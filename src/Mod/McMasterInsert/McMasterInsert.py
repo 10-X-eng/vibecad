@@ -122,26 +122,46 @@ def store_in_cache(source: Path, part_number: str) -> Path:
     return dest
 
 
+_CAD_VARIANT_PREFIX = re.compile(
+    r"^(NO THREADS|NO-THREADS|NOTHREADS|SIMPLIFIED)\s+",
+    re.IGNORECASE,
+)
+
+
 def catalog_description(part_number: str, source_path: Path) -> str:
-    """Catalog title from the McMaster STEP filename, e.g. 'Black-Oxide Alloy Steel Socket Head Screw'."""
+    """McMaster catalog summary from the STEP filename, without CAD-variant prefixes."""
     stem = re.sub(r"[_\s]+", " ", source_path.stem).strip()
     title = stem
     if part_number:
         prefix = re.compile(re.escape(part_number) + r"[\s\-]*", re.IGNORECASE)
         title = prefix.sub("", stem, count=1).strip(" -")
+    title = _CAD_VARIANT_PREFIX.sub("", title).strip()
     title = re.sub(r"\s+", " ", title).strip()
     if not title or (part_number and title.upper() == part_number.upper()):
         return "McMaster-Carr catalog part"
     return title
 
 
-def _stamp_metadata(obj, part_number: str, source_path: Path) -> None:
-    label = part_number or source_path.stem
-    description = catalog_description(part_number, source_path)
+def _set_label(obj, label: str) -> None:
     try:
         obj.Label = label
     except Exception:
         pass
+
+
+def _clear_description(obj) -> None:
+    for attr in ("Label2", "Description"):
+        try:
+            if hasattr(obj, attr):
+                setattr(obj, attr, "")
+        except Exception:
+            pass
+
+
+def _stamp_metadata(obj, part_number: str, source_path: Path) -> None:
+    label = part_number or source_path.stem
+    description = catalog_description(part_number, source_path)
+    _set_label(obj, label)
     try:
         obj.Label2 = description
     except Exception:
@@ -163,6 +183,29 @@ def _stamp_metadata(obj, part_number: str, source_path: Path) -> None:
             setattr(obj, name, value)
         except Exception:
             continue
+
+
+def _stamp_body(obj, part_number: str, source_path: Path) -> None:
+    _set_label(obj, part_number or source_path.stem)
+    _clear_description(obj)
+
+
+def _name_imported_tree(component, part_number: str, source_path: Path) -> None:
+    """Component: part number + catalog summary. Inner body: part number only."""
+    _stamp_metadata(component, part_number, source_path)
+    for child in list(getattr(component, "Group", []) or []):
+        if _is_origin_object(child):
+            continue
+        if _type_id(child) == "PartDesign::Body":
+            _stamp_body(child, part_number, source_path)
+            owned = list(getattr(child, "Group", []) or [])
+            tip = getattr(child, "Tip", None)
+            if tip is not None and tip not in owned:
+                owned.append(tip)
+            for inner in owned:
+                if _is_origin_object(inner):
+                    continue
+                _stamp_body(inner, part_number, source_path)
 
 
 _SKIP_TRANSFORM_TYPES = (
@@ -246,10 +289,6 @@ def _ensure_body(doc, obj):
     body = doc.addObject("PartDesign::Body", "Body")
     _classify_structure(doc, body)
     try:
-        body.Label = "Body"
-    except Exception:
-        pass
-    try:
         body.addObject(obj)
     except Exception:
         pass
@@ -306,11 +345,6 @@ def _promote_to_component(doc, created: list, part_number: str, source_path: Pat
                 component.addObject(body)
         except Exception:
             pass
-        if len(unique_bodies) == 1:
-            try:
-                body.Label = "Body"
-            except Exception:
-                pass
 
     try:
         import FreeCADGui as Gui
@@ -572,7 +606,7 @@ def import_cad(path: Path, part_number: str) -> list[str]:
         raise RuntimeError(f"Import produced no objects from {path.name}")
     try:
         component = _promote_to_component(doc, created, part_number, path)
-        _stamp_metadata(component, part_number, path)
+        _name_imported_tree(component, part_number, path)
         doc.recompute()
         return [component.Name]
     except Exception as exc:

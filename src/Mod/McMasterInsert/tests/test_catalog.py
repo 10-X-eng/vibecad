@@ -37,14 +37,30 @@ class TestCatalogNames(unittest.TestCase):
             "Black-Oxide Alloy Steel Socket Head Screw",
         )
 
-    def test_catalog_description_keeps_no_threads_variant(self):
+    def test_catalog_description_strips_cad_variant_prefix(self):
         path = Path(
             "91290A115_NO THREADS_Black-Oxide Alloy Steel Socket Head Screw.STEP"
         )
         self.assertEqual(
             mmc.catalog_description("91290A115", path),
-            "NO THREADS Black-Oxide Alloy Steel Socket Head Screw",
+            "Black-Oxide Alloy Steel Socket Head Screw",
         )
+
+    def test_inner_body_is_part_number_with_no_description(self):
+        class Dummy:
+            pass
+
+        body = Dummy()
+        body.Label2 = "should be cleared"
+        body.Description = "should be cleared"
+        mmc._stamp_body(
+            body,
+            "91251A051",
+            Path("91251A051_Black-Oxide Alloy Steel Socket Head Screw.STEP"),
+        )
+        self.assertEqual(body.Label, "91251A051")
+        self.assertEqual(body.Label2, "")
+        self.assertEqual(body.Description, "")
 
     def test_component_label_is_part_number_not_mmc_prefix(self):
         class Dummy:
