@@ -603,8 +603,16 @@ def test_transform_runtime_routes_circular_pattern_with_exact_preflight(
         lambda context, **kwargs: captured.update(kwargs) or {"routed": True},
     )
 
-    result = runtime.mutate_transform(
+    preview = runtime.mutate_transform(
         _circular_arguments(),
+        ticket=state.begin_call(document.Uid, "model.transform"),
+    )
+    assert preview["applied"] is False
+    apply_arguments = dict(_circular_arguments())
+    apply_arguments["stage"] = "apply"
+    apply_arguments["preview_id"] = preview["preview_id"]
+    result = runtime.mutate_transform(
+        apply_arguments,
         ticket=state.begin_call(document.Uid, "model.transform"),
     )
 
