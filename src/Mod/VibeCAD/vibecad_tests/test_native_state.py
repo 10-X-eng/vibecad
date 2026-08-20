@@ -484,6 +484,37 @@ def test_preview_rejects_other_families() -> None:
         )
 
 
+def test_hole_preview_propose_apply_and_stale() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.hole",
+        arguments={"operation": "hole", "label": "Hole", "stage": "propose"},
+    )
+    assert preview["applied"] is False
+    assert store.current_revision("doc-1") == 0
+    stored = store.consume_mutation_preview(
+        "doc-1",
+        preview["preview_id"],
+        capability_name="model.hole",
+    )
+    assert stored["operation"] == "hole"
+    store.ensure_document("doc-2")
+    stale = store.propose_mutation_preview(
+        "doc-2",
+        capability_name="model.hole",
+        arguments={"operation": "hole", "label": "Hole2"},
+    )
+    store.note_structural_change("doc-2")
+    with pytest.raises(NativeRevisionConflict):
+        store.consume_mutation_preview(
+            "doc-2",
+            stale["preview_id"],
+            capability_name="model.hole",
+        )
+
+
 def test_transform_pattern_mirror_preview_propose_apply_and_stale() -> None:
     store = NativeDocumentStateStore()
     store.ensure_document("doc-1")
