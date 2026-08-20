@@ -34,12 +34,16 @@ from VibeCADNativeDesignCircularPattern import (
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
-from VibeCADNativeState import NativeCallTicket
+from VibeCADNativeState import (
+    NativeCallTicket,
+    NativeRevisionConflict,
+    NativeStateError,
+)
 
 
 _FIELDS = {
     "pattern": frozenset({"label", "source", "definition"}),
-    "scale": frozenset({"label", "targets", "definition"}),
+    "scale": frozenset({"label", "targets", "definition", "stage", "preview_id"}),
 }
 
 
@@ -48,6 +52,49 @@ class NativeModelTransformRuntime:
         if not isinstance(context, NativeRuntimeContext):
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
+
+    def _maybe_preview_scale(
+        self, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage == "apply":
+            return None
+        if stage != "propose":
+            raise NativeModelError("model.transform scale stage must be propose or apply.")
+        return self._context.state.propose_mutation_preview(
+            self._context.document_uid,
+            capability_name="model.transform",
+            arguments={"operation": "scale", **dict(values)},
+        )
+
+    def _scale_apply_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage != "apply":
+            return {
+                name: value
+                for name, value in values.items()
+                if name not in {"stage", "preview_id"}
+            }
+        preview_id = str(values.get("preview_id") or "").strip()
+        if not preview_id:
+            raise NativeModelError("model.transform scale apply needs preview_id.")
+        try:
+            stored = self._context.state.consume_mutation_preview(
+                self._context.document_uid,
+                preview_id,
+                capability_name="model.transform",
+            )
+        except NativeRevisionConflict:
+            raise
+        except NativeStateError as exc:
+            raise NativeModelError(str(exc)) from exc
+        if str(stored.get("operation") or "scale") != "scale":
+            raise NativeModelError("preview_id is not a scale preview.")
+        return {
+            name: value
+            for name, value in stored.items()
+            if name not in {"stage", "preview_id", "operation"}
+        }
 
     def mutate_transform(
         self,
@@ -65,6 +112,10 @@ class NativeModelTransformRuntime:
                 "A visible Design transform label must contain 1 to 160 characters."
             )
         if operation == "scale":
+            previewed = self._maybe_preview_scale(values)
+            if previewed is not None:
+                return previewed
+            values = self._scale_apply_values(values)
             spec = prepare_design_scale(self._context.document_uid, values)
             self._context.guard()
             prepared = preflight_design_scale(self._context.document, spec)

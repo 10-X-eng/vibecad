@@ -484,6 +484,37 @@ def test_preview_rejects_other_families() -> None:
         )
 
 
+def test_transform_scale_preview_propose_apply_and_stale() -> None:
+    store = NativeDocumentStateStore()
+    store.ensure_document("doc-1")
+    preview = store.propose_mutation_preview(
+        "doc-1",
+        capability_name="model.transform",
+        arguments={"operation": "scale", "label": "Scale", "stage": "propose"},
+    )
+    assert preview["applied"] is False
+    assert store.current_revision("doc-1") == 0
+    stored = store.consume_mutation_preview(
+        "doc-1",
+        preview["preview_id"],
+        capability_name="model.transform",
+    )
+    assert stored["operation"] == "scale"
+    store.ensure_document("doc-2")
+    stale = store.propose_mutation_preview(
+        "doc-2",
+        capability_name="model.transform",
+        arguments={"operation": "scale", "label": "Scale2"},
+    )
+    store.note_structural_change("doc-2")
+    with pytest.raises(NativeRevisionConflict):
+        store.consume_mutation_preview(
+            "doc-2",
+            stale["preview_id"],
+            capability_name="model.transform",
+        )
+
+
 def test_boolean_intersect_preview_propose_apply_and_stale() -> None:
     store = NativeDocumentStateStore()
     store.ensure_document("doc-1")
