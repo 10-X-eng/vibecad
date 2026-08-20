@@ -48,21 +48,25 @@ class NativeModelBooleanRuntime:
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
 
-    def _maybe_preview_boolean_cut(
-        self, values: Mapping[str, Any]
+    def _maybe_preview_boolean(
+        self, values: Mapping[str, Any], *, mode: str
     ) -> dict[str, Any] | None:
         stage = str(values.get("stage") or "propose").strip()
         if stage == "apply":
             return None
         if stage != "propose":
-            raise NativeModelError("model.boolean cut stage must be propose or apply.")
+            raise NativeModelError(
+                f"model.boolean {mode} stage must be propose or apply."
+            )
         return self._context.state.propose_mutation_preview(
             self._context.document_uid,
             capability_name="model.boolean",
             arguments={"operation": "combine", **dict(values)},
         )
 
-    def _boolean_cut_apply_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+    def _boolean_apply_values(
+        self, values: Mapping[str, Any], *, mode: str
+    ) -> dict[str, Any]:
         stage = str(values.get("stage") or "propose").strip()
         if stage != "apply":
             return {
@@ -72,7 +76,7 @@ class NativeModelBooleanRuntime:
             }
         preview_id = str(values.get("preview_id") or "").strip()
         if not preview_id:
-            raise NativeModelError("model.boolean cut apply needs preview_id.")
+            raise NativeModelError(f"model.boolean {mode} apply needs preview_id.")
         try:
             stored = self._context.state.consume_mutation_preview(
                 self._context.document_uid,
@@ -84,11 +88,11 @@ class NativeModelBooleanRuntime:
         except NativeStateError as exc:
             raise NativeModelError(str(exc)) from exc
         definition = stored.get("definition")
-        mode = ""
+        stored_mode = ""
         if isinstance(definition, Mapping):
-            mode = str(definition.get("mode") or "")
-        if mode != "cut":
-            raise NativeModelError("preview_id is not a boolean cut preview.")
+            stored_mode = str(definition.get("mode") or "")
+        if stored_mode != mode:
+            raise NativeModelError(f"preview_id is not a boolean {mode} preview.")
         return {
             name: value
             for name, value in stored.items()
@@ -128,11 +132,11 @@ class NativeModelBooleanRuntime:
             mode = ""
             if isinstance(definition, Mapping):
                 mode = str(definition.get("mode") or "")
-            if mode == "cut":
-                previewed = self._maybe_preview_boolean_cut(values)
+            if mode in {"cut", "join"}:
+                previewed = self._maybe_preview_boolean(values, mode=mode)
                 if previewed is not None:
                     return previewed
-                values = self._boolean_cut_apply_values(values)
+                values = self._boolean_apply_values(values, mode=mode)
                 definition = values["definition"]
             spec = prepare_design_combine(
                 self._context.document_uid,
