@@ -154,6 +154,15 @@ def model_dressup_capability_definition() -> NativeCapabilityDefinition:
             "label": LABEL_SCHEMA,
             "selection": _selection_schema(),
             "definition": _chamfer_definition_schema(),
+            "stage": {
+                "type": "string",
+                "enum": ["propose", "apply"],
+            },
+            "preview_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
         },
         ("label", "selection", "definition"),
     )

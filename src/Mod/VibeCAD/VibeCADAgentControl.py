@@ -201,9 +201,9 @@ CAD path for Grok Bot (same quality as in-app Grok):
 4. POST `/v1/prompt` `{{"text":"..."}}` to start an in-app Build turn if you
    need the chat loop.
 `model.extrude`, `model.revolve`, `model.helix`, `model.loft`,
-`model.sweep`, and `model.dressup` fillet use `stage=propose` then
-`stage=apply` on `/v1/native`. Chamfer, Boolean, and sketch still
-live-commit.
+`model.sweep`, and `model.dressup` fillet/chamfer use `stage=propose`
+then `stage=apply` on `/v1/native`. Draft, thickness, Boolean, and
+sketch still live-commit.
 
 Peak Aero loop for Grok Bot (same quality as in-app Grok):
 1. GET `/v1/aero` for the stamped flight card.

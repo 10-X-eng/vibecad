@@ -39,7 +39,9 @@ from VibeCADNativeState import (
 
 
 _FILLET_FIELDS = frozenset({"label", "selection", "radius_mm", "stage", "preview_id"})
-_CHAMFER_FIELDS = frozenset({"label", "selection", "definition"})
+_CHAMFER_FIELDS = frozenset(
+    {"label", "selection", "definition", "stage", "preview_id"}
+)
 _DRAFT_FIELDS = frozenset(
     {
         "label",
@@ -110,6 +112,51 @@ class NativeModelDressupRuntime:
             if name not in {"stage", "preview_id", "operation"}
         }
 
+    def _maybe_preview_chamfer(
+        self, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage == "apply":
+            return None
+        if stage != "propose":
+            raise NativeModelError(
+                "model.dressup chamfer stage must be propose or apply."
+            )
+        return self._context.state.propose_mutation_preview(
+            self._context.document_uid,
+            capability_name="model.dressup",
+            arguments={"operation": "chamfer", **dict(values)},
+        )
+
+    def _chamfer_apply_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        stage = str(values.get("stage") or "propose").strip()
+        if stage != "apply":
+            return {
+                name: value
+                for name, value in values.items()
+                if name not in {"stage", "preview_id"}
+            }
+        preview_id = str(values.get("preview_id") or "").strip()
+        if not preview_id:
+            raise NativeModelError("model.dressup chamfer apply needs preview_id.")
+        try:
+            stored = self._context.state.consume_mutation_preview(
+                self._context.document_uid,
+                preview_id,
+                capability_name="model.dressup",
+            )
+        except NativeRevisionConflict:
+            raise
+        except NativeStateError as exc:
+            raise NativeModelError(str(exc)) from exc
+        if str(stored.get("operation") or "chamfer") != "chamfer":
+            raise NativeModelError("preview_id is not a chamfer preview.")
+        return {
+            name: value
+            for name, value in stored.items()
+            if name not in {"stage", "preview_id", "operation"}
+        }
+
     def mutate_dressup(
         self,
         arguments: Mapping[str, Any],
@@ -139,6 +186,10 @@ class NativeModelDressupRuntime:
             preflight = preflight_design_fillet
             create = create_design_fillet
         elif operation == "chamfer":
+            previewed = self._maybe_preview_chamfer(values)
+            if previewed is not None:
+                return previewed
+            values = self._chamfer_apply_values(values)
             prepared = prepare_design_chamfer(self._context.document_uid, values)
             preflight = preflight_design_chamfer
             create = create_design_chamfer
