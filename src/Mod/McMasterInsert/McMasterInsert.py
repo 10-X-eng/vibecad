@@ -142,11 +142,26 @@ def catalog_description(part_number: str, source_path: Path) -> str:
     return title
 
 
+def _legal_object_name(prefix: str, part_number: str) -> str:
+    raw = re.sub(r"[^0-9A-Za-z_]", "_", part_number or "Part")
+    if not raw or not raw[0].isalpha():
+        raw = f"{prefix}_{raw}"
+    return raw[:50]
+
+
 def _set_label(obj, label: str) -> None:
+    wanted = str(label or "").strip()
+    if obj is None or not wanted:
+        return
     try:
-        obj.Label = label
-    except Exception:
-        pass
+        obj.Label = wanted
+    except Exception as exc:
+        App.Console.PrintWarning(f"McMaster: could not set Label on {obj.Name}: {exc}\n")
+        return
+    if str(getattr(obj, "Label", "") or "") != wanted:
+        App.Console.PrintWarning(
+            f"McMaster: {obj.Name} Label is {obj.Label!r}, wanted {wanted!r}\n"
+        )
 
 
 def _clear_description(obj) -> None:
@@ -300,52 +315,100 @@ def _ensure_body(doc, obj):
     return body
 
 
-def _promote_to_component(doc, created: list, part_number: str, source_path: Path):
-    roots = _import_roots(created)
-    existing = [obj for obj in roots if _type_id(obj) == "PartDesign::Component"]
-    if len(existing) == 1 and len(roots) == 1:
-        return existing[0]
-
-    component = doc.addObject("PartDesign::Component", "Component")
-    if component is None or _type_id(component) != "PartDesign::Component":
-        raise RuntimeError("VibeCAD did not create a PartDesign::Component")
-    _classify_structure(doc, component)
-    try:
-        component.Label = part_number or source_path.stem
-    except Exception:
-        pass
-
-    parent = _active_component()
-    if parent is not None and parent is not component:
-        try:
-            parent.addObject(component)
-        except Exception:
-            pass
-
+def _imported_bodies(doc, created: list) -> list:
     bodies = []
-    for root in roots:
-        if root is component or _is_origin_object(root):
-            continue
-        if _type_id(root) == "PartDesign::Component":
-            for child in list(getattr(root, "Group", []) or []):
-                if _type_id(child) == "PartDesign::Body":
-                    bodies.append(child)
-            continue
-        bodies.append(_ensure_body(doc, root))
-
-    unique_bodies = []
     seen = set()
-    for body in bodies:
+    for obj in created:
+        if obj is None or _is_origin_object(obj):
+            continue
+        body = None
+        tid = _type_id(obj)
+        if tid == "PartDesign::Body":
+            body = obj
+        elif tid == "PartDesign::Component":
+            continue
+        else:
+            try:
+                parent = obj.getParentGeoFeatureGroup()
+            except Exception:
+                parent = None
+            if parent is not None and _type_id(parent) == "PartDesign::Body":
+                body = parent
+            else:
+                body = _ensure_body(doc, obj)
         if body is None or id(body) in seen:
             continue
         seen.add(id(body))
-        unique_bodies.append(body)
+        bodies.append(body)
+    return bodies
+
+
+def _component_only_holds(component, bodies: list) -> bool:
+    owned = [
+        child
+        for child in list(getattr(component, "Group", []) or [])
+        if not _is_origin_object(child)
+    ]
+    if not owned:
+        return True
+    imported = set(bodies)
+    return all(child in imported for child in owned)
+
+
+def _promote_to_component(doc, created: list, part_number: str, source_path: Path):
+    label = part_number or source_path.stem
+    created_components = [
+        obj for obj in created if _type_id(obj) == "PartDesign::Component"
+    ]
+    bodies = _imported_bodies(doc, created)
+
+    if len(created_components) == 1 and not bodies:
+        component = created_components[0]
+        _set_label(component, label)
+        return component
+
+    parents = []
+    for body in bodies:
+        try:
+            parent = body.getParentGeoFeatureGroup()
+        except Exception:
+            parent = None
+        if parent is not None and _type_id(parent) in (
+            "PartDesign::Component",
+            "App::Part",
+        ):
+            parents.append(parent)
+    unique_parents = []
+    seen = set()
+    for parent in parents:
+        if id(parent) in seen:
+            continue
+        seen.add(id(parent))
+        unique_parents.append(parent)
+
+    component = None
+    if len(unique_parents) == 1 and _component_only_holds(unique_parents[0], bodies):
+        component = unique_parents[0]
+    elif len(created_components) == 1:
+        component = created_components[0]
+
+    if component is None:
+        component = doc.addObject(
+            "PartDesign::Component",
+            _legal_object_name("Component", part_number),
+        )
+        if component is None or _type_id(component) != "PartDesign::Component":
+            raise RuntimeError("VibeCAD did not create a PartDesign::Component")
+        _classify_structure(doc, component)
+
+    for body in bodies:
         try:
             if body.getParentGeoFeatureGroup() is not component:
                 component.addObject(body)
         except Exception:
             pass
 
+    _set_label(component, label)
     try:
         import FreeCADGui as Gui
 
@@ -354,6 +417,9 @@ def _promote_to_component(doc, created: list, part_number: str, source_path: Pat
             view.setActiveObject("part", component)
     except Exception:
         pass
+    App.Console.PrintMessage(
+        f"McMaster: component {component.Name} Label={component.Label!r}\n"
+    )
     return component
 
 
@@ -608,6 +674,33 @@ def import_cad(path: Path, part_number: str) -> list[str]:
         component = _promote_to_component(doc, created, part_number, path)
         _name_imported_tree(component, part_number, path)
         doc.recompute()
+        _name_imported_tree(component, part_number, path)
+        try:
+            import FreeCADGui as Gui
+            from PySide import QtCore
+
+            Gui.updateGui()
+            doc_name = doc.Name
+            obj_name = component.Name
+            path_str = str(path)
+            pn = part_number
+
+            def _relabel() -> None:
+                live_doc = App.getDocument(doc_name)
+                if live_doc is None:
+                    return
+                live = live_doc.getObject(obj_name)
+                if live is None:
+                    return
+                _name_imported_tree(live, pn, Path(path_str))
+                App.Console.PrintMessage(
+                    f"McMaster: renamed {live.Name} -> {live.Label!r}\n"
+                )
+
+            QtCore.QTimer.singleShot(0, _relabel)
+            QtCore.QTimer.singleShot(250, _relabel)
+        except Exception:
+            pass
         return [component.Name]
     except Exception as exc:
         App.Console.PrintWarning(
