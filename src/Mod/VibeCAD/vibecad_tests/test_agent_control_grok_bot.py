@@ -358,6 +358,127 @@ def test_native_command_reuses_held_session(monkeypatch) -> None:
     assert first["session_id"] not in agent._native_sessions
 
 
+def _held_extrude_session(monkeypatch) -> tuple[list[tuple[str, str, str]], list[int]]:
+    agent._native_sessions.clear()
+    calls: list[tuple[str, str, str]] = []
+    created: list[int] = []
+
+    class _Dispatcher:
+        def call(self, tool_name, arguments_json, provider_call_id):
+            calls.append((tool_name, arguments_json, provider_call_id))
+            if '"stage":"apply"' in arguments_json:
+                return {
+                    "ok": True,
+                    "applied": True,
+                    "capability": "model.extrude",
+                }
+            return {
+                "ok": True,
+                "applied": False,
+                "preview_id": "preview-extrude-1",
+                "capability": "model.extrude",
+                "expected_revision": 0,
+                "claim_ceiling": "geometry_applied",
+            }
+
+    class _Execution:
+        dispatcher = _Dispatcher()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: object()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeDispatch",
+        SimpleNamespace(
+            NativeDispatchError=type("NativeDispatchError", (Exception,), {"code": "X"})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADNativeSessionFactory",
+        SimpleNamespace(
+            create_live_native_session_execution=lambda **_kwargs: created.append(1)
+            or _Execution()
+        ),
+    )
+    return calls, created
+
+
+def test_held_session_extrude_propose_then_apply(monkeypatch) -> None:
+    calls, created = _held_extrude_session(monkeypatch)
+    proposed = agent.native_command(
+        {
+            "capability": "model.extrude",
+            "arguments": {
+                "operation": "extrude",
+                "label": "Pad",
+                "stage": "propose",
+            },
+        }
+    )
+    assert proposed["ok"] is True
+    assert proposed["applied"] is False
+    assert proposed["preview_id"] == "preview-extrude-1"
+    assert proposed["claim_ceiling"] == "geometry_applied"
+    session_id = proposed["session_id"]
+    applied = agent.native_command(
+        {
+            "capability": "model.extrude",
+            "session_id": session_id,
+            "arguments": {
+                "operation": "extrude",
+                "label": "Pad",
+                "stage": "apply",
+                "preview_id": proposed["preview_id"],
+            },
+        }
+    )
+    assert applied["ok"] is True
+    assert applied["applied"] is True
+    assert applied["session_id"] == session_id
+    assert created == [1]
+    assert [item[0] for item in calls] == ["model.extrude", "model.extrude"]
+    assert '"stage":"propose"' in calls[0][1]
+    assert '"stage":"apply"' in calls[1][1]
+    assert '"preview_id":"preview-extrude-1"' in calls[1][1]
+    assert session_id in agent._native_sessions
+
+
+def test_held_session_extrude_apply_does_not_open_a_second_session(
+    monkeypatch,
+) -> None:
+    _calls, created = _held_extrude_session(monkeypatch)
+    first = agent.native_command(
+        {
+            "capability": "model.extrude",
+            "arguments": {"operation": "extrude", "label": "Pad", "stage": "propose"},
+        }
+    )
+    second = agent.native_command(
+        {
+            "capability": "model.extrude",
+            "session_id": first["session_id"],
+            "arguments": {
+                "operation": "extrude",
+                "label": "Pad",
+                "stage": "apply",
+                "preview_id": first["preview_id"],
+            },
+        }
+    )
+    assert created == [1]
+    assert first["session_id"] == second["session_id"]
+    agent.native_command({"close": True, "session_id": first["session_id"]})
+    assert first["session_id"] not in agent._native_sessions
+
+
 def test_native_command_rejects_invalid_arguments_type() -> None:
     payload = agent.native_command(
         {"capability": "inspect.query", "arguments": "not-an-object"}
