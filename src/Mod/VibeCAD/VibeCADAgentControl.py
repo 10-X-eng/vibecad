@@ -177,7 +177,7 @@ channel. Use it to drive VibeCAD without clicking menus.
 | POST | `/v1/open`        | `{{"path":"..."}}`                | Open/activate a document |
 | POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
 | GET  | `/v1/context`     |                                   | Frozen ribbon catalog + native_state + presentation screenshot path |
-| GET  | `/v1/screenshot`  | optional `?capture=true`          | Capture viewport PNG path. Pixels are not measurements. |
+| GET  | `/v1/screenshot`  | optional `?capture=true` `&pack=true` | Capture viewport PNG, or iso then front then top. Pixels are not measurements. |
 | POST | `/v1/prompt`      | `{{"text":"..."}}`                | Start an in-app Build turn (same path as in-app Grok) |
 | POST | `/v1/native`      | `{{"capability":"...","arguments":{{...}},"session_id":"..."}}` | Same Native dispatcher; reuse session_id until `{{"close":true,"session_id":"..."}}` |
 | GET  | `/v1/native/session` | optional `?session_id=...`     | Report the held Native session. Does not open a new turn. |
@@ -201,6 +201,7 @@ CAD path for Grok Bot (same quality as in-app Grok):
    `provider_tool_schemas`), `native_state`, and `native_preview` (`stage` /
    `preview_id` for allowlisted families only). Do not invent capability names.
 2. GET `/v1/screenshot` for a presentation-only PNG path. Open that file.
+   GET `/v1/screenshot?pack=true` for isometric, then front, then top.
    Pixels never prove dimensions, CL, or airworthiness (`claim_ceiling=not_measured`).
 3. POST `/v1/native` using a name from that freeze. Keep returning
    `session_id` on later calls so undo and the 256-call budget stay on one
@@ -798,11 +799,62 @@ def _presentation_attachment(screenshot: Mapping[str, Any]) -> dict[str, Any] | 
     }
 
 
+SCREENSHOT_PACK_VIEWS = ("isometric", "front", "top")
+
+
+def _capture_presentation_view(
+    service: Any,
+    *,
+    camera: Mapping[str, Any] | None = None,
+    view: str | None = None,
+) -> dict[str, Any] | tuple[None, dict[str, Any]]:
+    capture = getattr(service, "capture_view_screenshot", None)
+    captured: Mapping[str, Any] | None = None
+    if callable(capture):
+        kwargs: dict[str, Any] = {}
+        if camera is not None:
+            kwargs["camera"] = dict(camera)
+            kwargs["frame"] = "all"
+        captured = capture(**kwargs)
+        if isinstance(captured, dict) and captured.get("ok") is False:
+            return None, failure(
+                "SCREENSHOT_FAILED",
+                str(captured.get("error") or "Viewport capture failed."),
+                stage="native_call",
+            )
+    summary = service.view_screenshot_summary()
+    attachment = _presentation_attachment(
+        captured if isinstance(captured, Mapping) else {}
+    ) or _presentation_attachment(summary if isinstance(summary, Mapping) else {})
+    consume = getattr(service, "consume_view_screenshot_attachment", None)
+    if attachment is not None and callable(consume):
+        consume({"captured": True, "path": attachment["path"]})
+    if attachment is None:
+        return None, failure(
+            "SCREENSHOT_MISSING",
+            "No viewport screenshot is available. Retry GET /v1/screenshot.",
+            stage="precondition",
+        )
+    payload = {
+        "captured": True,
+        "path": attachment["path"],
+        "presentation_only": True,
+        "artifact_class": "presentation",
+        "claim_ceiling": "not_measured",
+    }
+    if view:
+        payload["view"] = view
+        attachment = dict(attachment)
+        attachment["view"] = view
+    return {"screenshot": payload, "attachment": attachment}
+
+
 def screenshot_command(arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     """Capture or return the last viewport PNG. Pixels are not measurements."""
 
     args = dict(arguments or {})
     capture = bool(args.get("capture", True))
+    pack = bool(args.get("pack"))
     if _gui() is None:
         return failure(
             "GUI_REQUIRED",
@@ -813,19 +865,38 @@ def screenshot_command(arguments: dict[str, Any] | None = None) -> dict[str, Any
         from VibeCADCore import get_service
 
         service = get_service()
-        if capture and callable(getattr(service, "capture_view_screenshot", None)):
-            captured = service.capture_view_screenshot()
-            if isinstance(captured, dict) and captured.get("ok") is False:
-                return failure(
-                    "SCREENSHOT_FAILED",
-                    str(captured.get("error") or "Viewport capture failed."),
-                    stage="native_call",
+        if pack:
+            views: list[dict[str, Any]] = []
+            attachments: list[dict[str, Any]] = []
+            for name in SCREENSHOT_PACK_VIEWS:
+                result = _capture_presentation_view(
+                    service,
+                    camera={"mode": "preset", "preset": name},
+                    view=name,
                 )
+                if isinstance(result, tuple):
+                    return result[1]
+                views.append(result["screenshot"])
+                attachments.append(result["attachment"])
+            return {
+                "ok": True,
+                "views": views,
+                "attachments": attachments,
+                "claim_ceiling": "not_measured",
+            }
+        if capture:
+            result = _capture_presentation_view(service)
+            if isinstance(result, tuple):
+                return result[1]
+            return {
+                "ok": True,
+                "screenshot": result["screenshot"],
+                "attachment": result["attachment"],
+            }
         summary = service.view_screenshot_summary()
-        attachment = _presentation_attachment(summary if isinstance(summary, Mapping) else {})
-        consume = getattr(service, "consume_view_screenshot_attachment", None)
-        if attachment is not None and callable(consume):
-            consume({"captured": True, "path": attachment["path"]})
+        attachment = _presentation_attachment(
+            summary if isinstance(summary, Mapping) else {}
+        )
     except Exception as exc:
         return failure("SCREENSHOT_UNAVAILABLE", str(exc), stage="precondition")
     if attachment is None:
@@ -1211,7 +1282,9 @@ def handle_http_request(
         query = parse_qs(parsed.query)
         capture_raw = str((query.get("capture") or ["true"])[0] or "true").strip().lower()
         capture = capture_raw not in {"0", "false", "no"}
-        return 200, dispatch("screenshot", {"capture": capture})
+        pack_raw = str((query.get("pack") or ["false"])[0] or "false").strip().lower()
+        pack = pack_raw in {"1", "true", "yes"}
+        return 200, dispatch("screenshot", {"capture": capture, "pack": pack})
     if method == "POST" and route in {"/v1/screenshot", "/screenshot"}:
         return 200, dispatch("screenshot", payload)
     if method == "POST" and route in {"/v1/prompt", "/prompt"}:

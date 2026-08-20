@@ -165,10 +165,13 @@ def test_screenshot_http_route_is_registered(monkeypatch) -> None:
     assert status == 200
     assert payload["command"] == "screenshot"
     assert payload["arguments"]["capture"] is True
+    assert payload["arguments"]["pack"] is False
     status, payload = agent.handle_http_request(
         "GET", "/v1/screenshot?capture=false", {}
     )
     assert payload["arguments"]["capture"] is False
+    status, payload = agent.handle_http_request("GET", "/v1/screenshot?pack=true", {})
+    assert payload["arguments"]["pack"] is True
 
 
 def test_screenshot_command_requires_gui(monkeypatch) -> None:
@@ -208,6 +211,49 @@ def test_screenshot_command_returns_presentation_attachment(monkeypatch) -> None
     assert payload["attachment"]["claim_ceiling"] == "not_measured"
     assert payload["screenshot"]["claim_ceiling"] == "not_measured"
     assert consumed[0]["path"] == r"C:\tmp\view.png"
+
+
+def test_screenshot_pack_captures_iso_front_top(monkeypatch) -> None:
+    cameras: list[dict] = []
+
+    class _Service:
+        def capture_view_screenshot(self, **kwargs):
+            cameras.append(dict(kwargs.get("camera") or {}))
+            preset = str((kwargs.get("camera") or {}).get("preset") or "view")
+            return {
+                "ok": True,
+                "captured": True,
+                "path": rf"C:\tmp\{preset}.png",
+            }
+
+        def view_screenshot_summary(self):
+            return {"captured": True, "path": r"C:\tmp\last.png"}
+
+        def consume_view_screenshot_attachment(self, screenshot):
+            return {"consumed": True}
+
+    monkeypatch.setattr(agent, "_gui", lambda: object())
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADCore",
+        SimpleNamespace(get_service=lambda: _Service()),
+    )
+    payload = agent.screenshot_command({"pack": True})
+    assert payload["ok"] is True
+    assert payload["claim_ceiling"] == "not_measured"
+    assert [item["view"] for item in payload["views"]] == [
+        "isometric",
+        "front",
+        "top",
+    ]
+    assert [item["claim_ceiling"] for item in payload["views"]] == [
+        "not_measured",
+        "not_measured",
+        "not_measured",
+    ]
+    assert payload["views"][0]["presentation_only"] is True
+    assert [item["preset"] for item in cameras] == ["isometric", "front", "top"]
+    assert payload["attachments"][1]["path"] == r"C:\tmp\front.png"
 
 
 def test_bot_turn_packet_exposes_screenshot_attachment() -> None:
