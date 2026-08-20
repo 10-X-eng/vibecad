@@ -24,7 +24,13 @@ NATIVE_AUTHORITY_CONFLICT = "NATIVE_AUTHORITY_CONFLICT"
 NATIVE_PREVIEW_MISSING = "NATIVE_PREVIEW_MISSING"
 NATIVE_PREVIEW_CONSUMED = "NATIVE_PREVIEW_CONSUMED"
 NATIVE_PREVIEW_FAMILIES = frozenset(
-    {"model.extrude", "model.revolve", "model.helix", "model.dressup"}
+    {
+        "model.extrude",
+        "model.revolve",
+        "model.helix",
+        "model.loft",
+        "model.dressup",
+    }
 )
 NATIVE_STATE_SCHEMA = "vibecad-native-state-v1"
 
