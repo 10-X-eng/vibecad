@@ -115,13 +115,15 @@ def test_exact_distance_angle_and_radius_reads() -> None:
     document.add(_Object(document, "First", shape=_Shape(_Element((1, 0, 0), 5))))
     document.add(_Object(document, "Second", shape=_Shape(_Element((0, 1, 0), 8))))
 
-    assert measure_distance(document, _target("First"), _target("Second"))[
-        "distance_mm"
-    ] == 12.5
-    assert measure_angle(document, _target("First"), _target("Second"))[
-        "angle_degrees"
-    ] == pytest.approx(90.0)
-    assert measure_radius(document, _target("Second"))["radius_mm"] == 8.0
+    distance = measure_distance(document, _target("First"), _target("Second"))
+    angle = measure_angle(document, _target("First"), _target("Second"))
+    radius = measure_radius(document, _target("Second"))
+    assert distance["distance_mm"] == 12.5
+    assert distance["claim_ceiling"] == "measured"
+    assert angle["angle_degrees"] == pytest.approx(90.0)
+    assert angle["claim_ceiling"] == "measured"
+    assert radius["radius_mm"] == 8.0
+    assert radius["claim_ceiling"] == "measured"
 
 
 def test_mass_properties_use_explicit_units_and_default_density() -> None:

@@ -50,6 +50,7 @@ def measure_distance(
     }
     if closest and len(closest) == 2:
         result["closest_points_mm"] = [_vector(closest[0]), _vector(closest[1])]
+    result["claim_ceiling"] = "measured"
     return result
 
 
@@ -97,6 +98,7 @@ def measure_angle(
         "angle_degrees": angle,
         "first": first.summary(),
         "second": second.summary(),
+        "claim_ceiling": "measured",
     }
 
 
@@ -118,7 +120,11 @@ def measure_radius(document: Any, target: NativeElementRef) -> dict[str, Any]:
             break
     if radius is None:
         raise NativeMeasureError("The exact element has no circular radius.")
-    return {"radius_mm": radius, "target": target.summary()}
+    return {
+        "radius_mm": radius,
+        "target": target.summary(),
+        "claim_ceiling": "measured",
+    }
 
 
 def _shape_material(obj: Any) -> Any | None:
