@@ -90,6 +90,30 @@ def test_preview_group_is_inserted_on_the_ribbon_page() -> None:
     ]
 
 
+def test_install_does_not_attach_to_qmainwindow() -> None:
+    registered: dict[str, object] = {}
+    window = FakeWidget("MainWindow")
+    window.findChild = lambda *_args, **_kwargs: window  # type: ignore[method-assign]
+    gui = SimpleNamespace(
+        getMainWindow=lambda: window,
+        addCommand=lambda name, command: registered.__setitem__(name, command),
+        runCommand=lambda _name: None,
+    )
+    qt_widgets = SimpleNamespace(
+        QFrame=FakeWidget,
+        QWidget=FakeWidget,
+        QHBoxLayout=FakeLayout,
+        QToolButton=FakeWidget,
+    )
+    assert ribbon.install_native_preview_ribbon(
+        gui=gui, qt_widgets=qt_widgets, remaining_attempts=0
+    ) is False
+    assert "VibeCAD_ApplyNativePreview" in registered
+    assert not any(
+        child.objectName() == ribbon.GROUP_OBJECT_NAME for child in window._children
+    )
+
+
 def test_install_registers_commands_and_returns_true() -> None:
     registered: dict[str, object] = {}
     page = FakeWidget("VibeCADRibbonPage")
