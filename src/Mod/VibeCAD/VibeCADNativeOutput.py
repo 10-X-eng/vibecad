@@ -19,12 +19,15 @@ MAX_NATIVE_OUTPUT_REQUEST_TEXT_CHARACTERS = 256
 NATIVE_OUTPUT_AUTHORIZATION_FAILED = "NATIVE_OUTPUT_AUTHORIZATION_FAILED"
 NATIVE_OUTPUT_FAILED = "NATIVE_OUTPUT_FAILED"
 _STEP_SUFFIXES = frozenset({".step", ".stp"})
+_MESH_SUFFIXES = frozenset({".stl", ".ast", ".bms", ".obj", ".off", ".ply", ".bdf"})
 
 
 def native_output_artifact_class(file_name: str) -> str | None:
     suffix = Path(file_name).suffix.casefold()
     if suffix in _STEP_SUFFIXES:
         return "exact"
+    if suffix in _MESH_SUFFIXES:
+        return "derived"
     return None
 
 
