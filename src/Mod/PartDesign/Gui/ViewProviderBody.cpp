@@ -185,7 +185,14 @@ void ViewProviderBody::onChangedObject(const Gui::ViewProvider& vp, const App::P
         // controls exactly the current Tip.
         const bool isResult = changedObj != body
             && PartDesign::Body::isResultFeature(changedObj);
-        if (isResult
+        if (changedObj == body
+            && !bodyPresentationStates()[this].adjustingResultVisibility) {
+            // The Body eye must still hide or show the current Tip while a
+            // native feature task has a pending transaction. Full
+            // normalization waits for that task; the result solid must not.
+            setResultVisibility(Visibility.getValue());
+        }
+        else if (isResult
             && !bodyPresentationStates()[this].adjustingResultVisibility
             && body->getDocument()) {
             normalizeResultPresentation(*body->getDocument(), false);
@@ -823,13 +830,15 @@ void ViewProviderBody::show()
 
     // The regular show path may reject a child whose enclosing component is
     // hidden. The physical container must nevertheless remain mounted so an
-    // independently visible sketch or datum can still draw. Normalize the
-    // result only at the same stable boundary used by undo/redo and native
-    // task completion; show() is also reached synchronously while those
-    // owners replay Visibility properties.
+    // independently visible sketch or datum can still draw.
     if (!Visibility.getValue()) {
         Gui::ViewProvider::show();
     }
+    // Honor the Body eye even while a native feature task holds a pending
+    // transaction. Full presentation restore still waits for that owner so
+    // TempoVis can keep a consumed sketch hidden, but selected bodies must
+    // still show or hide their current result.
+    setResultVisibility(Visibility.getValue());
     if (auto* body = getObject<PartDesign::Body>();
         body && body->getDocument()) {
         normalizeResultPresentation(*body->getDocument(), false);
@@ -840,13 +849,11 @@ void ViewProviderBody::hide()
 {
     // Let the regular implementation synchronize the persisted Visibility
     // property, then remount only the scene container. Its result children
-    // remain independently addressable. Stable-state normalization hides the
-    // result Tip; if this call is part of task teardown or transaction replay,
-    // it deliberately waits for that owner to finish before changing any
-    // child Visibility property.
+    // remain independently addressable.
     PartGui::ViewProviderPart::hide();
     useChildSceneMode();
     Gui::ViewProvider::show();
+    setResultVisibility(Visibility.getValue());
     if (auto* body = getObject<PartDesign::Body>();
         body && body->getDocument()) {
         normalizeResultPresentation(*body->getDocument(), false);
