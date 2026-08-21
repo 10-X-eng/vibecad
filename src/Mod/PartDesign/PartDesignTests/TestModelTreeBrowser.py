@@ -1729,6 +1729,80 @@ class TestModelTreeBrowser(unittest.TestCase):
             ),
         )
 
+    def test_selected_bodies_toggle_while_a_feature_task_is_open(self):
+        other = self.document.addObject("PartDesign::Body", "OtherToggleBody")
+        other.Label = "Other Toggle Body"
+        other_tip = other.newObject("PartDesign::Feature", "OtherToggleResult")
+        other_tip.Shape = Part.makeBox(4, 4, 4)
+        other.Tip = other_tip
+        other.Visibility = True
+        other_tip.Visibility = True
+        self.document.recompute()
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: other.Visibility and other_tip.Visibility
+            )
+        )
+
+        Gui.activeView().setActiveObject("pdbody", self.vibe_body)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.vibe_body)
+        Gui.Selection.addSelection(other)
+        entered = bool(Gui.activeDocument().setEdit(self.vibe_sketch.Name))
+        self.assertTrue(entered or Gui.Control.activeDialog())
+        try:
+            self.assertTrue(
+                self.document.HasPendingTransaction
+                or Gui.activeDocument().getInEdit() is not None
+            )
+
+            other.ViewObject.hide()
+            self.assertIsNotNone(
+                _wait_until(
+                    lambda: (
+                        not other.Visibility
+                        and not other_tip.Visibility
+                    )
+                ),
+                (other.Visibility, other_tip.Visibility),
+            )
+
+            self.vibe_body.ViewObject.hide()
+            self.assertIsNotNone(
+                _wait_until(
+                    lambda: (
+                        not self.vibe_body.Visibility
+                        and not self.vibe_result.Visibility
+                    )
+                ),
+                (
+                    self.vibe_body.Visibility,
+                    self.vibe_result.Visibility,
+                ),
+            )
+
+            self.vibe_body.ViewObject.show()
+            other.ViewObject.show()
+            self.assertIsNotNone(
+                _wait_until(
+                    lambda: (
+                        self.vibe_body.Visibility
+                        and self.vibe_result.Visibility
+                        and other.Visibility
+                        and other_tip.Visibility
+                    )
+                )
+            )
+        finally:
+            if Gui.activeDocument() and Gui.activeDocument().getInEdit():
+                Gui.activeDocument().resetEdit()
+            if Gui.Control.activeDialog():
+                try:
+                    Gui.Control.activeTaskDialog().reject()
+                except Exception:
+                    Gui.Control.closeDialog()
+            _event_step(50)
+
     def test_tip_change_and_undo_replace_the_sole_rendered_result(self):
         self.document.openTransaction("Move Body Tip")
         self.vibe_body.Tip = self.vibe_prior_result
