@@ -131,6 +131,8 @@ protected:
     void setResultVisibility(bool visible);
 
 private:
+    /// Keep an owned Body and its PartDesign::Component from hiding independently.
+    void syncEnclosingComponentVisibility(bool visible);
     static const char* BodyModeEnum[];
 
     void afterRecompute(const App::Document&, const std::vector<App::DocumentObject*>& recomputedObjs);

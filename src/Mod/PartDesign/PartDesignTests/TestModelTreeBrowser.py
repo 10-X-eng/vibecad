@@ -1996,6 +1996,77 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertTrue(self.vibe_body.Visibility)
         self.assertTrue(self.vibe_result.Visibility)
 
+    def test_component_and_owned_body_visibility_stay_together(self):
+        component = self.document.addObject(
+            "PartDesign::Component",
+            "ImportedScrew",
+        )
+        component.Label = "91251A051"
+        body = self.document.addObject(
+            "PartDesign::Body",
+            "ImportedScrewBody",
+        )
+        body.Label = "91251A051 Body"
+        component.addObject(body)
+        solid = body.newObject(
+            "PartDesign::Feature",
+            "ImportedScrewGeometry",
+        )
+        solid.Label = "91251A051 Geometry"
+        solid.Shape = Part.makeCylinder(2, 8)
+        body.Tip = solid
+        self.document.recompute()
+        _event_step()
+
+        component.Visibility = True
+        body.Visibility = True
+        solid.Visibility = True
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    component.Visibility
+                    and body.Visibility
+                    and solid.Visibility
+                )
+            )
+        )
+
+        component.Visibility = False
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    not component.Visibility
+                    and not body.Visibility
+                    and not solid.Visibility
+                )
+            ),
+            (component.Visibility, body.Visibility, solid.Visibility),
+        )
+
+        component.Visibility = True
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    component.Visibility
+                    and body.Visibility
+                    and solid.Visibility
+                )
+            ),
+            (component.Visibility, body.Visibility, solid.Visibility),
+        )
+
+        body.Visibility = False
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    not body.Visibility
+                    and not solid.Visibility
+                    and not component.Visibility
+                )
+            ),
+            (component.Visibility, body.Visibility, solid.Visibility),
+        )
+
     def test_standard_visibility_commands_use_the_same_body_contract(self):
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(self.vibe_body)
