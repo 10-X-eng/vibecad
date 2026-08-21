@@ -16,6 +16,8 @@ import json
 import os
 import platform
 import re
+import shutil
+import sys
 import tempfile
 import time
 import urllib.error
@@ -148,11 +150,20 @@ class UpdateRelease:
 
     def asset_for(self, system: str | None = None, machine: str | None = None) -> UpdateAsset | None:
         system_name = (system or platform.system()).casefold()
-        platform_name = {"windows": "windows", "linux": "linux"}.get(system_name)
+        platform_name = {
+            "windows": "windows",
+            "linux": "linux",
+            "darwin": "macos",
+            "macos": "macos",
+        }.get(system_name)
         if platform_name is None:
             return None
         architecture = normalize_architecture(machine or platform.machine())
-        preferred_kind = "installer" if platform_name == "windows" else "appimage"
+        preferred_kind = {
+            "windows": "installer",
+            "linux": "appimage",
+            "macos": "dmg",
+        }[platform_name]
         return next(
             (
                 asset
@@ -1119,7 +1130,54 @@ def create_install_plan(
         if not os.access(current.parent, os.W_OK):
             raise UpdateError(f"The AppImage directory is not writable: {current.parent}")
         return InstallPlan("appimage", package, (), current_appimage=current)
+    if asset.platform == "macos" and asset.kind == "dmg":
+        if package.suffix.casefold() != ".dmg":
+            raise UpdateError("The macOS update package is not a disk image.")
+        application = _macos_application_bundle(install_root)
+        if not os.access(application.parent, os.W_OK):
+            raise UpdateError(
+                f"The macOS application directory is not writable: {application.parent}"
+            )
+        return InstallPlan(
+            "macos-dmg",
+            package,
+            (),
+            current_install_root=application,
+        )
     raise UpdateError("This package type cannot be installed automatically.")
+
+
+def _macos_application_bundle(install_root: Path | None = None) -> Path:
+    if install_root is not None:
+        resolved = install_root.expanduser().resolve()
+        if resolved.suffix.casefold() != ".app" or not resolved.is_dir():
+            raise UpdateError("The macOS install location is not an application bundle.")
+        return resolved
+
+    starts: list[Path] = []
+    try:
+        import FreeCAD as App
+
+        starts.append(Path(str(App.getHomePath())).expanduser())
+    except Exception:
+        pass
+    executable = Path(sys.executable).expanduser()
+    if executable.parts:
+        starts.append(executable)
+
+    seen: set[Path] = set()
+    for start in starts:
+        current = start
+        for _ in range(8):
+            if current in seen:
+                break
+            seen.add(current)
+            if current.suffix.casefold() == ".app" and current.is_dir():
+                return current.resolve(strict=True)
+            if current.parent == current:
+                break
+            current = current.parent
+    raise UpdateError("VibeCAD's macOS application bundle is unavailable.")
 
 
 def record_pending_install(
@@ -1159,9 +1217,9 @@ def record_pending_install(
         )
         payload["current_appimage"] = str(appimage)
         payload["backup"] = str(backup)
-    elif plan.kind == "windows-installer":
+    elif plan.kind in {"windows-installer", "macos-dmg"}:
         if plan.current_install_root is None:
-            raise UpdateError("The Windows install plan has no current install directory.")
+            raise UpdateError("The install plan has no current install directory.")
         install_root = plan.current_install_root.resolve(strict=True)
         payload["current_install_root"] = str(install_root)
         payload["backup"] = f"{install_root}.vibecad-rollback"
@@ -1229,6 +1287,18 @@ def complete_pending_install_health(
                 raise UpdateError("Unexpected Windows rollback path in the health receipt.")
             # Retain one last-known-good Windows tree. The next elevated
             # installer removes it before creating a fresh rollback snapshot.
+        elif payload.get("kind") == "macos-dmg":
+            install_value = str(payload.get("current_install_root") or "")
+            if not install_value:
+                raise UpdateError("Pending macOS receipt has no application bundle.")
+            install_root = Path(install_value).resolve()
+            expected_backup = Path(f"{install_root}.vibecad-rollback").resolve()
+            if backup != expected_backup:
+                raise UpdateError("Unexpected macOS rollback path in the health receipt.")
+            if backup.is_dir():
+                shutil.rmtree(backup)
+            else:
+                backup.unlink(missing_ok=True)
 
     package_value = str(payload.get("package") or "")
     if package_value:

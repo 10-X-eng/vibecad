@@ -258,6 +258,8 @@ class UpdateController(QtCore.QObject):
                 _launch_windows_install_helper(plan)
             elif plan.kind == "appimage":
                 _launch_appimage_install_helper(plan)
+            elif plan.kind == "macos-dmg":
+                _launch_macos_install_helper(plan)
             else:
                 raise RuntimeError(f"Unsupported staged update plan: {plan.kind}")
         except Exception as exc:
@@ -381,6 +383,108 @@ printf '{"status":"rolled-back","platform":"appimage"}\n' > "$receipt"
             str(os.getpid()),
             str(current),
             str(plan.package),
+            str(backup),
+            str(receipt),
+            str(update_dir / "pending-install.json"),
+        ],
+        close_fds=True,
+        start_new_session=True,
+    )
+
+
+def _launch_macos_install_helper(plan: InstallPlan) -> None:
+    application = plan.current_install_root
+    if application is None:
+        raise RuntimeError("The staged macOS plan has no application bundle.")
+    update_dir = default_update_directory()
+    helper_dir = update_dir / "install-helper"
+    helper_dir.mkdir(parents=True, exist_ok=True)
+    helper = helper_dir / "install-macos-update.sh"
+    receipt = update_dir / "install-receipt.json"
+    backup = Path(f"{application}.vibecad-rollback")
+    helper.write_text(
+        """#!/bin/sh
+set -eu
+pid="$1"
+package="$2"
+app="$3"
+backup="$4"
+receipt="$5"
+pending="$6"
+
+while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+if [ -e "$backup" ]; then
+    exit 20
+fi
+
+mount=$(mktemp -d "${TMPDIR:-/tmp}/vibecad-dmg.XXXXXX")
+detach_mount() {
+    hdiutil detach "$mount" -quiet >/dev/null 2>&1 || true
+    rmdir "$mount" >/dev/null 2>&1 || true
+}
+
+if ! printf 'Y\\n' | hdiutil attach "$package" -nobrowse -readonly -noverify -mountpoint "$mount" >/dev/null; then
+    rmdir "$mount" >/dev/null 2>&1 || true
+    exit 23
+fi
+
+new_app=$(find "$mount" -maxdepth 3 \\( -name 'VibeCAD.app' -o -name '*.app' \\) -type d | head -n 1)
+if [ -z "$new_app" ] || [ ! -d "$new_app" ]; then
+    detach_mount
+    exit 24
+fi
+
+if [ -e "$app" ]; then
+    if ! mv "$app" "$backup"; then
+        detach_mount
+        exit 21
+    fi
+fi
+if ! ditto "$new_app" "$app"; then
+    detach_mount
+    if [ -e "$backup" ]; then
+        rm -rf "$app"
+        mv "$backup" "$app"
+    fi
+    exit 21
+fi
+xattr -dr com.apple.quarantine "$app" >/dev/null 2>&1 || true
+detach_mount
+
+printf '{"status":"installed","platform":"macos-dmg"}\\n' > "$receipt"
+open "$app"
+
+healthy=0
+attempt=0
+while [ "$attempt" -lt 120 ]; do
+    if [ ! -f "$pending" ]; then
+        healthy=1
+        break
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+done
+if [ "$healthy" -eq 1 ]; then
+    exit 0
+fi
+if [ -e "$backup" ]; then
+    rm -rf "$app"
+    mv "$backup" "$app"
+    printf '{"status":"rolled-back","platform":"macos-dmg"}\\n' > "$receipt"
+    open "$app"
+fi
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    helper.chmod(0o700)
+    subprocess.Popen(
+        [
+            "/bin/sh",
+            str(helper),
+            str(os.getpid()),
+            str(plan.package),
+            str(application),
             str(backup),
             str(receipt),
             str(update_dir / "pending-install.json"),
@@ -591,7 +695,7 @@ class UpdateCenterDialog(QtWidgets.QDialog):
     @QtCore.Slot(object)
     def _install_staged(self, _plan: InstallPlan) -> None:
         self.status.setText(
-            "VibeCAD will close, then open the verified installer normally."
+            "VibeCAD will close, then apply the verified update and reopen."
         )
         self._refresh_buttons()
 
