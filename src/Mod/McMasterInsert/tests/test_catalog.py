@@ -6,6 +6,8 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import ModuleType
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -13,14 +15,13 @@ if str(ROOT) not in sys.path:
 
 try:
     import McMasterInsert as mmc
-except ImportError as exc:  # pragma: no cover - needs FreeCAD on PYTHONPATH
-    mmc = None
-    _IMPORT_ERROR = exc
-else:
-    _IMPORT_ERROR = None
+except ImportError as exc:
+    if exc.name != "FreeCAD":
+        raise
+    with mock.patch.dict(sys.modules, {"FreeCAD": ModuleType("FreeCAD")}):
+        import McMasterInsert as mmc
 
 
-@unittest.skipIf(mmc is None, f"FreeCAD not importable: {_IMPORT_ERROR}")
 class TestCatalogNames(unittest.TestCase):
     def test_part_number_from_mcmaster_step_filename(self):
         self.assertEqual(
@@ -85,6 +86,47 @@ class TestCatalogNames(unittest.TestCase):
             TypeId = "App::Origin"
 
         self.assertTrue(mmc._is_origin_object(Origin()))
+
+
+class TestCatalogLaunch(unittest.TestCase):
+    def test_without_webkit_opens_catalog_in_system_browser(self):
+        with (
+            mock.patch.object(mmc, "_webkit_dylib", return_value=None),
+            mock.patch.object(mmc, "show_catalog_window") as embedded,
+            mock.patch.object(mmc, "open_external_catalog", return_value=True) as external,
+        ):
+            self.assertEqual(mmc.open_catalog(), "external")
+
+        embedded.assert_not_called()
+        external.assert_called_once_with()
+
+    def test_available_webkit_keeps_embedded_catalog(self):
+        with (
+            mock.patch.object(mmc, "_webkit_dylib", return_value=object()),
+            mock.patch.object(mmc, "show_catalog_window", return_value=True) as embedded,
+            mock.patch.object(mmc, "open_external_catalog") as external,
+        ):
+            self.assertEqual(mmc.open_catalog(), "embedded")
+
+        embedded.assert_called_once_with()
+        external.assert_not_called()
+
+    def test_broken_webkit_falls_back_to_system_browser(self):
+        with (
+            mock.patch.object(mmc, "_webkit_dylib", side_effect=OSError("bad library")),
+            mock.patch.object(mmc, "show_catalog_window") as embedded,
+            mock.patch.object(mmc, "open_external_catalog", return_value=True) as external,
+        ):
+            self.assertEqual(mmc.open_catalog(), "external")
+
+        embedded.assert_not_called()
+        external.assert_called_once_with()
+
+    def test_external_catalog_opens_live_mcmaster_url(self):
+        with mock.patch.object(mmc, "_open_system_url", return_value=True) as open_url:
+            self.assertTrue(mmc.open_external_catalog())
+
+        open_url.assert_called_once_with(mmc.CATALOG_URL)
 
 
 if __name__ == "__main__":

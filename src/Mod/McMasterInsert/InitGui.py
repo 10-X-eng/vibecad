@@ -20,7 +20,9 @@ class McMasterWorkbench(Workbench):
 
     def __init__(self):
         self.__class__.Icon = os.path.join(
-            os.path.dirname(__file__),
+            FreeCAD.getResourceDir(),
+            "Mod",
+            "McMasterInsert",
             "icons",
             "mcmaster-workbench.svg",
         )

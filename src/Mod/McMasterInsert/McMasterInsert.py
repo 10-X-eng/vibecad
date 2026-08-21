@@ -827,6 +827,21 @@ def close_catalog_panel() -> None:
     Gui.McMasterCatalogPanel = None
 
 
+def _open_system_url(url: str) -> bool:
+    from PySide import QtCore, QtGui
+
+    return bool(QtGui.QDesktopServices.openUrl(QtCore.QUrl(url)))
+
+
+def open_external_catalog() -> bool:
+    """Open the live catalog in the user's browser when no embedded backend exists."""
+    try:
+        return _open_system_url(CATALOG_URL)
+    except Exception as exc:
+        App.Console.PrintError(f"McMaster-Carr: could not open {CATALOG_URL}: {exc}\n")
+        return False
+
+
 def attach_webkit(widget, out_dir: Path) -> bool:
     lib = _webkit_dylib()
     if lib is None:
@@ -932,6 +947,24 @@ def show_catalog_window() -> bool:
     return True
 
 
+def open_catalog() -> str:
+    """Open the best available catalog backend and return its mode."""
+    try:
+        if _webkit_dylib() is not None and show_catalog_window():
+            return "embedded"
+    except Exception as exc:
+        try:
+            App.Console.PrintWarning(
+                f"McMaster-Carr: embedded catalog unavailable ({exc}); "
+                "using the system browser\n"
+            )
+        except Exception:
+            pass
+    if open_external_catalog():
+        return "external"
+    return ""
+
+
 def _ensure_import_watcher() -> None:
     from PySide import QtCore
     import FreeCADGui as Gui
@@ -1007,10 +1040,18 @@ def run() -> None:
     if not App.GuiUp:
         raise RuntimeError("McMaster catalog requires the VibeCAD GUI")
     _ensure_import_watcher()
-    if show_catalog_window():
+    mode = open_catalog()
+    if mode == "embedded":
         App.Console.PrintMessage(
             "McMaster-Carr catalog overlay opened. "
             "Download 3-D STEP — it imports automatically (no Save dialog).\n"
+        )
+        return
+    if mode == "external":
+        App.Console.PrintMessage(
+            "McMaster-Carr opened in your browser. Download 3-D STEP to your "
+            "Downloads folder and VibeCAD will import it automatically; use "
+            "Import if you save it somewhere else.\n"
         )
         return
     App.Console.PrintError("McMaster-Carr: could not open https://www.mcmaster.com/\n")
