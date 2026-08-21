@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="McMaster-Carr">
+  <rect x="6" y="6" width="52" height="52" rx="12" fill="#1B7A3D"/>
+  <path d="M32 16 L48 25 L32 34 L16 25 Z" fill="#ffffff"/>
+  <path d="M16 25 L32 34 L32 50 L16 41 Z" fill="#D7F0E0"/>
+  <path d="M32 34 L48 25 L48 41 L32 50 Z" fill="#A8D5B8"/>
+</svg>
