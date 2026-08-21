@@ -80,6 +80,12 @@ class TestCatalogNames(unittest.TestCase):
             "Black-Oxide Alloy Steel Socket Head Screw",
         )
         self.assertEqual(obj.Label2, obj.Description)
+        self.assertFalse(str(obj.Label).startswith("Component_"))
+
+    def test_legal_internal_name_is_not_component_prefix(self):
+        name = mmc._legal_object_name("Component", "90031A551")
+        self.assertEqual(name, "_90031A551")
+        self.assertFalse(name.startswith("Component_"))
 
     def test_origin_objects_are_not_transform_targets(self):
         class Origin:

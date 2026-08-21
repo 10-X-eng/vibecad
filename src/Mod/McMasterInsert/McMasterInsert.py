@@ -144,9 +144,39 @@ def catalog_description(part_number: str, source_path: Path) -> str:
 
 def _legal_object_name(prefix: str, part_number: str) -> str:
     raw = re.sub(r"[^0-9A-Za-z_]", "_", part_number or "Part")
-    if not raw or not raw[0].isalpha():
-        raw = f"{prefix}_{raw}"
+    if not raw:
+        raw = prefix
+    elif not raw[0].isalpha():
+        raw = f"_{raw}"
     return raw[:50]
+
+
+def _add_named_object(doc, type_id: str, visible_name: str, fallback_prefix: str):
+    """Create an object whose tree name is the catalog number when possible."""
+    visible = str(visible_name or fallback_prefix).strip()
+    candidates = []
+    if visible:
+        candidates.append(visible)
+        if visible[0].isdigit():
+            candidates.append(f"_{visible}")
+    candidates.append(_legal_object_name(fallback_prefix, visible))
+    candidates.append(fallback_prefix)
+    seen: set[str] = set()
+    obj = None
+    for name in candidates:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        try:
+            obj = doc.addObject(type_id, name)
+        except Exception:
+            obj = None
+        if obj is not None:
+            break
+    if obj is None:
+        raise RuntimeError(f"could not create {type_id}")
+    _set_label(obj, visible)
+    return obj
 
 
 def _set_label(obj, label: str) -> None:
@@ -158,9 +188,10 @@ def _set_label(obj, label: str) -> None:
     except Exception as exc:
         App.Console.PrintWarning(f"McMaster: could not set Label on {obj.Name}: {exc}\n")
         return
-    if str(getattr(obj, "Label", "") or "") != wanted:
+    actual = str(getattr(obj, "Label", "") or "")
+    if actual != wanted:
         App.Console.PrintWarning(
-            f"McMaster: {obj.Name} Label is {obj.Label!r}, wanted {wanted!r}\n"
+            f"McMaster: {obj.Name} Label is {actual!r}, wanted {wanted!r}\n"
         )
 
 
@@ -179,6 +210,12 @@ def _stamp_metadata(obj, part_number: str, source_path: Path) -> None:
     _set_label(obj, label)
     try:
         obj.Label2 = description
+    except Exception:
+        pass
+    try:
+        view = getattr(obj, "ViewObject", None)
+        if view is not None:
+            view.ToolTip = description
     except Exception:
         pass
     group = "McMaster"
@@ -382,18 +419,23 @@ def _promote_to_component(doc, created: list, part_number: str, source_path: Pat
             continue
         imported.append(obj)
 
-    component = doc.addObject(
+    component = _add_named_object(
+        doc,
         "PartDesign::Component",
-        _legal_object_name("Component", part_number),
+        label,
+        "Component",
     )
     if component is None or _type_id(component) != "PartDesign::Component":
         raise RuntimeError("VibeCAD did not create a PartDesign::Component")
     _classify_structure(doc, component)
     _set_label(component, label)
+    _stamp_metadata(component, part_number, source_path)
 
-    placeholder = doc.addObject(
+    placeholder = _add_named_object(
+        doc,
         "PartDesign::Body",
-        _legal_object_name("Body", part_number),
+        label,
+        "Body",
     )
     _classify_structure(doc, placeholder)
     if not _adopt(component, placeholder):
