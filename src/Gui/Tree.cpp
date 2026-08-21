@@ -2469,16 +2469,12 @@ void TreeWidget::setObjectItemVisibility(
         // Route through show()/hide() so a Body eye still updates its Tip
         // while a native feature task has a pending transaction. Assigning
         // Visibility alone leaves the result solid stuck in that case.
-        if (auto* vp = item->object()) {
-            if (visible) {
-                vp->show();
-            }
-            else {
-                vp->hide();
-            }
+        auto* vp = item->object();
+        if (visible) {
+            vp->show();
         }
         else {
-            object->Visibility.setValue(visible);
+            vp->hide();
         }
     }
     else {
