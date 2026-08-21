@@ -31,12 +31,19 @@ disk.
 `McMasterCatalog.swift` is the older out-of-process helper. It cannot join a
 macOS fullscreen Space, so the in-process WebKit attach is preferred.
 
-## Windows and Linux catalog
+## Windows catalog
 
-Catalog opens the live McMaster-Carr site in the system browser when the macOS
-WebKit helper is unavailable. Download 3-D STEP to the standard Downloads
-folder and VibeCAD imports it automatically. If the browser saves somewhere
-else, use **Import** to select the downloaded CAD file.
+Catalog opens the live site in a VibeCAD window backed by the installed
+Microsoft Edge WebView2 Runtime. Downloaded CAD goes directly to VibeCAD's
+watched McMaster inbox and imports automatically. The WebView2 profile is kept
+under `%LOCALAPPDATA%\VibeCAD\McMasterBrowser`, preserving McMaster cookies and
+the login session across VibeCAD restarts and upgrades.
+
+## Linux catalog
+
+Catalog opens the live site in the system browser. Download 3-D STEP to the
+standard Downloads folder and VibeCAD imports it automatically. If the browser
+saves somewhere else, use **Import** to select the downloaded CAD file.
 
 ## Cache
 

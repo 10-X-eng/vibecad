@@ -53,6 +53,21 @@ def downloads_dir() -> Path:
     return Path.home() / "Downloads"
 
 
+def webview2_profile_root() -> Path:
+    """Persistent WebView2 data so McMaster login survives VibeCAD restarts."""
+    local_app_data = str(os.environ.get("LOCALAPPDATA", "") or "").strip()
+    if local_app_data:
+        root = Path(local_app_data) / "VibeCAD" / "McMasterBrowser"
+    else:
+        root = Path(App.getUserAppDataDir()) / "McMasterBrowser"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def webview2_helper_path() -> Path:
+    return Path(__file__).resolve().parent / "McMasterCatalogWebView2.exe"
+
+
 def helper_app_path() -> Path:
     return Path(__file__).resolve().parent / "McMasterCatalog.app"
 
@@ -237,19 +252,29 @@ def _stamp_metadata(obj, part_number: str, source_path: Path) -> None:
             continue
 
 
-def _stamp_body(obj, part_number: str, source_path: Path) -> None:
-    _set_label(obj, part_number or source_path.stem)
+def _stamp_body(
+    obj,
+    part_number: str,
+    source_path: Path,
+    role: str = "Body",
+) -> None:
+    base_label = part_number or source_path.stem
+    _set_label(obj, f"{base_label} {role}".strip())
     _clear_description(obj)
 
 
 def _name_imported_tree(component, part_number: str, source_path: Path) -> None:
-    """Component: part number + catalog summary. Inner body: part number only."""
+    """Apply stable, unique labels to the imported component hierarchy."""
     _stamp_metadata(component, part_number, source_path)
+    body_index = 0
+    geometry_index = 0
     for child in list(getattr(component, "Group", []) or []):
         if _is_origin_object(child):
             continue
         if _type_id(child) == "PartDesign::Body":
-            _stamp_body(child, part_number, source_path)
+            body_index += 1
+            body_role = "Body" if body_index == 1 else f"Body {body_index}"
+            _stamp_body(child, part_number, source_path, body_role)
             owned = list(getattr(child, "Group", []) or [])
             tip = getattr(child, "Tip", None)
             if tip is not None and tip not in owned:
@@ -257,7 +282,11 @@ def _name_imported_tree(component, part_number: str, source_path: Path) -> None:
             for inner in owned:
                 if _is_origin_object(inner):
                     continue
-                _stamp_body(inner, part_number, source_path)
+                geometry_index += 1
+                role = "Geometry"
+                if geometry_index > 1:
+                    role = f"Geometry {geometry_index}"
+                _stamp_body(inner, part_number, source_path, role)
 
 
 _SKIP_TRANSFORM_TYPES = (
@@ -284,7 +313,13 @@ def _type_id(obj) -> str:
 
 def _is_origin_object(obj) -> bool:
     tid = _type_id(obj)
-    return tid in _SKIP_TRANSFORM_TYPES or "Origin" in tid
+    name = str(getattr(obj, "Name", "") or "")
+    return (
+        tid in _SKIP_TRANSFORM_TYPES
+        or "Origin" in tid
+        or bool(re.fullmatch(r"Origin\d*", name))
+        or name == "VibeCADTimeline"
+    )
 
 
 def _classify_structure(doc, obj) -> None:
@@ -434,13 +469,12 @@ def _promote_to_component(doc, created: list, part_number: str, source_path: Pat
     placeholder = _add_named_object(
         doc,
         "PartDesign::Body",
-        label,
+        f"{label} Body",
         "Body",
     )
     _classify_structure(doc, placeholder)
     if not _adopt(component, placeholder):
         raise RuntimeError("could not add Body to Component")
-    _stamp_body(placeholder, part_number, source_path)
 
     imported_bodies = [obj for obj in imported if _type_id(obj) == "PartDesign::Body"]
     imported_other = [obj for obj in imported if _type_id(obj) != "PartDesign::Body"]
@@ -449,7 +483,9 @@ def _promote_to_component(doc, created: list, part_number: str, source_path: Pat
 
     for obj in imported_bodies:
         if _adopt(component, obj):
-            _stamp_body(obj, part_number, source_path)
+            body_index = len(kept_bodies) + 1
+            role = "Body" if body_index == 1 else f"Body {body_index}"
+            _stamp_body(obj, part_number, source_path, role)
             kept_bodies.append(obj)
         elif _copy_into_body(placeholder, obj, part_number):
             leftovers.append(obj)
@@ -459,7 +495,9 @@ def _promote_to_component(doc, created: list, part_number: str, source_path: Pat
     if kept_bodies:
         leftovers.append(placeholder)
     else:
+        _stamp_body(placeholder, part_number, source_path)
         kept_bodies.append(placeholder)
+        geometry_index = 0
         for obj in imported_other:
             if _parent_of(obj) in imported_bodies:
                 leftovers.append(obj)
@@ -469,7 +507,9 @@ def _promote_to_component(doc, created: list, part_number: str, source_path: Pat
                     placeholder.Tip = obj
                 except Exception:
                     pass
-                _stamp_body(obj, part_number, source_path)
+                geometry_index += 1
+                role = "Geometry" if geometry_index == 1 else f"Geometry {geometry_index}"
+                _stamp_body(obj, part_number, source_path, role)
             elif _copy_into_body(placeholder, obj, part_number):
                 leftovers.append(obj)
 
@@ -735,73 +775,85 @@ def import_cad(path: Path, part_number: str) -> list[str]:
     if doc is None:
         doc = App.newDocument("McMaster")
     before = set(doc.Objects)
-    imported = False
+    owns_transaction = not bool(getattr(doc, "HasPendingTransaction", False))
+    if owns_transaction:
+        doc.openTransaction("Insert McMaster-Carr Component")
     try:
-        import ImportGui
-
+        imported = False
         try:
-            ImportGui.insert(
-                name=str(path),
-                docName=doc.Name,
-                merge=False,
-                useLinkGroup=True,
-                importSolidBodies=True,
-            )
-        except TypeError:
-            ImportGui.insert(str(path), doc.Name)
-        imported = True
-    except Exception:
-        pass
-    if not imported:
-        import Part
+            import ImportGui
 
-        Part.insert(str(path), doc.Name)
-    created = [obj for obj in doc.Objects if obj not in before]
-    if not created:
-        raise RuntimeError(f"Import produced no objects from {path.name}")
-    try:
-        component = _promote_to_component(doc, created, part_number, path)
-        _name_imported_tree(component, part_number, path)
-        doc.recompute()
-        _name_imported_tree(component, part_number, path)
-        try:
-            import FreeCADGui as Gui
-            from PySide import QtCore
-
-            Gui.updateGui()
-            doc_name = doc.Name
-            obj_name = component.Name
-            path_str = str(path)
-            pn = part_number
-
-            def _relabel() -> None:
-                live_doc = App.getDocument(doc_name)
-                if live_doc is None:
-                    return
-                live = live_doc.getObject(obj_name)
-                if live is None:
-                    return
-                _name_imported_tree(live, pn, Path(path_str))
-                App.Console.PrintMessage(
-                    f"McMaster: renamed {live.Name} -> {live.Label!r}\n"
+            try:
+                ImportGui.insert(
+                    name=str(path),
+                    docName=doc.Name,
+                    merge=False,
+                    useLinkGroup=True,
+                    importSolidBodies=True,
                 )
-
-            QtCore.QTimer.singleShot(0, _relabel)
-            QtCore.QTimer.singleShot(250, _relabel)
+            except TypeError:
+                ImportGui.insert(str(path), doc.Name)
+            imported = True
         except Exception:
             pass
-        return [component.Name]
-    except Exception as exc:
-        App.Console.PrintWarning(
-            f"McMaster: could not wrap as a component ({exc}); imported objects were left as-is\n"
-        )
-        for obj in created:
-            if not _is_origin_object(obj):
-                _stamp_metadata(obj, part_number, path)
-        doc.recompute()
-        return [obj.Name for obj in created if not _is_origin_object(obj)] or [
-            obj.Name for obj in created
-        ]
+        if not imported:
+            import Part
+
+            Part.insert(str(path), doc.Name)
+        created = [obj for obj in doc.Objects if obj not in before]
+        if not created:
+            raise RuntimeError(f"Import produced no objects from {path.name}")
+        try:
+            component = _promote_to_component(doc, created, part_number, path)
+            _name_imported_tree(component, part_number, path)
+            doc.recompute()
+            _name_imported_tree(component, part_number, path)
+            try:
+                import FreeCADGui as Gui
+                from PySide import QtCore
+
+                Gui.updateGui()
+                doc_name = doc.Name
+                obj_name = component.Name
+                path_str = str(path)
+                pn = part_number
+
+                def _relabel() -> None:
+                    live_doc = App.getDocument(doc_name)
+                    if live_doc is None:
+                        return
+                    live = live_doc.getObject(obj_name)
+                    if live is None:
+                        return
+                    _name_imported_tree(live, pn, Path(path_str))
+                    App.Console.PrintMessage(
+                        f"McMaster: renamed {live.Name} -> {live.Label!r}\n"
+                    )
+
+                QtCore.QTimer.singleShot(0, _relabel)
+                QtCore.QTimer.singleShot(250, _relabel)
+            except Exception:
+                pass
+            result = [component.Name]
+        except Exception as exc:
+            App.Console.PrintWarning(
+                f"McMaster: could not wrap as a component ({exc}); "
+                "imported objects were left as-is\n"
+            )
+            for obj in created:
+                if not _is_origin_object(obj):
+                    _stamp_metadata(obj, part_number, path)
+            doc.recompute()
+            result = [obj.Name for obj in created if not _is_origin_object(obj)] or [
+                obj.Name for obj in created
+            ]
+        if owns_transaction:
+            doc.commitTransaction()
+        return result
+    except Exception:
+        if owns_transaction:
+            doc.abortTransaction()
+        raise
 
 
 def _is_cad_file(path: Path) -> bool:
@@ -881,6 +933,44 @@ def open_external_catalog() -> bool:
         return _open_system_url(CATALOG_URL)
     except Exception as exc:
         App.Console.PrintError(f"McMaster-Carr: could not open {CATALOG_URL}: {exc}\n")
+        return False
+
+
+def show_webview2_catalog_window() -> bool:
+    """Launch the Windows catalog helper backed by Edge WebView2."""
+    if os.name != "nt":
+        return False
+    helper = webview2_helper_path()
+    if not helper.is_file():
+        return False
+    try:
+        import FreeCADGui as Gui
+
+        process = subprocess.Popen(
+            [
+                str(helper),
+                "--inbox",
+                str(inbox_dir()),
+                "--profile",
+                str(webview2_profile_root()),
+                "--url",
+                CATALOG_URL,
+                "--parent-pid",
+                str(os.getpid()),
+            ],
+            cwd=str(helper.parent),
+            close_fds=True,
+        )
+        Gui.McMasterCatalogProcess = process
+        App.Console.PrintMessage(
+            "McMaster catalog opened with Edge WebView2; "
+            f"profile={webview2_profile_root()}\n"
+        )
+        return True
+    except OSError as exc:
+        App.Console.PrintWarning(
+            f"McMaster-Carr: WebView2 helper could not start ({exc})\n"
+        )
         return False
 
 
@@ -991,6 +1081,17 @@ def show_catalog_window() -> bool:
 
 def open_catalog() -> str:
     """Open the best available catalog backend and return its mode."""
+    try:
+        if show_webview2_catalog_window():
+            return "embedded"
+    except Exception as exc:
+        try:
+            App.Console.PrintWarning(
+                f"McMaster-Carr: WebView2 unavailable ({exc}); "
+                "trying another browser\n"
+            )
+        except Exception:
+            pass
     try:
         if _webkit_dylib() is not None and show_catalog_window():
             return "embedded"
