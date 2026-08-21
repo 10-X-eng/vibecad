@@ -1194,6 +1194,58 @@ class TestVibeCADSketchRibbonTools(SketcherGuiTestCase):
             self.sketch.Constraints[-1].Type,
         )
 
+    def _move_sketch_point(self, point):
+        view = Gui.activeDocument().activeView()
+        viewport = self.active_viewport(view)
+        screen = view.getPointOnScreen(App.Vector(point[0], point[1], 0))
+        position = self.viewport_to_qpoint(view, viewport, screen)
+        self.assertTrue(
+            viewport.rect().contains(position),
+            (point, position, viewport.rect()),
+        )
+        self.move(viewport, position)
+
+    def test_dimension_tool_does_not_insert_a_second_automatic_dimension(self):
+        self._enter_edit()
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.sketch, "Edge1")
+        self.flush_gui()
+        before = self.sketch.ConstraintCount
+        dimensional_before = [
+            constraint.Type
+            for constraint in self.sketch.Constraints
+            if constraint.Type in ("Distance", "DistanceX", "DistanceY")
+        ]
+
+        Gui.runCommand("Sketcher_Dimension", 0)
+        self.flush_gui()
+
+        start = self.sketch.getPoint(0, 1)
+        end = self.sketch.getPoint(0, 2)
+        self._move_sketch_point(
+            (
+                (start.x + end.x) / 2.0,
+                max(start.y, end.y) + 12.0,
+            )
+        )
+        self.flush_gui(80)
+
+        dimensional = [
+            constraint
+            for constraint in self.sketch.Constraints
+            if constraint.Type in ("Distance", "DistanceX", "DistanceY")
+        ]
+        self.assertEqual(
+            len(dimensional_before) + 1,
+            len(dimensional),
+            [
+                (constraint.Type, constraint.First, constraint.Second)
+                for constraint in dimensional
+            ],
+        )
+        self.assertEqual(before + 1, self.sketch.ConstraintCount)
+        self._stop_operation()
+
     def test_dimension_composite_child_creates_a_native_radius_constraint(self):
         self._enter_edit()
         Gui.Selection.clearSelection()
