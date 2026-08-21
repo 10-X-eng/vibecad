@@ -167,6 +167,7 @@ endif(BUILD_TECHDRAW)
 
 add_subdirectory(VibeCAD)
 add_subdirectory(VibeCADAero)
+add_subdirectory(McMasterInsert)
 
 #add_subdirectory(TemplatePyMod)
 
