@@ -330,6 +330,33 @@ def test_every_transaction_owning_implementation_calls_its_boundary_guard() -> N
         ), command
 
 
+def test_fillet_and_chamfer_can_start_from_an_active_solid_body() -> None:
+    source = (_REPOSITORY / _PARTDESIGN_COMMAND).read_text(encoding="utf-8")
+    fillet = _cpp_command_section(source, "PartDesign_Fillet")
+    chamfer = _cpp_command_section(source, "PartDesign_Chamfer")
+    draft = _cpp_command_section(source, "PartDesign_Draft")
+    thickness = _cpp_command_section(source, "PartDesign_Thickness")
+    active = _function_section(
+        source, "bool designDressupOperationActive(DesignDressupSelectionKind selectionKind)"
+    )
+    start = _function_section(
+        source, "void startDesignDressupOperation("
+    )
+
+    assert "designDressupOperationActive" in fillet
+    assert "designDressupOperationActive" in chamfer
+    assert "pendingDressupBody" in active
+    assert "pendingFilletOrChamferSelection" in start
+    assert "selectionHasDressupSubelements" in active
+    assert "DesignDressupSelectionKind::EdgesOrFaces" in active
+    assert "pendingFilletOrChamferSelection" in start
+    assert "DesignDressupSelectionKind::EdgesOrFaces" in start
+    assert "pendingDressupBody" not in draft
+    assert "pendingDressupBody" not in thickness
+    assert "or start " in start
+    assert "the tool and pick them on a solid Body" in start
+
+
 def test_inspection_tasks_close_only_their_exact_locked_transactions() -> None:
     measure = (_REPOSITORY / "src/Mod/Measure/Gui/TaskMeasure.cpp").read_text(
         encoding="utf-8"
