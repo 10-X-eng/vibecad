@@ -606,7 +606,7 @@ class TestCatalogLaunch(unittest.TestCase):
 
         self.assertIn("McMasterCatalogWebKit.py", cmake)
         self.assertIn("McMasterCatalogWebKit.py", bundle)
-        self.assertIn("--smoke-test", bundle)
+        self.assertIn("-m py_compile", bundle)
         self.assertTrue(source.is_file())
 
 
