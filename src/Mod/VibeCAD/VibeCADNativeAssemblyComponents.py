@@ -29,6 +29,8 @@ _ASSEMBLY_RESOURCE_TYPES = frozenset(
 _INSTANCE_TYPES = frozenset(
     {"App::Link", "App::LinkElement", "Assembly::AssemblyLink"}
 )
+_INTERNAL_TIMELINE_ROLES = frozenset({"internal", "resource"})
+_INTERNAL_SCRIPTED_ROLES = frozenset({"implementation", "model"})
 
 
 class NativeAssemblyComponentError(RuntimeError):
@@ -92,6 +94,10 @@ def _is_component_source(obj: Any) -> bool:
     return (
         obj is not None
         and str(getattr(obj, "TypeId", "") or "") not in _INSTANCE_TYPES
+        and str(getattr(obj, "VibeCADTimelineRole", "") or "")
+        not in _INTERNAL_TIMELINE_ROLES
+        and str(getattr(obj, "VibeCADScriptedRole", "") or "")
+        not in _INTERNAL_SCRIPTED_ROLES
         and (_is_derived(obj, "App::Part") or _is_derived(obj, "Part::Feature"))
     )
 
@@ -180,10 +186,11 @@ def available_component_sources(
     assembly: Any | None,
     *,
     limit: int = 48,
+    before_first_assembly: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Return a bounded exact inventory of linkable objects in open documents."""
 
-    if assembly is None or limit < 1:
+    if (assembly is None and not before_first_assembly) or limit < 1:
         return [], False
     try:
         import FreeCAD as App
@@ -204,7 +211,10 @@ def available_component_sources(
             if (
                 not _is_component_source(candidate)
                 or not _timeline_active(candidate)
-                or _source_would_cycle(assembly, candidate)
+                or (
+                    assembly is not None
+                    and _source_would_cycle(assembly, candidate)
+                )
             ):
                 continue
             if len(sources) >= limit:

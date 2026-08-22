@@ -91,17 +91,8 @@ def _assembly_summary(result: dict, assembly_name: str) -> dict:
     )
 
 
-def _arguments(summary: dict) -> dict:
-    diagnosis = summary["diagnosis_state"]
-    assert diagnosis["available"] is True, diagnosis
-    return {
-        "operation": "asmt",
-        "assembly": {"object_name": summary["object_name"]},
-        "expected_state_sha256": diagnosis["state_sha256"],
-        "expected_component_count": diagnosis["component_count"],
-        "expected_grounded_count": diagnosis["grounded_count"],
-        "expected_joint_count": diagnosis["joint_count"],
-    }
+def _arguments() -> dict:
+    return {"operation": "asmt"}
 
 
 def _dispatcher(
@@ -257,10 +248,8 @@ def _run() -> None:
             "assembly-asmt-state-initial",
         )
         assert initial["ok"] is True, initial
-        summary = _assembly_summary(initial, assembly.Name)
-        arguments = _arguments(summary)
-        assert arguments["expected_component_count"] == 2
-        assert arguments["expected_grounded_count"] == 1
+        _assembly_summary(initial, assembly.Name)
+        arguments = _arguments()
 
         assembly.exportAsASMT(str(human_path))
         human_bytes = human_path.read_bytes()
@@ -347,6 +336,15 @@ def _run() -> None:
         assert stale["error_code"] == "NATIVE_REVISION_CONFLICT"
         assert stale_path.read_text(encoding="utf-8") == "stale sentinel"
 
+        dispatcher = _dispatcher(
+            document,
+            service,
+            controller,
+            surface,
+            registry,
+            authorize,
+            "native-assembly-asmt-export-overwrite-gui",
+        )
         overwrite_path.write_text("replace me", encoding="utf-8")
         choice.update(path=overwrite_path, mode="normal")
         overwritten = dispatcher.call(
@@ -397,9 +395,8 @@ def _run() -> None:
             "assembly-asmt-state-reopened",
         )
         assert reopened_state["ok"] is True, reopened_state
-        reopened_arguments = _arguments(
-            _assembly_summary(reopened_state, assembly.Name)
-        )
+        _assembly_summary(reopened_state, assembly.Name)
+        reopened_arguments = _arguments()
         reopened = reopened_dispatcher.call(
             ASSEMBLY_EXPORT_CAPABILITY_NAME,
             json.dumps(reopened_arguments, separators=(",", ":")),

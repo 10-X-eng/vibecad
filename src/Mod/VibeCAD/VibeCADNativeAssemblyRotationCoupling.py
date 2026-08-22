@@ -34,6 +34,7 @@ from VibeCADNativeTargets import (
 
 MIN_COUPLING_RADIUS_MM = 1.0e-7
 MAX_COUPLING_RADIUS_MM = 1_000_000.0
+MIN_COUPLING_AXIS_SEPARATION_MM = 1.0e-7
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +128,38 @@ def _resolve_dependency(
         ) from exc
 
 
+def rotation_coupling_axis_separation_mm(
+    first: Any,
+    second: Any,
+) -> float | None:
+    """Return native global connector-origin separation for real resolved inputs."""
+
+    required = ("local_frame", "reference")
+    if any(not hasattr(first, name) for name in required) or any(
+        not hasattr(second, name) for name in required
+    ):
+        return None
+    import UtilsAssembly
+
+    placements = (
+        UtilsAssembly.getJcsGlobalPlc(first.local_frame, first.reference),
+        UtilsAssembly.getJcsGlobalPlc(second.local_frame, second.reference),
+    )
+    origins = []
+    for placement in placements:
+        base = placement.Base
+        origin = (float(base.x), float(base.y), float(base.z))
+        if not all(math.isfinite(value) for value in origin):
+            raise ValueError("A coupling connector has a non-finite global origin.")
+        origins.append(origin)
+    return math.sqrt(
+        sum(
+            (first_value - second_value) ** 2
+            for first_value, second_value in zip(origins[0], origins[1], strict=True)
+        )
+    )
+
+
 def validate_rotation_coupling_dependencies(
     prepared: PreparedRegularJoint,
     first_connector: JointConnectorSpec,
@@ -182,6 +215,23 @@ def validate_rotation_coupling_dependencies(
         raise error_type(
             f"{contract.connector_label} connectors must exactly reuse the named "
             "Revolute joint coordinate systems."
+        )
+    try:
+        axis_separation = rotation_coupling_axis_separation_mm(
+            prepared.first,
+            prepared.second,
+        )
+    except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        raise error_type(
+            f"{contract.connector_label} connector global axes could not be resolved."
+        ) from exc
+    if (
+        axis_separation is not None
+        and axis_separation <= MIN_COUPLING_AXIS_SEPARATION_MM
+    ):
+        raise error_type(
+            f"{contract.connector_label} connector axes are coincident; give the "
+            "occurrences distinct initial placements before creating the coupling."
         )
     return first_side, second_side
 

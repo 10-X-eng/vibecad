@@ -256,11 +256,13 @@ def _arguments(
 def _assert_response(document, response, component, lcs, name: str):
     assert set(response) == {
         "ok",
+        "verified",
         "component",
         "interface",
         "receipt",
         "assistant_undo_available",
     }
+    assert response["verified"] is True
     assert response["component"]["object_name"] == component.Name
     interface = response["interface"]
     assert interface["name"] == name
@@ -339,6 +341,7 @@ def _run() -> None:
         production = resolve_native_provider_surface(surface, registry)
         assert production.available is True, production.debug_summary()
         assert "component.interface" in production.tool_names
+        assert "component.interfaces" in production.tool_names
         assert "VibeCAD_PublishInterface" in surface.command_ids
         assert "AssemblyContextToggleActive" in production.human_only_action_ids
         workbench = Gui.activeWorkbench().name()
@@ -374,11 +377,11 @@ def _run() -> None:
         Gui.Selection.clearSelection()
         call_number = 0
 
-        def native_call(arguments, *, succeeds=True):
+        def native_call(arguments, *, succeeds=True, name="component.interface"):
             nonlocal call_number
             call_number += 1
             result = dispatcher.call(
-                "component.interface",
+                name,
                 json.dumps(arguments, separators=(",", ":")),
                 f"component-interface-call-{call_number}",
             )
@@ -389,6 +392,15 @@ def _run() -> None:
             return result
 
         native_body, native_feature, native_lcs = setup["native"]
+        targets = native_call({}, name="component.interfaces")
+        native_target = next(
+            target
+            for target in targets["targets"]
+            if target["component"]["object_name"] == native_body.Name
+            and target["lcs"]["object_name"] == native_lcs.Name
+        )
+        assert native_target["component"] == {"object_name": native_body.Name}
+        assert native_target["lcs"] == {"object_name": native_lcs.Name}
         arguments = _arguments(native_body, native_lcs)
         before_objects = tuple(obj.Name for obj in document.Objects)
         duplicate_body, _duplicate_feature, _taken_lcs, duplicate_lcs = setup[
@@ -476,6 +488,17 @@ def _run() -> None:
             or name == PROP_NATIVE_INTERFACE
         )
 
+        turn = NativeTurnSnapshot.from_provider_surface(production)
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
+
         rollback_body, _rollback_feature, rollback_lcs = setup["rollback"]
         original_verifier = runtime_module.verify_component_interface
 
@@ -492,7 +515,7 @@ def _run() -> None:
             )
         finally:
             runtime_module.verify_component_interface = original_verifier
-        assert response["error_code"] == "NATIVE_COMPONENT_INVALID"
+        assert response["error_code"] == "NATIVE_COMPONENT_INVALID", response
         _assert_not_published(rollback_body, rollback_lcs)
         assert tuple(obj.Name for obj in document.Objects) == before_objects
         assert not document.HasPendingTransaction

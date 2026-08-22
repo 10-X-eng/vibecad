@@ -106,6 +106,19 @@ def test_service_transition_persists_authority_and_blocks_silent_return(
     assert project.mode == "native"
 
 
+def test_reselecting_current_mode_embeds_the_portable_document_choice(
+    tmp_path: Path,
+) -> None:
+    service = _service(_ProjectStore(tmp_path, mode="native"))
+    document = service._active_document()
+
+    assert service.select_modeling_engine("native") == {
+        "mode": "native",
+        "persistence": "unchanged",
+    }
+    assert document.Meta[core_module.AUTHORING_MODE_META_KEY] == "native"
+
+
 def test_unchanged_native_epoch_can_return_to_vibescript(tmp_path: Path) -> None:
     project = _ProjectStore(tmp_path)
     service = _service(project)

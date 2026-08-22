@@ -8,6 +8,7 @@ from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any
 import xml.etree.ElementTree as ET
 import zipfile
@@ -26,6 +27,9 @@ MAX_INJECTED_COMPONENTS = 64
 MAX_COMPONENT_SEARCH_RESULTS = 200
 MAX_COMPONENT_SEARCH_RESPONSE_BYTES = 36 * 1024
 MAX_COMPONENT_REFERENCE_LABEL_CHARACTERS = 512
+_GENERATED_COMPONENT_CARRIER = re.compile(
+    r"^Vibe[A-Za-z0-9]+_[0-9a-fA-F]{8}_([A-Za-z][A-Za-z0-9_]*)_Source$"
+)
 _SAVED_COMPONENT_TYPES = frozenset(
     {
         "App::Link",
@@ -867,11 +871,41 @@ def _query_matches(candidate: Mapping[str, Any], terms: tuple[str, ...]) -> bool
     return all(term in text for term in terms)
 
 
+def _component_catalog_sort_key(candidate: Mapping[str, Any]) -> tuple[str, ...]:
+    reference = dict(candidate.get("reference") or {})
+    return (
+        str(reference.get("document_path") or ""),
+        str(candidate.get("document_label") or "").casefold(),
+        str(candidate.get("label") or "").casefold(),
+        str(candidate.get("object_name") or ""),
+    )
+
+
+def _keyed_component_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    preserve_existing: bool = True,
+) -> list[dict[str, Any]]:
+    ordered = sorted(
+        (dict(candidate) for candidate in candidates),
+        key=_component_catalog_sort_key,
+    )
+    existing = [str(candidate.get("catalog_key") or "") for candidate in ordered]
+    reuse_existing = preserve_existing and all(existing) and len(set(existing)) == len(
+        existing
+    )
+    if not reuse_existing:
+        for index, candidate in enumerate(ordered):
+            candidate["catalog_key"] = f"component-{index + 1}"
+    return ordered
+
+
 def _component_reference_result(candidate: Mapping[str, Any]) -> dict[str, Any]:
     """Return one compact, copy-ready identity without redundant fields."""
 
     label = str(candidate.get("label") or candidate.get("object_name") or "")
     result = {
+        "catalog_key": str(candidate.get("catalog_key") or ""),
         "label": label[:MAX_COMPONENT_REFERENCE_LABEL_CHARACTERS],
         "kind": str(candidate.get("kind") or "definition"),
         "reference": dict(candidate.get("reference") or {}),
@@ -938,6 +972,7 @@ def prepare_captured_component_catalog(
                             "error": str(exc),
                         }
                     )
+    candidates = _keyed_component_candidates(candidates, preserve_existing=False)
     return {
         "schema": "vibecad-component-catalog-snapshot-v1",
         "owner_document_uid": str(captured.get("owner_document_uid") or ""),
@@ -993,11 +1028,13 @@ def search_prepared_component_catalog(
                 "Save the Assembly document before searching a project-relative file."
             )
 
-    candidates = [
-        dict(item)
-        for item in list(prepared.get("candidates") or [])
-        if isinstance(item, Mapping)
-    ]
+    candidates = _keyed_component_candidates(
+        [
+            dict(item)
+            for item in list(prepared.get("candidates") or [])
+            if isinstance(item, Mapping)
+        ]
+    )
     terms = tuple(term for term in clean_query.casefold().split() if term)
     if clean_document_path:
         candidates = [
@@ -1007,14 +1044,7 @@ def search_prepared_component_catalog(
             == clean_document_path
         ]
     matches = [item for item in candidates if _query_matches(item, terms)]
-    matches.sort(
-        key=lambda item: (
-            str(dict(item.get("reference") or {}).get("document_path") or ""),
-            str(item.get("document_label") or "").casefold(),
-            str(item.get("label") or "").casefold(),
-            str(item.get("object_name") or ""),
-        )
-    )
+    matches.sort(key=_component_catalog_sort_key)
     requested_page = matches[offset : offset + limit]
     if clean_detail == "references":
         requested_page = [_component_reference_result(item) for item in requested_page]
@@ -1109,6 +1139,27 @@ def search_captured_component_catalog(
     )
 
 
+def component_catalog_reference_map(
+    prepared: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Map turn-local catalog keys to exact references from one frozen snapshot."""
+
+    if prepared.get("schema") != "vibecad-component-catalog-snapshot-v1":
+        raise ComponentCatalogError("Invalid prepared component catalog snapshot.")
+    candidates = _keyed_component_candidates(
+        [
+            dict(item)
+            for item in list(prepared.get("candidates") or [])
+            if isinstance(item, Mapping)
+        ]
+    )
+    return {
+        str(candidate["catalog_key"]): dict(candidate["reference"])
+        for candidate in candidates
+        if isinstance(candidate.get("reference"), Mapping)
+    }
+
+
 def component_inventory(
     prepared: Mapping[str, Any],
     *,
@@ -1141,33 +1192,48 @@ def component_inventory(
     }
     found = search_prepared_component_catalog(active_catalog, limit=limit)
     included_fields = (
-        "document_label",
-        "object_name",
+        "catalog_key",
         "label",
         "kind",
-        "type_id",
-        "source",
-        "live_validated",
-        "geometry_validation",
-        "portable",
         "reference",
         "part_number",
         "stock_code",
-        "authoring_source",
-        "assembly_contract",
         "published_interfaces",
         "interfaces",
         "interfaces_truncated",
         "local_coordinate_systems",
     )
-    components = [
-        {
+    components: list[dict[str, Any]] = []
+    used_occurrence_keys: set[str] = set()
+    for candidate in found["matches"]:
+        component = {
             name: candidate[name]
             for name in included_fields
             if name in candidate and candidate[name] not in (None, "", [], {})
         }
-        for candidate in found["matches"]
-    ]
+        label = str(component.get("label") or "").strip()
+        object_name = str(candidate.get("object_name") or "").strip()
+        if label == object_name:
+            generated = _GENERATED_COMPONENT_CARRIER.fullmatch(object_name)
+            if generated is not None:
+                component["label"] = generated.group(1)
+        key_base = re.sub(
+            r"[^A-Za-z0-9_]+",
+            "_",
+            str(component.get("label") or object_name or "Component"),
+        ).strip("_")
+        if not key_base or not key_base[0].isalpha():
+            key_base = "Component_" + key_base
+        key_base = key_base[:64].rstrip("_") or "Component"
+        occurrence_key = key_base
+        suffix = 2
+        while occurrence_key.casefold() in used_occurrence_keys:
+            tail = f"_{suffix}"
+            occurrence_key = key_base[: 64 - len(tail)].rstrip("_") + tail
+            suffix += 1
+        used_occurrence_keys.add(occurrence_key.casefold())
+        component["occurrence_key"] = occurrence_key
+        components.append(component)
     inventory = {
         "schema": "vibecad-available-components-v1",
         "component_count": int(found["match_count"]),
@@ -1178,13 +1244,8 @@ def component_inventory(
         ),
         "components": components,
         "usage": (
-            "Use a definition reference with api.component or api.instances. Reuse an "
-            "occurrence reference when Assembly must adopt that exact placed object. "
-            "Call component_catalog.search only when the needed component is not listed "
-            "or when additional catalog metadata is required. To enumerate a truncated "
-            "catalog, use detail='references', limit=200, offset=0, then repeat with "
-            "offset=next_offset until next_offset is null. A page may return fewer "
-            "than limit so its complete matches array remains provider-safe."
+            "create_assembly components use catalog_key; assembly.connectors uses "
+            "reference."
         ),
     }
     skipped = int(prepared.get("saved_documents_skipped") or 0)

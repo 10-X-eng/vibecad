@@ -9250,6 +9250,63 @@ def _validate_assembly_execution(
                         f"Joint output {name!r} connector {index} has no resolved "
                         "geometry type."
                     )
+            elif mode == "query":
+                try:
+                    from vibescript_partdesign_api import normalize_geometry_selection
+
+                    normalized_query = normalize_geometry_selection(
+                        "connector",
+                        selection,
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Joint output {name!r} connector {index} has an invalid "
+                        "geometry query."
+                    ) from exc
+                if normalized_query.get("expected_count") != 1:
+                    raise ValueError(
+                        f"Joint output {name!r} connector {index} geometry query must "
+                        "resolve exactly one element."
+                    )
+                if source_metadata.get("requires_semantic_interfaces"):
+                    raise ValueError(
+                        f"Joint output {name!r} connector {index} bypassed a required "
+                        "published interface."
+                    )
+                expected_semantic = {
+                    "type": "geometry_query",
+                    "query": normalized_query,
+                }
+                if connector.get("semantic_selection") != expected_semantic:
+                    raise ValueError(
+                        f"Joint output {name!r} connector {index} lost its measured "
+                        "geometry identity."
+                    )
+                expected_element = str(connector.get("element") or "")
+                match = re.fullmatch(
+                    r"(Face|Edge)([1-9][0-9]*)",
+                    expected_element,
+                )
+                if match is None:
+                    raise ValueError(
+                        f"Joint output {name!r} connector {index} resolved an invalid "
+                        "geometry-query element."
+                    )
+                count_name = {"Face": "faces", "Edge": "edges"}[match.group(1)]
+                available = int(
+                    dict(source_metadata.get("facts") or {}).get(count_name, 0)
+                )
+                if int(match.group(2)) > available:
+                    raise ValueError(
+                        f"Joint output {name!r} connector {index} resolved outside "
+                        "the authenticated source topology."
+                    )
+                expected_geometry_type = str(connector.get("geometry_type") or "")
+                if not expected_geometry_type:
+                    raise ValueError(
+                        f"Joint output {name!r} connector {index} has no resolved "
+                        "geometry type."
+                    )
             elif mode == "published_interface":
                 interface_name = str(selection.get("interface_name") or "")
                 interface = dict(
@@ -23138,38 +23195,15 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                 ),
                 "input_reference_contract": {
                     "purpose": (
-                        "Pass component sources through inputs. The host detaches each exact "
-                        "Shape, hashes the BREP and semantic-interface contract into the "
-                        "program revision, and marks accepted Assembly outputs stale if a "
-                        "source changes. A definition reference creates a linked occurrence; "
-                        "an occurrence reference adopts that exact placed object in place. "
-                        "Copy references from available_components. Use "
-                        "component_catalog.search only when the needed definition is omitted "
-                        "from that bounded inventory or more catalog metadata is required. Its "
-                        "optional document_path is portable relative "
-                        "to the saved Assembly file and loads the exact native source document. "
-                        "The legacy document_uid/object_name reference remains valid. Raw "
-                        "document access from source is unavailable. "
-                        "Catalog fasteners are created directly with api.fastener and do "
-                        "not require an input reference."
+                        "Use a listed catalog_key as an input value and mark its input-schema "
+                        "property x-vibecad-reference=true. The host resolves the key against "
+                        "the frozen catalog and stores the exact component identity. A "
+                        "definition creates a linked occurrence; an occurrence is adopted in "
+                        "place. Search only when the component is not listed."
                     ),
                     "schema": {
                         "type": "object",
                         "x-vibecad-reference": True,
-                        "properties": {
-                            "document_uid": {"type": "string", "minLength": 1},
-                            "object_name": {"type": "string", "minLength": 1},
-                            "document_path": {
-                                "type": "string",
-                                "minLength": 1,
-                                "description": (
-                                    "Optional forward-slash .FCStd path below the saved "
-                                    "Assembly document directory."
-                                ),
-                            },
-                        },
-                        "required": ["document_uid", "object_name"],
-                        "additionalProperties": False,
                     },
                     "eligible_sources": [
                         "standalone solid Part::Feature",
@@ -23195,14 +23229,14 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                     "result": (
                         "Pass components and joints to api.assembly as mappings keyed by their "
                         "stable member names; those native members belong to the assembly and "
-                        "do not go in result. Return exactly one assembly and one "
-                        "solver_diagnostics value. If motion is requested, pass motions to "
-                        "api.simulation as a stable-key mapping and return only the simulation. "
+                        "do not go in result. Publish exactly one assembly and one "
+                        "solver_diagnostics value in result. If motion is requested, pass motions to "
+                        "api.simulation as a stable-key mapping and publish only the simulation. "
                         "The legacy sequence form remains readable but requires every sequence "
                         "member as a separate result output. If an "
-                        "exploded presentation is requested, return each api.exploded_view "
-                        "value exactly once. If a bill of materials is requested, return each "
-                        "api.bill_of_materials value exactly once. Return each "
+                        "exploded presentation is requested, publish each api.exploded_view "
+                        "value exactly once. If a bill of materials is requested, publish each "
+                        "api.bill_of_materials value exactly once. Publish each "
                         "api.mechanism_check value once. Every derived value must consume "
                         "that same assembly variable."
                     ),
@@ -23291,9 +23325,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                         "step": 1,
                         "action": "discover",
                         "instruction": (
-                            "Copy component references from available_components into program "
-                            "inputs. Search only when the needed component is not listed or "
-                            "additional catalog metadata is required. "
+                            "Put each selected catalog_key in program inputs. Search only when "
+                            "the needed component is not listed or more metadata is required. "
                             "Use flexible=True only when eligible_flexible_subassembly=true. "
                             "For internal connectors or detailed BOMs, require "
                             "eligible_detailed_bom_hierarchy=true and copy exact "
@@ -23985,9 +24018,8 @@ class AssemblyDomainAdapter(DeclarativeDomainAdapter):
                     "its source Shape contains several solids."
                 ),
                 "discovery": (
-                    "Copy a reference from available_components into an "
-                    "x-vibecad-reference input. Search only for an omitted component or "
-                    "additional metadata."
+                    "Put a listed catalog_key in an x-vibecad-reference input and pass "
+                    "inputs['name'] to api.component or api.instances."
                 ),
                 "motion_boundary": (
                     "A compound or multi-solid source does not expose independently moving "

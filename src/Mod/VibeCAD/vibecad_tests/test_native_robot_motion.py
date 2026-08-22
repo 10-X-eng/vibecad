@@ -5,10 +5,14 @@ from __future__ import annotations
 import pytest
 
 from VibeCADNativeActionManifest import _operation_variant
-from VibeCADNativeCapabilityRegistry import NativeCapabilityRegistry
+from VibeCADNativeCapabilityRegistry import (
+    NativeCapabilityRegistry,
+    provider_visible_native_schema,
+)
 from VibeCADNativeRobotMotion import (
     MAX_SIMULATION_SAMPLES,
     NativeRobotMotionError,
+    _canonical_home_value,
     prepare_robot_home_spec,
     prepare_robot_simulation_spec,
 )
@@ -76,6 +80,39 @@ def test_robot_motion_schema_covers_every_final_robot_action() -> None:
     registry = NativeCapabilityRegistry()
     register_robot_motion_capability_definition(registry)
     assert registry.definition_names == (ROBOT_MOTION_CAPABILITY_NAME,)
+
+
+def test_robot_motion_provider_contract_contains_no_internal_state_tokens() -> None:
+    definition = robot_motion_capability_definition()
+    published = provider_visible_native_schema(
+        definition.provider_schema(
+            tuple(variant.operation for variant in definition.variants)
+        )
+    )
+    assert published["description"] == (
+        "Set Robot home positions and sample trajectory motion."
+    )
+    schema = published["parameters"]
+    serialized = repr(schema)
+
+    assert "expected_" not in serialized
+    assert "sha256" not in serialized.casefold()
+    assert schema["type"] == "object"
+    assert schema["required"] == ["operation", "robot"]
+    properties = schema["properties"]
+    assert properties["operation"]["enum"] == [
+        "set_home_pos",
+        "restore_home_pos",
+        "simulate",
+    ]
+    assert properties["operation"]["description"] == (
+        "Fields: set_home_pos|restore_home_pos=none; "
+        "simulate=trajectory,sample_times_s."
+    )
+
+
+def test_robot_home_uses_the_same_canonical_value_as_durable_state() -> None:
+    assert _canonical_home_value(1.025348069561005e-6) == 1.02534807e-6
 
 
 @pytest.mark.parametrize("operation", ("set_home_pos", "restore_home_pos"))

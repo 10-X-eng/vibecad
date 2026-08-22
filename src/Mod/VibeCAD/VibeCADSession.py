@@ -97,6 +97,8 @@ MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 32 * 1024
 VIBESCRIPT_READ_OPERATION_TOOL = "vibescript.read_operation"
 VIBESCRIPT_BACKGROUND_SOURCE_TOOLS = frozenset(
     {
+        "vibescript.create_assembly",
+        "vibescript.create_part",
         "vibescript.create_program",
         "vibescript.build_program",
         "vibescript.edit_source",
@@ -1403,6 +1405,12 @@ _PROVIDER_REDUNDANT_SOURCE_FIELDS = frozenset(
 def _provider_editable_sources_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     """Remove tool-schema duplication from the model-visible source index."""
 
+    if int(value.get("source_count") or 0) == 0:
+        return {
+            key: value[key]
+            for key in ("schema", "domain", "source_count")
+            if key in value
+        }
     result = {
         key: item
         for key, item in value.items()
@@ -1434,7 +1442,61 @@ def _provider_component_inventory_payload(
     """Keep empty component discovery truthful without its unused instructions."""
 
     if int(value.get("component_count") or 0) != 0:
-        return dict(value)
+        result = dict(value)
+        result.pop("usage", None)
+        components = []
+        for raw_component in list(value.get("components") or []):
+            if not isinstance(raw_component, Mapping):
+                continue
+            component = {
+                key: raw_component[key]
+                for key in ("catalog_key", "label")
+                if key in raw_component
+            }
+            interfaces = []
+            for raw_interface in list(raw_component.get("interfaces") or []):
+                if not isinstance(raw_interface, Mapping):
+                    continue
+                interface = {
+                    key: raw_interface[key]
+                    for key in ("name", "description")
+                    if key in raw_interface and raw_interface[key] not in (None, "")
+                }
+                raw_connector = raw_interface.get("connector")
+                if isinstance(raw_connector, Mapping):
+                    connector = {
+                        key: raw_connector[key]
+                        for key in (
+                            "kind",
+                            "allowed_joints",
+                            "compatibility",
+                            "pitch_radius_mm",
+                            "thread_pitch_mm",
+                        )
+                        if key in raw_connector
+                        and raw_connector[key] not in (None, "", [], {})
+                    }
+                    allowed = connector.get("allowed_joints")
+                    if isinstance(allowed, list):
+                        connector["allowed_joints"] = [
+                            "gear" if kind == "gears" else kind
+                            for kind in allowed
+                        ]
+                    compatibility = connector.get("compatibility")
+                    if isinstance(compatibility, Mapping):
+                        connector["compatibility"] = {
+                            "gear" if kind == "gears" else str(kind): token
+                            for kind, token in compatibility.items()
+                        }
+                    interface["connector"] = connector
+                interfaces.append(interface)
+            if interfaces:
+                component["interfaces"] = interfaces
+            if raw_component.get("interfaces_truncated") is True:
+                component["interfaces_truncated"] = True
+            components.append(component)
+        result["components"] = components
+        return result
     return {
         key: value[key]
         for key in (
@@ -1447,7 +1509,64 @@ def _provider_component_inventory_payload(
     }
 
 
+class _ComponentCatalogInputError(ValueError):
+    def __init__(self, catalog_key: str, available_keys: list[str]) -> None:
+        self.catalog_key = catalog_key
+        self.available_keys = available_keys
+        super().__init__(f"Unknown component catalog key: {catalog_key}")
+
+
+def _resolve_component_catalog_inputs(
+    arguments: Mapping[str, Any],
+    component_catalog: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Resolve turn-local component keys to frozen durable references."""
+
+    resolved = dict(arguments)
+    inputs = arguments.get("inputs")
+    if not isinstance(inputs, Mapping):
+        return resolved
+    if not any(
+        isinstance(value, Mapping) and set(value) == {"catalog_key"}
+        for value in inputs.values()
+    ):
+        return resolved
+
+    catalog = dict(component_catalog or {})
+    if catalog.get("schema") == "vibecad-component-catalog-snapshot-v1":
+        from VibeCADComponentCatalog import component_catalog_reference_map
+
+        references = component_catalog_reference_map(catalog)
+    else:
+        components = [
+            dict(value)
+            for value in list(catalog.get("components") or [])
+            if isinstance(value, Mapping)
+        ]
+        references = {
+            str(component.get("catalog_key") or ""): dict(component["reference"])
+            for component in components
+            if str(component.get("catalog_key") or "")
+            and isinstance(component.get("reference"), Mapping)
+        }
+    available_keys = sorted(references)
+    resolved_inputs = dict(inputs)
+    for name, value in inputs.items():
+        if not isinstance(value, Mapping) or set(value) != {"catalog_key"}:
+            continue
+        catalog_key = str(value.get("catalog_key") or "").strip()
+        if catalog_key not in references:
+            raise _ComponentCatalogInputError(catalog_key, available_keys)
+        resolved_inputs[name] = dict(references[catalog_key])
+    resolved["inputs"] = resolved_inputs
+    return resolved
+
+
 def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
+    aero = context.get("aero")
+    include_aero = aero not in (None, "", [], {}) and not (
+        isinstance(aero, Mapping) and aero.get("available") is False
+    )
     modeling_surface = context.get("modeling_surface")
     if (
         isinstance(modeling_surface, Mapping)
@@ -1456,8 +1575,7 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
         result = _model_visible_context(context)
         result.pop("view_screenshot", None)
         result.pop("reference_images", None)
-        aero = context.get("aero")
-        if aero not in (None, "", [], {}):
+        if include_aero:
             result["aero"] = aero
         return result
     # Final first-prompt allowlist. This dict is serialized as
@@ -1479,6 +1597,8 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
         for key in keys
         if key in context and context[key] not in (None, "", [], {})
     }
+    if not include_aero:
+        result.pop("aero", None)
     editable_sources = result.get("editable_sources")
     if isinstance(editable_sources, Mapping):
         result["editable_sources"] = _provider_editable_sources_payload(
@@ -2565,6 +2685,7 @@ def _filtered_api_payload(
 ) -> dict[str, Any]:
     """Return either the complete API or a small exact callable selection."""
 
+    names = [name[4:] if name.startswith("api.") else name for name in names]
     result = dict(description)
     exports = [
         dict(item)
@@ -2633,10 +2754,12 @@ def _filtered_api_payload(
     if not names and not groups:
         result["_vibecad_complete_api_result"] = True
         return result
-    selected = set(names)
+    requested_order = list(names)
     for group in groups:
-        selected.update(api_groups[group])
-    ordered_names = [name for name in by_name if name in selected]
+        requested_order.extend(api_groups[group])
+    if str(result.get("domain") or "") == "assembly":
+        requested_order.extend(("assembly", "solve"))
+    ordered_names = list(dict.fromkeys(requested_order))
     focused = {
         key: result[key]
         for key in (
@@ -2913,6 +3036,21 @@ def _resolve_vibescript_program_target(
 ) -> _VibeScriptSourceTarget:
     """Resolve one readable program reference to its internal persistent id."""
 
+    requested_program = str(program or "").strip()
+    if "/" not in requested_program:
+        active_document = service._active_document()
+        document_name = str(getattr(active_document, "Name", "") or "").strip()
+        if not document_name:
+            raise _SourceTargetError(
+                "PROGRAM_REFERENCE_INVALID",
+                "A local program name requires an active document.",
+                observed={"program": requested_program},
+            )
+        program = _program_reference(
+            document_name=document_name,
+            domain=str(active_pack.domain),
+            program_name=requested_program,
+        )
     document_name, domain, program_name = _program_reference_key(program)
     if not document_name or not domain or not program_name:
         raise _SourceTargetError(
@@ -3244,6 +3382,7 @@ def _run_universal_vibescript_tool(
     cancellation_check: CancellationCheck | None,
     progress_callback: ProgressCallback | None,
 ) -> dict[str, Any]:
+    args = dict(args)
     active_pack = vibescript_domains.get_vibescript_pack(active_workbench)
     if active_pack is None:
         return tool_failure(
@@ -3255,6 +3394,19 @@ def _run_universal_vibescript_tool(
         )
     target: _VibeScriptSourceTarget | None = None
     pack = active_pack
+    replacement: dict[str, Any] | None = None
+    if tool_name == "vibescript.create_assembly" and "replace" in args:
+        raw_replacement = args.pop("replace")
+        if not isinstance(raw_replacement, Mapping):
+            return tool_failure(
+                tool_name,
+                "ASSEMBLY_REPLACEMENT_INVALID",
+                "schema",
+                "replace must contain program and expected_revision.",
+                requested=args,
+            )
+        replacement = dict(raw_replacement)
+        args["program"] = replacement.get("program")
     program = args.get("program")
     requested_domain = str(args.get("domain") or "").strip().lower()
     if program is not None and not isinstance(program, str):
@@ -3287,6 +3439,16 @@ def _run_universal_vibescript_tool(
                 ),
             )
         except _SourceTargetError as exc:
+            if (
+                tool_name == "vibescript.read_source"
+                and exc.code == "PROGRAM_NOT_FOUND"
+                and "/" not in program
+            ):
+                return {
+                    "ok": True,
+                    "found": False,
+                    "program_name": program.strip(),
+                }
             return tool_failure(
                 tool_name,
                 exc.code,
@@ -3326,6 +3488,129 @@ def _run_universal_vibescript_tool(
                 requested=args,
             )
         pack = requested_pack
+    try:
+        if tool_name == "vibescript.create_part":
+            requested_domain = "partdesign"
+            component_pack = vibescript_domains.get_vibescript_pack_for_domain(
+                requested_domain
+            )
+            if component_pack is None:
+                return tool_failure(
+                    tool_name,
+                    "DOMAIN_UNAVAILABLE",
+                    "surface",
+                    "The Part Design VibeScript domain is unavailable.",
+                    requested=args,
+                )
+            pack = component_pack
+        if tool_name == "vibescript.create_assembly":
+            from VibeCADAssemblyGraphProgram import (
+                AssemblyGraphProgramError,
+                compile_assembly_program,
+            )
+
+            try:
+                requested_domain = "assembly"
+                assembly_pack = vibescript_domains.get_vibescript_pack_for_domain(
+                    requested_domain
+                )
+                if assembly_pack is None:
+                    raise AssemblyGraphProgramError(
+                        "The Assembly VibeScript domain is unavailable"
+                    )
+                pack = assembly_pack
+                compiled = compile_assembly_program(
+                    args,
+                    component_catalog=component_catalog,
+                )
+                if target is None:
+                    document = service._active_document()
+                    existing_program = _program_reference(
+                        document_name=str(getattr(document, "Name", "") or ""),
+                        domain="assembly",
+                        program_name=str(compiled["program_name"]),
+                    )
+                    try:
+                        existing = _editable_program_record(
+                            editable_sources,
+                            existing_program,
+                        )
+                    except _SourceTargetError as exc:
+                        return tool_failure(
+                            tool_name,
+                            exc.code,
+                            "precondition",
+                            str(exc),
+                            requested=args,
+                            observed=exc.observed,
+                        )
+                    existing_revision = str(
+                        (existing or {}).get("current_revision") or ""
+                    )
+                    if existing is not None and existing_revision:
+                        replace = {
+                            "program": existing_program,
+                            "expected_revision": existing_revision,
+                        }
+                        return tool_failure(
+                            tool_name,
+                            "ASSEMBLY_REPLACEMENT_REQUIRED",
+                            "precondition",
+                            "An assembly source with this name already exists.",
+                            requested=args,
+                            observed={
+                                "program": existing_program,
+                                "current_revision": existing_revision,
+                            },
+                            required_changes=[{"replace": replace}],
+                            next_actions=[
+                                {
+                                    "tool": tool_name,
+                                    "target_arguments": {"replace": replace},
+                                }
+                            ],
+                        )
+                if target is not None and replacement is not None:
+                    compiled["expected_revision"] = replacement.get(
+                        "expected_revision"
+                    )
+                args = {
+                    "domain": "assembly",
+                    **compiled,
+                }
+            except AssemblyGraphProgramError as exc:
+                return tool_failure(
+                    tool_name,
+                    "ASSEMBLY_GRAPH_INVALID",
+                    "schema",
+                    str(exc),
+                    requested=args,
+                    observed={"path": exc.path, **exc.observed},
+                    allowed_values=exc.allowed_values,
+                    required_changes=(
+                        exc.required_changes
+                        or (
+                            [
+                                {
+                                    "path": exc.path,
+                                    "allowed_values": exc.allowed_values,
+                                }
+                            ]
+                            if exc.path and exc.allowed_values
+                            else []
+                        )
+                    ),
+                )
+        args = _resolve_component_catalog_inputs(args, component_catalog)
+    except _ComponentCatalogInputError as exc:
+        return tool_failure(
+            tool_name,
+            "COMPONENT_CATALOG_KEY_INVALID",
+            "schema",
+            str(exc),
+            requested=args,
+            observed={"available_catalog_keys": exc.available_keys},
+        )
     if target is not None:
         domain_service: Any = _SourceBoundService(service, target)
     elif requested_domain:
@@ -3343,16 +3628,19 @@ def _run_universal_vibescript_tool(
         )
         if not persisted_source:
             if (
-                tool_name == "vibescript.create_program"
+                tool_name in {
+                    "vibescript.create_program",
+                    "vibescript.create_assembly",
+                    "vibescript.create_part",
+                }
                 and result.get("ok") is not True
             ):
                 result["error"] = (
                     str(result.get("error") or "VibeScript program creation failed.")
                     + " No editable source was saved. Correct the reported request "
-                    + "field(s), then retry vibescript.create_program with a valid "
-                    + "program label and complete source; "
-                    + "do not call vibescript.read_source."
+                    + f"field(s), then retry {tool_name}."
                 )
+                result["next_actions"] = [{"tool": tool_name}]
                 retry = result.get("retry")
                 if not isinstance(retry, dict):
                     retry = {}
@@ -3386,6 +3674,20 @@ def _run_universal_vibescript_tool(
             target_payload["current_revision"] = str(result["working_revision"])
         result["program"] = str(target_payload["program"])
         result["source_target"] = target_payload
+        if tool_name == "vibescript.create_assembly" and result.get("ok") is not True:
+            revision = str(target_payload.get("current_revision") or "")
+            if revision:
+                result["next_actions"] = [
+                    {
+                        "tool": tool_name,
+                        "target_arguments": {
+                            "replace": {
+                                "program": str(target_payload["program"]),
+                                "expected_revision": revision,
+                            }
+                        },
+                    }
+                ]
         active_document = service._active_document()
         target_document = target.document if target is not None else document
         if result.get("ok") is True and active_document is not target_document:
@@ -3666,12 +3968,16 @@ def _run_universal_vibescript_tool(
                 observed={"exception_type": exc.__class__.__name__},
             )
     universal_domain_operations = {
+        "vibescript.create_assembly": "create_program",
+        "vibescript.create_part": "create_program",
         "vibescript.create_program": "create_program",
         "vibescript.set_inputs": "set_inputs",
         "vibescript.reconfigure_program": "reconfigure_program",
         "vibescript.delete_program": "delete_program",
     }
     operation = universal_domain_operations.get(tool_name)
+    if tool_name == "vibescript.create_assembly" and target is not None:
+        operation = "reconfigure_program"
     if operation is not None:
         if operation != "create_program" and target is None:
             return tool_failure(
@@ -3684,6 +3990,8 @@ def _run_universal_vibescript_tool(
         domain_args = dict(args)
         domain_args.pop("domain", None)
         domain_args.pop("program", None)
+        if operation == "reconfigure_program":
+            domain_args.pop("program_name", None)
         if target is not None:
             domain_args["program_id"] = target.source_id
         qualified_name = f"vibescript.{pack.domain}.{operation}"
@@ -4178,6 +4486,8 @@ def make_provider_tool_runner(
     }
     source_lifecycle_tools = frozenset(
         {
+            "vibescript.create_assembly",
+            "vibescript.create_part",
             "vibescript.create_program",
             "vibescript.build_program",
             "vibescript.edit_source",
@@ -4825,6 +5135,8 @@ def make_provider_tool_runner(
             edit_block["requested"] = args
             return finalize(edit_block)
         if tool_name in {
+            "vibescript.create_assembly",
+            "vibescript.create_part",
             "vibescript.read_source",
             "vibescript.read_api",
             "vibescript.read_geometry",

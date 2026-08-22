@@ -11,8 +11,8 @@ from VibeCADComponentCatalog import MAX_COMPONENT_SEARCH_RESULTS
 TOOL_SPEC = {
     "name": "component_catalog.search",
     "description": (
-        "Search reusable components absent from available_components. Returned "
-        "references are valid api.component inputs; follow next_offset until null."
+        "Search reusable components absent from available_components. Use a returned "
+        "catalog_key in a component input; follow next_offset until null."
     ),
     "contextual": False,
     "requires_document": True,

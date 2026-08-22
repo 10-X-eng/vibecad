@@ -128,12 +128,10 @@ def _parity_record(data: dict) -> dict:
     }
 
 
-def _arguments(state, *, label: str = "Native six-axis robot") -> dict:
+def _arguments(*, label: str = "Native six-axis robot") -> dict:
     return {
         "operation": "create",
         "label": label,
-        "expected_state_sha256": state.state_sha256,
-        "expected_robot_count": len(state.robots),
     }
 
 
@@ -205,8 +203,6 @@ def _run() -> None:
         assert set(schema["parameters"]["oneOf"][0]["properties"]) == {
             "operation",
             "label",
-            "expected_state_sha256",
-            "expected_robot_count",
         }
 
         service = get_service()
@@ -283,19 +279,10 @@ def _run() -> None:
             return result
 
         document.clearUndos()
-        before = capture_robot_setup_state(document)
-        arguments = _arguments(before)
+        arguments = _arguments()
         names_before = tuple(obj.Name for obj in document.Objects)
         history_before = tuple(document.VibeCADTimeline.Operations)
         selection_before = tuple(Gui.Selection.getSelection())
-
-        auth_before = authorization_count["value"]
-        stale = call(
-            {**arguments, "expected_state_sha256": "0" * 64},
-            succeeds=False,
-        )
-        assert stale["error_code"] == "NATIVE_ROBOT_SETUP_FAILED"
-        assert authorization_count["value"] == auth_before
 
         cancel_purpose["value"] = "robot_visual_definition"
         cancelled = call(arguments, succeeds=False)
@@ -406,7 +393,7 @@ def _run() -> None:
             "VIBECAD_NATIVE_ROBOT_SETUP_GUI_OK "
             "human_parity=true human_input_authority=true provider_paths=false "
             "exact_history=true exact_state=true malformed_noop=true "
-            "input_drift_noop=true stale_noop=true cancel_noop=true "
+            "input_drift_noop=true cancel_noop=true "
             "rollback=true idempotent=true undo_redo=true reopen=true "
             "selection_preserved=true",
             flush=True,

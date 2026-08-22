@@ -52,10 +52,6 @@ class NativeAssemblyExportError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class AssemblyAsmtExportSpec:
     assembly_ref: NativeObjectRef
-    expected_state_sha256: str
-    expected_component_count: int
-    expected_grounded_count: int
-    expected_joint_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,25 +65,6 @@ class PreparedAssemblyAsmtExport:
     transaction_id_before: int
     gui_modified_before: bool | None
     output_request: NativeOutputRequest
-
-
-def _exact_count(value: Any, field: str, maximum: int) -> int:
-    if type(value) is not int or not 0 <= value <= maximum:
-        raise NativeAssemblyExportError(
-            f"{field} must be an integer from 0 through {maximum}."
-        )
-    return value
-
-
-def _exact_digest(value: Any) -> str:
-    result = str(value or "")
-    if len(result) != 64 or any(
-        character not in "0123456789abcdef" for character in result
-    ):
-        raise NativeAssemblyExportError(
-            "expected_state_sha256 must be one lowercase SHA-256 digest."
-        )
-    return result
 
 
 def _transaction_id(document: Any) -> int:
@@ -191,14 +168,6 @@ def preflight_assembly_asmt_export(
         raise TypeError("spec must be an AssemblyAsmtExportSpec")
     if not isinstance(spec.assembly_ref, NativeObjectRef):
         raise TypeError("spec.assembly_ref must be a NativeObjectRef")
-    expected_digest = _exact_digest(spec.expected_state_sha256)
-    expected_counts = (
-        _exact_count(
-            spec.expected_component_count, "expected_component_count", 100_000
-        ),
-        _exact_count(spec.expected_grounded_count, "expected_grounded_count", 256),
-        _exact_count(spec.expected_joint_count, "expected_joint_count", 256),
-    )
     context.guard()
     document = context.document
     if _transaction_open(document):
@@ -216,26 +185,13 @@ def preflight_assembly_asmt_export(
         state = capture_assembly_diagnosis_state(assembly)
     except NativeAssemblyDiagnosisError as exc:
         raise NativeAssemblyExportError(str(exc)) from exc
-    actual_counts = (
-        len(state.components),
-        len(state.grounded_joints),
-        len(state.regular_joints),
-    )
-    if actual_counts != expected_counts or state.state_sha256 != expected_digest:
-        raise NativeAssemblyExportError(
-            "The active Assembly changed; read current Assemble state and retry."
-        )
     selection = selection_reader(document)
     if not same_assembly(assembly, active_reader(document)):
         raise NativeAssemblyExportError(
             "The human-active Assembly changed during ASMT export preflight."
         )
     return PreparedAssemblyAsmtExport(
-        spec=AssemblyAsmtExportSpec(
-            spec.assembly_ref,
-            expected_digest,
-            *expected_counts,
-        ),
+        spec=spec,
         state=state,
         active_before=assembly,
         selection_before=selection,

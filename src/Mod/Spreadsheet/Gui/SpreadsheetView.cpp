@@ -69,6 +69,8 @@ SheetView::SheetView(Gui::Document* pcDocument, App::DocumentObject* docObj, QWi
     : MDIView(pcDocument, parent)
     , sheet(static_cast<Sheet*>(docObj))
 {
+    setProperty("vibecadUsesModelBrowser", false);
+
     // Set up ui
 
     model = new SheetModel(static_cast<Sheet*>(docObj));
@@ -128,11 +130,6 @@ SheetView::SheetView(Gui::Document* pcDocument, App::DocumentObject* docObj, QWi
     // NOLINTEND
 
     connect(model, &QAbstractItemModel::dataChanged, this, &SheetView::modelUpdated);
-
-    QPalette palette = ui->cells->palette();
-    palette.setColor(QPalette::Base, QColor(255, 255, 255));
-    palette.setColor(QPalette::Text, QColor(0, 0, 0));
-    ui->cells->setPalette(palette);
 
     // Set document object to create auto completer
     ui->cellContent->setDocumentObject(sheet);

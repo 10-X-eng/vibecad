@@ -632,14 +632,16 @@ def _exercise_native_joint_matrix(root: Path, pack) -> dict[str, int]:
                 first_connector = api.connector(base, f"Edge{line_edge}")
                 second_connector = api.connector(moving, f"Edge{circle_edge}")
             elif kind == "fixed":
-                first_connector = api.connector(
+                first_connector = api.connector(moving)
+                second_connector = api.connector(
                     base,
                     f"Edge{line_edge}",
                     anchor=f"Vertex{line_vertex}",
                 )
-                second_connector = api.connector(moving)
             else:
-                first_connector = api.connector(base)
+                first_connector = api.connector(
+                    base,
+                )
                 second_connector = api.connector(moving)
             joint = api.joint(
                 kind,
@@ -667,9 +669,21 @@ def _exercise_native_joint_matrix(root: Path, pack) -> dict[str, int]:
             assert len(joint_data["connectors"]) == 2
             assert all(item["native_reference"]["component"] for item in joint_data["connectors"])
             if kind == "fixed":
-                first_frame = joint_data["connectors"][0]
-                assert first_frame["anchor"] == f"Vertex{line_vertex}"
-                assert first_frame["native_reference"]["subelements"] == [
+                component_native_names = {
+                    item["name"]: item["assembly_data"]["native_name"]
+                    for item in outputs
+                    if item["type"] == "component_link"
+                }
+                assert [
+                    item["native_reference"]["component"]
+                    for item in joint_data["connectors"]
+                ] == [
+                    component_native_names["Moving"],
+                    component_native_names["Base"],
+                ]
+                second_frame = joint_data["connectors"][1]
+                assert second_frame["anchor"] == f"Vertex{line_vertex}"
+                assert second_frame["native_reference"]["subelements"] == [
                     f"Edge{line_edge}",
                     f"Vertex{line_vertex}",
                 ]
@@ -1060,6 +1074,89 @@ def _exercise_semantic_connectors(root: Path, pack) -> dict:
             "rejected_transient_selections": ["origin", "Face1"],
             "retained_interface": retained_interface,
             "retained_frame_interface": connector["semantic_selection"],
+        }
+    finally:
+        App.closeDocument(document.Name)
+
+
+def _exercise_transient_geometry_connectors(root: Path, pack) -> dict:
+    """Resolve copy-ready queries without persisting transient FaceN names."""
+
+    import FreeCAD as App
+    import Part
+
+    reference_root = root / "transient-geometry-connector-references"
+    reference_root.mkdir()
+    shape = Part.makeCylinder(10.0, 20.0)
+    entries = []
+    for name in ("LegacyBase", "LegacyRotor"):
+        path = reference_root / f"{name}.brep"
+        shape.exportBrep(str(path))
+        entries.append(
+            {
+                "document_uid": "transient-geometry-connectors",
+                "object_name": name,
+                "label": name,
+                "type_id": "Part::Feature",
+                "shape_type": str(shape.ShapeType),
+                "brep_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "artifact_path": path.name,
+                "facts": part_shape_facts(shape, max_subelements=32),
+                "source_kind": "vibescript_partdesign",
+                "transient_topology": True,
+                "requires_semantic_interfaces": False,
+                "published_interfaces": {},
+            }
+        )
+    configure_assembly_references(reference_root, entries)
+    api = create_domain_api(pack.domain, pack.api_exports, pack.output_types)
+    source = lambda name: {
+        "document_uid": "transient-geometry-connectors",
+        "object_name": name,
+    }
+    base = api.component(source("LegacyBase"), grounded=True)
+    rotor = api.component(source("LegacyRotor"))
+    selection = {
+        "type": "query",
+        "element_type": "face",
+        "expected_count": 1,
+        "geometry_type": "Cylinder",
+        "radius": 10.0,
+        "radius_tolerance": 1.0e-6,
+        "near_point": [0.0, 0.0, 10.0],
+        "max_distance": 1.0e-6,
+    }
+    hinge = api.joint(
+        "revolute",
+        api.connector(base, selection),
+        api.connector(rotor, selection),
+    )
+    model = api.assembly([base, rotor], [hinge])
+    diagnostics = api.solve(model)
+    result = {
+        "Model": model,
+        "Base": base,
+        "Rotor": rotor,
+        "Hinge": hinge,
+        "Diagnostics": diagnostics,
+    }
+    outputs = [_worker_output(name, value) for name, value in result.items()]
+    document = App.newDocument("AssemblyTransientGeometryConnector")
+    try:
+        validation = validate_and_solve_assembly(document, result, outputs)
+        assert validation["solver_code"] == 0, validation
+        joint = next(item for item in outputs if item["name"] == "Hinge")
+        connectors = joint["assembly_data"]["connectors"]
+        assert [item["element"] for item in connectors] == ["Face1", "Face1"]
+        semantic_selections = [item["semantic_selection"] for item in connectors]
+        retained_selection = {**selection, "near_point": (0.0, 0.0, 10.0)}
+        assert semantic_selections == [
+            {"type": "geometry_query", "query": retained_selection},
+            {"type": "geometry_query", "query": retained_selection},
+        ], semantic_selections
+        return {
+            "selection": selection,
+            "resolved_elements": [item["element"] for item in connectors],
         }
     finally:
         App.closeDocument(document.Name)
@@ -4903,6 +5000,10 @@ def main() -> int:
         joint_codes = _exercise_native_joint_matrix(root, pack)
         coupled_joint_codes = _exercise_coupled_joint_dependencies(root, pack)
         semantic_connectors = _exercise_semantic_connectors(root, pack)
+        transient_geometry_connectors = _exercise_transient_geometry_connectors(
+            root,
+            pack,
+        )
         simulation = _exercise_simulation_lifecycle(root, pack)
         exploded_view = _exercise_exploded_view_lifecycle(root, pack)
         flexible_subassembly = _exercise_flexible_subassembly_lifecycle(root, pack)
@@ -4933,6 +5034,7 @@ def main() -> int:
                 "joint_solver_codes": joint_codes,
                 "coupled_joint_solver_codes": coupled_joint_codes,
                 "semantic_connectors": semantic_connectors,
+                "transient_geometry_connectors": transient_geometry_connectors,
                 "simulation": simulation,
                 "exploded_view": exploded_view,
                 "flexible_subassembly": flexible_subassembly,

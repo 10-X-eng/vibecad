@@ -33,10 +33,14 @@ set(VibeCAD_Scripts
     VibeCADPlacementInspection.py
     VibeCADGui.py
     VibeCADLegacyArchitecture.py
+    VibeCADLiveAcceptanceOracle.py
     VibeCADIntentMemory.py
     VibeCADIntentMemoryCompiler.py
     VibeCADMechanismEngine.py
     VibeCADMechanismGeometry.py
+    VibeCADGeometrySelector.py
+    VibeCADAssemblyConnectorDiscovery.py
+    VibeCADAssemblyGraphProgram.py
     VibeCADMCP.py
     VibeCADMCPStdio.py
     VibeCADMCPToolNames.py
@@ -208,6 +212,9 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyBallJoint.py
     VibeCADNativeAssemblyBeltJoint.py
     VibeCADNativeAssemblyBom.py
+    VibeCADNativeAssemblyBomBindings.py
+    VibeCADNativeAssemblyBomRuntime.py
+    VibeCADNativeAssemblyBomSchema.py
     VibeCADNativeAssemblyBomState.py
     VibeCADNativeAssemblyComponents.py
     VibeCADNativeAssemblyComponentJoints.py
@@ -239,6 +246,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyJointBindings.py
     VibeCADNativeAssemblyJointConnectors.py
     VibeCADNativeAssemblyJointGraph.py
+    VibeCADNativeAssemblyJointIntent.py
     VibeCADNativeAssemblyJointRuntime.py
     VibeCADNativeAssemblyJointSchema.py
     VibeCADNativeAssemblyMalformedDiagnosis.py
@@ -264,9 +272,11 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblySolveState.py
     VibeCADNativeAssemblySliderJoint.py
     VibeCADNativeAssemblySnapshot.py
+    VibeCADNativeAssemblyProviderState.py
     VibeCADNativeAssemblyState.py
     VibeCADNativeAssemblyStructure.py
     VibeCADNativeAssemblyStructureBindings.py
+    VibeCADNativeAssemblyStructureIntent.py
     VibeCADNativeAssemblyStructureRuntime.py
     VibeCADNativeAssemblyStructureSchema.py
     VibeCADNativeAssemblyView.py
@@ -791,6 +801,7 @@ set(VibeCAD_Scripts
     VibeCADNativeRobotExportBindings.py
     VibeCADNativeRobotExportRuntime.py
     VibeCADNativeRobotExportSchema.py
+    VibeCADNativeRobotIntent.py
     VibeCADNativeRobotMotion.py
     VibeCADNativeRobotMotionBindings.py
     VibeCADNativeRobotMotionRuntime.py
@@ -1396,7 +1407,9 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_agent_control_grok_bot.py
         vibecad_tests/test_reference_image_downscale.py
         vibecad_tests/test_ollama_inspect.py
+        vibecad_tests/test_live_acceptance_oracle.py
         vibecad_tests/test_native_robot_setup.py
+        vibecad_tests/test_native_robot_intent.py
         vibecad_tests/test_native_robot_motion.py
         vibecad_tests/test_native_robot_export.py
         vibecad_tests/test_native_robot_trajectory.py
