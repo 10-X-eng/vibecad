@@ -81,6 +81,7 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
         "fit_all",
         "isometric",
         "set_grid",
+        "set_section_view",
         "set_object_visibility",
         "capture_all",
         "capture_selection",
@@ -88,8 +89,8 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
         "capture_active_sketch",
     ]
     assert [
-        variant.transaction_behavior for variant in definitions[1].variants[:3]
-    ] == ["presentation", "presentation", "presentation"]
+        variant.transaction_behavior for variant in definitions[1].variants[:4]
+    ] == ["presentation", "presentation", "presentation", "presentation"]
     assert [variant.operation for variant in definitions[2].variants] == [
         "distance",
         "angle",

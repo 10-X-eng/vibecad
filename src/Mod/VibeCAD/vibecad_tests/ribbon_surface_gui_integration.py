@@ -243,6 +243,7 @@ def _assert_surface(main_window, controller, expected_surface_id):
         "Std_ViewFitAll",
         "Std_ViewIsometric",
         "VibeCAD_ToggleGrid",
+        "VibeCAD_SectionView",
     } <= set(command_ids)
     return surface
 
@@ -727,6 +728,7 @@ def _run() -> None:
             "Std_ViewFitAll",
             "Std_ViewIsometric",
             "VibeCAD_ToggleGrid",
+            "VibeCAD_SectionView",
         }
         edit_provider = _production_provider_surface(edit, registry)
         counts[edit.surface_id] = len(edit.command_ids)

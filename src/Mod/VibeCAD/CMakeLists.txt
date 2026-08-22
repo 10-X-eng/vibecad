@@ -25,6 +25,7 @@ set(VibeCAD_Scripts
     VibeCADFastenerAttachment.py
     VibeCADFastenerAssembly.py
     VibeCADGrid.py
+    VibeCADSectionView.py
     VibeCADGrokAuth.py
     VibeCADGeometry.py
     VibeCADGeometryFallback.py
@@ -1164,6 +1165,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/authoring_mode_persistence_gui_integration.py
         vibecad_tests/assembly_simulation_playback_gui_integration.py
         vibecad_tests/grid_gui_integration.py
+        vibecad_tests/section_view_gui_integration.py
         vibecad_tests/link_override_visibility_gui_integration.py
         vibecad_tests/mcp_gui_integration.py
     vibecad_tests/native_background_gui_integration.py

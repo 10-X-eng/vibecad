@@ -178,7 +178,7 @@ _COMPOSED_GROUP_COMMANDS = {
 _MODEL_GROUP_COMMANDS = (
     (
         "VIEW",
-        ("Std_ViewFitAll", "Std_ViewIsometric", "VibeCAD_ToggleGrid"),
+        ("Std_ViewFitAll", "Std_ViewIsometric", "VibeCAD_ToggleGrid", "VibeCAD_SectionView"),
     ),
     (
         "STRUCTURE",

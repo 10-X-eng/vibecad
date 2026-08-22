@@ -41,6 +41,7 @@ from VibeCADNativeView import (
     set_object_visibility,
     set_grid_visible,
     set_isometric,
+    set_section_view_visible,
 )
 
 
@@ -150,6 +151,7 @@ class NativeCommonRuntime:
                 "fit_all": frozenset(),
                 "isometric": frozenset(),
                 "set_grid": frozenset({"visible"}),
+                "set_section_view": frozenset({"visible"}),
                 "set_object_visibility": frozenset({"targets", "visible"}),
                 "capture_all": frozenset(),
                 "capture_selection": frozenset(),
@@ -164,6 +166,8 @@ class NativeCommonRuntime:
             return set_isometric(self._document)
         if operation == "set_grid":
             return set_grid_visible(self._document, values["visible"])
+        if operation == "set_section_view":
+            return set_section_view_visible(self._document, values["visible"])
         if operation == "set_object_visibility":
             targets = tuple(
                 self._object(value) for value in list(values["targets"])
