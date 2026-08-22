@@ -13,7 +13,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -49,6 +51,13 @@ def inbox_dir() -> Path:
     return path
 
 
+def new_session_inbox() -> Path:
+    """Create an inbox owned by one catalog window and one import."""
+    path = inbox_dir() / uuid.uuid4().hex
+    path.mkdir(parents=True, exist_ok=False)
+    return path
+
+
 def downloads_dir() -> Path:
     return Path.home() / "Downloads"
 
@@ -66,6 +75,17 @@ def webview2_profile_root() -> Path:
 
 def webview2_helper_path() -> Path:
     return Path(__file__).resolve().parent / "McMasterCatalogWebView2.exe"
+
+
+def linux_helper_path() -> Path:
+    return Path(__file__).resolve().parent / "McMasterCatalogWebKit.py"
+
+
+def linux_helper_python() -> str:
+    for candidate in (Path("/usr/bin/python3"), Path("/bin/python3")):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return ""
 
 
 def helper_app_path() -> Path:
@@ -469,7 +489,7 @@ def _promote_to_component(doc, created: list, part_number: str, source_path: Pat
     placeholder = _add_named_object(
         doc,
         "PartDesign::Body",
-        f"{label} Body",
+        "McMaster Import Body",
         "Body",
     )
     _classify_structure(doc, placeholder)
@@ -770,8 +790,19 @@ def open_position_dialog(object_names: list[str]) -> None:
     QtCore.QTimer.singleShot(500, _launch)
 
 
-def import_cad(path: Path, part_number: str) -> list[str]:
-    doc = App.ActiveDocument
+def import_cad(
+    path: Path,
+    part_number: str,
+    document_name: str = "",
+) -> list[str]:
+    doc = None
+    if document_name:
+        try:
+            doc = App.getDocument(document_name)
+        except Exception:
+            doc = None
+    if doc is None:
+        doc = App.ActiveDocument
     if doc is None:
         doc = App.newDocument("McMaster")
     before = set(doc.Objects)
@@ -871,6 +902,92 @@ def _looks_like_mcmaster_download(path: Path) -> bool:
     return bool(part_number_from_filename(path.name)) or path.parent == inbox_dir()
 
 
+class CatalogDownloadSession:
+    """Files and lifetime belonging to one catalog launch."""
+
+    def __init__(
+        self,
+        session_inbox: Path,
+        external_downloads: Path,
+        document_name: str = "",
+        lifetime_seconds: float = 20 * 60,
+    ) -> None:
+        self.inbox = Path(session_inbox)
+        self.downloads = Path(external_downloads)
+        self.document_name = str(document_name or "")
+        self.mode = ""
+        self.active = True
+        self.started = time.time()
+        self.expires = self.started + lifetime_seconds
+        self._seen: set[str] = set()
+        self._pending: dict[str, str] = {}
+        for folder in (self.inbox, self.downloads):
+            if not folder.is_dir():
+                continue
+            for path in folder.iterdir():
+                if _is_cad_file(path):
+                    self._seen.add(self._key(path))
+
+    @staticmethod
+    def _key(path: Path) -> str:
+        try:
+            stat = path.stat()
+        except OSError:
+            return str(path)
+        return f"{path.resolve()}::{stat.st_mtime_ns}::{stat.st_size}"
+
+    def set_mode(self, mode: str) -> None:
+        if mode not in {"embedded", "external"}:
+            self.stop()
+            return
+        self.mode = mode
+
+    def stop(self) -> None:
+        self.active = False
+        self._pending.clear()
+
+    def ready_paths(self) -> list[Path]:
+        if not self.active or not self.mode:
+            return []
+        if self.mode == "external" and time.time() >= self.expires:
+            self.stop()
+            return []
+        folder = self.inbox if self.mode == "embedded" else self.downloads
+        if not folder.is_dir():
+            return []
+        ready = []
+        for path in sorted(folder.iterdir(), key=lambda item: item.name.lower()):
+            if not _is_cad_file(path):
+                continue
+            if self.mode == "external" and not _looks_like_mcmaster_download(path):
+                continue
+            key = self._key(path)
+            if key in self._seen:
+                continue
+            try:
+                if path.stat().st_mtime < self.started - 1:
+                    self._seen.add(key)
+                    continue
+            except OSError:
+                continue
+            identity = str(path.resolve())
+            if self._pending.get(identity) != key:
+                self._pending[identity] = key
+                continue
+            self._pending.pop(identity, None)
+            self._seen.add(key)
+            ready.append(path)
+        return ready
+
+
+def catalog_paths_to_import(paths: list[Path], mode: str) -> list[Path]:
+    """Return files owned by this catalog session in import order."""
+    candidates = list(paths)
+    if mode == "embedded":
+        return candidates
+    return candidates[:1]
+
+
 def catalog_helper_running() -> bool:
     try:
         result = subprocess.run(
@@ -936,27 +1053,24 @@ def open_external_catalog() -> bool:
         return False
 
 
-def show_webview2_catalog_window() -> bool:
+def show_webview2_catalog_window(out_dir: Path | None = None) -> bool:
     """Launch the Windows catalog helper backed by Edge WebView2."""
     if os.name != "nt":
         return False
     helper = webview2_helper_path()
     if not helper.is_file():
         return False
+    destination = Path(out_dir) if out_dir is not None else inbox_dir()
     try:
         import FreeCADGui as Gui
 
         process = subprocess.Popen(
             [
                 str(helper),
-                "--inbox",
-                str(inbox_dir()),
-                "--profile",
-                str(webview2_profile_root()),
-                "--url",
-                CATALOG_URL,
-                "--parent-pid",
-                str(os.getpid()),
+                f"--inbox={destination}",
+                f"--profile={webview2_profile_root()}",
+                f"--url={CATALOG_URL}",
+                f"--parent-pid={os.getpid()}",
             ],
             cwd=str(helper.parent),
             close_fds=True,
@@ -974,6 +1088,60 @@ def show_webview2_catalog_window() -> bool:
         return False
 
 
+def show_linux_catalog_window(out_dir: Path | None = None) -> bool:
+    """Launch the Linux catalog helper backed by the platform WebKit."""
+    if not sys.platform.startswith("linux"):
+        return False
+    helper = linux_helper_path()
+    interpreter = linux_helper_python()
+    if not helper.is_file() or not interpreter:
+        return False
+    destination = Path(out_dir) if out_dir is not None else inbox_dir()
+    environment = os.environ.copy()
+    for name in ("PYTHONHOME", "PYTHONPATH", "LD_LIBRARY_PATH"):
+        environment.pop(name, None)
+    try:
+        import FreeCADGui as Gui
+
+        smoke = subprocess.run(
+            [interpreter, str(helper), "--smoke-test"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            env=environment,
+        )
+        if smoke.returncode != 0:
+            detail = (smoke.stderr or smoke.stdout or "unavailable").strip()
+            App.Console.PrintWarning(
+                f"McMaster-Carr: Linux embedded browser unavailable ({detail})\n"
+            )
+            return False
+        process = subprocess.Popen(
+            [
+                interpreter,
+                str(helper),
+                f"--inbox={destination}",
+                f"--profile={webview2_profile_root()}",
+                f"--url={CATALOG_URL}",
+                f"--parent-pid={os.getpid()}",
+            ],
+            cwd=str(helper.parent),
+            close_fds=True,
+            env=environment,
+        )
+        Gui.McMasterCatalogProcess = process
+        App.Console.PrintMessage(
+            "McMaster catalog opened with the Linux WebKit helper\n"
+        )
+        return True
+    except (OSError, subprocess.SubprocessError) as exc:
+        App.Console.PrintWarning(
+            f"McMaster-Carr: Linux catalog helper could not start ({exc})\n"
+        )
+        return False
+
+
 def attach_webkit(widget, out_dir: Path) -> bool:
     lib = _webkit_dylib()
     if lib is None:
@@ -987,7 +1155,7 @@ def attach_webkit(widget, out_dir: Path) -> bool:
     return lib.McMasterWebKit_Attach(handle, str(out_dir).encode("utf-8")) == 0
 
 
-def show_catalog_window() -> bool:
+def show_catalog_window(out_dir: Path | None = None) -> bool:
     """Fusion-style catalog: a tool window owned by VibeCAD (works in fullscreen)."""
     from PySide import QtCore, QtWidgets
     import FreeCADGui as Gui
@@ -1008,6 +1176,8 @@ def show_catalog_window() -> bool:
         | QtCore.Qt.WindowCloseButtonHint
         | QtCore.Qt.WindowMinMaxButtonsHint
     )
+
+    destination = Path(out_dir) if out_dir is not None else inbox_dir()
 
     class CatalogPanel(QtWidgets.QDialog):
         def __init__(self, parent=None):
@@ -1043,7 +1213,7 @@ def show_catalog_window() -> bool:
             if self.host.width() < 64 or self.host.height() < 64:
                 QtCore.QTimer.singleShot(120, self._attach)
                 return
-            if attach_webkit(self.host, inbox_dir()):
+            if attach_webkit(self.host, destination):
                 self._attached = True
                 self.status.setText("Connecting to McMaster-Carr…")
                 self._status_timer.start()
@@ -1079,10 +1249,11 @@ def show_catalog_window() -> bool:
     return True
 
 
-def open_catalog() -> str:
+def open_catalog(out_dir: Path | None = None) -> str:
     """Open the best available catalog backend and return its mode."""
+    destination = Path(out_dir) if out_dir is not None else inbox_dir()
     try:
-        if show_webview2_catalog_window():
+        if show_webview2_catalog_window(destination):
             return "embedded"
     except Exception as exc:
         try:
@@ -1093,7 +1264,18 @@ def open_catalog() -> str:
         except Exception:
             pass
     try:
-        if _webkit_dylib() is not None and show_catalog_window():
+        if show_linux_catalog_window(destination):
+            return "embedded"
+    except Exception as exc:
+        try:
+            App.Console.PrintWarning(
+                f"McMaster-Carr: Linux browser unavailable ({exc}); "
+                "trying another browser\n"
+            )
+        except Exception:
+            pass
+    try:
+        if _webkit_dylib() is not None and show_catalog_window(destination):
             return "embedded"
     except Exception as exc:
         try:
@@ -1108,61 +1290,137 @@ def open_catalog() -> str:
     return ""
 
 
-def _ensure_import_watcher() -> None:
+def _cleanup_session_inbox(path: Path) -> None:
+    try:
+        resolved = path.resolve()
+        root = inbox_dir().resolve()
+        if resolved.parent == root and resolved.is_dir():
+            shutil.rmtree(resolved)
+    except OSError:
+        pass
+
+
+def _stop_catalog_process() -> None:
+    try:
+        import FreeCADGui as Gui
+    except Exception:
+        return
+    process = getattr(Gui, "McMasterCatalogProcess", None)
+    if process is None:
+        return
+    try:
+        if process.poll() is None:
+            process.terminate()
+    except Exception:
+        pass
+    Gui.McMasterCatalogProcess = None
+
+
+def _catalog_backend_running() -> bool:
+    try:
+        import FreeCADGui as Gui
+    except Exception:
+        return False
+    process = getattr(Gui, "McMasterCatalogProcess", None)
+    if process is not None:
+        try:
+            if process.poll() is None:
+                return True
+        except Exception:
+            pass
+        Gui.McMasterCatalogProcess = None
+    panel = getattr(Gui, "McMasterCatalogPanel", None)
+    if panel is None:
+        return False
+    try:
+        return bool(panel.isVisible())
+    except Exception:
+        return True
+
+
+def _ensure_import_watcher(session_inbox: Path | None = None):
     from PySide import QtCore
     import FreeCADGui as Gui
 
     existing = getattr(Gui, "McMasterImportWatcher", None)
     if existing is not None:
-        return
+        try:
+            old_inbox = existing.session.inbox
+            existing.stop()
+            QtCore.QTimer.singleShot(
+                1000,
+                lambda path=old_inbox: _cleanup_session_inbox(path),
+            )
+        except Exception:
+            pass
+
+    destination = Path(session_inbox) if session_inbox is not None else new_session_inbox()
+    document_name = str(getattr(App.ActiveDocument, "Name", "") or "")
 
     class Watcher(QtCore.QObject):
         def __init__(self, parent=None):
             super().__init__(parent)
-            self._seen: set[str] = set()
-            self._started = time.time()
-            for folder in (inbox_dir(), downloads_dir()):
-                if not folder.is_dir():
-                    continue
-                for path in folder.iterdir():
-                    if _is_cad_file(path):
-                        self._seen.add(self._key(path))
+            self.session = CatalogDownloadSession(
+                destination,
+                downloads_dir(),
+                document_name=document_name,
+            )
             self._timer = QtCore.QTimer(self)
             self._timer.setInterval(800)
             self._timer.timeout.connect(self._poll)
+            self._closed_polls = 0
+            self._imported_names = []
             self._timer.start()
 
-        def _key(self, path: Path) -> str:
-            try:
-                st = path.stat()
-            except OSError:
-                return str(path)
-            return f"{path.resolve()}::{st.st_mtime_ns}::{st.st_size}"
+        def set_mode(self, mode: str) -> None:
+            self.session.set_mode(mode)
+
+        def stop(self) -> None:
+            self.session.stop()
+            self._timer.stop()
+            if getattr(Gui, "McMasterImportWatcher", None) is self:
+                Gui.McMasterImportWatcher = None
 
         def _poll(self) -> None:
-            for folder in (inbox_dir(), downloads_dir()):
-                if not folder.is_dir():
-                    continue
-                for path in folder.iterdir():
-                    key = self._key(path)
-                    if key in self._seen:
-                        continue
-                    if not _looks_like_mcmaster_download(path):
-                        continue
-                    try:
-                        if path.stat().st_mtime < self._started - 1:
-                            self._seen.add(key)
-                            continue
-                    except OSError:
-                        continue
-                    self._seen.add(key)
-                    self._import_path(path)
+            paths = self.session.ready_paths()
+            if not self.session.active:
+                self._finish()
+                return
+            if len(paths) > 1 and self.session.mode == "external":
+                from PySide import QtWidgets
+
+                selected, _filter = QtWidgets.QFileDialog.getOpenFileName(
+                    Gui.getMainWindow(),
+                    "Choose the McMaster CAD download",
+                    str(downloads_dir()),
+                    "CAD (*.step *.stp *.iges *.igs *.sat *.sldprt *.zip)",
+                )
+                if not selected:
+                    return
+                paths = [Path(selected)]
+            for path in catalog_paths_to_import(paths, self.session.mode):
+                self._import_path(path)
+            if paths and self.session.mode == "external":
+                self._finish()
+                return
+            if self.session.mode != "embedded":
+                return
+            if _catalog_backend_running():
+                self._closed_polls = 0
+                return
+            self._closed_polls += 1
+            if self._closed_polls >= 2:
+                self._finish()
 
         def _import_path(self, path: Path) -> None:
             pn = part_number_from_filename(path.name)
             try:
                 cached = store_in_cache(path, pn)
-                names = import_cad(cached, pn or cached.stem)
+                names = import_cad(
+                    cached,
+                    pn or cached.stem,
+                    document_name=self.session.document_name,
+                )
                 App.Console.PrintMessage(
                     f"McMaster: inserted {pn or cached.stem} as {', '.join(names)}\n"
                 )
@@ -1170,20 +1428,33 @@ def _ensure_import_watcher() -> None:
                     Gui.SendMsgToActiveView("ViewFit")
                 except Exception:
                     pass
-                close_catalog_panel()
-                open_position_dialog(names)
+                self._imported_names.extend(names)
             except Exception as exc:
                 App.Console.PrintError(f"McMaster insert: {exc}\n")
 
+        def _finish(self) -> None:
+            names = list(self._imported_names)
+            self.stop()
+            _stop_catalog_process()
+            close_catalog_panel()
+            _cleanup_session_inbox(self.session.inbox)
+            if names:
+                open_position_dialog(names)
+
     mw = Gui.getMainWindow()
     Gui.McMasterImportWatcher = Watcher(mw)
+    return Gui.McMasterImportWatcher
 
 
 def run() -> None:
     if not App.GuiUp:
         raise RuntimeError("McMaster catalog requires the VibeCAD GUI")
-    _ensure_import_watcher()
-    mode = open_catalog()
+    close_catalog_panel()
+    _stop_catalog_process()
+    destination = new_session_inbox()
+    watcher = _ensure_import_watcher(destination)
+    mode = open_catalog(destination)
+    watcher.set_mode(mode)
     if mode == "embedded":
         App.Console.PrintMessage(
             "McMaster-Carr catalog overlay opened. "
@@ -1197,6 +1468,8 @@ def run() -> None:
             "Import if you save it somewhere else.\n"
         )
         return
+    watcher.stop()
+    _cleanup_session_inbox(destination)
     App.Console.PrintError("McMaster-Carr: could not open https://www.mcmaster.com/\n")
 
 
