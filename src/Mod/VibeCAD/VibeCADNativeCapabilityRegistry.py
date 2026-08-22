@@ -34,6 +34,7 @@ from VibeCADRibbonSurface import RibbonSurface, SURFACE_IDS
 MAX_NATIVE_TOOLS_PER_SURFACE = 28
 MAX_NATIVE_TOOLS_BY_SURFACE = {
     "analyze": 32,
+    "assemble": 38,
     "drawing": 41,
     "model": 32,
     "sketch.edit": 39,
@@ -676,6 +677,7 @@ class NativeCapabilityVariant:
         properties["operation"] = {
             "type": "string",
             "const": self.operation,
+            "description": self.description,
         }
         parameters["properties"] = {"operation": properties.pop("operation"), **properties}
         required = [

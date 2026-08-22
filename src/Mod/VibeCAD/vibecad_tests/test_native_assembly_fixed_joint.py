@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 
 import pytest
 
 import VibeCADNativeAssemblyJointArguments as joint_arguments
+import VibeCADNativeAssemblyJointIntent as joint_intent
 import VibeCADNativeAssemblyMotionJointRuntime as runtime_module
 import VibeCADNativeAssemblyRegularJoint as regular_module
 from VibeCADNativeActionManifest import classify_native_surface
@@ -24,7 +26,12 @@ from VibeCADNativeAssemblyJointConnectors import (
 )
 from VibeCADNativeAssemblyJointGraph import NativeAssemblyJointGraphError
 from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
-from VibeCADNativeAssemblyJointSchema import assembly_joint_capability_definition
+from VibeCADNativeAssemblyJointSchema import (
+    assembly_coupling_capability_definition,
+    assembly_joint_capability_definition,
+    assembly_relation_capability_definition,
+)
+from VibeCADNativeCapabilityRegistry import provider_visible_native_schema
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeDocumentStateStore
@@ -76,42 +83,122 @@ def _connector_mapping(name: str, path: str) -> dict[str, object]:
     }
 
 
+def test_joint_intent_resolves_a_published_interface_endpoint(monkeypatch) -> None:
+    placement = SimpleNamespace(
+        Base=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        Rotation=SimpleNamespace(
+            Axis=SimpleNamespace(x=0.0, y=0.0, z=1.0),
+            Angle=0.0,
+        ),
+    )
+    component = SimpleNamespace(Name="Carrier", Placement=placement)
+    monkeypatch.setattr(joint_intent, "resolve_object", lambda _doc, _ref: component)
+    monkeypatch.setattr(
+        joint_intent.reference_contracts,
+        "resolve_component_interface",
+        lambda _source, name: {
+            "interface_name": name,
+            "selection": {"type": "query"},
+            "subelements": ["Face21"],
+            "geometry": [{"geometry_type": "cylinder"}],
+            "connector_frame": None,
+        },
+    )
+
+    result = joint_intent._connector(
+        object(),
+        "document-uid",
+        {"component": "Carrier", "interface": "Planet1Axis"},
+        "first",
+    )
+
+    assert result["component"] == {"object_name": "Carrier"}
+    assert result["element_path"] == "Face21"
+    assert result["anchor_path"] == "Face21"
+    assert result["offset"] == _placement_mapping()
+
+
 def test_fixed_joint_schema_and_action_mapping_are_exact_and_bounded() -> None:
     definition = assembly_joint_capability_definition()
-    variant = next(
-        item for item in definition.variants if item.operation == "create_fixed"
+    variant = definition.variants[0]
+    published = provider_visible_native_schema(
+        definition.provider_schema(("create",))
     )
-    schema = definition.provider_schema(("create_fixed",))["parameters"]["oneOf"][0]
+    schema = published["parameters"]["oneOf"][0]
 
     assert definition.name == ASSEMBLY_JOINT_CAPABILITY_NAME
-    assert variant.action_ids == frozenset({"Assembly_CreateJointFixed"})
+    assert definition.preserve_operation_branches is False
+    assert variant.operation == "create"
+    assert variant.action_ids == frozenset(
+        {
+            "Assembly_CreateJointFixed",
+            "Assembly_CreateJointRevolute",
+            "Assembly_CreateJointCylindrical",
+            "Assembly_CreateJointSlider",
+            "Assembly_CreateJointBall",
+        }
+    )
     assert variant.surface_ids == frozenset({"assemble"})
     assert set(schema["required"]) == {
-        "operation",
-        "assembly",
+        "joint_type",
+        "first",
+        "second",
+    }
+    assert set(schema["properties"]) == {
+        "joint_type",
         "first",
         "second",
         "label",
         "reverse",
-        "expected_component_count",
-        "expected_grounded_count",
-        "expected_joint_count",
-        "expected_solve_on_creation",
+        "limits",
     }
-    assert schema["properties"]["expected_joint_count"]["maximum"] == 256
-    assert schema["properties"]["first"]["additionalProperties"] is False
-    assert schema["properties"]["first"]["properties"]["element_path"][
-        "maxLength"
-    ] == 512
+    assert schema["properties"]["joint_type"]["enum"] == [
+        "fixed",
+        "revolute",
+        "cylindrical",
+        "slider",
+        "ball",
+    ]
+    assert "operation" not in schema["properties"]
+    assert "angle_degrees" not in schema["properties"]
+    assert "distance_mm" not in schema["properties"]
+    assert "first_revolute_joint" not in schema["properties"]
+    assert "components" not in schema["properties"]
+    endpoint = schema["properties"]["first"]
+    assert endpoint["type"] == "object"
+    assert endpoint["required"] == ["component", "connector_type", "connector"]
+    assert "oneOf" not in endpoint
+    assert "anchor" not in endpoint["properties"]
+    assert set(endpoint["properties"]) == {
+        "component",
+        "connector_type",
+        "connector",
+        "offset",
+    }
+    assert endpoint["properties"]["connector_type"]["enum"] == [
+        "element",
+        "interface",
+    ]
+    element_pattern = endpoint["properties"]["connector"]["pattern"]
+    assert re.fullmatch(element_pattern, "Origin")
+    assert re.fullmatch(element_pattern, "origin")
+    assert re.fullmatch(element_pattern, "Planet1Axis")
+    assert "Face|Edge|Vertex" in endpoint["properties"]["connector"]["pattern"]
     assert schema["additionalProperties"] is False
 
     plan = classify_native_surface(_fixed_surface())[0]
     assert plan.capability_family == ASSEMBLY_JOINT_CAPABILITY_NAME
-    assert plan.operation_variant == "create_fixed"
+    assert plan.operation_variant == "create"
     assert plan.transaction_behavior == "document"
     registry = build_native_capability_registry()
     assert registry.definition(ASSEMBLY_JOINT_CAPABILITY_NAME) is not None
     assert registry.implementation(ASSEMBLY_JOINT_CAPABILITY_NAME) is not None
+    assert assembly_relation_capability_definition().name == "assembly.relation"
+    assert assembly_coupling_capability_definition().name == "assembly.coupling"
+    assert registry.definition("assembly.relation") is not None
+    assert registry.definition("assembly.coupling") is not None
+    assert registry.implementation("assembly.relation") is not None
+    assert registry.implementation("assembly.coupling") is not None
 
 
 @pytest.mark.parametrize(
@@ -200,8 +287,7 @@ def test_fixed_runtime_routes_complete_exact_spec_before_transaction(
         return {"routed": True}
 
     monkeypatch.setattr(runtime_module, "run_immediate_mutation", run_immediate)
-    arguments = {
-        "operation": "create_fixed",
+    expanded = {
         "assembly": {"object_name": "Assembly"},
         "first": _connector_mapping("ComponentA", "Face6"),
         "second": _connector_mapping("ComponentB", "Body.Pad.Face1"),
@@ -212,6 +298,34 @@ def test_fixed_runtime_routes_complete_exact_spec_before_transaction(
         "expected_joint_count": 0,
         "expected_solve_on_creation": True,
     }
+    monkeypatch.setattr(
+        "VibeCADNativeAssemblyJointRuntime.expand_joint_intent",
+        lambda target_document, document_uid, operation, values: (
+            captured.update(
+                intent_document=target_document,
+                intent_document_uid=document_uid,
+                intent_operation=operation,
+                intent_values=values,
+            )
+            or expanded
+        ),
+    )
+    arguments = {
+        "operation": "create",
+        "joint_type": "fixed",
+        "first": {
+            "component": "ComponentA",
+            "connector_type": "element",
+            "connector": "Face6",
+        },
+        "second": {
+            "component": "ComponentB",
+            "connector_type": "element",
+            "connector": "Body.Pad.Face1",
+        },
+        "label": "Base Fixed Joint",
+        "reverse": True,
+    }
 
     result = runtime.mutate_joint(
         arguments,
@@ -219,6 +333,15 @@ def test_fixed_runtime_routes_complete_exact_spec_before_transaction(
     )
 
     assert result == {"routed": True}
+    assert captured["intent_document"] is document
+    assert captured["intent_document_uid"] == document.Uid
+    assert captured["intent_operation"] == "create_fixed"
+    assert captured["intent_values"] == {
+        "first": {"component": "ComponentA", "element": "Face6"},
+        "second": {"component": "ComponentB", "element": "Body.Pad.Face1"},
+        "label": "Base Fixed Joint",
+        "reverse": True,
+    }
     spec = captured["spec"]
     assert isinstance(spec, FixedJointSpec)
     assert spec.assembly_ref.object_name == "Assembly"
@@ -338,3 +461,45 @@ def test_fixed_preflight_normalizes_joint_graph_failure(monkeypatch) -> None:
             active_reader=lambda _document: assembly,
             preference_reader=lambda: True,
         )
+
+
+def test_regular_joint_postcondition_reports_suppression_exactly(monkeypatch) -> None:
+    spec = SimpleNamespace(joint_type="Revolute", label="Planet Joint")
+    joint = SimpleNamespace(
+        JointType="Revolute",
+        Label="Planet Joint",
+        Suppressed=True,
+        VibeCADTimelineRole="operation",
+    )
+    monkeypatch.setattr(regular_module, "timeline_active", lambda _joint: True)
+
+    with pytest.raises(
+        regular_module.NativeAssemblyRegularJointError,
+        match="suppressed during the native solve",
+    ):
+        regular_module._verify_joint_identity(
+            spec,
+            joint,
+            expected_label="Planet Joint",
+            proxy_checker=lambda _joint: True,
+            view_checker=lambda _joint: True,
+        )
+
+
+def test_regular_joint_accepts_the_label_assigned_by_freecad(monkeypatch) -> None:
+    spec = SimpleNamespace(joint_type="Revolute", label="Revolute Joint")
+    joint = SimpleNamespace(
+        JointType="Revolute",
+        Label="Revolute Joint001",
+        Suppressed=False,
+        VibeCADTimelineRole="operation",
+    )
+    monkeypatch.setattr(regular_module, "timeline_active", lambda _joint: True)
+
+    regular_module._verify_joint_identity(
+        spec,
+        joint,
+        expected_label="Revolute Joint001",
+        proxy_checker=lambda _joint: True,
+        view_checker=lambda _joint: True,
+    )

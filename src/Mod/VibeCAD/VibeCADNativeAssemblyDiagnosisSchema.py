@@ -1,9 +1,13 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Bounded provider contract for exact Assembly solver-diagnosis reads."""
+"""Provider contract for Assembly joint diagnosis."""
 
 from __future__ import annotations
 
+from VibeCADNativeAssemblyComponentJoints import (
+    DEFAULT_COMPONENT_JOINT_PAGE,
+    MAX_COMPONENT_JOINT_PAGE,
+)
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityDefinition,
     NativeCapabilityRegistry,
@@ -11,171 +15,114 @@ from VibeCADNativeCapabilityRegistry import (
 )
 
 
+_OBJECT_NAME = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 128,
+    "pattern": r"^[A-Za-z_][A-Za-z0-9_]*$",
+}
 _OBJECT_REF = {
     "type": "object",
-    "properties": {
-        "object_name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-        }
-    },
+    "properties": {"object_name": _OBJECT_NAME},
     "required": ["object_name"],
     "additionalProperties": False,
 }
-_COUNT = {
-    "type": "integer",
-    "minimum": 0,
-    "maximum": 256,
-}
 
 
-def _parameters(category_count_field: str) -> dict:
+def _parameters(*, component: bool = False) -> dict:
     properties = {
-        "assembly": _OBJECT_REF,
-        "expected_diagnosis_state_sha256": {
-            "type": "string",
-            "minLength": 64,
-            "maxLength": 64,
-            "pattern": r"^[0-9a-f]{64}$",
-        },
-        "expected_component_count": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 100_000,
-        },
-        "expected_grounded_count": _COUNT,
-        "expected_joint_count": _COUNT,
-        category_count_field: _COUNT,
-        "offset": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255,
-        },
+        "offset": {"type": "integer", "minimum": 0, "maximum": 255, "default": 0},
         "limit": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 32,
+            "maximum": MAX_COMPONENT_JOINT_PAGE if component else 100,
+            "default": DEFAULT_COMPONENT_JOINT_PAGE if component else 32,
         },
     }
+    required = []
+    if component:
+        properties["component"] = _OBJECT_REF
+        required.append("component")
     return {
         "type": "object",
         "properties": properties,
-        "required": list(properties),
+        "required": required,
         "additionalProperties": False,
     }
 
 
-def _component_joint_parameters() -> dict:
-    properties = {
-        "assembly": _OBJECT_REF,
-        "component": _OBJECT_REF,
-        "expected_joint_graph_state_sha256": {
-            "type": "string",
-            "minLength": 64,
-            "maxLength": 64,
-            "pattern": r"^[0-9a-f]{64}$",
-        },
-        "expected_component_count": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 100_000,
-        },
-        "expected_joint_count": _COUNT,
-        "offset": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255,
-        },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16,
-        },
-    }
-    return {
-        "type": "object",
-        "properties": properties,
-        "required": list(properties),
-        "additionalProperties": False,
-    }
+def _variant(
+    operation: str,
+    description: str,
+    action_id: str,
+    *,
+    component: bool = False,
+    provider_supplemental: bool = False,
+) -> NativeCapabilityVariant:
+    return NativeCapabilityVariant(
+        operation=operation,
+        description=description,
+        action_ids=frozenset({action_id}),
+        surface_ids=frozenset({"assemble"}),
+        exact_target_type=(
+            "HumanActiveAssemblyAndExactComponentJointGraph"
+            if component
+            else "HumanActiveAssemblyAndExactSolverDiagnosis"
+        ),
+        transaction_behavior="none",
+        background_required=False,
+        parameters=_parameters(component=component),
+        provider_supplemental=provider_supplemental,
+    )
 
 
 def assembly_diagnosis_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="assembly.diagnose",
-        description=(
-            "Read exact Assembly solver or component-joint diagnosis without "
-            "changing the human's selection."
-        ),
+        description="Read Assembly joint health.",
         primary_classification="read",
         variants=(
-            NativeCapabilityVariant(
-                operation="select_conflicting_constraints",
-                description=(
-                    "Read one exact bounded page of joints the human conflict "
-                    "selection command identifies."
-                ),
-                action_ids=frozenset({"Assembly_SelectConflictingConstraints"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyAndExactSolverDiagnosis",
-                transaction_behavior="none",
-                background_required=False,
-                parameters=_parameters("expected_conflicting_count"),
+            _variant(
+                "select_conflicting_constraints",
+                "Read joints with unsatisfied constraints.",
+                "Assembly_SelectConflictingConstraints",
             ),
-            NativeCapabilityVariant(
-                operation="select_redundant_constraints",
-                description=(
-                    "Read one exact bounded page of joints the human redundant "
-                    "selection command identifies."
-                ),
-                action_ids=frozenset({"Assembly_SelectRedundantConstraints"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyAndExactSolverDiagnosis",
-                transaction_behavior="none",
-                background_required=False,
-                parameters=_parameters("expected_redundant_count"),
+            _variant(
+                "select_redundant_constraints",
+                "Read fully redundant joints.",
+                "Assembly_SelectRedundantConstraints",
             ),
-            NativeCapabilityVariant(
-                operation="select_partially_redundant_constraints",
-                description=(
-                    "Read one exact bounded page of joints the human partial-"
-                    "redundancy selection command identifies."
-                ),
-                action_ids=frozenset(
-                    {"Assembly_SelectPartiallyRedundantConstraints"}
-                ),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyAndExactSolverDiagnosis",
-                transaction_behavior="none",
-                background_required=False,
-                parameters=_parameters("expected_partially_redundant_count"),
+            _variant(
+                "select_partially_redundant_constraints",
+                "Read partially redundant joints.",
+                "Assembly_SelectPartiallyRedundantConstraints",
             ),
-            NativeCapabilityVariant(
-                operation="select_malformed_constraints",
-                description=(
-                    "Read one exact bounded page of joints the human malformed "
-                    "selection command identifies after a Fixed-bundle drag solve."
-                ),
-                action_ids=frozenset({"Assembly_SelectMalformedConstraints"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyAndExactSolverDiagnosis",
-                transaction_behavior="none",
-                background_required=False,
-                parameters=_parameters("expected_malformed_count"),
+            _variant(
+                "select_malformed_constraints",
+                "Read malformed joints.",
+                "Assembly_SelectMalformedConstraints",
             ),
-            NativeCapabilityVariant(
-                operation="select_joints_of_component",
-                description=(
-                    "Read one exact bounded page of active joints attached to one "
-                    "exact movable Assembly component."
-                ),
-                action_ids=frozenset({"Assembly_SelectJointsOfComponent"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyAndExactComponentJointGraph",
-                transaction_behavior="none",
-                background_required=False,
-                parameters=_component_joint_parameters(),
+            _variant(
+                "read",
+                "Read component, joint, solver, and degree-of-freedom counts.",
+                "Assembly_SelectConflictingConstraints",
+                provider_supplemental=True,
+            ),
+        ),
+    )
+
+
+def assembly_component_joints_capability_definition() -> NativeCapabilityDefinition:
+    return NativeCapabilityDefinition(
+        name="assembly.component_joints",
+        description="Read joints and coupling names for one component.",
+        primary_classification="read",
+        variants=(
+            _variant(
+                "read",
+                "Read joints attached to one component.",
+                "Assembly_SelectJointsOfComponent",
+                component=True,
             ),
         ),
     )
@@ -187,3 +134,4 @@ def register_assembly_diagnosis_capability_definition(
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
     registry.register_definition(assembly_diagnosis_capability_definition())
+    registry.register_definition(assembly_component_joints_capability_definition())

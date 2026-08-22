@@ -24,8 +24,10 @@
 
 
 #include <QAbstractItemModel>
+#include <QApplication>
 #include <QFont>
 #include <QLocale>
+#include <QPalette>
 
 #include <App/Document.h>
 #include <Base/Interpreter.h>
@@ -344,11 +346,7 @@ QVariant SheetModel::data(const QModelIndex& index, int role) const
     if (!prop || dirty) {
         switch (role) {
             case Qt::ForegroundRole: {
-                return QColor(
-                    0,
-                    0,
-                    255.0
-                );  // TODO: Remove this hardcoded color, replace with preference
+                return QApplication::palette().color(QPalette::Link);
             }
             case Qt::TextAlignmentRole: {
                 qtAlignment = Qt::AlignHCenter | Qt::AlignVCenter;

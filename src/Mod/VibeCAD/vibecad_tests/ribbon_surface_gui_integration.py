@@ -380,10 +380,21 @@ def _schema_operations(schema) -> tuple[str, ...]:
     parameters = schema["parameters"]
     branches = parameters.get("oneOf")
     if branches is not None:
-        assert len(branches) == 1
-        operation = branches[0]["properties"]["operation"]
+        operations = []
+        for branch in branches:
+            operation = branch["properties"].get("operation")
+            if operation is None:
+                continue
+            if "const" in operation:
+                operations.append(str(operation["const"]))
+            else:
+                operations.extend(str(value) for value in operation["enum"])
+        assert len(operations) == len(set(operations))
+        return tuple(operations)
     else:
-        operation = parameters["properties"]["operation"]
+        operation = parameters["properties"].get("operation")
+    if operation is None:
+        return ()
     if "const" in operation:
         return (str(operation["const"]),)
     values = tuple(str(value) for value in operation["enum"])
@@ -450,21 +461,37 @@ def _assert_default_provider_contracts(contracts) -> None:
         assert len(values) == 1, (common_name, values)
 
     base_view_operations = {
-        tuple(tools[surface_id]["view.control"]["operations"])
-        for surface_id in surface_ids - {"model"}
+        "fit_all",
+        "isometric",
+        "set_grid",
+        "capture_all",
+        "capture_selection",
+        "capture_objects",
     }
-    assert len(base_view_operations) == 1
-    assert set(tools["model"]["view.control"]["operations"]) == {
-        *next(iter(base_view_operations)),
-        "set_object_visibility",
-    }
+    for surface_id in surface_ids:
+        expected = set(base_view_operations)
+        if surface_id == "model":
+            expected.add("set_object_visibility")
+        if surface_id == "sketch.edit":
+            expected.add("capture_active_sketch")
+        observed = set(tools[surface_id]["view.control"]["operations"])
+        assert observed == expected, (surface_id, observed, expected)
 
+    workspace_surface_ids = {
+        surface_id
+        for surface_id in surface_ids
+        if "workspace.switch" in tools[surface_id]
+    }
+    assert workspace_surface_ids == surface_ids - {"sketch.edit"}, (
+        workspace_surface_ids,
+        surface_ids,
+    )
     workspace_values = {
         (
             _canonical_json_bytes(tools[surface_id]["workspace.switch"]["schema"]),
             tuple(tools[surface_id]["workspace.switch"]["operations"]),
         )
-        for surface_id in surface_ids - {"sketch.edit"}
+        for surface_id in workspace_surface_ids
     }
     assert len(workspace_values) == 1
     assert "workspace.switch" not in tools["sketch.edit"]
@@ -549,7 +576,14 @@ def _run() -> None:
         )
         assert tabs is not None
         assert controller is not None
-        assert tabs.count() == len(_PERMANENT_SURFACES)
+        governed_tab_indexes = [
+            index
+            for index in range(tabs.count())
+            if str(tabs.tabData(index)) in _PERMANENT_SURFACES
+        ]
+        assert {
+            str(tabs.tabData(index)) for index in governed_tab_indexes
+        } == set(_PERMANENT_SURFACES)
 
         counts = {}
         provider_counts = {}
@@ -558,9 +592,8 @@ def _run() -> None:
         unique_commands = set()
         registry = build_native_capability_registry()
         preceding_revision = 0
-        for index in range(tabs.count()):
+        for index in governed_tab_indexes:
             workbench = str(tabs.tabData(index))
-            assert workbench in _PERMANENT_SURFACES
             tabs.setCurrentIndex(index)
             _process_events()
             assert Gui.activeWorkbench().name() == workbench

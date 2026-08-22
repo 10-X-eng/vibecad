@@ -12,6 +12,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
 )
+from VibeCADNativeMeasure import MAX_RADIUS_MEASUREMENTS
 from VibeCADRibbonSurface import SURFACE_IDS
 
 
@@ -123,7 +124,7 @@ def _variant(
 def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     state = NativeCapabilityDefinition(
         name="state.read",
-        description="Read document state.",
+        description="Read current CAD state or the current mouse selection.",
         primary_classification="read",
         variants=(
             _variant(
@@ -228,6 +229,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                 "capture_active_sketch",
                 "Capture a bounded image framed around the active Sketch.",
                 ("VibeCAD_NativeCaptureView",),
+                surface_ids=frozenset({"sketch.edit"}),
             ),
         ),
     )
@@ -258,13 +260,19 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
             ),
             _variant(
                 "radius",
-                "Measure one exact circular edge or cylindrical face radius in mm.",
+                "Measure exact circular edge or cylindrical face radii in mm.",
                 ("Std_Measure",),
                 parameters=_parameters(
-                    {"targets": _targets(_element_ref(), minimum=1, maximum=1)},
+                    {
+                        "targets": _targets(
+                            _element_ref(),
+                            minimum=1,
+                            maximum=MAX_RADIUS_MEASUREMENTS,
+                        )
+                    },
                     ("targets",),
                 ),
-                exact_target_type="EdgeOrFace",
+                exact_target_type="EdgeOrFace[]",
             ),
             _variant(
                 "mass_properties",

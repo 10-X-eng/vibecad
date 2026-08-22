@@ -80,27 +80,15 @@ def _focused_turn(surface, registry) -> NativeTurnSnapshot:
     return NativeTurnSnapshot.from_provider_surface(provider)
 
 
-def _assembly_summary(state: dict, assembly_name: str) -> dict:
-    return next(
-        item
-        for item in state["domain"]["assemblies"]
-        if item["object_name"] == assembly_name
-    )
-
-
 def _simulation_arguments(
-    summary: dict,
     *,
     label: str,
     motions: list[dict],
     time_end_seconds: float = 1.0,
     output_time_step_seconds: float = 0.05,
 ) -> dict:
-    state = summary["simulation_state"]
-    assert state["available"] is True, state
     return {
         "operation": "create_simulation",
-        "assembly": {"object_name": summary["object_name"]},
         "label": label,
         "time_start_seconds": 0.0,
         "time_end_seconds": time_end_seconds,
@@ -108,11 +96,6 @@ def _simulation_arguments(
         "global_error_tolerance": 1.0e-6,
         "frames_per_second": 30,
         "motions": motions,
-        "expected_simulation_state_sha256": state["state_sha256"],
-        "expected_component_count": state["component_count"],
-        "expected_grounded_count": state["grounded_count"],
-        "expected_eligible_joint_count": state["eligible_joint_count"],
-        "expected_simulation_count": state["simulation_count"],
     }
 
 
@@ -259,16 +242,19 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
-        turn = _focused_turn(surface, registry)
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state_store,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def new_dispatcher() -> NativeTurnDispatcher:
+            turn = _focused_turn(surface, registry)
+            return NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = new_dispatcher()
 
         call_number = 0
 
@@ -296,31 +282,18 @@ def _run() -> None:
             "assembly-simulation-state-initial",
         )
         assert initial["ok"] is True, initial
-        summary = _assembly_summary(initial, assembly.Name)
-        simulation_state = summary["simulation_state"]
-        assert simulation_state["available"] is True, simulation_state
-        assert simulation_state["component_count"] == 2
-        assert simulation_state["grounded_count"] == 1
-        assert simulation_state["eligible_joint_count"] == 1
-        assert simulation_state["simulation_count"] == 0
-        candidate = simulation_state["eligible_joints"][0]
-        assert candidate["object_name"] == drive.Name
-        assert candidate["joint_type"] == "Cylindrical"
-        assert candidate["supported_motion_types"] == ["angular", "linear"]
-
         first_arguments = _simulation_arguments(
-            summary,
             label="Native cylindrical cycle",
             motions=[
                 {
                     "joint": {"object_name": drive.Name},
                     "motion_type": "angular",
-                    "formula": "initialValue + pi/2*time",
+                    "angular_speed_degrees_per_second": 90.0,
                 },
                 {
                     "joint": {"object_name": drive.Name},
                     "motion_type": "linear",
-                    "formula": "initialValue + 8*time",
+                    "linear_speed_mm_per_second": 8.0,
                 },
             ],
         )
@@ -334,15 +307,14 @@ def _run() -> None:
 
         first_call_id = "assembly-simulation-create-first"
         first = call(first_arguments, call_id=first_call_id)
+        assert first["verified"] is True
         assert first["label"] == "Native cylindrical cycle"
         assert first["simulation_count"] == 1
         assert first["motion_count"] == 2
         assert first["angular_motion_count"] == 1
         assert first["linear_motion_count"] == 1
         assert first["planned_output_interval_count"] == 20
-        assert first["kinematics_generated"] is False
-        assert first["selection_unchanged"] is True
-        assert first["assembly_placements_unchanged"] is True
+        assert first["frame_count"] >= 21
         assert first["assistant_undo_available"] is True
         assert Gui.Selection.getSelection() == [components[1]]
         assert all(
@@ -361,7 +333,7 @@ def _run() -> None:
         ]
         assert [motion.Joint[0] for motion in first_simulation.Group] == [drive, drive]
         assert [motion.Formula for motion in first_simulation.Group] == [
-            "initialValue + pi/2*time",
+            "initialValue + (90*pi/180)*time",
             "initialValue + 8*time",
         ]
         _history_block(document, first_simulation)
@@ -386,6 +358,7 @@ def _run() -> None:
             for motion in first_simulation.Group
         )
         _history_block(document, first_simulation)
+        dispatcher = new_dispatcher()
 
         after_first = dispatcher.call(
             "state.read",
@@ -393,29 +366,8 @@ def _run() -> None:
             "assembly-simulation-state-after-first",
         )
         assert after_first["ok"] is True, after_first
-        after_summary = _assembly_summary(after_first, assembly.Name)
-        assert after_summary["simulation_state"]["simulation_count"] == 1
-
-        stale_arguments = _simulation_arguments(
-            after_summary,
-            label="Stale simulation",
-            motions=[
-                {
-                    "joint": {"object_name": drive.Name},
-                    "motion_type": "linear",
-                    "formula": "initialValue + time",
-                }
-            ],
-        )
-        stale_arguments["expected_simulation_state_sha256"] = simulation_state[
-            "state_sha256"
-        ]
-        stale = call(stale_arguments, succeeds=False)
-        assert stale["error_code"] == "NATIVE_ASSEMBLY_SIMULATION_FAILED"
-        assert int(document.UndoCount) == 1
 
         second_arguments = _simulation_arguments(
-            after_summary,
             label="Native linear service cycle",
             motions=[
                 {
@@ -520,7 +472,7 @@ def _run() -> None:
         print(
             "VIBECAD_NATIVE_ASSEMBLY_SIMULATION_GUI_OK "
             "simulations=2 motions=3 cylindrical_dual_motion=true "
-            "kinematics_not_generated=true stale_noop=true idempotent=true "
+            "kinematics_verified=true idempotent=true "
             "undo_redo=true reopen=true placements_unchanged=true",
             flush=True,
         )

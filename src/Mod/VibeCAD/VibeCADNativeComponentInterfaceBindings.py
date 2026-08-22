@@ -11,9 +11,11 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
 )
 from VibeCADNativeComponentInterfaceRuntime import NativeComponentInterfaceRuntime
+from VibeCADNativeComponentInterfaceSchema import (
+    COMPONENT_INTERFACE_CAPABILITY_NAME,
+    COMPONENT_INTERFACES_CAPABILITY_NAME,
+)
 
-
-COMPONENT_INTERFACE_CAPABILITY_NAME = "component.interface"
 
 
 def _publish(call: Any) -> Mapping[str, Any]:
@@ -29,6 +31,16 @@ def _publish(call: Any) -> Mapping[str, Any]:
     )
 
 
+def _interfaces(call: Any) -> Mapping[str, Any]:
+    runtime = getattr(call, "runtime", None)
+    arguments = getattr(call, "arguments", None)
+    if not isinstance(runtime, NativeComponentInterfaceRuntime):
+        raise TypeError("A component-interface call requires its exact runtime.")
+    if not isinstance(arguments, Mapping):
+        raise TypeError("A component-interface call requires argument data.")
+    return runtime.interfaces(arguments)
+
+
 def register_component_interface_capability_implementation(
     registry: NativeCapabilityRegistry,
 ) -> None:
@@ -39,9 +51,22 @@ def register_component_interface_capability_implementation(
     )
 
 
+def register_component_interfaces_capability_implementation(
+    registry: NativeCapabilityRegistry,
+) -> None:
+    if not isinstance(registry, NativeCapabilityRegistry):
+        raise TypeError("registry must be a NativeCapabilityRegistry")
+    registry.register_implementation(
+        NativeCapabilityImplementation(COMPONENT_INTERFACES_CAPABILITY_NAME, _interfaces)
+    )
+
+
 def component_interface_runtime_bindings(
     runtime: NativeComponentInterfaceRuntime,
 ) -> dict[str, Any]:
     if not isinstance(runtime, NativeComponentInterfaceRuntime):
         raise TypeError("runtime must be a NativeComponentInterfaceRuntime")
-    return {COMPONENT_INTERFACE_CAPABILITY_NAME: runtime}
+    return {
+        COMPONENT_INTERFACE_CAPABILITY_NAME: runtime,
+        COMPONENT_INTERFACES_CAPABILITY_NAME: runtime,
+    }

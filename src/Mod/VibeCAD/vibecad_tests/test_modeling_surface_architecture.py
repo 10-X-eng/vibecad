@@ -132,7 +132,7 @@ def test_complete_workbench_shaped_vibescript_surface_matrix() -> None:
             # The component-capable surfaces add only their exact catalog/interface
             # controls; Assembly alone also exposes saved playback.
             ceiling = (
-                24
+                25
                 if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}
                 else 21
             )
@@ -776,7 +776,7 @@ def test_universal_source_and_api_focused_reads_are_small_and_explicit() -> None
     focused_api = session._filtered_api_payload(
         "vibescript.read_api",
         description,
-        names=["sketch"],
+        names=["api.sketch"],
         groups=["verification"],
     )
     selected = [item["name"] for item in focused_api["runtime_exports"]]
@@ -788,6 +788,23 @@ def test_universal_source_and_api_focused_reads_are_small_and_explicit() -> None
     ]
     assert set(focused_api["api_details"]) == set(selected)
     assert focused_api["_vibecad_complete_api_result"] is False
+
+    assembly_pack = domains.get_vibescript_pack("AssemblyWorkbench")
+    assert assembly_pack is not None
+    assembly_description = domains.get_domain_adapter(
+        assembly_pack.domain
+    ).describe_api()
+    assembly_api = session._filtered_api_payload(
+        "vibescript.read_api",
+        assembly_description,
+        names=["component"],
+        groups=[],
+    )
+    assert [item["name"] for item in assembly_api["runtime_exports"]] == [
+        "component",
+        "assembly",
+        "solve",
+    ]
 
     wrong_surface = session._filtered_api_payload(
         "vibescript.read_api",
@@ -945,13 +962,24 @@ def test_universal_create_program_targets_explicit_domain_without_ribbon_switch(
 
 def test_universal_read_api_accepts_explicit_model_or_assembly_domain() -> None:
     import VibeCADSession as session
+    import VibeCADVibeScriptDomains as domains
+    from VibeCADTools import ToolSpec
+
+    read_api_spec = next(
+        item
+        for item in domains.universal_tool_specs()
+        if item["name"] == "vibescript.read_api"
+    )
+    ToolSpec.from_mapping(read_api_spec).validate_arguments(
+        {"domain": "assembly", "names": ["api.joint"]}
+    )
 
     service = type("Service", (), {"_active_document": lambda self: None})()
     result = session._run_universal_vibescript_tool(
         service,
         "AssemblyWorkbench",
         "vibescript.read_api",
-        {"domain": "partdesign", "names": ["component", "instances"]},
+        {"domain": "partdesign", "names": ["api.component", "api.instances"]},
         document_thread_dispatch=None,
         cancellation_check=None,
         progress_callback=None,
@@ -959,7 +987,10 @@ def test_universal_read_api_accepts_explicit_model_or_assembly_domain() -> None:
 
     assert result["ok"] is True
     assert result["domain"] == "partdesign"
-    assert result["selected_names"] == ["component", "instances"]
+    assert [item["name"] for item in result["runtime_exports"]] == [
+        "component",
+        "instances",
+    ]
 
 
 def test_unified_source_context_keeps_failed_programs_from_both_domains(
@@ -1926,6 +1957,99 @@ def test_universal_source_rejects_conflicting_row_and_index_domains() -> None:
     }
 
 
+def test_universal_source_accepts_exact_local_program_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    source_id = "6" * 32
+    revision = "5" * 64
+    program = "Active/assembly/Robot_Base_Assembly"
+
+    class SourceOutput:
+        VibeCADVibeScriptProgramId = source_id
+        VibeCADVibeScriptProgramLabel = "Robot_Base_Assembly"
+        VibeCADVibeScriptDomain = "assembly"
+        VibeCADVibeScriptRevision = revision
+        VibeCADVibeScriptOutputName = "assembly"
+
+    document = type(
+        "Document",
+        (),
+        {
+            "Uid": "active-document",
+            "Name": "Active",
+            "FileName": "/project/active.FCStd",
+            "Objects": [SourceOutput()],
+        },
+    )()
+    fake_freecad = type(
+        "FreeCAD",
+        (),
+        {"listDocuments": staticmethod(lambda: {"Active": document})},
+    )()
+    monkeypatch.setitem(sys.modules, "FreeCAD", fake_freecad)
+    service = type("Service", (), {"_active_document": lambda self: document})()
+
+    result = session._run_universal_vibescript_tool(
+        service,
+        "AssemblyWorkbench",
+        "vibescript.read_api",
+        {"program": "Robot_Base_Assembly", "names": ["component"]},
+        editable_sources={
+            "domain": "assembly",
+            "workbench": "AssemblyWorkbench",
+            "sources": [
+                {
+                    "source_id": source_id,
+                    "program": program,
+                    "label": "Robot_Base_Assembly",
+                    "domain": "assembly",
+                    "current_revision": revision,
+                    "affected_outputs": [{"name": "assembly"}],
+                }
+            ],
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert result["ok"] is True
+    assert result["source_target"]["program"] == program
+
+
+def test_read_source_local_name_lookup_reports_absence_without_failure() -> None:
+    import VibeCADSession as session
+
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
+    result = session._run_universal_vibescript_tool(
+        service,
+        "AssemblyWorkbench",
+        "vibescript.read_source",
+        {"program": "Missing Program"},
+        editable_sources={
+            "domain": "assembly",
+            "workbench": "AssemblyWorkbench",
+            "sources": [],
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert result == {
+        "ok": True,
+        "found": False,
+        "program_name": "Missing Program",
+    }
+
+
 def test_universal_source_tools_route_to_the_exact_open_authoring_document(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2241,6 +2365,26 @@ def test_assembly_connector_compatibility_uses_only_explicit_contracts() -> None
     )
     assert allowed["ok"] is True
     assert allowed["validation"] == "explicit_connector_contract"
+    multi_use = [
+        {
+            "kind": "axis",
+            "allowed_joints": ["revolute", "gears"],
+            "compatibility": {
+                "revolute": "bearing-v1",
+                "gears": "gear-module-v1",
+            },
+        },
+        {
+            "kind": "axis",
+            "allowed_joints": ["revolute", "gears"],
+            "compatibility": {
+                "revolute": "bearing-v1",
+                "gears": "other-gear-module",
+            },
+        },
+    ]
+    assert explicit_connector_compatibility("revolute", multi_use)["ok"] is True
+    assert explicit_connector_compatibility("gears", multi_use)["ok"] is False
     disallowed = explicit_connector_compatibility(
         "fixed",
         [{"kind": "axis", "allowed_joints": ["revolute"]}, None],
@@ -2810,6 +2954,7 @@ def test_component_inventory_is_copy_ready_and_prepared_search_does_not_rescan(
         }
     )
     inventory = component_inventory(prepared)
+    catalog_candidate = {**candidate, "catalog_key": "component-1"}
 
     assert inventory == {
         "schema": "vibecad-available-components-v1",
@@ -2817,20 +2962,181 @@ def test_component_inventory_is_copy_ready_and_prepared_search_does_not_rescan(
         "components_included": 1,
         "components_truncated": False,
         "project_file_search_available": False,
-        "components": [candidate],
+        "components": [
+            {
+                "catalog_key": "component-1",
+                "occurrence_key": "Motor_Bracket",
+                "label": "Motor Bracket",
+                "kind": "definition",
+                "reference": candidate["reference"],
+                "published_interfaces": ["MountAxis", "MountFace"],
+            }
+        ],
         "usage": (
-            "Use a definition reference with api.component or api.instances. Reuse an "
-            "occurrence reference when Assembly must adopt that exact placed object. "
-            "Call component_catalog.search only when the needed component is not listed "
-            "or when additional catalog metadata is required. To enumerate a truncated "
-            "catalog, use detail='references', limit=200, offset=0, then repeat with "
-            "offset=next_offset until next_offset is null. A page may return fewer "
-            "than limit so its complete matches array remains provider-safe."
+            "create_assembly components use catalog_key; assembly.connectors uses "
+            "reference."
         ),
     }
     assert search_prepared_component_catalog(prepared, "mount")["match_count"] == 1
     assert search_prepared_component_catalog(prepared, "motor bracket")["matches"] == [
-        candidate
+        catalog_candidate
+    ]
+
+    import VibeCADSession as session
+
+    resolved = session._resolve_component_catalog_inputs(
+        {
+            "input_schema": {
+                "properties": {
+                    "base": {"type": "object", "x-vibecad-reference": True}
+                },
+                "additionalProperties": False,
+            },
+            "inputs": {"base": {"catalog_key": "component-1"}},
+        },
+        prepared,
+    )
+    assert resolved["inputs"] == {"base": candidate["reference"]}
+
+
+def test_provider_component_inventory_uses_model_facing_joint_names() -> None:
+    import VibeCADSession as session
+
+    inventory = {
+        "schema": "vibecad-available-components-v1",
+        "component_count": 1,
+        "components": [
+            {
+                "catalog_key": "component-1",
+                "occurrence_key": "Gear",
+                "label": "24 Tooth Gear",
+                "kind": "definition",
+                "published_interfaces": ["PitchAxis"],
+                "reference": {
+                    "document_uid": "component-uid",
+                    "object_name": "GearBody",
+                },
+                "interfaces": [
+                    {
+                        "name": "PitchAxis",
+                        "selection_type": "frame",
+                        "subelements": [],
+                        "connector_eligible": True,
+                        "description": "Gear pitch axis",
+                        "connector": {
+                            "kind": "axis",
+                            "allowed_joints": ["gears", "revolute"],
+                            "compatibility": {
+                                "gears": "gear-family-v1",
+                                "revolute": "bearing-family-v1",
+                            },
+                            "pitch_radius_mm": 12.5,
+                        },
+                        "geometry_type": "component_frame",
+                        "frame": {"matrix": list(range(16))},
+                    }
+                ],
+                "interfaces_truncated": False,
+            }
+        ],
+    }
+
+    visible = session._provider_component_inventory_payload(inventory)
+
+    assert visible["components"] == [
+        {
+            "catalog_key": "component-1",
+            "label": "24 Tooth Gear",
+            "interfaces": [
+                {
+                    "name": "PitchAxis",
+                    "description": "Gear pitch axis",
+                    "connector": {
+                        "kind": "axis",
+                        "allowed_joints": ["gear", "revolute"],
+                        "compatibility": {
+                            "gear": "gear-family-v1",
+                            "revolute": "bearing-family-v1",
+                        },
+                        "pitch_radius_mm": 12.5,
+                    },
+                }
+            ],
+        }
+    ]
+    assert inventory["components"][0]["interfaces"][0]["connector"][
+        "allowed_joints"
+    ] == ["gears", "revolute"]
+
+
+def test_provider_omits_cross_domain_sources_when_active_domain_is_empty() -> None:
+    import VibeCADSession as session
+
+    visible = session._provider_editable_sources_payload(
+        {
+            "schema": "vibecad-editable-sources-v1",
+            "domain": "assembly",
+            "workbench": "AssemblyWorkbench",
+            "source_count": 0,
+            "sources": [],
+            "all_source_count": 1,
+            "all_sources": [
+                {
+                    "source_id": "a" * 32,
+                    "domain": "partdesign",
+                    "program": "Robot/partdesign/Components",
+                }
+            ],
+        }
+    )
+
+    assert visible == {
+        "schema": "vibecad-editable-sources-v1",
+        "domain": "assembly",
+        "source_count": 0,
+    }
+
+
+def test_component_inventory_removes_generated_carrier_names() -> None:
+    from VibeCADComponentCatalog import (
+        component_inventory,
+        prepare_captured_component_catalog,
+    )
+
+    reference = {
+        "document_uid": "robot-uid",
+        "object_name": "VibePartdesign_ea661316_FixedBase_Source",
+    }
+    prepared = prepare_captured_component_catalog(
+        {
+            "owner_document_uid": "robot-uid",
+            "project_directory": "",
+            "owner_file": "",
+            "open_document_files": [],
+            "open_candidates": [
+                {
+                    "document_label": "Robot",
+                    "object_name": reference["object_name"],
+                    "label": reference["object_name"],
+                    "kind": "definition",
+                    "type_id": "Part::Feature",
+                    "source": "open_document",
+                    "live_validated": False,
+                    "geometry_validation": "deferred_until_use",
+                    "portable": True,
+                    "reference": reference,
+                }
+            ],
+        }
+    )
+
+    assert component_inventory(prepared)["components"] == [
+        {
+            "catalog_key": "component-1",
+            "label": "FixedBase",
+            "kind": "definition",
+            "reference": reference,
+        }
     ]
 
 
@@ -2915,7 +3221,14 @@ def test_component_catalog_large_inventory_has_explicit_bounded_pagination() -> 
     assert first["match_count"] == 344
     assert first["returned_count"] == 200
     assert first["next_offset"] == 200
-    assert set(first["matches"][0]) == {"kind", "label", "reference"}
+    assert set(first["matches"][0]) == {
+        "catalog_key",
+        "kind",
+        "label",
+        "reference",
+    }
+    assert first["matches"][0]["catalog_key"] == "component-1"
+    assert second["matches"][0]["catalog_key"] == "component-201"
     assert second["offset"] == 200
     assert second["returned_count"] == 144
     assert second["next_offset"] is None
@@ -2932,8 +3245,6 @@ def test_component_catalog_large_inventory_has_explicit_bounded_pagination() -> 
         "properties"
     ]
     assert visible_properties["limit"]["maximum"] == 200
-    assert "1 to 200" in visible_properties["limit"]["description"]
-    assert "next_offset" in visible_properties["offset"]["description"]
     tool_spec = ToolSpec.from_mapping(TOOL_SPEC)
     tool_spec.validate_arguments(
         {"query": "Body", "limit": 200, "offset": 0, "detail": "references"}
@@ -3947,8 +4258,64 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     adapter = domains.get_domain_adapter(pack.domain)
     assert adapter is not None
     description = adapter.describe_api()
+    core_api = domains._core_api_snapshot(pack)
 
     assert description["api_contract"] == "vibecad-vibescript-assembly-api-v1"
+    assert list(core_api["api"]) == [
+        "component",
+        "connector",
+        "joint",
+        "assembly",
+        "solve",
+        "mechanism_check",
+        "motion",
+        "simulation",
+        "bill_of_materials",
+    ]
+    assert "Mapping[str, DomainValue]" in core_api["api"]["assembly"]
+    assert "Mapping[str, DomainValue]" in core_api["api"]["simulation"]
+    assert "Sequence[str | Mapping[str, str]]" in core_api["api"][
+        "bill_of_materials"
+    ]
+    assert all(not call.startswith("ONLY ") for call in core_api["api"].values())
+    assert "inputs['name']" in core_api["source"]
+    assert "solver_diagnostics" in core_api["source"]
+    assert "Define main()" in core_api["source"]
+    assert "Return {'assembly': model" in core_api["source"]
+    assert "End with result=" not in core_api["source"]
+    assert core_api["create_program"]["reference_input"] == {
+        "input_schema": {
+            "properties": {
+                "base": {"type": "object", "x-vibecad-reference": True},
+                "moving": {"type": "object", "x-vibecad-reference": True},
+            },
+            "required": ["base", "moving"],
+            "additionalProperties": False,
+        },
+        "inputs": {
+            "base": {"catalog_key": "component-1"},
+            "moving": {"catalog_key": "component-2"},
+        },
+        "source": "inputs['base']; inputs['moving']",
+    }
+    assert core_api["create_program"]["result_example"] == (
+        "return {'assembly': model, 'solver_diagnostics': api.solve(model)}"
+    )
+    create_tool = next(
+        spec
+        for spec in domains.universal_tool_specs()
+        if spec["name"] == "vibescript.create_program"
+    )
+    source_description = create_tool["parameters"]["properties"]["source"][
+        "description"
+    ]
+    assert "Define main()" in source_description
+    assert "result=" not in source_description
+    inputs_description = create_tool["parameters"]["properties"]["inputs"][
+        "description"
+    ]
+    assert "catalog_key" in inputs_description
+    assert "api.component(inputs['name'])" in inputs_description
     assert tuple(api.exported_names) == pack.api_exports
     assert [item["name"] for item in description["runtime_exports"]] == list(
         pack.api_exports
@@ -3958,6 +4325,16 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
         "*args" not in item["signature"] and "**properties" not in item["signature"]
         for item in description["runtime_exports"]
     )
+    exports = {item["name"]: item for item in description["runtime_exports"]}
+    assert exports["component"]["description"].startswith(
+        "Create one occurrence from api.component(inputs['name'])"
+    )
+    assert exports["connector"]["description"].startswith(
+        "Use a named interface or exact selection as one JCS."
+    )
+    assert "Mapping[str, Any]" in exports["connector"]["signature"]
+    assert "api.solve" in exports["assembly"]["description"]
+    assert "solver_diagnostics" in exports["assembly"]["description"]
     assert set(description["joint_types"]["coupled_motion"]) == {
         "rack_pinion",
         "screw",
@@ -4023,13 +4400,11 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     assert description["operation_selection"]["repeated_source_occurrences"] == (
         "api.instances"
     )
-    assert (
-        "component_catalog.search" in description["input_reference_contract"]["purpose"]
-    )
-    assert (
-        "document_path"
-        in description["input_reference_contract"]["schema"]["properties"]
-    )
+    assert "catalog_key" in description["input_reference_contract"]["purpose"]
+    assert description["input_reference_contract"]["schema"] == {
+        "type": "object",
+        "x-vibecad-reference": True,
+    }
     assert "fastener_catalog.search" in description["standard_hardware"]["selection"]
     assert "no aliases" in description["operation_selection"]["redundancy_contract"]
     assert "failed_segment_index" in description["nested_subassemblies"]["repair"]
@@ -4296,6 +4671,29 @@ def test_assembly_api_exposes_native_signed_parameters_anchors_and_open_limits()
     assert anchored.properties["selection"] == {
         "type": "exact_subelement",
         "subelement": "Edge1",
+    }
+    measured = api.connector(
+        first,
+        {
+            "type": "query",
+            "element_type": "face",
+            "expected_count": 1,
+            "geometry_type": "Cylinder",
+            "radius": 20.0,
+            "radius_tolerance": 1.0e-6,
+            "near_point": [0.0, 0.0, 31.0],
+            "max_distance": 1.0e-6,
+        },
+    )
+    assert measured.properties["selection"] == {
+        "type": "query",
+        "element_type": "face",
+        "expected_count": 1,
+        "geometry_type": "Cylinder",
+        "radius": 20.0,
+        "radius_tolerance": 1.0e-6,
+        "near_point": (0.0, 0.0, 31.0),
+        "max_distance": 1.0e-6,
     }
 
     slider = api.joint(

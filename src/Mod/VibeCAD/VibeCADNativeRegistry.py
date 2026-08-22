@@ -154,6 +154,12 @@ from VibeCADNativeAssemblyDiagnosisBindings import (
 from VibeCADNativeAssemblyDiagnosisSchema import (
     register_assembly_diagnosis_capability_definition,
 )
+from VibeCADNativeAssemblyBomBindings import (
+    register_assembly_bom_capability_implementation,
+)
+from VibeCADNativeAssemblyBomSchema import (
+    register_assembly_bom_capability_definition,
+)
 from VibeCADNativeAssemblyFastenerBindings import (
     register_assembly_fastener_capability_implementation,
 )
@@ -167,9 +173,11 @@ from VibeCADNativeAssemblyExportSchema import (
     register_assembly_export_capability_definition,
 )
 from VibeCADNativeAssemblyInspectBindings import (
+    register_assembly_connectors_capability_implementation,
     register_assembly_inspect_capability_implementation,
 )
 from VibeCADNativeAssemblyInspectSchema import (
+    register_assembly_connectors_capability_definition,
     register_assembly_inspect_capability_definition,
 )
 from VibeCADNativeAssemblyJointBindings import (
@@ -252,9 +260,11 @@ from VibeCADNativeBackgroundSchema import (
 )
 from VibeCADNativeComponentInterfaceBindings import (
     register_component_interface_capability_implementation,
+    register_component_interfaces_capability_implementation,
 )
 from VibeCADNativeComponentInterfaceSchema import (
     register_component_interface_capability_definition,
+    register_component_interfaces_capability_definition,
 )
 from VibeCADNativeCommonBindings import register_common_capability_implementations
 from VibeCADNativeCommonSchema import register_common_capability_definitions
@@ -649,9 +659,11 @@ from VibeCADNativeRobotExportSchema import (
     register_robot_export_capability_definition,
 )
 from VibeCADNativeRobotTrajectoryBindings import (
+    register_robot_path_feature_capability_implementations,
     register_robot_trajectory_capability_implementation,
 )
 from VibeCADNativeRobotTrajectorySchema import (
+    register_robot_path_feature_capability_definitions,
     register_robot_trajectory_capability_definition,
 )
 from VibeCADNativeSketchProviderBindings import (
@@ -749,10 +761,14 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_parameters_capability_implementations(registry)
     register_assembly_diagnosis_capability_definition(registry)
     register_assembly_diagnosis_capability_implementation(registry)
+    register_assembly_bom_capability_definition(registry)
+    register_assembly_bom_capability_implementation(registry)
     register_assembly_fastener_capability_definition(registry)
     register_assembly_fastener_capability_implementation(registry)
     register_assembly_export_capability_definition(registry)
     register_assembly_export_capability_implementation(registry)
+    register_assembly_connectors_capability_definition(registry)
+    register_assembly_connectors_capability_implementation(registry)
     register_assembly_inspect_capability_definition(registry)
     register_assembly_inspect_capability_implementation(registry)
     register_assembly_joint_capability_definition(registry)
@@ -763,6 +779,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_assembly_structure_capability_implementation(registry)
     register_component_interface_capability_definition(registry)
     register_component_interface_capability_implementation(registry)
+    register_component_interfaces_capability_definition(registry)
+    register_component_interfaces_capability_implementation(registry)
     register_model_catalog_capability_definition(registry)
     register_model_catalog_capability_implementation(registry)
     register_model_structure_capability_definitions(registry)
@@ -895,6 +913,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_robot_export_capability_implementation(registry)
     register_robot_trajectory_capability_definition(registry)
     register_robot_trajectory_capability_implementation(registry)
+    register_robot_path_feature_capability_definitions(registry)
+    register_robot_path_feature_capability_implementations(registry)
     register_sketch_provider_capability_definitions(registry)
     register_sketch_provider_capability_implementations(registry)
     return registry

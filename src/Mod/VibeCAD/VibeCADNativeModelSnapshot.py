@@ -303,11 +303,15 @@ def _standard_fastener_summary(document: Any, body: Any) -> dict[str, Any] | Non
             "definition": {
                 "standard": str(identity["standard"]),
                 "nominal_thread": str(identity["nominal_size"]),
-                "length_mm": identity["length_mm"],
                 "model_thread": bool(identity["model_thread"]),
                 "left_handed": bool(identity["left_handed"]),
-                "options": dict(identity["options"]),
-            },
+                "catalog_option_overrides": dict(identity["options"]),
+            }
+            | (
+                {"length_mm": identity["length_mm"]}
+                if identity["length_mm"] is not None
+                else {}
+            ),
         }
     except (KeyError, RuntimeError, TypeError, ValueError):
         return None

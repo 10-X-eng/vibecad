@@ -22,13 +22,16 @@ from VibeCADNativeAssemblyBomState import (
     capture_assembly_bom_state,
     read_bom_table,
 )
-from VibeCADNativeAssemblyStructureBindings import (
-    ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+from VibeCADNativeAssemblyBomBindings import (
+    ASSEMBLY_BOM_CAPABILITY_NAME,
 )
-from VibeCADNativeAssemblyStructureSchema import (
-    assembly_structure_capability_definition,
+from VibeCADNativeAssemblyBomSchema import (
+    assembly_bom_capability_definition,
 )
-from VibeCADNativeCapabilityRegistry import NativeProviderSurface
+from VibeCADNativeCapabilityRegistry import (
+    NativeProviderSurface,
+    resolve_native_provider_surface,
+)
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -36,6 +39,7 @@ from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
+from VibeCADNativeSessionFactory import _edit_or_task_active
 from VibeCADRibbonSurface import read_active_ribbon_surface
 
 
@@ -60,16 +64,16 @@ def _select_assemble_ribbon(main_window) -> None:
 
 def _focused_turn(surface, registry) -> NativeTurnSnapshot:
     state = registry.definition("state.read")
-    structure = assembly_structure_capability_definition()
+    bom = assembly_bom_capability_definition()
     assert state is not None
     provider = NativeProviderSurface(
         snapshot=NativeSurfaceSnapshot.from_surface(surface),
         available=True,
         unavailable_reason="",
-        tool_names=("state.read", ASSEMBLY_STRUCTURE_CAPABILITY_NAME),
+        tool_names=("state.read", ASSEMBLY_BOM_CAPABILITY_NAME),
         schemas=(
             state.provider_schema(("active", "selection")),
-            structure.provider_schema(("create_bom",)),
+            bom.provider_schema(("create",)),
         ),
         human_only_action_ids=("Assembly_ActivateAssembly",),
         missing_definition_names=(),
@@ -88,7 +92,6 @@ def _assembly_summary(state: dict, assembly_name: str) -> dict:
 
 
 def _bom_arguments(
-    summary: dict,
     *,
     label: str,
     columns: list[str],
@@ -96,19 +99,12 @@ def _bom_arguments(
     detail_parts: bool,
     only_parts: bool,
 ) -> dict:
-    state = summary["bom_state"]
-    assert state["available"] is True, state
     return {
-        "operation": "create_bom",
-        "assembly": {"object_name": summary["object_name"]},
         "label": label,
         "columns": columns,
         "detail_subassemblies": detail_subassemblies,
         "detail_parts": detail_parts,
         "only_parts": only_parts,
-        "expected_bom_state_sha256": state["state_sha256"],
-        "expected_component_count": state["component_count"],
-        "expected_bom_count": state["bom_count"],
     }
 
 
@@ -186,17 +182,26 @@ def _run() -> None:
         frozen = NativeSurfaceSnapshot.from_surface(surface)
 
         registry = build_native_capability_registry()
-        structure = registry.definition(ASSEMBLY_STRUCTURE_CAPABILITY_NAME)
-        assert structure is not None
-        variant = next(
-            value for value in structure.variants if value.operation == "create_bom"
-        )
+        full_provider_surface = resolve_native_provider_surface(surface, registry)
+        assert full_provider_surface.available, full_provider_surface.summary()
+        assert ASSEMBLY_BOM_CAPABILITY_NAME in full_provider_surface.tool_names
+        assert next(
+            schema
+            for schema in full_provider_surface.schemas
+            if schema["name"] == ASSEMBLY_BOM_CAPABILITY_NAME
+        )["parameters"]["oneOf"][0]["required"] == []
+        bom_definition = registry.definition(ASSEMBLY_BOM_CAPABILITY_NAME)
+        assert bom_definition is not None
+        variant = bom_definition.variants[0]
+        assert variant.operation == "create"
         assert variant.action_ids == frozenset({"Assembly_CreateBom"})
         assert variant.transaction_behavior == "document"
-        assert registry.implementation(ASSEMBLY_STRUCTURE_CAPABILITY_NAME) is not None
+        assert registry.implementation(ASSEMBLY_BOM_CAPABILITY_NAME) is not None
 
         service = get_service()
         service.select_modeling_engine("native")
+        task_summary = service.task_panel_summary()
+        assert _edit_or_task_active(service) is False, task_summary
         state = service.native_document_state_store()
         ledger = NativeAssistantUndoLedger()
         ledger.begin_run("native-assembly-bom-gui")
@@ -212,18 +217,21 @@ def _run() -> None:
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
-            edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
+            edit_or_task_active=lambda: _edit_or_task_active(service),
         )
         turn = _focused_turn(surface, registry)
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def new_dispatcher() -> NativeTurnDispatcher:
+            return NativeTurnDispatcher(
+                document=document,
+                state=state,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = new_dispatcher()
 
         mdi_area = main_window.findChild(QtWidgets.QMdiArea)
         assert mdi_area is not None
@@ -235,7 +243,7 @@ def _run() -> None:
             task_before = Gui.Control.activeTaskDialog()
             subwindow_before = mdi_area.activeSubWindow()
             result = dispatcher.call(
-                ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+                ASSEMBLY_BOM_CAPABILITY_NAME,
                 json.dumps(arguments, separators=(",", ":")),
                 call_id or f"assembly-bom-call-{call_number}",
             )
@@ -261,14 +269,14 @@ def _run() -> None:
         )
         assert initial["ok"] is True, initial
         summary = _assembly_summary(initial, assembly.Name)
-        bom_state = summary["bom_state"]
-        assert bom_state["available"] is True, bom_state
-        assert bom_state["component_count"] == 3
-        assert bom_state["source_node_count"] == 4
-        assert bom_state["bom_count"] == 0
+        assert summary["counts"] == {
+            "components": 3,
+            "joints": 0,
+            "grounded": 0,
+        }
+        assert summary["artifacts"]["boms"] == 0
 
         malformed = _bom_arguments(
-            summary,
             label="Malformed",
             columns=["Name"],
             detail_subassemblies=False,
@@ -282,10 +290,8 @@ def _run() -> None:
         assert tuple(document.Objects) == before_objects
         assert int(document.UndoCount) == 0
 
-        first_arguments = _bom_arguments(
-            summary,
-            label="Native service BOM",
-            columns=[
+        first_arguments = {
+            "columns": [
                 "Index",
                 "Name",
                 ".PartNumber",
@@ -293,18 +299,17 @@ def _run() -> None:
                 "Quantity",
                 "File Name",
             ],
-            detail_subassemblies=False,
-            detail_parts=True,
-            only_parts=False,
-        )
+        }
         first_call_id = "assembly-bom-create-first"
         first = call(first_arguments, call_id=first_call_id)
-        assert first["label"] == "Native service BOM"
+        assert first["operation"] == "create"
+        assert first["verified"] is True
+        assert "table_sha256" not in first
+        assert "bom_state_sha256" not in first
+        assert first["label"] == "Bill of Materials"
         assert first["component_count"] == 3
         assert first["bom_count"] == 1
         assert first["row_count"] == 3
-        assert first["selection_unchanged"] is True
-        assert first["assembly_placements_unchanged"] is True
         assert first["assistant_undo_available"] is True
         assert Gui.Selection.getSelection() == [occurrences[2]]
         assert all(
@@ -322,7 +327,7 @@ def _run() -> None:
         assert CommandCreateBom._findBomAssembly(first_bom) is assembly
         assert first_bom.ViewObject.TypeId == "AssemblyGui::ViewProviderBom"
         assert list(first_bom.columnsNames) == first_arguments["columns"]
-        assert first_bom.detailParts and not first_bom.detailSubAssemblies
+        assert first_bom.detailParts and first_bom.detailSubAssemblies
         assert not first_bom.onlyParts and first_bom.autoGenerate
         _timeline_accepts(document, first_bom)
         first_table = read_bom_table(first_bom)
@@ -359,6 +364,14 @@ def _run() -> None:
         assert read_bom_table(first_bom) == first_table
         _timeline_accepts(document, first_bom)
 
+        changed_turn = dispatcher.call(
+            "state.read",
+            '{"operation":"active"}',
+            "assembly-bom-state-after-undo-redo",
+        )
+        assert changed_turn["error_code"] == "NATIVE_REVISION_CONFLICT"
+        dispatcher = new_dispatcher()
+
         after_first = dispatcher.call(
             "state.read",
             '{"operation":"active"}',
@@ -366,24 +379,9 @@ def _run() -> None:
         )
         assert after_first["ok"] is True, after_first
         after_summary = _assembly_summary(after_first, assembly.Name)
-        assert after_summary["bom_state"]["bom_count"] == 1
-
-        stale_arguments = _bom_arguments(
-            after_summary,
-            label="Stale BOM",
-            columns=["Name", "Quantity"],
-            detail_subassemblies=True,
-            detail_parts=False,
-            only_parts=True,
-        )
-        stale_arguments["expected_bom_state_sha256"] = bom_state["state_sha256"]
-        stale = call(stale_arguments, succeeds=False)
-        assert stale["error_code"] == "NATIVE_ASSEMBLY_BOM_FAILED"
-        assert int(document.UndoCount) == 1
-        assert list(group.Group) == [first_bom]
+        assert after_summary["artifacts"]["boms"] == 1
 
         second_arguments = _bom_arguments(
-            after_summary,
             label="Native parts-only BOM",
             columns=["Name", "Quantity"],
             detail_subassemblies=True,
@@ -456,8 +454,10 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_ASSEMBLY_BOM_GUI_OK "
+            f"tools={len(full_provider_surface.tool_names)} "
+            f"schema_bytes={len(json.dumps(full_provider_surface.schemas, separators=(',', ':')).encode('utf-8'))} "
             "boms=2 rows=4 properties=true quantity_aggregation=true "
-            "parts_filter=true stale_noop=true idempotent=true undo_redo=true "
+            "parts_filter=true stale_turn=true idempotent=true undo_redo=true "
             "reopen=true owner=true no_sheet_opened=true placements_unchanged=true",
             flush=True,
         )

@@ -20,21 +20,20 @@ _FASTENER_SURFACES = frozenset({"model", "assemble"})
 _CATALOG_TEXT = {"type": "string", "maxLength": 128}
 
 
-def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
-    return {"oneOf": [schema, {"type": "null"}]}
-
-
 def model_catalog_capability_definition() -> NativeCapabilityDefinition:
-    hole_standard = _nullable(
-        {"type": "string", "enum": list(THREAD_STANDARDS)}
-    )
+    hole_standard = {"type": "string", "enum": list(THREAD_STANDARDS)}
     fastener_parameters = {
-        "query": {"type": "string", "maxLength": 256},
-        "family": _nullable(_CATALOG_TEXT),
-        "standard": _nullable(_CATALOG_TEXT),
-        "nominal_thread": _nullable(_CATALOG_TEXT),
-        "length_mm": _nullable(POSITIVE_MM_SCHEMA),
-        "limit": {"type": "integer", "minimum": 1, "maximum": 25},
+        "query": {"type": "string", "maxLength": 256, "default": ""},
+        "family": _CATALOG_TEXT,
+        "standard": _CATALOG_TEXT,
+        "nominal_thread": _CATALOG_TEXT,
+        "length_mm": POSITIVE_MM_SCHEMA,
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 25,
+            "default": 5,
+        },
     }
     return NativeCapabilityDefinition(
         name="model.catalog",
@@ -51,7 +50,7 @@ def model_catalog_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=parameters_schema(
                     {"standard": hole_standard},
-                    ("standard",),
+                    (),
                 ),
             ),
             NativeCapabilityVariant(
@@ -67,7 +66,7 @@ def model_catalog_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=parameters_schema(
                     fastener_parameters,
-                    tuple(fastener_parameters),
+                    (),
                 ),
             ),
         ),

@@ -114,6 +114,33 @@ def test_opaque_edit_view_provider_is_active_but_never_masquerades_as_object(
     }
 
 
+def test_opaque_native_assembly_edit_resolves_through_its_active_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assembly = _assembly_object()
+    view_provider = _AssemblyViewProvider()
+    view_provider.isInEditMode = lambda: True
+    assembly.ViewObject = view_provider
+    active_view = SimpleNamespace(
+        getActiveObject=lambda role: assembly if role == "assembly" else None
+    )
+    gui_document = SimpleNamespace(
+        Document=assembly.Document,
+        ActiveView=active_view,
+        getInEdit=lambda: view_provider,
+    )
+    _install_gui(monkeypatch, gui_document)
+
+    state = active_edit_state(gui_document)
+
+    assert state.active is True
+    assert state.document_object is assembly
+    service = object.__new__(VibeCADService)
+    assert service.task_panel_summary()["edit_object"]["type"] == (
+        "Assembly::AssemblyObject"
+    )
+
+
 def test_legacy_view_provider_object_property_remains_supported() -> None:
     assembly = _assembly_object()
     view_provider = SimpleNamespace(Object=assembly)

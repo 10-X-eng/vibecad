@@ -17,11 +17,18 @@ import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeAssemblySnapshot import build_assembly_snapshot
 from VibeCADNativeAssemblyJointBindings import (
+    ASSEMBLY_GROUND_CAPABILITY_NAME,
     ASSEMBLY_JOINT_CAPABILITY_NAME,
 )
 from VibeCADNativeAssemblyGrounding import active_grounded_joints
+from VibeCADNativeAssemblyInspectSchema import (
+    ASSEMBLY_CONNECTORS_CAPABILITY_NAME,
+)
 from VibeCADNativeAssemblyStructureBindings import (
-    ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+    ASSEMBLY_CREATE_CAPABILITY_NAME,
+    ASSEMBLY_INSERT_CAPABILITY_NAME,
+    ASSEMBLY_NEW_PART_CAPABILITY_NAME,
+    ASSEMBLY_RIGIDITY_CAPABILITY_NAME,
 )
 from VibeCADNativeCapabilityRegistry import (
     resolve_native_provider_surface,
@@ -130,6 +137,7 @@ def _run() -> None:
         source_box = document.addObject("Part::Box", "SourceBox")
         source_box.Label = "Local source box"
         document.recompute()
+        source_box.ViewObject.Visibility = False
         document.saveAs(str(target_path))
 
         source_document = App.newDocument("NativeAssemblySourceGate")
@@ -179,8 +187,12 @@ def _run() -> None:
         assert not production.missing_definition_names
         assert not production.missing_implementation_names
         assert not production.incomplete_definition_names
-        assert ASSEMBLY_STRUCTURE_CAPABILITY_NAME in production.tool_names
+        assert ASSEMBLY_CREATE_CAPABILITY_NAME in production.tool_names
+        assert ASSEMBLY_INSERT_CAPABILITY_NAME in production.tool_names
+        assert ASSEMBLY_NEW_PART_CAPABILITY_NAME in production.tool_names
+        assert ASSEMBLY_RIGIDITY_CAPABILITY_NAME in production.tool_names
         assert ASSEMBLY_JOINT_CAPABILITY_NAME in production.tool_names
+        assert ASSEMBLY_CONNECTORS_CAPABILITY_NAME in production.tool_names
         assert "component.interface" in production.tool_names
         assert "AssemblyContextToggleActive" in production.human_only_action_ids
         assert "AssemblyContextMakeFlexible" not in production.human_only_action_ids
@@ -213,16 +225,22 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
-        turn = NativeTurnSnapshot.from_provider_surface(production)
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def new_dispatcher() -> NativeTurnDispatcher:
+            current_turn = NativeTurnSnapshot.from_provider_surface(production)
+            return NativeTurnDispatcher(
+                document=document,
+                state=state,
+                registry=registry,
+                turn=current_turn,
+                runtimes=build_native_runtime_bindings(
+                    context,
+                    current_turn.tool_names,
+                ),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = new_dispatcher()
         call_number = 0
 
         def native_call(name: str, arguments: dict, *, succeeds: bool = True) -> dict:
@@ -238,60 +256,45 @@ def _run() -> None:
             return result
 
         initial_state = native_call("state.read", {"operation": "active"})
-        assert initial_state["domain"]["active_assembly"] is None
+        assert initial_state["domain"].get("active_assembly") is None
         assert initial_state["domain"]["assembly_count"] == 0
         document.clearUndos()
 
-        before_invalid = tuple(document.Objects)
-        native_call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
-            {
-                "operation": "create_assembly",
-                "label": "Missing expected state",
-                "parent_assembly": None,
-            },
-            succeeds=False,
-        )
-        assert tuple(document.Objects) == before_invalid
-        assert int(document.UndoCount) == 0
-
-        stale = native_call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
-            {
-                "operation": "create_assembly",
-                "label": "Stale root",
-                "parent_assembly": None,
-                "expected_assembly_count": 1,
-            },
-            succeeds=False,
-        )
-        assert stale["error_code"] == "NATIVE_ASSEMBLY_STRUCTURE_FAILED"
-        assert tuple(document.Objects) == before_invalid
-        assert int(document.UndoCount) == 0
-
         root_result = native_call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_CREATE_CAPABILITY_NAME,
             {
-                "operation": "create_assembly",
                 "label": "Native Root Assembly",
-                "parent_assembly": None,
-                "expected_assembly_count": 0,
             },
         )
         root_name = root_result["assembly"]["object_name"]
         root_joints_name = root_result["joint_group"]["object_name"]
         assert root_result["nested"] is False
-        assert root_result["active_assembly_unchanged"] is True
+        assert root_result["active_assembly_unchanged"] is False
+        assert root_result["active_assembly"]["object_name"] == root_name
         assert int(document.UndoCount) == 1
-        assert Gui.activeDocument().getInEdit() is None
         root = document.getObject(root_name)
         assert root.Label == "Native Root Assembly"
         assert _joints_group(root).Name == root_joints_name
+        assert Gui.activeDocument().getInEdit() is root.ViewObject
 
         after_root = native_call("state.read", {"operation": "active"})
-        assert after_root["domain"]["active_assembly"] is None
+        assert after_root["domain"]["active_assembly"]["object_name"] == root_name
         assert after_root["domain"]["assembly_count"] == 1
+        source_inventory = after_root["domain"]["available_component_sources"]
+        local_source = next(
+            item for item in source_inventory if item["object_name"] == source_box.Name
+        )
+        external_source = next(
+            item
+            for item in source_inventory
+            if item["document_name"] == source_document.Name
+            and item["object_name"] == source_assembly.Name
+        )
+        assert local_source["subassembly"] is False
+        assert external_source["subassembly"] is True
 
+        Gui.activeDocument().resetEdit()
+        _process_events()
         document.undo()
         _process_events()
         assert document.getObject(root_name) is None
@@ -302,32 +305,19 @@ def _run() -> None:
         assert root is not None
         assert _joints_group(root).Name == root_joints_name
         assert Gui.activeDocument().getInEdit() is None
+        dispatcher = new_dispatcher()
 
         assert Gui.activeDocument().setEdit(root.Name)
         _process_events(24)
         assert Gui.activeDocument().getInEdit() is root.ViewObject
         active_state = native_call("state.read", {"operation": "active"})
         assert active_state["domain"]["active_assembly"]["object_name"] == root_name
-        source_inventory = active_state["domain"]["available_component_sources"]
-        local_source = next(
-            item for item in source_inventory if item["object_name"] == source_box.Name
-        )
-        external_source = next(
-            item
-            for item in source_inventory
-            if item["document_uid"] == source_document.Uid
-            and item["object_name"] == source_assembly.Name
-        )
-        assert local_source["subassembly"] is False
-        assert external_source["subassembly"] is True
 
         nested_result = native_call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_CREATE_CAPABILITY_NAME,
             {
-                "operation": "create_assembly",
                 "label": "Native Nested Assembly",
                 "parent_assembly": {"object_name": root_name},
-                "expected_assembly_count": 1,
             },
         )
         nested_call_id = f"assembly-structure-call-{call_number}"
@@ -343,13 +333,11 @@ def _run() -> None:
         assert int(document.UndoCount) == 2
 
         replay = dispatcher.call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_CREATE_CAPABILITY_NAME,
             json.dumps(
                 {
-                    "operation": "create_assembly",
                     "label": "Native Nested Assembly",
                     "parent_assembly": {"object_name": root_name},
-                    "expected_assembly_count": 1,
                 },
                 separators=(",", ":"),
             ),
@@ -370,36 +358,55 @@ def _run() -> None:
         nested = document.getObject(nested_name)
         assert nested is not None and nested in list(root.Group)
         assert _joints_group(nested).Name == nested_joints_name
+        dispatcher = new_dispatcher()
 
         local_insert = native_call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_INSERT_CAPABILITY_NAME,
             {
-                "operation": "insert_component",
                 "assembly": {"object_name": root_name},
                 "source": {
                     key: local_source[key]
-                    for key in (
-                        "document_uid",
-                        "document_name",
-                        "object_name",
-                        "object_id",
-                    )
+                    for key in ("document_name", "object_name")
                 },
                 "label": "Placed local box",
-                "placement": _placement(10.0, 20.0, 30.0, 15.0),
-                "rigid": None,
-                "expected_component_count": 1,
+                "placement": {},
             },
         )
         local_occurrence_name = local_insert["occurrence"]["object_name"]
         local_occurrence = document.getObject(local_occurrence_name)
+        assert local_occurrence.ViewObject.Visibility is True
+        assert local_occurrence.ViewObject.getBoundingBox().isValid()
         assert local_occurrence.TypeId == "App::Link"
         assert local_occurrence.LinkedObject is source_box
         assert local_occurrence.Label == "Placed local box"
+        assert local_occurrence.Placement.isSame(App.Placement(), 1.0e-12)
         assert local_insert["component_count"] == 2
         assert local_insert["grounded"] is False
         assert Gui.activeDocument().getInEdit() is root.ViewObject
         assert int(document.UndoCount) == 3
+
+        connectors = native_call(
+            ASSEMBLY_CONNECTORS_CAPABILITY_NAME,
+            {
+                "first_component": {"object_name": local_occurrence_name},
+                "second_component": {"object_name": nested_name},
+                "joint_type": "fixed",
+            },
+        )
+        assert connectors["operation"] == "joint_connector_pairs"
+        assert connectors["first_component"]["object_name"] == local_occurrence_name
+        assert connectors["second_component"]["object_name"] == nested_name
+        assert connectors["pairs"] == []
+        invalid_connectors = native_call(
+            ASSEMBLY_CONNECTORS_CAPABILITY_NAME,
+            {
+                "first_component": {"object_name": source_box.Name},
+                "second_component": {"object_name": local_occurrence_name},
+                "joint_type": "fixed",
+            },
+            succeeds=False,
+        )
+        assert "not a component" in invalid_connectors["error"]
 
         document.undo()
         _process_events()
@@ -410,32 +417,25 @@ def _run() -> None:
         local_occurrence = document.getObject(local_occurrence_name)
         assert local_occurrence is not None and local_occurrence.LinkedObject is source_box
         assert Gui.activeDocument().getInEdit() is root.ViewObject
+        dispatcher = new_dispatcher()
 
         subassembly_insert = native_call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_INSERT_CAPABILITY_NAME,
             {
-                "operation": "insert_component",
                 "assembly": {"object_name": root_name},
                 "source": {
                     key: external_source[key]
-                    for key in (
-                        "document_uid",
-                        "document_name",
-                        "object_name",
-                        "object_id",
-                    )
+                    for key in ("document_name", "object_name")
                 },
-                "label": "Flexible external module",
+                "label": "External module",
                 "placement": _placement(-25.0, 5.0, 0.0, -30.0),
-                "rigid": False,
-                "expected_component_count": 2,
             },
         )
         subassembly_occurrence_name = subassembly_insert["occurrence"]["object_name"]
         subassembly_occurrence = document.getObject(subassembly_occurrence_name)
         assert subassembly_occurrence.TypeId == "Assembly::AssemblyLink"
         assert subassembly_occurrence.LinkedObject is source_assembly
-        assert subassembly_occurrence.Rigid is False
+        assert subassembly_occurrence.Rigid is True
         assert subassembly_insert["component_count"] == 3
         assert len(subassembly_insert["receipt"]["created"]) >= 2
         assert all(
@@ -454,18 +454,20 @@ def _run() -> None:
         subassembly_occurrence = document.getObject(subassembly_occurrence_name)
         assert subassembly_occurrence is not None
         assert subassembly_occurrence.LinkedObject is source_assembly
-        assert subassembly_occurrence.Rigid is False
+        assert subassembly_occurrence.Rigid is True
+        dispatcher = new_dispatcher()
 
-        flexible_summary = _active_summary(native_call, root_name)
-        flexible_link = next(
-            item
-            for item in flexible_summary["components"]
-            if item["object_name"] == subassembly_occurrence_name
+        flexible_insert = native_call(
+            ASSEMBLY_RIGIDITY_CAPABILITY_NAME,
+            {
+                "operation": "make_flexible",
+                "assembly": {"object_name": root_name},
+                "link": {"object_name": subassembly_occurrence_name},
+            },
         )
-        assert flexible_link["rigid"] is False
-        assert flexible_link["linked_assembly"]["object_name"] == source_assembly.Name
-        assert flexible_link["linked_assembly"]["object_id"] == source_assembly.ID
-        flexible_diagnosis = flexible_summary["diagnosis_state"]
+        assert flexible_insert["operation"] == "make_flexible"
+        assert document.getObject(subassembly_occurrence_name).Rigid is False
+        assert int(document.UndoCount) == 5
 
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(local_occurrence)
@@ -476,13 +478,9 @@ def _run() -> None:
             "operation": "make_rigid",
             "assembly": {"object_name": root_name},
             "link": {"object_name": subassembly_occurrence_name},
-            "expected_state_sha256": flexible_diagnosis["state_sha256"],
-            "expected_component_count": flexible_diagnosis["component_count"],
-            "expected_grounded_count": flexible_diagnosis["grounded_count"],
-            "expected_joint_count": flexible_diagnosis["joint_count"],
         }
         rigid_result = native_call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_RIGIDITY_CAPABILITY_NAME,
             rigid_arguments,
         )
         rigid_call_id = f"assembly-structure-call-{call_number}"
@@ -497,27 +495,15 @@ def _run() -> None:
         assert tuple(
             obj.Name for obj in Gui.Selection.getSelection(document.Name)
         ) == selection_before
-        assert int(document.UndoCount) == 5
+        assert int(document.UndoCount) == 6
 
         rigid_replay = dispatcher.call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_RIGIDITY_CAPABILITY_NAME,
             json.dumps(rigid_arguments, separators=(",", ":")),
             rigid_call_id,
         )
         assert rigid_replay == rigid_result
-        assert int(document.UndoCount) == 5
-
-        stale_flexible = native_call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
-            {
-                **rigid_arguments,
-                "operation": "make_flexible",
-            },
-            succeeds=False,
-        )
-        assert stale_flexible["error_code"] == "NATIVE_ASSEMBLY_RIGIDITY_FAILED"
-        assert document.getObject(subassembly_occurrence_name).Rigid is True
-        assert int(document.UndoCount) == 5
+        assert int(document.UndoCount) == 6
 
         document.undo()
         _process_events()
@@ -530,48 +516,26 @@ def _run() -> None:
         root = document.getObject(root_name)
         subassembly_occurrence = document.getObject(subassembly_occurrence_name)
         assert subassembly_occurrence.Rigid is True
-
-        rigid_summary = _active_summary(native_call, root_name)
-        rigid_diagnosis = rigid_summary["diagnosis_state"]
-        assert rigid_diagnosis["state_sha256"] == rigid_result[
-            "assembly_state_sha256"
-        ]
+        dispatcher = new_dispatcher()
         ground_result = native_call(
-            ASSEMBLY_JOINT_CAPABILITY_NAME,
+            ASSEMBLY_GROUND_CAPABILITY_NAME,
             {
                 "operation": "set_grounded",
-                "assembly": {"object_name": root_name},
-                "targets": [
-                    {
-                        "component": {
-                            "object_name": subassembly_occurrence_name,
-                        },
-                        "expected_grounded": False,
-                    }
-                ],
-                "grounded": True,
-                "expected_component_count": rigid_diagnosis["component_count"],
-                "expected_grounded_count": rigid_diagnosis["grounded_count"],
+                "components": [subassembly_occurrence_name],
             },
         )
         ground_joint_name = ground_result["targets"][0]["grounded_joint"][
             "object_name"
         ]
         assert len(active_grounded_joints(_joints_group(root))) == 1
-        assert int(document.UndoCount) == 6
+        assert int(document.UndoCount) == 7
 
-        grounded_summary = _active_summary(native_call, root_name)
-        grounded_diagnosis = grounded_summary["diagnosis_state"]
         flexible_result = native_call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_RIGIDITY_CAPABILITY_NAME,
             {
                 "operation": "make_flexible",
                 "assembly": {"object_name": root_name},
                 "link": {"object_name": subassembly_occurrence_name},
-                "expected_state_sha256": grounded_diagnosis["state_sha256"],
-                "expected_component_count": grounded_diagnosis["component_count"],
-                "expected_grounded_count": grounded_diagnosis["grounded_count"],
-                "expected_joint_count": grounded_diagnosis["joint_count"],
             },
         )
         subassembly_occurrence = document.getObject(subassembly_occurrence_name)
@@ -587,7 +551,7 @@ def _run() -> None:
             item["object_name"] == ground_joint_name
             for item in flexible_result["receipt"]["deleted"]
         )
-        assert int(document.UndoCount) == 7
+        assert int(document.UndoCount) == 8
 
         document.undo()
         _process_events()
@@ -603,17 +567,16 @@ def _run() -> None:
         assert subassembly_occurrence.Rigid is False
         assert document.getObject(ground_joint_name) is None
         assert not active_grounded_joints(_joints_group(root))
+        dispatcher = new_dispatcher()
 
         prior_body = Gui.activeDocument().activeView().getActiveObject("pdbody")
         new_part_arguments = {
-            "operation": "create_part",
             "assembly": {"object_name": root_name},
             "label": "Native drive bracket",
             "placement": _placement(2.0, 4.0, 6.0, 45.0),
-            "expected_component_count": 3,
         }
         new_part_result = native_call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_NEW_PART_CAPABILITY_NAME,
             new_part_arguments,
         )
         new_part_call_id = f"assembly-structure-call-{call_number}"
@@ -634,15 +597,15 @@ def _run() -> None:
         assert Gui.activeDocument().activeView().getActiveObject("pdbody") is prior_body
         assert Gui.activeDocument().getInEdit() is root.ViewObject
         assert new_part_result["component_count"] == 4
-        assert int(document.UndoCount) == 8
+        assert int(document.UndoCount) == 9
 
         replay = dispatcher.call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_NEW_PART_CAPABILITY_NAME,
             json.dumps(new_part_arguments, separators=(",", ":")),
             new_part_call_id,
         )
         assert replay == new_part_result
-        assert int(document.UndoCount) == 8
+        assert int(document.UndoCount) == 9
 
         document.undo()
         _process_events()
@@ -689,6 +652,8 @@ def _run() -> None:
         body = document.getObject(body_name)
         part_occurrence = document.getObject(part_occurrence_name)
         assert local_occurrence.LinkedObject is source_box
+        assert local_occurrence.ViewObject.Visibility is True
+        assert local_occurrence.ViewObject.getBoundingBox().isValid()
         assert subassembly_occurrence.LinkedObject is source_assembly
         assert subassembly_occurrence.Rigid is False
         assert body in list(part.Group)

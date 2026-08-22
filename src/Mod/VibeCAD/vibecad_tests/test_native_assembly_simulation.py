@@ -126,31 +126,25 @@ def test_schema_maps_only_simulation_action_to_one_closed_bounded_graph() -> Non
     assert variant.transaction_behavior == "document"
     assert variant.background_required is False
     assert set(schema["required"]) == {
-        "operation",
-        "assembly",
-        "label",
-        "time_start_seconds",
-        "time_end_seconds",
-        "output_time_step_seconds",
-        "global_error_tolerance",
-        "frames_per_second",
         "motions",
-        "expected_simulation_state_sha256",
-        "expected_component_count",
-        "expected_grounded_count",
-        "expected_eligible_joint_count",
-        "expected_simulation_count",
     }
     assert schema["additionalProperties"] is False
+    assert schema["properties"]["label"]["default"] == "Simulation"
     motions = schema["properties"]["motions"]
     assert motions["minItems"] == 1
     assert motions["maxItems"] == 256
-    assert motions["items"]["additionalProperties"] is False
-    assert motions["items"]["properties"]["motion_type"]["enum"] == [
+    variants = motions["items"]["oneOf"]
+    assert len(variants) == 4
+    assert {variant["properties"]["motion_type"]["const"] for variant in variants} == {
         "angular",
         "linear",
-    ]
-    assert motions["items"]["properties"]["formula"]["maxLength"] == 512
+    }
+    assert {name for variant in variants for name in variant["required"]} >= {
+        "angular_speed_degrees_per_second",
+        "linear_speed_mm_per_second",
+        "formula",
+    }
+    assert all(variant["additionalProperties"] is False for variant in variants)
 
 
 def test_runtime_parser_preserves_motion_order_and_exact_joint_refs() -> None:
@@ -160,12 +154,17 @@ def test_runtime_parser_preserves_motion_order_and_exact_joint_refs() -> None:
             {
                 "joint": {"object_name": "Hinge"},
                 "motion_type": "angular",
-                "formula": "initialValue + time",
+                "angular_speed_degrees_per_second": 30.0,
             },
             {
                 "joint": {"object_name": "Slide"},
                 "motion_type": "linear",
-                "formula": "2*time",
+                "linear_speed_mm_per_second": 8.0,
+            },
+            {
+                "joint": {"object_name": "Wave"},
+                "motion_type": "angular",
+                "formula": "initialValue + sin(time)",
             },
         ],
     )
@@ -173,11 +172,17 @@ def test_runtime_parser_preserves_motion_order_and_exact_joint_refs() -> None:
     assert [motion.joint_ref.object_name for motion in motions] == [
         "Hinge",
         "Slide",
+        "Wave",
     ]
-    assert [motion.motion_type for motion in motions] == ["angular", "linear"]
+    assert [motion.motion_type for motion in motions] == [
+        "angular",
+        "linear",
+        "angular",
+    ]
     assert [motion.formula for motion in motions] == [
-        "initialValue + time",
-        "2*time",
+        "initialValue + (30*pi/180)*time",
+        "initialValue + 8*time",
+        "initialValue + sin(time)",
     ]
 
     with pytest.raises(NativeAssemblySimulationError, match="exactly"):
@@ -187,7 +192,7 @@ def test_runtime_parser_preserves_motion_order_and_exact_joint_refs() -> None:
                 {
                     "joint": {"object_name": "Hinge"},
                     "motion_type": "angular",
-                    "formula": "time",
+                    "angular_speed_degrees_per_second": 30.0,
                     "extra": True,
                 }
             ],
@@ -199,7 +204,7 @@ def test_runtime_parser_preserves_motion_order_and_exact_joint_refs() -> None:
                 {
                     "joint": {"object_name": "Hinge"},
                     "motion_type": "rotary",
-                    "formula": "time",
+                    "formula": "initialValue + time",
                 }
             ],
         )

@@ -22,8 +22,6 @@ import VibeCADGui as VibeGui
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeRegistry import build_native_capability_registry
-from VibeCADNativeRobotDefaultsState import capture_robot_waypoint_defaults
-from VibeCADNativeRobotState import capture_robot_setup_state
 from VibeCADNativeRobotTrajectory import NativeRobotTrajectoryError
 from VibeCADNativeRobotTrajectorySchema import (
     ROBOT_TRAJECTORY_CAPABILITY_NAME,
@@ -116,36 +114,22 @@ def _trajectory_record(document, trajectory):
     return state, state.records[index]
 
 
-def _create_arguments(document) -> dict:
-    state = capture_robot_trajectory_state(document)
+def _create_arguments() -> dict:
     return {
         "operation": "create_trajectory",
         "label": "Native inspection route",
-        "expected_state_sha256": state.state_sha256,
-        "expected_trajectory_count": len(state.trajectories),
     }
 
 
-def _robot_waypoint_arguments(document, robot, trajectory) -> dict:
-    trajectories, trajectory_record = _trajectory_record(document, trajectory)
-    robots = capture_robot_setup_state(document)
-    robot_index = robots.robots.index(robot)
-    defaults = capture_robot_waypoint_defaults()
+def _robot_waypoint_arguments(robot, trajectory) -> dict:
     return {
         "operation": "insert_robot_waypoint",
         "trajectory": {"object_name": trajectory.Name},
         "robot": {"object_name": robot.Name},
-        "expected_trajectory_setup_state_sha256": trajectories.state_sha256,
-        "expected_trajectory_state_sha256": trajectory_record.state_sha256,
-        "expected_robot_setup_state_sha256": robots.state_sha256,
-        "expected_robot_state_sha256": robots.records[robot_index].state_sha256,
-        "expected_defaults_state_sha256": defaults.state_sha256,
     }
 
 
-def _position_waypoint_arguments(document, trajectory, position) -> dict:
-    trajectories, record = _trajectory_record(document, trajectory)
-    defaults = capture_robot_waypoint_defaults()
+def _position_waypoint_arguments(trajectory, position) -> dict:
     return {
         "operation": "insert_position_waypoint",
         "trajectory": {"object_name": trajectory.Name},
@@ -154,9 +138,6 @@ def _position_waypoint_arguments(document, trajectory, position) -> dict:
             "y": position[1],
             "z": position[2],
         },
-        "expected_trajectory_setup_state_sha256": trajectories.state_sha256,
-        "expected_trajectory_state_sha256": record.state_sha256,
-        "expected_defaults_state_sha256": defaults.state_sha256,
     }
 
 
@@ -321,6 +302,20 @@ def _run() -> None:
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
+
+        def refresh_dispatcher() -> None:
+            nonlocal turn, dispatcher
+            turn = _focused_turn(surface, registry)
+            dispatcher = NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
         call_index = 0
 
         def call(arguments: dict, *, succeeds: bool = True, call_id: str = "") -> dict:
@@ -338,7 +333,7 @@ def _run() -> None:
             return result
 
         _select(sentinel)
-        create_arguments = _create_arguments(document)
+        create_arguments = _create_arguments()
         create_call_id = "native-trajectory-create-idempotence"
         created = call(create_arguments, call_id=create_call_id)
         native = document.getObject(created["trajectory"]["object_name"])
@@ -363,8 +358,9 @@ def _run() -> None:
         native = document.getObject(native_name)
         assert native is not None
         assert tuple(timeline.Operations) == (*human_operations, native)
+        refresh_dispatcher()
 
-        robot_arguments = _robot_waypoint_arguments(document, robot, native)
+        robot_arguments = _robot_waypoint_arguments(robot, native)
         before_failure = capture_robot_trajectory_state(document)
         failure_undo = int(document.UndoCount)
         original_verify = runtime_module.verify_appended_waypoint
@@ -381,28 +377,6 @@ def _run() -> None:
         assert capture_robot_trajectory_state(document) == before_failure
         assert int(document.UndoCount) == failure_undo
 
-        stale_trajectory = call(
-            {
-                **robot_arguments,
-                "expected_trajectory_state_sha256": "0" * 64,
-            },
-            succeeds=False,
-        )
-        assert stale_trajectory["error_code"] == "NATIVE_ROBOT_TRAJECTORY_FAILED"
-        stale_robot = call(
-            {**robot_arguments, "expected_robot_state_sha256": "0" * 64},
-            succeeds=False,
-        )
-        assert stale_robot["error_code"] == "NATIVE_ROBOT_TRAJECTORY_FAILED"
-        stale_defaults = call(
-            {**robot_arguments, "expected_defaults_state_sha256": "0" * 64},
-            succeeds=False,
-        )
-        assert stale_defaults["error_code"] == "NATIVE_ROBOT_TRAJECTORY_FAILED"
-        assert capture_robot_trajectory_state(document) == before_failure
-        assert int(document.UndoCount) == failure_undo
-
-        robot_arguments = _robot_waypoint_arguments(document, robot, native)
         robot_call_id = "native-trajectory-robot-waypoint-idempotence"
         inserted_robot = call(robot_arguments, call_id=robot_call_id)
         native_after_robot_state, native_after_robot = _trajectory_record(
@@ -424,8 +398,9 @@ def _run() -> None:
         _process_events(12)
         _, after_redo = _trajectory_record(document, native)
         assert after_redo.state_sha256 == native_after_robot.state_sha256
+        refresh_dispatcher()
 
-        position_arguments = _position_waypoint_arguments(document, native, point)
+        position_arguments = _position_waypoint_arguments(native, point)
         position_call_id = "native-trajectory-position-waypoint-idempotence"
         inserted_position = call(position_arguments, call_id=position_call_id)
         final_state, native_complete = _trajectory_record(document, native)
@@ -468,8 +443,7 @@ def _run() -> None:
             "VIBECAD_NATIVE_ROBOT_TRAJECTORY_GUI_OK "
             "human_create_parity=true exact_history=true exact_targets=true "
             "human_robot_waypoint_parity=true human_position_waypoint_parity=true "
-            "provider_preselection=false stale_trajectory_noop=true "
-            "stale_robot_noop=true stale_defaults_noop=true rollback=true "
+            "provider_preselection=false rollback=true "
             "idempotent=true undo_redo=true reopen=true selection_preserved=true",
             flush=True,
         )
