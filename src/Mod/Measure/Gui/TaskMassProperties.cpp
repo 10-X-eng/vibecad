@@ -45,6 +45,7 @@
 #include <Gui/Application.h>
 #include <Gui/ExactTransaction.h>
 #include <Gui/Document.h>
+#include <Gui/ViewProvider.h>
 #include <Gui/ViewProviderDocumentObject.h>
 
 #include <Base/Console.h>
@@ -83,6 +84,46 @@
 
 using namespace MassPropertiesGui;
 using MeasureGui::isTimelineSelectionActive;
+
+namespace
+{
+
+Gui::ViewProvider* viewProviderOf(App::DocumentObject* object)
+{
+    if (!object || !object->getDocument() || !Gui::Application::Instance) {
+        return nullptr;
+    }
+    auto* guiDoc = Gui::Application::Instance->getDocument(object->getDocument());
+    return guiDoc ? guiDoc->getViewProvider(object) : nullptr;
+}
+
+bool viewProviderIsShown(App::DocumentObject* object)
+{
+    auto* viewProvider = viewProviderOf(object);
+    return viewProvider && viewProvider->isShow();
+}
+
+bool isPresentedForMassProperties(App::DocumentObject* object)
+{
+    // PartDesign keeps Tip features' Visibility property false while the Body
+    // still displays them. Climb to a shown container instead of treating the
+    // hidden property as "not in the 3D view".
+    std::unordered_set<const App::DocumentObject*> seen;
+    auto* current = object;
+    while (current && seen.insert(current).second) {
+        if (viewProviderIsShown(current)) {
+            return true;
+        }
+        auto* group = App::GroupExtension::getGroupOfObject(current);
+        if (!group || group == current) {
+            break;
+        }
+        current = group;
+    }
+    return false;
+}
+
+}  // namespace
 
 namespace MassPropertiesGui
 {
@@ -955,18 +996,9 @@ void TaskMassProperties::tryUpdate()
             }
 
             bool isVisible = isTimelineSelectionActive(sel.pObject)
-                && isTimelineSelectionActive(pickedObject);
-            Gui::Document* guiDoc = Gui::Application::Instance->getDocument(
-                pickedObject->getDocument()
-            );
-            if (guiDoc) {
-                auto* viewProvider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
-                    guiDoc->getViewProvider(pickedObject)
-                );
-                if (viewProvider && !viewProvider->Visibility.getValue()) {
-                    isVisible = false;
-                }
-            }
+                && isTimelineSelectionActive(pickedObject)
+                && (isPresentedForMassProperties(sel.pObject)
+                    || isPresentedForMassProperties(pickedObject));
 
             if (!isVisible) {
                 hasInvisibleSelection = true;
@@ -1401,17 +1433,8 @@ void TaskMassProperties::tryUpdate()
                 continue;
             }
 
-            Gui::Document* guiDoc = Gui::Application::Instance->getDocument(
-                displayObject->getDocument()
-            );
-            if (!guiDoc) {
-                continue;
-            }
-
-            auto* viewProvider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
-                guiDoc->getViewProvider(displayObject)
-            );
-            if (!viewProvider || !viewProvider->Visibility.getValue()) {
+            if (!isPresentedForMassProperties(selObj.pObject)
+                && !isPresentedForMassProperties(displayObject)) {
                 continue;
             }
 
