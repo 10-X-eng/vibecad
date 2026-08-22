@@ -114,17 +114,10 @@ def _assembly_summary(state: dict, assembly_name: str) -> dict:
     )
 
 
-def _arguments(summary: dict, *, offset: int, limit: int) -> dict:
-    diagnosis = summary["diagnosis_state"]
-    assert diagnosis["available"] is True
+def _arguments(assembly_name: str, *, offset: int, limit: int) -> dict:
     return {
         "operation": "select_conflicting_constraints",
-        "assembly": {"object_name": summary["object_name"]},
-        "expected_diagnosis_state_sha256": diagnosis["state_sha256"],
-        "expected_component_count": diagnosis["component_count"],
-        "expected_grounded_count": diagnosis["grounded_count"],
-        "expected_joint_count": diagnosis["joint_count"],
-        "expected_conflicting_count": diagnosis["conflicting_count"],
+        "assembly": {"object_name": assembly_name},
         "offset": offset,
         "limit": limit,
     }
@@ -289,17 +282,17 @@ def _run() -> None:
         )
         assert current["ok"] is True, current
         summary = _assembly_summary(current, assembly.Name)
-        diagnosis = summary["diagnosis_state"]
-        assert diagnosis["available"] is True
-        assert diagnosis["solver_status"] == -1
-        assert diagnosis["conflicting_count"] == 3
-        assert diagnosis["joint_count"] == 3
-        assert diagnosis["grounded_count"] == 1
+        assert summary["counts"] == {
+            "components": 3,
+            "joints": 3,
+            "grounded": 1,
+        }
+        assert summary["solver"]["conflicts"]["conflicting"] == 3
 
         before_objects = tuple(document.Objects)
         before_placements = tuple(component.Placement for component in components)
         before_selection = tuple(Gui.Selection.getSelection())
-        stale_arguments = _arguments(summary, offset=0, limit=2)
+        stale_arguments = _arguments(assembly.Name, offset=0, limit=2)
         stale_arguments["expected_diagnosis_state_sha256"] = "0" * 64
         stale = dispatcher.call(
             ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME,
@@ -307,19 +300,9 @@ def _run() -> None:
             "assembly-conflict-stale",
         )
         assert stale["ok"] is False, stale
-        assert stale["error_code"] == "NATIVE_ASSEMBLY_DIAGNOSIS_FAILED"
+        assert stale["error_code"] == "NATIVE_ARGUMENTS_INVALID"
 
-        wrong_count_arguments = _arguments(summary, offset=0, limit=2)
-        wrong_count_arguments["expected_conflicting_count"] = 2
-        wrong_count = dispatcher.call(
-            ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME,
-            json.dumps(wrong_count_arguments, separators=(",", ":")),
-            "assembly-conflict-wrong-count",
-        )
-        assert wrong_count["ok"] is False, wrong_count
-        assert wrong_count["error_code"] == "NATIVE_ASSEMBLY_DIAGNOSIS_FAILED"
-
-        first_arguments = _arguments(summary, offset=0, limit=2)
+        first_arguments = _arguments(assembly.Name, offset=0, limit=2)
         first_encoded = json.dumps(first_arguments, separators=(",", ":"))
         first = dispatcher.call(
             ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME,
@@ -329,7 +312,10 @@ def _run() -> None:
         assert first["ok"] is True, first
         second = dispatcher.call(
             ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME,
-            json.dumps(_arguments(summary, offset=2, limit=2), separators=(",", ":")),
+            json.dumps(
+                _arguments(assembly.Name, offset=2, limit=2),
+                separators=(",", ":"),
+            ),
             "assembly-conflict-second-page",
         )
         assert second["ok"] is True, second
@@ -411,11 +397,10 @@ def _run() -> None:
             "assembly-conflict-reopened-state",
         )
         assert reopened_state["ok"] is True, reopened_state
-        reopened_summary = _assembly_summary(reopened_state, assembly.Name)
         reopened_result = reopened_dispatcher.call(
             ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME,
             json.dumps(
-                _arguments(reopened_summary, offset=0, limit=32),
+                _arguments(assembly.Name, offset=0, limit=32),
                 separators=(",", ":"),
             ),
             "assembly-conflict-reopened-read",
@@ -431,7 +416,8 @@ def _run() -> None:
         print(
             "VIBECAD_NATIVE_ASSEMBLY_CONFLICT_DIAGNOSIS_GUI_OK "
             "components=3 joints=3 conflicts=3 solver_status=-1 human_match=true "
-            "pagination=true stale_noop=true selection=true transactions=0 reopen=true",
+            "pagination=true removed_state_field=true selection=true "
+            "transactions=0 reopen=true",
             flush=True,
         )
         exit_code = 0

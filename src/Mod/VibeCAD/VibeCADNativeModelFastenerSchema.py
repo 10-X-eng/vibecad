@@ -43,7 +43,7 @@ _ATTACHMENT_HOST = parameters_schema(
 
 
 def standard_fastener_options_schema() -> dict[str, Any]:
-    return parameters_schema(
+    schema = parameters_schema(
         {
             "body_width_code": _CATALOG_TEXT,
             "pitch": _CATALOG_TEXT,
@@ -61,20 +61,30 @@ def standard_fastener_options_schema() -> dict[str, Any]:
         },
         (),
     )
+    schema["description"] = (
+        "Non-default values listed by model.catalog for this standard and size."
+    )
+    return schema
 
 
 def standard_fastener_definition_schema() -> dict[str, Any]:
     fields = {
         "standard": _CATALOG_TEXT,
         "nominal_thread": _CATALOG_TEXT,
-        "length_mm": {
-            "oneOf": [POSITIVE_MM_SCHEMA, {"type": "null"}],
-        },
+        "length_mm": POSITIVE_MM_SCHEMA,
         "model_thread": {"type": "boolean"},
         "left_handed": {"type": "boolean"},
-        "options": standard_fastener_options_schema(),
+        "catalog_option_overrides": standard_fastener_options_schema(),
     }
-    return parameters_schema(fields, tuple(fields))
+    return parameters_schema(
+        fields,
+        (
+            "standard",
+            "nominal_thread",
+            "model_thread",
+            "left_handed",
+        ),
+    )
 
 
 def model_fastener_capability_definition() -> NativeCapabilityDefinition:

@@ -225,7 +225,11 @@ def test_provider_runner_dispatches_call_id_and_records_concise_trace() -> None:
 
     result = runner("state.read", '{"operation":"active"}', "provider-call-1")
 
-    assert result == {"ok": True, "value": 4}
+    assert result == {
+        "ok": True,
+        "value": 4,
+        "_vibecad_native_result": True,
+    }
     assert dispatcher.calls == [
         ("state.read", '{"operation":"active"}', "provider-call-1")
     ]

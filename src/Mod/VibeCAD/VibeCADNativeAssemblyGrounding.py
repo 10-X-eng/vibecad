@@ -261,10 +261,6 @@ def preflight_grounding(
             raise NativeAssemblyGroundingError(
                 "An exact component grounding state changed; read current Assemble state and retry."
             )
-        if current is spec.grounded:
-            raise NativeAssemblyGroundingError(
-                "Every grounding target must change to the requested state."
-            )
         resolved.append(component)
         existing.append(joint)
     return PreparedGrounding(
@@ -318,8 +314,19 @@ def apply_grounding(
     created_joints: list[Any] = []
     deleted_identities = []
     deleted_names: list[str] = []
+    changed_targets = tuple(
+        component
+        for component, joint in zip(
+            prepared.targets, prepared.existing_joints, strict=True
+        )
+        if (joint is not None) is not spec.grounded
+    )
     if spec.grounded:
-        for component in prepared.targets:
+        for component, existing_joint in zip(
+            prepared.targets, prepared.existing_joints, strict=True
+        ):
+            if existing_joint is not None:
+                continue
             joint = joint_factory(component, prepared.assembly)
             if (
                 joint is None
@@ -334,9 +341,7 @@ def apply_grounding(
     else:
         for joint in prepared.existing_joints:
             if joint is None:
-                raise NativeAssemblyGroundingError(
-                    "The exact grounding joint disappeared before removal."
-                )
+                continue
             deleted_identities.append(object_identity(joint))
             deleted_names.append(str(joint.Name))
             document.removeObject(str(joint.Name))
@@ -344,7 +349,7 @@ def apply_grounding(
     changed_objects = (
         prepared.assembly,
         prepared.joint_group,
-        *prepared.targets,
+        *changed_targets,
     )
     return NativeMutationDraft(
         value={
@@ -352,6 +357,7 @@ def apply_grounding(
             "assembly": prepared.assembly,
             "joint_group": prepared.joint_group,
             "targets": prepared.targets,
+            "changed_targets": changed_targets,
             "created_joints": tuple(created_joints),
             "deleted_names": tuple(deleted_names),
             "before_objects": before_objects,
@@ -360,7 +366,7 @@ def apply_grounding(
         },
         recompute_targets=(
             *created_joints,
-            *prepared.targets,
+            *changed_targets,
             prepared.joint_group,
             prepared.assembly,
         ),
@@ -410,8 +416,8 @@ def verify_grounding(
         after_joints,
         ownership_checker,
     )
-    expected_count = spec.expected_grounded_count + (
-        len(targets) if spec.grounded else -len(targets)
+    expected_count = (
+        spec.expected_grounded_count + len(created) - len(deleted_names)
     )
     if len(after_joints) != expected_count:
         raise NativeAssemblyGroundingError(
@@ -481,4 +487,40 @@ def verify_grounding(
         "component_count": len(assembly_components(assembly)),
         "grounded_count": len(after_joints),
         "active_assembly_unchanged": True,
+        "changed": bool(value["changed_targets"]),
+    }
+
+
+def prepared_grounding_result(
+    prepared: PreparedGrounding,
+    spec: GroundingSpec,
+) -> dict[str, Any]:
+    """Return a verified desired-state result when no mutation is needed."""
+
+    if any(
+        (joint is not None) is not spec.grounded
+        for joint in prepared.existing_joints
+    ):
+        raise NativeAssemblyGroundingError(
+            "The grounding request still requires a document change."
+        )
+    return {
+        "assembly": object_reference(prepared.assembly),
+        "grounded": spec.grounded,
+        "targets": [
+            {
+                "component": object_reference(component),
+                "grounded": spec.grounded,
+                "grounded_joint": (
+                    object_reference(joint) if joint is not None else None
+                ),
+            }
+            for component, joint in zip(
+                prepared.targets, prepared.existing_joints, strict=True
+            )
+        ],
+        "component_count": spec.expected_component_count,
+        "grounded_count": spec.expected_grounded_count,
+        "active_assembly_unchanged": True,
+        "changed": False,
     }

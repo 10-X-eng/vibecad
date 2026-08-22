@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import signal
 import sys
 import threading
@@ -22,6 +23,12 @@ import VibeCADCodex as CodexModule
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADMCP import get_control_mode_controller
+from VibeCADLiveAcceptanceOracle import (
+    AssemblyExpectations,
+    copy_linked_document_dependencies,
+    validate_assembly_input_snapshot,
+    validate_assembly_snapshot,
+)
 from VibeCADProvider import CodexProvider, provider_tool_schema_digest
 from VibeCADSession import run_native_surface_continuation, run_prompt
 
@@ -95,6 +102,50 @@ def _shape_summary(document) -> dict:
     }
 
 
+def _optional_nonnegative_integer(name: str) -> int | None:
+    raw = str(os.environ.get(name) or "").strip()
+    if not raw:
+        return None
+    value = int(raw)
+    if value < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer.")
+    return value
+
+
+def _print_live_progress(event: dict) -> None:
+    """Keep the exact model/tool sequence visible during long live runs."""
+
+    if str(event.get("event") or "") not in {
+        "context_build_completed",
+        "provider_tool_requested",
+        "provider_tool_result_sent",
+        "provider_turn_completed",
+        "provider_turn_failed",
+    }:
+        return
+    visible = {
+        key: event[key]
+        for key in (
+            "event",
+            "provider",
+            "workbench",
+            "provider_tool_count",
+            "tool_name",
+            "arguments",
+            "ok",
+            "failure_stage",
+            "error",
+            "tool_count",
+        )
+        if key in event
+    }
+    print(
+        "VIBECAD_OLLAMA_LIVE_EVENT "
+        + json.dumps(visible, ensure_ascii=True, separators=(",", ":")),
+        flush=True,
+    )
+
+
 def _run() -> None:
     application = QtWidgets.QApplication.instance()
     prompt = str(os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_PROMPT") or "").strip()
@@ -108,6 +159,9 @@ def _run() -> None:
     input_fixture = (
         Path(input_raw).expanduser().resolve() if input_raw else None
     )
+    input_state = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_INPUT_STATE") or "source_only"
+    ).strip().lower()
     reference_image_raw = str(
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_REFERENCE_IMAGE") or ""
     ).strip()
@@ -123,6 +177,12 @@ def _run() -> None:
         Path(step_raw).expanduser().resolve()
         if step_raw
         else artifact.with_suffix(".step")
+    )
+    output_raw = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_OUTPUT") or ""
+    ).strip()
+    output_artifact = (
+        Path(output_raw).expanduser().resolve() if output_raw else None
     )
     model = str(
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_MODEL") or "qwen3.5:9b"
@@ -161,6 +221,45 @@ def _run() -> None:
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_RESULT_TYPE")
         or "PartDesign::Body"
     ).strip()
+    result_kind = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_RESULT_KIND") or "single_solid"
+    ).strip().lower()
+    workbench = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_WORKBENCH")
+        or "PartDesignWorkbench"
+    ).strip()
+    active_object_name = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_ACTIVE_OBJECT") or ""
+    ).strip()
+    assembly_expectations = AssemblyExpectations(
+        assemblies=(
+            _optional_nonnegative_integer(
+                "VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_ASSEMBLY_COUNT"
+            )
+            if str(
+                os.environ.get(
+                    "VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_ASSEMBLY_COUNT"
+                )
+                or ""
+            ).strip()
+            else 1
+        ),
+        components=_optional_nonnegative_integer(
+            "VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_COMPONENT_COUNT"
+        ),
+        joints=_optional_nonnegative_integer(
+            "VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_JOINT_COUNT"
+        ),
+        grounded=_optional_nonnegative_integer(
+            "VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_GROUNDED_COUNT"
+        ),
+        boms=_optional_nonnegative_integer(
+            "VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_BOM_COUNT"
+        ),
+        remaining_degrees_of_freedom=_optional_nonnegative_integer(
+            "VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_REMAINING_DOF"
+        ),
+    )
     excluded_tools = frozenset(
         name.strip()
         for name in str(
@@ -178,15 +277,22 @@ def _run() -> None:
     checkpoint = QtCore.QTimer()
     timeout = QtCore.QTimer()
     document = None
+    final_state_saved = False
+    copied_dependencies: tuple[Path, ...] = ()
 
     def save_checkpoint() -> None:
         if document is None:
             return
         try:
             document_name = str(document.Name)
+            document_path = Path(str(document.FileName)).resolve()
         except ReferenceError:
             return
-        if document_name not in App.listDocuments():
+        if (
+            document_name not in App.listDocuments()
+            or document_path != artifact
+            or not artifact.is_file()
+        ):
             return
         document.save()
         with zipfile.ZipFile(artifact) as archive:
@@ -196,13 +302,29 @@ def _run() -> None:
             ):
                 raise RuntimeError(f"Invalid FCStd checkpoint: {artifact}")
 
+    def save_final_state() -> None:
+        nonlocal final_state_saved
+        if final_state_saved or document is None:
+            return
+        # Keep a recoverable checkpoint before closing any active task, then
+        # persist the normal post-task presentation that a user will reopen.
+        save_checkpoint()
+        gui_document = Gui.activeDocument()
+        if gui_document is not None and gui_document.getInEdit():
+            gui_document.resetEdit()
+        Gui.updateGui()
+        QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 25)
+        document.recompute()
+        save_checkpoint()
+        final_state_saved = True
+
     def finish(code: int) -> None:
         poll.stop()
         checkpoint.stop()
         timeout.stop()
         if document is not None and document.Name in App.listDocuments():
             try:
-                save_checkpoint()
+                save_final_state()
             except Exception:
                 traceback.print_exc(file=sys.__stderr__)
                 code = 1
@@ -210,8 +332,6 @@ def _run() -> None:
         # acceptance process owns this transport, so closing it is sufficient;
         # deleting the thread would discard the strongest model evidence.
         CodexModule.shutdown_managed_codex_sessions()
-        if Gui.activeDocument() is not None and Gui.activeDocument().getInEdit():
-            Gui.activeDocument().resetEdit()
         if document is not None and document.Name in App.listDocuments():
             App.closeDocument(document.Name)
         application.exit(code)
@@ -223,21 +343,40 @@ def _run() -> None:
             raise RuntimeError(
                 "VIBECAD_OLLAMA_ACCEPTANCE_ENGINE must be native or vibescript."
             )
+        if input_state not in {"source_only", "assembled"}:
+            raise RuntimeError(
+                "VIBECAD_OLLAMA_ACCEPTANCE_INPUT_STATE must be source_only or assembled."
+            )
         if auth_mode not in {"api_key", "chatgpt"}:
             raise RuntimeError(
                 "VIBECAD_OLLAMA_ACCEPTANCE_AUTH_MODE must be api_key or chatgpt."
             )
+        if result_kind not in {"single_solid", "assembly"}:
+            raise RuntimeError(
+                "VIBECAD_OLLAMA_ACCEPTANCE_RESULT_KIND must be single_solid or assembly."
+            )
+        if expected_volume is not None and result_kind != "single_solid":
+            raise RuntimeError("Expected volume applies only to a single-solid run.")
+        if expected_bounds is not None and result_kind != "single_solid":
+            raise RuntimeError("Expected bounds apply only to a single-solid run.")
         if input_fixture is not None and not input_fixture.is_file():
             raise RuntimeError(
                 f"VIBECAD_OLLAMA_ACCEPTANCE_INPUT does not exist: {input_fixture}"
             )
+        if input_fixture is not None and input_fixture == artifact:
+            raise RuntimeError(
+                "VIBECAD_OLLAMA_ACCEPTANCE_ARTIFACT must not overwrite its input fixture."
+            )
         artifact.parent.mkdir(parents=True, exist_ok=True)
+        if output_artifact is not None:
+            output_artifact.parent.mkdir(parents=True, exist_ok=True)
         get_control_mode_controller().request_mcp_enabled(False)
+        VibeGui.ensure_commands_registered()
         VibeGui._ensure_document_thread_invoker()
         VibeGui._connect_document_observer()
         Gui.getMainWindow().resize(1440, 900)
         Gui.getMainWindow().show()
-        Gui.activateWorkbench("PartDesignWorkbench")
+        service = get_service()
         if input_fixture is not None and input_fixture.suffix.lower() == ".fcstd":
             document = App.openDocument(str(input_fixture))
         else:
@@ -252,22 +391,60 @@ def _run() -> None:
                 Import.insert(str(input_fixture), document.Name)
         if document is None:
             raise RuntimeError("FreeCAD did not open the acceptance document.")
-        document.UndoMode = 1
-        document.saveAs(str(artifact))
-        save_checkpoint()
-        checkpoint.timeout.connect(save_checkpoint)
-        checkpoint.start(15_000)
-        application.aboutToQuit.connect(save_checkpoint)
-        service = get_service()
-        service.select_modeling_engine(engine)
-        # Workbench activation publishes the human ribbon surface through the Qt
-        # event loop. Do not freeze a turn until that exact surface is available.
+        if Gui.activeWorkbench().name() == workbench:
+            Gui.activateWorkbench("NoneWorkbench")
+        Gui.activateWorkbench(workbench)
+        # Let document and ribbon activation finish before selecting authority;
+        # their queued initialization restores the saved document preference.
         for _ in range(24):
             Gui.updateGui()
             QtWidgets.QApplication.processEvents(
                 QtCore.QEventLoop.AllEvents,
                 25,
             )
+        service.select_modeling_engine(engine)
+        if result_kind == "assembly":
+            from VibeCADNativeAssemblySnapshot import build_assembly_snapshot
+
+            input_snapshot = build_assembly_snapshot(document)
+            input_snapshot["assembly_owned_object_count"] = sum(
+                1
+                for obj in document.Objects
+                if "VibeCADVibeScriptDomain" in obj.PropertiesList
+                and str(obj.VibeCADVibeScriptDomain) == "assembly"
+            )
+            result["input_evidence"] = validate_assembly_input_snapshot(
+                input_snapshot,
+                allow_existing=input_state == "assembled",
+            )
+        document.UndoMode = 1
+        copied_dependencies = copy_linked_document_dependencies(
+            document,
+            artifact.parent,
+        )
+        document.saveAs(str(artifact))
+        save_checkpoint()
+        checkpoint.timeout.connect(save_checkpoint)
+        checkpoint.start(15_000)
+        application.aboutToQuit.connect(save_checkpoint)
+        if active_object_name:
+            active_object = document.getObject(active_object_name)
+            if active_object is None:
+                raise RuntimeError(
+                    "VIBECAD_OLLAMA_ACCEPTANCE_ACTIVE_OBJECT does not exist: "
+                    f"{active_object_name}"
+                )
+            if not Gui.activeDocument().setEdit(active_object.Name):
+                raise RuntimeError(
+                    "VibeCAD could not activate acceptance object "
+                    f"{active_object_name}."
+                )
+            for _ in range(12):
+                Gui.updateGui()
+                QtWidgets.QApplication.processEvents(
+                    QtCore.QEventLoop.AllEvents,
+                    25,
+                )
         service.clear_reference_images()
         if reference_image is not None:
             attached = service.attach_reference_image(
@@ -290,6 +467,14 @@ def _run() -> None:
             skills_enabled=False,
             excluded_tools=excluded_tools,
         )
+        output_authorizer = None
+        if output_artifact is not None:
+            from VibeCADNativeOutput import authorize_native_output_path
+
+            output_authorizer = lambda request: authorize_native_output_path(
+                request,
+                output_artifact,
+            )
 
         def run_provider() -> None:
             try:
@@ -298,7 +483,9 @@ def _run() -> None:
                     prompt,
                     service=service,
                     provider=provider,
+                    progress_callback=_print_live_progress,
                     cancellation_check=cancel_requested.is_set,
+                    output_authorization_callback=output_authorizer,
                     document_thread_dispatch=VibeGui._dispatch_to_document_thread,
                 )
                 responses.append(response)
@@ -315,7 +502,9 @@ def _run() -> None:
                             continuation,
                             service=service,
                             provider=provider,
+                            progress_callback=_print_live_progress,
                             cancellation_check=cancel_requested.is_set,
+                            output_authorization_callback=output_authorizer,
                             document_thread_dispatch=(
                                 VibeGui._dispatch_to_document_thread
                             ),
@@ -360,65 +549,96 @@ def _run() -> None:
                 response = result["response"]
                 if response.error:
                     raise AssertionError(response.error)
-                document.recompute()
-                save_checkpoint()
-                final_results = [
-                    obj
-                    for obj in document.Objects
-                    if str(getattr(obj, "TypeId", "")) == expected_result_type
-                    and getattr(obj, "Shape", None) is not None
-                    and not obj.Shape.isNull()
-                    and len(obj.Shape.Solids) == 1
-                    and bool(getattr(getattr(obj, "ViewObject", None), "Visibility", True))
-                ]
-                if len(final_results) != 1:
-                    raise AssertionError(
-                        "Live STEP acceptance requires exactly one visible solid "
-                        f"{expected_result_type}; found "
-                        f"{[(obj.Name, obj.Label) for obj in final_results]}."
-                    )
-                final_shape = final_results[0].Shape
-                if expected_volume is not None and not math.isclose(
-                    float(final_shape.Volume),
-                    expected_volume,
-                    rel_tol=1.0e-9,
-                    abs_tol=1.0e-7,
-                ):
-                    raise AssertionError(
-                        "Live acceptance volume mismatch: "
-                        f"expected {expected_volume}, found {float(final_shape.Volume)}."
-                    )
-                if expected_bounds is not None:
-                    bounds = final_shape.optimalBoundingBox(False, False)
-                    actual_bounds = {
-                        "x": [float(bounds.XMin), float(bounds.XMax)],
-                        "y": [float(bounds.YMin), float(bounds.YMax)],
-                        "z": [float(bounds.ZMin), float(bounds.ZMax)],
-                    }
-                    for axis in ("x", "y", "z"):
-                        expected_axis = expected_bounds.get(axis)
-                        actual_axis = actual_bounds[axis]
-                        if (
-                            not isinstance(expected_axis, list)
-                            or len(expected_axis) != 2
-                            or any(
-                                not math.isclose(
-                                    float(actual),
-                                    float(expected),
-                                    rel_tol=1.0e-9,
-                                    abs_tol=1.0e-7,
-                                )
-                                for actual, expected in zip(
-                                    actual_axis,
-                                    expected_axis,
-                                    strict=True,
-                                )
+                save_final_state()
+                assembly_evidence = None
+                if result_kind == "single_solid":
+                    neutral_objects = [
+                        obj
+                        for obj in document.Objects
+                        if str(getattr(obj, "TypeId", "")) == expected_result_type
+                        and getattr(obj, "Shape", None) is not None
+                        and not obj.Shape.isNull()
+                        and len(obj.Shape.Solids) == 1
+                        and bool(
+                            getattr(
+                                getattr(obj, "ViewObject", None),
+                                "Visibility",
+                                True,
                             )
-                        ):
-                            raise AssertionError(
-                                "Live acceptance bounds mismatch: "
-                                f"expected {expected_bounds}, found {actual_bounds}."
-                            )
+                        )
+                    ]
+                    if len(neutral_objects) != 1:
+                        raise AssertionError(
+                            "Live STEP acceptance requires exactly one visible solid "
+                            f"{expected_result_type}; found "
+                            f"{[(obj.Name, obj.Label) for obj in neutral_objects]}."
+                        )
+                    final_shape = neutral_objects[0].Shape
+                    if expected_volume is not None and not math.isclose(
+                        float(final_shape.Volume),
+                        expected_volume,
+                        rel_tol=1.0e-9,
+                        abs_tol=1.0e-7,
+                    ):
+                        raise AssertionError(
+                            "Live acceptance volume mismatch: "
+                            f"expected {expected_volume}, found {float(final_shape.Volume)}."
+                        )
+                    if expected_bounds is not None:
+                        bounds = final_shape.optimalBoundingBox(False, False)
+                        actual_bounds = {
+                            "x": [float(bounds.XMin), float(bounds.XMax)],
+                            "y": [float(bounds.YMin), float(bounds.YMax)],
+                            "z": [float(bounds.ZMin), float(bounds.ZMax)],
+                        }
+                        for axis in ("x", "y", "z"):
+                            expected_axis = expected_bounds.get(axis)
+                            actual_axis = actual_bounds[axis]
+                            if (
+                                not isinstance(expected_axis, list)
+                                or len(expected_axis) != 2
+                                or any(
+                                    not math.isclose(
+                                        float(actual),
+                                        float(expected),
+                                        rel_tol=1.0e-9,
+                                        abs_tol=1.0e-7,
+                                    )
+                                    for actual, expected in zip(
+                                        actual_axis,
+                                        expected_axis,
+                                        strict=True,
+                                    )
+                                )
+                            ):
+                                raise AssertionError(
+                                    "Live acceptance bounds mismatch: "
+                                    f"expected {expected_bounds}, found {actual_bounds}."
+                                )
+                else:
+                    from VibeCADNativeAssemblyComponents import assembly_components
+                    from VibeCADNativeAssemblySnapshot import build_assembly_snapshot
+
+                    assembly_snapshot = build_assembly_snapshot(document)
+                    assembly_evidence = validate_assembly_snapshot(
+                        assembly_snapshot,
+                        assembly_expectations,
+                    )
+                    assembly = document.getObject(
+                        assembly_evidence["assembly"]["object_name"]
+                    )
+                    if assembly is None:
+                        raise AssertionError("Accepted Assembly no longer exists.")
+                    neutral_objects = [
+                        component
+                        for component in assembly_components(assembly)
+                        if getattr(component, "Shape", None) is not None
+                        and not component.Shape.isNull()
+                    ]
+                    if not neutral_objects:
+                        raise AssertionError(
+                            "Accepted Assembly has no component geometry to export."
+                        )
                 failed_calls = [
                     item
                     for turn in result.get("responses", [response])
@@ -436,18 +656,50 @@ def _run() -> None:
                 import Part
 
                 step_artifact.parent.mkdir(parents=True, exist_ok=True)
-                Part.export(final_results, str(step_artifact))
+                expected_step_solids = sum(
+                    len(obj.Shape.Solids) for obj in neutral_objects
+                )
+                export_shape = Part.makeCompound(
+                    [obj.Shape.copy() for obj in neutral_objects]
+                )
+                export_shape.exportStep(str(step_artifact))
                 if not step_artifact.is_file() or step_artifact.stat().st_size <= 0:
                     raise AssertionError("FreeCAD did not write the acceptance STEP file.")
-                view = Gui.activeDocument().activeView()
-                view.viewAxonometric()
-                view.fitAll()
+                imported_step = Part.read(str(step_artifact))
+                if (
+                    imported_step.isNull()
+                    or len(imported_step.Solids) != expected_step_solids
+                ):
+                    raise AssertionError(
+                        "Acceptance STEP geometry mismatch: "
+                        f"expected {expected_step_solids} solids, found "
+                        f"{len(imported_step.Solids)}."
+                    )
+                from tool_impl.service import core_capture_view_screenshot
+
+                capture = core_capture_view_screenshot.run(
+                    service,
+                    camera="isometric",
+                    frame="objects",
+                    object_names=[obj.Name for obj in neutral_objects],
+                    sketch_annotations="clean",
+                )
+                if capture.get("ok") is not True:
+                    raise AssertionError(
+                        "Target-aware acceptance screenshot failed: "
+                        f"{capture.get('failure_code')}: {capture.get('error')}"
+                    )
+                capture_path = Path(str(capture["artifact"]["path"]))
                 screenshot = artifact.with_suffix(".png")
-                view.saveImage(str(screenshot), 1440, 900, "Current")
+                if capture_path != screenshot:
+                    shutil.copyfile(capture_path, screenshot)
                 summary = {
                     "ok": True,
                     "model": model,
                     "engine": engine,
+                    "result_kind": result_kind,
+                    "workbench": workbench,
+                    "active_object": active_object_name or None,
                     "reasoning_effort": reasoning_effort,
                     "auth_mode": auth_mode,
                     "expected_result_type": expected_result_type,
@@ -456,7 +708,16 @@ def _run() -> None:
                     "input_fixture": (
                         str(input_fixture) if input_fixture is not None else None
                     ),
+                    "input_state": input_state,
+                    "linked_dependencies": [
+                        str(path) for path in copied_dependencies
+                    ],
                     "step": str(step_artifact),
+                    "output": (
+                        str(output_artifact)
+                        if output_artifact is not None
+                        else None
+                    ),
                     "screenshot": str(screenshot),
                     "reference_image": (
                         str(reference_image) if reference_image is not None else None
@@ -481,6 +742,7 @@ def _run() -> None:
                         for item in turn.tool_trace
                     ],
                     "turn_count": len(result.get("responses", [response])),
+                    "assembly_evidence": assembly_evidence,
                     "shape_summary": _shape_summary(document),
                 }
                 print(

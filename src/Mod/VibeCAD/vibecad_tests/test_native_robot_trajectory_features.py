@@ -86,7 +86,7 @@ def _compound_values() -> dict:
     }
 
 
-def test_row_11_38_schema_exactly_covers_both_shipped_robot_surfaces() -> None:
+def test_legacy_feature_schema_remains_available_to_internal_callers() -> None:
     variants = robot_trajectory_capability_definition().variants[-3:]
 
     assert tuple(value.operation for value in variants) == (
@@ -105,9 +105,9 @@ def test_row_11_38_schema_exactly_covers_both_shipped_robot_surfaces() -> None:
         and value.background_required is False
         for value in variants
     )
-    assert _operation_variant("Robot_Edge2Trac") == "edge2_trac"
-    assert _operation_variant("Robot_TrajectoryDressUp") == "trajectory_dress_up"
-    assert _operation_variant("Robot_TrajectoryCompound") == "trajectory_compound"
+    assert _operation_variant("Robot_Edge2Trac") == "create_path"
+    assert _operation_variant("Robot_TrajectoryDressUp") == "set_motion"
+    assert _operation_variant("Robot_TrajectoryCompound") == "create_sequence"
 
     serialized = repr(
         robot_trajectory_capability_definition().provider_schema(

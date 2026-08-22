@@ -30,16 +30,17 @@ from VibeCADNativeTargets import (
 )
 
 
-_DEFINITION_FIELDS = frozenset(
+_REQUIRED_DEFINITION_FIELDS = frozenset(
     {
         "standard",
         "nominal_thread",
-        "length_mm",
         "model_thread",
         "left_handed",
-        "options",
     }
 )
+_OPTIONAL_DEFINITION_FIELDS = frozenset({"length_mm"})
+_OPTION_OVERRIDE_FIELD = "catalog_option_overrides"
+_LEGACY_OPTION_FIELD = "options"
 _OPTION_KINDS = {
     "body_width_code": "text",
     "pitch": "text",
@@ -104,13 +105,23 @@ def _options(value: Any) -> dict[str, Any]:
 
 
 def prepare_model_fastener(value: Any) -> PreparedModelFastener:
-    if not isinstance(value, Mapping) or set(value) != _DEFINITION_FIELDS:
+    if not isinstance(value, Mapping):
+        raise NativeModelError("A standard-fastener definition is invalid.")
+    supplied_fields = set(value)
+    extra_fields = supplied_fields - (
+        _REQUIRED_DEFINITION_FIELDS | _OPTIONAL_DEFINITION_FIELDS
+    )
+    if not _REQUIRED_DEFINITION_FIELDS.issubset(supplied_fields) or extra_fields not in (
+        set(),
+        {_OPTION_OVERRIDE_FIELD},
+        {_LEGACY_OPTION_FIELD},
+    ):
         raise NativeModelError("A standard-fastener definition is invalid.")
     model_thread = value["model_thread"]
     left_handed = value["left_handed"]
     if not isinstance(model_thread, bool) or not isinstance(left_handed, bool):
         raise NativeModelError("Standard-fastener hand and thread controls are invalid.")
-    raw_length = value["length_mm"]
+    raw_length = value.get("length_mm")
     length = (
         None
         if raw_length is None
@@ -125,7 +136,12 @@ def prepare_model_fastener(value: Any) -> PreparedModelFastener:
         "length_mm": length,
         "model_thread": model_thread,
         "left_handed": left_handed,
-        "options": _options(value["options"]),
+        "options": _options(
+            value.get(
+                _OPTION_OVERRIDE_FIELD,
+                value.get(_LEGACY_OPTION_FIELD, {}),
+            )
+        ),
     }
     try:
         identity = resolve_fastener(**constructor)
@@ -271,11 +287,15 @@ def verify_model_fastener(
             "part_number": str(identity["part_number"]),
             "standard": str(identity["standard"]),
             "nominal_thread": str(identity["nominal_size"]),
-            "length_mm": identity["length_mm"],
             "model_thread": bool(identity["model_thread"]),
             "left_handed": bool(identity["left_handed"]),
-            "options": dict(identity["options"]),
-        },
+            "catalog_option_overrides": dict(identity["options"]),
+        }
+        | (
+            {"length_mm": identity["length_mm"]}
+            if identity["length_mm"] is not None
+            else {}
+        ),
         "solid_count": len(graph.body.Shape.Solids),
         "volume_mm3": float(graph.body.Shape.Volume),
     }

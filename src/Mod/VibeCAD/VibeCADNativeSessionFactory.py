@@ -42,17 +42,17 @@ def _edit_or_task_active(service: Any) -> bool:
     summary = service.task_panel_summary()
     if not isinstance(summary, Mapping):
         return False
-    if summary.get("active_dialog"):
-        return True
     if not summary.get("edit_mode"):
-        return False
+        return bool(summary.get("active_dialog"))
     if summary.get("active_sketch"):
         return True
     edit_object = summary.get("edit_object")
-    return not (
+    if (
         isinstance(edit_object, Mapping)
         and str(edit_object.get("type") or "") == "Assembly::AssemblyObject"
-    )
+    ):
+        return False
+    return True
 
 
 def _validate_expected_turn(

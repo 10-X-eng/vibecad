@@ -45,7 +45,12 @@ def parameters_schema(
 
 def object_reference_schema() -> dict[str, Any]:
     return parameters_schema(
-        {"object_name": OBJECT_NAME_SCHEMA},
+        {
+            "object_name": {
+                **OBJECT_NAME_SCHEMA,
+                "description": "Exact object_name from context.",
+            }
+        },
         ("object_name",),
     )
 

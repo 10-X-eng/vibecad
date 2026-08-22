@@ -13,44 +13,26 @@ from VibeCADNativeDesignSchema import object_reference_schema, parameters_schema
 
 
 ROBOT_MOTION_CAPABILITY_NAME = "robot.motion"
-_STATE_SHA256 = {
-    "type": "string",
-    "minLength": 64,
-    "maxLength": 64,
-    "pattern": r"^[0-9a-f]{64}$",
-}
 
 
 def _home_parameters() -> dict[str, object]:
     return parameters_schema(
         {
             "robot": object_reference_schema(),
-            "expected_setup_state_sha256": _STATE_SHA256,
-            "expected_robot_state_sha256": _STATE_SHA256,
         },
-        (
-            "robot",
-            "expected_setup_state_sha256",
-            "expected_robot_state_sha256",
-        ),
+        ("robot",),
     )
 
 
 def robot_motion_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ROBOT_MOTION_CAPABILITY_NAME,
-        description=(
-            "Capture or restore one exact Robot home position, or evaluate one "
-            "exact Robot and trajectory at bounded explicit simulation times."
-        ),
+        description="Set Robot home positions and sample trajectory motion.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="set_home_pos",
-                description=(
-                    "Capture the exact Robot's current six joint values as its "
-                    "durable home position."
-                ),
+                description="Save the Robot's current six-axis position as home.",
                 action_ids=frozenset({"Robot_SetHomePos"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="ActiveDocumentRobot",
@@ -60,9 +42,7 @@ def robot_motion_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="restore_home_pos",
-                description=(
-                    "Move the exact Robot's six joints to its durable home position."
-                ),
+                description="Move the Robot to its saved home position.",
                 action_ids=frozenset({"Robot_RestoreHomePos"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="ActiveDocumentRobotWithSixAxisHome",
@@ -72,10 +52,7 @@ def robot_motion_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="simulate",
-                description=(
-                    "Evaluate the shipped Robot trajectory simulation at explicit "
-                    "ordered times without changing the document or opening a dialog."
-                ),
+                description="Sample the Robot and trajectory at ordered times.",
                 action_ids=frozenset({"Robot_Simulate"}),
                 surface_ids=frozenset({"assemble", "manufacture"}),
                 exact_target_type="ActiveDocumentRobotAndTrajectory",
@@ -95,19 +72,11 @@ def robot_motion_capability_definition() -> NativeCapabilityDefinition:
                                 "maximum": 1.0e12,
                             },
                         },
-                        "expected_setup_state_sha256": _STATE_SHA256,
-                        "expected_robot_state_sha256": _STATE_SHA256,
-                        "expected_trajectory_setup_state_sha256": _STATE_SHA256,
-                        "expected_trajectory_state_sha256": _STATE_SHA256,
                     },
                     (
                         "robot",
                         "trajectory",
                         "sample_times_s",
-                        "expected_setup_state_sha256",
-                        "expected_robot_state_sha256",
-                        "expected_trajectory_setup_state_sha256",
-                        "expected_trajectory_state_sha256",
                     ),
                 ),
             ),

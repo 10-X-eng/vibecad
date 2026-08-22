@@ -242,26 +242,74 @@ def test_schema_maps_only_the_live_conflict_action_to_an_exact_read() -> None:
     ]["oneOf"][0]
 
     assert definition.name == "assembly.diagnose"
+    assert tuple(item.operation for item in definition.variants) == (
+        "select_conflicting_constraints",
+        "select_redundant_constraints",
+        "select_partially_redundant_constraints",
+        "select_malformed_constraints",
+        "read",
+    )
     assert definition.primary_classification == "read"
     assert variant.action_ids == frozenset({"Assembly_SelectConflictingConstraints"})
     assert variant.surface_ids == frozenset({"assemble"})
     assert variant.exact_target_type == "HumanActiveAssemblyAndExactSolverDiagnosis"
     assert variant.transaction_behavior == "none"
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == {
-        "operation",
-        "assembly",
-        "expected_diagnosis_state_sha256",
-        "expected_component_count",
-        "expected_grounded_count",
-        "expected_joint_count",
-        "expected_conflicting_count",
-        "offset",
-        "limit",
-    }
+    assert schema["required"] == []
+    assert set(schema["properties"]) == {"operation", "offset", "limit"}
+    assert schema["properties"]["limit"]["maximum"] == 100
     registry = build_native_capability_registry()
     assert registry.definition("assembly.diagnose") is not None
     assert registry.implementation("assembly.diagnose") is not None
+
+
+def test_runtime_reads_the_active_assembly_summary_without_a_component(
+    monkeypatch,
+) -> None:
+    document, assembly, _group, _ground, _components, _joints = _fixture()
+    context = _context(document)
+    runtime = NativeAssemblyDiagnosisRuntime(context)
+    monkeypatch.setattr(
+        runtime_module,
+        "read_active_assembly",
+        lambda target_document: assembly,
+    )
+
+    result = runtime.diagnose({"operation": "read"})
+
+    assert result["assembly"] == {
+        "object_name": assembly.Name,
+        "label": assembly.Label,
+    }
+    assert result["component_count"] == 3
+    assert result["joint_count"] == 3
+
+
+def test_runtime_accepts_a_large_diagnosis_page(monkeypatch) -> None:
+    document, assembly, _group, _ground, _components, _joints = _fixture()
+    context = _context(document)
+    state = capture_assembly_diagnosis_state(assembly)
+    runtime = NativeAssemblyDiagnosisRuntime(context)
+    captured = []
+    monkeypatch.setattr(
+        runtime_module,
+        "read_active_assembly",
+        lambda target_document: assembly,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "read_conflicting_constraints",
+        lambda exact_context, spec: (
+            captured.append((exact_context, spec)) or {"ok": True}
+        ),
+    )
+
+    result = runtime.diagnose(
+        {"operation": "select_conflicting_constraints", "limit": 50}
+    )
+
+    assert result == {"ok": True}
+    assert captured == [(context, _spec(document, assembly, state, limit=50))]
 
 
 def test_diagnosis_state_hashes_placements_joint_definitions_and_residuals() -> None:
@@ -440,37 +488,3 @@ def test_empty_conflict_read_returns_one_exact_empty_page() -> None:
     assert result["conflicting_joints"] == []
     assert "next_offset" not in result
     assert "solver_message" not in result
-
-
-def test_runtime_parses_closed_exact_arguments(monkeypatch) -> None:
-    document, assembly, _group, _ground, _components, _joints = _fixture()
-    context = _context(document)
-    state = capture_assembly_diagnosis_state(assembly)
-    runtime = NativeAssemblyDiagnosisRuntime(context)
-    captured = []
-    monkeypatch.setattr(
-        runtime_module,
-        "read_conflicting_constraints",
-        lambda exact_context, spec: (
-            captured.append((exact_context, spec)) or {"ok": True}
-        ),
-    )
-    arguments = {
-        "operation": "select_conflicting_constraints",
-        "assembly": {"object_name": assembly.Name},
-        "expected_diagnosis_state_sha256": state.state_sha256,
-        "expected_component_count": 3,
-        "expected_grounded_count": 1,
-        "expected_joint_count": 3,
-        "expected_conflicting_count": 3,
-        "offset": 0,
-        "limit": 2,
-    }
-
-    assert runtime.diagnose(arguments) == {"ok": True}
-    assert captured[0][0] is context
-    assert captured[0][1] == _spec(document, assembly, state, limit=2)
-    with pytest.raises(RuntimeError, match="do not match"):
-        runtime.diagnose({**arguments, "unexpected": True})
-    with pytest.raises(NativeAssemblyDiagnosisError, match="lowercase SHA-256"):
-        runtime.diagnose({**arguments, "expected_diagnosis_state_sha256": "A" * 64})

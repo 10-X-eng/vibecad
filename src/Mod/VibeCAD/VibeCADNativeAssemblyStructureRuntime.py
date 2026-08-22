@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from VibeCADNativeArguments import strict_variant_arguments
+from VibeCADNativeArguments import NativeArgumentError
 from VibeCADNativeAssemblyComponents import (
     AssemblySourceRef,
     CreatePartSpec,
@@ -26,19 +26,17 @@ from VibeCADNativeAssemblyRigidity import (
     preflight_assembly_rigidity,
     verify_assembly_rigidity,
 )
-from VibeCADNativeAssemblyBom import (
-    AssemblyBomCreateSpec,
-    NativeAssemblyBomError,
-    create_assembly_bom,
-    preflight_create_assembly_bom,
-    verify_created_assembly_bom,
-)
 from VibeCADNativeAssemblyStructure import (
     AssemblyCreateSpec,
     NativeAssemblyStructureError,
     create_assembly,
     preflight_create_assembly,
     verify_created_assembly,
+)
+from VibeCADNativeAssemblyState import read_active_assembly, same_assembly
+from VibeCADNativeAssemblyStructureIntent import expand_structure_intent
+from VibeCADNativeAssemblyStructureSchema import (
+    assembly_structure_capability_definition,
 )
 from VibeCADNativeAssemblySolve import (
     AssemblySolveSpec,
@@ -69,6 +67,31 @@ from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
 from VibeCADNativeTargets import NativeObjectRef
+
+
+_INTENT_VARIANTS = {
+    variant.operation: (
+        frozenset(variant.parameters.get("required", ())),
+        frozenset(variant.parameters["properties"]),
+    )
+    for variant in assembly_structure_capability_definition().variants
+}
+
+
+def _intent_values(arguments: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    if not isinstance(arguments, Mapping):
+        raise NativeArgumentError("Native capability arguments must be an object.")
+    values = dict(arguments)
+    operation = str(values.pop("operation", "") or "").strip()
+    contract = _INTENT_VARIANTS.get(operation)
+    if contract is None:
+        raise NativeArgumentError("Native capability operation is unavailable.")
+    required, allowed = contract
+    if not required <= set(values) or not set(values) <= allowed:
+        raise NativeArgumentError(
+            "Native capability arguments do not match the selected operation."
+        )
+    return operation, values
 
 
 def _label(value: Any) -> str:
@@ -179,25 +202,6 @@ def _source_ref(value: Any) -> AssemblySourceRef:
     )
 
 
-def _bom_object_ref(document_uid: str, value: Any) -> NativeObjectRef:
-    if not isinstance(value, Mapping) or set(value) != {"object_name"}:
-        raise NativeAssemblyBomError(
-            "assembly must be one exact object reference."
-        )
-    try:
-        return NativeObjectRef(document_uid, str(value.get("object_name") or ""))
-    except Exception as exc:
-        raise NativeAssemblyBomError(
-            "assembly must be one exact object reference."
-        ) from exc
-
-
-def _bom_columns(value: Any) -> tuple[Any, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise NativeAssemblyBomError("columns must be one ordered list.")
-    return tuple(value)
-
-
 def _placement(value: Any) -> Any:
     try:
         return placement_from_mapping(value)
@@ -230,48 +234,52 @@ def _view_moves(document_uid: str, value: Any) -> tuple[AssemblyViewMoveSpec, ..
             "moves must contain 1 through 256 ordered exploded-view moves."
         )
     result = []
-    total_targets = 0
     for index, raw in enumerate(value):
         if not isinstance(raw, Mapping):
             raise NativeAssemblyViewError(
                 f"moves[{index}] must be one exact move object."
             )
         kind = str(raw.get("kind") or "")
-        required = (
-            {"kind", "targets", "transform"}
-            if kind == "normal"
-            else {"kind", "targets", "radial_distance_mm"}
+        allowed = (
+            ({"kind", "component", "translation_mm"}, {"rotation"})
+            if kind == "transform"
+            else ({"kind", "component", "radial_distance_mm"}, set())
             if kind == "radial"
-            else set()
+            else (set(), set())
         )
-        if not required or set(raw) != required:
+        required, optional = allowed
+        if (
+            not required
+            or not required <= set(raw)
+            or not set(raw) <= required | optional
+        ):
             raise NativeAssemblyViewError(
-                f"moves[{index}] must be exactly one normal or radial move."
+                f"moves[{index}] must be exactly one transform or radial move."
             )
-        targets = raw["targets"]
-        if not isinstance(targets, (list, tuple)) or not 1 <= len(targets) <= 256:
-            raise NativeAssemblyViewError(
-                f"moves[{index}].targets must contain 1 through 256 exact object references."
-            )
-        target_refs = tuple(
-            _object_ref(document_uid, target, f"moves[{index}].targets")
-            for target in targets
+        target_refs = (
+            _object_ref(
+                document_uid,
+                raw["component"],
+                f"moves[{index}].component",
+            ),
         )
-        if len({target.object_name for target in target_refs}) != len(target_refs):
-            raise NativeAssemblyViewError(
-                f"moves[{index}].targets contains a duplicate object."
-            )
-        total_targets += len(target_refs)
-        if total_targets > 16_384:
-            raise NativeAssemblyViewError(
-                "moves may contain at most 16384 target references."
-            )
-        if kind == "normal":
+        if kind == "transform":
             result.append(
                 AssemblyViewMoveSpec(
                     kind="normal",
                     target_refs=target_refs,
-                    movement_transform=_view_placement(raw["transform"]),
+                    movement_transform=_view_placement(
+                        {
+                            "origin_mm": raw["translation_mm"],
+                            "rotation": raw.get(
+                                "rotation",
+                                {
+                                    "axis": {"x": 0.0, "y": 0.0, "z": 1.0},
+                                    "angle_degrees": 0.0,
+                                },
+                            ),
+                        }
+                    ),
                 )
             )
             continue
@@ -347,19 +355,39 @@ def _simulation_motions(
         )
     result = []
     for index, raw in enumerate(value):
-        if not isinstance(raw, Mapping) or set(raw) != {
-            "joint",
-            "motion_type",
-            "formula",
-        }:
+        if not isinstance(raw, Mapping):
             raise NativeAssemblySimulationError(
-                f"motions[{index}] must contain exactly joint, motion_type, and formula."
+                f"motions[{index}] must be one motion object."
             )
-        motion_type = raw["motion_type"]
-        formula = raw["formula"]
+        if "joint" not in raw or "motion_type" not in raw:
+            raise NativeAssemblySimulationError(
+                f"motions[{index}] requires joint and motion_type."
+            )
+        motion_type = raw.get("motion_type")
         if motion_type not in {"angular", "linear"}:
             raise NativeAssemblySimulationError(
                 f"motions[{index}].motion_type must be angular or linear."
+            )
+        formula_fields = set(raw) - {"joint", "motion_type"}
+        expected_speed = (
+            "angular_speed_degrees_per_second"
+            if motion_type == "angular"
+            else "linear_speed_mm_per_second"
+        )
+        if formula_fields == {"formula"}:
+            formula = raw["formula"]
+        elif formula_fields == {expected_speed}:
+            speed = _simulation_number(raw[expected_speed], expected_speed)
+            value = format(speed, ".15g")
+            formula = (
+                f"initialValue + ({value}*pi/180)*time"
+                if motion_type == "angular"
+                else f"initialValue + {value}*time"
+            )
+        else:
+            raise NativeAssemblySimulationError(
+                f"motions[{index}] must contain exactly joint, motion_type, and "
+                f"either formula or {expected_speed}."
             )
         if not isinstance(formula, str) or not 1 <= len(formula) <= 512:
             raise NativeAssemblySimulationError(
@@ -399,112 +427,90 @@ class NativeAssemblyStructureRuntime:
             str(value.get("object_name") or ""),
         )
 
+    def _activate_created_root(self, result: dict[str, Any]) -> dict[str, Any]:
+        if bool(result.get("nested")):
+            return result
+        assembly_ref = result.get("assembly")
+        if not isinstance(assembly_ref, Mapping):
+            raise NativeAssemblyStructureError(
+                "The created root Assembly has no exact object reference."
+            )
+        assembly = self._context.document.getObject(
+            str(assembly_ref.get("object_name") or "")
+        )
+        if (
+            assembly is None
+            or str(getattr(assembly, "TypeId", "") or "")
+            != "Assembly::AssemblyObject"
+        ):
+            raise NativeAssemblyStructureError(
+                "The created root Assembly no longer exists."
+            )
+        dispatch = self._context.document_thread_dispatch
+
+        def activate() -> None:
+            import FreeCADGui as Gui
+            from PySide import QtCore, QtWidgets
+
+            gui_document = Gui.getDocument(str(self._context.document.Name))
+            if (
+                gui_document is None
+                or self._context.active_document() is not self._context.document
+            ):
+                raise NativeAssemblyStructureError(
+                    "The created root Assembly document is no longer active."
+                )
+            active = read_active_assembly(self._context.document)
+            if active is None and not bool(gui_document.setEdit(str(assembly.Name))):
+                raise NativeAssemblyStructureError(
+                    "The created root Assembly could not be activated."
+                )
+            if active is not None and not same_assembly(active, assembly):
+                raise NativeAssemblyStructureError(
+                    "Another Assembly became active after root creation."
+                )
+            for _index in range(8):
+                Gui.updateGui()
+                QtWidgets.QApplication.processEvents(
+                    QtCore.QEventLoop.AllEvents,
+                    25,
+                )
+
+        if dispatch is None:
+            from PySide import QtCore, QtWidgets
+
+            application = QtWidgets.QApplication.instance()
+            if (
+                application is None
+                or QtCore.QThread.currentThread() is not application.thread()
+            ):
+                raise NativeAssemblyStructureError(
+                    "Activating the created root Assembly requires the document thread."
+                )
+            activate()
+        else:
+            dispatch(activate)
+        if not same_assembly(read_active_assembly(self._context.document), assembly):
+            raise NativeAssemblyStructureError(
+                "The created root Assembly did not remain active."
+            )
+        result["active_assembly_unchanged"] = False
+        result["active_assembly"] = dict(assembly_ref)
+        return result
+
     def mutate_structure(
         self,
         arguments: Mapping[str, Any],
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(
-            arguments,
-            {
-                "create_assembly": frozenset(
-                    {
-                        "label",
-                        "parent_assembly",
-                        "expected_assembly_count",
-                    }
-                ),
-                "insert_component": frozenset(
-                    {
-                        "assembly",
-                        "source",
-                        "label",
-                        "placement",
-                        "rigid",
-                        "expected_component_count",
-                    }
-                ),
-                "create_part": frozenset(
-                    {
-                        "assembly",
-                        "label",
-                        "placement",
-                        "expected_component_count",
-                    }
-                ),
-                "make_flexible": frozenset(
-                    {
-                        "assembly",
-                        "link",
-                        "expected_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    }
-                ),
-                "make_rigid": frozenset(
-                    {
-                        "assembly",
-                        "link",
-                        "expected_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    }
-                ),
-                "solve_assembly": frozenset(
-                    {
-                        "assembly",
-                        "expected_solver_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    }
-                ),
-                "create_view": frozenset(
-                    {
-                        "assembly",
-                        "label",
-                        "parts_as_single_solid",
-                        "moves",
-                        "expected_view_state_sha256",
-                        "expected_component_count",
-                        "expected_target_count",
-                        "expected_view_count",
-                    }
-                ),
-                "create_simulation": frozenset(
-                    {
-                        "assembly",
-                        "label",
-                        "time_start_seconds",
-                        "time_end_seconds",
-                        "output_time_step_seconds",
-                        "global_error_tolerance",
-                        "frames_per_second",
-                        "motions",
-                        "expected_simulation_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_eligible_joint_count",
-                        "expected_simulation_count",
-                    }
-                ),
-                "create_bom": frozenset(
-                    {
-                        "assembly",
-                        "label",
-                        "columns",
-                        "detail_subassemblies",
-                        "detail_parts",
-                        "only_parts",
-                        "expected_bom_state_sha256",
-                        "expected_component_count",
-                        "expected_bom_count",
-                    }
-                ),
-            },
+        operation, intent = _intent_values(arguments)
+        self._context.guard()
+        values = expand_structure_intent(
+            self._context.document,
+            self._context.document_uid,
+            operation,
+            intent,
         )
         if operation == "create_assembly":
             spec = AssemblyCreateSpec(
@@ -516,39 +522,14 @@ class NativeAssemblyStructureRuntime:
             )
             self._context.guard()
             preflight_create_assembly(self._context.document, spec)
-            return run_immediate_mutation(
+            result = run_immediate_mutation(
                 self._context,
                 ticket=ticket,
                 transaction_name="Create Native Assembly",
                 mutate=lambda document: create_assembly(document, spec),
                 verify=verify_created_assembly,
             )
-        if operation == "create_bom":
-            bom_spec = AssemblyBomCreateSpec(
-                assembly_ref=_bom_object_ref(
-                    self._context.document_uid,
-                    values["assembly"],
-                ),
-                label=values["label"],
-                columns=_bom_columns(values["columns"]),
-                detail_subassemblies=values["detail_subassemblies"],
-                detail_parts=values["detail_parts"],
-                only_parts=values["only_parts"],
-                expected_bom_state_sha256=values[
-                    "expected_bom_state_sha256"
-                ],
-                expected_component_count=values["expected_component_count"],
-                expected_bom_count=values["expected_bom_count"],
-            )
-            self._context.guard()
-            preflight_create_assembly_bom(self._context.document, bom_spec)
-            return run_immediate_mutation(
-                self._context,
-                ticket=ticket,
-                transaction_name="Create Native Assembly BOM",
-                mutate=lambda document: create_assembly_bom(document, bom_spec),
-                verify=verify_created_assembly_bom,
-            )
+            return self._activate_created_root(result)
         if operation in {"make_flexible", "make_rigid"}:
             rigidity_spec = AssemblyRigiditySpec(
                 assembly_ref=_rigidity_object_ref(

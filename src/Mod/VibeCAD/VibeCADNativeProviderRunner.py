@@ -148,7 +148,7 @@ class NativeProviderToolRunner:
                 "elapsed_seconds": elapsed,
             },
         )
-        return result
+        return {**result, "_vibecad_native_result": True}
 
     def turn_transition_requested(self) -> bool:
         """Return whether an exact CAD transition ended this frozen turn."""
