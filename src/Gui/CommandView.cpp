@@ -2566,6 +2566,48 @@ Action* VibeCADCmdToggleGrid::createAction()
 }
 
 //===========================================================================
+// VibeCAD_SectionView
+//===========================================================================
+DEF_STD_CMD_AC(VibeCADCmdSectionView)
+
+VibeCADCmdSectionView::VibeCADCmdSectionView()
+    : Command("VibeCAD_SectionView")
+{
+    sGroup = "Standard-View";
+    sMenuText = QT_TR_NOOP("Section View");
+    sToolTipText = QT_TR_NOOP("Cuts the model with a draggable section plane");
+    sStatusTip = sToolTipText;
+    sWhatsThis = "VibeCAD_SectionView";
+    sPixmap = "Std_ToggleClipPlane";
+    eType = Alter3DView;
+}
+
+void VibeCADCmdSectionView::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+    doCommand(Command::Gui, "import VibeCADSectionView; VibeCADSectionView.toggle_section_view()");
+}
+
+bool VibeCADCmdSectionView::isActive()
+{
+    auto view = qobject_cast<View3DInventor*>(Gui::getMainWindow()->activeWindow());
+    if (_pcAction) {
+        const bool checked = view && view->getViewer() && view->getViewer()->hasClippingPlane();
+        if (_pcAction->isChecked() != checked) {
+            _pcAction->setBlockedChecked(checked);
+        }
+    }
+    return view != nullptr;
+}
+
+Action* VibeCADCmdSectionView::createAction()
+{
+    Action* pcAction = Command::createAction();
+    pcAction->setCheckable(true);
+    return pcAction;
+}
+
+//===========================================================================
 // Std_ViewExample1
 //===========================================================================
 DEF_STD_CMD_A(StdCmdViewExample1)
@@ -4412,6 +4454,7 @@ void CreateViewStdCommands()
     rcCmdMgr.addCommand(new StdCmdToggleNavigation());
     rcCmdMgr.addCommand(new StdCmdAxisCross());
     rcCmdMgr.addCommand(new VibeCADCmdToggleGrid());
+    rcCmdMgr.addCommand(new VibeCADCmdSectionView());
     rcCmdMgr.addCommand(new StdCmdSelBoundingBox());
     rcCmdMgr.addCommand(new StdCmdTreeViewActions());
     rcCmdMgr.addCommand(new StdCmdDockOverlay());

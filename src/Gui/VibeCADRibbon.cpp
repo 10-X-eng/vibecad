@@ -1360,7 +1360,12 @@ struct Gui::VibeCADRibbon::Private
 
         // View controls stay present in every CAD domain.
         CommandEntries viewEntries = resolveUniqueEntries(
-            {"Std_ViewFitAll", "Std_ViewIsometric", "VibeCAD_ToggleGrid"}
+            {
+                "Std_ViewFitAll",
+                "Std_ViewIsometric",
+                "VibeCAD_ToggleGrid",
+                "VibeCAD_SectionView",
+            }
         );
         addGroup(QObject::tr("View"), std::move(viewEntries));
 

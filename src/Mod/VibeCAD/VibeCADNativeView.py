@@ -99,6 +99,36 @@ def set_grid_visible(document: Any, visible: bool) -> dict[str, bool]:
     return {"grid_visible": observed}
 
 
+def set_section_view_visible(document: Any, visible: bool) -> dict[str, bool]:
+    document_uid(document)
+    if type(visible) is not bool:
+        raise TypeError("visible must be a boolean")
+    from VibeCADSectionView import is_section_view_active, set_section_view
+
+    set_section_view(visible, document=document)
+    observed = bool(is_section_view_active())
+    for _cycle in range(8):
+        if observed == visible:
+            break
+        try:
+            import FreeCADGui as Gui
+            from PySide import QtCore, QtWidgets
+
+            Gui.updateGui()
+            QtWidgets.QApplication.processEvents(
+                QtCore.QEventLoop.AllEvents,
+                25,
+            )
+        except Exception:
+            break
+        observed = bool(is_section_view_active())
+    if observed != visible:
+        raise NativeViewError(
+            "The active 3D section view did not reach the requested state."
+        )
+    return {"section_view": observed}
+
+
 def _is_derived_from(obj: Any, type_id: str) -> bool:
     check = getattr(obj, "isDerivedFrom", None)
     if not callable(check):

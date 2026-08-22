@@ -25,6 +25,7 @@ from VibeCADNativeView import (
     fit_all,
     set_grid_visible,
     set_isometric,
+    set_section_view_visible,
 )
 
 
@@ -282,6 +283,48 @@ def test_grid_visibility_waits_for_the_deferred_view_update(monkeypatch) -> None
     assert set_grid_visible(_Document(), True) == {"grid_visible": True}
     assert calls == [
         ("toggle", True),
+        ("update",),
+        ("events",),
+        ("update",),
+        ("events",),
+    ]
+
+
+def test_section_view_visibility_waits_for_the_deferred_view_update(monkeypatch) -> None:
+    observed = iter((False, False, True))
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADSectionView",
+        SimpleNamespace(
+            is_section_view_active=lambda: next(observed),
+            set_section_view=lambda visible, document=None: calls.append(
+                ("toggle", visible, document)
+            ),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "FreeCADGui",
+        SimpleNamespace(updateGui=lambda: calls.append(("update",))),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(
+            QtCore=SimpleNamespace(QEventLoop=SimpleNamespace(AllEvents=1)),
+            QtWidgets=SimpleNamespace(
+                QApplication=SimpleNamespace(
+                    processEvents=lambda *_args: calls.append(("events",))
+                )
+            ),
+        ),
+    )
+
+    document = _Document()
+    assert set_section_view_visible(document, True) == {"section_view": True}
+    assert calls == [
+        ("toggle", True, document),
         ("update",),
         ("events",),
         ("update",),
