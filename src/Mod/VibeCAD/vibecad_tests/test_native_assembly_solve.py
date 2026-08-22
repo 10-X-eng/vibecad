@@ -202,7 +202,7 @@ def _spec(document, assembly, *, grounded_count: int = 1) -> AssemblySolveSpec:
     )
 
 
-def test_solve_schema_maps_the_live_action_to_one_exact_state_digest() -> None:
+def test_solve_schema_requires_only_the_active_assembly() -> None:
     definition = assembly_structure_capability_definition()
     variants = {variant.operation: variant for variant in definition.variants}
     solve = variants["solve_assembly"]
@@ -212,14 +212,13 @@ def test_solve_schema_maps_the_live_action_to_one_exact_state_digest() -> None:
     assert solve.surface_ids == frozenset({"assemble"})
     assert solve.exact_target_type == "HumanActiveAssemblyAndExactSolverState"
     assert solve.transaction_behavior == "document"
-    assert set(schema["required"]) == {
-        "operation",
-        "assembly",
+    assert set(schema["required"]) == {"assembly"}
+    assert not {
         "expected_solver_state_sha256",
         "expected_component_count",
         "expected_grounded_count",
         "expected_joint_count",
-    }
+    } & set(schema["properties"])
     assert schema["additionalProperties"] is False
 
 

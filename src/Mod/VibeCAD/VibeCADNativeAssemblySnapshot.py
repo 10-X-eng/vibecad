@@ -137,7 +137,13 @@ def _component_summary(
         summary["shape"] = shape
     fastener = assembly_fastener_summary(assembly, component)
     if fastener is not None:
-        summary["standard_fastener"] = fastener
+        provider_fastener = dict(fastener)
+        provider_fastener["catalog_option_overrides"] = dict(
+            provider_fastener.pop("options", {}) or {}
+        )
+        if provider_fastener.get("length_mm") is None:
+            provider_fastener.pop("length_mm", None)
+        summary["standard_fastener"] = provider_fastener
     return summary
 
 
@@ -382,7 +388,11 @@ def build_assembly_snapshot(document: Any) -> dict[str, Any]:
         "Assembly::Assembly",
     )
     active = read_active_assembly(document)
-    sources, sources_truncated = available_component_sources(document, active)
+    sources, sources_truncated = available_component_sources(
+        document,
+        active,
+        before_first_assembly=active is None and not assemblies,
+    )
     result = {
         "kind": "assembly",
         "assembly_count": len(assemblies),

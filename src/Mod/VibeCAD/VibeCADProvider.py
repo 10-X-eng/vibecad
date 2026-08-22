@@ -2253,6 +2253,10 @@ def _model_visible_native_context(context: Mapping[str, Any]) -> dict[str, Any]:
         for name in ("revision", "domain", "working_set", "selection")
         if name in snapshot and snapshot[name] not in (None, "", [], {})
     }
+    if surface_id == "assemble" and isinstance(state.get("domain"), Mapping):
+        from VibeCADNativeAssemblyProviderState import provider_assembly_state
+
+        state["domain"] = provider_assembly_state(state["domain"])
     result: dict[str, Any] = {"work": work, "state": state}
     if document_name:
         result["document"] = {"name": document_name}
@@ -2544,6 +2548,30 @@ def _provider_state_after_tool(
     return result
 
 
+def _provider_compact_native_mutation_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _provider_compact_native_mutation_value(item)
+            for key, item in value.items()
+            if key not in {"document_uid", "object_id", "receipt"}
+            and key != "state_sha256"
+            and not str(key).endswith("_state_sha256")
+        }
+    if isinstance(value, (list, tuple)):
+        return [_provider_compact_native_mutation_value(item) for item in value]
+    return value
+
+
+def _provider_visible_native_mutation_result(
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    visible = _provider_compact_native_mutation_value(result)
+    feature = visible.get("feature")
+    if isinstance(feature, dict) and visible.get("sources") == feature.get("sources"):
+        visible.pop("sources", None)
+    return visible
+
+
 def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     """Return an exact normal result or an honest, bounded omission envelope.
 
@@ -2556,6 +2584,7 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
 
     visible = dict(result)
     visible.pop("_vibecad_image_attachment", None)
+    native_result = bool(visible.pop("_vibecad_native_result", False))
     source_lifecycle = bool(
         visible.pop("_vibecad_source_lifecycle_result", False)
     )
@@ -2565,6 +2594,11 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         visible.pop("_vibecad_complete_source_result", False)
         or visible.pop("_vibecad_complete_api_result", False)
     )
+    receipt = visible.get("receipt")
+    if native_result or (
+        isinstance(receipt, dict) and str(receipt.get("capability") or "")
+    ):
+        visible = _provider_visible_native_mutation_result(visible)
     visible = _provider_hide_internal_program_ids(visible)
     if source_lifecycle:
         visible = _provider_visible_source_lifecycle_result(visible)

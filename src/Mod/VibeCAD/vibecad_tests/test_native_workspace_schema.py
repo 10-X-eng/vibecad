@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from VibeCADNativeWorkspaceSchema import (
+    NATIVE_SURFACE_BY_WORKSPACE,
     NATIVE_WORKSPACES,
     NATIVE_WORKSPACE_SURFACES,
     workspace_capability_definition,
@@ -30,9 +31,11 @@ def test_workspace_switch_is_one_shared_inter_turn_surface_control() -> None:
     assert variant.transaction_behavior == "surface_control"
     assert variant.surface_ids == frozenset(NATIVE_WORKSPACE_SURFACES)
     assert "sketch.edit" not in variant.surface_ids
-    assert set(branch["required"]) == {"operation", "workspace"}
+    assert set(branch["required"]) == {"workspace"}
     assert branch["properties"]["workspace"]["enum"] == list(NATIVE_WORKSPACES)
     assert branch["additionalProperties"] is False
+    assert NATIVE_SURFACE_BY_WORKSPACE["aerodynamics"] == "aero"
+    assert WORKBENCH_BY_NATIVE_WORKSPACE["aerodynamics"] == "VibeCADAeroWorkbench"
 
 
 def test_workspace_runtime_activates_exact_workbench_on_document_thread() -> None:

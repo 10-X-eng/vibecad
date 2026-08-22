@@ -24,12 +24,6 @@ _OBJECT_REF = {
     "required": ["object_name"],
     "additionalProperties": False,
 }
-_STATE_SHA256 = {
-    "type": "string",
-    "minLength": 64,
-    "maxLength": 64,
-    "pattern": r"^[0-9a-f]{64}$",
-}
 _PLAYBACK_ID = {
     "type": "string",
     "minLength": 32,
@@ -57,11 +51,8 @@ def _parameters(properties: dict, required: tuple[str, ...]) -> dict:
 
 
 def _control_parameters(*, time: bool = False, direction: bool = False) -> dict:
-    properties = {
-        "simulation": _OBJECT_REF,
-        "playback_id": _PLAYBACK_ID,
-    }
-    required = ["simulation", "playback_id"]
+    properties = {"playback_id": _PLAYBACK_ID}
+    required = ["playback_id"]
     if time:
         properties["time_seconds"] = _TIME
         required.append("time_seconds")
@@ -73,19 +64,16 @@ def _control_parameters(*, time: bool = False, direction: bool = False) -> dict:
 
 def assembly_playback_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
-        name="assembly.simulation",
+        name="assembly.playback",
         description=(
-            "Control one exact generated Assembly simulation and restore its "
-            "launch presentation when playback closes."
+            "Show a motion study at a time, or seek, step, play, pause, and close "
+            "active playback."
         ),
         primary_classification="view",
         variants=(
             NativeCapabilityVariant(
-                operation="open",
-                description=(
-                    "Generate frames and open one exact active simulation at an "
-                    "exact output time, held or playing in one direction."
-                ),
+                operation="show",
+                description="Show a motion study at an optional time.",
                 action_ids=frozenset({"AssemblyContextPlaySimulation"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="ActiveAssemblySimulationAndFrozenState",
@@ -94,26 +82,19 @@ def assembly_playback_capability_definition() -> NativeCapabilityDefinition:
                 parameters=_parameters(
                     {
                         "simulation": _OBJECT_REF,
-                        "expected_simulation_state_sha256": _STATE_SHA256,
                         "time_seconds": _TIME,
                         "mode": {
                             "type": "string",
                             "enum": ["hold", "forward", "backward"],
+                            "default": "hold",
                         },
                     },
-                    (
-                        "simulation",
-                        "expected_simulation_state_sha256",
-                        "time_seconds",
-                        "mode",
-                    ),
+                    ("simulation",),
                 ),
             ),
             NativeCapabilityVariant(
                 operation="seek",
-                description=(
-                    "Pause and display one exact generated solver-output time."
-                ),
+                description="Move active playback to a time.",
                 action_ids=frozenset({"AssemblySimulationSeek"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="NativeOwnedAssemblyPlaybackAndTime",
@@ -123,9 +104,7 @@ def assembly_playback_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="step",
-                description=(
-                    "Pause and step one generated solver frame forward or backward."
-                ),
+                description="Step active playback one frame.",
                 action_ids=frozenset({"AssemblySimulationStep"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="NativeOwnedAssemblyPlayback",
@@ -135,10 +114,7 @@ def assembly_playback_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="play",
-                description=(
-                    "Play the generated solver frames forward or backward at the "
-                    "simulation's stored frame rate."
-                ),
+                description="Play active playback forward or backward.",
                 action_ids=frozenset({"AssemblySimulationPlay"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="NativeOwnedAssemblyPlayback",
@@ -148,7 +124,7 @@ def assembly_playback_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="pause",
-                description="Pause the exact active Native-owned Assembly player.",
+                description="Pause active playback.",
                 action_ids=frozenset({"AssemblySimulationPause"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="NativeOwnedAssemblyPlayback",
@@ -158,10 +134,7 @@ def assembly_playback_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="close",
-                description=(
-                    "Close the exact Native-owned player and verify restoration of "
-                    "placements, visibility, selection, camera, and dirty state."
-                ),
+                description="Close active playback.",
                 action_ids=frozenset({"AssemblySimulationClose"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="NativeOwnedAssemblyPlayback",

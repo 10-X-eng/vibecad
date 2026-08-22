@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import VibeCADNativeAssemblyComponents as components_module
+import VibeCADNativeAssemblyJointRuntime as joint_runtime_module
 import VibeCADNativeAssemblySnapshot as snapshot_module
 from VibeCADNativeActionManifest import classify_native_surface
 from VibeCADNativeAssemblyGrounding import (
@@ -18,8 +19,14 @@ from VibeCADNativeAssemblyGrounding import (
     preflight_grounding,
     verify_grounding,
 )
-from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
-from VibeCADNativeAssemblyJointSchema import assembly_joint_capability_definition
+from VibeCADNativeAssemblyJointBindings import (
+    ASSEMBLY_GROUND_CAPABILITY_NAME,
+    ASSEMBLY_JOINT_CAPABILITY_NAME,
+)
+from VibeCADNativeAssemblyJointSchema import (
+    assembly_ground_capability_definition,
+    assembly_joint_capability_definition,
+)
 from VibeCADNativeAssemblySnapshot import build_assembly_snapshot
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeTargets import NativeObjectRef
@@ -184,26 +191,54 @@ def _spec(
 
 
 def test_joint_schema_is_exact_bounded_and_registered() -> None:
-    definition = assembly_joint_capability_definition()
-    variant = definition.variants[0]
-    schema = definition.provider_schema(("set_grounded",))["parameters"]["oneOf"][0]
+    joint_definition = assembly_joint_capability_definition()
+    ground_definition = assembly_ground_capability_definition()
+    variants = {variant.operation: variant for variant in ground_definition.variants}
+    schema = ground_definition.provider_schema(("set_grounded", "set_movable"))[
+        "parameters"
+    ]
 
-    assert definition.name == ASSEMBLY_JOINT_CAPABILITY_NAME
-    assert variant.operation == "set_grounded"
-    assert variant.action_ids == frozenset({"Assembly_ToggleGrounded"})
+    assert joint_definition.name == ASSEMBLY_JOINT_CAPABILITY_NAME
+    assert tuple(variant.operation for variant in joint_definition.variants) == (
+        "create",
+    )
+    assert variants["set_grounded"].action_ids == frozenset(
+        {"Assembly_ToggleGrounded"}
+    )
+    assert variants["set_movable"].provider_supplemental is True
     assert set(schema["required"]) == {
         "operation",
-        "assembly",
-        "targets",
-        "grounded",
-        "expected_component_count",
-        "expected_grounded_count",
+        "components",
     }
-    assert schema["properties"]["targets"]["maxItems"] == 16
+    assert set(schema["properties"]["operation"]["enum"]) == {
+        "set_grounded",
+        "set_movable",
+    }
+    assert "grounded" not in schema["properties"]
+    assert schema["properties"]["components"]["maxItems"] == 16
     assert schema["additionalProperties"] is False
     registry = build_native_capability_registry()
+    assert ground_definition.name == ASSEMBLY_GROUND_CAPABILITY_NAME
+    assert tuple(variant.operation for variant in ground_definition.variants) == (
+        "set_grounded",
+        "set_movable",
+    )
+    assert registry.definition(ASSEMBLY_GROUND_CAPABILITY_NAME) is not None
+    assert registry.implementation(ASSEMBLY_GROUND_CAPABILITY_NAME) is not None
     assert registry.definition(ASSEMBLY_JOINT_CAPABILITY_NAME) is not None
     assert registry.implementation(ASSEMBLY_JOINT_CAPABILITY_NAME) is not None
+
+
+def test_ground_runtime_accepts_the_dedicated_ground_contract() -> None:
+    operation, values = joint_runtime_module._intent_values(
+        {
+            "operation": "set_grounded",
+            "components": ["Component1"],
+        }
+    )
+
+    assert operation == "set_grounded"
+    assert values == {"components": ["Component1"]}
 
 
 def test_ground_action_maps_to_desired_state_joint_operation() -> None:
@@ -230,7 +265,7 @@ def test_ground_action_maps_to_desired_state_joint_operation() -> None:
 
     plan = classify_native_surface(surface)[0]
 
-    assert plan.capability_family == ASSEMBLY_JOINT_CAPABILITY_NAME
+    assert plan.capability_family == ASSEMBLY_GROUND_CAPABILITY_NAME
     assert plan.operation_variant == "set_grounded"
     assert plan.transaction_behavior == "document"
 
@@ -371,14 +406,15 @@ def test_preflight_rejects_stale_noop_duplicate_and_malformed_grounding() -> Non
         2,
         1,
     )
-    with pytest.raises(NativeAssemblyGroundingError, match="must change"):
-        preflight_grounding(
-            document,
-            no_op,
-            active_reader=active,
-            timeline_active=lambda _obj: True,
-            ownership_checker=owns,
-        )
+    prepared_no_op = preflight_grounding(
+        document,
+        no_op,
+        active_reader=active,
+        timeline_active=lambda _obj: True,
+        ownership_checker=owns,
+    )
+    assert prepared_no_op.targets == (components[0],)
+    assert prepared_no_op.existing_joints == (joint,)
 
     duplicate_joint = joint_group.newObject("App::FeaturePython", "GroundedJoint")
     duplicate_joint.ObjectToGround = components[0]

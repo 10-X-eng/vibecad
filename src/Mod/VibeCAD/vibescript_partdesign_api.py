@@ -785,6 +785,17 @@ def _selection(
     return result
 
 
+def normalize_geometry_selection(
+    operation: str,
+    value: Any,
+    *,
+    element_type: str | None = None,
+) -> dict[str, Any]:
+    """Normalize the geometric query shared by modeling and assembly."""
+
+    return _selection(operation, value, element_type=element_type)
+
+
 def _interfaces(value: Any) -> dict[str, dict[str, Any]]:
     """Validate semantic names in the local namespace of one published output."""
 
@@ -833,6 +844,8 @@ def _interfaces(value: Any) -> dict[str, dict[str, Any]]:
                 "kind",
                 "allowed_joints",
                 "compatibility",
+                "pitch_radius_mm",
+                "thread_pitch_mm",
             }:
                 raise _error(
                     "body",
@@ -876,15 +889,66 @@ def _interfaces(value: Any) -> dict[str, dict[str, Any]]:
                     )
                 clean_connector["allowed_joints"] = joints
             if "compatibility" in connector:
-                compatibility = str(connector.get("compatibility") or "").strip()
-                if not _CONNECTOR_COMPATIBILITY.fullmatch(compatibility):
+                raw_compatibility = connector.get("compatibility")
+                if isinstance(raw_compatibility, Mapping):
+                    from vibescript_assembly_api import JOINT_TYPES
+
+                    compatibility = {
+                        str(joint or "").strip().lower(): str(token or "").strip()
+                        for joint, token in raw_compatibility.items()
+                    }
+                    if not compatibility or any(
+                        joint not in JOINT_TYPES
+                        or not _CONNECTOR_COMPATIBILITY.fullmatch(token)
+                        for joint, token in compatibility.items()
+                    ):
+                        raise _error(
+                            "body",
+                            f"interfaces[{name}].connector.compatibility",
+                            "must map Assembly joint kinds to stable tokens",
+                            raw_compatibility,
+                        )
+                    allowed = set(clean_connector.get("allowed_joints") or ())
+                    if allowed and not set(compatibility) <= allowed:
+                        raise _error(
+                            "body",
+                            f"interfaces[{name}].connector.compatibility",
+                            "contains a joint kind absent from allowed_joints",
+                            raw_compatibility,
+                        )
+                    clean_connector["compatibility"] = compatibility
+                else:
+                    compatibility = str(raw_compatibility or "").strip()
+                    if not _CONNECTOR_COMPATIBILITY.fullmatch(compatibility):
+                        raise _error(
+                            "body",
+                            f"interfaces[{name}].connector.compatibility",
+                            "must be a stable token using letters, digits, '.', '_', ':', or '-'",
+                            compatibility,
+                        )
+                    clean_connector["compatibility"] = compatibility
+            if "pitch_radius_mm" in connector:
+                clean_connector["pitch_radius_mm"] = _number(
+                    "body",
+                    f"interfaces[{name}].connector.pitch_radius_mm",
+                    connector.get("pitch_radius_mm"),
+                    minimum=0.0,
+                    strict=True,
+                )
+            if "thread_pitch_mm" in connector:
+                thread_pitch = _number(
+                    "body",
+                    f"interfaces[{name}].connector.thread_pitch_mm",
+                    connector.get("thread_pitch_mm"),
+                )
+                if abs(thread_pitch) <= 1.0e-12:
                     raise _error(
                         "body",
-                        f"interfaces[{name}].connector.compatibility",
-                        "must be a stable token using letters, digits, '.', '_', ':', or '-'",
-                        compatibility,
+                        f"interfaces[{name}].connector.thread_pitch_mm",
+                        "must be non-zero",
+                        connector.get("thread_pitch_mm"),
                     )
-                clean_connector["compatibility"] = compatibility
+                clean_connector["thread_pitch_mm"] = thread_pitch
         result[name] = {
             "selection": clean_selection,
             **({"description": description} if description else {}),

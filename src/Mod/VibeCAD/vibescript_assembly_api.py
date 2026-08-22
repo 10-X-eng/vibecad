@@ -83,6 +83,7 @@ def explicit_connector_compatibility(
 ) -> dict[str, Any]:
     """Validate authored connector contracts without classifying geometry."""
 
+    contract_kind = "gears" if kind == "gear" else kind
     retained = [dict(value) if isinstance(value, Mapping) else value for value in contracts]
     explicit = [value for value in retained if isinstance(value, Mapping)]
     for index, contract in enumerate(retained, start=1):
@@ -97,7 +98,7 @@ def explicit_connector_compatibility(
             }
         allowed = contract.get("allowed_joints")
         if allowed is not None and (
-            not isinstance(allowed, (list, tuple)) or kind not in allowed
+            not isinstance(allowed, (list, tuple)) or contract_kind not in allowed
         ):
             return {
                 "ok": False,
@@ -105,12 +106,22 @@ def explicit_connector_compatibility(
                 "reason": f"connector {index} explicitly disallows joint type {kind!r}",
                 "contracts": retained,
             }
-    compatibility = [
-        str(contract.get("compatibility") or "")
-        if isinstance(contract, Mapping)
-        else ""
-        for contract in retained
-    ]
+    compatibility = []
+    for contract in retained:
+        if not isinstance(contract, Mapping):
+            compatibility.append("")
+            continue
+        raw_compatibility = contract.get("compatibility")
+        if isinstance(raw_compatibility, Mapping):
+            compatibility.append(
+                str(
+                    raw_compatibility.get(contract_kind)
+                    or raw_compatibility.get(kind)
+                    or ""
+                )
+            )
+        else:
+            compatibility.append(str(raw_compatibility or ""))
     declared_compatibility = [value for value in compatibility if value]
     if len(set(declared_compatibility)) > 1:
         return {
@@ -840,7 +851,7 @@ def _mechanism_declarations(
     return normalized_requirements, normalized_contacts
 
 
-def _selection(operation: str, value: Any) -> dict[str, str]:
+def _selection(operation: str, value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         clean = value.strip()
         if clean.lower() in {"", "origin", "component_origin"}:
@@ -856,6 +867,18 @@ def _selection(operation: str, value: Any) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise _error(operation, "selection", "expected a string or selection object", value)
     kind = str(value.get("type") or "").strip()
+    if kind == "query":
+        from vibescript_partdesign_api import normalize_geometry_selection
+
+        selection = normalize_geometry_selection(operation, value)
+        if selection["expected_count"] != 1:
+            raise _error(
+                operation,
+                "selection.expected_count",
+                "must be 1 for a connector",
+                selection["expected_count"],
+            )
+        return selection
     if kind == "component_origin" and set(value) == {"type"}:
         return {"type": kind}
     if kind == "exact_subelement" and set(value) == {"type", "subelement"}:
@@ -1098,19 +1121,13 @@ class AssemblyDomainAPI:
         flexible: bool = False,
         label: str = "",
     ) -> DomainValue:
-        """Create one linked occurrence from a stable input reference.
+        """Create one occurrence from api.component(inputs['name']).
 
-        ``placement`` is either ``[x,y,z]`` or an object with ``position`` and
-        either quaternion ``rotation=[x,y,z,w]`` or ``axis=[x,y,z]`` plus
-        ``angle_degrees``. Set ``grounded=True`` for a fixed base occurrence.
-        Set ``flexible=True`` only for an authenticated native Assembly source;
-        its internal joints and stable occurrence paths then participate in the
-        parent solve. A flexible occurrence cannot be grounded.
-        Reuse the returned variable in connectors. In a mapped
-        ``api.assembly({...}, {...})``, the assembly owns the occurrence and it
-        does not need a separate result output. Return it as a
-        ``component_link`` only when the occurrence itself is a required public
-        output.
+        The input-schema property uses ``x-vibecad-reference=true``. Placement is
+        ``[x,y,z]`` or an object with ``position`` plus quaternion ``rotation``,
+        or ``axis`` plus ``angle_degrees``. ``grounded=True`` fixes the base.
+        ``flexible=True`` exposes an authenticated subassembly's internal joints.
+        A stable-key ``api.assembly`` mapping owns the returned occurrence.
         """
 
         operation = "component"
@@ -1145,14 +1162,11 @@ class AssemblyDomainAPI:
         flexible: bool = False,
         labels: Sequence[str] | None = None,
     ) -> tuple[DomainValue, ...]:
-        """Create repeated native links to one authored component definition.
+        """Create repeated occurrences with ``api.instances(inputs['name'], placements)``.
 
-        ``placements`` contains one exact placement per occurrence.  The return
-        value is a tuple of ordinary ``component_link`` graph values: assign or
-        index each item, use those exact items in connectors and api.assembly,
-        and return every item once under its own stable output name.  Set
-        ``grounded_index`` to the one fixed occurrence, or omit it.  ``labels``
-        must contain exactly one label per placement when supplied.
+        Bind each returned occurrence and reuse it in connectors and
+        ``api.assembly``. ``grounded_index`` selects the fixed occurrence.
+        ``labels`` contains one label per placement.
         """
 
         operation = "instances"
@@ -1273,13 +1287,13 @@ class AssemblyDomainAPI:
     def connector(
         self,
         component: DomainValue,
-        selection: str | Mapping[str, str] = "origin",
+        selection: str | Mapping[str, Any] = "origin",
         *,
         occurrence_path: str | None = None,
         anchor: str | None = None,
         offset: Sequence[float] | Mapping[str, Sequence[float]] | None = None,
     ) -> DomainValue:
-        """Select one component origin or exact/semantic subelement as a JCS.
+        """Use a named interface or exact selection as one JCS.
 
         ``occurrence_path`` optionally targets one copy-ready internal source
         occurrence path exposed in Assembly domain context. It is required when
@@ -1464,14 +1478,12 @@ class AssemblyDomainAPI:
         *,
         label: str = "",
     ) -> DomainValue:
-        """Build one assembly graph from component and joint variables.
+        """Own component and joint variables in one Assembly.
 
-        Prefer mappings whose keys are stable native member identities, for
-        example ``api.assembly({'Housing': housing}, {'ShaftJoint': joint})``.
-        Mapped members are owned by the Assembly and do not consume public
-        ``result`` outputs. The established sequence form remains supported and
-        requires each member to be returned exactly once. At least one component
-        must be grounded before the graph is solved.
+        Use stable-key mappings, for example
+        ``api.assembly({'Housing': housing}, {'ShaftJoint': joint})``. Ground one
+        component. Return this value as ``assembly`` and ``api.solve(model)`` as
+        ``solver_diagnostics``.
         """
 
         operation = "assembly"
@@ -1539,14 +1551,10 @@ class AssemblyDomainAPI:
         require_solved: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Solve the assembly in the worker and return structured native diagnostics.
+        """Solve an Assembly and return ``solver_diagnostics``.
 
-        ``require_solved=True`` rejects and retains a candidate when FreeCAD
-        reports conflicts, redundancy, malformed constraints, or no grounded
-        component.  Set it false only when intentionally publishing a diagnostic
-        snapshot of a non-solved graph. A solved result proves joint-constraint
-        consistency only. It does not prove collision clearance, usable motion,
-        retention, manufacturability, hardware access, or correct operation.
+        ``require_solved=True`` accepts a consistent graph with a grounded
+        component. ``require_solved=False`` publishes diagnostic state.
         """
 
         operation = "solve"
@@ -1920,6 +1928,7 @@ class AssemblyDomainAPI:
         with copy-ready occurrence paths in ``row_overrides``. The Quantity
         column aggregates repeated identical sources among siblings; every
         aggregated row retains all contributing occurrence paths for inspection.
+        ``only_parts=True`` keeps Part containers and subassemblies only.
         """
 
         operation = "bill_of_materials"

@@ -47,14 +47,12 @@ class NativeAssemblyPlaybackError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class AssemblyPlaybackOpenSpec:
     simulation_ref: NativeObjectRef
-    expected_simulation_state_sha256: str
-    time_seconds: float
+    time_seconds: float | None
     mode: str
 
 
 @dataclass(frozen=True, slots=True)
 class AssemblyPlaybackControlSpec:
-    simulation_ref: NativeObjectRef
     playback_id: str
     time_seconds: float | None = None
     direction: str | None = None
@@ -100,17 +98,6 @@ def _finite(value: Any, field: str) -> float:
     if not math.isfinite(result) or not -1_000_000.0 <= result <= 1_000_000.0:
         raise NativeAssemblyPlaybackError(
             f"{field} must be a finite number from -1000000 through 1000000."
-        )
-    return result
-
-
-def _digest(value: Any) -> str:
-    result = str(value or "")
-    if len(result) != 64 or any(
-        character not in "0123456789abcdef" for character in result
-    ):
-        raise NativeAssemblyPlaybackError(
-            "expected_simulation_state_sha256 must be one lowercase SHA-256 digest."
         )
     return result
 
@@ -381,16 +368,14 @@ def _status(session: _PlaybackSession, operation: str) -> dict[str, Any]:
         ) from exc
     return {
         "operation": operation,
+        "verified": True,
         "playback_id": session.playback_id,
         "simulation": object_reference(session.simulation),
-        "assembly": object_reference(session.assembly),
         "frame": frame,
         "frame_count": frame_count,
         "time_seconds": None if displayed_time is None else float(displayed_time),
         "playing": playing,
         "direction": direction,
-        "kinematics_generated": frame_count >= 2,
-        "restoration_pending": True,
     }
 
 
@@ -435,7 +420,6 @@ def _validate_open(
     mode = str(spec.mode or "")
     if mode not in _PLAYBACK_MODES:
         raise NativeAssemblyPlaybackError("mode must be hold, forward, or backward.")
-    expected_digest = _digest(spec.expected_simulation_state_sha256)
     simulation = resolve_object(
         context.document,
         spec.simulation_ref,
@@ -450,10 +434,6 @@ def _validate_open(
         state = capture_assembly_simulation_state(assembly)
     except Exception as exc:
         raise NativeAssemblyPlaybackError(str(exc)) from exc
-    if state.state_sha256 != expected_digest:
-        raise NativeAssemblyPlaybackError(
-            "The Assembly simulation state changed; read current Assemble state and retry."
-        )
     _simulation_record(state, simulation)
     proxy = getattr(simulation, "Proxy", None)
     getter = getattr(proxy, "getAssembly", None)
@@ -461,7 +441,12 @@ def _validate_open(
         raise NativeAssemblyPlaybackError(
             "The exact simulation has no valid native Assembly owner."
         )
-    frame, exact_time = _grid_frame(simulation, spec.time_seconds)
+    time_seconds = (
+        float(simulation.aTimeStart.Value)
+        if spec.time_seconds is None
+        else spec.time_seconds
+    )
+    frame, exact_time = _grid_frame(simulation, time_seconds)
     return state, assembly, simulation, frame, exact_time
 
 
@@ -553,7 +538,7 @@ def open_native_assembly_playback(
         elif spec.mode == "backward":
             panel.animationTimerStartBackward()
         event_pump()
-        return _status(session, "open")
+        return _status(session, "show")
     except Exception as exc:
         if dialog is None:
             dialog = _active_task_dialog()
@@ -577,21 +562,10 @@ def _require_session(
 ) -> _PlaybackSession:
     if not isinstance(spec, AssemblyPlaybackControlSpec):
         raise TypeError("spec must be an AssemblyPlaybackControlSpec")
-    if not isinstance(spec.simulation_ref, NativeObjectRef):
-        raise TypeError("spec.simulation_ref must be a NativeObjectRef")
     context.guard(allow_owned_playback=True)
     playback_id = _playback_id(spec.playback_id)
-    simulation = resolve_object(
-        context.document,
-        spec.simulation_ref,
-        expected_types=("App::FeaturePython",),
-    )
     session = _session_for_document(context.document)
-    if (
-        session is None
-        or session.playback_id != playback_id
-        or session.simulation is not simulation
-    ):
+    if session is None or session.playback_id != playback_id:
         raise NativeAssemblyPlaybackError(
             "The exact Native Assembly playback is no longer active."
         )
@@ -739,17 +713,30 @@ def _close_playback(
         )
     return {
         "operation": "close",
+        "verified": True,
         "playback_id": session.playback_id,
         "simulation": object_reference(session.simulation),
-        "assembly": object_reference(session.assembly),
         "closed": True,
         "playing": False,
-        "restored": [
-            "placements",
-            "visibility",
-            "selection",
-            "camera",
-            "document_modified_state",
-        ],
-        "document_graph_unchanged": True,
     }
+
+
+def is_native_assembly_playback_presentation_change(
+    obj: Any,
+    property_name: str,
+) -> bool:
+    """Identify placement updates owned by the active simulation player."""
+
+    if str(property_name or "") not in {"Placement", "LinkPlacement"}:
+        return False
+    document = getattr(obj, "Document", None)
+    uid = str(getattr(document, "Uid", "") or "")
+    if not uid:
+        return False
+    with _SESSIONS_LOCK:
+        session = _SESSIONS.get(uid)
+        return bool(
+            session is not None
+            and session.document is document
+            and any(record.obj is obj for record in session.solver_before.records)
+        )

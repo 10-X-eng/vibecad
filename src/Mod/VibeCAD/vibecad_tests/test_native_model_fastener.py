@@ -49,7 +49,6 @@ def _definition() -> dict[str, object]:
         "length_mm": 10.0,
         "model_thread": False,
         "left_handed": False,
-        "options": {},
     }
 
 
@@ -105,11 +104,22 @@ def test_fastener_contract_matches_the_model_ribbon_insert_action() -> None:
         {"VibeCAD_InsertStandardFastener"}
     )
     assert definition.variants[0].background_required is False
-    assert set(branch["required"]) == {"operation", "label", "definition"}
+    assert set(branch["required"]) == {"label", "definition"}
     assert branch["additionalProperties"] is False
-    assert set(fastener["required"]) == set(_definition())
-    assert fastener["properties"]["options"]["additionalProperties"] is False
-    assert fastener["properties"]["options"]["required"] == []
+    assert set(fastener["required"]) == set(_definition()) - {"length_mm"}
+    assert "catalog_option_overrides" not in fastener["required"]
+    assert "length_mm" not in fastener["required"]
+    assert fastener["properties"]["length_mm"]["type"] == "number"
+    assert (
+        fastener["properties"]["catalog_option_overrides"][
+            "additionalProperties"
+        ]
+        is False
+    )
+    assert (
+        fastener["properties"]["catalog_option_overrides"]["required"]
+        == []
+    )
     serialized = repr(schema)
     for forbidden in ("selection", "workbench", "runCommand", "assembly"):
         assert forbidden not in serialized
@@ -126,7 +136,6 @@ def test_fastener_contract_maps_exact_body_editing_to_the_edit_action() -> None:
     assert definition.variants[1].exact_target_type == "PartDesign::Body"
     assert definition.variants[1].background_required is False
     assert set(branch["required"]) == {
-        "operation",
         "target",
         "label",
         "definition",
@@ -145,7 +154,9 @@ def test_fastener_contract_maps_matching_holes_to_exact_reusable_inputs() -> Non
         {"VibeCAD_CreateMatchingFastenerHole"}
     )
     assert variant.background_required is False
-    assert set(branch["required"]) == set(_matching_hole_arguments())
+    assert set(branch["required"]) == set(_matching_hole_arguments()) - {
+        "operation"
+    }
     assert branch["additionalProperties"] is False
     assert branch["properties"]["fastener"]["required"] == ["object_name"]
     assert branch["properties"]["profile"]["required"] == ["object_name"]
@@ -176,7 +187,7 @@ def test_fastener_contract_maps_attachment_to_one_exact_circular_edge() -> None:
         "RetainedFastenerBody + DesignBody.CircularEdge"
     )
     assert variant.background_required is False
-    assert set(branch["required"]) == set(_attachment_arguments())
+    assert set(branch["required"]) == set(_attachment_arguments()) - {"operation"}
     assert branch["additionalProperties"] is False
     assert branch["properties"]["fastener"]["required"] == ["object_name"]
     host = branch["properties"]["host"]
@@ -206,7 +217,7 @@ def test_fastener_preparation_resolves_the_exact_catalog_constructor(
     prepared = prepare_model_fastener(
         {
             **_definition(),
-            "options": {
+            "catalog_option_overrides": {
                 "blind": True,
                 "thread_length_mm": 8,
                 "number_of_starts": 2,
@@ -252,13 +263,54 @@ def test_fastener_preparation_rejects_extra_and_invalid_option_fields() -> None:
         prepare_model_fastener(definition)
 
     definition = _definition()
-    definition["options"] = {"unknown": "value"}
+    definition["catalog_option_overrides"] = {"unknown": "value"}
     with pytest.raises(NativeModelError, match="option"):
         prepare_model_fastener(definition)
 
-    definition["options"] = {"number_of_starts": True}
+    definition["catalog_option_overrides"] = {"number_of_starts": True}
     with pytest.raises(NativeModelError, match="number_of_starts"):
         prepare_model_fastener(definition)
+
+
+def test_fastener_preparation_uses_catalog_defaults_without_overrides(
+    monkeypatch,
+) -> None:
+    observed = {}
+
+    monkeypatch.setattr(
+        fastener_module,
+        "resolve_fastener",
+        lambda **constructor: observed.update(constructor)
+        or {
+            **constructor,
+            "canonical_key": "freecad-fasteners:defaults",
+        },
+    )
+
+    prepare_model_fastener(_definition())
+
+    assert observed["options"] == {}
+
+
+def test_fastener_preparation_omits_axial_length_when_the_standard_has_none(
+    monkeypatch,
+) -> None:
+    observed = {}
+    definition = _definition()
+    del definition["length_mm"]
+    monkeypatch.setattr(
+        fastener_module,
+        "resolve_fastener",
+        lambda **constructor: observed.update(constructor)
+        or {
+            **constructor,
+            "canonical_key": "freecad-fasteners:no-length",
+        },
+    )
+
+    prepare_model_fastener(definition)
+
+    assert observed["length_mm"] is None
 
 
 def test_fastener_runtime_prepares_before_one_immediate_mutation(monkeypatch) -> None:

@@ -13,6 +13,7 @@ import hashlib
 from typing import Any, Iterable
 
 from VibeCADVibeScriptDomains import (
+    MODEL_ASSEMBLY_SOURCE_OPERATIONS,
     UNIVERSAL_SOURCE_OPERATIONS,
     domain_availability,
     get_vibescript_pack,
@@ -295,7 +296,7 @@ def resolve_modeling_surface(
                     if is_model_assembly_workbench(clean_workbench)
                     else vibescript_pack.domain
                 ),
-                generation="domain-v7-stable-authoring-tools",
+                generation="domain-v10-atomic-assembly-graph",
             ),
             core_tool_names=_core_tool_names(clean_workbench),
             cad_tool_names=_provider_cad_tool_names(
@@ -361,7 +362,10 @@ def _vibescript_domains(names: Iterable[str]) -> set[str]:
         parts = str(name).split(".")
         if not parts or parts[0] != "vibescript":
             continue
-        if len(parts) == 2 and parts[1] in UNIVERSAL_SOURCE_OPERATIONS:
+        if len(parts) == 2 and parts[1] in {
+            *UNIVERSAL_SOURCE_OPERATIONS,
+            *MODEL_ASSEMBLY_SOURCE_OPERATIONS,
+        }:
             continue
         if len(parts) == 3:
             result.add(parts[1])

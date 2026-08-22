@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeImmediate import run_immediate_mutation
+from VibeCADNativeRobotIntent import expand_robot_motion_intent
 from VibeCADNativeRobotMotion import (
     NativeRobotMotionError,
     evaluate_robot_simulation,
@@ -26,21 +27,13 @@ from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
 
 _HOME_ARGUMENTS = frozenset(
-    {
-        "robot",
-        "expected_setup_state_sha256",
-        "expected_robot_state_sha256",
-    }
+    {"robot"}
 )
 _SIMULATION_ARGUMENTS = frozenset(
     {
         "robot",
         "trajectory",
         "sample_times_s",
-        "expected_setup_state_sha256",
-        "expected_robot_state_sha256",
-        "expected_trajectory_setup_state_sha256",
-        "expected_trajectory_state_sha256",
     }
 )
 
@@ -80,6 +73,12 @@ class NativeRobotMotionRuntime:
         )
         self._context.guard()
         _require_current_ticket(self._context, ticket)
+        values = expand_robot_motion_intent(
+            self._context.document,
+            self._context.document_uid,
+            operation,
+            values,
+        )
         if operation == "simulate":
             prepared_simulation = preflight_robot_simulation(
                 self._context.document,
