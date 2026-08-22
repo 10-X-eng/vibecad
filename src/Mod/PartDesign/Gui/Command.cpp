@@ -3201,6 +3201,40 @@ DesignDressupSelection selectedDesignDressup(DesignDressupSelectionKind selectio
     return result;
 }
 
+bool selectionHasDressupSubelements()
+{
+    for (auto& selected : Gui::Selection().getSelectionEx()) {
+        if (!selected.getSubNames().empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+PartDesign::Body* pendingDressupBody()
+{
+    auto* body = PartDesignGui::getBodyForCommandState();
+    if (!body || !usableSolidTip(body)
+        || !PartDesign::designBodyStateBefore(body, nullptr)) {
+        return nullptr;
+    }
+    return body;
+}
+
+DesignDressupSelection pendingFilletOrChamferSelection()
+{
+    DesignDressupSelection result;
+    auto* body = pendingDressupBody();
+    if (!body || !body->getDocument()) {
+        return result;
+    }
+    result.document = body->getDocument();
+    result.bodies.push_back(body);
+    result.elementGroups.emplace_back();
+    result.valid = true;
+    return result;
+}
+
 template<typename Operation>
 void startDesignDressupOperation(
     Gui::Command& command,
@@ -3210,7 +3244,11 @@ void startDesignDressupOperation(
     DesignDressupSelectionKind selectionKind
 )
 {
-    const auto selected = selectedDesignDressup(selectionKind);
+    auto selected = selectedDesignDressup(selectionKind);
+    if (!selected.valid && selectionKind == DesignDressupSelectionKind::EdgesOrFaces
+        && !selectionHasDressupSubelements()) {
+        selected = pendingFilletOrChamferSelection();
+    }
     if (!selected.valid) {
         QMessageBox::warning(
             Gui::getMainWindow(),
@@ -3220,9 +3258,8 @@ void startDesignDressupOperation(
             selectionKind != DesignDressupSelectionKind::EdgesOrFaces
                 ? QObject::tr("Select one or more supported faces. Selections may "
                               "belong to multiple Bodies in this Design.")
-                : QObject::tr("Select one or more dressable edges or faces. "
-                              "Selections may belong to multiple Bodies in this "
-                              "Design.")
+                : QObject::tr("Select one or more dressable edges or faces, or start "
+                              "the tool and pick them on a solid Body.")
         );
         return;
     }
@@ -3271,7 +3308,17 @@ void startDesignDressupOperation(
 
 bool designDressupOperationActive(DesignDressupSelectionKind selectionKind)
 {
-    return PartDesignGui::canStartModelingCommand() && selectedDesignDressup(selectionKind).valid;
+    if (!PartDesignGui::canStartModelingCommand()) {
+        return false;
+    }
+    if (selectedDesignDressup(selectionKind).valid) {
+        return true;
+    }
+    if (selectionKind != DesignDressupSelectionKind::EdgesOrFaces
+        || selectionHasDressupSubelements()) {
+        return false;
+    }
+    return pendingDressupBody() != nullptr;
 }
 
 }  // namespace
@@ -3466,7 +3513,9 @@ CmdPartDesignFillet::CmdPartDesignFillet()
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
     sMenuText = QT_TR_NOOP("Fillet");
-    sToolTipText = QT_TR_NOOP("Applies a fillet to the selected edges or faces");
+    sToolTipText = QT_TR_NOOP(
+        "Applies a fillet to selected edges or faces, or starts picking them on a solid Body"
+    );
     sWhatsThis = "PartDesign_Fillet";
     sStatusTip = sToolTipText;
     sPixmap = "PartDesign_Fillet";
@@ -3500,7 +3549,9 @@ CmdPartDesignChamfer::CmdPartDesignChamfer()
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
     sMenuText = QT_TR_NOOP("Chamfer");
-    sToolTipText = QT_TR_NOOP("Applies a chamfer to the selected edges or faces");
+    sToolTipText = QT_TR_NOOP(
+        "Applies a chamfer to selected edges or faces, or starts picking them on a solid Body"
+    );
     sWhatsThis = "PartDesign_Chamfer";
     sStatusTip = sToolTipText;
     sPixmap = "PartDesign_Chamfer";
