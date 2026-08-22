@@ -337,6 +337,7 @@ SHARED_RIBBON_TIMELINE_BEHAVIOR = {
     "Std_ViewFitAll": frozenset({"read-only"}),
     "Std_ViewIsometric": frozenset({"read-only"}),
     "VibeCAD_ToggleGrid": frozenset({"read-only"}),
+    "VibeCAD_SectionView": frozenset({"read-only"}),
     # TestRibbonInspectView exercises each task's Save Result action and the
     # resulting durable, source-linked Measure::Result history operation.
     "Std_Measure": frozenset({"operation", "source-preserving"}),
@@ -639,6 +640,7 @@ class TestConsolidatedPartWorkbench(unittest.TestCase):
                 "Std_ViewFitAll",
                 "Std_ViewIsometric",
                 "VibeCAD_ToggleGrid",
+                "VibeCAD_SectionView",
                 "Std_Measure",
                 "Std_MassProperties",
                 "Inspection_VisualInspection",

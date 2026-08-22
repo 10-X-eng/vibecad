@@ -38,12 +38,14 @@ VIEW_COMMANDS = (
     "Std_ViewFitAll",
     "Std_ViewIsometric",
     "VibeCAD_ToggleGrid",
+    "VibeCAD_SectionView",
 )
 
 SHARED_RIBBON_TIMELINE_BEHAVIOR = {
     "Std_ViewFitAll": frozenset({"read-only"}),
     "Std_ViewIsometric": frozenset({"read-only"}),
     "VibeCAD_ToggleGrid": frozenset({"read-only"}),
+    "VibeCAD_SectionView": frozenset({"read-only"}),
     "Std_Measure": frozenset({"operation", "source-preserving"}),
     "Std_MassProperties": frozenset({"operation", "source-preserving"}),
     "Inspection_VisualInspection": frozenset({"operation", "replacement"}),

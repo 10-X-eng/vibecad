@@ -167,6 +167,16 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                 transaction_behavior="presentation",
             ),
             _variant(
+                "set_section_view",
+                "Set 3D section-view clipping explicitly.",
+                ("VibeCAD_SectionView",),
+                parameters=_parameters(
+                    {"visible": {"type": "boolean"}},
+                    ("visible",),
+                ),
+                transaction_behavior="presentation",
+            ),
+            _variant(
                 "set_object_visibility",
                 "Set exact model-object visibility.",
                 ("VibeCAD_NativeSetObjectVisibility",),

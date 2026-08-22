@@ -18,6 +18,7 @@ _READ_ONLY_OR_VIEW_COMMANDS = frozenset(
         "Std_ViewFitAll",
         "Std_ViewIsometric",
         "VibeCAD_ToggleGrid",
+        "VibeCAD_SectionView",
         "Inspection_InspectElement",
         "Part_CheckGeometry",
     }

@@ -22,16 +22,16 @@ from vibecad_tests.test_ribbon_surface import _manifest
 
 
 EXPECTED_DEFAULT_COUNTS = {
-    "aero": 16,
-    "analyze": 104,
-    "assemble": 53,
-    "drawing": 107,
-    "manufacture": 59,
-    "mesh": 60,
-    "model": 70,
-    "parameters": 24,
-    "sketch.edit": 105,
-    "sketch.setup": 15,
+    "aero": 17,
+    "analyze": 105,
+    "assemble": 54,
+    "drawing": 108,
+    "manufacture": 60,
+    "mesh": 61,
+    "model": 71,
+    "parameters": 25,
+    "sketch.edit": 106,
+    "sketch.setup": 16,
 }
 
 EXPECTED_MODEL_COMPOSITES = {
@@ -76,7 +76,7 @@ def test_default_inventory_has_exact_proven_counts_without_duplicates() -> None:
     unique_ids = set().union(
         *(set(command_ids) for command_ids in KNOWN_ACTIONS_BY_SURFACE.values())
     )
-    assert len(unique_ids) == DEFAULT_UNIQUE_ACTION_COUNT == 536
+    assert len(unique_ids) == DEFAULT_UNIQUE_ACTION_COUNT == 537
     all_known_ids = unique_ids | set().union(
         *(set(command_ids) for command_ids in OPTIONAL_ACTIONS_BY_SURFACE.values())
     )
@@ -253,6 +253,7 @@ def test_model_inventory_excludes_every_contextual_sketch_edit_action() -> None:
         "Std_ViewFitAll",
         "Std_ViewIsometric",
         "VibeCAD_ToggleGrid",
+        "VibeCAD_SectionView",
     }
     model = set(KNOWN_ACTIONS_BY_SURFACE["model"])
     sketch_edit = set(KNOWN_ACTIONS_BY_SURFACE["sketch.edit"])
