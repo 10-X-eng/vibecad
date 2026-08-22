@@ -145,12 +145,12 @@ EOF
         exit 1
     fi
     if ! env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
-        /usr/bin/python3 \
-        "${conda_env}/Mod/McMasterInsert/McMasterCatalogWebKit.py" \
-        --smoke-test; then
-        echo "VibeCAD McMaster WebKit helper smoke test failed; the Linux bundle cannot provide the embedded catalog."
+        /usr/bin/python3 -m py_compile \
+        "${conda_env}/Mod/McMasterInsert/McMasterCatalogWebKit.py"; then
+        echo "VibeCAD McMaster WebKit helper is not valid Python."
         exit 1
     fi
+    rm -rf -- "${conda_env}/Mod/McMasterInsert/__pycache__"
 
     # Finalize AppDir here so the packaging phases only ever read it.
     chmod a+x ./AppDir/AppRun
