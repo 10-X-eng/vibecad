@@ -27,7 +27,8 @@ from VibeCADNativeTargets import (
 
 
 MAX_ASSEMBLY_COMPONENTS = 100_000
-MAX_COMPONENT_JOINT_PAGE = 16
+DEFAULT_COMPONENT_JOINT_PAGE = 32
+MAX_COMPONENT_JOINT_PAGE = 64
 
 
 class NativeAssemblyComponentJointsError(RuntimeError):
@@ -412,7 +413,8 @@ def preflight_component_joints(
     offset = _exact_count(spec.offset, "offset", MAX_ASSEMBLY_JOINTS - 1)
     if type(spec.limit) is not int or not 1 <= spec.limit <= MAX_COMPONENT_JOINT_PAGE:
         raise NativeAssemblyComponentJointsError(
-            "Component-joint limit must be an integer from 1 through 16."
+            "Component-joint limit must be an integer from 1 through "
+            f"{MAX_COMPONENT_JOINT_PAGE}."
         )
 
     selection_before = selection_reader(context.document)
@@ -503,7 +505,7 @@ def _result_record(
 ) -> dict[str, Any]:
     first_component, second_component = endpoints
     first_side = first_component is component
-    return {
+    result = {
         "joint": _public_reference(record["joint"]),
         "label": str(record["label"]),
         "joint_type": str(record["joint_type"]),
@@ -514,6 +516,10 @@ def _result_record(
         "first": dict(record["first"]),
         "second": dict(record["second"]),
     }
+    if str(record["joint_type"]) in {"Revolute", "Slider"}:
+        result["coupling_joint"] = str(record["joint"]["object_name"])
+        result["coupling_component"] = str(component.Name)
+    return result
 
 
 def read_component_joints(

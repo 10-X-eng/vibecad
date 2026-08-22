@@ -16,7 +16,7 @@ from VibeCADNativeAssemblyComponentJoints import (
 )
 from VibeCADNativeAssemblyDiagnosisRuntime import NativeAssemblyDiagnosisRuntime
 from VibeCADNativeAssemblyDiagnosisSchema import (
-    assembly_diagnosis_capability_definition,
+    assembly_component_joints_capability_definition,
 )
 from VibeCADNativeTargets import NativeObjectRef
 from vibecad_tests.test_native_assembly_conflict_diagnosis import (
@@ -75,20 +75,15 @@ def _spec(
 
 
 def test_schema_maps_the_remaining_live_diagnose_action_to_one_exact_read() -> None:
-    definition = assembly_diagnosis_capability_definition()
+    definition = assembly_component_joints_capability_definition()
     variants = {variant.operation: variant for variant in definition.variants}
-    variant = variants["select_joints_of_component"]
+    variant = variants["read"]
     schema = definition.provider_schema((variant.operation,))["parameters"]["oneOf"][
         0
     ]
 
-    assert tuple(variants) == (
-        "select_conflicting_constraints",
-        "select_redundant_constraints",
-        "select_partially_redundant_constraints",
-        "select_malformed_constraints",
-        "select_joints_of_component",
-    )
+    assert definition.name == "assembly.component_joints"
+    assert tuple(variants) == ("read",)
     assert variant.action_ids == frozenset({"Assembly_SelectJointsOfComponent"})
     assert variant.surface_ids == frozenset({"assemble"})
     assert (
@@ -97,18 +92,14 @@ def test_schema_maps_the_remaining_live_diagnose_action_to_one_exact_read() -> N
     )
     assert variant.transaction_behavior == "none"
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == {
-        "operation",
-        "assembly",
-        "component",
-        "expected_joint_graph_state_sha256",
-        "expected_component_count",
-        "expected_joint_count",
-        "offset",
-        "limit",
-    }
-    assert "expected_diagnosis_state_sha256" not in schema["properties"]
-    assert schema["properties"]["limit"]["maximum"] == 16
+    assert schema["required"] == ["component"]
+    assert "assembly" not in schema["properties"]
+    assert schema["properties"]["component"]["type"] == "object"
+    assert not any(
+        name.startswith("expected_") for name in schema["properties"]
+    )
+    assert schema["properties"]["limit"]["maximum"] == 64
+    assert schema["properties"]["limit"]["default"] == 32
 
 
 def test_component_joint_state_uses_compiled_order_and_hashes_exact_output() -> None:
@@ -160,6 +151,8 @@ def test_component_joint_state_rejects_duplicate_or_malformed_compiled_rows() ->
 
 def test_component_joint_read_is_exact_paginated_and_non_mutating() -> None:
     document, assembly, _group, _ground, components, joints = _component_fixture()
+    joints[0].JointType = "Revolute"
+    joints[1].JointType = "Revolute"
     context = _context(document)
     state = capture_component_joint_state(assembly)
     selected = _selection(document, (components[1].Name,))
@@ -189,12 +182,16 @@ def test_component_joint_read_is_exact_paginated_and_non_mutating() -> None:
     assert first["next_offset"] == 1
     assert first["joints"][0]["joint"]["object_name"] == joints[0].Name
     assert first["joints"][0]["component_side"] == "second"
+    assert first["joints"][0]["coupling_joint"] == joints[0].Name
+    assert first["joints"][0]["coupling_component"] == components[1].Name
     assert (
         first["joints"][0]["other_component"]["object_name"]
         == components[0].Name
     )
     assert second["joints"][0]["joint"]["object_name"] == joints[1].Name
     assert second["joints"][0]["component_side"] == "first"
+    assert second["joints"][0]["coupling_joint"] == joints[1].Name
+    assert second["joints"][0]["coupling_component"] == components[1].Name
     assert "next_offset" not in second
     assert tuple(document.Objects) == before_objects
     assert tuple(component.Placement for component in components) == before_placements
@@ -317,6 +314,12 @@ def test_runtime_parses_closed_exact_component_joint_arguments(monkeypatch) -> N
     captured = []
     monkeypatch.setattr(
         runtime_module,
+        "read_active_assembly",
+        lambda target_document: assembly,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module,
         "read_component_joints",
         lambda exact_context, spec: (
             captured.append((exact_context, spec)) or {"ok": True}
@@ -324,11 +327,7 @@ def test_runtime_parses_closed_exact_component_joint_arguments(monkeypatch) -> N
     )
     arguments = {
         "operation": "select_joints_of_component",
-        "assembly": {"object_name": assembly.Name},
         "component": {"object_name": components[1].Name},
-        "expected_joint_graph_state_sha256": state.state_sha256,
-        "expected_component_count": 3,
-        "expected_joint_count": 3,
         "offset": 0,
         "limit": 1,
     }
@@ -339,11 +338,36 @@ def test_runtime_parses_closed_exact_component_joint_arguments(monkeypatch) -> N
     ]
     with pytest.raises(RuntimeError, match="do not match"):
         runtime.diagnose({**arguments, "expected_malformed_count": 0})
-    with pytest.raises(RuntimeError, match="lowercase SHA-256"):
-        runtime.diagnose(
-            {**arguments, "expected_joint_graph_state_sha256": "A" * 64}
-        )
-    with pytest.raises(RuntimeError, match="lowercase SHA-256"):
-        runtime.diagnose(
-            {**arguments, "expected_joint_graph_state_sha256": 10**63}
-        )
+
+
+def test_runtime_routes_the_focused_component_joint_read(monkeypatch) -> None:
+    document, assembly, _group, _ground, components, _joints = _component_fixture()
+    context = _context(document)
+    state = capture_component_joint_state(assembly)
+    runtime = NativeAssemblyDiagnosisRuntime(context)
+    captured = []
+    monkeypatch.setattr(
+        runtime_module,
+        "read_active_assembly",
+        lambda target_document: assembly,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "read_component_joints",
+        lambda exact_context, spec: (
+            captured.append((exact_context, spec)) or {"ok": True}
+        ),
+    )
+
+    result = runtime.component_joints(
+        {
+            "operation": "read",
+            "component": {"object_name": components[1].Name},
+            "limit": 20,
+        }
+    )
+
+    assert result == {"ok": True}
+    assert captured == [
+        (context, _spec(document, assembly, components[1], state, limit=20))
+    ]

@@ -308,6 +308,38 @@ def test_provider_keeps_operations_in_the_enum_without_description_duplication()
     assert all(variant.description not in repr(schema) for variant in definition.variants)
 
 
+def test_preserved_operation_branches_describe_the_selected_operation() -> None:
+    definition = NativeCapabilityDefinition(
+        name="model.exact",
+        description="Apply one exact operation.",
+        primary_classification="mutation",
+        variants=(
+            _variant(
+                "create",
+                "Part_Create",
+                transaction_behavior="document",
+                parameters=_parameters(label={"type": "string", "maxLength": 80}),
+            ),
+            _variant(
+                "edit",
+                "Part_Edit",
+                transaction_behavior="document",
+                parameters=_parameters(target={"type": "string", "maxLength": 80}),
+            ),
+        ),
+        preserve_operation_branches=True,
+    )
+
+    branches = definition.provider_schema(("create", "edit"))["parameters"]["oneOf"]
+
+    assert branches[0]["properties"]["operation"] == {
+        "type": "string",
+        "const": "create",
+        "description": "Perform create.",
+    }
+    assert branches[1]["properties"]["operation"]["description"] == "Perform edit."
+
+
 def test_compact_multi_operation_schema_keeps_closed_typed_field_union() -> None:
     definition = NativeCapabilityDefinition(
         name="model.compact",

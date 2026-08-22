@@ -798,7 +798,10 @@ def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
     assert 'modelBrowserWidthPreference = "ModelBrowserWidth"' in main_window
     assert "browserPreferences->GetInt(" in main_window
     assert "browserPreferences->SetInt(modelBrowserWidthPreference, browserWidth)" in main_window
-    assert "workspaceLayout->addWidget(viewportCanvas, 1)" in main_window
+    assert "workspaceLayout->addWidget(d->viewportCanvas, 1)" in main_window
+    assert "setModelBrowserVisible" in main_window
+    assert 'view->property("vibecadUsesModelBrowser")' in main_window
+    assert "browserHost->show()" in main_window
     permanent = source.split("void presentPermanentModelBrowser", 1)[1].split(
         "}  // namespace", 1
     )[0]
@@ -807,7 +810,7 @@ def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
     assert "dock->setFeatures(QDockWidget::NoDockWidgetFeatures)" in permanent
     assert "toggle->setEnabled(false)" in permanent
     assert "toggle->setVisible(false)" in permanent
-    assert "host->show()" in permanent
+    assert "host->show()" not in permanent
     assert "dock->show()" in permanent
     assert "VibeCADModelBrowserHost" in tree
     assert "widget.setUpdatesEnabled(false)" in tree

@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Provider contract for exact Assembly structure mutations."""
+"""Small provider contract for native Assembly structure mutations."""
 
 from __future__ import annotations
+
+from typing import Any
 
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityDefinition,
@@ -12,11 +14,7 @@ from VibeCADNativeCapabilityRegistry import (
 from VibeCADNativeDesignSchema import placement_schema
 
 
-_LABEL = {
-    "type": "string",
-    "minLength": 1,
-    "maxLength": 160,
-}
+_LABEL = {"type": "string", "minLength": 1, "maxLength": 160}
 _OBJECT_NAME = {
     "type": "string",
     "maxLength": 128,
@@ -31,407 +29,266 @@ _OBJECT_REF = {
 _SOURCE_REF = {
     "type": "object",
     "properties": {
-        "document_uid": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-        },
         "document_name": _OBJECT_NAME,
         "object_name": _OBJECT_NAME,
-        "object_id": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 2_147_483_647,
-        },
     },
-    "required": [
-        "document_uid",
-        "document_name",
-        "object_name",
-        "object_id",
-    ],
+    "required": ["document_name", "object_name"],
     "additionalProperties": False,
 }
-_EXPECTED_COMPONENT_COUNT = {
-    "type": "integer",
-    "minimum": 0,
-    "maximum": 100_000,
-}
-_EXPECTED_JOINT_COUNT = {
-    "type": "integer",
-    "minimum": 0,
-    "maximum": 256,
-}
-_STATE_SHA256 = {
-    "type": "string",
-    "minLength": 64,
-    "maxLength": 64,
-    "pattern": r"^[0-9a-f]{64}$",
-}
-_VIEW_TARGETS = {
-    "type": "array",
-    "items": _OBJECT_REF,
-    "minItems": 1,
-    "maxItems": 256,
-    "uniqueItems": True,
-}
+_VIEW_PLACEMENT = placement_schema()
 _VIEW_MOVE = {
     "oneOf": [
         {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "const": "normal"},
-                "targets": _VIEW_TARGETS,
-                "transform": placement_schema(),
+                "kind": {"type": "string", "const": "transform"},
+                "component": _OBJECT_REF,
+                "translation_mm": _VIEW_PLACEMENT["properties"]["origin_mm"],
+                "rotation": _VIEW_PLACEMENT["properties"]["rotation"],
             },
-            "required": ["kind", "targets", "transform"],
+            "required": ["kind", "component", "translation_mm"],
             "additionalProperties": False,
         },
         {
             "type": "object",
             "properties": {
                 "kind": {"type": "string", "const": "radial"},
-                "targets": _VIEW_TARGETS,
+                "component": _OBJECT_REF,
                 "radial_distance_mm": {
                     "type": "number",
                     "exclusiveMinimum": 0.0,
                     "maximum": 1_000_000.0,
                 },
             },
-            "required": ["kind", "targets", "radial_distance_mm"],
+            "required": ["kind", "component", "radial_distance_mm"],
             "additionalProperties": False,
         },
     ]
 }
+_SIMULATION_FORMULA = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 512,
+    "description": (
+        "Assembly expression using time in seconds and initialValue; angular "
+        "values are radians and linear values are millimeters."
+    ),
+}
+
+
+def _simulation_motion(
+    motion_type: str,
+    value_name: str,
+    value_schema: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "joint": _OBJECT_REF,
+            "motion_type": {"type": "string", "const": motion_type},
+            value_name: value_schema,
+        },
+        "required": ["joint", "motion_type", value_name],
+        "additionalProperties": False,
+    }
+
+
 _SIMULATION_MOTION = {
-    "type": "object",
-    "properties": {
-        "joint": _OBJECT_REF,
-        "motion_type": {
-            "type": "string",
-            "enum": ["angular", "linear"],
-        },
-        "formula": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512,
-        },
-    },
-    "required": ["joint", "motion_type", "formula"],
-    "additionalProperties": False,
-}
-_BOM_COLUMNS = {
-    "type": "array",
-    "items": {
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 129,
-        "pattern": (
-            r"^(?:\.[A-Za-z_][A-Za-z0-9_]{0,127}|"
-            r"[^.\x00-\x1f\x7f][^\x00-\x1f\x7f]*)$"
+    "oneOf": [
+        _simulation_motion(
+            "angular",
+            "angular_speed_degrees_per_second",
+            {
+                "type": "number",
+                "minimum": -1_000_000.0,
+                "maximum": 1_000_000.0,
+            },
         ),
-    },
-    "minItems": 1,
-    "maxItems": 32,
-    "uniqueItems": True,
+        _simulation_motion(
+            "linear",
+            "linear_speed_mm_per_second",
+            {
+                "type": "number",
+                "minimum": -1_000_000.0,
+                "maximum": 1_000_000.0,
+            },
+        ),
+        _simulation_motion("angular", "formula", _SIMULATION_FORMULA),
+        _simulation_motion("linear", "formula", _SIMULATION_FORMULA),
+    ]
 }
+
+
+def _parameters(
+    properties: dict[str, Any],
+    required: tuple[str, ...],
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(required),
+        "additionalProperties": False,
+    }
+
+
+def _initial_placement_schema() -> dict[str, Any]:
+    schema = placement_schema()
+    schema["required"] = []
+    schema["description"] = "Initial placement; omitted fields use identity."
+    return schema
+
+
+def _variant(
+    operation: str,
+    description: str,
+    action_id: str,
+    exact_target_type: str,
+    parameters: dict[str, Any],
+) -> NativeCapabilityVariant:
+    return NativeCapabilityVariant(
+        operation=operation,
+        description=description,
+        action_ids=frozenset({action_id}),
+        surface_ids=frozenset({"assemble"}),
+        exact_target_type=exact_target_type,
+        transaction_behavior="document",
+        background_required=False,
+        parameters=parameters,
+    )
 
 
 def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="assembly.structure",
-        description=(
-            "Create and modify exact structures in the human-selected Assemble ribbon."
-        ),
+        description="Create components, solve, views, and simulations in the active assembly.",
         primary_classification="mutation",
         variants=(
-            NativeCapabilityVariant(
-                operation="create_assembly",
-                description=(
-                    "Create one root or nested native Assembly without changing activation."
+            _variant(
+                "create_assembly",
+                "Create a root assembly or a child of parent_assembly.",
+                "Assembly_CreateAssembly",
+                "HumanActiveAssemblyAndExpectedCount",
+                _parameters(
+                    {"label": _LABEL, "parent_assembly": _OBJECT_REF},
+                    ("label",),
                 ),
-                action_ids=frozenset({"Assembly_CreateAssembly"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyAndExpectedCount",
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "label": _LABEL,
-                        "parent_assembly": {
-                            "oneOf": [_OBJECT_REF, {"type": "null"}],
-                        },
-                        "expected_assembly_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 10_000,
-                        },
-                    },
-                    "required": [
-                        "label",
-                        "parent_assembly",
-                        "expected_assembly_count",
-                    ],
-                    "additionalProperties": False,
-                },
             ),
-            NativeCapabilityVariant(
-                operation="insert_component",
-                description=(
-                    "Insert one exact existing Part, Body, primitive, or Assembly "
-                    "into the human-active Assembly without changing activation."
-                ),
-                action_ids=frozenset({"Assembly_InsertLink"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyExactSourceAndExpectedCount",
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
+            _variant(
+                "insert_component",
+                "Insert an available component source.",
+                "Assembly_InsertLink",
+                "HumanActiveAssemblyExactSourceAndExpectedCount",
+                _parameters(
+                    {
                         "assembly": _OBJECT_REF,
                         "source": _SOURCE_REF,
                         "label": _LABEL,
-                        "placement": placement_schema(),
-                        "rigid": {
-                            "oneOf": [
-                                {"type": "boolean"},
-                                {"type": "null"},
-                            ],
-                        },
-                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
+                        "placement": _initial_placement_schema(),
                     },
-                    "required": [
-                        "assembly",
-                        "source",
-                        "label",
-                        "placement",
-                        "rigid",
-                        "expected_component_count",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_part",
-                description=(
-                    "Create one empty current-document Part and Body and insert "
-                    "its occurrence into the human-active Assembly."
+                    ("assembly", "source"),
                 ),
-                action_ids=frozenset({"Assembly_InsertNewPart"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyAndExpectedCount",
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
+            ),
+            _variant(
+                "create_part",
+                "Create an editable Part and Body occurrence.",
+                "Assembly_InsertNewPart",
+                "HumanActiveAssemblyAndExpectedCount",
+                _parameters(
+                    {
                         "assembly": _OBJECT_REF,
                         "label": _LABEL,
-                        "placement": placement_schema(),
-                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
+                        "placement": _initial_placement_schema(),
                     },
-                    "required": [
-                        "assembly",
-                        "label",
-                        "placement",
-                        "expected_component_count",
-                    ],
-                    "additionalProperties": False,
-                },
+                    ("assembly", "label"),
+                ),
             ),
-            NativeCapabilityVariant(
-                operation="make_flexible",
-                description=(
-                    "Convert one exact active AssemblyLink to flexible mode; "
-                    "the native lifecycle removes incompatible grounding."
+            _variant(
+                "make_flexible",
+                "Allow an AssemblyLink's internal joints to move.",
+                "AssemblyContextMakeFlexible",
+                "HumanActiveAssemblyExactAssemblyLinkAndFrozenAssemblyState",
+                _parameters(
+                    {"assembly": _OBJECT_REF, "link": _OBJECT_REF},
+                    ("assembly", "link"),
                 ),
-                action_ids=frozenset({"AssemblyContextMakeFlexible"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactAssemblyLinkAndFrozenAssemblyState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "link": _OBJECT_REF,
-                        "expected_state_sha256": _STATE_SHA256,
-                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
-                        "expected_grounded_count": _EXPECTED_JOINT_COUNT,
-                        "expected_joint_count": _EXPECTED_JOINT_COUNT,
-                    },
-                    "required": [
-                        "assembly",
-                        "link",
-                        "expected_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    ],
-                    "additionalProperties": False,
-                },
             ),
-            NativeCapabilityVariant(
-                operation="make_rigid",
-                description=(
-                    "Convert one exact active AssemblyLink to rigid mode; the "
-                    "native lifecycle rewrites joints and incompatible grounding."
+            _variant(
+                "make_rigid",
+                "Treat an AssemblyLink as one rigid component.",
+                "AssemblyContextMakeRigid",
+                "HumanActiveAssemblyExactAssemblyLinkAndFrozenAssemblyState",
+                _parameters(
+                    {"assembly": _OBJECT_REF, "link": _OBJECT_REF},
+                    ("assembly", "link"),
                 ),
-                action_ids=frozenset({"AssemblyContextMakeRigid"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactAssemblyLinkAndFrozenAssemblyState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "link": _OBJECT_REF,
-                        "expected_state_sha256": _STATE_SHA256,
-                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
-                        "expected_grounded_count": _EXPECTED_JOINT_COUNT,
-                        "expected_joint_count": _EXPECTED_JOINT_COUNT,
-                    },
-                    "required": [
-                        "assembly",
-                        "link",
-                        "expected_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    ],
-                    "additionalProperties": False,
-                },
             ),
-            NativeCapabilityVariant(
-                operation="solve_assembly",
-                description="Solve the exact human-active Assembly and verify every placement.",
-                action_ids=frozenset({"Assembly_SolveAssembly"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyAndExactSolverState",
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "expected_solver_state_sha256": {
-                            "type": "string",
-                            "minLength": 64,
-                            "maxLength": 64,
-                            "pattern": r"^[0-9a-f]{64}$",
-                        },
-                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
-                        "expected_grounded_count": _EXPECTED_JOINT_COUNT,
-                        "expected_joint_count": _EXPECTED_JOINT_COUNT,
-                    },
-                    "required": [
-                        "assembly",
-                        "expected_solver_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    ],
-                    "additionalProperties": False,
-                },
+            _variant(
+                "solve_assembly",
+                "Solve the active assembly.",
+                "Assembly_SolveAssembly",
+                "HumanActiveAssemblyAndExactSolverState",
+                _parameters({"assembly": _OBJECT_REF}, ("assembly",)),
             ),
-            NativeCapabilityVariant(
-                operation="create_view",
-                description=(
-                    "Create one native exploded-view History operation with its "
-                    "complete ordered normal and radial move graph."
-                ),
-                action_ids=frozenset({"Assembly_CreateView"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyExactViewStateAndMovableTargets",
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
+            _variant(
+                "create_view",
+                "Create an exploded view from ordered component moves.",
+                "Assembly_CreateView",
+                "HumanActiveAssemblyExactViewStateAndMovableTargets",
+                _parameters(
+                    {
                         "assembly": _OBJECT_REF,
                         "label": _LABEL,
-                        "parts_as_single_solid": {"type": "boolean"},
+                        "parts_as_single_solid": {
+                            "type": "boolean",
+                            "default": False,
+                        },
                         "moves": {
                             "type": "array",
                             "items": _VIEW_MOVE,
                             "minItems": 1,
                             "maxItems": 256,
                         },
-                        "expected_view_state_sha256": _STATE_SHA256,
-                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
-                        "expected_target_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 4_096,
-                        },
-                        "expected_view_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 1_024,
-                        },
                     },
-                    "required": [
-                        "assembly",
-                        "label",
-                        "parts_as_single_solid",
-                        "moves",
-                        "expected_view_state_sha256",
-                        "expected_component_count",
-                        "expected_target_count",
-                        "expected_view_count",
-                    ],
-                    "additionalProperties": False,
-                },
+                    ("assembly", "label", "moves"),
+                ),
             ),
-            NativeCapabilityVariant(
-                operation="create_simulation",
-                description=(
-                    "Create one native Assembly simulation History operation "
-                    "with its complete ordered motion graph."
-                ),
-                action_ids=frozenset({"Assembly_CreateSimulation"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactSimulationStateAndDriveableJoints"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "label": _LABEL,
+            _variant(
+                "create_simulation",
+                "Create a joint-motion simulation.",
+                "Assembly_CreateSimulation",
+                "HumanActiveAssemblyExactSimulationStateAndDriveableJoints",
+                _parameters(
+                    {
+                        "label": {**_LABEL, "default": "Simulation"},
                         "time_start_seconds": {
                             "type": "number",
                             "minimum": -1_000_000.0,
                             "maximum": 1_000_000.0,
+                            "default": 0.0,
                         },
                         "time_end_seconds": {
                             "type": "number",
                             "minimum": -1_000_000.0,
                             "maximum": 1_000_000.0,
+                            "default": 10.0,
                         },
                         "output_time_step_seconds": {
                             "type": "number",
-                            "minimum": 1.0e-9,
+                            "exclusiveMinimum": 0.0,
                             "maximum": 1_000_000.0,
+                            "default": 0.05,
                         },
                         "global_error_tolerance": {
                             "type": "number",
-                            "minimum": 1.0e-12,
+                            "exclusiveMinimum": 0.0,
                             "maximum": 1.0,
+                            "default": 1.0e-6,
                         },
                         "frames_per_second": {
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 240,
+                            "default": 30,
                         },
                         "motions": {
                             "type": "array",
@@ -439,79 +296,85 @@ def assembly_structure_capability_definition() -> NativeCapabilityDefinition:
                             "minItems": 1,
                             "maxItems": 256,
                         },
-                        "expected_simulation_state_sha256": _STATE_SHA256,
-                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
-                        "expected_grounded_count": _EXPECTED_JOINT_COUNT,
-                        "expected_eligible_joint_count": _EXPECTED_JOINT_COUNT,
-                        "expected_simulation_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 1_024,
-                        },
                     },
-                    "required": [
-                        "assembly",
-                        "label",
-                        "time_start_seconds",
-                        "time_end_seconds",
-                        "output_time_step_seconds",
-                        "global_error_tolerance",
-                        "frames_per_second",
-                        "motions",
-                        "expected_simulation_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_eligible_joint_count",
-                        "expected_simulation_count",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_bom",
-                description=(
-                    "Create one native Assembly bill-of-materials History "
-                    "operation with exact ordered columns and traversal settings."
+                    ("motions",),
                 ),
-                action_ids=frozenset({"Assembly_CreateBom"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactBomStateAndSourceGraph"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "label": _LABEL,
-                        "columns": _BOM_COLUMNS,
-                        "detail_subassemblies": {"type": "boolean"},
-                        "detail_parts": {"type": "boolean"},
-                        "only_parts": {"type": "boolean"},
-                        "expected_bom_state_sha256": _STATE_SHA256,
-                        "expected_component_count": _EXPECTED_COMPONENT_COUNT,
-                        "expected_bom_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 1_024,
-                        },
-                    },
-                    "required": [
-                        "assembly",
-                        "label",
-                        "columns",
-                        "detail_subassemblies",
-                        "detail_parts",
-                        "only_parts",
-                        "expected_bom_state_sha256",
-                        "expected_component_count",
-                        "expected_bom_count",
-                    ],
-                    "additionalProperties": False,
-                },
             ),
         ),
+    )
+
+
+def _focused_structure_definition(
+    name: str,
+    description: str,
+    *operations: str,
+) -> NativeCapabilityDefinition:
+    by_operation = {
+        variant.operation: variant
+        for variant in assembly_structure_capability_definition().variants
+    }
+    return NativeCapabilityDefinition(
+        name=name,
+        description=description,
+        primary_classification="mutation",
+        variants=tuple(by_operation[operation] for operation in operations),
+    )
+
+
+def assembly_create_capability_definition() -> NativeCapabilityDefinition:
+    return _focused_structure_definition(
+        "assembly.create",
+        "Create an empty Assembly.",
+        "create_assembly",
+    )
+
+
+def assembly_insert_capability_definition() -> NativeCapabilityDefinition:
+    return _focused_structure_definition(
+        "assembly.insert",
+        "Insert an available component source into the active Assembly.",
+        "insert_component",
+    )
+
+
+def assembly_new_part_capability_definition() -> NativeCapabilityDefinition:
+    return _focused_structure_definition(
+        "assembly.new_part",
+        "Create an editable Part in the active Assembly.",
+        "create_part",
+    )
+
+
+def assembly_rigidity_capability_definition() -> NativeCapabilityDefinition:
+    return _focused_structure_definition(
+        "assembly.rigidity",
+        "Set a nested AssemblyLink rigid or flexible.",
+        "make_flexible",
+        "make_rigid",
+    )
+
+
+def assembly_solve_capability_definition() -> NativeCapabilityDefinition:
+    return _focused_structure_definition(
+        "assembly.solve",
+        "Solve the active Assembly.",
+        "solve_assembly",
+    )
+
+
+def assembly_exploded_view_capability_definition() -> NativeCapabilityDefinition:
+    return _focused_structure_definition(
+        "assembly.exploded_view",
+        "Create an exploded view.",
+        "create_view",
+    )
+
+
+def assembly_motion_study_capability_definition() -> NativeCapabilityDefinition:
+    return _focused_structure_definition(
+        "assembly.motion_study",
+        "Create a joint-motion simulation.",
+        "create_simulation",
     )
 
 
@@ -520,4 +383,13 @@ def register_assembly_structure_capability_definition(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_definition(assembly_structure_capability_definition())
+    for definition in (
+        assembly_create_capability_definition(),
+        assembly_insert_capability_definition(),
+        assembly_new_part_capability_definition(),
+        assembly_rigidity_capability_definition(),
+        assembly_solve_capability_definition(),
+        assembly_exploded_view_capability_definition(),
+        assembly_motion_study_capability_definition(),
+    ):
+        registry.register_definition(definition)

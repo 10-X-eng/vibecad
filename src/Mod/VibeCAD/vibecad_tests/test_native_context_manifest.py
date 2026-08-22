@@ -330,8 +330,14 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
     assert provider_actions["AssemblyContextMakeFlexible"].operation_variant == (
         "make_flexible"
     )
+    assert provider_actions["AssemblyContextMakeFlexible"].capability_family == (
+        "assembly.rigidity"
+    )
     assert (
         provider_actions["AssemblyContextMakeRigid"].operation_variant == "make_rigid"
+    )
+    assert provider_actions["AssemblyContextMakeRigid"].capability_family == (
+        "assembly.rigidity"
     )
     assert provider_actions["VibeCAD_AnalyzeReadAnalysis"].operation_variant == (
         "analysis"
@@ -398,7 +404,7 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
         "Assembly_ExportASMT"
     )
     assert provider_actions["AssemblyContextPlaySimulation"].operation_variant == (
-        "open"
+        "show"
     )
     assert provider_actions["AssemblyContextPlaySimulation"].source_command_id == (
         "Assembly_EditHistoryOperation"

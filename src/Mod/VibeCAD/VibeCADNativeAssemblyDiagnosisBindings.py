@@ -14,6 +14,11 @@ from VibeCADNativeCapabilityRegistry import (
 
 
 ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME = "assembly.diagnose"
+ASSEMBLY_COMPONENT_JOINTS_CAPABILITY_NAME = "assembly.component_joints"
+ASSEMBLY_DIAGNOSIS_CAPABILITY_NAMES = (
+    ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME,
+    ASSEMBLY_COMPONENT_JOINTS_CAPABILITY_NAME,
+)
 
 
 def _diagnose(call: Any) -> Mapping[str, Any]:
@@ -24,6 +29,16 @@ def _diagnose(call: Any) -> Mapping[str, Any]:
     if not isinstance(arguments, Mapping):
         raise TypeError("An Assembly diagnosis call requires argument data.")
     return runtime.diagnose(arguments)
+
+
+def _component_joints(call: Any) -> Mapping[str, Any]:
+    runtime = getattr(call, "runtime", None)
+    arguments = getattr(call, "arguments", None)
+    if not isinstance(runtime, NativeAssemblyDiagnosisRuntime):
+        raise TypeError("An Assembly component-joints call requires its exact runtime.")
+    if not isinstance(arguments, Mapping):
+        raise TypeError("An Assembly component-joints call requires argument data.")
+    return runtime.component_joints(arguments)
 
 
 def register_assembly_diagnosis_capability_implementation(
@@ -37,6 +52,12 @@ def register_assembly_diagnosis_capability_implementation(
             _diagnose,
         )
     )
+    registry.register_implementation(
+        NativeCapabilityImplementation(
+            ASSEMBLY_COMPONENT_JOINTS_CAPABILITY_NAME,
+            _component_joints,
+        )
+    )
 
 
 def assembly_diagnosis_runtime_bindings(
@@ -44,4 +65,4 @@ def assembly_diagnosis_runtime_bindings(
 ) -> dict[str, Any]:
     if not isinstance(runtime, NativeAssemblyDiagnosisRuntime):
         raise TypeError("runtime must be a NativeAssemblyDiagnosisRuntime")
-    return {ASSEMBLY_DIAGNOSIS_CAPABILITY_NAME: runtime}
+    return {name: runtime for name in ASSEMBLY_DIAGNOSIS_CAPABILITY_NAMES}

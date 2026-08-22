@@ -7,11 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import VibeCADNativeAssemblyDiagnosisRuntime as runtime_module
-from VibeCADNativeAssemblyDiagnosisRuntime import NativeAssemblyDiagnosisRuntime
-from VibeCADNativeAssemblyDiagnosisSchema import (
-    assembly_diagnosis_capability_definition,
-)
 from VibeCADNativeAssemblyDiagnosisState import (
     NativeAssemblyDiagnosisError,
     capture_assembly_diagnosis_state,
@@ -76,28 +71,6 @@ def _spec(document, assembly, state, *, offset: int = 0, limit: int = 32):
         offset=offset,
         limit=limit,
     )
-
-
-def test_schema_maps_the_live_redundant_action_to_the_shared_exact_read() -> None:
-    definition = assembly_diagnosis_capability_definition()
-    variants = {variant.operation: variant for variant in definition.variants}
-    variant = variants["select_redundant_constraints"]
-    schema = definition.provider_schema((variant.operation,))["parameters"]["oneOf"][0]
-
-    assert tuple(variants) == (
-        "select_conflicting_constraints",
-        "select_redundant_constraints",
-        "select_partially_redundant_constraints",
-        "select_malformed_constraints",
-        "select_joints_of_component",
-    )
-    assert variant.action_ids == frozenset({"Assembly_SelectRedundantConstraints"})
-    assert variant.surface_ids == frozenset({"assemble"})
-    assert variant.exact_target_type == "HumanActiveAssemblyAndExactSolverDiagnosis"
-    assert variant.transaction_behavior == "none"
-    assert schema["additionalProperties"] is False
-    assert "expected_redundant_count" in schema["required"]
-    assert "expected_conflicting_count" not in schema["properties"]
 
 
 def test_state_matches_native_overlapping_redundancy_categories() -> None:
@@ -247,34 +220,3 @@ def test_empty_redundant_read_returns_one_exact_empty_page() -> None:
     assert result["returned_count"] == 0
     assert result["redundant_joints"] == []
     assert "next_offset" not in result
-
-
-def test_runtime_parses_closed_exact_redundant_arguments(monkeypatch) -> None:
-    document, assembly, _group, _ground, _components, _joints = _redundant_fixture()
-    context = _context(document)
-    state = capture_assembly_diagnosis_state(assembly)
-    runtime = NativeAssemblyDiagnosisRuntime(context)
-    captured = []
-    monkeypatch.setattr(
-        runtime_module,
-        "read_redundant_constraints",
-        lambda exact_context, spec: (
-            captured.append((exact_context, spec)) or {"ok": True}
-        ),
-    )
-    arguments = {
-        "operation": "select_redundant_constraints",
-        "assembly": {"object_name": assembly.Name},
-        "expected_diagnosis_state_sha256": state.state_sha256,
-        "expected_component_count": 3,
-        "expected_grounded_count": 1,
-        "expected_joint_count": 3,
-        "expected_redundant_count": 3,
-        "offset": 0,
-        "limit": 2,
-    }
-
-    assert runtime.diagnose(arguments) == {"ok": True}
-    assert captured == [(context, _spec(document, assembly, state, limit=2))]
-    with pytest.raises(RuntimeError, match="do not match"):
-        runtime.diagnose({**arguments, "expected_conflicting_count": 3})

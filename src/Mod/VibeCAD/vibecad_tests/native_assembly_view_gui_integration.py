@@ -84,6 +84,16 @@ def _placement(x: float, y: float, z: float, angle: float = 0.0) -> dict:
     }
 
 
+def _transform_move(component, x: float, y: float, z: float, angle: float = 0.0):
+    placement = _placement(x, y, z, angle)
+    return {
+        "kind": "transform",
+        "component": {"object_name": component.Name},
+        "translation_mm": placement["origin_mm"],
+        "rotation": placement["rotation"],
+    }
+
+
 def _assembly_summary(state: dict, assembly_name: str) -> dict:
     return next(
         item
@@ -99,20 +109,12 @@ def _view_arguments(
     parts_as_single_solid: bool,
     moves: list[dict],
 ) -> dict:
-    view_state = summary["view_state"]
-    assert view_state["available"] is True, view_state
     return {
         "operation": "create_view",
         "assembly": {"object_name": summary["object_name"]},
         "label": label,
         "parts_as_single_solid": parts_as_single_solid,
         "moves": moves,
-        "expected_view_state_sha256": view_state["state_sha256"],
-        "expected_component_count": view_state["component_count"],
-        "expected_target_count": view_state[
-            "solid_target_count" if parts_as_single_solid else "individual_target_count"
-        ],
-        "expected_view_count": view_state["view_count"],
     }
 
 
@@ -226,16 +228,19 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
-        turn = _focused_turn(surface, registry)
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def new_dispatcher() -> NativeTurnDispatcher:
+            turn = _focused_turn(surface, registry)
+            return NativeTurnDispatcher(
+                document=document,
+                state=state,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = new_dispatcher()
 
         call_number = 0
 
@@ -266,27 +271,12 @@ def _run() -> None:
         )
         assert initial["ok"] is True, initial
         summary = _assembly_summary(initial, assembly.Name)
-        view_state = summary["view_state"]
-        assert view_state["component_count"] == 3
-        assert view_state["individual_target_count"] == 4
-        assert view_state["solid_target_count"] == 3
-        assert view_state["view_count"] == 0
-        assert any(
-            item["object_name"] == direct_inner.Name
-            and item["target_modes"] == ["individual_objects"]
-            for item in view_state["movable_targets"]
-        )
-
         malformed = _view_arguments(
             summary,
             label="Malformed",
             parts_as_single_solid=False,
             moves=[
-                {
-                    "kind": "normal",
-                    "targets": [{"object_name": direct_inner.Name}],
-                    "transform": _placement(0.0, 0.0, 5.0),
-                }
+                _transform_move(direct_inner, 0.0, 0.0, 5.0)
             ],
         )
         malformed["unexpected"] = True
@@ -301,16 +291,8 @@ def _run() -> None:
             label="Native service sequence",
             parts_as_single_solid=False,
             moves=[
-                {
-                    "kind": "normal",
-                    "targets": [{"object_name": direct_inner.Name}],
-                    "transform": _placement(0.0, 0.0, 24.0),
-                },
-                {
-                    "kind": "normal",
-                    "targets": [{"object_name": links[0].Name}],
-                    "transform": _placement(0.0, 14.0, 0.0, 12.0),
-                },
+                _transform_move(direct_inner, 0.0, 0.0, 24.0),
+                _transform_move(links[0], 0.0, 14.0, 0.0, 12.0),
             ],
         )
         first_call_id = "assembly-view-create-first"
@@ -353,7 +335,6 @@ def _run() -> None:
             "after-create",
             visibility_state,
         )
-
         replay = call(first_arguments, call_id=first_call_id)
         assert replay == first
         assert int(document.UndoCount) == 1
@@ -380,6 +361,7 @@ def _run() -> None:
             "after-redo",
             visibility_state,
         )
+        dispatcher = new_dispatcher()
 
         after_first = dispatcher.call(
             "state.read",
@@ -388,23 +370,6 @@ def _run() -> None:
         )
         assert after_first["ok"] is True, after_first
         after_summary = _assembly_summary(after_first, assembly.Name)
-        stale_arguments = _view_arguments(
-            after_summary,
-            label="Stale radial view",
-            parts_as_single_solid=True,
-            moves=[
-                {
-                    "kind": "radial",
-                    "targets": [{"object_name": links[0].Name}],
-                    "radial_distance_mm": 18.0,
-                }
-            ],
-        )
-        stale_arguments["expected_view_state_sha256"] = view_state["state_sha256"]
-        stale = call(stale_arguments, succeeds=False)
-        assert stale["error_code"] == "NATIVE_ASSEMBLY_VIEW_FAILED"
-        assert int(document.UndoCount) == 1
-
         second_arguments = _view_arguments(
             after_summary,
             label="Native radial service view",
@@ -412,7 +377,7 @@ def _run() -> None:
             moves=[
                 {
                     "kind": "radial",
-                    "targets": [{"object_name": links[0].Name}],
+                    "component": {"object_name": links[0].Name},
                     "radial_distance_mm": 18.0,
                 }
             ],

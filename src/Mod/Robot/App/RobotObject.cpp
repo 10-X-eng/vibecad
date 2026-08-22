@@ -130,6 +130,11 @@ void RobotObject::setKinematic(const AxisDefinition definitions[6])
 void RobotObject::onChanged(const Property* prop)
 {
 
+    if (isRestoring()) {
+        App::GeoFeature::onChanged(prop);
+        return;
+    }
+
     if (isFreezed() && prop != &Visibility) {
         App::GeoFeature::onChanged(prop);
         return;

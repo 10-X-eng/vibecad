@@ -1710,7 +1710,15 @@ void ViewProviderPartExt::forceUpdate(bool enable)
     if (enable) {
         if (++forceUpdateCount == 1) {
             if (!isShow() && VisualTouched) {
-                updateVisual();
+                auto* object = getObject();
+                auto* document = object ? object->getDocument() : nullptr;
+                if (document
+                    && document->testStatus(App::Document::Status::Restoring)) {
+                    deferVisualRestore(*this);
+                }
+                else {
+                    updateVisual();
+                }
             }
         }
     }

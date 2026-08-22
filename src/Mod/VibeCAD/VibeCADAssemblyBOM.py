@@ -34,8 +34,6 @@ _BUILTINS = {
     "quantity": ("Quantity", "Quantity"),
     "file_name": ("File Name", "File Name"),
 }
-
-
 class AssemblyBOMError(ValueError):
     """A deterministic BOM failure with copy-ready model feedback."""
 

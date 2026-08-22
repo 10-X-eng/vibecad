@@ -15,7 +15,9 @@ from VibeCADNativeComponentInterface import (
 from VibeCADNativeComponentInterfaceRuntime import NativeComponentInterfaceRuntime
 from VibeCADNativeComponentInterfaceSchema import (
     component_interface_capability_definition,
+    component_interfaces_capability_definition,
 )
+from VibeCADNativeCapabilityRegistry import provider_visible_native_schema
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeUndo import NativeAssistantUndoLedger
@@ -91,12 +93,15 @@ def test_component_interface_contract_is_exact_and_ribbon_scoped() -> None:
     variant = definition.variants[0]
 
     assert definition.name == "component.interface"
+    assert definition.description == (
+        "Publish an LCS returned by component.interfaces."
+    )
     assert definition.primary_classification == "mutation"
     assert variant.action_ids == frozenset({"VibeCAD_PublishInterface"})
     assert variant.surface_ids == frozenset({"model", "assemble"})
     assert variant.exact_target_type == "Component + LocalCoordinateSystem"
     assert variant.background_required is False
-    assert set(branch["required"]) == set(_arguments())
+    assert set(branch["required"]) == set(_arguments()) - {"operation"}
     assert branch["additionalProperties"] is False
     assert branch["properties"]["component"]["required"] == ["object_name"]
     assert branch["properties"]["lcs"]["required"] == ["object_name"]
@@ -104,6 +109,44 @@ def test_component_interface_contract_is_exact_and_ribbon_scoped() -> None:
     serialized = repr(schema)
     for forbidden in ("selection", "workbench", "runCommand", "activate"):
         assert forbidden not in serialized
+
+
+def test_component_interface_discovery_has_one_empty_request() -> None:
+    definition = component_interfaces_capability_definition()
+    variant = definition.variants[0]
+    schema = provider_visible_native_schema(
+        definition.provider_schema((variant.operation,))
+    )
+    parameters = schema["parameters"]["oneOf"][0]
+
+    assert definition.name == "component.interfaces"
+    assert definition.description == "Find LCS references and published interfaces."
+    assert variant.operation == "find"
+    assert variant.surface_ids == frozenset({"model", "assemble"})
+    assert parameters == {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False,
+    }
+
+
+def test_component_interface_discovery_runtime_reads_current_document(monkeypatch) -> None:
+    runtime, _state, document = _runtime()
+    calls = []
+    monkeypatch.setattr(
+        runtime_module,
+        "read_component_interface_targets",
+        lambda target_document, *, guard: (
+            calls.append((target_document, guard)) or {"targets": []}
+        ),
+        raising=False,
+    )
+
+    result = runtime.interfaces({})
+
+    assert result == {"targets": []}
+    assert calls == [(document, runtime._context.guard)]
 
 
 def test_component_interface_preflight_resolves_and_normalizes_exact_targets() -> None:

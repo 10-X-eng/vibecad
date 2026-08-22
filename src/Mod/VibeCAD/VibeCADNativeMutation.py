@@ -92,6 +92,21 @@ def _transaction_is_open(document: Any) -> bool:
     )
 
 
+def _controlled_failure_message(exc: BaseException) -> str | None:
+    failure = getattr(exc, "failure", None)
+    if not callable(failure):
+        return None
+    try:
+        details = failure()
+    except BaseException:
+        return None
+    if not isinstance(details, Mapping):
+        return None
+    code = str(details.get("error_code") or "").strip()
+    message = " ".join(str(details.get("message") or "").split())
+    return message if code.startswith("NATIVE_") and message else None
+
+
 def _exact_recompute_targets(document: Any, targets: tuple[Any, ...]) -> list[Any]:
     exact: list[Any] = []
     names: set[str] = set()
@@ -320,4 +335,7 @@ class NativeMutationRunner:
                 ),
                 NATIVE_TRANSACTION_FAILED: "The Native transaction could not commit.",
             }
-            raise NativeMutationError(stage, messages[stage]) from exc
+            raise NativeMutationError(
+                stage,
+                _controlled_failure_message(exc) or messages[stage],
+            ) from exc

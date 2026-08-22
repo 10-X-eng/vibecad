@@ -62,9 +62,9 @@ def test_schema_exactly_maps_the_complete_player_lifecycle() -> None:
     definition = assembly_playback_capability_definition()
     variants = {variant.operation: variant for variant in definition.variants}
 
-    assert definition.name == "assembly.simulation"
+    assert definition.name == "assembly.playback"
     assert definition.primary_classification == "view"
-    assert tuple(variants) == ("open", "seek", "step", "play", "pause", "close")
+    assert tuple(variants) == ("show", "seek", "step", "play", "pause", "close")
     assert all(
         variant.surface_ids == frozenset({"assemble"}) for variant in variants.values()
     )
@@ -72,22 +72,61 @@ def test_schema_exactly_maps_the_complete_player_lifecycle() -> None:
         variant.transaction_behavior == "presentation" for variant in variants.values()
     )
     assert all(variant.background_required is False for variant in variants.values())
-    assert variants["open"].action_ids == frozenset({"AssemblyContextPlaySimulation"})
+    assert variants["show"].action_ids == frozenset({"AssemblyContextPlaySimulation"})
     assert variants["close"].action_ids == frozenset({"AssemblySimulationClose"})
 
-    schema = definition.provider_schema(tuple(variants))["parameters"]
-    assert schema["additionalProperties"] is False
-    assert schema["properties"]["operation"]["enum"] == list(variants)
-    assert schema["properties"]["playback_id"]["pattern"] == r"^[0-9a-f]{32}$"
-    assert schema["properties"]["mode"]["enum"] == [
+    assert definition.description == (
+        "Show a motion study at a time, or seek, step, play, pause, and close "
+        "active playback."
+    )
+    assert variants["show"].description == "Show a motion study at an optional time."
+    assert variants["seek"].description == "Move active playback to a time."
+    assert variants["step"].description == "Step active playback one frame."
+    assert variants["play"].description == "Play active playback forward or backward."
+    assert variants["pause"].description == "Pause active playback."
+    assert variants["close"].description == "Close active playback."
+    provider_parameters = definition.provider_schema(tuple(variants))["parameters"]
+    assert provider_parameters["properties"]["operation"]["enum"] == list(variants)
+    show_schema = variants["show"].provider_parameters()
+    assert set(show_schema["required"]) == {"operation", "simulation"}
+    assert "expected_simulation_state_sha256" not in show_schema["properties"]
+    assert show_schema["properties"]["mode"]["default"] == "hold"
+    assert show_schema["properties"]["mode"]["enum"] == [
         "hold",
         "forward",
         "backward",
     ]
+    assert set(variants["seek"].provider_parameters()["required"]) == {
+        "operation",
+        "playback_id",
+        "time_seconds",
+    }
+    assert set(variants["step"].provider_parameters()["required"]) == {
+        "operation",
+        "playback_id",
+        "direction",
+    }
+    assert set(variants["play"].provider_parameters()["required"]) == {
+        "operation",
+        "playback_id",
+        "direction",
+    }
+    assert set(variants["pause"].provider_parameters()["required"]) == {
+        "operation",
+        "playback_id",
+    }
+    assert set(variants["close"].provider_parameters()["required"]) == {
+        "operation",
+        "playback_id",
+    }
+    assert all(
+        "simulation" not in variants[operation].provider_parameters()["properties"]
+        for operation in ("seek", "step", "play", "pause", "close")
+    )
 
     registry = build_native_capability_registry()
-    assert registry.definition("assembly.simulation") is not None
-    assert registry.implementation("assembly.simulation") is not None
+    assert registry.definition("assembly.playback") is not None
+    assert registry.implementation("assembly.playback") is not None
 
 
 def test_runtime_decodes_exact_open_and_control_arguments(monkeypatch) -> None:
@@ -98,52 +137,66 @@ def test_runtime_decodes_exact_open_and_control_arguments(monkeypatch) -> None:
         runtime_module,
         "open_native_assembly_playback",
         lambda received_context, spec: (
-            observed.append(("open", received_context, spec)) or {"operation": "open"}
-        ),
+            received_context.state.note_structural_change(received_context.document_uid),
+            observed.append(("show", received_context, spec)),
+            {"operation": "show"},
+        )[-1],
     )
     monkeypatch.setattr(
         runtime_module,
         "control_native_assembly_playback",
         lambda received_context, operation, spec: (
-            observed.append((operation, received_context, spec))
-            or {"operation": operation}
-        ),
+            received_context.state.note_structural_change(received_context.document_uid),
+            observed.append((operation, received_context, spec)),
+            {"operation": operation},
+        )[-1],
     )
 
+    open_ticket = context.state.begin_call(
+        context.document_uid,
+        "assembly.playback",
+    )
     opened = runtime.control(
         {
-            "operation": "open",
+            "operation": "show",
             "simulation": {"object_name": "Simulation"},
-            "expected_simulation_state_sha256": "a" * 64,
-            "time_seconds": 0.0,
-            "mode": "hold",
-        }
+        },
+        ticket=open_ticket,
+    )
+    play_ticket = context.state.begin_call(
+        context.document_uid,
+        "assembly.playback",
     )
     played = runtime.control(
         {
             "operation": "play",
-            "simulation": {"object_name": "Simulation"},
             "playback_id": "b" * 32,
             "direction": "backward",
-        }
+        },
+        ticket=play_ticket,
     )
 
-    assert opened == {"operation": "open"}
+    assert opened == {"operation": "show"}
     assert observed[0][2].simulation_ref.object_name == "Simulation"
-    assert observed[0][2].expected_simulation_state_sha256 == "a" * 64
+    assert observed[0][2].time_seconds is None
     assert observed[0][2].mode == "hold"
     assert played == {"operation": "play"}
     assert observed[1][2].playback_id == "b" * 32
     assert observed[1][2].direction == "backward"
+    assert context.state.current_revision(context.document_uid) == 0
 
+    failure_ticket = context.state.begin_call(
+        context.document_uid,
+        "assembly.playback",
+    )
     with pytest.raises(Exception, match="do not match"):
         runtime.control(
             {
                 "operation": "pause",
-                "simulation": {"object_name": "Simulation"},
                 "playback_id": "b" * 32,
                 "extra": True,
-            }
+            },
+            ticket=failure_ticket,
         )
 
 
@@ -200,6 +253,19 @@ def test_session_task_guard_ignores_normal_assembly_edit_but_not_dialog_or_sketc
             Service(
                 {
                     "active_dialog": False,
+                    "edit_mode": True,
+                    "active_sketch": None,
+                    "edit_object": {"type": "Assembly::AssemblyObject"},
+                }
+            )
+        )
+        is False
+    )
+    assert (
+        _edit_or_task_active(
+            Service(
+                {
+                    "active_dialog": True,
                     "edit_mode": True,
                     "active_sketch": None,
                     "edit_object": {"type": "Assembly::AssemblyObject"},

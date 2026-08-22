@@ -15,6 +15,7 @@ from VibeCADNativeAssemblyPlayback import (
     open_native_assembly_playback,
 )
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADNativeState import NativeCallTicket
 from VibeCADNativeTargets import NativeObjectRef
 
 
@@ -37,53 +38,65 @@ class NativeAssemblyPlaybackRuntime:
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
 
-    def control(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    def control(
+        self,
+        arguments: Mapping[str, Any],
+        *,
+        ticket: NativeCallTicket,
+    ) -> dict[str, Any]:
+        normalized = dict(arguments)
+        if normalized.get("operation") == "show":
+            normalized.setdefault("time_seconds", None)
+            normalized.setdefault("mode", "hold")
         operation, values = strict_variant_arguments(
-            arguments,
+            normalized,
             {
-                "open": frozenset(
+                "show": frozenset(
                     {
                         "simulation",
-                        "expected_simulation_state_sha256",
                         "time_seconds",
                         "mode",
                     }
                 ),
-                "seek": frozenset({"simulation", "playback_id", "time_seconds"}),
-                "step": frozenset({"simulation", "playback_id", "direction"}),
-                "play": frozenset({"simulation", "playback_id", "direction"}),
-                "pause": frozenset({"simulation", "playback_id"}),
-                "close": frozenset({"simulation", "playback_id"}),
+                "seek": frozenset({"playback_id", "time_seconds"}),
+                "step": frozenset({"playback_id", "direction"}),
+                "play": frozenset({"playback_id", "direction"}),
+                "pause": frozenset({"playback_id"}),
+                "close": frozenset({"playback_id"}),
             },
         )
-        simulation_ref = _object_ref(
-            self._context.document_uid,
-            values["simulation"],
-            "simulation",
-        )
-        if operation == "open":
-            return open_native_assembly_playback(
-                self._context,
-                AssemblyPlaybackOpenSpec(
-                    simulation_ref=simulation_ref,
-                    expected_simulation_state_sha256=str(
-                        values["expected_simulation_state_sha256"]
+        authorization = self._context.state.authorize_mutation(ticket)
+        if authorization.duplicate:
+            return dict(authorization.prior_verified_result or {})
+        self._context.state.begin_mutation_observation(ticket)
+        try:
+            if operation == "show":
+                result = open_native_assembly_playback(
+                    self._context,
+                    AssemblyPlaybackOpenSpec(
+                        simulation_ref=_object_ref(
+                            self._context.document_uid,
+                            values["simulation"],
+                            "simulation",
+                        ),
+                        time_seconds=values["time_seconds"],
+                        mode=str(values["mode"]),
                     ),
-                    time_seconds=values["time_seconds"],
-                    mode=str(values["mode"]),
-                ),
-            )
-        return control_native_assembly_playback(
-            self._context,
-            operation,
-            AssemblyPlaybackControlSpec(
-                simulation_ref=simulation_ref,
-                playback_id=str(values["playback_id"]),
-                time_seconds=values.get("time_seconds"),
-                direction=(
-                    None
-                    if values.get("direction") is None
-                    else str(values["direction"])
-                ),
-            ),
-        )
+                )
+            else:
+                result = control_native_assembly_playback(
+                    self._context,
+                    operation,
+                    AssemblyPlaybackControlSpec(
+                        playback_id=str(values["playback_id"]),
+                        time_seconds=values.get("time_seconds"),
+                        direction=(
+                            None
+                            if values.get("direction") is None
+                            else str(values["direction"])
+                        ),
+                    ),
+                )
+            return result
+        finally:
+            self._context.state.cancel_mutation(ticket)

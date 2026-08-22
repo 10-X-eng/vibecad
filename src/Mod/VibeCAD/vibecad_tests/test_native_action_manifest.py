@@ -493,7 +493,7 @@ def test_provider_families_exclude_parent_only_actions_and_preserve_order() -> N
     )
 
 
-def test_assemble_insert_actions_use_the_structure_contract_operations() -> None:
+def test_assemble_create_and_insert_actions_use_focused_contracts() -> None:
     manifest = {
         "schema_version": 1,
         "surface_id": "assemble",
@@ -501,6 +501,12 @@ def test_assemble_insert_actions_use_the_structure_contract_operations() -> None
             {
                 "label": "Assembly",
                 "actions": [
+                    {
+                        "command_id": "Assembly_CreateAssembly",
+                        "kind": "command",
+                        "label": "Create Assembly",
+                        "available": True,
+                    },
                     {
                         "command_id": "Assembly_InsertLink",
                         "kind": "command",
@@ -513,6 +519,30 @@ def test_assemble_insert_actions_use_the_structure_contract_operations() -> None
                         "label": "Insert New Part",
                         "available": True,
                     },
+                    {
+                        "command_id": "Assembly_ToggleGrounded",
+                        "kind": "command",
+                        "label": "Toggle Grounded",
+                        "available": True,
+                    },
+                    {
+                        "command_id": "Assembly_SolveAssembly",
+                        "kind": "command",
+                        "label": "Solve Assembly",
+                        "available": True,
+                    },
+                    {
+                        "command_id": "Assembly_CreateView",
+                        "kind": "command",
+                        "label": "Exploded View",
+                        "available": True,
+                    },
+                    {
+                        "command_id": "Assembly_CreateSimulation",
+                        "kind": "command",
+                        "label": "Simulation",
+                        "available": True,
+                    },
                 ],
             }
         ],
@@ -521,47 +551,87 @@ def test_assemble_insert_actions_use_the_structure_contract_operations() -> None
     plans = classify_native_surface(_surface(manifest))
 
     assert tuple(plan.capability_family for plan in plans) == (
-        "assembly.structure",
-        "assembly.structure",
+        "assembly.create",
+        "assembly.insert",
+        "assembly.new_part",
+        "assembly.ground",
+        "assembly.solve",
+        "assembly.exploded_view",
+        "assembly.motion_study",
     )
     assert tuple(plan.operation_variant for plan in plans) == (
+        "create_assembly",
         "insert_component",
         "create_part",
+        "set_grounded",
+        "solve_assembly",
+        "create_view",
+        "create_simulation",
     )
 
 
-def test_assemble_fasteners_use_an_assembly_owned_capability_family() -> None:
+def test_fastener_actions_use_the_active_ribbon_contract() -> None:
+    actions = [
+        {
+            "command_id": "VibeCAD_InsertStandardFastener",
+            "kind": "command",
+            "label": "Insert Standard Fastener",
+            "available": True,
+        },
+        {
+            "command_id": "VibeCAD_EditStandardFastener",
+            "kind": "command",
+            "label": "Edit Standard Fastener",
+            "available": True,
+        },
+    ]
+    model = {
+        "schema_version": 1,
+        "surface_id": "model",
+        "groups": [{"label": "Fasteners", "actions": actions}],
+    }
     manifest = {
         "schema_version": 1,
         "surface_id": "assemble",
         "groups": [
             {
                 "label": "Fasteners",
-                "actions": [
-                    {
-                        "command_id": "VibeCAD_InsertStandardFastener",
-                        "kind": "command",
-                        "label": "Insert Standard Fastener",
-                        "available": True,
-                    },
-                    {
-                        "command_id": "VibeCAD_EditStandardFastener",
-                        "kind": "command",
-                        "label": "Edit Standard Fastener",
-                        "available": True,
-                    },
-                ],
+                "actions": actions,
             }
         ],
     }
 
+    model_plans = classify_native_surface(_surface(model))
     plans = classify_native_surface(_surface(manifest))
 
-    assert {plan.capability_family for plan in plans} == {"assembly.fastener"}
+    assert tuple(plan.capability_family for plan in model_plans) == (
+        "model.fastener",
+        "model.fastener",
+    )
+    assert tuple(plan.capability_family for plan in plans) == (
+        "assembly.fastener",
+        "assembly.fastener_edit",
+    )
     assert tuple(plan.operation_variant for plan in plans) == (
         "insert_standard_fastener",
         "edit_standard_fastener",
     )
+
+
+def test_aero_vlm_action_uses_the_exact_solver_operation() -> None:
+    plan = _plan(
+        "aero",
+        "Aero",
+        RibbonAction(
+            command_id="VibeCADAero_VLM",
+            label="VLM",
+            available=True,
+            kind="command",
+        ),
+    )
+
+    assert plan.capability_family == "aero.solve"
+    assert plan.operation_variant == "vlm"
 
 
 def test_robot_configuration_preserves_document_and_session_boundaries() -> None:

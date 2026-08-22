@@ -11,6 +11,7 @@ SET(McMasterInsert_SRCS
     McMasterWebKit.swift
     McMasterCatalog.swift
     McMasterCatalog.entitlements
+    McMasterCatalogWebKit.py
 )
 
 if(WIN32 AND BUILD_GUI)

@@ -119,6 +119,22 @@ def test_safe_api_imports_bind_only_the_prebound_domain_surface() -> None:
     )
     assert alias_result["Body"].operation == "box"
 
+    main_result, _stdout, _budget = _execute_source(
+        source=(
+            "import api\n"
+            "def main():\n"
+            "    return api.box(2, 3, 4)\n"
+        ),
+        document_name="SafeImportFixture",
+        document_objects=[],
+        inputs={},
+        api=api,
+        expected_output_names=["Body"],
+        max_operations=100,
+        max_seconds=1.0,
+    )
+    assert main_result["Body"].operation == "box"
+
     with pytest.raises(ImportError, match="Only the prebound api module"):
         _execute_source(
             source="import os\nresult = {}\n",
@@ -420,8 +436,12 @@ def test_semantic_interface_frame_is_explicit_and_orthonormal() -> None:
                 },
                 "connector": {
                     "kind": "axis",
-                    "allowed_joints": ["revolute", "fixed"],
-                    "compatibility": "shaft-family-v1",
+                    "allowed_joints": ["revolute", "fixed", "gears"],
+                    "compatibility": {
+                        "revolute": "shaft-family-v1",
+                        "gears": "gear-family-v1",
+                    },
+                    "pitch_radius_mm": 12.5,
                 },
             }
         },
@@ -436,8 +456,12 @@ def test_semantic_interface_frame_is_explicit_and_orthonormal() -> None:
     }
     assert dict(interface["connector"]) == {
         "kind": "axis",
-        "allowed_joints": ("revolute", "fixed"),
-        "compatibility": "shaft-family-v1",
+        "allowed_joints": ("revolute", "fixed", "gears"),
+        "compatibility": {
+            "revolute": "shaft-family-v1",
+            "gears": "gear-family-v1",
+        },
+        "pitch_radius_mm": 12.5,
     }
     with pytest.raises(ValueError, match="must not be parallel"):
         api.publish(

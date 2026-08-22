@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from VibeCADNativeArguments import strict_variant_arguments
+from VibeCADNativeArguments import NativeArgumentError
 from VibeCADNativeDesignHoleCatalog import read_hole_catalog
 from VibeCADFasteners import FastenerCatalogError, search_catalog
 from VibeCADNativeModelErrors import NativeModelError
@@ -44,6 +44,7 @@ def _concise_fastener_search(result: Mapping[str, Any]) -> dict[str, Any]:
                 "supports_model_thread",
                 "supports_left_handed",
                 "option_names",
+                "available_options",
                 "requested_match",
                 "request_error",
                 "nearest_valid_lengths_mm",
@@ -56,6 +57,17 @@ def _concise_fastener_search(result: Mapping[str, Any]) -> dict[str, Any]:
             )
             if name in row
         }
+        constructor = concise.get("constructor")
+        if isinstance(constructor, Mapping):
+            provider_constructor = dict(constructor)
+            legacy_options = provider_constructor.pop("options", {})
+            if "catalog_option_overrides" not in provider_constructor:
+                provider_constructor["catalog_option_overrides"] = dict(
+                    legacy_options or {}
+                )
+            if provider_constructor.get("length_mm") is None:
+                provider_constructor.pop("length_mm", None)
+            concise["constructor"] = provider_constructor
         if exact_standard and not exact_thread:
             concise["nominal_threads"] = list(row.get("nominal_threads") or [])
         rows.append(concise)
@@ -79,28 +91,36 @@ class NativeModelCatalogRuntime:
         self._context = context
 
     def read_catalog(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(
-            arguments,
-            {
-                "hole_threads": frozenset({"standard"}),
-                "fasteners": _FASTENER_FIELDS,
-            },
+        if not isinstance(arguments, Mapping):
+            raise NativeArgumentError("Native capability arguments must be an object.")
+        values = dict(arguments)
+        operation = str(values.pop("operation", "") or "").strip()
+        allowed = (
+            frozenset({"standard"})
+            if operation == "hole_threads"
+            else _FASTENER_FIELDS if operation == "fasteners" else None
         )
+        if allowed is None:
+            raise NativeArgumentError("Native capability operation is unavailable.")
+        if not set(values).issubset(allowed):
+            raise NativeArgumentError(
+                "Native capability arguments do not match the selected operation."
+            )
         self._context.guard()
         if operation == "hole_threads":
-            standard = values["standard"]
+            standard = values.get("standard")
             return read_hole_catalog(
                 None if standard is None else str(standard)
             )
-        query = str(values["query"])
+        query = str(values.get("query") or "")
         if len(query) > 256:
             raise NativeModelError(
                 "A fastener catalog query must contain at most 256 characters."
             )
-        limit = values["limit"]
+        limit = values.get("limit", 5)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 25:
             raise NativeModelError("A fastener catalog limit must be from 1 through 25.")
-        length = values["length_mm"]
+        length = values.get("length_mm")
         if length is not None:
             if isinstance(length, bool):
                 raise NativeModelError("A fastener catalog length is invalid.")
@@ -110,10 +130,10 @@ class NativeModelCatalogRuntime:
         try:
             result = search_catalog(
                 query,
-                family=_optional_text(values["family"], field="family"),
-                standard=_optional_text(values["standard"], field="standard"),
+                family=_optional_text(values.get("family"), field="family"),
+                standard=_optional_text(values.get("standard"), field="standard"),
                 nominal_thread=_optional_text(
-                    values["nominal_thread"],
+                    values.get("nominal_thread"),
                     field="nominal_thread",
                 ),
                 length_mm=length,
