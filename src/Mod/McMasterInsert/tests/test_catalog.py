@@ -22,6 +22,8 @@ except ImportError as exc:
     with mock.patch.dict(sys.modules, {"FreeCAD": ModuleType("FreeCAD")}):
         import McMasterInsert as mmc
 
+import McMasterCatalogWebKit as webkit_helper
+
 
 class TestCatalogNames(unittest.TestCase):
     def test_part_number_from_mcmaster_step_filename(self):
@@ -202,7 +204,7 @@ class TestCatalogImport(unittest.TestCase):
             named,
             [
                 ("PartDesign::Component", "95462A029"),
-                ("PartDesign::Body", "95462A029 Body"),
+                ("PartDesign::Body", "McMaster Import Body"),
             ],
         )
 
@@ -272,6 +274,191 @@ class TestCatalogImport(unittest.TestCase):
 
 
 class TestCatalogLaunch(unittest.TestCase):
+    def test_linux_helper_persists_login_cookies_in_its_profile(self):
+        class CookieManager:
+            def __init__(self):
+                self.storage = None
+
+            def set_persistent_storage(self, path, storage):
+                self.storage = (path, storage)
+
+        cookies = CookieManager()
+
+        class DataManager:
+            def get_cookie_manager(self):
+                return cookies
+
+        data_manager = DataManager()
+        context = object()
+        webkit = mock.Mock()
+        webkit.WebsiteDataManager.return_value = data_manager
+        webkit.CookiePersistentStorage.SQLITE = "sqlite"
+        webkit.WebContext.new_with_website_data_manager.return_value = context
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile = Path(temp_dir)
+            result = webkit_helper.create_web_context(webkit, profile)
+
+            self.assertIs(result, context)
+            self.assertEqual(
+                cookies.storage,
+                (str(profile / "cookies.sqlite"), "sqlite"),
+            )
+
+    def test_linux_helper_waits_for_all_downloads_before_closing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_staging = root / "first.step.download"
+            first_target = root / "first.step"
+            second_staging = root / "second.step.download"
+            second_target = root / "second.step"
+            first_staging.write_bytes(b"first")
+            second_staging.write_bytes(b"second")
+            first = object()
+            second = object()
+
+            window = webkit_helper.CatalogWindow.__new__(
+                webkit_helper.CatalogWindow
+            )
+            window.downloads = {
+                id(first): (first_staging, first_target),
+                id(second): (second_staging, second_target),
+            }
+            window.GLib = mock.Mock()
+            window._set_status = mock.Mock()
+            window._quit = mock.Mock(return_value=False)
+
+            window._download_finished(second)
+            window.GLib.timeout_add.assert_not_called()
+            self.assertTrue(second_target.is_file())
+
+            window._download_finished(first)
+            window.GLib.timeout_add.assert_called_once_with(500, window._quit)
+            self.assertTrue(first_target.is_file())
+
+    def test_linux_helper_publishes_a_complete_step_stream(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            staging = root / "part.step.download"
+            target = root / "part.step"
+            staging.write_bytes(
+                b"ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\n"
+                b"END-ISO-10303-21;\n"
+            )
+
+            download = mock.Mock()
+
+            window = webkit_helper.CatalogWindow.__new__(
+                webkit_helper.CatalogWindow
+            )
+            window.downloads = {id(download): (staging, target)}
+            window.GLib = mock.Mock()
+            window._set_status = mock.Mock()
+            window._quit = mock.Mock(return_value=False)
+
+            window._download_received(download, 5)
+
+            self.assertTrue(target.is_file())
+            self.assertFalse(staging.exists())
+            window.GLib.timeout_add.assert_called_once_with(500, window._quit)
+
+    def test_linux_helper_does_not_publish_an_incomplete_step_stream(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            staging = root / "part.step.download"
+            target = root / "part.step"
+            staging.write_bytes(b"ISO-10303-21;\nHEADER;\n")
+            download = mock.Mock()
+
+            window = webkit_helper.CatalogWindow.__new__(
+                webkit_helper.CatalogWindow
+            )
+            window.downloads = {id(download): (staging, target)}
+            window.GLib = mock.Mock()
+            window._set_status = mock.Mock()
+            window._quit = mock.Mock(return_value=False)
+
+            window._download_received(download, 5)
+
+            self.assertFalse(target.exists())
+            self.assertTrue(staging.is_file())
+            window.GLib.timeout_add.assert_not_called()
+
+    def test_linux_helper_only_classifies_real_cad_filenames(self):
+        self.assertFalse(webkit_helper.is_cad_filename(""))
+        self.assertFalse(webkit_helper.is_cad_filename("/"))
+        self.assertFalse(webkit_helper.is_cad_filename("https://www.mcmaster.com/"))
+        self.assertTrue(webkit_helper.is_cad_filename("91251A051.STEP"))
+
+    def test_download_session_ignores_existing_files_and_stops_after_import(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            inbox = root / "session"
+            downloads = root / "Downloads"
+            inbox.mkdir()
+            downloads.mkdir()
+            existing = downloads / "91251A051_existing.STEP"
+            existing.write_bytes(b"existing")
+
+            session = mmc.CatalogDownloadSession(
+                inbox,
+                downloads,
+                document_name="TestDocument",
+            )
+            session.set_mode("external")
+            downloaded = downloads / "95462A029_new.STEP"
+            downloaded.write_bytes(b"complete")
+
+            self.assertEqual(session.ready_paths(), [])
+            self.assertEqual(session.ready_paths(), [downloaded])
+            session.stop()
+            self.assertEqual(session.ready_paths(), [])
+
+    def test_embedded_session_only_observes_its_private_inbox(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            inbox = root / "session"
+            downloads = root / "Downloads"
+            inbox.mkdir()
+            downloads.mkdir()
+            session = mmc.CatalogDownloadSession(
+                inbox,
+                downloads,
+                document_name="TestDocument",
+            )
+            session.set_mode("embedded")
+            unrelated = downloads / "95462A029_unrelated.STEP"
+            unrelated.write_bytes(b"other browser")
+            exact = inbox / "download.step"
+            exact.write_bytes(b"embedded browser")
+
+            self.assertEqual(session.ready_paths(), [])
+            self.assertEqual(session.ready_paths(), [exact])
+
+    def test_embedded_session_does_not_expire_while_catalog_is_open(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            inbox = root / "session"
+            downloads = root / "Downloads"
+            inbox.mkdir()
+            downloads.mkdir()
+            session = mmc.CatalogDownloadSession(
+                inbox,
+                downloads,
+                lifetime_seconds=0,
+            )
+            session.set_mode("embedded")
+            exact = inbox / "download.step"
+            exact.write_bytes(b"embedded browser")
+
+            self.assertEqual(session.ready_paths(), [])
+            self.assertEqual(session.ready_paths(), [exact])
+
+    def test_embedded_catalog_imports_every_completed_download(self):
+        paths = [Path("first.step"), Path("second.step")]
+
+        self.assertEqual(mmc.catalog_paths_to_import(paths, "embedded"), paths)
+
     def test_webview2_profile_is_persistent_under_vibecad_user_data(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             with mock.patch.dict(mmc.os.environ, {"LOCALAPPDATA": temp_dir}):
@@ -281,6 +468,7 @@ class TestCatalogLaunch(unittest.TestCase):
             self.assertTrue(root.is_dir())
 
     def test_webview2_is_the_preferred_catalog_backend(self):
+        inbox = Path("/tmp/mcmaster-session")
         with (
             mock.patch.object(
                 mmc, "show_webview2_catalog_window", return_value=True
@@ -289,51 +477,99 @@ class TestCatalogLaunch(unittest.TestCase):
             mock.patch.object(mmc, "show_catalog_window") as native_catalog,
             mock.patch.object(mmc, "open_external_catalog") as external,
         ):
-            self.assertEqual(mmc.open_catalog(), "embedded")
+            self.assertEqual(mmc.open_catalog(inbox), "embedded")
 
-        webview2.assert_called_once_with()
+        webview2.assert_called_once_with(inbox)
         webkit.assert_not_called()
         native_catalog.assert_not_called()
         external.assert_not_called()
 
     def test_without_webkit_opens_catalog_in_system_browser(self):
+        inbox = Path("/tmp/mcmaster-session")
         with (
             mock.patch.object(
                 mmc, "show_webview2_catalog_window", return_value=False
+            ),
+            mock.patch.object(
+                mmc, "show_linux_catalog_window", return_value=False
             ),
             mock.patch.object(mmc, "_webkit_dylib", return_value=None),
             mock.patch.object(mmc, "show_catalog_window") as embedded,
             mock.patch.object(mmc, "open_external_catalog", return_value=True) as external,
         ):
-            self.assertEqual(mmc.open_catalog(), "external")
+            self.assertEqual(mmc.open_catalog(inbox), "external")
+
+        embedded.assert_not_called()
+        external.assert_called_once_with()
+
+    def test_linux_helper_is_preferred_before_system_browser(self):
+        inbox = Path("/tmp/mcmaster-session")
+        with (
+            mock.patch.object(
+                mmc, "show_webview2_catalog_window", return_value=False
+            ),
+            mock.patch.object(
+                mmc, "show_linux_catalog_window", return_value=True
+            ) as linux,
+            mock.patch.object(mmc, "_webkit_dylib") as webkit,
+            mock.patch.object(mmc, "open_external_catalog") as external,
+        ):
+            self.assertEqual(mmc.open_catalog(inbox), "embedded")
+
+        linux.assert_called_once_with(inbox)
+        webkit.assert_not_called()
+        external.assert_not_called()
+
+    def test_without_embedded_backend_opens_system_browser(self):
+        inbox = Path("/tmp/mcmaster-session")
+        with (
+            mock.patch.object(
+                mmc, "show_webview2_catalog_window", return_value=False
+            ),
+            mock.patch.object(
+                mmc, "show_linux_catalog_window", return_value=False
+            ),
+            mock.patch.object(mmc, "_webkit_dylib", return_value=None),
+            mock.patch.object(mmc, "show_catalog_window") as embedded,
+            mock.patch.object(mmc, "open_external_catalog", return_value=True) as external,
+        ):
+            self.assertEqual(mmc.open_catalog(inbox), "external")
 
         embedded.assert_not_called()
         external.assert_called_once_with()
 
     def test_available_webkit_keeps_embedded_catalog(self):
+        inbox = Path("/tmp/mcmaster-session")
         with (
             mock.patch.object(
                 mmc, "show_webview2_catalog_window", return_value=False
+            ),
+            mock.patch.object(
+                mmc, "show_linux_catalog_window", return_value=False
             ),
             mock.patch.object(mmc, "_webkit_dylib", return_value=object()),
             mock.patch.object(mmc, "show_catalog_window", return_value=True) as embedded,
             mock.patch.object(mmc, "open_external_catalog") as external,
         ):
-            self.assertEqual(mmc.open_catalog(), "embedded")
+            self.assertEqual(mmc.open_catalog(inbox), "embedded")
 
-        embedded.assert_called_once_with()
+        embedded.assert_called_once_with(inbox)
         external.assert_not_called()
 
     def test_broken_webkit_falls_back_to_system_browser(self):
+        inbox = Path("/tmp/mcmaster-session")
         with (
             mock.patch.object(
                 mmc, "show_webview2_catalog_window", return_value=False
+            ),
+            mock.patch.object(
+                mmc, "show_linux_catalog_window", return_value=False
             ),
             mock.patch.object(mmc, "_webkit_dylib", side_effect=OSError("bad library")),
             mock.patch.object(mmc, "show_catalog_window") as embedded,
             mock.patch.object(mmc, "open_external_catalog", return_value=True) as external,
         ):
-            self.assertEqual(mmc.open_catalog(), "external")
+            self.assertEqual(mmc.open_catalog(inbox), "external")
 
         embedded.assert_not_called()
         external.assert_called_once_with()
@@ -359,6 +595,18 @@ class TestCatalogLaunch(unittest.TestCase):
         webview_source = source.read_text(encoding="utf-8")
         self.assertIn('L".download"', webview_source)
         self.assertIn("std::filesystem::rename", webview_source)
+        self.assertTrue(source.is_file())
+
+    def test_linux_build_packages_webkit_helper(self):
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        source = ROOT / "McMasterCatalogWebKit.py"
+        bundle = (
+            ROOT.parents[2] / "package/rattler-build/linux/create_bundle.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("McMasterCatalogWebKit.py", cmake)
+        self.assertIn("McMasterCatalogWebKit.py", bundle)
+        self.assertIn("--smoke-test", bundle)
         self.assertTrue(source.is_file())
 
 

@@ -632,7 +632,7 @@ def verify_created_trajectory(
         "trajectory": object_reference(trajectory),
         "label": str(trajectory.Label),
         "trajectory_count": len(state.trajectories),
-        "waypoint_count": state.waypoint_count,
+        "waypoint_count": len(record.waypoints),
         "trajectory_state_sha256": record.state_sha256,
         "trajectory_setup_state_sha256": state.state_sha256,
     }

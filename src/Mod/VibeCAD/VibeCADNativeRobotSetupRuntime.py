@@ -16,6 +16,7 @@ from VibeCADNativeRobotDefaults import (
     set_robot_motion_defaults,
     set_robot_orientation_defaults,
 )
+from VibeCADNativeRobotIntent import expand_robot_setup_intent
 from VibeCADNativeRobotSetup import (
     NativeRobotSetupError,
     RobotCreateSpec,
@@ -67,27 +68,16 @@ class NativeRobotSetupRuntime:
             arguments,
             {
                 "create": frozenset(
-                    {
-                        "label",
-                        "expected_state_sha256",
-                        "expected_robot_count",
-                    }
+                    {"label"}
                 ),
                 "add_tool_shape": frozenset(
-                    {
-                        "robot",
-                        "tool_shape",
-                        "expected_setup_state_sha256",
-                        "expected_robot_state_sha256",
-                        "expected_tool_shape_state_sha256",
-                    }
+                    {"robot", "tool_shape"}
                 ),
                 "set_default_orientation": frozenset(
-                    {"expected_defaults_state_sha256", "placement"}
+                    {"placement"}
                 ),
                 "set_default_values": frozenset(
                     {
-                        "expected_defaults_state_sha256",
                         "speed_mm_per_s",
                         "continuous",
                         "acceleration_mm_per_s2",
@@ -97,6 +87,12 @@ class NativeRobotSetupRuntime:
         )
         self._context.guard()
         _require_current_ticket(self._context, ticket)
+        values = expand_robot_setup_intent(
+            self._context.document,
+            self._context.document_uid,
+            operation,
+            values,
+        )
         if operation == "add_tool_shape":
             prepared = preflight_robot_tool_shape(
                 self._context.document,

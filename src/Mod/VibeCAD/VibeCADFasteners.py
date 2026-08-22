@@ -692,6 +692,30 @@ def _option_values(
     return clean
 
 
+def _available_options(
+    standard: str,
+    nominal_size: str,
+    defaults: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    return {
+        name: {
+            "default": value,
+            **(
+                {
+                    "allowed": _catalog_option_values(
+                        standard,
+                        nominal_size,
+                        name,
+                    )
+                }
+                if _OPTION_PROPERTIES[name][2] == "enumeration"
+                else {}
+            ),
+        }
+        for name, value in defaults.items()
+    }
+
+
 def _nominal_diameter_mm(standard: str, nominal_size: str) -> float:
     """Resolve a positive characteristic diameter, including range designations."""
 
@@ -932,23 +956,11 @@ def describe_standard(
         )
         result["nominal_thread"] = size
         defaults = _option_values(clean_standard, size, {})
-        result["options"] = {
-            name: {
-                "default": value,
-                **(
-                    {
-                        "allowed": _catalog_option_values(
-                            clean_standard,
-                            size,
-                            name,
-                        )
-                    }
-                    if _OPTION_PROPERTIES[name][2] == "enumeration"
-                    else {}
-                ),
-            }
-            for name, value in defaults.items()
-        }
+        result["options"] = _available_options(
+            clean_standard,
+            size,
+            defaults,
+        )
         if result["requires_length"] and not result["arbitrary_length"]:
             width = (
                 str(defaults["body_width_code"])
@@ -1137,6 +1149,11 @@ def search_catalog(
             defaults = _option_values(candidate, selected_size, {})
             row["nominal_thread"] = selected_size
             row["default_options"] = defaults
+            row["available_options"] = _available_options(
+                candidate,
+                selected_size,
+                defaults,
+            )
             if row["requires_length"] and "lengthArbitrary" not in parameters:
                 width = (
                     str(defaults["body_width_code"])

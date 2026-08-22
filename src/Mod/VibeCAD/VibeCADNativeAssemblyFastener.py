@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
 from VibeCADFastenerAssembly import (
     AssemblyFastenerGraph,
@@ -53,24 +53,14 @@ class AssemblyFastenerInsertSpec:
     assembly_ref: NativeObjectRef
     label: str
     definition: Any
-    expected_state_sha256: str
-    expected_component_count: int
-    expected_grounded_count: int
-    expected_joint_count: int
 
 
 @dataclass(frozen=True, slots=True)
 class AssemblyFastenerEditSpec:
     assembly_ref: NativeObjectRef
     occurrence_ref: NativeObjectRef
-    definition_source_ref: NativeObjectRef
     label: str
     definition: Any
-    expected_fastener_state_sha256: str
-    expected_state_sha256: str
-    expected_component_count: int
-    expected_grounded_count: int
-    expected_joint_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +80,7 @@ class PreparedAssemblyFastenerEdit:
     spec: AssemblyFastenerEditSpec
     definition: PreparedModelFastener
     graph: AssemblyFastenerGraph
+    initial_fastener_state_sha256: str
     state: AssemblyDiagnosisState
     active_before: Any
     selection_before: dict[str, Any]
@@ -105,25 +96,6 @@ def _timeline_active(obj: Any) -> bool:
         return bool(UtilsAssembly.isTimelineOperationActive(obj))
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError):
         return False
-
-
-def _exact_digest(value: Any, field: str = "expected_state_sha256") -> str:
-    result = str(value or "")
-    if len(result) != 64 or any(
-        character not in "0123456789abcdef" for character in result
-    ):
-        raise NativeAssemblyFastenerError(
-            f"{field} must be one lowercase SHA-256 digest."
-        )
-    return result
-
-
-def _exact_count(value: Any, field: str, maximum: int) -> int:
-    if type(value) is not int or not 0 <= value <= maximum:
-        raise NativeAssemblyFastenerError(
-            f"{field} must be an integer from 0 through {maximum}."
-        )
-    return value
 
 
 def _label(value: Any) -> str:
@@ -178,18 +150,6 @@ def _timeline_state(document: Any) -> tuple[tuple[Any, ...], tuple[bool, ...]]:
     return operations, visibility
 
 
-def _state_matches_spec(
-    state: AssemblyDiagnosisState,
-    spec: AssemblyFastenerInsertSpec | AssemblyFastenerEditSpec,
-) -> bool:
-    return bool(
-        state.state_sha256 == spec.expected_state_sha256
-        and len(state.components) == spec.expected_component_count
-        and len(state.grounded_joints) == spec.expected_grounded_count
-        and len(state.regular_joints) == spec.expected_joint_count
-    )
-
-
 def preflight_insert_assembly_fastener(
     document: Any,
     spec: AssemblyFastenerInsertSpec,
@@ -207,22 +167,6 @@ def preflight_insert_assembly_fastener(
         assembly_ref=spec.assembly_ref,
         label=_label(spec.label),
         definition=spec.definition,
-        expected_state_sha256=_exact_digest(spec.expected_state_sha256),
-        expected_component_count=_exact_count(
-            spec.expected_component_count,
-            "expected_component_count",
-            100_000,
-        ),
-        expected_grounded_count=_exact_count(
-            spec.expected_grounded_count,
-            "expected_grounded_count",
-            256,
-        ),
-        expected_joint_count=_exact_count(
-            spec.expected_joint_count,
-            "expected_joint_count",
-            256,
-        ),
     )
     try:
         definition = prepare_model_fastener(clean_spec.definition)
@@ -233,10 +177,6 @@ def preflight_insert_assembly_fastener(
         state = capture_assembly_diagnosis_state(assembly)
     except Exception as exc:
         raise NativeAssemblyFastenerError(str(exc)) from exc
-    if not _state_matches_spec(state, clean_spec):
-        raise NativeAssemblyFastenerError(
-            "The active Assembly changed; read current Assemble state and retry."
-        )
     operations, visibility = _timeline_state(document)
     selection = selection_reader(document)
     if not same_assembly(assembly, active_reader(document)):
@@ -255,22 +195,6 @@ def preflight_insert_assembly_fastener(
     )
 
 
-def _selection_is_exact_occurrence(
-    selection: Mapping[str, Any],
-    occurrence: Any,
-) -> bool:
-    items = selection.get("items")
-    if (
-        selection.get("selected_count") != 1
-        or selection.get("truncated") is not None
-        or not isinstance(items, list)
-        or len(items) != 1
-        or not isinstance(items[0], Mapping)
-    ):
-        return False
-    return items[0].get("object") == object_reference(occurrence)
-
-
 def preflight_edit_assembly_fastener(
     document: Any,
     spec: AssemblyFastenerEditSpec,
@@ -287,7 +211,6 @@ def preflight_edit_assembly_fastener(
         for reference in (
             spec.assembly_ref,
             spec.occurrence_ref,
-            spec.definition_source_ref,
         )
     ):
         raise TypeError(
@@ -296,29 +219,8 @@ def preflight_edit_assembly_fastener(
     clean_spec = AssemblyFastenerEditSpec(
         assembly_ref=spec.assembly_ref,
         occurrence_ref=spec.occurrence_ref,
-        definition_source_ref=spec.definition_source_ref,
         label=_label(spec.label),
         definition=spec.definition,
-        expected_fastener_state_sha256=_exact_digest(
-            spec.expected_fastener_state_sha256,
-            "expected_fastener_state_sha256",
-        ),
-        expected_state_sha256=_exact_digest(spec.expected_state_sha256),
-        expected_component_count=_exact_count(
-            spec.expected_component_count,
-            "expected_component_count",
-            100_000,
-        ),
-        expected_grounded_count=_exact_count(
-            spec.expected_grounded_count,
-            "expected_grounded_count",
-            256,
-        ),
-        expected_joint_count=_exact_count(
-            spec.expected_joint_count,
-            "expected_joint_count",
-            256,
-        ),
     )
     try:
         definition = prepare_model_fastener(clean_spec.definition)
@@ -331,12 +233,8 @@ def preflight_edit_assembly_fastener(
             clean_spec.occurrence_ref,
             expected_types=("App::Link",),
         )
-        source = resolve_object(
-            document,
-            clean_spec.definition_source_ref,
-            expected_types=("Part::FeaturePython",),
-        )
         graph = assembly_fastener_graph_from_occurrence(assembly, occurrence)
+        source = graph.source
         identity = validate_assembly_fastener_graph(
             document,
             graph,
@@ -347,9 +245,7 @@ def preflight_edit_assembly_fastener(
     except Exception as exc:
         raise NativeAssemblyFastenerError(str(exc)) from exc
     if (
-        graph.source is not source
-        or summary is None
-        or summary["state_sha256"] != clean_spec.expected_fastener_state_sha256
+        summary is None
         or summary["canonical_key"] != str(identity["canonical_key"])
     ):
         raise NativeAssemblyFastenerError(
@@ -369,15 +265,7 @@ def preflight_edit_assembly_fastener(
         state = capture_assembly_diagnosis_state(assembly)
     except Exception as exc:
         raise NativeAssemblyFastenerError(str(exc)) from exc
-    if not _state_matches_spec(state, clean_spec):
-        raise NativeAssemblyFastenerError(
-            "The active Assembly changed; read current Assemble state and retry."
-        )
     selection = selection_reader(document)
-    if not _selection_is_exact_occurrence(selection, occurrence):
-        raise NativeAssemblyFastenerError(
-            "Select exactly the requested Assembly fastener occurrence and retry."
-        )
     operations, visibility = _timeline_state(document)
     if not same_assembly(assembly, active_reader(document)):
         raise NativeAssemblyFastenerError(
@@ -387,6 +275,7 @@ def preflight_edit_assembly_fastener(
         spec=clean_spec,
         definition=definition,
         graph=graph,
+        initial_fastener_state_sha256=str(summary["state_sha256"]),
         state=state,
         active_before=assembly,
         selection_before=selection,
@@ -499,12 +388,8 @@ def _prepared_edit_state_is_current(
             prepared.spec.occurrence_ref,
             expected_types=("App::Link",),
         )
-        source = resolve_object(
-            document,
-            prepared.spec.definition_source_ref,
-            expected_types=("Part::FeaturePython",),
-        )
         graph = assembly_fastener_graph_from_occurrence(assembly, occurrence)
+        source = graph.source
         summary = assembly_fastener_summary(assembly, occurrence)
         state = capture_assembly_diagnosis_state(assembly)
     except Exception as exc:
@@ -516,7 +401,7 @@ def _prepared_edit_state_is_current(
         and source is prepared.graph.source
         and graph.source is source
         and summary is not None
-        and summary["state_sha256"] == prepared.spec.expected_fastener_state_sha256
+        and summary["state_sha256"] == prepared.initial_fastener_state_sha256
         and state.state_sha256 == prepared.state.state_sha256
         and state.components == prepared.state.components
         and state.grounded_joints == prepared.state.grounded_joints
@@ -692,6 +577,7 @@ def verify_inserted_assembly_fastener(
     )
     return {
         "operation": "insert_standard_fastener",
+        "verified": True,
         "assembly": object_reference(graph.assembly),
         "occurrence": object_reference(graph.occurrence),
         "definition_source": object_reference(graph.source),
@@ -699,20 +585,18 @@ def verify_inserted_assembly_fastener(
         "fastener": {
             name: summary[name]
             for name in (
-                "canonical_key",
                 "part_number",
                 "standard",
                 "nominal_thread",
                 "length_mm",
                 "model_thread",
                 "left_handed",
-                "options",
             )
-        },
+            if name != "length_mm" or summary[name] is not None
+        } | {"catalog_option_overrides": dict(summary["options"])},
         "component_count": len(current.components),
         "grounded_count": len(current.grounded_joints),
         "joint_count": len(current.regular_joints),
-        "assembly_state_sha256": current.state_sha256,
         "initial_placement_identity": True,
     }
 
@@ -781,6 +665,7 @@ def verify_edited_assembly_fastener(
     )
     return {
         "operation": "edit_standard_fastener",
+        "verified": True,
         "assembly": object_reference(graph.assembly),
         "occurrence": object_reference(graph.occurrence),
         "definition_source": object_reference(graph.source),
@@ -788,21 +673,18 @@ def verify_edited_assembly_fastener(
         "fastener": {
             name: summary[name]
             for name in (
-                "canonical_key",
                 "part_number",
                 "standard",
                 "nominal_thread",
                 "length_mm",
                 "model_thread",
                 "left_handed",
-                "options",
             )
-        },
-        "fastener_state_sha256": summary["state_sha256"],
+            if name != "length_mm" or summary[name] is not None
+        } | {"catalog_option_overrides": dict(summary["options"])},
         "solid_count": len(graph.source.Shape.Solids),
         "volume_mm3": float(graph.source.Shape.Volume),
         "component_count": len(current.components),
         "grounded_count": len(current.grounded_joints),
         "joint_count": len(current.regular_joints),
-        "assembly_state_sha256": current.state_sha256,
     }

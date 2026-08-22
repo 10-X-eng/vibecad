@@ -718,6 +718,109 @@ def test_complete_source_reads_are_not_cut_down_to_the_normal_tool_result_limit(
     assert "_vibecad_complete_source_result" not in visible
 
 
+def test_native_mutation_result_keeps_cad_facts_and_hides_host_bookkeeping() -> None:
+    visible = provider._provider_visible_tool_result(
+        {
+            "ok": True,
+            "changed": True,
+            "mode": "edit",
+            "operation": "trajectory_compound",
+            "trajectory": {
+                "document_uid": "document-uid",
+                "object_id": 42,
+                "object_name": "TrajectorySequence",
+                "type_id": "Robot::TrajectoryCompound",
+            },
+            "sources": [
+                {
+                    "document_uid": "document-uid",
+                    "object_id": 41,
+                    "object_name": "EdgeTrajectory",
+                    "type_id": "Robot::Edge2TracObject",
+                }
+            ],
+            "feature": {
+                "kind": "compound",
+                "sources": [
+                    {
+                        "document_uid": "document-uid",
+                        "object_id": 41,
+                        "object_name": "EdgeTrajectory",
+                        "type_id": "Robot::Edge2TracObject",
+                    }
+                ],
+            },
+            "waypoint_count": 2,
+            "waypoint": {
+                "name": "Pt",
+                "state_sha256": "c" * 64,
+            },
+            "trajectory_state_sha256": "a" * 64,
+            "trajectory_setup_state_sha256": "b" * 64,
+            "receipt": {
+                "capability": "robot.path_sequence",
+                "revision_before": 10,
+                "revision_after": 11,
+                "changed": ["TrajectorySequence"],
+            },
+            "assistant_undo_available": True,
+        }
+    )
+
+    assert visible == {
+        "ok": True,
+        "changed": True,
+        "mode": "edit",
+        "operation": "trajectory_compound",
+        "trajectory": {
+            "object_name": "TrajectorySequence",
+            "type_id": "Robot::TrajectoryCompound",
+        },
+        "feature": {
+            "kind": "compound",
+            "sources": [
+                {
+                    "object_name": "EdgeTrajectory",
+                    "type_id": "Robot::Edge2TracObject",
+                }
+            ],
+        },
+        "waypoint_count": 2,
+        "waypoint": {"name": "Pt"},
+        "assistant_undo_available": True,
+    }
+
+
+def test_native_noop_result_hides_host_bookkeeping_without_a_receipt() -> None:
+    visible = provider._provider_visible_tool_result(
+        {
+            "_vibecad_native_result": True,
+            "ok": True,
+            "changed": False,
+            "operation": "restore_home_pos",
+            "robot": {
+                "document_uid": "document-uid",
+                "object_name": "Robot",
+                "type_id": "Robot::RobotObject",
+            },
+            "robot_state_sha256": "a" * 64,
+            "setup_state_sha256": "b" * 64,
+            "axes_degrees": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        }
+    )
+
+    assert visible == {
+        "ok": True,
+        "changed": False,
+        "operation": "restore_home_pos",
+        "robot": {
+            "object_name": "Robot",
+            "type_id": "Robot::RobotObject",
+        },
+        "axes_degrees": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    }
+
+
 def test_source_write_result_is_compact_readable_and_actionable() -> None:
     visible = provider._provider_visible_tool_result(
         {

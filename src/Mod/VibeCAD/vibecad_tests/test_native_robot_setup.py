@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from VibeCADNativeCapabilityRegistry import NativeCapabilityRegistry
+from VibeCADNativeCapabilityRegistry import provider_visible_native_schema
 from VibeCADNativeInput import authorize_native_input_path
 from VibeCADNativeRobotSetup import (
     NativeRobotSetupError,
@@ -57,12 +58,7 @@ def test_robot_setup_schema_covers_each_shipped_configuration_action() -> None:
     ) == ("document", "document", "session", "session")
     schema = definition.provider_schema(("create",))
     properties = schema["parameters"]["oneOf"][0]["properties"]
-    assert set(properties) == {
-        "operation",
-        "label",
-        "expected_state_sha256",
-        "expected_robot_count",
-    }
+    assert set(properties) == {"operation", "label"}
     serialized = repr(
         definition.provider_schema(
             (
@@ -81,6 +77,42 @@ def test_robot_setup_schema_covers_each_shipped_configuration_action() -> None:
     registry = NativeCapabilityRegistry()
     register_robot_setup_capability_definition(registry)
     assert registry.definition_names == (ROBOT_SETUP_CAPABILITY_NAME,)
+
+
+def test_robot_setup_provider_contract_contains_only_user_intent() -> None:
+    published = provider_visible_native_schema(
+        robot_setup_capability_definition().provider_schema(
+            (
+                "create",
+                "add_tool_shape",
+                "set_default_orientation",
+                "set_default_values",
+            )
+        )
+    )
+    assert published["description"] == "Create and configure a Robot."
+    schema = published["parameters"]
+    serialized = repr(schema)
+
+    assert "expected_" not in serialized
+    assert "sha256" not in serialized.casefold()
+    assert schema["type"] == "object"
+    assert schema["required"] == ["operation"]
+    properties = schema["properties"]
+    assert properties["operation"]["enum"] == [
+        "create",
+        "add_tool_shape",
+        "set_default_orientation",
+        "set_default_values",
+    ]
+    operation_map = properties["operation"]["description"]
+    assert "create=label" in operation_map
+    assert "add_tool_shape=robot,tool_shape" in operation_map
+    assert "set_default_orientation=placement" in operation_map
+    assert (
+        "set_default_values=speed_mm_per_s,continuous,acceleration_mm_per_s2"
+        in operation_map
+    )
 
 
 def test_robot_motion_defaults_are_explicit_positive_native_units() -> None:

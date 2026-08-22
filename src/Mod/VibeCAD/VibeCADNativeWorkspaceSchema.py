@@ -20,6 +20,7 @@ NATIVE_SURFACE_BY_WORKSPACE = {
     "manufacturing": "manufacture",
     "drawing": "drawing",
     "parameters": "parameters",
+    "aerodynamics": "aero",
 }
 NATIVE_WORKSPACES = tuple(NATIVE_SURFACE_BY_WORKSPACE)
 NATIVE_WORKSPACE_SURFACES = tuple(NATIVE_SURFACE_BY_WORKSPACE.values())

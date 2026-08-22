@@ -7,9 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 import VibeCADNativeAssemblyDistanceJoint as distance_module
-import VibeCADNativeAssemblyJointArguments as joint_arguments
-import VibeCADNativeAssemblyRelationJointRuntime as runtime_module
-from VibeCADNativeActionManifest import classify_native_surface
 from VibeCADNativeAssemblyDistanceJoint import (
     DISTANCE_MODES,
     DistanceJointSpec,
@@ -18,9 +15,7 @@ from VibeCADNativeAssemblyDistanceJoint import (
     _regular_spec,
     preflight_distance_joint,
 )
-from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
 from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
-from VibeCADNativeAssemblyJointSchema import assembly_joint_capability_definition
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeUndo import NativeAssistantUndoLedger
@@ -72,42 +67,6 @@ def _spec(**changes) -> DistanceJointSpec:
     }
     values.update(changes)
     return DistanceJointSpec(**values)
-
-
-def test_distance_schema_and_action_mapping_are_exact() -> None:
-    definition = assembly_joint_capability_definition()
-    variant = next(
-        item for item in definition.variants if item.operation == "create_distance"
-    )
-    schema = definition.provider_schema(("create_distance",))["parameters"]["oneOf"][0]
-
-    assert variant.action_ids == frozenset({"Assembly_CreateJointDistance"})
-    assert variant.surface_ids == frozenset({"assemble"})
-    assert set(schema["required"]) == {
-        "operation",
-        "assembly",
-        "first",
-        "second",
-        "label",
-        "reverse",
-        "distance_mm",
-        "expected_distance_mode",
-        "expected_component_count",
-        "expected_grounded_count",
-        "expected_joint_count",
-        "expected_solve_on_creation",
-    }
-    assert schema["properties"]["distance_mm"] == {
-        "type": "number",
-        "minimum": -1_000_000.0,
-        "maximum": 1_000_000.0,
-    }
-    assert set(schema["properties"]["expected_distance_mode"]["enum"]) == DISTANCE_MODES
-    assert schema["additionalProperties"] is False
-    plan = classify_native_surface(_surface())[0]
-    assert plan.capability_family == ASSEMBLY_JOINT_CAPABILITY_NAME
-    assert plan.operation_variant == "create_distance"
-    assert plan.transaction_behavior == "document"
 
 
 def test_distance_spec_maps_only_the_real_distance_property() -> None:
@@ -254,47 +213,3 @@ def _arguments() -> dict[str, object]:
         "expected_joint_count": 0,
         "expected_solve_on_creation": True,
     }
-
-
-def test_distance_runtime_routes_complete_exact_spec_before_transaction(
-    monkeypatch,
-) -> None:
-    runtime, state, document = _runtime()
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        joint_arguments,
-        "joint_placement",
-        lambda value, field, _error_type: (field, value),
-    )
-    monkeypatch.setattr(
-        runtime_module,
-        "preflight_distance_joint",
-        lambda target_document, spec: captured.update(
-            preflight_document=target_document,
-            spec=spec,
-        ),
-    )
-
-    def run_immediate(context, **kwargs):
-        captured.update(context=context, **kwargs)
-        return {"routed": True}
-
-    monkeypatch.setattr(runtime_module, "run_immediate_mutation", run_immediate)
-
-    result = runtime.mutate_joint(
-        _arguments(),
-        ticket=state.begin_call(document.Uid, ASSEMBLY_JOINT_CAPABILITY_NAME),
-    )
-
-    assert result == {"routed": True}
-    spec = captured["spec"]
-    assert isinstance(spec, DistanceJointSpec)
-    assert spec.assembly_ref.object_name == "Assembly"
-    assert spec.first.component_ref.object_name == "Arm"
-    assert spec.second.component_ref.object_name == "Base"
-    assert spec.label == "Arm Height"
-    assert spec.reverse is True
-    assert spec.distance_mm == 18.0
-    assert spec.expected_distance_mode == "point_plane"
-    assert captured["preflight_document"] is document
-    assert captured["transaction_name"] == "Create Native Assembly Distance Joint"

@@ -167,7 +167,6 @@ def test_schema_covers_both_live_insert_actions_with_exact_targets() -> None:
         "solve_assembly",
         "create_view",
         "create_simulation",
-        "create_bom",
     )
     assert variants["insert_component"].action_ids == frozenset(
         {"Assembly_InsertLink"}
@@ -178,21 +177,11 @@ def test_schema_covers_both_live_insert_actions_with_exact_targets() -> None:
     insert_schema = definition.provider_schema(("insert_component",))["parameters"][
         "oneOf"
     ][0]
-    assert set(insert_schema["required"]) == {
-        "operation",
-        "assembly",
-        "source",
-        "label",
-        "placement",
-        "rigid",
-        "expected_component_count",
-    }
+    assert set(insert_schema["required"]) == {"assembly", "source"}
     assert insert_schema["additionalProperties"] is False
     assert set(insert_schema["properties"]["source"]["required"]) == {
-        "document_uid",
         "document_name",
         "object_name",
-        "object_id",
     }
 
 
@@ -407,4 +396,56 @@ def test_assemble_snapshot_returns_bounded_exact_link_sources(monkeypatch) -> No
             "label": source.Label,
             "subassembly": False,
         }
+    ]
+
+
+def test_assemble_snapshot_lists_sources_before_first_root_assembly(
+    monkeypatch,
+) -> None:
+    document = _Document()
+    source = document.addObject("Part::Box", "SourceBox")
+    source.Label = "Source Box"
+    monkeypatch.setattr(snapshot_module, "read_active_assembly", lambda _doc: None)
+
+    snapshot = build_assembly_snapshot(document)
+
+    assert snapshot["assembly_count"] == 0
+    assert snapshot["active_assembly"] is None
+    assert snapshot["available_component_sources"] == [
+        {
+            "document_uid": document.Uid,
+            "document_name": document.Name,
+            "object_name": source.Name,
+            "object_id": source.ID,
+            "type_id": source.TypeId,
+            "label": source.Label,
+            "subassembly": False,
+        }
+    ]
+
+
+def test_component_sources_hide_vibecad_bookkeeping_objects() -> None:
+    document = _Document()
+    source = document.addObject("Part::Box", "SourceBox")
+    program = document.addObject("App::Part", "Program")
+    program.VibeCADScriptedRole = "model"
+    implementation = document.addObject("Part::Box", "ProgramOperation")
+    implementation.VibeCADScriptedRole = "implementation"
+    state = document.addObject("Part::Box", "BodyState")
+    state.VibeCADTimelineRole = "resource"
+    result = document.addObject("Part::Box", "BodyResult")
+    result.VibeCADTimelineRole = "internal"
+    publication = document.addObject("Part::Box", "PublishedOutput")
+    publication.VibeCADScriptedRole = "publication_target"
+    assembly = _assembly(document)
+
+    sources, truncated = components_module.available_component_sources(
+        document,
+        assembly,
+    )
+
+    assert truncated is False
+    assert [item["object_name"] for item in sources] == [
+        source.Name,
+        publication.Name,
     ]
