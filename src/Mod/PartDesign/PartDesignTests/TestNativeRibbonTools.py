@@ -2216,7 +2216,9 @@ class TestNativeRibbonTools(unittest.TestCase):
         self._process_events(50)
 
         self.assertTrue(Gui.Control.activeDialog())
-        operation = self.document.ActiveObject
+        editing = Gui.activeDocument().getInEdit()
+        self.assertIsNotNone(editing)
+        operation = editing.Object
         self.assertEqual(operation.TypeId, "PartDesign::DesignChamfer")
         self.assertEqual(list(operation.TargetElements), [])
         self._cancel_task("PartDesign_Chamfer without an edge")
@@ -2238,9 +2240,27 @@ class TestNativeRibbonTools(unittest.TestCase):
                 Gui.runCommand(command_name, 0)
                 self._process_events(80)
                 self.assertTrue(Gui.Control.activeDialog(), command_name)
-                operation = self.document.ActiveObject
+                editing = Gui.activeDocument().getInEdit()
+                self.assertIsNotNone(editing, command_name)
+                operation = editing.Object
                 self.assertEqual(operation.TypeId, feature_type, command_name)
-                self.assertEqual(list(operation.InputStates), [source], command_name)
+                self.assertEqual(len(operation.InputStates), 1, command_name)
+                input_state = operation.InputStates[0]
+                self.assertEqual(
+                    input_state.TypeId,
+                    "PartDesign::DesignBodyState",
+                    command_name,
+                )
+                self.assertEqual(
+                    str(input_state.BodyId),
+                    str(body.VibeCADBodyId),
+                    command_name,
+                )
+                self.assertAlmostEqual(
+                    input_state.Shape.Volume,
+                    source.Shape.Volume,
+                    msg=command_name,
+                )
                 self.assertEqual(list(operation.TargetElements), [], command_name)
 
                 Gui.Selection.addSelection(body, subelement)
@@ -2256,7 +2276,9 @@ class TestNativeRibbonTools(unittest.TestCase):
                 self.assertEqual(committed.TypeId, feature_type, command_name)
                 self.assertEqual(list(committed.TargetElements), [subelement], command_name)
                 self.assertTrue(committed.isValid(), committed.getStatusString())
-                self.assertGreater(committed.Shape.Volume, 0.0, command_name)
+                self.assertEqual(len(committed.OutputShapes), 1, command_name)
+                self.assertGreater(committed.OutputShapes[0].Volume, 0.0, command_name)
+                self.assertGreater(body.Shape.Volume, 0.0, command_name)
 
     def test_fillet_stays_off_without_a_solid_body(self):
         empty_body, _feature = self._new_body("EmptyFilletBody", solid=False)
