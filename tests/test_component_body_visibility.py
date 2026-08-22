@@ -54,3 +54,15 @@ def test_body_does_not_remount_when_its_component_is_hidden() -> None:
     assert "enclosingComponentIsVisible" in show
     assert "enclosingComponentIsVisible" in hide
     assert show.find("enclosingComponentIsVisible") < show.find("Gui::ViewProvider::show()")
+
+
+def test_show_reveals_the_enclosing_component_before_showing_the_body() -> None:
+    show = _method(
+        BODY_CPP.read_text(encoding="utf-8"),
+        "void ViewProviderBody::show()",
+        "void ViewProviderBody::hide()",
+    )
+    assert "syncEnclosingComponentVisibility(true)" in show
+    assert show.find("syncEnclosingComponentVisibility(true)") < show.find(
+        "PartGui::ViewProviderPart::show()"
+    )

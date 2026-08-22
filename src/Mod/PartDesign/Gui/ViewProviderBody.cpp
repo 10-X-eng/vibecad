@@ -867,10 +867,11 @@ void ViewProviderBody::show()
     // The Body's scene container owns sketches, datums, and result features.
     // Keep it mounted, then expose exactly the current Tip as the one solid
     // represented by the Body row.
+    auto* body = getObject<PartDesign::Body>();
+    syncEnclosingComponentVisibility(true);
     useChildSceneMode();
     PartGui::ViewProviderPart::show();
 
-    auto* body = getObject<PartDesign::Body>();
     const bool componentVisible = enclosingComponentIsVisible(body);
 
     // The regular show path may reject a child whose enclosing component is
