@@ -418,61 +418,113 @@ if [ -e "$backup" ]; then
 fi
 
 mount=$(mktemp -d "${TMPDIR:-/tmp}/vibecad-dmg.XXXXXX")
+attached=0
+new_pid=""
 detach_mount() {
-    hdiutil detach "$mount" -quiet >/dev/null 2>&1 || true
+    if [ "$attached" -eq 1 ]; then
+        hdiutil detach "$mount" -quiet >/dev/null 2>&1 || true
+        attached=0
+    fi
     rmdir "$mount" >/dev/null 2>&1 || true
 }
+terminate_new_app() {
+    if [ -z "$new_pid" ] || ! kill -0 "$new_pid" 2>/dev/null; then
+        return
+    fi
+    kill "$new_pid" 2>/dev/null || true
+    stop_attempt=0
+    while kill -0 "$new_pid" 2>/dev/null && [ "$stop_attempt" -lt 10 ]; do
+        sleep 1
+        stop_attempt=$((stop_attempt + 1))
+    done
+    kill -9 "$new_pid" 2>/dev/null || true
+    wait "$new_pid" 2>/dev/null || true
+}
+rollback_install() {
+    terminate_new_app
+    if [ -e "$backup" ]; then
+        rm -rf "$app"
+        mv "$backup" "$app"
+        printf '{"status":"rolled-back","platform":"macos-dmg"}\\n' > "$receipt"
+        open "$app" >/dev/null 2>&1 || true
+    fi
+}
+find_new_pid() {
+    ps -axo pid=,command= | awk -v executable="$app/Contents/MacOS/FreeCAD" \\
+        'index($0, executable) { print $1; exit }'
+}
+trap detach_mount EXIT
 
-if ! printf 'Y\\n' | hdiutil attach "$package" -nobrowse -readonly -noverify -mountpoint "$mount" >/dev/null; then
-    rmdir "$mount" >/dev/null 2>&1 || true
+if ! printf 'Y\\n' | hdiutil attach "$package" -nobrowse -readonly -mountpoint "$mount" >/dev/null; then
     exit 23
 fi
+attached=1
 
-new_app=$(find "$mount" -maxdepth 3 \\( -name 'VibeCAD.app' -o -name '*.app' \\) -type d | head -n 1)
-if [ -z "$new_app" ] || [ ! -d "$new_app" ]; then
-    detach_mount
+new_app="$mount/VibeCAD.app"
+if [ ! -d "$new_app" ]; then
     exit 24
 fi
 
 if [ -e "$app" ]; then
     if ! mv "$app" "$backup"; then
-        detach_mount
         exit 21
     fi
 fi
 if ! ditto "$new_app" "$app"; then
-    detach_mount
-    if [ -e "$backup" ]; then
-        rm -rf "$app"
-        mv "$backup" "$app"
-    fi
+    rollback_install
     exit 21
 fi
 xattr -dr com.apple.quarantine "$app" >/dev/null 2>&1 || true
 detach_mount
 
 printf '{"status":"installed","platform":"macos-dmg"}\\n' > "$receipt"
-open "$app"
+if ! open -n "$app"; then
+    rollback_install
+    exit 25
+fi
 
 healthy=0
+attempt=0
+while [ "$attempt" -lt 15 ]; do
+    if [ ! -f "$pending" ]; then
+        healthy=1
+        break
+    fi
+    new_pid=$(find_new_pid)
+    if [ -n "$new_pid" ]; then
+        break
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+done
+if [ "$healthy" -ne 1 ] && [ -z "$new_pid" ]; then
+    rollback_install
+    exit 25
+fi
+
 attempt=0
 while [ "$attempt" -lt 120 ]; do
     if [ ! -f "$pending" ]; then
         healthy=1
         break
     fi
+    if ! kill -0 "$new_pid" 2>/dev/null; then
+        break
+    fi
     sleep 1
     attempt=$((attempt + 1))
 done
 if [ "$healthy" -eq 1 ]; then
+    cleanup_attempt=0
+    while [ -e "$backup" ] && [ "$cleanup_attempt" -lt 10 ]; do
+        sleep 1
+        cleanup_attempt=$((cleanup_attempt + 1))
+    done
+    rm -rf "$backup"
     exit 0
 fi
-if [ -e "$backup" ]; then
-    rm -rf "$app"
-    mv "$backup" "$app"
-    printf '{"status":"rolled-back","platform":"macos-dmg"}\\n' > "$receipt"
-    open "$app"
-fi
+rollback_install
+exit 25
 """,
         encoding="utf-8",
         newline="\n",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -828,6 +829,54 @@ class UpdateServiceTests(unittest.TestCase):
         self.assertFalse(backup_exists)
         self.assertFalse(package_exists)
 
+    def test_macos_health_commits_before_removing_the_rollback_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            downloads = root / "downloads"
+            downloads.mkdir()
+            package = downloads / "VibeCAD.dmg"
+            package.write_bytes(b"dmg")
+            app = root / "VibeCAD.app"
+            app.mkdir()
+            original = ReleaseIdentity("26.3.1-RC3", 1)
+            target = ReleaseIdentity("26.3.1-RC3", 2)
+            asset = UpdateAsset(
+                "macos",
+                "aarch64",
+                "dmg",
+                package.name,
+                "https://github.com/10-X-eng/vibecad/releases/download/"
+                f"{target.tag}/{package.name}",
+                3,
+                hashlib.sha256(b"dmg").hexdigest(),
+            )
+            plan = create_install_plan(package, asset, install_root=app)
+            record_pending_install(
+                plan,
+                original,
+                target,
+                update_directory=root,
+            )
+            backup = Path(f"{app}.vibecad-rollback")
+            backup.mkdir()
+            real_rmtree = shutil.rmtree
+
+            def assert_committed_before_cleanup(path) -> None:
+                self.assertFalse((root / "pending-install.json").exists())
+                self.assertTrue((root / "health-receipt.json").is_file())
+                real_rmtree(path)
+
+            with mock.patch(
+                "VibeCADUpdate.shutil.rmtree",
+                side_effect=assert_committed_before_cleanup,
+            ):
+                status = complete_pending_install_health(
+                    target,
+                    update_directory=root,
+                )
+
+        self.assertEqual(status, "healthy")
+
     def test_updater_gui_launches_a_macos_dmg_helper(self) -> None:
         gui = (
             REPO_ROOT / "src" / "Mod" / "VibeCAD" / "VibeCADUpdateGui.py"
@@ -838,8 +887,17 @@ class UpdateServiceTests(unittest.TestCase):
         self.assertIn("macos-dmg", gui.split("def _launch_pending_install", 1)[1])
         self.assertIn("hdiutil attach", helper)
         self.assertIn("ditto", helper)
-        self.assertIn("open", helper)
-        self.assertIn("VibeCAD.app", helper)
+        self.assertIn('new_app="$mount/VibeCAD.app"', helper)
+        self.assertNotIn("-name '*.app'", helper)
+        self.assertIn("terminate_new_app()", helper)
+        self.assertIn("rollback_install()", helper)
+        self.assertIn('if ! open -n "$app"; then', helper)
+        self.assertIn('if ! kill -0 "$new_pid" 2>/dev/null; then', helper)
+        rollback = helper.split("rollback_install()", 1)[1].split("}", 1)[0]
+        self.assertLess(
+            rollback.index("terminate_new_app"),
+            rollback.index('rm -rf "$app"'),
+        )
 
     def test_appimage_plan_requires_real_appimage_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

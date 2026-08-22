@@ -1265,6 +1265,7 @@ def complete_pending_install_health(
     else:
         return "pending"
 
+    backup_to_remove: Path | None = None
     backup_value = str(payload.get("backup") or "")
     if status == "healthy" and backup_value:
         backup = Path(backup_value).resolve()
@@ -1295,10 +1296,7 @@ def complete_pending_install_health(
             expected_backup = Path(f"{install_root}.vibecad-rollback").resolve()
             if backup != expected_backup:
                 raise UpdateError("Unexpected macOS rollback path in the health receipt.")
-            if backup.is_dir():
-                shutil.rmtree(backup)
-            else:
-                backup.unlink(missing_ok=True)
+            backup_to_remove = backup
 
     package_value = str(payload.get("package") or "")
     if package_value:
@@ -1321,6 +1319,16 @@ def complete_pending_install_health(
     _atomic_json_write(root / "health-receipt.json", receipt)
     pending.unlink(missing_ok=True)
     (root / "install-receipt.json").unlink(missing_ok=True)
+    if backup_to_remove is not None:
+        try:
+            if backup_to_remove.is_dir():
+                shutil.rmtree(backup_to_remove)
+            else:
+                backup_to_remove.unlink(missing_ok=True)
+        except FileNotFoundError:
+            # The detached install helper also removes a committed rollback
+            # bundle if this process exits between the commit and cleanup.
+            pass
     return status
 
 
