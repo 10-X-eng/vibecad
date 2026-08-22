@@ -2130,6 +2130,7 @@ public:
     void deactivated() override
     {
         abortCommand();
+        discardProvisionalConstraints();
         if (availableConstraint != AvailableConstraint::FIRST) {
             Obj->solve();
         }
@@ -2606,12 +2607,14 @@ protected:
         const std::vector<Sketcher::Constraint*>& ConStr = Obj->Constraints.getValues();
 
         bool commandHandledInEditDatum = false;
+        bool dialogCancelled = false;
         for (int index : cstrIndexes | boost::adaptors::reversed) {
             if (show && ConStr[index]->isDimensional() && ConStr[index]->isDriving) {
                 commandHandledInEditDatum = true;
                 EditDatumDialog editDatumDialog(currentTransactionID, sketchgui, index);
                 editDatumDialog.exec();
                 if (!editDatumDialog.isSuccess()) {
+                    dialogCancelled = true;
                     break;
                 }
             }
@@ -2619,6 +2622,13 @@ protected:
 
         if (!commandHandledInEditDatum) {
             commitCommand();
+        }
+
+        // Keep accepted dimensions. Sketch-edit transactions are locked, so
+        // abortCommand() is a no-op and starting the next dimension would
+        // otherwise delete the constraint the user just placed.
+        if (!dialogCancelled) {
+            cstrIndexes.clear();
         }
 
         // This code enables the continuous creation mode.
@@ -3661,9 +3671,34 @@ protected:
         return false;
     }
 
+    void discardProvisionalConstraints()
+    {
+        if (cstrIndexes.empty() || !Obj) {
+            return;
+        }
+
+        std::vector<int> indexes = cstrIndexes;
+        std::sort(indexes.begin(), indexes.end(), [](int left, int right) {
+            return left > right;
+        });
+        indexes.erase(std::unique(indexes.begin(), indexes.end()), indexes.end());
+
+        for (int index : indexes) {
+            if (index >= 0 && index < Obj->Constraints.getSize()) {
+                Gui::cmdAppObjectArgs(Obj, "delConstraint(%d)", index);
+            }
+        }
+        cstrIndexes.clear();
+    }
+
     void restartCommand(const char* cstrName) {
         specialConstraint = SpecialConstraint::None;
         abortCommand();
+        // Exact sketch-edit transactions are locked, so abortCommand() cannot
+        // roll back the first Distance while the mouse switches to
+        // DistanceX/DistanceY. Delete the handler's provisional constraints
+        // instead of leaving an automatic extra dimension.
+        discardProvisionalConstraints();
         Obj->solve();
         sketchgui->draw(false, false); // Redraw
         openCommand(cstrName);
@@ -3674,6 +3709,7 @@ protected:
     void resetTool()
     {
         abortCommand();
+        discardProvisionalConstraints();
         Gui::Selection().clearSelection();
         openCommand(QT_TRANSLATE_NOOP("Command", "Dimension"));
         cstrIndexes.clear();
