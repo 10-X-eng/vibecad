@@ -14,6 +14,7 @@ from VibeCADNativeAssemblyExport import (
     preflight_assembly_asmt_export,
     require_current_output_ticket,
 )
+from VibeCADNativeAssemblyState import read_active_assembly
 from VibeCADNativeOutput import NativeOutputError
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
@@ -35,31 +36,19 @@ class NativeAssemblyExportRuntime:
     ) -> dict[str, Any]:
         operation, values = strict_variant_arguments(
             arguments,
-            {
-                "asmt": frozenset(
-                    {
-                        "assembly",
-                        "expected_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    }
-                )
-            },
+            {"asmt": frozenset()},
         )
         if operation != "asmt":
             raise NativeAssemblyExportError(
                 "The Assembly export operation is not implemented."
             )
-        assembly = values["assembly"]
-        if not isinstance(assembly, Mapping) or set(assembly) != {"object_name"}:
-            raise NativeAssemblyExportError(
-                "assembly must contain one exact object_name."
-            )
+        assembly = read_active_assembly(self._context.document)
+        if assembly is None:
+            raise NativeAssemblyExportError("No Assembly is active.")
         try:
             reference = NativeObjectRef(
                 self._context.document_uid,
-                str(assembly["object_name"]),
+                str(assembly.Name),
             )
         except Exception as exc:
             raise NativeAssemblyExportError(
@@ -67,10 +56,6 @@ class NativeAssemblyExportRuntime:
             ) from exc
         spec = AssemblyAsmtExportSpec(
             assembly_ref=reference,
-            expected_state_sha256=values["expected_state_sha256"],
-            expected_component_count=values["expected_component_count"],
-            expected_grounded_count=values["expected_grounded_count"],
-            expected_joint_count=values["expected_joint_count"],
         )
         require_current_output_ticket(self._context, ticket)
         prepared = preflight_assembly_asmt_export(self._context, spec)

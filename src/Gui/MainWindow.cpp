@@ -425,7 +425,16 @@ public:
             tr("Drag to resize the Model browser")
         );
         browserResizeHandle->installEventFilter(this);
-        browserHost->hide();
+        browserHost->show();
+    }
+
+    void setModelBrowserVisible(bool visible)
+    {
+        browserHost->setVisible(visible);
+        if (visible) {
+            browserHost->raise();
+            browserResizeHandle->raise();
+        }
     }
 
 protected:
@@ -487,8 +496,10 @@ protected:
     void showEvent(QShowEvent* event) override
     {
         QWidget::showEvent(event);
-        browserHost->raise();
-        browserResizeHandle->raise();
+        if (browserHost->isVisible()) {
+            browserHost->raise();
+            browserResizeHandle->raise();
+        }
     }
 
 private:
@@ -518,8 +529,10 @@ private:
             std::min(modelBrowserResizeHandleWidth, displayedWidth),
             height()
         );
-        browserHost->raise();
-        browserResizeHandle->raise();
+        if (browserHost->isVisible()) {
+            browserHost->raise();
+            browserResizeHandle->raise();
+        }
     }
 
     QMdiArea* mdiArea;
@@ -563,6 +576,7 @@ struct MainWindowP
     QTimer saveStateTimer;
     QTimer restoreStateTimer;
     QMdiArea* mdiArea;
+    ViewportCanvas* viewportCanvas {nullptr};
     FeatureTimeline* featureTimeline;
     QPointer<MDIView> activeView;
     QSignalMapper* windowMapper;
@@ -675,8 +689,8 @@ MainWindow::MainWindow(QWidget* parent, Qt::WindowFlags f)
     auto* workspaceLayout = new QVBoxLayout(workspace);
     workspaceLayout->setContentsMargins(0, 0, 0, 0);
     workspaceLayout->setSpacing(0);
-    auto* viewportCanvas = new ViewportCanvas(d->mdiArea, workspace);
-    workspaceLayout->addWidget(viewportCanvas, 1);
+    d->viewportCanvas = new ViewportCanvas(d->mdiArea, workspace);
+    workspaceLayout->addWidget(d->viewportCanvas, 1);
     d->featureTimeline = new FeatureTimeline(workspace);
     workspaceLayout->addWidget(d->featureTimeline);
     setCentralWidget(workspace);
@@ -1823,6 +1837,10 @@ void MainWindow::setActiveWindow(MDIView* view)
     }
 
     d->activeView = view;
+    const QVariant modelBrowserPreference = view->property("vibecadUsesModelBrowser");
+    d->viewportCanvas->setModelBrowserVisible(
+        !modelBrowserPreference.isValid() || modelBrowserPreference.toBool()
+    );
     Application::Instance->viewActivated(view);
 
     // activate/remember workbench by tab (if enabled)

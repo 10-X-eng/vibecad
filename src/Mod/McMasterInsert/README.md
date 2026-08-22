@@ -9,10 +9,10 @@ imports 3-D STEP as a `PartDesign::Component`.
 - Menu **McMaster-Carr → Open Cache Folder** for local copies
 
 Download **3-D STEP** from a product page. The catalog overlay intercepts the
-file (no Save dialog on macOS), imports it, names the component with the part
-number, and puts the catalog title on **Description**. A transform manipulator
-opens so the component can be placed immediately. The overlay closes after one
-part.
+file, imports it, names the component with the part number, and puts the catalog
+title on **Description**. A transform manipulator opens so the component can be
+placed immediately. If more than one catalog download is active, VibeCAD waits
+for and imports every completed file before closing the catalog.
 
 ## macOS catalog overlay
 
@@ -41,9 +41,15 @@ the login session across VibeCAD restarts and upgrades.
 
 ## Linux catalog
 
-Catalog opens the live site in the system browser. Download 3-D STEP to the
-standard Downloads folder and VibeCAD imports it automatically. If the browser
-saves somewhere else, use **Import** to select the downloaded CAD file.
+Catalog opens the live site in a separate WebKitGTK window when the host system
+provides WebKitGTK 4.1 and Python GObject bindings. Downloads go directly to a
+private VibeCAD inbox, so unrelated files in **Downloads** are ignored. Cookies
+and website data are kept under the VibeCAD user-data directory in
+`McMasterBrowser/webkitgtk`, preserving the McMaster login across launches.
+
+If WebKitGTK is unavailable, Catalog opens the system browser and watches the
+standard **Downloads** folder for one McMaster CAD file. Use **Import** when the
+browser saves somewhere else.
 
 ## Cache
 

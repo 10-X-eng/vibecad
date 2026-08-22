@@ -3925,6 +3925,51 @@ def _resolve_connector(
             context=context,
         )
         geometry_type = _geometry_type(subshape, category)
+    elif mode == "query":
+        if metadata.get("requires_semantic_interfaces"):
+            raise AssemblyCandidateError(
+                f"{context} targets component {output_name!r} through geometry even "
+                "though it publishes connector interfaces.",
+                details={
+                    "stage": "connector_selection",
+                    "component_output": output_name,
+                    "available_interfaces": sorted(
+                        dict(metadata.get("published_interfaces") or {})
+                    ),
+                },
+            )
+        if properties.get("anchor") is not None:
+            raise AssemblyCandidateError(
+                f"{context}.anchor is unavailable for a geometry query."
+            )
+        from vibescript_partdesign_worker import (
+            PartDesignCandidateError,
+            resolve_geometry_selection,
+        )
+
+        try:
+            names, _details = resolve_geometry_selection(
+                selection_component.Shape,
+                selection,
+            )
+        except PartDesignCandidateError as exc:
+            raise AssemblyCandidateError(
+                f"{context} geometry query did not resolve exactly one connector.",
+                details={
+                    "stage": "connector_selection",
+                    "component_output": output_name,
+                    **dict(exc.details),
+                },
+            ) from exc
+        element = str(names[0])
+        subshape, category = _subelement(
+            selection_component,
+            element,
+            context=context,
+        )
+        anchor = element
+        geometry_type = _geometry_type(subshape, category)
+        semantic = {"type": "geometry_query", "query": dict(selection)}
     elif mode == "published_interface":
         if properties.get("anchor") is not None:
             raise AssemblyCandidateError(
@@ -4228,9 +4273,31 @@ def _parallel_axes(first: Mapping[str, Any], second: Mapping[str, Any]) -> bool:
 
 def _coupled_joint_issues(
     joint_data: Mapping[str, Mapping[str, Any]],
+    *,
+    grounded_outputs: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
-    """Mirror native RackPinion/Screw slider prerequisites with useful feedback."""
+    """Verify native coupled-joint prerequisites before solving."""
 
+    def same_connector(
+        first: Mapping[str, Any],
+        second: Mapping[str, Any],
+    ) -> bool:
+        return all(
+            first.get(name) == second.get(name)
+            for name in (
+                "component_output",
+                "selection",
+                "occurrence_path",
+                "anchor",
+                "offset",
+            )
+        )
+
+    revolutes = [
+        (name, data)
+        for name, data in joint_data.items()
+        if data.get("kind") == "revolute" and not bool(data.get("suppressed"))
+    ]
     sliders = [
         (name, data)
         for name, data in joint_data.items()
@@ -4239,6 +4306,108 @@ def _coupled_joint_issues(
     issues: list[dict[str, Any]] = []
     for name, data in joint_data.items():
         kind = str(data.get("kind") or "")
+        if kind in {"gears", "belt"} and not bool(data.get("suppressed")):
+            connectors = list(data.get("connectors") or [])
+            matches = [
+                [
+                    revolute_name
+                    for revolute_name, revolute_data in revolutes
+                    if any(
+                        same_connector(connector, revolute_connector)
+                        for revolute_connector in list(
+                            revolute_data.get("connectors") or []
+                        )
+                    )
+                ]
+                for connector in connectors
+            ]
+            grounded_components = list(
+                dict.fromkeys(
+                    str(connector.get("component_output") or "")
+                    for connector in connectors
+                    if str(connector.get("component_output") or "")
+                    in grounded_outputs
+                )
+            )
+            valid_dependencies = (
+                not grounded_components
+                and len(matches) == 2
+                and all(len(items) == 1 for items in matches)
+                and matches[0][0] != matches[1][0]
+            )
+            if not valid_dependencies:
+                issues.append(
+                {
+                    "code": "invalid_revolute_dependencies",
+                    "joint_output": name,
+                    "joint_type": kind,
+                    "grounded_component_outputs": grounded_components,
+                    "endpoints": [
+                        {
+                            "component_output": str(
+                                connector.get("component_output") or ""
+                            ),
+                            "selection": _json_safe(connector.get("selection")),
+                            "revolute_joint_outputs": endpoint_matches,
+                        }
+                        for connector, endpoint_matches in zip(
+                            connectors,
+                            matches,
+                            strict=True,
+                        )
+                    ],
+                    "requirement": (
+                        "Each connector must exactly reuse one distinct non-suppressed "
+                        "Revolute joint connector; neither coupled component may be "
+                        "grounded."
+                    ),
+                    "suggestion": (
+                        f"Create one Revolute joint for each rotating component, then "
+                        f"reuse those exact connectors in the {kind} joint."
+                    ),
+                }
+                )
+                continue
+            origins = [
+                list(dict(connector.get("global_frame") or {}).get("position_mm") or [])
+                for connector in connectors
+            ]
+            if any(len(origin) != 3 for origin in origins):
+                issues.append(
+                    {
+                        "code": "missing_coupling_axis_frame",
+                        "joint_output": name,
+                        "joint_type": kind,
+                        "requirement": "Both coupling connectors need resolved global axes.",
+                        "suggestion": "Read the current assembly and recreate the joint.",
+                    }
+                )
+                continue
+            separation = math.sqrt(
+                sum(
+                    (float(first) - float(second)) ** 2
+                    for first, second in zip(origins[0], origins[1], strict=True)
+                )
+            )
+            if separation <= 1.0e-7:
+                issues.append(
+                    {
+                        "code": "coincident_coupling_axes",
+                        "joint_output": name,
+                        "joint_type": kind,
+                        "axis_separation_mm": separation,
+                        "component_outputs": [
+                            str(connector.get("component_output") or "")
+                            for connector in connectors
+                        ],
+                        "requirement": "Coupling axes must have distinct global origins.",
+                        "suggestion": (
+                            "Give the occurrences distinct initial placements before "
+                            f"creating the {kind} joint."
+                        ),
+                    }
+                )
+            continue
         if kind not in {"rack_pinion", "screw"} or bool(data.get("suppressed")):
             continue
         connectors = list(data.get("connectors") or [])
@@ -4295,16 +4464,35 @@ def _preflight_coupled_joint_structure(
 ) -> list[dict[str, Any]]:
     """Reject structurally incomplete coupled joints before native construction."""
 
+    def connectors(value: DomainValue) -> list[DomainValue]:
+        return [
+            connector
+            for connector in value.arguments
+            if isinstance(connector, DomainValue)
+            and connector.operation == "connector"
+            and connector.arguments
+        ]
+
     def component_names(value: DomainValue) -> list[str]:
         names: list[str] = []
-        for connector in value.arguments:
-            if not isinstance(connector, DomainValue) or not connector.arguments:
-                continue
+        for connector in connectors(value):
             name = component_outputs.get(id(connector.arguments[0]))
             if name is not None:
                 names.append(name)
         return names
 
+    def same_connector(first: DomainValue, second: DomainValue) -> bool:
+        return (
+            first.arguments[0] is second.arguments[0]
+            and first.properties == second.properties
+        )
+
+    revolutes = [
+        (joint_outputs[id(value)], connectors(value))
+        for value in joint_values
+        if str(_properties(value, "joint").get("kind") or "") == "revolute"
+        and not bool(_properties(value, "joint").get("suppressed"))
+    ]
     sliders = [
         (joint_outputs[id(value)], component_names(value))
         for value in joint_values
@@ -4315,6 +4503,67 @@ def _preflight_coupled_joint_structure(
     for value in joint_values:
         properties = _properties(value, "joint")
         kind = str(properties.get("kind") or "")
+        if kind in {"gears", "belt"} and not bool(properties.get("suppressed")):
+            coupled_connectors = connectors(value)
+            matches = [
+                [
+                    revolute_name
+                    for revolute_name, revolute_connectors in revolutes
+                    if any(
+                        same_connector(connector, revolute_connector)
+                        for revolute_connector in revolute_connectors
+                    )
+                ]
+                for connector in coupled_connectors
+            ]
+            grounded_components = list(
+                dict.fromkeys(
+                    str(component_outputs.get(id(connector.arguments[0])) or "")
+                    for connector in coupled_connectors
+                    if bool(connector.arguments[0].properties.get("grounded"))
+                )
+            )
+            if (
+                not grounded_components
+                and len(matches) == 2
+                and all(len(items) == 1 for items in matches)
+                and matches[0][0] != matches[1][0]
+            ):
+                continue
+            issues.append(
+                {
+                    "code": "invalid_revolute_dependencies",
+                    "joint_output": joint_outputs[id(value)],
+                    "joint_type": kind,
+                    "grounded_component_outputs": grounded_components,
+                    "endpoints": [
+                        {
+                            "component_output": str(
+                                component_outputs.get(id(connector.arguments[0])) or ""
+                            ),
+                            "selection": _json_safe(
+                                connector.properties.get("selection")
+                            ),
+                            "revolute_joint_outputs": endpoint_matches,
+                        }
+                        for connector, endpoint_matches in zip(
+                            coupled_connectors,
+                            matches,
+                            strict=True,
+                        )
+                    ],
+                    "requirement": (
+                        "Each connector must exactly reuse one distinct non-suppressed "
+                        "Revolute joint connector; neither coupled component may be "
+                        "grounded."
+                    ),
+                    "suggestion": (
+                        f"Create one Revolute joint for each rotating component, then "
+                        f"reuse those exact connectors in the {kind} joint."
+                    ),
+                }
+            )
+            continue
         if kind not in {"rack_pinion", "screw"} or bool(
             properties.get("suppressed")
         ):
@@ -4874,10 +5123,52 @@ def validate_and_solve_assembly(
             ) from exc
         if hasattr(joint, "Suppressed"):
             joint.Suppressed = bool(properties.get("suppressed"))
+        native_slots = []
+        for native_index in (1, 2):
+            native_reference = getattr(joint, f"Reference{native_index}")
+            native_slots.append(
+                {
+                    "reference": native_reference,
+                    "reference_fact": _native_reference(native_reference),
+                    "placement": getattr(joint, f"Placement{native_index}"),
+                }
+            )
+
         frames = []
+        used_native_slots: set[int] = set()
         for connector_index, connector in enumerate(connectors, start=1):
-            native_reference = getattr(joint, f"Reference{connector_index}")
-            local_frame = getattr(joint, f"Placement{connector_index}")
+            expected_reference = {
+                "component": str(getattr(connector["component"], "Name", "") or ""),
+                "subelements": [
+                    connector["native_element"],
+                    connector["native_anchor"],
+                ],
+            }
+            matching_slots = [
+                slot_index
+                for slot_index, slot in enumerate(native_slots)
+                if slot_index not in used_native_slots
+                and slot["reference_fact"] == expected_reference
+            ]
+            if len(matching_slots) != 1:
+                raise AssemblyCandidateError(
+                    f"FreeCAD did not retain one native connector for joint output "
+                    f"{output_name!r} connector {connector_index}.",
+                    details={
+                        "stage": "native_connector_frames",
+                        "joint_output": output_name,
+                        "connector_index": connector_index,
+                        "expected_reference": expected_reference,
+                        "native_references": [
+                            slot["reference_fact"] for slot in native_slots
+                        ],
+                    },
+                )
+            native_slot_index = matching_slots[0]
+            used_native_slots.add(native_slot_index)
+            native_slot = native_slots[native_slot_index]
+            native_reference = native_slot["reference"]
+            local_frame = native_slot["placement"]
             try:
                 global_frame = UtilsAssembly.getJcsGlobalPlc(
                     local_frame,
@@ -4907,7 +5198,7 @@ def validate_and_solve_assembly(
                     "native_hierarchy_chain": connector[
                         "native_hierarchy_chain"
                     ],
-                    "native_reference": _native_reference(native_reference),
+                    "native_reference": native_slot["reference_fact"],
                     "interface_frame": connector["interface_frame"],
                     "offset": _placement_fact(connector["offset"]),
                     "local_frame": _placement_fact(local_frame),
@@ -4931,7 +5222,10 @@ def validate_and_solve_assembly(
         "joint", completed=len(joint_values), total=len(joint_values)
     )
 
-    joint_dependency_issues = _coupled_joint_issues(joint_data)
+    joint_dependency_issues = _coupled_joint_issues(
+        joint_data,
+        grounded_outputs=set(grounded_outputs),
+    )
     if require_solved and joint_dependency_issues:
         first_issue = joint_dependency_issues[0]
         raise AssemblyCandidateError(

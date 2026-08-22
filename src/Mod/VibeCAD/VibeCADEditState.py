@@ -66,6 +66,31 @@ def _optional_mode(values: tuple[Any, ...]) -> int | None:
         return None
 
 
+def _active_assembly_object(
+    gui_document: Any,
+    view_provider: Any,
+) -> Any | None:
+    """Resolve Assembly's opaque edit provider through its native active view."""
+
+    try:
+        document = gui_document.Document
+        view = getattr(gui_document, "ActiveView", None)
+        if view is None:
+            view = gui_document.activeView()
+        active = view.getActiveObject("assembly")
+        if (
+            active is None
+            or active.Document is not document
+            or active.TypeId != "Assembly::AssemblyObject"
+            or active.ViewObject is not view_provider
+            or not active.ViewObject.isInEditMode()
+        ):
+            return None
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return None
+    return _document_object(active)
+
+
 def active_edit_state(gui_document: Any | None = None) -> ActiveEditState:
     """Return the active edit session without leaking GUI wrappers to callers.
 
@@ -127,9 +152,15 @@ def active_edit_state(gui_document: Any | None = None) -> ActiveEditState:
             if isinstance(view_provider, (tuple, list)):
                 view_provider = view_provider[0] if view_provider else None
             if view_provider is not None:
+                document_object = _document_object(view_provider)
+                if document_object is None:
+                    document_object = _active_assembly_object(
+                        gui_document,
+                        view_provider,
+                    )
                 return ActiveEditState(
                     active=True,
-                    document_object=_document_object(view_provider),
+                    document_object=document_object,
                     view_provider=view_provider,
                     error="; ".join(errors),
                 )

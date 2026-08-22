@@ -15,6 +15,9 @@ from VibeCADNativeTargets import (
 )
 
 
+MAX_RADIUS_MEASUREMENTS = 16
+
+
 MAX_MASS_OBJECTS = 16
 DEFAULT_DENSITY_KG_PER_MM3 = 1.0e-6
 

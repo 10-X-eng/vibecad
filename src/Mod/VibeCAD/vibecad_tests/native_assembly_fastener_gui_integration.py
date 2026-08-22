@@ -27,7 +27,9 @@ import VibeCADGui as VibeGui
 from VibeCADNativeAssemblyFastener import NativeAssemblyFastenerError
 from VibeCADNativeAssemblyFastenerSchema import (
     ASSEMBLY_FASTENER_CAPABILITY_NAME,
+    ASSEMBLY_FASTENER_EDIT_CAPABILITY_NAME,
     assembly_fastener_capability_definition,
+    assembly_fastener_edit_capability_definition,
 )
 from VibeCADNativeAssemblySnapshot import build_assembly_snapshot
 from VibeCADNativeCapabilityRegistry import (
@@ -73,17 +75,16 @@ def _definition(
     return {
         "standard": standard,
         "nominal_thread": "M6",
-        "length_mm": length_mm,
         "model_thread": model_thread,
         "left_handed": False,
-        "options": {},
-    }
+    } | ({"length_mm": length_mm} if length_mm is not None else {})
 
 
 def _dialog_values(label: str, *, length_mm: float = 25.0) -> dict[str, object]:
     definition = _definition(length_mm=length_mm)
     return {
         **definition,
+        "options": {},
         "label": label,
         "identity": resolve_fastener(**definition),
     }
@@ -219,17 +220,21 @@ def _human_edit(document, assembly, graph):
 def _focused_turn(surface, registry) -> NativeTurnSnapshot:
     state = registry.definition("state.read")
     assert state is not None
-    fastener = assembly_fastener_capability_definition()
+    fastener_insert = assembly_fastener_capability_definition()
+    fastener_edit = assembly_fastener_edit_capability_definition()
     provider = NativeProviderSurface(
         snapshot=NativeSurfaceSnapshot.from_surface(surface),
         available=True,
         unavailable_reason="",
-        tool_names=("state.read", ASSEMBLY_FASTENER_CAPABILITY_NAME),
+        tool_names=(
+            "state.read",
+            ASSEMBLY_FASTENER_CAPABILITY_NAME,
+            ASSEMBLY_FASTENER_EDIT_CAPABILITY_NAME,
+        ),
         schemas=(
             state.provider_schema(("active", "selection")),
-            fastener.provider_schema(
-                ("insert_standard_fastener", "edit_standard_fastener")
-            ),
+            fastener_insert.provider_schema(("insert_standard_fastener",)),
+            fastener_edit.provider_schema(("edit_standard_fastener",)),
         ),
         human_only_action_ids=("Assembly_ActivateAssembly",),
         missing_definition_names=(),
@@ -247,42 +252,24 @@ def _assembly_summary(response: dict, assembly_name: str) -> dict:
     )
 
 
-def _insert_arguments(summary: dict, *, label: str) -> dict[str, object]:
-    diagnosis = summary["diagnosis_state"]
-    assert diagnosis["available"] is True, diagnosis
+def _insert_arguments(*, label: str) -> dict[str, object]:
     return {
         "operation": "insert_standard_fastener",
-        "assembly": {"object_name": summary["object_name"]},
         "label": label,
         "definition": _definition(),
-        "expected_state_sha256": diagnosis["state_sha256"],
-        "expected_component_count": diagnosis["component_count"],
-        "expected_grounded_count": diagnosis["grounded_count"],
-        "expected_joint_count": diagnosis["joint_count"],
     }
 
 
 def _edit_arguments(
-    summary: dict,
     component: dict,
     *,
     label: str,
 ) -> dict[str, object]:
-    diagnosis = summary["diagnosis_state"]
-    fastener = component["standard_fastener"]
-    assert diagnosis["available"] is True, diagnosis
     return {
         "operation": "edit_standard_fastener",
-        "assembly": {"object_name": summary["object_name"]},
         "occurrence": {"object_name": component["object_name"]},
-        "definition_source": dict(fastener["source"]),
         "label": label,
         "definition": _definition(length_mm=30.0),
-        "expected_fastener_state_sha256": fastener["state_sha256"],
-        "expected_state_sha256": diagnosis["state_sha256"],
-        "expected_component_count": diagnosis["component_count"],
-        "expected_grounded_count": diagnosis["grounded_count"],
-        "expected_joint_count": diagnosis["joint_count"],
     }
 
 
@@ -338,32 +325,30 @@ def _run() -> None:
         registry = build_native_capability_registry()
         fastener_definition = registry.definition(ASSEMBLY_FASTENER_CAPABILITY_NAME)
         assert fastener_definition is not None
-        variant = next(
-            value
-            for value in fastener_definition.variants
-            if value.operation == "insert_standard_fastener"
-        )
+        variant = fastener_definition.variants[0]
         assert variant.action_ids == frozenset({"VibeCAD_InsertStandardFastener"})
         assert variant.surface_ids == frozenset({"assemble"})
-        edit_variant = next(
-            value
-            for value in fastener_definition.variants
-            if value.operation == "edit_standard_fastener"
+        fastener_edit_definition = registry.definition(
+            ASSEMBLY_FASTENER_EDIT_CAPABILITY_NAME
         )
+        assert fastener_edit_definition is not None
+        edit_variant = fastener_edit_definition.variants[0]
         assert edit_variant.action_ids == frozenset({"VibeCAD_EditStandardFastener"})
         assert edit_variant.surface_ids == frozenset({"assemble"})
         assert registry.implementation(ASSEMBLY_FASTENER_CAPABILITY_NAME) is not None
+        assert (
+            registry.implementation(ASSEMBLY_FASTENER_EDIT_CAPABILITY_NAME)
+            is not None
+        )
         production = resolve_native_provider_surface(surface, registry)
         assert production.available is True, production.summary()
-        assert ASSEMBLY_FASTENER_CAPABILITY_NAME not in (
-            production.missing_definition_names
-        )
-        assert ASSEMBLY_FASTENER_CAPABILITY_NAME not in (
-            production.missing_implementation_names
-        )
-        assert ASSEMBLY_FASTENER_CAPABILITY_NAME not in (
-            production.incomplete_definition_names
-        )
+        for capability_name in (
+            ASSEMBLY_FASTENER_CAPABILITY_NAME,
+            ASSEMBLY_FASTENER_EDIT_CAPABILITY_NAME,
+        ):
+            assert capability_name not in production.missing_definition_names
+            assert capability_name not in production.missing_implementation_names
+            assert capability_name not in production.incomplete_definition_names
 
         service = get_service()
         service.select_modeling_engine("native")
@@ -385,15 +370,19 @@ def _run() -> None:
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
         turn = _focused_turn(surface, registry)
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+
+        def new_dispatcher() -> NativeTurnDispatcher:
+            return NativeTurnDispatcher(
+                document=document,
+                state=state,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = new_dispatcher()
         mdi_area = main_window.findChild(QtWidgets.QMdiArea)
         assert mdi_area is not None
         call_number = 0
@@ -407,8 +396,13 @@ def _run() -> None:
                 (entry.Object, tuple(entry.SubElementNames))
                 for entry in Gui.Selection.getSelectionEx("", 0)
             )
+            capability_name = (
+                ASSEMBLY_FASTENER_EDIT_CAPABILITY_NAME
+                if arguments.get("operation") == "edit_standard_fastener"
+                else ASSEMBLY_FASTENER_CAPABILITY_NAME
+            )
             result = dispatcher.call(
-                ASSEMBLY_FASTENER_CAPABILITY_NAME,
+                capability_name,
                 json.dumps(arguments, separators=(",", ":")),
                 call_id or f"assembly-fastener-call-{call_number}",
             )
@@ -437,9 +431,7 @@ def _run() -> None:
             "assembly-fastener-state-initial",
         )
         assert initial["ok"] is True, initial
-        summary = _assembly_summary(initial, assembly.Name)
-        arguments = _insert_arguments(summary, label="Native M6 socket bolt")
-        assert arguments["expected_component_count"] == 1
+        arguments = _insert_arguments(label="Native M6 socket bolt")
         before_objects = tuple(document.Objects)
         before_timeline = tuple(document.VibeCADTimeline.Operations)
 
@@ -448,16 +440,6 @@ def _run() -> None:
         assert failure["error_code"] == "NATIVE_ARGUMENTS_INVALID"
         assert tuple(document.Objects) == before_objects
         assert int(document.UndoCount) == 0
-
-        stale_digest = {**arguments, "expected_state_sha256": "0" * 64}
-        failure = call(stale_digest, succeeds=False)
-        assert failure["error_code"] == "NATIVE_ASSEMBLY_FASTENER_FAILED"
-        stale_count = {
-            **arguments,
-            "expected_component_count": arguments["expected_component_count"] + 1,
-        }
-        failure = call(stale_count, succeeds=False)
-        assert failure["error_code"] == "NATIVE_ASSEMBLY_FASTENER_FAILED"
 
         invalid_catalog = {
             **arguments,
@@ -475,6 +457,7 @@ def _run() -> None:
         assert set(result) == {
             "ok",
             "operation",
+            "verified",
             "assembly",
             "occurrence",
             "definition_source",
@@ -483,12 +466,12 @@ def _run() -> None:
             "component_count",
             "grounded_count",
             "joint_count",
-            "assembly_state_sha256",
             "initial_placement_identity",
             "receipt",
             "assistant_undo_available",
         }
         assert result["operation"] == "insert_standard_fastener"
+        assert result["verified"] is True
         assert result["assembly"]["object_name"] == assembly.Name
         assert result["label"] == arguments["label"]
         assert result["component_count"] == 2
@@ -506,7 +489,9 @@ def _run() -> None:
             assembly,
             occurrence,
             label=arguments["label"],
-            canonical_key=result["fastener"]["canonical_key"],
+            canonical_key=resolve_fastener(**arguments["definition"])[
+                "canonical_key"
+            ],
         )
         assert graph.source is source
         assert _graph_contract(graph) == human_contract
@@ -539,15 +524,10 @@ def _run() -> None:
             for value in after_summary["components"]
             if value["object_name"] == occurrence_name
         )
-        assert component["standard_fastener"]["source"] == {"object_name": source_name}
-        assert component["standard_fastener"]["state_sha256"]
         for name, value in result["fastener"].items():
             assert component["standard_fastener"][name] == value
 
-        rollback_arguments = _insert_arguments(
-            after_summary,
-            label="Rolled back M6 socket bolt",
-        )
+        rollback_arguments = _insert_arguments(label="Rolled back M6 socket bolt")
         names_before_rollback = tuple(obj.Name for obj in document.Objects)
         timeline_before_rollback = tuple(document.VibeCADTimeline.Operations)
         original_verifier = runtime_module.verify_inserted_assembly_fastener
@@ -604,6 +584,7 @@ def _run() -> None:
         document.clearUndos()
         assert int(document.UndoCount) == 0
 
+        dispatcher = new_dispatcher()
         before_edit_state = dispatcher.call(
             "state.read",
             '{"operation":"active"}',
@@ -617,7 +598,6 @@ def _run() -> None:
             if value["object_name"] == occurrence_name
         )
         edit_arguments = _edit_arguments(
-            before_edit_summary,
             edit_component,
             label="Native edited M6 socket bolt",
         )
@@ -627,23 +607,6 @@ def _run() -> None:
 
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(human_graph.occurrence)
-        wrong_selection = call(edit_arguments, succeeds=False)
-        assert wrong_selection["error_code"] == "NATIVE_ASSEMBLY_FASTENER_FAILED"
-        Gui.Selection.clearSelection()
-        Gui.Selection.addSelection(occurrence)
-
-        stale_fastener = {
-            **edit_arguments,
-            "expected_fastener_state_sha256": "0" * 64,
-        }
-        failure = call(stale_fastener, succeeds=False)
-        assert failure["error_code"] == "NATIVE_ASSEMBLY_FASTENER_FAILED"
-        wrong_source = {
-            **edit_arguments,
-            "definition_source": {"object_name": human_names[1]},
-        }
-        failure = call(wrong_source, succeeds=False)
-        assert failure["error_code"] == "NATIVE_ASSEMBLY_FASTENER_FAILED"
         incompatible = {
             **edit_arguments,
             "definition": _definition(length_mm=None, standard="ISO4032"),
@@ -656,11 +619,13 @@ def _run() -> None:
         )
         shared_definition.LinkedObject = source
         document.recompute()
+        dispatcher = new_dispatcher()
         failure = call(edit_arguments, succeeds=False)
         assert failure["error_code"] == "NATIVE_ASSEMBLY_FASTENER_FAILED"
         document.removeObject(shared_definition.Name)
         document.recompute()
         document.clearUndos()
+        dispatcher = new_dispatcher()
         assert tuple(obj.Name for obj in document.Objects) == pre_edit_names
         assert tuple(document.VibeCADTimeline.Operations) == pre_edit_timeline
         assert occurrence.Placement.isSame(edited_placement, 1.0e-9)
@@ -696,22 +661,22 @@ def _run() -> None:
         assert set(edited) == {
             "ok",
             "operation",
+            "verified",
             "assembly",
             "occurrence",
             "definition_source",
             "label",
             "fastener",
-            "fastener_state_sha256",
             "solid_count",
             "volume_mm3",
             "component_count",
             "grounded_count",
             "joint_count",
-            "assembly_state_sha256",
             "receipt",
             "assistant_undo_available",
         }
         assert edited["operation"] == "edit_standard_fastener"
+        assert edited["verified"] is True
         assert edited["occurrence"]["object_name"] == occurrence_name
         assert edited["definition_source"]["object_name"] == source_name
         assert edited["label"] == edit_arguments["label"]
@@ -730,7 +695,9 @@ def _run() -> None:
             assembly,
             occurrence,
             label=edit_arguments["label"],
-            canonical_key=edited["fastener"]["canonical_key"],
+            canonical_key=resolve_fastener(**edit_arguments["definition"])[
+                "canonical_key"
+            ],
         )
         assert graph.occurrence.Name == occurrence_name
         assert graph.source.Name == source_name
@@ -767,6 +734,7 @@ def _run() -> None:
         _assert_signature(_shape_signature(graph.source.Shape), human_edit_signature)
         assert occurrence.Placement.isSame(edited_placement, 1.0e-9)
 
+        dispatcher = new_dispatcher()
         after_edit_state = dispatcher.call(
             "state.read",
             '{"operation":"active"}',
@@ -778,10 +746,6 @@ def _run() -> None:
             value
             for value in after_edit_summary["components"]
             if value["object_name"] == occurrence_name
-        )
-        assert (
-            edited_component["standard_fastener"]["state_sha256"]
-            == (edited["fastener_state_sha256"])
         )
         for name, value in edited["fastener"].items():
             assert edited_component["standard_fastener"][name] == value
@@ -844,8 +808,8 @@ def _run() -> None:
         print(
             "VIBECAD_NATIVE_ASSEMBLY_FASTENER_GUI_OK "
             "human_parity=true hidden_definition=true visible_occurrence=true "
-            "exact_history=true edit_in_place=true exact_selected_target=true "
-            "compatible_guard=true shared_definition_guard=true stale_noop=true "
+            "exact_history=true edit_in_place=true explicit_target=true "
+            "selection_preserved=true compatible_guard=true shared_definition_guard=true "
             "invalid_catalog_noop=true "
             "rollback=true idempotent=true undo_redo=true reopen=true snapshot=true "
             "placements_unchanged=true",

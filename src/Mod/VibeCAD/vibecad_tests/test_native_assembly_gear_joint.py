@@ -7,9 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import VibeCADNativeAssemblyJointArguments as joint_arguments
 import VibeCADNativeAssemblyRelationJointRuntime as runtime_module
-from VibeCADNativeActionManifest import classify_native_surface
+import VibeCADNativeAssemblyRotationCoupling as rotation_coupling
 from VibeCADNativeArguments import NativeArgumentError
 from VibeCADNativeAssemblyGearJoint import (
     GearJointSpec,
@@ -21,7 +20,6 @@ from VibeCADNativeAssemblyGearJoint import (
 )
 from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
 from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
-from VibeCADNativeAssemblyJointSchema import assembly_joint_capability_definition
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeTargets import NativeObjectRef
@@ -74,55 +72,6 @@ def _spec(radius1: float = 20.0, radius2: float = 40.0) -> GearJointSpec:
         expected_joint_count=2,
         expected_solve_on_creation=True,
     )
-
-
-def test_gears_schema_and_live_action_mapping_are_exact() -> None:
-    definition = assembly_joint_capability_definition()
-    variant = next(
-        item for item in definition.variants if item.operation == "create_gears"
-    )
-    schema = definition.provider_schema(("create_gears",))["parameters"]["oneOf"][0]
-
-    assert variant.action_ids == frozenset({"Assembly_CreateJointGears"})
-    assert variant.surface_ids == frozenset({"assemble"})
-    assert set(schema["required"]) == {
-        "operation",
-        "assembly",
-        "first_gear_connector",
-        "second_gear_connector",
-        "first_revolute_joint",
-        "second_revolute_joint",
-        "label",
-        "radius1_mm",
-        "radius2_mm",
-        "expected_component_count",
-        "expected_grounded_count",
-        "expected_joint_count",
-        "expected_solve_on_creation",
-    }
-    assert schema["properties"]["radius1_mm"] == {
-        "type": "number",
-        "minimum": 1.0e-7,
-        "maximum": 1_000_000.0,
-    }
-    assert schema["properties"]["radius2_mm"] == {
-        "type": "number",
-        "minimum": 1.0e-7,
-        "maximum": 1_000_000.0,
-    }
-    assert not {
-        "first",
-        "second",
-        "reverse",
-        "angle",
-        "limits",
-        "pitch_radius_mm",
-    } & set(schema["properties"])
-    assert schema["additionalProperties"] is False
-    plan = classify_native_surface(_surface())[0]
-    assert plan.capability_family == ASSEMBLY_JOINT_CAPABILITY_NAME
-    assert plan.operation_variant == "create_gears"
-    assert plan.transaction_behavior == "document"
 
 
 @pytest.mark.parametrize(
@@ -179,7 +128,7 @@ def _dependency_fixture():
     )
     prepared = _Node(
         regular_joints_before=(first_revolute, second_revolute),
-        grounded_joints_before=(),
+        grounded_joints_before=(_Node(ObjectToGround=base),),
         first=_Node(component=first_gear),
         second=_Node(component=second_gear),
     )
@@ -224,7 +173,6 @@ def test_dependencies_require_two_distinct_exact_reused_revolute_frames() -> Non
             second_revolute,
         )
 
-
 def test_dependencies_reject_grounded_or_cross_constrained_gears() -> None:
     (
         _document,
@@ -249,6 +197,66 @@ def test_dependencies_reject_grounded_or_cross_constrained_gears() -> None:
     prepared.grounded_joints_before = ()
     first_revolute.Reference1 = [second_gear, ["Face1", "Face1"]]
     with pytest.raises(NativeAssemblyGearJointError, match="distinct rotating"):
+        _validate_dependencies(
+            prepared,
+            spec,
+            first_revolute,
+            second_revolute,
+        )
+
+
+def test_dependencies_accept_a_revolute_mounted_on_a_moving_support() -> None:
+    (
+        document,
+        _first_gear,
+        _second_gear,
+        first_revolute,
+        second_revolute,
+        prepared,
+        spec,
+    ) = _dependency_fixture()
+    base = first_revolute.Reference1[0]
+    carrier = _Node(Name="Carrier", Document=document)
+    carrier_revolute = _Node(
+        Name="CarrierRevolute",
+        Document=document,
+        JointType="Revolute",
+        Reference1=[base, ["Face1", "Face1"]],
+        Reference2=[carrier, ["Face1", "Face1"]],
+    )
+    first_revolute.Reference1 = [carrier, ["Face1", "Face1"]]
+    prepared.regular_joints_before = (
+        carrier_revolute,
+        first_revolute,
+        second_revolute,
+    )
+    prepared.grounded_joints_before = (_Node(ObjectToGround=base),)
+
+    assert _validate_dependencies(
+        prepared,
+        spec,
+        first_revolute,
+        second_revolute,
+    ) == (2, 2)
+
+
+def test_dependencies_reject_coincident_global_gear_axes(monkeypatch) -> None:
+    (
+        _document,
+        _first_gear,
+        _second_gear,
+        first_revolute,
+        second_revolute,
+        prepared,
+        spec,
+    ) = _dependency_fixture()
+    monkeypatch.setattr(
+        rotation_coupling,
+        "rotation_coupling_axis_separation_mm",
+        lambda _first, _second: 0.0,
+    )
+
+    with pytest.raises(NativeAssemblyGearJointError, match="axes are coincident"):
         _validate_dependencies(
             prepared,
             spec,
@@ -340,55 +348,6 @@ def _arguments() -> dict[str, object]:
         "expected_joint_count": 2,
         "expected_solve_on_creation": True,
     }
-
-
-def test_gear_runtime_routes_complete_exact_spec_before_transaction(
-    monkeypatch,
-) -> None:
-    runtime, state, document = _runtime()
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        joint_arguments,
-        "joint_placement",
-        lambda value, field, _error_type: (field, value),
-    )
-    monkeypatch.setattr(
-        runtime_module,
-        "preflight_gear_joint",
-        lambda target_document, spec: captured.update(
-            preflight_document=target_document,
-            spec=spec,
-        ),
-    )
-
-    def run_immediate(context, **kwargs):
-        captured.update(context=context, **kwargs)
-        return {"routed": True}
-
-    monkeypatch.setattr(runtime_module, "run_immediate_mutation", run_immediate)
-
-    result = runtime.mutate_joint(
-        _arguments(),
-        ticket=state.begin_call(document.Uid, ASSEMBLY_JOINT_CAPABILITY_NAME),
-    )
-
-    assert result == {"routed": True}
-    spec = captured["spec"]
-    assert isinstance(spec, GearJointSpec)
-    assert spec.assembly_ref.object_name == "Assembly"
-    assert spec.first_gear_connector.component_ref.object_name == "GearOne"
-    assert spec.second_gear_connector.component_ref.object_name == "GearTwo"
-    assert spec.first_revolute_joint_ref.object_name == "FirstRevolute"
-    assert spec.second_revolute_joint_ref.object_name == "SecondRevolute"
-    assert spec.label == "External Gear Coupling"
-    assert spec.radius1_mm == 20.0
-    assert spec.radius2_mm == 40.0
-    assert spec.expected_component_count == 3
-    assert spec.expected_grounded_count == 1
-    assert spec.expected_joint_count == 2
-    assert spec.expected_solve_on_creation is True
-    assert captured["preflight_document"] is document
-    assert captured["transaction_name"] == "Create Native Assembly Gears Joint"
 
 
 @pytest.mark.parametrize(

@@ -219,6 +219,35 @@ def test_abort_stabilizes_after_document_rollback() -> None:
     assert (transactions.commits, transactions.aborts) == (0, 1)
 
 
+def test_controlled_domain_postcondition_keeps_its_actionable_message() -> None:
+    state, document, transactions, runner, ticket = _host()
+
+    class _ControlledPostcondition(RuntimeError):
+        def failure(self):
+            return {
+                "error_code": "NATIVE_EXACT_DOMAIN_FAILED",
+                "message": "The requested joint is redundant with Joint004.",
+            }
+
+    def fail_verify(_target, _draft):
+        raise _ControlledPostcondition()
+
+    with pytest.raises(NativeMutationError) as caught:
+        runner.run(
+            ticket=ticket,
+            document=document,
+            transaction_name="Reject exact redundant joint",
+            reauthorize_turn=lambda: None,
+            mutate=lambda target: _successful_mutation(state, target),
+            verify=fail_verify,
+        )
+
+    assert caught.value.error_code == NATIVE_POSTCONDITION_FAILED
+    assert str(caught.value) == "The requested joint is redundant with Joint004."
+    assert document.objects == {}
+    assert (transactions.commits, transactions.aborts) == (0, 1)
+
+
 def test_committed_operation_is_one_exact_undo_and_redo_step() -> None:
     state, document, _transactions, runner, ticket = _host()
     before = document.snapshot()

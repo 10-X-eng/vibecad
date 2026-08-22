@@ -979,6 +979,25 @@ _CAPABILITY_OVERRIDES = {
     "Part_JoinCutout": "model.join",
     "PartDesign_Split": "model.boolean",
     "PartDesign_Separate": "model.structure",
+    "Assembly_CreateAssembly": "assembly.create",
+    "Assembly_InsertLink": "assembly.insert",
+    "Assembly_InsertNewPart": "assembly.new_part",
+    "Assembly_SolveAssembly": "assembly.solve",
+    "Assembly_CreateView": "assembly.exploded_view",
+    "Assembly_CreateSimulation": "assembly.motion_study",
+    "AssemblyContextMakeFlexible": "assembly.rigidity",
+    "AssemblyContextMakeRigid": "assembly.rigidity",
+    "Assembly_ToggleGrounded": "assembly.ground",
+    "Assembly_CreateBom": "assembly.bom",
+    "Assembly_CreateJointDistance": "assembly.relation",
+    "Assembly_CreateJointParallel": "assembly.relation",
+    "Assembly_CreateJointPerpendicular": "assembly.relation",
+    "Assembly_CreateJointAngle": "assembly.relation",
+    "Assembly_CreateJointRackPinion": "assembly.rack_pinion",
+    "Assembly_CreateJointScrew": "assembly.screw",
+    "Assembly_CreateJointBelt": "assembly.belt",
+    "Assembly_CreateJointGears": "assembly.gears",
+    "Assembly_SelectJointsOfComponent": "assembly.component_joints",
     "FEM_Analysis": "analyze.model",
     "FEM_MaterialSolid": "analyze.model",
     "FEM_MaterialFluid": "analyze.model",
@@ -1216,6 +1235,9 @@ _CAPABILITY_OVERRIDES = {
     "TechDraw_ShowAll": "drawing.presentation",
     "VibeCAD_PublishInterface": "component.interface",
     "Robot_Simulate": "robot.motion",
+    "Robot_Edge2Trac": "robot.edge_path",
+    "Robot_TrajectoryDressUp": "robot.set_path_motion",
+    "Robot_TrajectoryCompound": "robot.path_sequence",
 }
 
 _CAPABILITY_OVERRIDES.update(
@@ -1400,6 +1422,7 @@ _CAPABILITY_OVERRIDES.update(
 )
 
 _OPERATION_VARIANT_OVERRIDES = {
+    "VibeCADAero_VLM": "vlm",
     "VibeCADAero_ExportJSBSim": "export_jsbsim",
     "VibeCADAero_ProposeRepairs": "propose_repairs",
     "VibeCADAero_ApplyRepairs": "apply_repairs",
@@ -1463,19 +1486,21 @@ _OPERATION_VARIANT_OVERRIDES = {
     "CAM_ToolBitDock": "create_controller",
     "Assembly_InsertLink": "insert_component",
     "Assembly_InsertNewPart": "create_part",
-    "Assembly_CreateJointBall": "create_ball",
-    "Assembly_CreateJointBelt": "create_belt",
-    "Assembly_CreateJointCylindrical": "create_cylindrical",
-    "Assembly_CreateJointAngle": "create_angle",
-    "Assembly_CreateJointDistance": "create_distance",
-    "Assembly_CreateJointFixed": "create_fixed",
-    "Assembly_CreateJointGears": "create_gears",
-    "Assembly_CreateJointParallel": "create_parallel",
-    "Assembly_CreateJointPerpendicular": "create_perpendicular",
-    "Assembly_CreateJointRackPinion": "create_rack_pinion",
-    "Assembly_CreateJointRevolute": "create_revolute",
-    "Assembly_CreateJointScrew": "create_screw",
-    "Assembly_CreateJointSlider": "create_slider",
+    "Assembly_CreateBom": "create",
+    "Assembly_CreateJointBall": "create",
+    "Assembly_CreateJointBelt": "belt",
+    "Assembly_CreateJointCylindrical": "create",
+    "Assembly_CreateJointAngle": "create",
+    "Assembly_CreateJointDistance": "create",
+    "Assembly_CreateJointFixed": "create",
+    "Assembly_CreateJointGears": "gears",
+    "Assembly_CreateJointParallel": "create",
+    "Assembly_CreateJointPerpendicular": "create",
+    "Assembly_CreateJointRackPinion": "rack_pinion",
+    "Assembly_CreateJointRevolute": "create",
+    "Assembly_CreateJointScrew": "screw",
+    "Assembly_CreateJointSlider": "create",
+    "Assembly_SelectJointsOfComponent": "read",
     "Assembly_ToggleGrounded": "set_grounded",
     "FEM_Analysis": "create_analysis",
     "FEM_MaterialSolid": "create_solid_material",
@@ -1757,6 +1782,9 @@ _OPERATION_VARIANT_OVERRIDES = {
     "TechDraw_RedrawPage": "redraw_page",
     "Robot_InsertWaypoint": "insert_robot_waypoint",
     "Robot_InsertWaypointPreselect": "insert_position_waypoint",
+    "Robot_Edge2Trac": "create_path",
+    "Robot_TrajectoryDressUp": "set_motion",
+    "Robot_TrajectoryCompound": "create_sequence",
     "TechDraw_ExportPageDXF": "dxf",
     "TechDraw_ExportPageSVG": "svg",
 }
@@ -2049,6 +2077,13 @@ _EXACT_TARGET_TYPE_OVERRIDES = {
     "Sketcher_MirrorSketch": "ExactReusableSketchSetAndMirrorReference",
 }
 
+_SURFACE_CAPABILITY_OVERRIDES = {
+    ("model", "VibeCAD_InsertStandardFastener"): "model.fastener",
+    ("model", "VibeCAD_EditStandardFastener"): "model.fastener",
+    ("assemble", "VibeCAD_InsertStandardFastener"): "assembly.fastener",
+    ("assemble", "VibeCAD_EditStandardFastener"): "assembly.fastener_edit",
+}
+
 _GROUP_CAPABILITY_FAMILIES = {
     ("model", "Structure"): "model.structure",
     ("model", "Solids"): "model.feature",
@@ -2067,7 +2102,7 @@ _GROUP_CAPABILITY_FAMILIES = {
     ("sketch.edit", "Modify"): "sketch.edit",
     ("sketch.edit", "B-Spline"): "sketch.edit",
     ("sketch.edit", "Visual"): "sketch.presentation",
-    ("assemble", "Assembly"): "assembly.structure",
+    ("assemble", "Assembly"): "assembly.create",
     ("assemble", "Joints"): "assembly.joint",
     ("assemble", "Diagnose"): "assembly.diagnose",
     ("assemble", "Fasteners"): "assembly.fastener",
@@ -2236,6 +2271,9 @@ def _capability_family(
     group_label: str,
     command_id: str,
 ) -> str:
+    surface_override = _SURFACE_CAPABILITY_OVERRIDES.get((surface_id, command_id))
+    if surface_override:
+        return surface_override
     override = _CAPABILITY_OVERRIDES.get(command_id)
     if override:
         return override

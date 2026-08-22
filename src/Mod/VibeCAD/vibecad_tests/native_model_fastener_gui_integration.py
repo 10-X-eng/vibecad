@@ -116,7 +116,6 @@ def _constructor(
         "length_mm": length_mm,
         "model_thread": model_thread,
         "left_handed": False,
-        "options": {},
     }
 
 
@@ -125,6 +124,7 @@ def _human_insert(document):
     identity = resolve_fastener(**constructor)
     values = {
         **constructor,
+        "options": {},
         "label": "Human M3 socket bolt",
         "identity": identity,
     }
@@ -156,6 +156,7 @@ def _human_edit(document, graph):
     identity = resolve_fastener(**constructor)
     values = {
         **constructor,
+        "options": {},
         "label": "Human edited M3 socket bolt",
         "identity": identity,
     }
@@ -272,7 +273,7 @@ def _assert_native_result(document, response, arguments, *, mutation: str):
         "length_mm": identity["length_mm"],
         "model_thread": identity["model_thread"],
         "left_handed": identity["left_handed"],
-        "options": identity["options"],
+        "catalog_option_overrides": identity["options"],
     }
     assert response["solid_count"] == 1
     assert _close(response["volume_mm3"], body.Shape.Volume)
@@ -299,7 +300,13 @@ def _assert_native_result(document, response, arguments, *, mutation: str):
     )
     assert current["operation"]["object_name"] == operation.Name
     assert current["canonical_key"] == identity["canonical_key"]
-    assert current["definition"] == arguments["definition"]
+    assert current["definition"] == {
+        **arguments["definition"],
+        "catalog_option_overrides": arguments["definition"].get(
+            "catalog_option_overrides",
+            {},
+        ),
+    }
     return graph
 
 

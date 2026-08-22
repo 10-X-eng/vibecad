@@ -7,10 +7,11 @@ from __future__ import annotations
 from functools import partial
 from typing import Any, Mapping
 
-from VibeCADNativeArguments import strict_variant_arguments
+from VibeCADNativeArguments import NativeArgumentError, strict_variant_arguments
 from VibeCADNativeComponentInterface import (
     prepare_component_interface,
     publish_component_interface,
+    read_component_interface_targets,
     verify_component_interface,
 )
 from VibeCADNativeImmediate import run_immediate_mutation
@@ -28,6 +29,20 @@ class NativeComponentInterfaceRuntime:
         if not isinstance(context, NativeRuntimeContext):
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
+
+    def interfaces(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(arguments, Mapping):
+            raise NativeArgumentError("Native capability arguments must be an object.")
+        values = dict(arguments)
+        operation = values.pop("operation", "find")
+        if operation != "find" or values:
+            raise NativeArgumentError(
+                "Component interface discovery takes no arguments."
+            )
+        return read_component_interface_targets(
+            self._context.document,
+            guard=self._context.guard,
+        )
 
     def publish_interface(
         self,

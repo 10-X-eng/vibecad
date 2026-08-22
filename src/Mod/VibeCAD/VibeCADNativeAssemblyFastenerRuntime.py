@@ -19,6 +19,7 @@ from VibeCADNativeAssemblyFastener import (
     verify_edited_assembly_fastener,
     verify_inserted_assembly_fastener,
 )
+from VibeCADNativeAssemblyState import read_active_assembly
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
@@ -43,29 +44,10 @@ class NativeAssemblyFastenerRuntime:
             arguments,
             {
                 "insert_standard_fastener": frozenset(
-                    {
-                        "assembly",
-                        "label",
-                        "definition",
-                        "expected_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    }
+                    {"label", "definition"}
                 ),
                 "edit_standard_fastener": frozenset(
-                    {
-                        "assembly",
-                        "occurrence",
-                        "definition_source",
-                        "label",
-                        "definition",
-                        "expected_fastener_state_sha256",
-                        "expected_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    }
+                    {"occurrence", "label", "definition"}
                 ),
             },
         )
@@ -86,24 +68,22 @@ class NativeAssemblyFastenerRuntime:
                     f"{field}.object_name must identify one exact document object."
                 ) from exc
 
-        assembly_ref = exact_reference("assembly")
         self._context.guard()
+        assembly = read_active_assembly(self._context.document)
+        if assembly is None:
+            raise NativeAssemblyFastenerError("No Assembly is active.")
+        assembly_ref = NativeObjectRef(
+            self._context.document_uid,
+            str(assembly.Name),
+        )
         if operation == "edit_standard_fastener":
             prepared_edit = preflight_edit_assembly_fastener(
                 self._context.document,
                 AssemblyFastenerEditSpec(
                     assembly_ref=assembly_ref,
                     occurrence_ref=exact_reference("occurrence"),
-                    definition_source_ref=exact_reference("definition_source"),
                     label=values["label"],
                     definition=values["definition"],
-                    expected_fastener_state_sha256=values[
-                        "expected_fastener_state_sha256"
-                    ],
-                    expected_state_sha256=values["expected_state_sha256"],
-                    expected_component_count=values["expected_component_count"],
-                    expected_grounded_count=values["expected_grounded_count"],
-                    expected_joint_count=values["expected_joint_count"],
                 ),
             )
             return run_immediate_mutation(
@@ -121,10 +101,6 @@ class NativeAssemblyFastenerRuntime:
             assembly_ref=assembly_ref,
             label=values["label"],
             definition=values["definition"],
-            expected_state_sha256=values["expected_state_sha256"],
-            expected_component_count=values["expected_component_count"],
-            expected_grounded_count=values["expected_grounded_count"],
-            expected_joint_count=values["expected_joint_count"],
         )
         prepared = preflight_insert_assembly_fastener(
             self._context.document,

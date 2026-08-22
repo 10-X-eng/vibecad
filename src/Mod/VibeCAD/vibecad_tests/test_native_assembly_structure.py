@@ -21,6 +21,13 @@ from VibeCADNativeAssemblyStructure import (
     verify_created_assembly,
 )
 from VibeCADNativeAssemblyStructureSchema import (
+    assembly_create_capability_definition,
+    assembly_exploded_view_capability_definition,
+    assembly_insert_capability_definition,
+    assembly_motion_study_capability_definition,
+    assembly_new_part_capability_definition,
+    assembly_rigidity_capability_definition,
+    assembly_solve_capability_definition,
     assembly_structure_capability_definition,
 )
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -110,7 +117,7 @@ def _assembly(document: _Document, *, parent: _Object | None = None) -> _Object:
     return result
 
 
-def test_structure_schema_exactly_covers_the_live_create_action() -> None:
+def test_structure_runtime_is_advertised_as_focused_tools() -> None:
     definition = assembly_structure_capability_definition()
     schema = definition.provider_schema(("create_assembly",))["parameters"][
         "oneOf"
@@ -122,32 +129,39 @@ def test_structure_schema_exactly_covers_the_live_create_action() -> None:
         {"Assembly_CreateAssembly"}
     )
     assert definition.variants[0].surface_ids == frozenset({"assemble"})
-    assert set(schema["required"]) == {
-        "operation",
-        "label",
-        "parent_assembly",
-        "expected_assembly_count",
-    }
+    assert set(schema["required"]) == {"label"}
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["parent_assembly"]["oneOf"][1] == {
-        "type": "null"
-    }
+    assert schema["properties"]["parent_assembly"]["type"] == "object"
+    assert not any(
+        name.startswith("expected_") for name in schema["properties"]
+    )
 
     registry = build_native_capability_registry()
-    registered = registry.definition("assembly.structure")
-    assert registered is not None
-    assert tuple(variant.operation for variant in registered.variants) == (
-        "create_assembly",
-        "insert_component",
-        "create_part",
-        "make_flexible",
-        "make_rigid",
-        "solve_assembly",
-        "create_view",
-        "create_simulation",
-        "create_bom",
-    )
-    assert registry.implementation("assembly.structure") is not None
+    assert registry.definition("assembly.structure") is None
+    focused = {
+        item.name: tuple(variant.operation for variant in item.variants)
+        for item in (
+            assembly_create_capability_definition(),
+            assembly_insert_capability_definition(),
+            assembly_new_part_capability_definition(),
+            assembly_rigidity_capability_definition(),
+            assembly_solve_capability_definition(),
+            assembly_exploded_view_capability_definition(),
+            assembly_motion_study_capability_definition(),
+        )
+    }
+    assert focused == {
+        "assembly.create": ("create_assembly",),
+        "assembly.insert": ("insert_component",),
+        "assembly.new_part": ("create_part",),
+        "assembly.rigidity": ("make_flexible", "make_rigid"),
+        "assembly.solve": ("solve_assembly",),
+        "assembly.exploded_view": ("create_view",),
+        "assembly.motion_study": ("create_simulation",),
+    }
+    for name in focused:
+        assert registry.definition(name) is not None
+        assert registry.implementation(name) is not None
 
     conversion_schemas = definition.provider_schema(
         ("make_flexible", "make_rigid")
@@ -161,11 +175,11 @@ def test_structure_schema_exactly_covers_the_live_create_action() -> None:
         "operation",
         "assembly",
         "link",
-        "expected_state_sha256",
-        "expected_component_count",
-        "expected_grounded_count",
-        "expected_joint_count",
     }
+    assert not any(
+        name.startswith("expected_")
+        for name in conversion_schemas["properties"]
+    )
     assert conversion_schemas["additionalProperties"] is False
     variants = {variant.operation: variant for variant in definition.variants}
     assert variants["make_flexible"].action_ids == frozenset(
@@ -177,6 +191,14 @@ def test_structure_schema_exactly_covers_the_live_create_action() -> None:
     assert variants["make_flexible"].surface_ids == frozenset({"assemble"})
     assert variants["make_rigid"].surface_ids == frozenset({"assemble"})
 
+    insert_schema = definition.provider_schema(("insert_component",))["parameters"][
+        "oneOf"
+    ][0]
+    assert set(insert_schema["required"]) == {
+        "assembly",
+        "source",
+    }
+    assert "rigid" not in insert_schema["properties"]
 
 def test_active_assembly_read_is_exact_and_nonmutating() -> None:
     document = _Document()

@@ -150,6 +150,22 @@ def test_first_prompt_context_json_includes_toplevel_aero() -> None:
     assert "human_steering" not in json.dumps(payload)
 
 
+def test_first_prompt_omits_unavailable_aero_state() -> None:
+    context = {
+        **_active_state(),
+        "aero": {
+            "available": False,
+            "evidence_state": "evidence_waiting",
+            "claim_ceiling": "not_airworthy",
+            "not_airworthy": True,
+        },
+    }
+
+    state = session._provider_state_payload(context)
+
+    assert "aero" not in state
+
+
 def test_turn_history_is_supplied_separately_from_model_state_packet() -> None:
     prior_user = "What hole diameter did I specify?"
     prior_assistant = "You specified a 6 mm through-hole."

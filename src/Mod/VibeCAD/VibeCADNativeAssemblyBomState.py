@@ -544,11 +544,34 @@ def _bom_graph(
         raise NativeAssemblyBomStateError(
             "The Assembly bill-of-materials group is not one exact live object."
         )
-    boms = tuple(getattr(group, "Group", ()) or ())
+    members = tuple(getattr(group, "Group", ()) or ())
+    boms = tuple(
+        member
+        for member in members
+        if str(getattr(member, "TypeId", "") or "") == "Assembly::BomObject"
+    )
+    resources = tuple(member for member in members if member not in boms)
     if len(boms) > MAX_BOM_OPERATIONS:
         raise NativeAssemblyBomStateError(
             f"The Assembly exceeds the {MAX_BOM_OPERATIONS}-BOM Native bound."
         )
+    if len(resources) > MAX_BOM_OPERATIONS:
+        raise NativeAssemblyBomStateError(
+            f"The Assembly exceeds the {MAX_BOM_OPERATIONS}-resource Native BOM bound."
+        )
+    resources_by_bom = {bom: [] for bom in boms}
+    for resource in resources:
+        owner = getattr(resource, "VibeCADTimelineOwner", None)
+        if (
+            not _live_object(resource)
+            or not _timeline_active(resource)
+            or str(getattr(resource, "VibeCADTimelineRole", "") or "") != "resource"
+            or owner not in resources_by_bom
+        ):
+            raise NativeAssemblyBomStateError(
+                "The bill-of-materials group contains a stale or invalid resource."
+            )
+        resources_by_bom[owner].append(resource)
     records = []
     remaining_cells = MAX_BOM_CELLS
     for bom in boms:
@@ -586,6 +609,10 @@ def _bom_graph(
                     "only_parts": bool(bom.onlyParts),
                     "auto_generate": bool(bom.autoGenerate),
                 },
+                "resources": [
+                    _identity_record(resource)
+                    for resource in resources_by_bom[bom]
+                ],
                 "table": table,
             }
         )

@@ -13,6 +13,10 @@ from VibeCADNativeDesignSchema import object_reference_schema, parameters_schema
 from vibescript_assembly_api import JOINT_TYPES
 
 
+COMPONENT_INTERFACE_CAPABILITY_NAME = "component.interface"
+COMPONENT_INTERFACES_CAPABILITY_NAME = "component.interfaces"
+
+
 def component_interface_capability_definition() -> NativeCapabilityDefinition:
     fields = {
         "component": object_reference_schema(),
@@ -39,8 +43,8 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
         },
     }
     return NativeCapabilityDefinition(
-        name="component.interface",
-        description="Publish an LCS.",
+        name=COMPONENT_INTERFACE_CAPABILITY_NAME,
+        description="Publish an LCS returned by component.interfaces.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
@@ -57,9 +61,41 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
     )
 
 
+def component_interfaces_capability_definition() -> NativeCapabilityDefinition:
+    return NativeCapabilityDefinition(
+        name=COMPONENT_INTERFACES_CAPABILITY_NAME,
+        description="Find LCS references and published interfaces.",
+        primary_classification="read",
+        variants=(
+            NativeCapabilityVariant(
+                operation="find",
+                description="Find publishable component LCS resources.",
+                action_ids=frozenset({"VibeCAD_PublishInterface"}),
+                surface_ids=frozenset({"model", "assemble"}),
+                exact_target_type="Component LocalCoordinateSystem resources",
+                transaction_behavior="none",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            ),
+        ),
+    )
+
+
 def register_component_interface_capability_definition(
     registry: NativeCapabilityRegistry,
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
     registry.register_definition(component_interface_capability_definition())
+
+
+def register_component_interfaces_capability_definition(
+    registry: NativeCapabilityRegistry,
+) -> None:
+    if not isinstance(registry, NativeCapabilityRegistry):
+        raise TypeError("registry must be a NativeCapabilityRegistry")
+    registry.register_shared_definition(component_interfaces_capability_definition())

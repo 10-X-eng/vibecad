@@ -509,6 +509,11 @@ class VibeCADService:
                 self._write_active_authoring_metadata(selected)
                 self._pending_authoring_documents().discard(uid)
                 return {"mode": current, "persistence": "session"}
+            embedded = str(
+                previous_metadata.get(AUTHORING_MODE_META_KEY) or ""
+            ).strip()
+            if embedded != selected:
+                self._write_active_authoring_metadata(selected)
             return {"mode": current, "persistence": "unchanged"}
         self.ensure_native_document_state(uid)
         restore_error = self._native_state_restore_errors.get(uid)
@@ -711,6 +716,19 @@ class VibeCADService:
         uid = self._object_document_uid(obj)
         if not uid:
             return None
+        if str(property_name or "") in {"Placement", "LinkPlacement"}:
+            try:
+                from VibeCADNativeAssemblyPlayback import (
+                    is_native_assembly_playback_presentation_change,
+                )
+
+                if is_native_assembly_playback_presentation_change(
+                    obj,
+                    property_name,
+                ):
+                    return self._native_document_states.current_revision(uid)
+            except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError):
+                pass
         previous_revision = self._native_document_states.current_revision(uid)
         revision = self._native_document_states.note_object_property_change(
             uid,

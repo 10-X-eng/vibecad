@@ -131,30 +131,27 @@ def test_schema_maps_only_the_live_view_action_to_a_closed_bounded_graph() -> No
     assert variant.surface_ids == frozenset({"assemble"})
     assert definition.primary_classification == "mutation"
     assert variant.transaction_behavior == "document"
-    assert set(schema["required"]) == {
-        "operation",
-        "assembly",
-        "label",
-        "parts_as_single_solid",
-        "moves",
-        "expected_view_state_sha256",
-        "expected_component_count",
-        "expected_target_count",
-        "expected_view_count",
-    }
+    assert set(schema["required"]) == {"assembly", "label", "moves"}
+    assert schema["properties"]["parts_as_single_solid"]["default"] is False
+    assert not any(name.startswith("expected_") for name in schema["properties"])
     assert schema["additionalProperties"] is False
     moves = schema["properties"]["moves"]
     assert moves["minItems"] == 1
     assert moves["maxItems"] == 256
     branches = moves["items"]["oneOf"]
     assert {branch["properties"]["kind"]["const"] for branch in branches} == {
-        "normal",
+        "transform",
         "radial",
     }
     assert all(branch["additionalProperties"] is False for branch in branches)
-    assert all(
-        branch["properties"]["targets"]["maxItems"] == 256 for branch in branches
+    assert all(branch["properties"]["component"]["type"] == "object" for branch in branches)
+    transform = next(
+        branch
+        for branch in branches
+        if branch["properties"]["kind"]["const"] == "transform"
     )
+    assert set(transform["required"]) == {"kind", "component", "translation_mm"}
+    assert "targets" not in transform["properties"]
 
 
 def test_runtime_parser_preserves_order_and_rejects_ambiguous_moves(
@@ -171,41 +168,41 @@ def test_runtime_parser_preserves_order_and_rejects_ambiguous_moves(
         "assembly-view-document",
         [
             {
-                "kind": "normal",
-                "targets": [{"object_name": "First"}],
-                "transform": {"exact": "transform"},
+                "kind": "transform",
+                "component": {"object_name": "First"},
+                "translation_mm": {"x": 4.0, "y": 0.0, "z": 0.0},
             },
             {
                 "kind": "radial",
-                "targets": [
-                    {"object_name": "First"},
-                    {"object_name": "Second"},
-                ],
+                "component": {"object_name": "Second"},
                 "radial_distance_mm": 12.5,
             },
         ],
     )
 
     assert [move.kind for move in moves] == ["normal", "radial"]
-    assert [target.object_name for target in moves[1].target_refs] == [
-        "First",
-        "Second",
-    ]
+    assert [target.object_name for target in moves[1].target_refs] == ["Second"]
     assert moves[0].movement_transform.x == 4.0
     assert moves[1].radial_distance_mm == 12.5
-    assert transforms == [{"exact": "transform"}]
+    assert transforms == [
+        {
+            "origin_mm": {"x": 4.0, "y": 0.0, "z": 0.0},
+            "rotation": {
+                "axis": {"x": 0.0, "y": 0.0, "z": 1.0},
+                "angle_degrees": 0.0,
+            },
+        }
+    ]
 
-    with pytest.raises(NativeAssemblyViewError, match="duplicate"):
+    with pytest.raises(NativeAssemblyViewError, match="exactly one"):
         runtime_module._view_moves(
             "assembly-view-document",
             [
                 {
                     "kind": "radial",
-                    "targets": [
-                        {"object_name": "First"},
-                        {"object_name": "First"},
-                    ],
+                    "component": {"object_name": "First"},
                     "radial_distance_mm": 1.0,
+                    "translation_mm": {"x": 1.0, "y": 0.0, "z": 0.0},
                 }
             ],
         )
@@ -214,9 +211,9 @@ def test_runtime_parser_preserves_order_and_rejects_ambiguous_moves(
             "assembly-view-document",
             [
                 {
-                    "kind": "normal",
-                    "targets": [{"object_name": "First"}],
-                    "transform": {},
+                    "kind": "transform",
+                    "component": {"object_name": "First"},
+                    "translation_mm": {"x": 1.0, "y": 0.0, "z": 0.0},
                     "radial_distance_mm": 2.0,
                 }
             ],
@@ -227,7 +224,7 @@ def test_runtime_parser_preserves_order_and_rejects_ambiguous_moves(
             [
                 {
                     "kind": "radial",
-                    "targets": [{"object_name": "First"}],
+                    "component": {"object_name": "First"},
                     "radial_distance_mm": 0.0,
                 }
             ],
