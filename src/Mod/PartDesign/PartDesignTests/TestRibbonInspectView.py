@@ -1005,6 +1005,47 @@ class TestRibbonInspectView(unittest.TestCase):
         self.assertEqual(self._document_snapshot(), before_document)
         self.assertEqual(self._selection_snapshot(), before_selection)
 
+    def _mass_object_list(self):
+        return Gui.getMainWindow().findChild(QtGui.QListWidget, "objectList")
+
+    def test_mass_properties_adds_body_and_face_picks_to_objects_to_measure(self):
+        # PartDesign displays the Tip through the Body. The Tip feature's
+        # Visibility property can stay false while the solid is on screen.
+        if self.tip.ViewObject is not None:
+            self.tip.ViewObject.Visibility = False
+        if self.body.ViewObject is not None:
+            self.body.ViewObject.Visibility = True
+        Gui.Selection.clearSelection()
+        self._process_events()
+
+        Gui.runCommand("Std_MassProperties")
+        self._process_events(250)
+        self.assertTrue(Gui.Control.activeDialog())
+        object_list = self._mass_object_list()
+        self.assertIsNotNone(object_list)
+        self.assertEqual(object_list.count(), 0)
+
+        Gui.Selection.addSelection(self.body)
+        self._process_events(250)
+        self.assertGreater(
+            object_list.count(),
+            0,
+            "selecting a Body must fill Objects to measure",
+        )
+
+        Gui.Selection.clearSelection()
+        self._process_events(150)
+        self.assertEqual(object_list.count(), 0)
+
+        Gui.Selection.addSelection(self.body, "Face1")
+        self._process_events(250)
+        self.assertGreater(
+            object_list.count(),
+            0,
+            "selecting a Face of a Body must fill Objects to measure",
+        )
+        self._close_task("Std_MassProperties body and face picks")
+
     def test_mass_properties_preview_is_locked_and_save_is_durable(self):
         Gui.Selection.addSelection(self.body)
         self._process_events()
