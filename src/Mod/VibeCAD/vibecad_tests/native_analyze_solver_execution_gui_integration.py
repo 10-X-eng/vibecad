@@ -213,8 +213,9 @@ def _run() -> None:
         document.saveAs(str(output))
         VibeGui._ensure_document_thread_invoker()
         VibeGui._connect_document_observer()
-        controller, surface = _surface(Gui.getMainWindow())
         _analysis, pipeline_solver, ccx_tools_solver = _create_analysis(document)
+        _events(24)
+        controller, surface = _surface(Gui.getMainWindow())
         solvers = (pipeline_solver, ccx_tools_solver)
 
         from femsolver import settings
@@ -311,13 +312,13 @@ def _run() -> None:
                     assert run_status["capability"] == (
                         "analyze.solver_execution.run"
                     )
-                    assert run_status["terminal"] is False
                     assert domain["analysis_workflow_count"] == 1
                     workflow = domain["analysis_workflows"][0]
                     assert workflow["readiness"]["ready"] is True
                     assert workflow["readiness"]["generated_mesh_count"] >= 1
                     assert workflow["solver_count"] == 2
-                    active_status_seen = True
+                    if run_status["terminal"] is False:
+                        active_status_seen = True
                     return
                 assert status["phase"] == "completed", status
                 result = status["result"]

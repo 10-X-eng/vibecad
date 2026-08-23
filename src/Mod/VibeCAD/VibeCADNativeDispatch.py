@@ -320,6 +320,19 @@ class NativeTurnDispatcher:
     def _guard_revision(self) -> None:
         current = self._state.current_revision(self._document_uid)
         if current != self._expected_revision:
+            for record in self._calls.values():
+                ticket = record.ticket
+                if ticket is None:
+                    continue
+                receipt = self._state.completed_mutation_receipt(ticket)
+                if (
+                    receipt is not None
+                    and receipt.revision_before == self._expected_revision
+                ):
+                    self._expected_revision = receipt.revision_after
+                    if self._expected_revision == current:
+                        break
+        if current != self._expected_revision:
             raise NativeDispatchError(
                 "NATIVE_REVISION_CONFLICT",
                 "The document changed outside this Native turn. Start a new "

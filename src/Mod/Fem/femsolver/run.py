@@ -142,11 +142,11 @@ def run_fem_solver(solver, working_dir=None, blocking=False):
     if membertools._is_suppressed(solver):
         raise ValueError("A suppressed FEM solver cannot be run")
 
-    if solver.Proxy.Type == "Fem::SolverOpenFOAM":
-        from VibeCADAnalyzeSolverGui import run_openfoam_solver
+    if solver.Proxy.Type in {"Fem::SolverElmer", "Fem::SolverOpenFOAM"}:
+        from VibeCADAnalyzeSolverGui import run_solver_detached
 
         try:
-            return run_openfoam_solver(solver)
+            return run_solver_detached(solver)
         except Exception as exc:
             _report_solver_start_failure(str(exc))
             return None

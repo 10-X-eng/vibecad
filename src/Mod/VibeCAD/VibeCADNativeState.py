@@ -634,6 +634,28 @@ class NativeDocumentStateStore:
         )
         return self.complete_prepared_mutation(prepared)
 
+    def completed_mutation_receipt(
+        self,
+        ticket: NativeCallTicket,
+    ) -> NativeOperationReceipt | None:
+        """Return the durable receipt for one exact completed call ticket."""
+
+        if not isinstance(ticket, NativeCallTicket):
+            raise TypeError("ticket must be a NativeCallTicket")
+        with self._lock:
+            record = self._records.setdefault(ticket.document_uid, _DocumentRecord())
+            receipt = record.receipts.get(ticket.idempotency_token)
+            if receipt is None:
+                return None
+            if (
+                receipt.capability_name != ticket.capability_name
+                or receipt.revision_before != ticket.expected_revision
+            ):
+                raise NativeStateError(
+                    "A completed Native receipt does not match its call ticket."
+                )
+            return receipt
+
     def snapshot(self, document_uid: str) -> dict[str, Any]:
         uid = _required_text(document_uid, "document UID")
         with self._lock:

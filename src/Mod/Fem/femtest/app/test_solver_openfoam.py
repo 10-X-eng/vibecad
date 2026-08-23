@@ -77,15 +77,19 @@ class TestOpenFOAMSolver(unittest.TestCase):
         self.assertIn("type            fixedValue;", files["0/p"])
         self.assertIn("value           uniform 82714.2857142857;", files["0/p"])
 
-    def test_standard_run_dispatches_openfoam_to_shared_gui_runner(self):
+    def test_standard_run_dispatches_detached_solvers_to_shared_gui_runner(self):
         from femsolver.run import run_fem_solver
 
         analysis = ObjectsFem.makeAnalysis(self.document)
-        solver = ObjectsFem.makeSolverOpenFOAM(self.document)
-        analysis.addObject(solver)
+        solvers = (
+            ObjectsFem.makeSolverElmer(self.document),
+            ObjectsFem.makeSolverOpenFOAM(self.document),
+        )
+        for solver in solvers:
+            analysis.addObject(solver)
         calls = []
         gui_runner = mock.Mock(
-            run_openfoam_solver=lambda exact_solver: calls.append(exact_solver)
+            run_solver_detached=lambda exact_solver: calls.append(exact_solver)
             or "started"
         )
 
@@ -93,10 +97,10 @@ class TestOpenFOAMSolver(unittest.TestCase):
             "sys.modules",
             {"VibeCADAnalyzeSolverGui": gui_runner},
         ):
-            result = run_fem_solver(solver)
+            results = [run_fem_solver(solver) for solver in solvers]
 
-        self.assertEqual(result, "started")
-        self.assertEqual(calls, [solver])
+        self.assertEqual(results, ["started", "started"])
+        self.assertEqual(calls, list(solvers))
 
     def test_case_requires_a_pressure_reference(self):
         from femsolver.openfoam.case import SteadyIncompressibleCase, build_case_files

@@ -52,6 +52,11 @@ packages and source builds.
    cancellable while the solver runs outside the UI thread.
 9. Inspect the imported result and create post-processing views as needed.
 
+Elmer and OpenFOAM use the same detached execution and exact result-import path
+whether **Run Solver** is chosen by a person or by the assistant. Running the
+same solver again updates its durable result graph according to the FEM result-
+retention preference.
+
 The solver does not infer missing engineering inputs. A generated mesh and a
 solver object alone are not a ready study: material properties, physics, units,
 loads, and boundary conditions must form a complete and physically meaningful

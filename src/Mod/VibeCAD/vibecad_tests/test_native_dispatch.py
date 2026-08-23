@@ -219,6 +219,61 @@ def test_dispatch_advances_with_its_own_successful_mutations() -> None:
     assert tickets == [0, 1]
 
 
+def test_dispatch_adopts_its_own_completed_background_mutation() -> None:
+    calls = []
+
+    def handler(call):
+        calls.append(call)
+        return {"value": call.arguments["value"]}
+
+    dispatcher, state, _debug = _dispatcher(
+        handler,
+        definition=_mutation_definition(),
+    )
+    first = dispatcher.call("test.execute", _arguments(1), "provider-call-1")
+    ticket = calls[0].ticket
+    state.authorize_mutation(ticket)
+    state.begin_mutation_observation(ticket)
+    state.note_structural_change(ticket.document_uid)
+    prepared = state.prepare_mutation_completion(ticket, {"value": 1})
+    state.commit_mutation_observation(ticket)
+    state.complete_prepared_mutation(prepared)
+
+    second = dispatcher.call("test.execute", _arguments(2), "provider-call-2")
+
+    assert first == {"ok": True, "value": 1}
+    assert second == {"ok": True, "value": 2}
+    assert calls[1].ticket.expected_revision == 1
+
+
+def test_dispatch_still_refuses_change_after_its_background_receipt() -> None:
+    calls = []
+
+    def handler(call):
+        calls.append(call)
+        return {"value": call.arguments["value"]}
+
+    dispatcher, state, _debug = _dispatcher(
+        handler,
+        definition=_mutation_definition(),
+    )
+    dispatcher.call("test.execute", _arguments(1), "provider-call-1")
+    ticket = calls[0].ticket
+    state.authorize_mutation(ticket)
+    state.begin_mutation_observation(ticket)
+    state.note_structural_change(ticket.document_uid)
+    prepared = state.prepare_mutation_completion(ticket, {"value": 1})
+    state.commit_mutation_observation(ticket)
+    state.complete_prepared_mutation(prepared)
+    state.note_structural_change(ticket.document_uid)
+
+    result = dispatcher.call("test.execute", _arguments(2), "provider-call-2")
+
+    assert result["error_code"] == "NATIVE_REVISION_CONFLICT"
+    assert result["current_revision"] == 2
+    assert len(calls) == 1
+
+
 def test_single_purpose_tool_infers_its_frozen_operation() -> None:
     calls = []
     dispatcher, _state, _debug = _dispatcher(

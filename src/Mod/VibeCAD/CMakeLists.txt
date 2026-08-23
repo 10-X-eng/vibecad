@@ -1187,6 +1187,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/analyze_study_setup_gui_integration.py
     vibecad_tests/native_analyze_geometry_gui_integration.py
     vibecad_tests/native_analyze_electromagnetic_gui_integration.py
+    vibecad_tests/native_analyze_elmer_execution_gui_integration.py
     vibecad_tests/native_analyze_fluid_gui_integration.py
     vibecad_tests/native_analyze_geometrical_gui_integration.py
     vibecad_tests/native_analyze_load_gui_integration.py

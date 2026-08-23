@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Non-blocking GUI presentation for the shared OpenFOAM solver pipeline."""
+"""Non-blocking GUI presentation for the shared detached solver pipeline."""
 
 from __future__ import annotations
 
@@ -25,7 +25,8 @@ from VibeCADNativeMutation import NativeMutationDraft
 import VibeCADGui
 
 
-_ACTIVE_RUNS: dict[str, "_OpenFOAMRunUi"] = {}
+_ACTIVE_RUNS: dict[str, "_SolverRunUi"] = {}
+_BACKEND_LABELS = {"elmer": "Elmer", "openfoam": "OpenFOAM"}
 
 
 def _document_is_live(document: Any) -> bool:
@@ -38,22 +39,22 @@ def _document_is_live(document: Any) -> bool:
 def _commit_human_result(document: Any, prepared: Any) -> Mapping[str, Any]:
     if not _document_is_live(document):
         raise NativeAnalyzeError(
-            "The OpenFOAM document closed before result import.",
+            "The FEM document closed before result import.",
             error_code="NATIVE_ANALYZE_DOCUMENT_UNAVAILABLE",
         )
     if bool(getattr(document, "HasPendingTransaction", False)):
         raise NativeAnalyzeError(
-            "Finish the active document operation before importing OpenFOAM results.",
+            "Finish the active document operation before importing FEM results.",
             error_code="NATIVE_ANALYZE_TRANSACTION_ACTIVE",
         )
-    document.openTransaction("Import OpenFOAM FEM Results")
+    document.openTransaction("Import FEM Results")
     try:
         draft = commit_solver_execution(document, prepared)
         if not isinstance(draft, NativeMutationDraft):
-            raise RuntimeError("OpenFOAM result import returned no document change.")
+            raise RuntimeError("FEM result import returned no document change.")
         targets = tuple(dict.fromkeys(draft.recompute_targets))
         if targets and document.recompute(list(targets), True, True) is False:
-            raise RuntimeError("The OpenFOAM result graph failed to recompute.")
+            raise RuntimeError("The FEM result graph failed to recompute.")
         if draft.after_recompute is not None:
             draft.after_recompute(document)
         result = verify_solver_execution(document, draft)
@@ -64,20 +65,21 @@ def _commit_human_result(document: Any, prepared: Any) -> Mapping[str, Any]:
         raise
 
 
-class _OpenFOAMRunUi:
+class _SolverRunUi:
     def __init__(self, document: Any, request: Any, manager: Any) -> None:
         self.document = document
         self.request = request
         self.manager = manager
+        self.backend = _BACKEND_LABELS[request.target.kind]
         self.job_id = ""
         self.dialog = QtWidgets.QProgressDialog(
-            "Preparing OpenFOAM case",
+            f"Preparing {self.backend} case",
             "Cancel",
             0,
             100,
             Gui.getMainWindow(),
         )
-        self.dialog.setWindowTitle("OpenFOAM")
+        self.dialog.setWindowTitle(self.backend)
         self.dialog.setWindowModality(QtCore.Qt.NonModal)
         self.dialog.setMinimumDuration(0)
         self.dialog.setAutoClose(False)
@@ -98,7 +100,7 @@ class _OpenFOAMRunUi:
         def validate() -> None:
             if not _document_is_live(document):
                 raise NativeAnalyzeError(
-                    "The OpenFOAM document closed while the solver was running.",
+                    "The FEM document closed while the solver was running.",
                     error_code="NATIVE_ANALYZE_DOCUMENT_UNAVAILABLE",
                 )
 
@@ -109,7 +111,7 @@ class _OpenFOAMRunUi:
             validate_before_commit=validate,
             commit=lambda prepared: _commit_human_result(document, prepared),
             dispatch_to_document_thread=VibeCADGui._dispatch_to_document_thread,
-            finalize_message="Importing verified OpenFOAM results",
+            finalize_message=f"Importing verified {self.backend} results",
             cleanup=lambda _prepared: discard_solver_execution_request(request),
         )
         self.job_id = str(snapshot.job_id)
@@ -122,7 +124,7 @@ class _OpenFOAMRunUi:
         if not self.job_id:
             return
         if self.manager.cancel(self.job_id):
-            self.dialog.setLabelText("Cancelling OpenFOAM")
+            self.dialog.setLabelText(f"Cancelling {self.backend}")
 
     def poll(self) -> None:
         try:
@@ -160,26 +162,26 @@ class _OpenFOAMRunUi:
             if result_object is not None:
                 Gui.Selection.clearSelection()
                 Gui.Selection.addSelection(result_object)
-            App.Console.PrintMessage("OpenFOAM analysis completed.\n")
+            App.Console.PrintMessage(f"{self.backend} analysis completed.\n")
         elif phase == "cancelled":
-            App.Console.PrintMessage("OpenFOAM analysis cancelled.\n")
+            App.Console.PrintMessage(f"{self.backend} analysis cancelled.\n")
         else:
-            clean = str(message or "OpenFOAM analysis failed.")
+            clean = str(message or f"{self.backend} analysis failed.")
             App.Console.PrintError(clean + "\n")
             QtWidgets.QMessageBox.critical(
                 Gui.getMainWindow(),
-                "OpenFOAM failed",
+                f"{self.backend} failed",
                 clean,
             )
         self.dialog.deleteLater()
 
 
-def run_openfoam_solver(solver: Any) -> str:
-    """Start the exact OpenFOAM solver through the shared detached pipeline."""
+def run_solver_detached(solver: Any) -> str:
+    """Start a supported solver through the shared exact detached pipeline."""
 
     state = solver_state(solver)
-    if state["solver_kind"] != "openfoam":
-        raise TypeError("run_openfoam_solver requires an OpenFOAM solver")
+    if state["solver_kind"] not in _BACKEND_LABELS:
+        raise TypeError("run_solver_detached requires an Elmer or OpenFOAM solver")
     document = solver.Document
     VibeCADGui._ensure_document_thread_invoker()
     request = prepare_solver_execution_request(
@@ -191,7 +193,7 @@ def run_openfoam_solver(solver: Any) -> str:
         },
         timeout_seconds=86400,
     )
-    runner = _OpenFOAMRunUi(
+    runner = _SolverRunUi(
         document,
         request,
         get_service().native_background_manager(),
@@ -204,3 +206,21 @@ def run_openfoam_solver(solver: Any) -> str:
     except Exception:
         discard_solver_execution_request(request)
         raise
+
+
+def run_openfoam_solver(solver: Any) -> str:
+    """Start OpenFOAM through the shared exact detached pipeline."""
+
+    state = solver_state(solver)
+    if state["solver_kind"] != "openfoam":
+        raise TypeError("run_openfoam_solver requires an OpenFOAM solver")
+    return run_solver_detached(solver)
+
+
+def run_elmer_solver(solver: Any) -> str:
+    """Start Elmer through the shared exact detached pipeline."""
+
+    state = solver_state(solver)
+    if state["solver_kind"] != "elmer":
+        raise TypeError("run_elmer_solver requires an Elmer solver")
+    return run_solver_detached(solver)
