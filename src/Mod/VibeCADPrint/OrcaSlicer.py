@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import ntpath
 import os
 from pathlib import Path
 import re
@@ -53,7 +52,7 @@ def _default_config_dir(
         )
     if platform == "win32":
         base = environ.get("APPDATA", "")
-        return ntpath.join(base, "OrcaSlicer") if base else ""
+        return BambuStudio._platform_path(platform, base, "OrcaSlicer") if base else ""
     if platform == "darwin":
         return (
             str(Path(home) / "Library/Application Support/OrcaSlicer")
@@ -106,13 +105,24 @@ def _candidate_specs(
         program_files = environ.get("ProgramFiles", r"C:\Program Files")
         if program_files:
             standard.extend(
-                ntpath.join(program_files, "OrcaSlicer", name)
+                BambuStudio._platform_path(
+                    platform,
+                    program_files,
+                    "OrcaSlicer",
+                    name,
+                )
                 for name in ("OrcaSlicer.exe", "orca-slicer.exe")
             )
         local_app_data = environ.get("LOCALAPPDATA", "")
         if local_app_data:
             standard.extend(
-                ntpath.join(local_app_data, "Programs", "OrcaSlicer", name)
+                BambuStudio._platform_path(
+                    platform,
+                    local_app_data,
+                    "Programs",
+                    "OrcaSlicer",
+                    name,
+                )
                 for name in ("OrcaSlicer.exe", "orca-slicer.exe")
             )
         for executable in standard:
@@ -329,6 +339,8 @@ def build_prepare_project_command(
     machine_profile: str | os.PathLike[str],
     process_profile: str | os.PathLike[str],
     material_profiles: Iterable[str | os.PathLike[str]],
+    *,
+    model_files: Iterable[str | os.PathLike[str]] = (),
 ) -> tuple[str, ...]:
     return BambuStudio.build_prepare_project_command(
         installation,
@@ -338,6 +350,7 @@ def build_prepare_project_command(
         machine_profile,
         process_profile,
         material_profiles,
+        model_files=model_files,
     )
 
 
@@ -347,8 +360,11 @@ def prepare_orca_project(
     destination: str | os.PathLike[str],
     setup: VibeCADPrint.PrintSetup,
     *,
+    model_files: Iterable[str | os.PathLike[str]] = (),
+    source_names: Iterable[str] = (),
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     timeout: float = 120.0,
+    backend: BambuStudio.BambuStudioBackend | None = None,
 ) -> Path:
     try:
         return BambuStudio.prepare_bambu_project(
@@ -356,8 +372,11 @@ def prepare_orca_project(
             source_file,
             destination,
             setup,
+            model_files=model_files,
+            source_names=source_names,
             runner=runner,
             timeout=timeout,
+            backend=backend,
         )
     except VibeCADPrint.SlicerError as exc:
         raise _orca_error(exc) from exc
@@ -420,12 +439,18 @@ class OrcaSlicerBackend(BambuStudio.BambuStudioBackend):
         source_file: str | os.PathLike[str],
         destination: str | os.PathLike[str],
         setup: VibeCADPrint.PrintSetup,
+        *,
+        model_files: Iterable[str | os.PathLike[str]] = (),
+        source_names: Iterable[str] = (),
     ) -> Path:
         return prepare_orca_project(
             installation,
             source_file,
             destination,
             setup,
+            model_files=model_files,
+            source_names=source_names,
+            backend=self,
         )
 
     def launch(

@@ -78,6 +78,35 @@ def test_export_selection_is_atomic_and_keeps_separate_objects(tmp_path: Path) -
     assert not list(tmp_path.glob("*.partial.3mf"))
 
 
+def test_export_objects_stl_writes_one_named_model_per_object(tmp_path: Path) -> None:
+    document = object()
+    objects = [
+        _object("Fan Frame", document=document),
+        _object("Fan/Frame", document=document),
+    ]
+    calls = []
+
+    def mesh_export(selected, path):
+        calls.append((tuple(selected), Path(path)))
+        Path(path).write_bytes(b"solid model")
+
+    result = VibeCADPrint.export_objects_stl(
+        objects,
+        tmp_path,
+        mesh_exporter=mesh_export,
+    )
+
+    assert result == (
+        tmp_path / "0001-Fan-Frame.stl",
+        tmp_path / "0002-Fan-Frame.stl",
+    )
+    assert [selected for selected, _path in calls] == [
+        (objects[0],),
+        (objects[1],),
+    ]
+    assert all(path.read_bytes() == b"solid model" for path in result)
+
+
 def test_managed_handoff_prunes_only_owned_old_files(tmp_path: Path) -> None:
     for index in range(12):
         path = tmp_path / f"vibecad-print-old-{index:02d}.3mf"

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 from typing import Any
 
 import PrintIcons
@@ -319,16 +320,46 @@ def _open_resolved_in_slicer(
         if installation.tested and setup is not None:
             import PrintSetupDialog
 
-            PrintSetupDialog.run_with_progress(
-                _main_window(),
-                f"Arranging objects and preparing the {slicer_name} project…",
-                lambda: backend.prepare_project(
-                    installation,
-                    destination,
-                    destination,
-                    setup,
-                ),
+            progress_label = (
+                f"Arranging objects and preparing the {slicer_name} project…"
             )
+            if "object_filament_assignment" in tuple(
+                getattr(backend, "capabilities", ()) or ()
+            ):
+                with tempfile.TemporaryDirectory(
+                    prefix=".vibecad-models-",
+                    dir=destination.parent,
+                ) as model_directory:
+                    model_files = VibeCADPrint.export_objects_stl(
+                        objects,
+                        model_directory,
+                    )
+                    PrintSetupDialog.run_with_progress(
+                        _main_window(),
+                        progress_label,
+                        lambda: backend.prepare_project(
+                            installation,
+                            destination,
+                            destination,
+                            setup,
+                            model_files=model_files,
+                            source_names=tuple(
+                                VibeCADPrint.printable_object_name(obj)
+                                for obj in objects
+                            ),
+                        ),
+                    )
+            else:
+                PrintSetupDialog.run_with_progress(
+                    _main_window(),
+                    progress_label,
+                    lambda: backend.prepare_project(
+                        installation,
+                        destination,
+                        destination,
+                        setup,
+                    ),
+                )
         result = backend.launch(installation, destination, setup)
         if managed:
             VibeCADPrint.prune_managed_handoffs(

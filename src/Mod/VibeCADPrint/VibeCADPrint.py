@@ -126,6 +126,7 @@ class PrintSetup:
     material_profiles: tuple[str, ...]
     auto_arrange: bool = True
     ensure_on_bed: bool = True
+    object_filament_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -936,8 +937,8 @@ def launch_slicer_gui(
     current_platform = platform or sys.platform
     creationflags = 0
     if current_platform == "win32":
-        creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008)) | int(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         )
     try:
         process = popen(
@@ -978,6 +979,12 @@ def _is_printable_object(obj: Any) -> bool:
 
 
 def _object_label(obj: Any) -> str:
+    return printable_object_name(obj)
+
+
+def printable_object_name(obj: Any) -> str:
+    """Return the exact user-visible name used for a printable object."""
+
     return str(getattr(obj, "Label", "") or getattr(obj, "Name", "") or repr(obj))
 
 
@@ -1055,6 +1062,44 @@ def export_selection_3mf(
             except OSError:
                 pass
     return target
+
+
+def export_objects_stl(
+    objects: Iterable[Any],
+    directory: str | os.PathLike[str],
+    *,
+    mesh_exporter: Callable[[Sequence[Any], str], Any] | None = None,
+) -> tuple[Path, ...]:
+    """Export one temporary STL per object for slicers that assign by input file."""
+
+    selected = tuple(objects)
+    if not selected:
+        raise PrintExportError("No selected objects were provided for STL export.")
+    target_directory = Path(directory)
+    target_directory.mkdir(parents=True, exist_ok=True)
+    if mesh_exporter is None:
+        import Mesh
+
+        mesh_exporter = Mesh.export
+    exported: list[Path] = []
+    try:
+        for index, obj in enumerate(selected, start=1):
+            label = _object_label(obj)
+            filename = f"{index:04d}-{_safe_name(label, f'Object-{index}')}.stl"
+            target = target_directory / filename
+            mesh_exporter([obj], str(target))
+            if not target.is_file() or target.stat().st_size <= 0:
+                raise PrintExportError(
+                    f"STL export for '{label}' did not produce a non-empty file."
+                )
+            exported.append(target)
+    except PrintExportError:
+        raise
+    except Exception as exc:
+        raise PrintExportError(
+            f"Could not export '{_object_label(selected[len(exported)])}' as STL: {exc}"
+        ) from exc
+    return tuple(exported)
 
 
 def _safe_name(value: str, fallback: str = "Untitled") -> str:

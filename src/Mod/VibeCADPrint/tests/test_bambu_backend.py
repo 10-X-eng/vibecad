@@ -193,15 +193,34 @@ def _source_3mf(path: Path) -> None:
         )
 
 
-def _prepared_3mf(path: Path, names: tuple[str, ...]) -> None:
+def _prepared_3mf(
+    path: Path,
+    names: tuple[str, ...],
+    *,
+    filament_ids: tuple[int, ...] | None = None,
+    project_settings: dict | None = None,
+) -> None:
+    filament_ids = filament_ids or (1,) * len(names)
     objects = "".join(
-        f'<object id="{index}"><metadata key="name" value="{name}"/></object>'
+        f'<object id="{index}"><metadata key="name" value="{name}"/>'
+        f'<metadata key="extruder" value="{filament_ids[index - 1]}"/></object>'
         for index, name in enumerate(names, start=1)
     )
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("3D/3dmodel.model", "<model/>")
         archive.writestr("Metadata/model_settings.config", f"<config>{objects}</config>")
-        archive.writestr("Metadata/project_settings.config", "{}")
+        archive.writestr(
+            "Metadata/project_settings.config",
+            json.dumps(
+                project_settings
+                or {
+                    "filament_settings_id": [
+                        f"Filament {index}"
+                        for index in range(1, max(filament_ids, default=1) + 1)
+                    ]
+                }
+            ),
+        )
 
 
 def test_bambu_catalog_resolves_inheritance_and_exact_compatibility(
@@ -326,15 +345,21 @@ def test_prepare_bambu_project_uses_full_profiles_and_preserves_named_objects(
         assert machine["machine_start_gcode"] == "G28"
         assert process["layer_height"] == "0.2"
         assert filament["filament_type"] == ["PLA"]
+        filament_ids = command[command.index("--load-filament-ids") + 1]
+        assert filament_ids == "1,1"
         output = Path(command[command.index("--export-3mf") + 1])
-        _prepared_3mf(output, ("Frame", "Rotor"))
+        _prepared_3mf(output, ("Frame", "Rotor"), filament_ids=(1, 1))
         return subprocess.CompletedProcess(command, 0, "prepared", "")
 
+    model_files = (tmp_path / "frame.stl", tmp_path / "rotor.stl")
+    for model_file in model_files:
+        model_file.write_bytes(b"solid model")
     actual = BambuStudio.prepare_bambu_project(
         _installation(root),
         source,
         destination,
         setup,
+        model_files=model_files,
         runner=runner,
     )
 
@@ -346,6 +371,141 @@ def test_prepare_bambu_project_uses_full_profiles_and_preserves_named_objects(
     assert all(not path.exists() for path in working_directories)
     assert not list(tmp_path.glob("*.partial.3mf"))
     assert not list(tmp_path.glob("*.profile.json"))
+
+
+def test_multi_filament_command_assigns_a_filament_to_every_object(
+    tmp_path: Path,
+) -> None:
+    installation = _installation(tmp_path / "profiles")
+    setup = VibeCADPrint.PrintSetup(
+        "Dual Printer",
+        "Quality",
+        ("PLA", "PETG"),
+        object_filament_ids=(2, 1, 2),
+    )
+
+    command = BambuStudio.build_prepare_project_command(
+        installation,
+        tmp_path / "input.3mf",
+        tmp_path / "output.3mf",
+        setup,
+        tmp_path / "machine.json",
+        tmp_path / "process.json",
+        (tmp_path / "pla.json", tmp_path / "petg.json"),
+        model_files=(
+            tmp_path / "frame.stl",
+            tmp_path / "rotor.stl",
+            tmp_path / "guard.stl",
+        ),
+    )
+
+    assert command[command.index("--load-filament-ids") + 1] == "2,1,2"
+    assert command[-3:] == (
+        str(tmp_path / "frame.stl"),
+        str(tmp_path / "rotor.stl"),
+        str(tmp_path / "guard.stl"),
+    )
+    assert str(tmp_path / "input.3mf") not in command
+
+
+def test_multi_filament_command_preserves_legacy_3mf_input_without_models(
+    tmp_path: Path,
+) -> None:
+    setup = VibeCADPrint.PrintSetup(
+        "Dual Printer",
+        "Quality",
+        ("PLA", "PETG"),
+        object_filament_ids=(1, 2),
+    )
+
+    command = BambuStudio.build_prepare_project_command(
+        _installation(tmp_path / "profiles"),
+        tmp_path / "input.3mf",
+        tmp_path / "output.3mf",
+        setup,
+        tmp_path / "machine.json",
+        tmp_path / "process.json",
+        (tmp_path / "pla.json", tmp_path / "petg.json"),
+    )
+
+    assert command[-1] == str(tmp_path / "input.3mf")
+    assert "--load-filament-ids" not in command
+
+
+def test_project_metadata_normalization_preserves_exact_assignments(tmp_path: Path) -> None:
+    project = tmp_path / "prepared.3mf"
+    _prepared_3mf(
+        project,
+        ("frame.stl", "rotor.stl"),
+        filament_ids=(1, 2),
+        project_settings={
+            "filament_settings_id": ["ABS-GF", "PC"],
+            "filament_colour": ["#F2754E"],
+            "filament_map": ["1"],
+            "filament_is_support": ["0"],
+            "nozzle_diameter": ["0.4", "0.4"],
+            "default_nozzle_volume_type": ["Standard", "Standard"],
+            "nozzle_volume_type": ["Standard"],
+        },
+    )
+    setup = VibeCADPrint.PrintSetup(
+        "Bambu Lab H2D 0.4 nozzle",
+        "Quality",
+        ("ABS-GF", "PC"),
+        object_filament_ids=(1, 2),
+    )
+
+    BambuStudio._normalize_project_metadata(
+        project,
+        source_names=("Fan Frame", "Fan Rotor"),
+        setup=setup,
+        filament_keys={"filament_is_support"},
+    )
+
+    with zipfile.ZipFile(project) as archive:
+        settings = json.loads(archive.read("Metadata/project_settings.config"))
+        model = BambuStudio.ET.fromstring(
+            archive.read("Metadata/model_settings.config")
+        )
+    objects = model.findall("./{*}object")
+    assert [
+        obj.find('./{*}metadata[@key="name"]').attrib["value"] for obj in objects
+    ] == ["Fan Frame", "Fan Rotor"]
+    assert [
+        obj.find('./{*}metadata[@key="extruder"]').attrib["value"]
+        for obj in objects
+    ] == ["1", "2"]
+    assert settings["filament_colour"] == ["#F2754E", "#F2754E"]
+    assert settings["filament_map"] == ["1", "1"]
+    assert settings["filament_is_support"] == ["0", "0"]
+    assert settings["nozzle_volume_type"] == ["Standard", "Standard"]
+
+
+def test_project_setup_keeps_only_used_filaments_and_remaps_ids() -> None:
+    setup = VibeCADPrint.PrintSetup(
+        "Dual Printer",
+        "Quality",
+        ("PLA", "PETG", "Support"),
+        object_filament_ids=(3, 1, 3),
+    )
+
+    project = BambuStudio._project_setup(setup, object_count=3)
+
+    assert project.material_profiles == ("PLA", "Support")
+    assert project.object_filament_ids == (2, 1, 2)
+
+
+@pytest.mark.parametrize("ids", [(), (1,), (1, 3)])
+def test_multi_filament_project_requires_a_valid_id_for_every_object(ids) -> None:
+    setup = VibeCADPrint.PrintSetup(
+        "Dual Printer",
+        "Quality",
+        ("PLA", "PETG"),
+        object_filament_ids=ids,
+    )
+
+    with pytest.raises(VibeCADPrint.SlicerError, match="filament.*each object"):
+        BambuStudio._project_setup(setup, object_count=2)
 
 
 def test_prepare_bambu_project_rejects_object_collapse_and_preserves_source(

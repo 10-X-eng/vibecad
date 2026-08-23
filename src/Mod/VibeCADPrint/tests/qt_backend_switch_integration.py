@@ -22,10 +22,15 @@ import VibeCADPrint  # noqa: E402
 
 
 def _setup(prefix: str) -> VibeCADPrint.PrintSetup:
+    materials = (
+        (f"{prefix} Material 1", f"{prefix} Material 2")
+        if prefix in {"Bambu", "Orca"}
+        else (f"{prefix} Material",)
+    )
     return VibeCADPrint.PrintSetup(
         f"{prefix} Printer",
         f"{prefix} Quality",
-        (f"{prefix} Material",),
+        materials,
     )
 
 
@@ -53,11 +58,13 @@ def _backend_data(backend_id: str):
             "orcaslicer": (2, 4, 2),
         }[backend_id],
     )
-    material = VibeCADPrint.MaterialProfile(setup.material_profiles[0])
-    quality = VibeCADPrint.PrintProfile(setup.print_profile, (material,))
+    materials = tuple(
+        VibeCADPrint.MaterialProfile(name) for name in setup.material_profiles
+    )
+    quality = VibeCADPrint.PrintProfile(setup.print_profile, materials)
     printer = VibeCADPrint.PrinterProfile(
         setup.printer_profile,
-        extruders=1,
+        extruders=len(materials),
         bed=VibeCADPrint.BedInfo(width=250, height=250, max_print_height=250),
     )
     catalog = VibeCADPrint.ProfileCatalog(printer.name, (quality,))
@@ -72,6 +79,11 @@ class _Backend:
             "bambustudio": "Bambu Studio",
             "orcaslicer": "OrcaSlicer",
         }[backend_id]
+        self.capabilities = (
+            ("object_filament_assignment",)
+            if backend_id in {"bambustudio", "orcaslicer"}
+            else ()
+        )
         self.setup, self.installation, self.printer, self.catalog = _backend_data(
             backend_id
         )
@@ -126,7 +138,10 @@ def _run() -> None:
         )
         PrintPanel._active_print_selection = lambda: (
             SimpleNamespace(Name="Fan"),
-            (SimpleNamespace(Name="Body", Label="Fan Frame"),),
+            (
+                SimpleNamespace(Name="Body", Label="Fan Frame"),
+                SimpleNamespace(Name="Body001", Label="Fan Rotor"),
+            ),
         )
 
         panel = PrintPanel.PrintPanelWidget()
@@ -151,8 +166,24 @@ def _run() -> None:
         assert panel.installation.backend_id == "bambustudio"
         assert panel.printer_combo.currentText() == "Bambu Printer"
         assert panel.print_combo.currentText() == "Bambu Quality"
-        assert panel.material_combos[0].currentText() == "Bambu Material"
+        assert [combo.currentText() for combo in panel.material_combos] == [
+            "Bambu Material 1",
+            "Bambu Material 2",
+        ]
         assert panel.object_checkboxes[0].isChecked()
+        assert len(panel.object_filament_combos) == 2
+        assert not panel.print_button.isEnabled()
+        panel.object_filament_combos[0].setCurrentIndex(
+            panel.object_filament_combos[0].findData(1)
+        )
+        panel.object_filament_combos[1].setCurrentIndex(
+            panel.object_filament_combos[1].findData(2)
+        )
+        application.processEvents()
+        assert panel._current_setup(
+            require_object_assignments=True
+        ).object_filament_ids == (1, 2)
+        assert panel.print_button.isEnabled()
 
         orca_index = panel.slicer_combo.findData("orcaslicer")
         assert orca_index >= 0
@@ -162,7 +193,23 @@ def _run() -> None:
         assert panel.backend.backend_id == "orcaslicer"
         assert panel.printer_combo.currentText() == "Orca Printer"
         assert panel.print_combo.currentText() == "Orca Quality"
-        assert panel.material_combos[0].currentText() == "Orca Material"
+        assert [combo.currentText() for combo in panel.material_combos] == [
+            "Orca Material 1",
+            "Orca Material 2",
+        ]
+        assert len(panel.object_filament_combos) == 2
+        assert not panel.print_button.isEnabled()
+        panel.object_filament_combos[0].setCurrentIndex(
+            panel.object_filament_combos[0].findData(2)
+        )
+        panel.object_filament_combos[1].setCurrentIndex(
+            panel.object_filament_combos[1].findData(1)
+        )
+        application.processEvents()
+        assert panel._current_setup(
+            require_object_assignments=True
+        ).object_filament_ids == (2, 1)
+        assert panel.print_button.isEnabled()
         panel._manual_refresh()
         assert backends["orcaslicer"].invalidations == 1
         assert panel.object_checkboxes[0].isChecked()

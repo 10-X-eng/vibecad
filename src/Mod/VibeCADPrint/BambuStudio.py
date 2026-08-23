@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import ntpath
 import os
@@ -31,6 +31,7 @@ BAMBU_CAPABILITIES = (
     "project_export",
     "auto_arrange",
     "ensure_on_bed",
+    "object_filament_assignment",
 )
 
 _BAMBU_VERSION_RE = re.compile(
@@ -518,7 +519,7 @@ def _default_config_dir(
         )
     if platform == "win32":
         base = environ.get("APPDATA", "")
-        return ntpath.join(base, "BambuStudio") if base else ""
+        return _platform_path(platform, base, "BambuStudio") if base else ""
     if platform == "darwin":
         return (
             str(Path(home) / "Library/Application Support/BambuStudio")
@@ -542,6 +543,16 @@ def _native_resource_dir(executable: str, platform: str) -> str:
             path.parent / "resources/profiles",
         ]
     return str(next((candidate for candidate in candidates if candidate.is_dir()), ""))
+
+
+def _platform_path(platform: str, root: str, *parts: str) -> str:
+    """Join real Windows roots while keeping injected POSIX test roots usable."""
+
+    if platform == "win32" and (
+        bool(ntpath.splitdrive(root)[0]) or str(root).startswith(("\\\\", "//"))
+    ):
+        return ntpath.join(root, *parts)
+    return str(Path(root).joinpath(*parts))
 
 
 def _candidate_specs(
@@ -569,7 +580,12 @@ def _candidate_specs(
             environ.get("LOCALAPPDATA", ""),
         ]
         for root in (value for value in roots if value):
-            executable = ntpath.join(root, "Bambu Studio", "bambu-studio.exe")
+            executable = _platform_path(
+                platform,
+                root,
+                "Bambu Studio",
+                "bambu-studio.exe",
+            )
             values.append(
                 _Candidate(
                     (executable,),
@@ -768,25 +784,83 @@ def build_prepare_project_command(
     machine_profile: str | os.PathLike[str],
     process_profile: str | os.PathLike[str],
     material_profiles: Iterable[str | os.PathLike[str]],
+    *,
+    model_files: Iterable[str | os.PathLike[str]] = (),
 ) -> tuple[str, ...]:
     """Build Bambu Studio's shell-free, exact-profile project export command."""
 
+    material_paths = tuple(material_profiles)
+    model_paths = tuple(Path(path) for path in model_files)
+    if model_paths and not setup.object_filament_ids:
+        raise VibeCADPrint.SlicerError(
+            "Choose a filament for each object before preparing a multi-filament "
+            "project."
+        )
+    if model_paths and len(model_paths) != len(setup.object_filament_ids):
+        raise VibeCADPrint.SlicerError(
+            "Bambu Studio requires one separate model file and filament choice for "
+            "each object."
+        )
     command = [*installation.cli_command, "--debug", "2"]
     command.extend(("--arrange", "1" if setup.auto_arrange else "0"))
     if setup.ensure_on_bed:
         command.append("--ensure-on-bed")
+    if model_paths:
+        command.extend(
+            (
+                "--load-filament-ids",
+                ",".join(str(value) for value in setup.object_filament_ids),
+            )
+        )
     command.extend(
         (
             "--load-settings",
             f"{Path(machine_profile)};{Path(process_profile)}",
             "--load-filaments",
-            ";".join(str(Path(path)) for path in material_profiles),
+            ";".join(str(Path(path)) for path in material_paths),
             "--export-3mf",
             str(Path(output_file)),
-            str(Path(source_file)),
         )
     )
+    command.extend(str(path) for path in model_paths or (Path(source_file),))
     return tuple(command)
+
+
+def _project_setup(
+    setup: VibeCADPrint.PrintSetup,
+    *,
+    object_count: int,
+) -> VibeCADPrint.PrintSetup:
+    """Return a dense project-filament setup with one explicit ID per object."""
+
+    material_count = len(setup.material_profiles)
+    raw_ids = tuple(setup.object_filament_ids)
+    if material_count == 1 and not raw_ids:
+        raw_ids = (1,) * object_count
+    if len(raw_ids) != object_count:
+        raise VibeCADPrint.SlicerError(
+            "Choose a filament for each object before preparing the slicer project."
+        )
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 1
+        or value > material_count
+        for value in raw_ids
+    ):
+        raise VibeCADPrint.SlicerError(
+            "Choose a valid filament for each object before preparing the slicer "
+            "project."
+        )
+    used_ids = tuple(sorted(set(raw_ids)))
+    remap = {source_id: index for index, source_id in enumerate(used_ids, start=1)}
+    return replace(
+        setup,
+        material_profiles=tuple(
+            setup.material_profiles[source_id - 1] for source_id in used_ids
+        ),
+        object_filament_ids=tuple(remap[value] for value in raw_ids),
+    )
 
 
 def _source_object_names(path: Path) -> tuple[str, ...]:
@@ -830,21 +904,180 @@ def _prepared_object_names(path: Path) -> tuple[str, ...]:
     )
 
 
+def _metadata_tag(element: ET.Element) -> str:
+    namespace = (
+        element.tag.partition("}")[0] + "}" if element.tag.startswith("{") else ""
+    )
+    return f"{namespace}metadata"
+
+
+def _set_metadata(element: ET.Element, key: str, value: str) -> None:
+    metadata = next(
+        (
+            item
+            for item in element.findall("./{*}metadata")
+            if item.attrib.get("key") == key
+        ),
+        None,
+    )
+    if metadata is None:
+        metadata = ET.SubElement(element, _metadata_tag(element), {"key": key})
+    metadata.set("value", value)
+
+
+def _normalize_project_metadata(
+    path: Path,
+    *,
+    source_names: Sequence[str],
+    setup: VibeCADPrint.PrintSetup,
+    filament_keys: set[str],
+) -> None:
+    """Repair Bambu-format CLI metadata without changing selected profiles."""
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            model = ET.fromstring(archive.read("Metadata/model_settings.config"))
+            settings = json.loads(archive.read("Metadata/project_settings.config"))
+    except (
+        ET.ParseError,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        zipfile.BadZipFile,
+    ) as exc:
+        raise VibeCADPrint.SlicerError(
+            "Bambu Studio produced an invalid project 3MF without editable project "
+            "metadata."
+        ) from exc
+    if not isinstance(settings, dict):
+        raise VibeCADPrint.SlicerError(
+            "Bambu Studio produced invalid project profile metadata."
+        )
+
+    objects = model.findall("./{*}object")
+    object_ids = tuple(setup.object_filament_ids)
+    if len(objects) != len(source_names) or (
+        object_ids and len(object_ids) != len(source_names)
+    ):
+        raise VibeCADPrint.SlicerError(
+            "Bambu Studio changed the project object count while assigning "
+            "filaments."
+        )
+    for index, (obj, name) in enumerate(zip(objects, source_names)):
+        _set_metadata(obj, "name", str(name))
+        if object_ids:
+            _set_metadata(obj, "extruder", str(object_ids[index]))
+        for part in obj.findall("./{*}part"):
+            _set_metadata(part, "name", str(name))
+
+    material_count = len(setup.material_profiles)
+    for key in filament_keys | {"filament_colour", "filament_map"}:
+        values = settings.get(key)
+        if material_count > 1 and isinstance(values, list) and len(values) == 1:
+            settings[key] = values * material_count
+
+    filament_settings = settings.get("filament_settings_id")
+    if not isinstance(filament_settings, list) or len(filament_settings) != material_count:
+        raise VibeCADPrint.SlicerError(
+            "Bambu Studio produced incomplete filament profile metadata."
+        )
+
+    nozzle_diameters = settings.get("nozzle_diameter")
+    nozzle_count = len(nozzle_diameters) if isinstance(nozzle_diameters, list) else 0
+    nozzle_types = settings.get("nozzle_volume_type")
+    if (
+        nozzle_count > 1
+        and isinstance(nozzle_types, list)
+        and 0 < len(nozzle_types) < nozzle_count
+    ):
+        defaults = settings.get("default_nozzle_volume_type")
+        if isinstance(defaults, list) and len(defaults) == nozzle_count:
+            settings["nozzle_volume_type"] = list(defaults)
+        elif len(nozzle_types) == 1:
+            settings["nozzle_volume_type"] = nozzle_types * nozzle_count
+        else:
+            raise VibeCADPrint.SlicerError(
+                "Bambu Studio produced incomplete nozzle metadata."
+            )
+
+    replacements = {
+        "Metadata/model_settings.config": ET.tostring(
+            model,
+            encoding="utf-8",
+            xml_declaration=True,
+        ),
+        "Metadata/project_settings.config": json.dumps(
+            settings,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8"),
+    }
+    rewritten = path.with_name(f".{path.name}.{uuid4().hex}.rewrite")
+    try:
+        with (
+            zipfile.ZipFile(path) as source_archive,
+            zipfile.ZipFile(rewritten, "w") as rewritten_archive,
+        ):
+            rewritten_archive.comment = source_archive.comment
+            for item in source_archive.infolist():
+                replacement = replacements.get(item.filename)
+                if replacement is not None:
+                    rewritten_archive.writestr(item, replacement)
+                    continue
+                with (
+                    source_archive.open(item) as source_entry,
+                    rewritten_archive.open(
+                        item,
+                        mode="w",
+                        force_zip64=True,
+                    ) as rewritten_entry,
+                ):
+                    shutil.copyfileobj(source_entry, rewritten_entry)
+        os.replace(rewritten, path)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        raise VibeCADPrint.SlicerError(
+            f"Could not finalize the Bambu Studio project metadata: {exc}"
+        ) from exc
+    finally:
+        if rewritten.exists():
+            try:
+                rewritten.unlink()
+            except OSError:
+                pass
+
+
 def prepare_bambu_project(
     installation: VibeCADPrint.SlicerInstallation,
     source_file: str | os.PathLike[str],
     destination: str | os.PathLike[str],
     setup: VibeCADPrint.PrintSetup,
     *,
+    model_files: Iterable[str | os.PathLike[str]] = (),
+    source_names: Iterable[str] = (),
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     timeout: float = 120.0,
+    backend: BambuStudioBackend | None = None,
 ) -> Path:
     """Atomically prepare a full-profile, named, multi-object Bambu 3MF."""
 
     source = Path(source_file)
     target = Path(destination)
-    source_names = _source_object_names(source)
-    backend = BambuStudioBackend()
+    exact_source_names = tuple(str(name) for name in source_names)
+    if not exact_source_names:
+        exact_source_names = _source_object_names(source)
+    model_paths = tuple(Path(path) for path in model_files)
+    if model_paths and len(model_paths) != len(exact_source_names):
+        raise VibeCADPrint.SlicerError(
+            "Bambu Studio requires one separate model file for each source object."
+        )
+    project_setup = (
+        _project_setup(setup, object_count=len(exact_source_names))
+        if model_paths
+        else setup
+    )
+    backend = backend or BambuStudioBackend()
     printers = backend.query_printers(installation)
     printer = next((item for item in printers if item.name == setup.printer_profile), None)
     if printer is None:
@@ -858,18 +1091,32 @@ def prepare_bambu_project(
     resolved = (
         ("machine", setup.printer_profile),
         ("process", setup.print_profile),
-        *[("filament", name) for name in setup.material_profiles],
+        *[("filament", name) for name in project_setup.material_profiles],
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     token = uuid4().hex
     profile_paths: list[Path] = []
+    resolved_profiles: list[dict[str, Any]] = []
     partial = target.with_name(f"{target.stem}.{token}.partial.3mf")
     try:
         for index, (profile_type, name) in enumerate(resolved):
+            profile = next(
+                (
+                    value
+                    for record, value in backend._resolved(installation, profile_type)
+                    if record.name == name
+                ),
+                None,
+            )
+            if profile is None:
+                raise VibeCADPrint.SlicerError(
+                    f"Bambu Studio profile '{name}' ({profile_type}) is not available."
+                )
+            resolved_profiles.append(dict(profile))
             path = target.parent / f".{target.stem}.{token}.{index}.profile.json"
             path.write_text(
                 json.dumps(
-                    resolved_profile(installation, profile_type, name),
+                    profile,
                     ensure_ascii=False,
                     indent=2,
                 ),
@@ -880,10 +1127,11 @@ def prepare_bambu_project(
             installation,
             source,
             partial,
-            setup,
+            project_setup,
             profile_paths[0],
             profile_paths[1],
             profile_paths[2:],
+            model_files=model_paths,
         )
         with tempfile.TemporaryDirectory(
             prefix=".vibecad-slicer-",
@@ -908,14 +1156,27 @@ def prepare_bambu_project(
                 "Bambu Studio could not prepare the 3MF project "
                 f"(status {completed.returncode}).{suffix}"
             )
+        _normalize_project_metadata(
+            partial,
+            source_names=exact_source_names,
+            setup=project_setup,
+            filament_keys={
+                key
+                for profile in resolved_profiles[2:]
+                for key in profile
+                if key.startswith("filament_")
+            },
+        )
         prepared_names = _prepared_object_names(partial)
-        if len(prepared_names) != len(source_names):
+        if len(prepared_names) != len(exact_source_names):
             raise VibeCADPrint.SlicerError(
                 "Bambu Studio changed the project object count from "
-                f"{len(source_names)} to {len(prepared_names)}; the original 3MF "
+                f"{len(exact_source_names)} to {len(prepared_names)}; the original 3MF "
                 "was preserved."
             )
-        if all(source_names) and Counter(prepared_names) != Counter(source_names):
+        if all(exact_source_names) and Counter(prepared_names) != Counter(
+            exact_source_names
+        ):
             raise VibeCADPrint.SlicerError(
                 "Bambu Studio changed the project object names; the original 3MF "
                 "was preserved."
@@ -1055,12 +1316,18 @@ class BambuStudioBackend:
         source_file: str | os.PathLike[str],
         destination: str | os.PathLike[str],
         setup: VibeCADPrint.PrintSetup,
+        *,
+        model_files: Iterable[str | os.PathLike[str]] = (),
+        source_names: Iterable[str] = (),
     ) -> Path:
         return prepare_bambu_project(
             installation,
             source_file,
             destination,
             setup,
+            model_files=model_files,
+            source_names=source_names,
+            backend=self,
         )
 
     def launch(

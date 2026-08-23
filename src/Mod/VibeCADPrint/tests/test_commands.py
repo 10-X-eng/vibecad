@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -174,6 +175,107 @@ def test_shared_handoff_uses_the_selected_slicer_backend(
     )
     assert events[2] == ("launch", installation, handoff, setup)
     assert "Bambu Studio" in events[3][1]
+
+
+def test_object_filament_backend_prepares_from_temporary_separate_models(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    commands = PrintCommandLoader.command_module()
+    installation = VibeCADPrint.SlicerInstallation(
+        backend_id="orcaslicer",
+        version="2.4.2",
+        gui_command=("orca-slicer",),
+        cli_command=("orca-slicer",),
+        source="path",
+        display_name="OrcaSlicer 2.4.2",
+        tested_version=(2, 4, 2),
+    )
+    setup = _setup()
+    document = SimpleNamespace(Label="Fan")
+
+    class Shape:
+        def isNull(self):
+            return False
+
+    objects = (
+        SimpleNamespace(
+            Name="Frame",
+            Label="Fan Frame",
+            Document=document,
+            Shape=Shape(),
+        ),
+        SimpleNamespace(
+            Name="Rotor",
+            Label="Fan Rotor",
+            Document=document,
+            Shape=Shape(),
+        ),
+    )
+    handoff = tmp_path / "fan.3mf"
+    model_root = None
+
+    class Backend:
+        display_name = "OrcaSlicer"
+        capabilities = ("object_filament_assignment",)
+
+        def prepare_project(
+            self,
+            _installation,
+            _source,
+            _destination,
+            _setup,
+            *,
+            model_files=(),
+            source_names=(),
+        ):
+            nonlocal model_root
+            assert len(model_files) == 2
+            assert all(path.is_file() for path in model_files)
+            assert source_names == ("Fan Frame", "Fan Rotor")
+            model_root = model_files[0].parent
+            return handoff
+
+        def launch(self, *_args):
+            return VibeCADPrint.LaunchResult(("orca-slicer",), 84)
+
+    def export_models(actual_objects, directory):
+        assert actual_objects == objects
+        paths = tuple(
+            Path(directory) / f"{index}-{obj.Name}.stl"
+            for index, obj in enumerate(actual_objects, start=1)
+        )
+        for path in paths:
+            path.write_bytes(b"stl")
+        return paths
+
+    monkeypatch.setattr(
+        commands,
+        "_handoff_destination",
+        lambda _document, _objects: (handoff, False),
+    )
+    monkeypatch.setattr(
+        commands.VibeCADPrint,
+        "export_selection_3mf",
+        lambda _objects, destination: Path(destination).write_bytes(b"3mf"),
+    )
+    monkeypatch.setattr(commands.VibeCADPrint, "export_objects_stl", export_models)
+    monkeypatch.setattr(commands, "_main_window", lambda: None)
+    monkeypatch.setattr(commands, "_status", lambda _message: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "PrintSetupDialog",
+        SimpleNamespace(run_with_progress=lambda _parent, _label, operation: operation()),
+    )
+
+    assert commands.open_selected_in_slicer(
+        backend=Backend(),
+        installation=installation,
+        setup=setup,
+        selection=(document, objects),
+    )
+    assert model_root is not None
+    assert not model_root.exists()
 
 
 def test_active_selection_deduplicates_a_body_and_its_picked_subelement(

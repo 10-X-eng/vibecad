@@ -115,6 +115,7 @@ def test_orca_project_command_keeps_explicit_placement_and_profiles(
         ("PLA", "PETG"),
         auto_arrange=False,
         ensure_on_bed=True,
+        object_filament_ids=(1, 2),
     )
     command = OrcaSlicer.build_prepare_project_command(
         installation,
@@ -124,6 +125,7 @@ def test_orca_project_command_keeps_explicit_placement_and_profiles(
         tmp_path / "machine.json",
         tmp_path / "process.json",
         (tmp_path / "pla.json", tmp_path / "petg.json"),
+        model_files=(tmp_path / "frame.stl", tmp_path / "rotor.stl"),
     )
 
     assert command[:3] == ("orca-slicer", "--debug", "2")
@@ -134,6 +136,11 @@ def test_orca_project_command_keeps_explicit_placement_and_profiles(
     )
     assert command[command.index("--load-filaments") + 1].endswith(
         "pla.json;" + str(tmp_path / "petg.json")
+    )
+    assert command[command.index("--load-filament-ids") + 1] == "1,2"
+    assert command[-2:] == (
+        str(tmp_path / "frame.stl"),
+        str(tmp_path / "rotor.stl"),
     )
 
 
