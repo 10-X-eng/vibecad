@@ -340,7 +340,11 @@ class _HostToolSession:
         return self._service
 
     def _live_surface(self) -> dict[str, Any]:
-        from VibeCADModelingSurface import resolve_service_surface
+        from VibeCADModelingSurface import (
+            provider_engine_from_service,
+            resolve_modeling_surface,
+            resolve_service_surface,
+        )
         from VibeCADSession import _minimal_runtime_state, provider_tool_schemas
         import VibeCADVibeScriptDomains as vibescript_domains
 
@@ -350,7 +354,12 @@ class _HostToolSession:
             import FreeCAD as App
 
             workbench = service.active_workbench_name()
-            resolution = resolve_service_surface(service, workbench)
+            provider_engine = provider_engine_from_service(service)
+            resolution = (
+                resolve_modeling_surface(workbench, provider_engine)
+                if provider_engine == "native"
+                else resolve_service_surface(service, workbench)
+            )
             runtime_state = _minimal_runtime_state(service)
             schemas = provider_tool_schemas(
                 service,

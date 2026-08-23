@@ -755,15 +755,22 @@ class VibeCADService:
     def native_active_snapshot(self) -> dict[str, Any]:
         """Build only the live state for the human-selected Native surface."""
 
-        if self.modeling_engine() != "native":
-            raise RuntimeError("The active document is not under Native authority.")
         document = self._active_document()
         if document is None:
             raise RuntimeError("No active document is available.")
         from VibeCADNativeSnapshot import build_active_snapshot
+        from VibeCADModelingSurface import provider_engine_for_ribbon
         from VibeCADRibbonSurface import read_active_ribbon_surface
 
         surface = read_active_ribbon_surface()
+        if (
+            provider_engine_for_ribbon(
+                self.modeling_engine(),
+                surface.surface_id,
+            )
+            != "native"
+        ):
+            raise RuntimeError("The active ribbon has no Native provider surface.")
         background_job = None
         if surface.surface_id == "analyze":
             background_job = self._native_background_jobs.latest_document_snapshot(

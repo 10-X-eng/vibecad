@@ -262,6 +262,7 @@ SET(FemSolver_SRCS
     femsolver/report.py
     femsolver/reportdialog.py
     femsolver/run.py
+    femsolver/runtime.py
     femsolver/settings.py
     femsolver/signal.py
     femsolver/solver_taskpanel.py

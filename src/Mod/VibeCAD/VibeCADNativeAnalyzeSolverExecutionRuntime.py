@@ -64,6 +64,10 @@ class NativeAnalyzeSolverExecutionRuntime:
                 verify=verify_solver_execution,
             )
 
+        def cleanup(_prepared: Any) -> None:
+            discard_solver_execution_request(request)
+            context.state.cancel_mutation(ticket)
+
         try:
             snapshot = manager.submit(
                 document_uid=context.document_uid,
@@ -73,7 +77,7 @@ class NativeAnalyzeSolverExecutionRuntime:
                 commit=commit,
                 dispatch_to_document_thread=dispatcher,
                 finalize_message="Importing verified FEM results",
-                cleanup=lambda _prepared: discard_solver_execution_request(request),
+                cleanup=cleanup,
             )
         except NativeBackgroundError as exc:
             discard_solver_execution_request(request)

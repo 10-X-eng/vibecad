@@ -87,6 +87,54 @@ def test_manual_geometry_change_locks_native_authority() -> None:
         store.require_vibescript_return_safe("document-a")
 
 
+def test_scoped_analyze_authority_does_not_take_geometry_authority() -> None:
+    store = NativeDocumentStateStore()
+    scope = store.begin_scoped_authority("document-a", "analyze")
+
+    analyze_ticket = store.begin_call("document-a", "analyze.model")
+    assert store.authorize_mutation(analyze_ticket).duplicate is False
+    store.note_structural_change("document-a")
+    store.complete_mutation(analyze_ticket, {"analysis": "Analysis"})
+
+    model_ticket = store.begin_call("document-a", "model.feature")
+    with pytest.raises(NativeStateError, match="not active"):
+        store.authorize_mutation(model_ticket)
+
+    store.end_scoped_authority("document-a", scope)
+    store.require_vibescript_return_safe("document-a")
+    assert store.snapshot("document-a")["native_authority"]["active"] is False
+    assert store.snapshot("document-a")["recent_receipts"] == []
+
+
+def test_scoped_authority_is_exact_and_ends_outstanding_calls() -> None:
+    store = NativeDocumentStateStore()
+    scope = store.begin_scoped_authority("document-a", "analyze")
+    ticket = store.begin_call("document-a", "analyze.load")
+    store.authorize_mutation(ticket)
+
+    store.end_scoped_authority("document-a", scope)
+
+    store.complete_mutation(ticket, {"load": "Force"})
+    assert store.snapshot("document-a")["recent_receipts"] == []
+    with pytest.raises(NativeStateError, match="not active"):
+        store.authorize_mutation(store.begin_call("document-a", "analyze.load"))
+    with pytest.raises(NativeStateError, match="not active"):
+        store.authorize_mutation(store.begin_call("document-a", "analyzer.test"))
+
+
+def test_closed_scoped_authority_releases_a_failed_background_call() -> None:
+    store = NativeDocumentStateStore()
+    scope = store.begin_scoped_authority("document-a", "analyze")
+    ticket = store.begin_call("document-a", "analyze.mesh")
+    store.authorize_mutation(ticket)
+
+    store.end_scoped_authority("document-a", scope)
+    store.cancel_mutation(ticket)
+
+    with pytest.raises(NativeStateError, match="not active"):
+        store.authorize_mutation(store.begin_call("document-a", "analyze.mesh"))
+
+
 def test_call_ticket_is_host_generated_and_stale_mutation_is_rejected() -> None:
     store = NativeDocumentStateStore()
     store.begin_native_authority("document-a")

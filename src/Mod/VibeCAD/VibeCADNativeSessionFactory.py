@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import secrets
@@ -33,9 +33,18 @@ class NativeSessionExecution:
     turn: NativeTurnSnapshot
     undo_ledger: NativeAssistantUndoLedger
     run_id: str
+    authority_release: Callable[[], None] | None = None
+    _closed: bool = field(default=False, init=False, repr=False)
 
     def close(self) -> None:
-        self.undo_ledger.end_run(self.run_id)
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.undo_ledger.end_run(self.run_id)
+        finally:
+            if self.authority_release is not None:
+                self.authority_release()
 
 
 def _edit_or_task_active(service: Any) -> bool:
@@ -122,7 +131,12 @@ def create_native_session_execution(
     input_authorizer: NativeInputAuthorizer | None = None,
     document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = None,
 ) -> NativeSessionExecution:
-    if str(service.modeling_engine() or "").strip().lower() != "native":
+    authoring_engine = str(service.modeling_engine() or "").strip().lower()
+    scoped_analyze = (
+        authoring_engine == "vibescript"
+        and str(expected_surface.get("domain") or "") == "analyze"
+    )
+    if authoring_engine != "native" and not scoped_analyze:
         raise NativeDispatchError(
             "NATIVE_AUTHORITY_CHANGED",
             "The document is no longer under Native authority.",
@@ -139,18 +153,24 @@ def create_native_session_execution(
     state = service.native_document_state_store()
     uid = document_uid(document)
     state.ensure_document(uid)
-    authority = state.snapshot(uid).get("native_authority")
-    if not isinstance(authority, Mapping) or authority.get("active") is not True:
+    if authoring_engine == "native":
+        authority = state.snapshot(uid).get("native_authority")
+        if not isinstance(authority, Mapping) or authority.get("active") is not True:
+            raise NativeDispatchError(
+                "NATIVE_AUTHORITY_CHANGED",
+                "Native mutation authority is not active for the exact document.",
+            )
+    elif turn.surface.surface_id != "analyze":
         raise NativeDispatchError(
             "NATIVE_AUTHORITY_CHANGED",
-            "Native mutation authority is not active for the exact document.",
+            "Only the Analyze ribbon can use scoped Native authority.",
         )
 
     def reauthorize() -> NativeTurnSnapshot:
-        if str(service.modeling_engine() or "").strip().lower() != "native":
+        if str(service.modeling_engine() or "").strip().lower() != authoring_engine:
             raise NativeDispatchError(
                 "NATIVE_AUTHORITY_CHANGED",
-                "The document is no longer under Native authority.",
+                "The document authoring authority changed during this turn.",
             )
         if service._active_document() is not document:
             raise NativeDispatchError(
@@ -167,33 +187,47 @@ def create_native_session_execution(
             "The Native host has no assistant undo provenance store.",
         )
     undo.begin_run(run_id)
+    scope_token = (
+        state.begin_scoped_authority(uid, "analyze") if scoped_analyze else None
+    )
     background_manager_factory = getattr(service, "native_background_manager", None)
-    context = NativeRuntimeContext(
-        service=service,
-        document=document,
-        state=state,
-        undo_ledger=undo,
-        reauthorize_turn=reauthorize,
-        active_document=service._active_document,
-        active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
-        edit_or_task_active=lambda: _edit_or_task_active(service),
-        authorize_output=output_authorizer,
-        authorize_input=input_authorizer,
-        background_manager=(
-            background_manager_factory()
-            if callable(background_manager_factory)
-            else None
-        ),
-        document_thread_dispatch=document_thread_dispatch,
+    try:
+        context = NativeRuntimeContext(
+            service=service,
+            document=document,
+            state=state,
+            undo_ledger=undo,
+            reauthorize_turn=reauthorize,
+            active_document=service._active_document,
+            active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
+            edit_or_task_active=lambda: _edit_or_task_active(service),
+            authorize_output=output_authorizer,
+            authorize_input=input_authorizer,
+            background_manager=(
+                background_manager_factory()
+                if callable(background_manager_factory)
+                else None
+            ),
+            document_thread_dispatch=document_thread_dispatch,
+        )
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state,
+            registry=selected_registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=service._active_document,
+            debug_sink=debug_sink,
+        )
+    except Exception:
+        undo.end_run(run_id)
+        if scope_token is not None:
+            state.end_scoped_authority(uid, scope_token)
+        raise
+    release = (
+        (lambda: state.end_scoped_authority(uid, scope_token))
+        if scope_token is not None
+        else None
     )
-    dispatcher = NativeTurnDispatcher(
-        document=document,
-        state=state,
-        registry=selected_registry,
-        turn=turn,
-        runtimes=build_native_runtime_bindings(context, turn.tool_names),
-        reauthorize_turn=reauthorize,
-        active_document=service._active_document,
-        debug_sink=debug_sink,
-    )
-    return NativeSessionExecution(dispatcher, turn, undo, run_id)
+    return NativeSessionExecution(dispatcher, turn, undo, run_id, release)

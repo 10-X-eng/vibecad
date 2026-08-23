@@ -36,6 +36,7 @@ from VibeCADModelingSurface import (
     infer_engine_from_names,
     is_model_assembly_workbench,
     modeling_surface_from_native_provider,
+    provider_engine_from_service,
     resolve_service_surface,
     share_authoring_surface,
     validate_surface_names,
@@ -714,11 +715,11 @@ def is_provider_safe_tool(
     tool_name: str,
     workbench: str | None = None,
 ) -> bool:
-    modeling_engine = getattr(service, "modeling_engine", None)
-    if (
-        callable(modeling_engine)
-        and str(modeling_engine() or "").strip().lower() == "native"
-    ):
+    try:
+        provider_engine = provider_engine_from_service(service)
+    except Exception:
+        return False
+    if provider_engine == "native":
         from VibeCADNativeProviderContext import resolve_production_native_surface
 
         try:
@@ -749,11 +750,7 @@ def provider_tool_schemas(
     *,
     runtime_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    modeling_engine = getattr(service, "modeling_engine", None)
-    if (
-        callable(modeling_engine)
-        and str(modeling_engine() or "").strip().lower() == "native"
-    ):
+    if provider_engine_from_service(service) == "native":
         from VibeCADNativeProviderContext import native_provider_tool_schemas
 
         return native_provider_tool_schemas()
@@ -779,7 +776,17 @@ def _live_provider_surface_state(
     """Capture one coherent authorization snapshot on the document thread."""
 
     workbench = service.active_workbench_name()
-    resolution = resolve_service_surface(service, workbench)
+    provider_engine = provider_engine_from_service(service)
+    if provider_engine == "native":
+        from VibeCADNativeProviderContext import resolve_production_native_surface
+
+        _registry, provider_surface = resolve_production_native_surface()
+        resolution = modeling_surface_from_native_provider(
+            workbench,
+            provider_surface,
+        )
+    else:
+        resolution = resolve_service_surface(service, workbench)
     runtime_state = _minimal_runtime_state(service)
     return {
         "workbench": workbench,
@@ -789,10 +796,14 @@ def _live_provider_surface_state(
         "available": resolution.available,
         "unavailable_reason": resolution.unavailable_reason,
         "runtime_state": runtime_state,
-        "tool_names": _provider_safe_tool_names(
-            service,
-            workbench,
-            _edit_mode_from_runtime_state(runtime_state),
+        "tool_names": (
+            list(provider_surface.tool_names)
+            if provider_engine == "native" and provider_surface.available
+            else _provider_safe_tool_names(
+                service,
+                workbench,
+                _edit_mode_from_runtime_state(runtime_state),
+            )
         ),
     }
 
@@ -1103,7 +1114,7 @@ def _capture_context_for_provider(
     }
     workbench = service.active_workbench_name()
     native_provider_surface = None
-    native_engine = str(service.modeling_engine() or "").strip().lower() == "native"
+    native_engine = provider_engine_from_service(service) == "native"
     if native_engine:
         from VibeCADNativeProviderContext import resolve_production_native_surface
 
