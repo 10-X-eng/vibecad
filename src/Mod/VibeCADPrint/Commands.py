@@ -98,6 +98,19 @@ def _active_selection() -> tuple[Any, tuple[Any, ...]]:
     return document, objects
 
 
+def _resolved_selection(
+    selection: tuple[Any, tuple[Any, ...]] | None,
+) -> tuple[Any, tuple[Any, ...]]:
+    if selection is None:
+        return _active_selection()
+    document, selected = selection
+    objects = VibeCADPrint.collect_printable_objects(
+        selected,
+        active_document=document,
+    )
+    return document, objects
+
+
 def _selection_available() -> bool:
     try:
         import FreeCAD
@@ -235,11 +248,12 @@ def open_selected_in_prusaslicer(
     *,
     installation: VibeCADPrint.SlicerInstallation | None = None,
     setup: VibeCADPrint.PrintSetup | None = None,
+    selection: tuple[Any, tuple[Any, ...]] | None = None,
 ) -> bool:
     """Export and open the selection, optionally using panel-validated choices."""
 
     try:
-        document, objects = _active_selection()
+        document, objects = _resolved_selection(selection)
     except VibeCADPrint.PrintSelectionError as exc:
         _warning("Open in PrusaSlicer", str(exc))
         return False
@@ -290,9 +304,12 @@ def _open_selected_in_prusaslicer() -> None:
     open_selected_in_prusaslicer()
 
 
-def _save_selected_3mf() -> None:
+def _save_selected_3mf(
+    *,
+    selection: tuple[Any, tuple[Any, ...]] | None = None,
+) -> None:
     try:
-        document, objects = _active_selection()
+        document, objects = _resolved_selection(selection)
     except VibeCADPrint.PrintSelectionError as exc:
         _warning("Save 3MF", str(exc))
         return

@@ -114,9 +114,19 @@ def main() -> None:
     assert len(panel.material_combos) == 1
     assert panel.material_combos[0].currentData() == material.name
     assert panel.output_location.text() == storage.directory
-    assert "120 mm Fan Frame" in panel.selection_summary.text()
-    assert "120 mm Fan Rotor" in panel.selection_summary.text()
-    assert "BodyResult" not in panel.selection_summary.text()
+    assert not panel.output_location.isVisible()
+    assert panel.selection_group.title() == "Objects to be sent"
+    assert [choice.text() for choice in panel.object_checkboxes] == [
+        "120 mm Fan Frame",
+        "120 mm Fan Rotor",
+    ]
+    assert all(choice.isChecked() for choice in panel.object_checkboxes)
+    panel.object_checkboxes[0].setChecked(False)
+    app.processEvents()
+    _document, chosen = panel._checked_print_selection()
+    assert [obj.Label for obj in chosen] == ["120 mm Fan Rotor"]
+    assert "1 of 2 objects will be sent" in panel.selection_summary.text()
+    panel.object_checkboxes[0].setChecked(True)
     assert panel.print_button.text() == "Print"
     assert panel.setup_button.text().startswith("Setup")
     assert panel.export_button.text() == "Export 3MF…"
@@ -146,6 +156,10 @@ def main() -> None:
     assert remembered.print_combo.currentData() == profile
     assert remembered.material_combos[0].currentData() == material.name
     assert not remembered.auto_arrange.isChecked()
+    assert [choice.text() for choice in remembered.object_checkboxes] == [
+        "120 mm Fan Frame",
+        "120 mm Fan Rotor",
+    ]
     screenshot = os.environ.get("VIBECAD_PRINT_PANEL_SCREENSHOT")
     if screenshot:
         assert remembered.grab().save(screenshot)

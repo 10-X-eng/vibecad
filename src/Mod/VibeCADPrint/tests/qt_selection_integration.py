@@ -45,9 +45,15 @@ def _run() -> None:
 
         panel = PrintPanel.PrintPanelWidget()
         panel._update_selection_summary()
-        assert "Frame" in panel.selection_summary.text()
-        assert "Rotor" in panel.selection_summary.text()
-        assert "FrameResult" not in panel.selection_summary.text()
+        assert [choice.text() for choice in panel.object_checkboxes] == [
+            "Frame",
+            "Rotor",
+        ]
+        assert all(choice.isChecked() for choice in panel.object_checkboxes)
+        assert all(
+            "FrameResult" not in choice.text()
+            for choice in panel.object_checkboxes
+        )
         panel.close()
         print("VIBECAD_PRINT_SELECTION_GUI_OK", flush=True)
         exit_code = 0

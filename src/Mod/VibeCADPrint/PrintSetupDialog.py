@@ -59,8 +59,9 @@ def run_with_progress(
     progress.show()
     _qt_exec(loop)
     timer.stop()
+    was_canceled = progress.wasCanceled()
     progress.close()
-    if progress.wasCanceled():
+    if was_canceled:
         future.cancel()
         raise VibeCADPrint.SlicerQueryError("PrusaSlicer profile check was canceled.")
     return future.result()

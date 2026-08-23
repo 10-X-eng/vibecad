@@ -149,3 +149,63 @@ def test_active_selection_deduplicates_a_body_and_its_picked_subelement(
 
     assert actual_document is document
     assert objects == (frame, rotor)
+
+
+def test_explicit_panel_choices_override_the_live_selection(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    commands = PrintCommandLoader.command_module()
+    installation = _installation()
+    setup = _setup()
+    document = SimpleNamespace(Label="Fan")
+
+    class Shape:
+        def isNull(self):
+            return False
+
+    frame = SimpleNamespace(Name="Body", Document=document, Shape=Shape())
+    rotor = SimpleNamespace(Name="Body001", Document=document, Shape=Shape())
+    handoff = tmp_path / "fan.3mf"
+    exported = []
+
+    class Backend:
+        def prepare_project(self, *_args):
+            return handoff
+
+        def launch(self, *_args):
+            return VibeCADPrint.LaunchResult(("prusa-slicer",), 42)
+
+    monkeypatch.setattr(commands.VibeCADPrint, "PrusaSlicerBackend", Backend)
+    monkeypatch.setattr(
+        commands,
+        "_active_selection",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("Panel choices unexpectedly reread the live selection")
+        ),
+    )
+    monkeypatch.setattr(
+        commands,
+        "_handoff_destination",
+        lambda _document, _objects: (handoff, False),
+    )
+    monkeypatch.setattr(
+        commands.VibeCADPrint,
+        "export_selection_3mf",
+        lambda objects, _destination: exported.append(objects),
+    )
+    monkeypatch.setattr(commands, "_main_window", lambda: None)
+    monkeypatch.setattr(commands, "_status", lambda _message: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "PrintSetupDialog",
+        SimpleNamespace(run_with_progress=lambda _parent, _label, operation: operation()),
+    )
+
+    assert commands.open_selected_in_prusaslicer(
+        installation=installation,
+        setup=setup,
+        selection=(document, (rotor,)),
+    )
+    assert exported == [(rotor,)]
+    assert frame not in exported[0]

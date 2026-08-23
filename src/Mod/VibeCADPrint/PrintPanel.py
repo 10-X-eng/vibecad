@@ -83,6 +83,9 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self._futures: set[Future[Any]] = set()
         self._busy = False
         self._print_selection_ready = False
+        self._selection_document: Any | None = None
+        self._selection_items: list[tuple[Any, Any, tuple[Any, ...]]] = []
+        self.object_checkboxes: list[Any] = []
         self._selection_observer: _SelectionObserver | None = None
         self._bridge = _Bridge(self)
         self._bridge.finished.connect(self._job_finished)
@@ -120,12 +123,6 @@ class PrintPanelWidget(QtWidgets.QWidget):
         content_layout = QtWidgets.QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(8)
-
-        content_layout.addWidget(QtWidgets.QLabel("<b>SELECTED OBJECTS</b>", content))
-        self.selection_summary = _wrapped(QtWidgets.QLabel(content))
-        self.selection_summary.setObjectName("VibeCADPrintSelectionSummary")
-        self.selection_summary.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        content_layout.addWidget(self.selection_summary)
 
         content_layout.addWidget(QtWidgets.QLabel("<b>PRINT SETTINGS</b>", content))
         profiles = QtWidgets.QFormLayout()
@@ -178,19 +175,26 @@ class PrintPanelWidget(QtWidgets.QWidget):
         placement.addStretch(1)
         content_layout.addLayout(placement)
 
-        content_layout.addWidget(QtWidgets.QLabel("<b>3MF OUTPUT</b>", content))
-        self.output_location = _wrapped(QtWidgets.QLabel(content))
+        self.selection_group = QtWidgets.QGroupBox("Objects to be sent", content)
+        self.selection_group.setObjectName("VibeCADPrintObjectChoices")
+        selection_layout = QtWidgets.QVBoxLayout(self.selection_group)
+        selection_layout.setContentsMargins(8, 8, 8, 8)
+        selection_layout.setSpacing(4)
+        self.selection_summary = _wrapped(QtWidgets.QLabel(self.selection_group))
+        self.selection_summary.setObjectName("VibeCADPrintSelectionSummary")
+        selection_layout.addWidget(self.selection_summary)
+        self.selection_choices_layout = QtWidgets.QVBoxLayout()
+        self.selection_choices_layout.setContentsMargins(0, 0, 0, 0)
+        self.selection_choices_layout.setSpacing(2)
+        selection_layout.addLayout(self.selection_choices_layout)
+        content_layout.addWidget(self.selection_group)
+
+        # Kept as a hidden compatibility surface for prototype callers. The
+        # everyday panel no longer spends space describing its output path;
+        # that choice remains available in Setup.
+        self.output_location = _wrapped(QtWidgets.QLabel(self))
         self.output_location.setObjectName("VibeCADPrintOutputLocation")
-        self.output_location.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        content_layout.addWidget(self.output_location)
-        automatic = _wrapped(
-            QtWidgets.QLabel(
-                "Selections are saved automatically. Change the slicer or output "
-                "location in Setup.",
-                content,
-            )
-        )
-        content_layout.addWidget(automatic)
+        self.output_location.hide()
         content_layout.addStretch(1)
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
@@ -272,9 +276,54 @@ class PrintPanelWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+    @staticmethod
+    def _selection_key(obj: Any) -> tuple[Any, ...]:
+        document = getattr(obj, "Document", None)
+        name = str(getattr(obj, "Name", "") or "")
+        if document is not None and name:
+            return ("document-object", id(document), name)
+        return ("python-object", id(obj))
+
+    def _clear_object_choices(self) -> None:
+        self._selection_items.clear()
+        self.object_checkboxes.clear()
+        while self.selection_choices_layout.count():
+            item = self.selection_choices_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _selection_choices_changed(self, *_args) -> None:
+        selected = sum(choice.isChecked() for choice in self.object_checkboxes)
+        total = len(self.object_checkboxes)
+        if total:
+            self.selection_summary.setText(
+                f"{selected} of {total} object{'s' if total != 1 else ''} will be sent"
+            )
+            self.selection_summary.setToolTip(
+                "Uncheck any selected object you do not want to send."
+            )
+        self._print_selection_ready = selected > 0
+        self._update_actions()
+
+    def _checked_print_selection(self) -> tuple[Any, tuple[Any, ...]]:
+        objects = tuple(
+            obj for choice, obj, _key in self._selection_items if choice.isChecked()
+        )
+        if self._selection_document is None or not objects:
+            raise VibeCADPrint.PrintSelectionError(
+                "Check at least one printable object to send."
+            )
+        return self._selection_document, objects
+
     def _update_selection_summary(self) -> None:
+        previous = {
+            key: choice.isChecked() for choice, _obj, key in self._selection_items
+        }
+        self._selection_document = None
+        self._clear_object_choices()
         try:
-            _document, objects = _active_print_selection()
+            document, objects = _active_print_selection()
         except (VibeCADPrint.PrintSelectionError, RuntimeError) as exc:
             self._print_selection_ready = False
             self.selection_summary.setText(str(exc))
@@ -285,17 +334,21 @@ class PrintPanelWidget(QtWidgets.QWidget):
             self.selection_summary.setText(message)
             self.selection_summary.setToolTip(message)
         else:
-            labels = tuple(
-                str(getattr(obj, "Label", "") or getattr(obj, "Name", "") or "Object")
-                for obj in objects
-            )
-            count = len(labels)
-            heading = f"{count} object{'s' if count != 1 else ''} will be sent"
-            self.selection_summary.setText(
-                heading + "\n" + "\n".join(f"• {label}" for label in labels)
-            )
-            self.selection_summary.setToolTip("\n".join(labels))
-            self._print_selection_ready = bool(objects)
+            self._selection_document = document
+            for obj in objects:
+                key = self._selection_key(obj)
+                label = str(
+                    getattr(obj, "Label", "") or getattr(obj, "Name", "") or "Object"
+                )
+                choice = QtWidgets.QCheckBox(label, self.selection_group)
+                choice.setObjectName("VibeCADPrintObjectChoice")
+                choice.setChecked(previous.get(key, True))
+                choice.toggled.connect(self._selection_choices_changed)
+                self.selection_choices_layout.addWidget(choice)
+                self.object_checkboxes.append(choice)
+                self._selection_items.append((choice, obj, key))
+            self._selection_choices_changed()
+            return
         self._update_actions()
 
     def _start_job(
@@ -579,6 +632,7 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self._update_selection_summary()
         if not self._print_selection_ready:
             return
+        selection = self._checked_print_selection()
         if not self._save() or self.installation is None:
             return
         import PrintCommandLoader
@@ -587,15 +641,20 @@ class PrintPanelWidget(QtWidgets.QWidget):
         commands.open_selected_in_prusaslicer(
             installation=self.installation,
             setup=self._current_setup(),
+            selection=selection,
         )
 
     def _open_selected(self) -> None:
         self.print_selected()
 
     def _save_selected(self) -> None:
-        import FreeCADGui
+        self._update_selection_summary()
+        if not self._print_selection_ready:
+            return
+        import PrintCommandLoader
 
-        FreeCADGui.runCommand("VibeCADPrint_Save3MF")
+        commands = PrintCommandLoader.command_module()
+        commands._save_selected_3mf(selection=self._checked_print_selection())
 
     def _initial_setup(self) -> None:
         open_setup_dialog(parent=self, backend=self.backend)
