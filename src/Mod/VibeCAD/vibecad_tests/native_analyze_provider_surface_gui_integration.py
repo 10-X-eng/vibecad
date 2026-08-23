@@ -10,6 +10,7 @@ import traceback
 
 import FreeCAD as App
 import FreeCADGui as Gui
+import Part
 from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui
@@ -37,6 +38,7 @@ from VibeCADRibbonSurface import read_active_ribbon_surface
 
 REQUIRED_DOMAIN_TOOLS = {
     "analyze.model",
+    "analyze.faces",
     "analyze.inspect",
     "analyze.geometry",
     "analyze.electromagnetic",
@@ -163,6 +165,10 @@ def _run() -> None:
         Gui.activateWorkbench("FemWorkbench")
         document = App.newDocument("NativeAnalyzeProviderSurfaceGate")
         document.UndoMode = 1
+        geometry = document.addObject("Part::Feature", "FluidDomain")
+        geometry.Label = "Rectangular Fluid Domain"
+        geometry.Shape = Part.makeBox(200.0, 60.0, 40.0)
+        document.recompute()
         VibeGui._connect_document_observer()
         controller, surface = _surface()
         frozen = NativeSurfaceSnapshot.from_surface(surface)
@@ -183,7 +189,7 @@ def _run() -> None:
         assert not provider.missing_implementation_names
         assert not provider.incomplete_definition_names
         assert len(surface.command_ids) == len(inventory.plans)
-        assert len(provider.tool_names) <= 32
+        assert len(provider.tool_names) <= 33
         assert REQUIRED_DOMAIN_TOOLS <= set(provider.tool_names)
 
         ribbon_human_only = tuple(
@@ -246,6 +252,12 @@ def _run() -> None:
         assert "analyze.fluid" not in initial_names
         assert "analyze.mesh" not in initial_names
         assert "workspace.switch" not in initial_names
+        initial_domain = service.native_active_snapshot()["domain"]
+        geometry_state = next(
+            value
+            for value in initial_domain["geometry_sources"]
+            if value["object_name"] == geometry.Name
+        )
         initial_state_bytes = len(
             json.dumps(
                 initial_context["native_state"],
@@ -283,6 +295,28 @@ def _run() -> None:
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
+        geometry_response = dispatcher.call(
+            "analyze.faces",
+            json.dumps(
+                {
+                    "target": {
+                        "object_name": geometry.Name,
+                        "expected_state_sha256": geometry_state["state_sha256"],
+                    },
+                },
+                separators=(",", ":"),
+            ),
+            "native-analyze-provider-surface-read-geometry",
+        )
+        assert geometry_response.get("ok") is True, geometry_response
+        face_page = geometry_response["face_page"]
+        assert face_page["total"] == 6
+        assert face_page["faces"][0]["subelement"] == "Face1"
+        assert face_page["faces"][0]["center_mm"] == [0.0, 30.0, 20.0]
+        assert face_page["faces"][0]["normal"] == [-1.0, 0.0, 0.0]
+        assert face_page["faces"][1]["subelement"] == "Face2"
+        assert face_page["faces"][1]["center_mm"] == [200.0, 30.0, 20.0]
+        assert face_page["faces"][1]["normal"] == [1.0, 0.0, 0.0]
         response = dispatcher.call(
             "analyze.model",
             json.dumps(

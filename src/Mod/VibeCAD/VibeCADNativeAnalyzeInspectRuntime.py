@@ -29,6 +29,7 @@ from VibeCADNativeAnalyzeInspect import (
     inspect_material_catalog,
 )
 from VibeCADNativeAnalyzePostSampling import linearized_stress_summary
+from VibeCADNativeAnalyzeGeometryRead import inspect_geometry_source
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 
@@ -36,6 +37,7 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 _VARIANTS = {
     "study": frozenset({"target"}),
     "analysis": frozenset({"target"}),
+    "geometry_source": frozenset({"target", "offset", "page_size"}),
     "assignments": frozenset({"target", "category", "offset", "page_size"}),
     "validate_assignments": frozenset({"target"}),
     "material": frozenset({"target"}),
@@ -79,6 +81,13 @@ class NativeAnalyzeInspectRuntime:
                 context.document,
                 context.document_uid,
                 values["target"],
+            )
+        elif operation == "geometry_source":
+            result = inspect_geometry_source(
+                context.document,
+                context.document_uid,
+                values.pop("target"),
+                **values,
             )
         elif operation == "assignments":
             result = inspect_assignments(

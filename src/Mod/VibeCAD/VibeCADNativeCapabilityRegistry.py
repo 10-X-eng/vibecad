@@ -33,7 +33,7 @@ from VibeCADRibbonSurface import RibbonSurface, SURFACE_IDS
 
 MAX_NATIVE_TOOLS_PER_SURFACE = 28
 MAX_NATIVE_TOOLS_BY_SURFACE = {
-    "analyze": 32,
+    "analyze": 33,
     "assemble": 38,
     "drawing": 41,
     "model": 32,

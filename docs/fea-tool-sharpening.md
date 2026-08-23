@@ -81,3 +81,38 @@ calls caused by VibeCAD's contract.
 - Registered capabilities and human ribbon actions are unchanged. The provider
   projection is rebuilt between turns from durable physics, inventory counts,
   exact target kinds, and explicit truncation state.
+- A trial that expanded every multi-operation family into top-level exact
+  `oneOf` branches made the local model serialize nested objects as strings. It
+  was removed rather than weakening runtime validation to accept malformed
+  calls.
+- The compiled inventory is 104,896 bytes. A live fluid study publishes 23,974
+  bytes and 33 tools. Its focused `analyze.faces` tool reads a bounded page of
+  exact current FaceN names, surface kinds, areas, centers, bounds, and planar
+  normals without inflating unrelated operations.
+
+### Rectangular-duct CFD baseline
+
+- The first unsteered Qwen 3.5 9B run started from one inspected 200 x 60 x
+  40 mm fluid-domain solid and this ordinary request: “Set up and run a steady
+  incompressible air-flow analysis through the supplied rectangular duct. Flow
+  travels in +X at 5 m/s, the outlet is at 0 Pa gauge, and the remaining faces
+  are no-slip walls. Use a suitable mesh, solve it, and report the pressure drop
+  and maximum velocity.” It reached the 1,800-second limit after 90 tool calls
+  without producing a mesh, complete boundaries, solver, or results.
+- Its saved FCStd contains the unchanged fluid domain, two analyses, one initial
+  velocity, and one fluid material. The trace repeatedly guessed face names and
+  state hashes because the provider exposed source topology but no exact FaceN
+  identities or geometric properties. It also mixed operation-specific fields
+  in the compact fluid, mesh, model, and inspection families.
+- A second run tested exact top-level operation branches and was worse: nested
+  analysis and reference objects were emitted as strings. Its saved artifact
+  contains only two analyses and one OpenFOAM solver. This isolates schema
+  expansion as a model-facing regression, so those branches were removed.
+- A third run used the unchanged prompt and immutable source with the focused
+  face reader. The model successfully read all six exact faces and created one
+  study, initial velocity, outlet pressure, fluid material, and OpenFOAM solver.
+  It still timed out before meshing. The trace isolates three shared contract
+  defects: provider state records are not ready-to-use exact targets, mutation
+  results expose the next analysis target inconsistently, and the multi-operation
+  mesh/inspection families invite fields from the wrong operation. The saved
+  artifact is retained for the next production correction.

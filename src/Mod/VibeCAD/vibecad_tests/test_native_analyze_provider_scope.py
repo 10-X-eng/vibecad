@@ -9,6 +9,7 @@ from VibeCADNativeAnalyzeProviderScope import (
     scope_analyze_provider_surface,
 )
 from VibeCADNativeAnalyzeFluidSchema import analyze_fluid_capability_definition
+from VibeCADNativeAnalyzeFaceSchema import analyze_face_capability_definition
 from VibeCADNativeAnalyzeInspectSchema import analyze_inspect_capability_definition
 from VibeCADNativeAnalyzeModelSchema import analyze_model_capability_definition
 from VibeCADNativeCapabilityRegistry import (
@@ -32,6 +33,7 @@ _SHARED = {
 
 _ANALYZE = {
     "analyze.model",
+    "analyze.faces",
     "analyze.inspect",
     "analyze.geometry",
     "analyze.electromagnetic",
@@ -67,6 +69,7 @@ def _domain(
     generated_mesh_count: int = 0,
     solver_count: int = 0,
     result_count: int = 0,
+    geometry_source_count: int = 0,
 ) -> dict:
     workflows = []
     if analysis_count:
@@ -95,6 +98,7 @@ def _domain(
         "analysis_count": analysis_count,
         "analysis_workflow_count": analysis_count,
         "analysis_workflows": workflows,
+        "geometry_source_count": geometry_source_count,
         "provider_scope": {
             "analysis_count": analysis_count,
             "undeclared_analysis_count": analysis_count if not physics else 0,
@@ -118,6 +122,13 @@ def test_new_analysis_surface_contains_only_setup_and_observation() -> None:
     assert not ({"analyze.fluid", "analyze.load", "analyze.mesh"} & names)
     assert "workspace.switch" not in names
     assert (_SHARED - {"workspace.switch"}) <= names
+
+
+def test_face_reader_appears_only_when_exact_geometry_exists() -> None:
+    assert "analyze.faces" not in _names(_domain(analysis_count=0))
+    assert "analyze.faces" in _names(
+        _domain(analysis_count=0, geometry_source_count=1)
+    )
 
 
 def test_declared_study_exposes_only_its_physics_and_core_lifecycle() -> None:
@@ -330,6 +341,7 @@ def test_operation_scope_publishes_only_calls_that_match_current_study_state() -
     registry = NativeCapabilityRegistry()
     definitions = (
         analyze_model_capability_definition(),
+        analyze_face_capability_definition(),
         analyze_inspect_capability_definition(),
         analyze_fluid_capability_definition(),
     )
@@ -368,6 +380,7 @@ def test_operation_scope_publishes_only_calls_that_match_current_study_state() -
     fluid_domain = _domain("fluid")
     fluid_domain.update(
         {
+            "geometry_source_count": 1,
             "materials": [],
             "fluid_constraints": [],
             "element_definitions": [],
@@ -407,6 +420,7 @@ def test_operation_scope_publishes_only_calls_that_match_current_study_state() -
         "update_study",
         "create_fluid_material",
     }
+    assert fluid_operations["analyze.faces"] == {"read"}
     assert {
         operation
         for operation in fluid_operations["analyze.fluid"]

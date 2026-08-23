@@ -198,6 +198,12 @@ NATIVE_CONTEXT_ACTIONS = (
         source_command_id="FEM_Analysis",
     ),
     _action(
+        "VibeCAD_AnalyzeReadGeometrySource", ("analyze",), ("task_panel",),
+        "read", "analyze.faces", "read",
+        "BoundedExactGeometryFacePage", "none",
+        source_command_id="VibeCAD_AnalyzeStudySetup",
+    ),
+    _action(
         "VibeCAD_AnalyzeReadAssignments", ("analyze",), ("task_panel",),
         "read", "analyze.inspect", "assignments",
         "BoundedExactFemAssignmentPage", "none",

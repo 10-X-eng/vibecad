@@ -23,6 +23,7 @@ EXPECTED_CONTEXT_ACTION_IDS = {
     "VibeCAD_NativeSketchState",
     "SketchEditDeleteGeometry",
     "VibeCAD_AnalyzeReadAnalysis",
+    "VibeCAD_AnalyzeReadGeometrySource",
     "VibeCAD_AnalyzeReadAssignments",
     "VibeCAD_AnalyzeValidateAssignments",
     "VibeCAD_AnalyzeHighlightAssignment",
@@ -210,6 +211,7 @@ def test_surface_filtering_never_leaks_context_actions() -> None:
     analyze = context_actions_for_surface("analyze")
     assert tuple(action.action_id for action in analyze) == (
         "VibeCAD_AnalyzeReadAnalysis",
+        "VibeCAD_AnalyzeReadGeometrySource",
         "VibeCAD_AnalyzeReadAssignments",
         "VibeCAD_AnalyzeValidateAssignments",
         "VibeCAD_AnalyzeHighlightAssignment",

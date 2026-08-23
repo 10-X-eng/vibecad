@@ -176,6 +176,9 @@ def analyze_provider_tool_names(
     if not isinstance(domain, Mapping) or domain.get("kind") != "analyze":
         return tuple(name for name in available_tool_names if name in allowed)
 
+    if (_nonnegative_int(domain.get("geometry_source_count")) or 0) > 0:
+        allowed.add("analyze.faces")
+
     analysis_count = _nonnegative_int(domain.get("analysis_count"))
     if analysis_count is None:
         return tuple(name for name in available_tool_names if name in allowed)

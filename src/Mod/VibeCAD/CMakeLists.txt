@@ -65,8 +65,11 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeGeometryBindings.py
     VibeCADNativeAnalyzeGeometryCreate.py
     VibeCADNativeAnalyzeGeometryEdit.py
+    VibeCADNativeAnalyzeGeometryRead.py
     VibeCADNativeAnalyzeGeometryRuntime.py
     VibeCADNativeAnalyzeGeometrySchema.py
+    VibeCADNativeAnalyzeFaceBindings.py
+    VibeCADNativeAnalyzeFaceSchema.py
     VibeCADNativeAnalyzeConstraintCreate.py
     VibeCADNativeAnalyzeConstraintEdit.py
     VibeCADNativeAnalyzeConstraintState.py

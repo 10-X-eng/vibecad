@@ -7,6 +7,12 @@ from __future__ import annotations
 from VibeCADNativeAnalyzeInspectBindings import (
     register_analyze_inspect_capability_implementation,
 )
+from VibeCADNativeAnalyzeFaceBindings import (
+    register_analyze_face_capability_implementation,
+)
+from VibeCADNativeAnalyzeFaceSchema import (
+    register_analyze_face_capability_definition,
+)
 from VibeCADNativeAnalyzeElectromagneticBindings import (
     register_analyze_electromagnetic_capability_implementation,
 )
@@ -688,6 +694,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_analyze_model_capability_implementation(registry)
     register_analyze_inspect_capability_definition(registry)
     register_analyze_inspect_capability_implementation(registry)
+    register_analyze_face_capability_definition(registry)
+    register_analyze_face_capability_implementation(registry)
     register_analyze_assignment_view_capability_definition(registry)
     register_analyze_assignment_view_capability_implementation(registry)
     register_analyze_geometry_capability_definition(registry)

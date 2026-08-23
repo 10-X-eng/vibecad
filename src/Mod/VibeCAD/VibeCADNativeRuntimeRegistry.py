@@ -9,6 +9,7 @@ from typing import Any
 from VibeCADNativeAeroBindings import aero_solve_runtime_bindings
 from VibeCADNativeAeroRuntime import NativeAeroRuntime
 from VibeCADNativeAnalyzeInspectBindings import analyze_inspect_runtime_bindings
+from VibeCADNativeAnalyzeFaceBindings import analyze_face_runtime_bindings
 from VibeCADNativeAnalyzeInspectRuntime import NativeAnalyzeInspectRuntime
 from VibeCADNativeAnalyzeAssignmentViewBindings import (
     analyze_assignment_view_runtime_bindings,
@@ -540,6 +541,7 @@ def build_native_runtime_bindings(
     available = {
         **analyze_model_runtime_bindings(analyze_model),
         **analyze_inspect_runtime_bindings(analyze_inspect),
+        **analyze_face_runtime_bindings(analyze_inspect),
         **analyze_assignment_view_runtime_bindings(analyze_assignment_view),
         **analyze_geometry_runtime_bindings(analyze_geometry),
         **analyze_electromagnetic_runtime_bindings(analyze_electromagnetic),
