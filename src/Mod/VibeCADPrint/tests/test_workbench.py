@@ -83,6 +83,7 @@ def test_cmake_installs_module_tests_and_icons() -> None:
         "InitGui.py",
         "VibeCADPrint.py",
         "PrintPreferences.py",
+        "PrintPanel.py",
         "PrintSetupDialog.py",
         "Commands.py",
         "PrintCommandLoader.py",
@@ -125,3 +126,19 @@ def test_setup_dialog_exposes_guided_detection_profiles_and_placement() -> None:
         assert text in source
     assert "ThreadPoolExecutor" in source
     assert "one material profile for every extruder" in source
+
+
+def test_print_workbench_registers_and_opens_persistent_panel() -> None:
+    init_gui = (ROOT / "InitGui.py").read_text(encoding="utf-8")
+    commands = (ROOT / "Commands.py").read_text(encoding="utf-8")
+    panel = (ROOT / "PrintPanel.py").read_text(encoding="utf-8")
+
+    assert "PrintPanel.ensure_panel_registered()" in init_gui
+    assert "PrintPanel.show_panel()" in init_gui
+    assert "PrintPanel.hide_panel()" in init_gui
+    assert "PrintPanel.show_panel()" in commands
+    assert 'DOCK_NAME = "VibeCADPrintPanel"' in panel
+    assert "Managed VibeCAD cache" in panel
+    assert "Choose a folder" in panel
+    assert "Auto-arrange" in panel
+    assert "Ensure on bed" in panel

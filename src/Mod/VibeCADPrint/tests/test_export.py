@@ -97,3 +97,19 @@ def test_managed_handoff_prunes_only_owned_old_files(tmp_path: Path) -> None:
     assert destination.name.startswith("vibecad-print-A-Plate-With-Spaces-")
     assert unrelated.exists()
     assert len(list(tmp_path.glob("vibecad-print-*.3mf"))) == 10
+
+
+def test_persistent_handoff_path_never_prunes_user_folder(tmp_path: Path) -> None:
+    existing = tmp_path / "previous-print.3mf"
+    existing.write_bytes(b"keep")
+
+    destination = VibeCADPrint.persistent_handoff_path(
+        tmp_path,
+        document_label="Gearbox / Rev B",
+        object_names=("Housing", "Cover"),
+    )
+
+    assert destination.parent == tmp_path
+    assert destination.name.startswith("Gearbox-Rev-B-")
+    assert destination.suffix == ".3mf"
+    assert existing.read_bytes() == b"keep"

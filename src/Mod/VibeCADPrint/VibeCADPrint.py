@@ -949,6 +949,23 @@ def managed_handoff_path(
     return root / f"{MANAGED_HANDOFF_PREFIX}{label}-{stamp}-{digest}.3mf"
 
 
+def persistent_handoff_path(
+    directory: str | os.PathLike[str],
+    *,
+    document_label: str,
+    object_names: Sequence[str],
+) -> Path:
+    """Create a unique user-owned handoff path without deleting older files."""
+
+    root = Path(directory).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    identity = "\0".join(str(name) for name in object_names)
+    digest = hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest()[:10]
+    label = _safe_name(document_label)
+    return root / f"{label}-{stamp}-{digest}.3mf"
+
+
 class PrusaSlicerBackend:
     """Adapter used by today's GUI and future plate/slice coordinators."""
 

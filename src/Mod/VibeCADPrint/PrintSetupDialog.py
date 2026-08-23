@@ -261,6 +261,40 @@ class PrintSetupDialog(QtWidgets.QDialog):
         placement_layout.addWidget(self.ensure_on_bed)
         layout.addWidget(placement_group)
 
+        storage_group = QtWidgets.QGroupBox("3MF handoff location", self)
+        storage_layout = QtWidgets.QVBoxLayout(storage_group)
+        self.managed_storage = QtWidgets.QRadioButton(
+            "Managed VibeCAD cache", storage_group
+        )
+        self.folder_storage = QtWidgets.QRadioButton("Choose a folder", storage_group)
+        storage_layout.addWidget(self.managed_storage)
+        storage_layout.addWidget(self.folder_storage)
+        folder_row = QtWidgets.QWidget(storage_group)
+        folder_layout = QtWidgets.QHBoxLayout(folder_row)
+        folder_layout.setContentsMargins(0, 0, 0, 0)
+        self.folder_edit = QtWidgets.QLineEdit(folder_row)
+        self.folder_edit.setPlaceholderText("Folder for persistent 3MF files")
+        browse_folder = QtWidgets.QPushButton("Browse…", folder_row)
+        browse_folder.clicked.connect(self._browse_handoff_folder)
+        folder_layout.addWidget(self.folder_edit, 1)
+        folder_layout.addWidget(browse_folder)
+        storage_layout.addWidget(folder_row)
+        storage_note = QtWidgets.QLabel(
+            "Managed files are automatically limited to recent handoffs. Files "
+            "in your chosen folder are never pruned by VibeCAD.",
+            storage_group,
+        )
+        _configure_wrapped_label(storage_note)
+        storage_layout.addWidget(storage_note)
+        storage = PrintPreferences.load_handoff_storage()
+        self.folder_edit.setText(storage.directory)
+        self.folder_edit.textChanged.connect(self._update_actions)
+        self.managed_storage.setChecked(storage.mode == "managed")
+        self.folder_storage.setChecked(storage.mode == "folder")
+        self.managed_storage.toggled.connect(self._storage_changed)
+        self.folder_storage.toggled.connect(self._storage_changed)
+        layout.addWidget(storage_group)
+
         self.summary = QtWidgets.QLabel(self)
         _configure_wrapped_label(self.summary)
         self.summary.setObjectName("VibeCADPrintSetupSummary")
@@ -287,6 +321,7 @@ class PrintSetupDialog(QtWidgets.QDialog):
         layout.addWidget(self.buttons)
 
         self._clear_profiles()
+        self._storage_changed()
         self._update_summary()
         self.resize(700, 590)
         self._ensure_layout_room()
@@ -348,8 +383,34 @@ class PrintSetupDialog(QtWidgets.QDialog):
         self.printer_combo.setEnabled(not busy)
         self.print_combo.setEnabled(not busy)
         self.save_button.setEnabled(
-            False if busy else self._selected_setup() is not None
+            False
+            if busy
+            else self._selected_setup() is not None
+            and self._selected_storage() is not None
         )
+
+    def _selected_storage(self) -> PrintPreferences.HandoffStorage | None:
+        directory = self.folder_edit.text().strip()
+        if self.folder_storage.isChecked():
+            if not directory:
+                return None
+            return PrintPreferences.HandoffStorage("folder", directory)
+        return PrintPreferences.HandoffStorage("managed", directory)
+
+    def _storage_changed(self, *_args) -> None:
+        self.folder_edit.setEnabled(self.folder_storage.isChecked())
+        self._update_actions()
+
+    def _browse_handoff_folder(self) -> None:
+        start = self.folder_edit.text().strip() or str(Path.home())
+        selected = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Choose a folder for 3MF handoffs",
+            start,
+        )
+        if selected:
+            self.folder_edit.setText(str(selected))
+            self.folder_storage.setChecked(True)
 
     def _locate(self) -> None:
         selected = _browse_for_prusaslicer(self, self.executable.text())
@@ -605,13 +666,17 @@ class PrintSetupDialog(QtWidgets.QDialog):
         installation = self._selected_installation()
         self.open_slicer_button.setEnabled(installation is not None)
         self.basic_button.setEnabled(self.open_after_save and installation is not None)
-        self.save_button.setEnabled(self._selected_setup() is not None)
+        self.save_button.setEnabled(
+            self._selected_setup() is not None
+            and self._selected_storage() is not None
+        )
         self._update_summary()
 
     def _update_summary(self, *_args) -> None:
         installation = self._selected_installation()
         printer = self._selected_printer()
         print_profile = self._selected_print_profile()
+        storage = self._selected_storage()
         materials = [
             str(combo.currentData() or "Not selected")
             for combo in self._material_combos
@@ -623,34 +688,49 @@ class PrintSetupDialog(QtWidgets.QDialog):
             f"{print_profile.name if print_profile else 'No print profile'} | "
             f"materials: {', '.join(materials) if materials else 'not selected'} | "
             f"Auto-arrange: {'on' if self.auto_arrange.isChecked() else 'off'} | "
-            f"Ensure on bed: {'on' if self.ensure_on_bed.isChecked() else 'off'}"
+            f"Ensure on bed: {'on' if self.ensure_on_bed.isChecked() else 'off'} | "
+            "3MF: "
+            + (
+                storage.directory
+                if storage is not None and storage.mode == "folder"
+                else "managed cache"
+                if storage is not None
+                else "choose a folder"
+            )
         )
         if hasattr(self, "save_button"):
-            self.save_button.setEnabled(self._selected_setup() is not None)
+            self.save_button.setEnabled(
+                self._selected_setup() is not None
+                and self._selected_storage() is not None
+            )
             QtCore.QTimer.singleShot(0, self._ensure_layout_room)
 
     def _accept_setup(self) -> None:
         setup = self._selected_setup()
+        storage = self._selected_storage()
         installation = self._selected_installation()
-        if setup is None or installation is None:
+        if setup is None or storage is None or installation is None:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Incomplete Print Setup",
                 "Explicitly select a printer, print profile, and one compatible "
-                "material profile for every extruder.",
+                "material profile for every extruder, plus a 3MF handoff location.",
             )
             return
         PrintPreferences.set_executable_override(self.executable.text())
         PrintPreferences.save_confirmed_setup(setup)
+        PrintPreferences.save_handoff_storage(storage)
         self.result_installation = installation
         self.result_setup = setup
         self.accept()
 
     def _accept_basic(self) -> None:
         installation = self._selected_installation()
-        if installation is None:
+        storage = self._selected_storage()
+        if installation is None or storage is None:
             return
         PrintPreferences.set_executable_override(self.executable.text())
+        PrintPreferences.save_handoff_storage(storage)
         self.result_installation = installation
         self.result_setup = None
         self.accept()

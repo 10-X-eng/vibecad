@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from typing import Any
 
@@ -17,6 +18,16 @@ PRINT_PROFILE_KEY = "PrintProfile"
 MATERIAL_PROFILES_KEY = "MaterialProfilesJson"
 AUTO_ARRANGE_KEY = "AutoArrange"
 ENSURE_ON_BED_KEY = "EnsureOnBed"
+HANDOFF_STORAGE_MODE_KEY = "HandoffStorageMode"
+HANDOFF_DIRECTORY_KEY = "HandoffDirectory"
+
+
+@dataclass(frozen=True)
+class HandoffStorage:
+    """Explicit location policy for automatically generated handoff files."""
+
+    mode: str = "managed"
+    directory: str = ""
 
 
 def preferences() -> Any:
@@ -33,6 +44,31 @@ def executable_override(*, params: Any | None = None) -> str:
 def set_executable_override(value: str, *, params: Any | None = None) -> None:
     group = params or preferences()
     group.SetString(EXECUTABLE_KEY, str(value or "").strip())
+
+
+def load_handoff_storage(*, params: Any | None = None) -> HandoffStorage:
+    group = params or preferences()
+    mode = str(group.GetString(HANDOFF_STORAGE_MODE_KEY, "managed") or "managed")
+    directory = str(group.GetString(HANDOFF_DIRECTORY_KEY, "") or "").strip()
+    if mode not in {"managed", "folder"} or (mode == "folder" and not directory):
+        return HandoffStorage()
+    return HandoffStorage(mode=mode, directory=directory)
+
+
+def save_handoff_storage(
+    storage: HandoffStorage,
+    *,
+    params: Any | None = None,
+) -> None:
+    mode = str(storage.mode or "").strip()
+    directory = str(storage.directory or "").strip()
+    if mode not in {"managed", "folder"}:
+        raise ValueError("3MF storage mode must be 'managed' or 'folder'.")
+    if mode == "folder" and not directory:
+        raise ValueError("Choose a folder for persistent 3MF handoffs.")
+    group = params or preferences()
+    group.SetString(HANDOFF_STORAGE_MODE_KEY, mode)
+    group.SetString(HANDOFF_DIRECTORY_KEY, directory)
 
 
 def load_confirmed_setup(

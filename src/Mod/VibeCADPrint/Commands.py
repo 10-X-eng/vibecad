@@ -176,6 +176,32 @@ def _managed_cache_directory() -> Path:
     return Path(str(FreeCAD.getUserCachePath())) / "VibeCAD" / "3DPrint" / "handoff"
 
 
+def _handoff_destination(
+    document: Any,
+    objects: tuple[Any, ...],
+) -> tuple[Path, bool]:
+    storage = PrintPreferences.load_handoff_storage()
+    label = str(getattr(document, "Label", "") or "Untitled")
+    names = tuple(str(getattr(obj, "Name", "")) for obj in objects)
+    if storage.mode == "folder":
+        return (
+            VibeCADPrint.persistent_handoff_path(
+                storage.directory,
+                document_label=label,
+                object_names=names,
+            ),
+            False,
+        )
+    return (
+        VibeCADPrint.managed_handoff_path(
+            _managed_cache_directory(),
+            document_label=label,
+            object_names=names,
+        ),
+        True,
+    )
+
+
 def _open_selected_in_prusaslicer() -> None:
     try:
         document, objects = _active_selection()
@@ -188,19 +214,16 @@ def _open_selected_in_prusaslicer() -> None:
     if resolved is None:
         return
     installation, setup = resolved
-    destination = VibeCADPrint.managed_handoff_path(
-        _managed_cache_directory(),
-        document_label=str(getattr(document, "Label", "") or "Untitled"),
-        object_names=tuple(str(getattr(obj, "Name", "")) for obj in objects),
-    )
     try:
+        destination, managed = _handoff_destination(document, objects)
         VibeCADPrint.export_selection_3mf(objects, destination)
         result = backend.launch(installation, destination, setup)
-        VibeCADPrint.prune_managed_handoffs(
-            destination.parent,
-            keep=VibeCADPrint.DEFAULT_HANDOFF_LIMIT,
-        )
-    except VibeCADPrint.SlicerError as exc:
+        if managed:
+            VibeCADPrint.prune_managed_handoffs(
+                destination.parent,
+                keep=VibeCADPrint.DEFAULT_HANDOFF_LIMIT,
+            )
+    except (OSError, VibeCADPrint.SlicerError) as exc:
         _warning("Open in PrusaSlicer", str(exc))
         return
     profile = (
@@ -210,7 +233,7 @@ def _open_selected_in_prusaslicer() -> None:
     )
     _status(
         f"Opened {len(objects)} selected object(s) in {installation.display_name} "
-        f"using {profile}. Process {result.process_id or 'started'}."
+        f"using {profile}. 3MF: {destination}. Process {result.process_id or 'started'}."
     )
 
 
@@ -291,13 +314,9 @@ class _PrintSetupCommand:
         return True
 
     def Activated(self) -> None:
-        import PrintSetupDialog
+        import PrintPanel
 
-        PrintSetupDialog.choose_print_setup(
-            parent=_main_window(),
-            backend=VibeCADPrint.PrusaSlicerBackend(),
-            open_after_save=False,
-        )
+        PrintPanel.show_panel()
 
 
 def register_commands(gui: Any | None = None) -> None:

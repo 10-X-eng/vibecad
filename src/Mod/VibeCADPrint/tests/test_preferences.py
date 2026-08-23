@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import PrintPreferences
 import VibeCADPrint
+import pytest
 
 
 class _Params:
@@ -94,3 +95,29 @@ def test_executable_override_and_clear_are_additive_preferences() -> None:
     )
     assert PrintPreferences.load_confirmed_setup(params=params) is None
     assert params.values == {"PrusaSlicerExecutable": "/opt/Prusa Slicer/prusa-slicer"}
+
+
+def test_handoff_storage_round_trips_managed_or_explicit_folder() -> None:
+    params = _Params()
+
+    assert PrintPreferences.load_handoff_storage(params=params) == (
+        PrintPreferences.HandoffStorage(mode="managed", directory="")
+    )
+
+    storage = PrintPreferences.HandoffStorage(
+        mode="folder",
+        directory="/home/maker/Print Projects",
+    )
+    PrintPreferences.save_handoff_storage(storage, params=params)
+
+    assert PrintPreferences.load_handoff_storage(params=params) == storage
+
+
+def test_custom_handoff_storage_requires_an_explicit_folder() -> None:
+    params = _Params()
+
+    with pytest.raises(ValueError, match="folder"):
+        PrintPreferences.save_handoff_storage(
+            PrintPreferences.HandoffStorage(mode="folder", directory=""),
+            params=params,
+        )

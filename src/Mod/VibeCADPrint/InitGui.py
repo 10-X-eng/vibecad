@@ -16,8 +16,10 @@ class VibeCADPrintWorkbench(Workbench):
 
     def Initialize(self):
         import PrintCommandLoader
+        import PrintPanel
 
         PrintCommandLoader.ensure_commands_registered()
+        PrintPanel.ensure_panel_registered()
         send_commands = [
             "VibeCADPrint_OpenInPrusaSlicer",
             "VibeCADPrint_Save3MF",
@@ -29,9 +31,15 @@ class VibeCADPrintWorkbench(Workbench):
         Log("Loading VibeCAD 3D Print workbench... done\n")
 
     def Activated(self):
+        import PrintPanel
+
         Msg("VibeCADPrintWorkbench::Activated()\n")
+        PrintPanel.show_panel()
 
     def Deactivated(self):
+        import PrintPanel
+
+        PrintPanel.hide_panel()
         Msg("VibeCADPrintWorkbench::Deactivated()\n")
 
     def GetClassName(self):

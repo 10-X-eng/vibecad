@@ -6,6 +6,7 @@ SET(VibeCADPrint_SRCS
     Commands.py
     PrintCommandLoader.py
     PrintIcons.py
+    PrintPanel.py
     PrintPreferences.py
     PrintSetupDialog.py
     VibeCADPrint.py
@@ -21,6 +22,8 @@ SET(VibeCADPrint_Tests
     tests/__init__.py
     tests/conftest.py
     tests/qt_dialog_layout.py
+    tests/qt_panel_integration.py
+    tests/qt_workbench_panel_integration.py
     tests/test_backend.py
     tests/test_export.py
     tests/test_preferences.py
