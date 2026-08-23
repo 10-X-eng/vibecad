@@ -152,10 +152,12 @@ class SlicerInstallation:
     display_name: str
     config_dir: str = ""
     capabilities: tuple[str, ...] = BACKEND_CAPABILITIES
+    resource_dir: str = ""
+    tested_version: tuple[int, int, int] = TESTED_PRUSASLICER_VERSION
 
     @property
     def tested(self) -> bool:
-        return version_key(self.version) >= TESTED_PRUSASLICER_VERSION
+        return version_key(self.version) >= self.tested_version
 
 
 @dataclass(frozen=True)
@@ -1092,6 +1094,7 @@ class PrusaSlicerBackend:
     """Adapter used by today's GUI and future plate/slice coordinators."""
 
     backend_id = "prusaslicer"
+    display_name = "PrusaSlicer"
     capabilities = BACKEND_CAPABILITIES
 
     def discover(self, explicit_executable: str = "") -> tuple[SlicerInstallation, ...]:

@@ -34,8 +34,8 @@ def main() -> None:
         + (styles / "VibeDark.qss").read_text(encoding="utf-8")
     )
 
-    PrintPreferences.load_confirmed_setup = lambda: None
-    PrintPreferences.executable_override = lambda: ""
+    PrintPreferences.load_confirmed_setup = lambda **_kwargs: None
+    PrintPreferences.executable_override = lambda **_kwargs: ""
     real_single_shot = PrintSetupDialog.QtCore.QTimer.singleShot
     PrintSetupDialog.QtCore.QTimer.singleShot = lambda *_args: None
 

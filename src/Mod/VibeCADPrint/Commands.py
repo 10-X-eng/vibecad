@@ -263,6 +263,56 @@ def open_selected_in_prusaslicer(
         if resolved is None:
             return False
         installation, setup = resolved
+    return _open_resolved_in_slicer(
+        backend=backend,
+        installation=installation,
+        setup=setup,
+        document=document,
+        objects=objects,
+    )
+
+
+def open_selected_in_slicer(
+    *,
+    backend: Any,
+    installation: VibeCADPrint.SlicerInstallation,
+    setup: VibeCADPrint.PrintSetup | None,
+    selection: tuple[Any, tuple[Any, ...]] | None = None,
+) -> bool:
+    """Export, prepare, and launch using an already validated slicer backend."""
+
+    slicer_name = str(
+        getattr(backend, "display_name", "")
+        or getattr(installation, "display_name", "")
+        or "slicer"
+    )
+    try:
+        document, objects = _resolved_selection(selection)
+    except VibeCADPrint.PrintSelectionError as exc:
+        _warning(f"Open in {slicer_name}", str(exc))
+        return False
+    return _open_resolved_in_slicer(
+        backend=backend,
+        installation=installation,
+        setup=setup,
+        document=document,
+        objects=objects,
+    )
+
+
+def _open_resolved_in_slicer(
+    *,
+    backend: Any,
+    installation: VibeCADPrint.SlicerInstallation,
+    setup: VibeCADPrint.PrintSetup | None,
+    document: Any,
+    objects: tuple[Any, ...],
+) -> bool:
+    slicer_name = str(
+        getattr(backend, "display_name", "")
+        or getattr(installation, "display_name", "")
+        or "slicer"
+    )
     try:
         destination, managed = _handoff_destination(document, objects)
         VibeCADPrint.export_selection_3mf(objects, destination)
@@ -271,7 +321,7 @@ def open_selected_in_prusaslicer(
 
             PrintSetupDialog.run_with_progress(
                 _main_window(),
-                "Arranging objects and preparing the PrusaSlicer project…",
+                f"Arranging objects and preparing the {slicer_name} project…",
                 lambda: backend.prepare_project(
                     installation,
                     destination,
@@ -286,12 +336,12 @@ def open_selected_in_prusaslicer(
                 keep=VibeCADPrint.DEFAULT_HANDOFF_LIMIT,
             )
     except (OSError, VibeCADPrint.SlicerError) as exc:
-        _warning("Open in PrusaSlicer", str(exc))
+        _warning(f"Open in {slicer_name}", str(exc))
         return False
     profile = (
         setup.printer_profile
         if setup is not None
-        else "profiles selected in PrusaSlicer"
+        else f"profiles selected in {slicer_name}"
     )
     _status(
         f"Opened {len(objects)} selected object(s) in {installation.display_name} "

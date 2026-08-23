@@ -121,3 +121,52 @@ def test_custom_handoff_storage_requires_an_explicit_folder() -> None:
             PrintPreferences.HandoffStorage(mode="folder", directory=""),
             params=params,
         )
+
+
+def test_backend_preferences_are_separate_and_prusa_keys_remain_compatible() -> None:
+    params = _Params()
+    bambu = VibeCADPrint.PrintSetup(
+        printer_profile="Bambu Lab X1 Carbon 0.4 nozzle",
+        print_profile="0.20mm Standard @BBL X1C",
+        material_profiles=("Generic PLA",),
+    )
+
+    assert PrintPreferences.active_backend(params=params) == "prusaslicer"
+    PrintPreferences.set_active_backend("bambustudio", params=params)
+    PrintPreferences.set_executable_override(
+        "/opt/BambuStudio/bin/bambu-studio",
+        backend_id="bambustudio",
+        params=params,
+    )
+    PrintPreferences.save_confirmed_setup(
+        _setup(),
+        backend_id="prusaslicer",
+        params=params,
+    )
+    PrintPreferences.save_confirmed_setup(
+        bambu,
+        backend_id="bambustudio",
+        params=params,
+    )
+
+    assert PrintPreferences.active_backend(params=params) == "bambustudio"
+    assert PrintPreferences.load_confirmed_setup(
+        backend_id="prusaslicer", params=params
+    ) == _setup()
+    assert PrintPreferences.load_confirmed_setup(
+        backend_id="bambustudio", params=params
+    ) == bambu
+    assert PrintPreferences.executable_override(
+        backend_id="bambustudio", params=params
+    ) == "/opt/BambuStudio/bin/bambu-studio"
+    assert params.values["PrinterProfile"] == _setup().printer_profile
+    assert params.values["BambuStudioPrinterProfile"] == bambu.printer_profile
+
+
+def test_unknown_backend_preference_is_rejected_without_changing_state() -> None:
+    params = _Params()
+
+    with pytest.raises(ValueError, match="backend"):
+        PrintPreferences.set_active_backend("unknown", params=params)
+
+    assert params.values == {}

@@ -42,11 +42,13 @@ def main() -> None:
     )
     storage = PrintPreferences.HandoffStorage("folder", "/tmp/print-projects")
     saved: dict[str, object] = {"setup": setup, "storage": storage}
-    PrintPanel.PrintPreferences.load_confirmed_setup = lambda: saved["setup"]
+    PrintPanel.PrintPreferences.load_confirmed_setup = (
+        lambda **_kwargs: saved["setup"]
+    )
     PrintPanel.PrintPreferences.load_handoff_storage = lambda: saved["storage"]
-    PrintPanel.PrintPreferences.executable_override = lambda: ""
-    PrintPanel.PrintPreferences.save_confirmed_setup = lambda value: saved.__setitem__(
-        "setup", value
+    PrintPanel.PrintPreferences.executable_override = lambda **_kwargs: ""
+    PrintPanel.PrintPreferences.save_confirmed_setup = (
+        lambda value, **_kwargs: saved.__setitem__("setup", value)
     )
     PrintPanel.PrintPreferences.save_handoff_storage = lambda value: saved.__setitem__(
         "storage", value
@@ -88,6 +90,9 @@ def main() -> None:
     )
 
     class Backend:
+        backend_id = "prusaslicer"
+        display_name = "PrusaSlicer"
+
         def discover(self, _override=""):
             return (installation,)
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Persistent daily-use 3D Print panel backed by exact PrusaSlicer profiles."""
+"""Persistent daily-use 3D Print panel backed by exact slicer profiles."""
 
 from __future__ import annotations
 
@@ -40,6 +40,28 @@ def _active_print_selection() -> tuple[Any, tuple[Any, ...]]:
     return PrintCommandLoader.command_module()._active_selection()
 
 
+def _backend_for_id(backend_id: str) -> Any:
+    """Create a supported slicer adapter without loading unused integrations."""
+
+    if backend_id == "bambustudio":
+        import BambuStudio
+
+        return BambuStudio.BambuStudioBackend()
+    if backend_id == "prusaslicer":
+        return VibeCADPrint.PrusaSlicerBackend()
+    raise ValueError(f"Unsupported slicer backend: {backend_id}")
+
+
+def _backend_display_name(backend: Any) -> str:
+    value = str(getattr(backend, "display_name", "") or "").strip()
+    if value:
+        return value
+    return {
+        "bambustudio": "Bambu Studio",
+        "prusaslicer": "PrusaSlicer",
+    }.get(str(getattr(backend, "backend_id", "")), "PrusaSlicer")
+
+
 class _Bridge(QtCore.QObject):
     finished = QtCore.Signal(int, object, object)
 
@@ -72,12 +94,19 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self.setObjectName("VibeCADPrintPanelContents")
         self.setWindowTitle("3D Print")
         self.setMinimumWidth(280)
-        self.backend = VibeCADPrint.PrusaSlicerBackend()
+        self.backend_id = PrintPreferences.active_backend()
+        try:
+            self.backend = _backend_for_id(self.backend_id)
+        except ValueError:
+            self.backend_id = "prusaslicer"
+            self.backend = _backend_for_id(self.backend_id)
         self.installation: VibeCADPrint.SlicerInstallation | None = None
         self.printers: tuple[VibeCADPrint.PrinterProfile, ...] = ()
         self.catalog: VibeCADPrint.ProfileCatalog | None = None
         self.material_combos: list[Any] = []
-        self._remembered = PrintPreferences.load_confirmed_setup()
+        self._remembered = PrintPreferences.load_confirmed_setup(
+            backend_id=self.backend_id
+        )
         self._job = 0
         self._callback: Callable[[Any], None] | None = None
         self._futures: set[Future[Any]] = set()
@@ -95,19 +124,27 @@ class PrintPanelWidget(QtWidgets.QWidget):
         outer.setSpacing(8)
 
         header = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel("<b>Print with PrusaSlicer</b>", self)
-        header.addWidget(title, 1)
+        self.title_label = QtWidgets.QLabel("<b>3D Print</b>", self)
+        header.addWidget(self.title_label, 1)
         self.refresh_button = QtWidgets.QPushButton("Refresh", self)
-        self.refresh_button.setToolTip("Reload profiles installed by PrusaSlicer")
         self.refresh_button.clicked.connect(self.refresh)
         self.setup_button = QtWidgets.QPushButton("Setup…", self)
-        self.setup_button.setToolTip(
-            "Locate PrusaSlicer and configure profiles and 3MF storage"
-        )
         self.setup_button.clicked.connect(self._initial_setup)
         header.addWidget(self.refresh_button)
         header.addWidget(self.setup_button)
         outer.addLayout(header)
+
+        slicer_row = QtWidgets.QFormLayout()
+        slicer_row.setContentsMargins(0, 0, 0, 0)
+        self.slicer_combo = _compact_combo(QtWidgets.QComboBox(self))
+        self.slicer_combo.setObjectName("VibeCADPrintSlicerBackend")
+        self.slicer_combo.addItem("PrusaSlicer", "prusaslicer")
+        self.slicer_combo.addItem("Bambu Studio", "bambustudio")
+        selected_backend = self.slicer_combo.findData(self.backend_id)
+        self.slicer_combo.setCurrentIndex(max(0, selected_backend))
+        self.slicer_combo.currentIndexChanged.connect(self._slicer_changed)
+        slicer_row.addRow("Slicer", self.slicer_combo)
+        outer.addLayout(slicer_row)
 
         self.installation_label = _wrapped(QtWidgets.QLabel(self))
         self.installation_label.setObjectName("VibeCADPrintInstallationSummary")
@@ -224,6 +261,7 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self.installation_combo = QtWidgets.QComboBox(self)
         self.installation_combo.hide()
 
+        self._update_backend_ui()
         self._update_output_location()
         self._clear_profiles()
         self._attach_selection_observer()
@@ -234,18 +272,62 @@ class PrintPanelWidget(QtWidgets.QWidget):
         return QtCore.QSize(360, 640)
 
     def refresh(self) -> None:
-        self._remembered = PrintPreferences.load_confirmed_setup()
+        self._remembered = PrintPreferences.load_confirmed_setup(
+            backend_id=self.backend_id
+        )
         if self._remembered is not None:
             self.auto_arrange.setChecked(self._remembered.auto_arrange)
             self.ensure_on_bed.setChecked(self._remembered.ensure_on_bed)
         self._update_output_location()
-        override = PrintPreferences.executable_override()
+        override = PrintPreferences.executable_override(backend_id=self.backend_id)
         self._clear_profiles()
         self._start_job(
-            "Loading installed PrusaSlicer profiles…",
+            f"Loading installed {_backend_display_name(self.backend)} profiles…",
             lambda: self.backend.discover(override),
             self._installations_loaded,
         )
+
+    def _update_backend_ui(self) -> None:
+        display_name = _backend_display_name(self.backend)
+        self.refresh_button.setToolTip(
+            f"Reload profiles installed by {display_name}"
+        )
+        self.setup_button.setToolTip(
+            f"Locate {display_name} and configure profiles and 3MF storage"
+        )
+        self.print_button.setToolTip(
+            f"Export the selection and open it in {display_name} with these exact profiles"
+        )
+
+    def _slicer_changed(self, _index: int) -> None:
+        backend_id = str(self.slicer_combo.currentData() or "")
+        if not backend_id or backend_id == self.backend_id:
+            return
+        try:
+            backend = _backend_for_id(backend_id)
+        except ValueError as exc:
+            self.status.setText(str(exc))
+            return
+        PrintPreferences.set_active_backend(backend_id)
+        self.backend_id = backend_id
+        self.backend = backend
+        self.installation = None
+        self._remembered = PrintPreferences.load_confirmed_setup(
+            backend_id=self.backend_id
+        )
+        remembered = self._remembered
+        self.auto_arrange.blockSignals(True)
+        self.ensure_on_bed.blockSignals(True)
+        self.auto_arrange.setChecked(
+            remembered.auto_arrange if remembered is not None else True
+        )
+        self.ensure_on_bed.setChecked(
+            remembered.ensure_on_bed if remembered is not None else True
+        )
+        self.auto_arrange.blockSignals(False)
+        self.ensure_on_bed.blockSignals(False)
+        self._update_backend_ui()
+        self.refresh()
 
     def _update_output_location(self) -> None:
         storage = PrintPreferences.load_handoff_storage()
@@ -393,6 +475,7 @@ class PrintPanelWidget(QtWidgets.QWidget):
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
+        self.slicer_combo.setEnabled(not busy)
         self.refresh_button.setEnabled(not busy)
         self.printer_combo.setEnabled(not busy)
         self.print_combo.setEnabled(not busy)
@@ -409,14 +492,21 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self.installation_combo.blockSignals(False)
         self.installation = preferred
         if preferred is None:
-            self.installation_label.setText("PrusaSlicer is not configured")
-            self.status.setText("Click Setup to locate PrusaSlicer and choose profiles.")
+            self.installation_label.setText(
+                f"{_backend_display_name(self.backend)} is not configured"
+            )
+            self.status.setText(
+                f"Click Setup to locate {_backend_display_name(self.backend)} and "
+                "choose profiles."
+            )
             self._update_actions()
             return
         self.installation_label.setText(preferred.display_name)
         if not preferred.tested:
+            baseline = ".".join(str(part) for part in preferred.tested_version)
             self.status.setText(
-                f"PrusaSlicer {preferred.version} is below the tested 2.9.6 baseline."
+                f"{_backend_display_name(self.backend)} {preferred.version} is below the "
+                f"tested {baseline} baseline."
             )
             self._update_actions()
             return
@@ -503,11 +593,15 @@ class PrintPanelWidget(QtWidgets.QWidget):
 
     def _profiles_loaded(self, value: Any) -> None:
         if not isinstance(value, VibeCADPrint.ProfileCatalog):
-            self.status.setText("PrusaSlicer returned an invalid profile catalog.")
+            self.status.setText(
+                f"{_backend_display_name(self.backend)} returned an invalid profile catalog."
+            )
             return
         printer = self._selected_printer()
         if printer is None or value.printer_profile != printer.name:
-            self.status.setText("PrusaSlicer returned profiles for another printer.")
+            self.status.setText(
+                f"{_backend_display_name(self.backend)} returned profiles for another printer."
+            )
             return
         self.catalog = value
         self.print_combo.blockSignals(True)
@@ -609,7 +703,10 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self.print_button.setEnabled(ready)
         self.export_button.setEnabled(self._print_selection_ready)
         if setup is not None:
-            PrintPreferences.save_confirmed_setup(setup)
+            PrintPreferences.save_confirmed_setup(
+                setup,
+                backend_id=self.backend_id,
+            )
             self._remembered = setup
             self.status.setText("Ready · selections saved automatically")
         elif not self._busy and self.status.text().startswith("Ready"):
@@ -620,7 +717,10 @@ class PrintPanelWidget(QtWidgets.QWidget):
         if setup is None:
             self.status.setText("Choose a printer, quality, and material.")
             return False
-        PrintPreferences.save_confirmed_setup(setup)
+        PrintPreferences.save_confirmed_setup(
+            setup,
+            backend_id=self.backend_id,
+        )
         self._remembered = setup
         self.status.setText("Ready · selections saved automatically")
         return True
@@ -638,7 +738,8 @@ class PrintPanelWidget(QtWidgets.QWidget):
         import PrintCommandLoader
 
         commands = PrintCommandLoader.command_module()
-        commands.open_selected_in_prusaslicer(
+        commands.open_selected_in_slicer(
+            backend=self.backend,
             installation=self.installation,
             setup=self._current_setup(),
             selection=selection,
@@ -712,7 +813,7 @@ def hide_panel() -> None:
 def open_setup_dialog(
     *,
     parent: Any | None = None,
-    backend: VibeCADPrint.PrusaSlicerBackend | None = None,
+    backend: Any | None = None,
 ) -> Any:
     """Open explicit slicer configuration and refresh the daily-use panel."""
 

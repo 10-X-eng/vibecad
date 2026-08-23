@@ -3,6 +3,7 @@
 SET(VibeCADPrint_SRCS
     Init.py
     InitGui.py
+    BambuStudio.py
     Commands.py
     PrintCommandLoader.py
     PrintIcons.py
@@ -22,12 +23,15 @@ SET(VibeCADPrint_Tests
     tests/__init__.py
     tests/conftest.py
     tests/qt_dialog_layout.py
+    tests/qt_bambu_setup_integration.py
+    tests/qt_backend_switch_integration.py
     tests/qt_panel_integration.py
     tests/qt_panel_persistence_integration.py
     tests/qt_progress_integration.py
     tests/qt_selection_integration.py
     tests/qt_workbench_panel_integration.py
     tests/test_backend.py
+    tests/test_bambu_backend.py
     tests/test_commands.py
     tests/test_export.py
     tests/test_preferences.py

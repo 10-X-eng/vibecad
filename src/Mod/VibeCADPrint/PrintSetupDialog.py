@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Guided, non-blocking PrusaSlicer profile and placement setup."""
+"""Guided, non-blocking external-slicer profile and placement setup."""
 
 from __future__ import annotations
 
@@ -18,7 +18,11 @@ import VibeCADPrint
 
 
 DOWNLOAD_URL = "https://www.prusa3d.com/page/prusaslicer_424/"
-_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vibecad-prusa")
+DOWNLOAD_URLS = {
+    "prusaslicer": DOWNLOAD_URL,
+    "bambustudio": "https://github.com/bambulab/BambuStudio/releases",
+}
+_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vibecad-print-setup")
 
 
 def _qt_exec(value: Any) -> int:
@@ -63,7 +67,7 @@ def run_with_progress(
     progress.close()
     if was_canceled:
         future.cancel()
-        raise VibeCADPrint.SlicerQueryError("PrusaSlicer profile check was canceled.")
+        raise VibeCADPrint.SlicerQueryError("Slicer profile check was canceled.")
     return future.result()
 
 
@@ -116,18 +120,22 @@ class VibeCADPrintPreferencesPage:
 
 
 def _browse_for_prusaslicer(parent: Any, initial: str = "") -> str:
+    return _browse_for_slicer(parent, "PrusaSlicer", initial)
+
+
+def _browse_for_slicer(parent: Any, display_name: str, initial: str = "") -> str:
     start = initial or str(Path.home())
     if sys.platform == "darwin":
         selected = QtWidgets.QFileDialog.getExistingDirectory(
             parent,
-            "Locate PrusaSlicer.app",
+            f"Locate {display_name}.app",
             start,
         )
         if selected:
             return str(selected)
     selected, _filter = QtWidgets.QFileDialog.getOpenFileName(
         parent,
-        "Locate the PrusaSlicer application",
+        f"Locate the {display_name} application",
         start,
         "Executables (*);;All files (*)",
     )
@@ -135,13 +143,13 @@ def _browse_for_prusaslicer(parent: Any, initial: str = "") -> str:
 
 
 class PrintSetupDialog(QtWidgets.QDialog):
-    """Explicit profile selection backed by PrusaSlicer's installed presets."""
+    """Explicit profile selection backed by a slicer's installed presets."""
 
     def __init__(
         self,
         *,
         parent: Any,
-        backend: VibeCADPrint.PrusaSlicerBackend,
+        backend: Any,
         open_after_save: bool,
         initial_installation: VibeCADPrint.SlicerInstallation | None = None,
         initial_message: str = "",
@@ -150,11 +158,16 @@ class PrintSetupDialog(QtWidgets.QDialog):
         self.setObjectName("VibeCADPrintSetupDialog")
         self.setWindowTitle("Print Setup")
         self.backend = backend
+        self.backend_id = str(getattr(backend, "backend_id", "prusaslicer"))
+        self.slicer_name = str(getattr(backend, "display_name", "PrusaSlicer"))
+        self.download_url = DOWNLOAD_URLS.get(self.backend_id, "")
         self.open_after_save = open_after_save
         self.initial_installation = initial_installation
         self.result_installation: VibeCADPrint.SlicerInstallation | None = None
         self.result_setup: VibeCADPrint.PrintSetup | None = None
-        self._remembered = PrintPreferences.load_confirmed_setup()
+        self._remembered = PrintPreferences.load_confirmed_setup(
+            backend_id=self.backend_id
+        )
         self._printers: tuple[VibeCADPrint.PrinterProfile, ...] = ()
         self._catalog: VibeCADPrint.ProfileCatalog | None = None
         self._material_combos: list[Any] = []
@@ -170,20 +183,22 @@ class PrintSetupDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
         intro = QtWidgets.QLabel(
-            "VibeCAD reads profiles installed by PrusaSlicer. Nothing is selected "
-            "or substituted on your behalf.",
+            f"VibeCAD reads profiles installed by {self.slicer_name}. Nothing is "
+            "selected or substituted on your behalf.",
             self,
         )
         _configure_wrapped_label(intro)
         layout.addWidget(intro)
 
-        executable_group = QtWidgets.QGroupBox("PrusaSlicer", self)
+        executable_group = QtWidgets.QGroupBox(self.slicer_name, self)
         executable_layout = QtWidgets.QFormLayout(executable_group)
         executable_row = QtWidgets.QWidget(executable_group)
         executable_row_layout = QtWidgets.QHBoxLayout(executable_row)
         executable_row_layout.setContentsMargins(0, 0, 0, 0)
         self.executable = QtWidgets.QLineEdit(executable_row)
-        self.executable.setText(PrintPreferences.executable_override())
+        self.executable.setText(
+            PrintPreferences.executable_override(backend_id=self.backend_id)
+        )
         self.executable.setPlaceholderText("Auto-detect")
         locate = QtWidgets.QPushButton("Locate", executable_row)
         locate.clicked.connect(self._locate)
@@ -200,9 +215,12 @@ class PrintSetupDialog(QtWidgets.QDialog):
         action_row = QtWidgets.QWidget(executable_group)
         action_layout = QtWidgets.QHBoxLayout(action_row)
         action_layout.setContentsMargins(0, 0, 0, 0)
-        self.open_slicer_button = QtWidgets.QPushButton("Open PrusaSlicer", action_row)
+        self.open_slicer_button = QtWidgets.QPushButton(
+            f"Open {self.slicer_name}", action_row
+        )
         self.open_slicer_button.clicked.connect(self._open_prusaslicer)
         download = QtWidgets.QPushButton("Download", action_row)
+        download.setEnabled(bool(self.download_url))
         download.clicked.connect(self._download)
         retry = QtWidgets.QPushButton("Retry", action_row)
         retry.clicked.connect(self._detect)
@@ -231,7 +249,7 @@ class PrintSetupDialog(QtWidgets.QDialog):
         profiles_layout.addRow("Materials", self.material_widget)
         material_note = QtWidgets.QLabel(
             "Choose one material profile for every extruder. Object-to-extruder "
-            "assignment remains explicit in PrusaSlicer.",
+            f"assignment remains explicit in {self.slicer_name}.",
             profiles_group,
         )
         _configure_wrapped_label(material_note)
@@ -242,12 +260,12 @@ class PrintSetupDialog(QtWidgets.QDialog):
         placement_layout = QtWidgets.QVBoxLayout(placement_group)
         self.auto_arrange = QtWidgets.QCheckBox("Auto-arrange", placement_group)
         self.auto_arrange.setToolTip(
-            "Allow PrusaSlicer to arrange imported objects in XY. Turn this off "
+            f"Allow {self.slicer_name} to arrange imported objects in XY. Turn this off "
             "to retain their exact CAD XY positions."
         )
         self.ensure_on_bed = QtWidgets.QCheckBox("Ensure on bed", placement_group)
         self.ensure_on_bed.setToolTip(
-            "Allow PrusaSlicer to lift objects that extend below the build plate."
+            f"Allow {self.slicer_name} to lift objects that extend below the build plate."
         )
         remembered = self._remembered
         self.auto_arrange.setChecked(
@@ -414,7 +432,11 @@ class PrintSetupDialog(QtWidgets.QDialog):
             self.folder_storage.setChecked(True)
 
     def _locate(self) -> None:
-        selected = _browse_for_prusaslicer(self, self.executable.text())
+        selected = _browse_for_slicer(
+            self,
+            self.slicer_name,
+            self.executable.text(),
+        )
         if selected:
             self.executable.setText(selected)
             self._detect()
@@ -426,7 +448,7 @@ class PrintSetupDialog(QtWidgets.QDialog):
     def _detect(self) -> None:
         override = self.executable.text().strip()
         self._start_async(
-            "Detecting PrusaSlicer installations...",
+            f"Detecting {self.slicer_name} installations...",
             lambda: self.backend.discover(override),
             self._installations_loaded,
         )
@@ -459,7 +481,7 @@ class PrintSetupDialog(QtWidgets.QDialog):
         self.installation_combo.blockSignals(False)
         if preferred is None:
             self._set_status(
-                "PrusaSlicer was not found. Use Locate or Download, then Retry."
+                f"{self.slicer_name} was not found. Use Locate or Download, then Retry."
             )
             self._clear_profiles()
             self._update_actions()
@@ -474,12 +496,13 @@ class PrintSetupDialog(QtWidgets.QDialog):
         installation = self._selected_installation()
         self._clear_profiles()
         if installation is None:
-            self._set_status("Choose a detected PrusaSlicer installation.")
+            self._set_status(f"Choose a detected {self.slicer_name} installation.")
         elif not installation.tested:
+            baseline = ".".join(str(part) for part in installation.tested_version)
             self._set_status(
-                f"PrusaSlicer {installation.version} is older than the tested "
-                "2.9.6 baseline. Basic 3MF handoff remains available, but VibeCAD "
-                "will not pass profiles."
+                f"{self.slicer_name} {installation.version} is older than the tested "
+                f"{baseline} baseline. Basic 3MF handoff remains available, but "
+                "VibeCAD will not pass profiles."
             )
         else:
             self._start_async(
@@ -565,12 +588,14 @@ class PrintSetupDialog(QtWidgets.QDialog):
 
     def _profiles_loaded(self, catalog: Any) -> None:
         if not isinstance(catalog, VibeCADPrint.ProfileCatalog):
-            self._set_status("PrusaSlicer returned an invalid profile catalog.")
+            self._set_status(
+                f"{self.slicer_name} returned an invalid profile catalog."
+            )
             return
         printer = self._selected_printer()
         if printer is None or catalog.printer_profile != printer.name:
             self._set_status(
-                "PrusaSlicer returned profiles for a different printer."
+                f"{self.slicer_name} returned profiles for a different printer."
             )
             return
         self._catalog = catalog
@@ -718,8 +743,14 @@ class PrintSetupDialog(QtWidgets.QDialog):
                 "material profile for every extruder, plus a 3MF handoff location.",
             )
             return
-        PrintPreferences.set_executable_override(self.executable.text())
-        PrintPreferences.save_confirmed_setup(setup)
+        PrintPreferences.set_executable_override(
+            self.executable.text(),
+            backend_id=self.backend_id,
+        )
+        PrintPreferences.save_confirmed_setup(
+            setup,
+            backend_id=self.backend_id,
+        )
         PrintPreferences.save_handoff_storage(storage)
         self.result_installation = installation
         self.result_setup = setup
@@ -730,7 +761,10 @@ class PrintSetupDialog(QtWidgets.QDialog):
         storage = self._selected_storage()
         if installation is None or storage is None:
             return
-        PrintPreferences.set_executable_override(self.executable.text())
+        PrintPreferences.set_executable_override(
+            self.executable.text(),
+            backend_id=self.backend_id,
+        )
         PrintPreferences.save_handoff_storage(storage)
         self.result_installation = installation
         self.result_setup = None
@@ -755,20 +789,21 @@ class PrintSetupDialog(QtWidgets.QDialog):
                 creationflags=creationflags,
             )
             self._set_status(
-                "PrusaSlicer opened. Complete its Configuration Wizard if needed, "
+                f"{self.slicer_name} opened. Complete its Configuration Wizard if needed, "
                 "then return here and click Retry."
             )
         except OSError as exc:
-            self._set_status(f"Could not open PrusaSlicer: {exc}")
+            self._set_status(f"Could not open {self.slicer_name}: {exc}")
 
     def _download(self) -> None:
-        QtGui.QDesktopServices.openUrl(QtCore.QUrl(DOWNLOAD_URL))
+        if self.download_url:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(self.download_url))
 
 
 def choose_print_setup(
     *,
     parent: Any,
-    backend: VibeCADPrint.PrusaSlicerBackend,
+    backend: Any,
     open_after_save: bool,
     initial_installation: VibeCADPrint.SlicerInstallation | None = None,
     initial_message: str = "",

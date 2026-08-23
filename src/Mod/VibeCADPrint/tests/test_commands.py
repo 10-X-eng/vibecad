@@ -103,6 +103,79 @@ def test_panel_validated_print_does_not_reopen_or_revalidate_setup(
     assert events[3][0] == "status"
 
 
+def test_shared_handoff_uses_the_selected_slicer_backend(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    commands = PrintCommandLoader.command_module()
+    installation = VibeCADPrint.SlicerInstallation(
+        backend_id="bambustudio",
+        version="2.8.2.61",
+        gui_command=("bambu-studio",),
+        cli_command=("bambu-studio",),
+        source="flatpak-user",
+        display_name="Bambu Studio 2.8.2.61",
+        tested_version=(2, 8, 2),
+    )
+    setup = _setup()
+    document = SimpleNamespace(Label="Fan")
+
+    class Shape:
+        def isNull(self):
+            return False
+
+    body = SimpleNamespace(Name="Rotor", Document=document, Shape=Shape())
+    handoff = tmp_path / "fan.3mf"
+    events = []
+
+    class Backend:
+        backend_id = "bambustudio"
+        display_name = "Bambu Studio"
+
+        def prepare_project(self, *args):
+            events.append(("prepare", *args))
+            return handoff
+
+        def launch(self, *args):
+            events.append(("launch", *args))
+            return VibeCADPrint.LaunchResult(("bambu-studio",), 84)
+
+    monkeypatch.setattr(
+        commands,
+        "_handoff_destination",
+        lambda _document, _objects: (handoff, False),
+    )
+    monkeypatch.setattr(
+        commands.VibeCADPrint,
+        "export_selection_3mf",
+        lambda objects, destination: events.append(("export", objects, destination)),
+    )
+    monkeypatch.setattr(commands, "_main_window", lambda: None)
+    monkeypatch.setattr(commands, "_status", lambda message: events.append(("status", message)))
+    monkeypatch.setitem(
+        sys.modules,
+        "PrintSetupDialog",
+        SimpleNamespace(run_with_progress=lambda _parent, _label, operation: operation()),
+    )
+
+    assert commands.open_selected_in_slicer(
+        backend=Backend(),
+        installation=installation,
+        setup=setup,
+        selection=(document, (body,)),
+    )
+    assert events[0] == ("export", (body,), handoff)
+    assert events[1] == (
+        "prepare",
+        installation,
+        handoff,
+        handoff,
+        setup,
+    )
+    assert events[2] == ("launch", installation, handoff, setup)
+    assert "Bambu Studio" in events[3][1]
+
+
 def test_active_selection_deduplicates_a_body_and_its_picked_subelement(
     monkeypatch,
 ) -> None:

@@ -79,6 +79,7 @@ def test_cmake_installs_module_tests_and_icons() -> None:
     assert "add_subdirectory(VibeCADPrint)" in parent
     for filename in (
         "InitGui.py",
+        "BambuStudio.py",
         "VibeCADPrint.py",
         "PrintPreferences.py",
         "PrintPanel.py",
@@ -89,6 +90,9 @@ def test_cmake_installs_module_tests_and_icons() -> None:
         assert filename in cmake
     assert "icons/vibecad-print-open.svg" in cmake
     assert "tests/test_backend.py" in cmake
+    assert "tests/test_bambu_backend.py" in cmake
+    assert "tests/qt_bambu_setup_integration.py" in cmake
+    assert "tests/qt_backend_switch_integration.py" in cmake
     assert "tests/qt_selection_integration.py" in cmake
     assert "tests/qt_panel_persistence_integration.py" in cmake
     assert "tests/qt_progress_integration.py" in cmake
@@ -115,7 +119,7 @@ def test_setup_dialog_exposes_guided_detection_profiles_and_placement() -> None:
     for text in (
         "Auto-detect",
         "Locate",
-        "Open PrusaSlicer",
+        'f"Open {self.slicer_name}"',
         "Download",
         "Retry",
         "Printer profile",
