@@ -3016,19 +3016,18 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
         return None
     for trace in reversed(list(getattr(response, "tool_trace", ()) or ())):
         tool_name = trace.get("tool_name") if isinstance(trace, dict) else None
-        if tool_name not in {
-            "workspace.switch",
-            "sketch.open",
-            "sketch.control",
-            "sketch.finish",
-        }:
-            continue
         result = trace.get("result")
         if not isinstance(result, dict) or result.get("ok") is not True:
             continue
         if result.get("next_turn_required") is not True:
             continue
-        if tool_name in {
+        provider_surface_changed = result.get("provider_surface_changed") is True
+        if provider_surface_changed:
+            next_surface = str(result.get("next_surface") or "").strip()
+            from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
+
+            workspace = str(NATIVE_WORKSPACE_BY_SURFACE.get(next_surface) or "")
+        elif tool_name in {
             "sketch.open",
             "sketch.control",
             "sketch.finish",
@@ -3037,11 +3036,13 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
             from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
 
             workspace = str(NATIVE_WORKSPACE_BY_SURFACE.get(next_surface) or "")
-        else:
+        elif tool_name == "workspace.switch":
             workspace = str(result.get("workspace") or "").strip()
             from VibeCADNativeWorkspaceSchema import NATIVE_SURFACE_BY_WORKSPACE
 
             next_surface = str(NATIVE_SURFACE_BY_WORKSPACE.get(workspace) or "")
+        else:
+            continue
         if not workspace or not next_surface:
             return None
         try:
@@ -3052,7 +3053,11 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
         except Exception:
             return None
         event = {
-            "type": "cad_workspace_changed",
+            "type": (
+                "cad_provider_surface_changed"
+                if provider_surface_changed
+                else "cad_workspace_changed"
+            ),
             "document_uid": str(getattr(document, "Uid", "") or "").strip(),
             "document_name": str(getattr(document, "Name", "") or "").strip(),
             "surface_id": next_surface,

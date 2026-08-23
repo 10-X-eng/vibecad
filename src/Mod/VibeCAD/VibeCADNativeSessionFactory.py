@@ -148,7 +148,10 @@ def create_native_session_execution(
             "No exact active Native document is available.",
         )
     selected_registry = registry or build_native_capability_registry()
-    turn = freeze_native_turn(controller, selected_registry)
+    expected_names = tuple(
+        str(value) for value in expected_surface.get("tool_names") or ()
+    )
+    turn = freeze_native_turn(controller, selected_registry, expected_names)
     _validate_expected_turn(expected_surface, expected_schemas, turn)
     state = service.native_document_state_store()
     uid = document_uid(document)

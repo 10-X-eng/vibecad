@@ -10,6 +10,7 @@ from typing import Any
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeProviderSurface,
+    project_native_provider_surface,
     provider_visible_native_schema,
     resolve_native_provider_surface,
 )
@@ -45,8 +46,32 @@ def resolve_production_native_surface(
     return registry, surface
 
 
-def native_provider_tool_schemas() -> list[dict[str, Any]]:
+def provider_authorized_native_surface(
+    surface: NativeProviderSurface,
+    active_state: dict[str, Any] | None = None,
+) -> NativeProviderSurface:
+    """Keep ribbon choice human-owned, then apply exact document scope."""
+
+    if not isinstance(surface, NativeProviderSurface):
+        raise TypeError("surface must be a NativeProviderSurface")
+    if not surface.available:
+        return surface
+    surface = project_native_provider_surface(
+        surface,
+        tuple(name for name in surface.tool_names if name != "workspace.switch"),
+    )
+    if active_state is not None and surface.snapshot.surface_id == "analyze":
+        from VibeCADNativeAnalyzeProviderScope import scope_analyze_provider_surface
+
+        surface = scope_analyze_provider_surface(surface, active_state)
+    return surface
+
+
+def native_provider_tool_schemas(
+    active_state: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     _registry, surface = resolve_production_native_surface()
+    surface = provider_authorized_native_surface(surface, active_state)
     return schemas_for_native_provider_surface(surface)
 
 

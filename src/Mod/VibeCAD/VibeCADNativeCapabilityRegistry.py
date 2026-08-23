@@ -863,6 +863,53 @@ class NativeProviderSurface:
         }
 
 
+def project_native_provider_surface(
+    surface: NativeProviderSurface,
+    tool_names: tuple[str, ...],
+) -> NativeProviderSurface:
+    """Select exact families from one already-validated complete surface."""
+
+    if not isinstance(surface, NativeProviderSurface):
+        raise TypeError("surface must be a NativeProviderSurface")
+    if not surface.available:
+        return surface
+    requested = tuple(str(name or "").strip() for name in tool_names)
+    if not requested or any(not name for name in requested):
+        raise NativeCapabilityRegistryError(
+            "A projected Native surface requires at least one exact tool name."
+        )
+    if len(requested) != len(set(requested)):
+        raise NativeCapabilityRegistryError(
+            "A projected Native surface cannot repeat tool names."
+        )
+    missing = sorted(set(requested) - set(surface.tool_names))
+    if missing:
+        raise NativeCapabilityRegistryError(
+            "Projected tools are outside the complete Native surface: "
+            + ", ".join(missing)
+            + "."
+        )
+    selected = set(requested)
+    names = tuple(name for name in surface.tool_names if name in selected)
+    schemas = tuple(
+        schema
+        for name, schema in zip(surface.tool_names, surface.schemas, strict=True)
+        if name in selected
+    )
+    return NativeProviderSurface(
+        snapshot=surface.snapshot,
+        available=True,
+        unavailable_reason="",
+        tool_names=names,
+        schemas=schemas,
+        human_only_action_ids=surface.human_only_action_ids,
+        missing_definition_names=(),
+        missing_implementation_names=(),
+        incomplete_definition_names=(),
+        missing_action_ids=(),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _RequiredAction:
     action_id: str

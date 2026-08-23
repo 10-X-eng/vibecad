@@ -14,8 +14,10 @@ import json
 from typing import Any
 
 from VibeCADNativeCapabilityRegistry import (
+    NativeCapabilityRegistryError,
     NativeCapabilityRegistry,
     NativeProviderSurface,
+    project_native_provider_surface,
     resolve_native_provider_surface,
 )
 from VibeCADNativeSurface import (
@@ -126,11 +128,20 @@ class NativeTurnSnapshot:
 def freeze_native_turn(
     controller: Any | None = None,
     registry: NativeCapabilityRegistry | None = None,
+    tool_names: tuple[str, ...] | None = None,
 ) -> NativeTurnSnapshot:
-    """Freeze the exact complete Native surface without changing UI state."""
+    """Freeze an exact validated Native surface without changing UI state."""
 
     surface = read_active_ribbon_surface(controller)
     provider_surface = resolve_native_provider_surface(surface, registry)
+    if tool_names is not None:
+        try:
+            provider_surface = project_native_provider_surface(
+                provider_surface,
+                tool_names,
+            )
+        except NativeCapabilityRegistryError as exc:
+            raise NativeTurnUnavailable(str(exc)) from exc
     return NativeTurnSnapshot.from_provider_surface(provider_surface)
 
 
@@ -147,8 +158,12 @@ def require_frozen_native_turn(
     require_frozen_native_surface(expected.surface, controller)
     current_provider = resolve_native_provider_surface(current_surface, registry)
     try:
+        current_provider = project_native_provider_surface(
+            current_provider,
+            expected.tool_names,
+        )
         current = NativeTurnSnapshot.from_provider_surface(current_provider)
-    except NativeTurnUnavailable as exc:
+    except (NativeCapabilityRegistryError, NativeTurnUnavailable) as exc:
         raise NativeTurnChanged(current_surface.surface_id) from exc
     if (
         current.tool_names != expected.tool_names

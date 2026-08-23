@@ -13,6 +13,7 @@ import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui
+import VibeCADSession as Session
 from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import (
@@ -24,8 +25,10 @@ from VibeCADNativeCapabilityRegistry import (
 from VibeCADNativeContextManifest import provider_context_actions_for_surface
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeRegistry import build_native_capability_registry
+from VibeCADNativeProviderRunner import NativeProviderToolRunner
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
+from VibeCADNativeSessionFactory import create_native_session_execution
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
@@ -154,6 +157,7 @@ def _schema_diagnostics(surface, inventory, registry) -> dict:
 def _run() -> None:
     application = QtWidgets.QApplication.instance()
     document = None
+    runner = None
     exit_code = 1
     try:
         Gui.activateWorkbench("FemWorkbench")
@@ -230,6 +234,23 @@ def _run() -> None:
 
         service = get_service()
         service.select_modeling_engine("native")
+        initial_context = Session._context_for_provider(service)
+        initial_names = {
+            str(schema.get("name") or "")
+            for schema in initial_context["provider_tool_schemas"]
+        }
+        assert {"analyze.model", "analyze.inspect"} <= initial_names
+        assert "analyze.fluid" not in initial_names
+        assert "analyze.mesh" not in initial_names
+        assert "workspace.switch" not in initial_names
+        initial_state_bytes = len(
+            json.dumps(
+                initial_context["native_state"],
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
         state = service.native_document_state_store()
         ledger = NativeAssistantUndoLedger()
         ledger.begin_run("native-analyze-provider-surface-gui")
@@ -274,18 +295,130 @@ def _run() -> None:
         assert response.get("ok") is True, response
         assert response["created_analysis"]["object_name"]
         assert document.getObject(response["created_analysis"]["object_name"])
+        ledger.end_run("native-analyze-provider-surface-gui")
+
+        setup_context = Session._context_for_provider(service)
+        setup_surface = dict(setup_context["provider_tool_surface"])
+        setup_schemas = list(setup_context["provider_tool_schemas"])
+        setup_trace = []
+        execution = create_native_session_execution(
+            service=service,
+            expected_surface=setup_surface,
+            expected_schemas=setup_schemas,
+            controller=controller,
+            document_thread_dispatch=lambda operation: operation(),
+        )
+        runner = NativeProviderToolRunner(
+            execution=execution,
+            document_dispatch=lambda operation: operation(),
+            refresh_context=lambda: Session._context_for_provider(service),
+            frozen_surface=setup_surface,
+            frozen_schemas=setup_schemas,
+            frozen_modeling_surface=dict(setup_context["modeling_surface"]),
+            tool_trace=setup_trace,
+        )
+        study_response = runner(
+            "analyze.model",
+            json.dumps(
+                {
+                    "operation": "update_study",
+                    "target": {
+                        "object_name": response["created_analysis"]["object_name"],
+                        "expected_state_sha256": response["created_analysis"][
+                            "state_sha256"
+                        ],
+                        "expected_member_count": response["created_analysis"][
+                            "member_count"
+                        ],
+                    },
+                    "study": {"physics": ["fluid"], "regime": "steady"},
+                },
+                separators=(",", ":"),
+            ),
+            "native-analyze-provider-surface-update-study",
+        )
+        assert study_response.get("ok") is True, study_response
+        assert study_response["provider_surface_changed"] is True
+        assert study_response["next_turn_required"] is True
+        assert runner.turn_transition_requested() is True
+        continuation = VibeGui._native_surface_continuation_event(
+            type(
+                "Response",
+                (),
+                {"error": None, "tool_trace": setup_trace},
+            )()
+        )
+        assert continuation is not None
+        assert continuation["type"] == "cad_provider_surface_changed"
+        assert continuation["surface_id"] == "analyze"
+        runner.close()
+        runner = None
+
+        fluid_context = Session._context_for_provider(service)
+        assert fluid_context["native_state"]["domain"]["provider_scope"] == {
+            "analysis_count": 1,
+            "undeclared_analysis_count": 0,
+            "physics": ["fluid"],
+            "mesh_definition_count": 0,
+            "generated_mesh_count": 0,
+            "solver_count": 0,
+            "result_count": 0,
+        }
+        fluid_schemas = list(fluid_context["provider_tool_schemas"])
+        fluid_names = {str(schema.get("name") or "") for schema in fluid_schemas}
+        service_surface = service.provider_tool_surface()
+        assert {
+            str(schema.get("name") or "") for schema in service_surface["tools"]
+        } == fluid_names
+        assert {
+            "analyze.model",
+            "analyze.inspect",
+            "analyze.geometry",
+            "analyze.fluid",
+            "analyze.mesh",
+            "analyze.solver",
+        } <= fluid_names
+        assert not {
+            "analyze.load",
+            "analyze.support",
+            "analyze.thermal",
+            "analyze.electromagnetic",
+            "workspace.switch",
+        } & fluid_names
+        fluid_schema_bytes = len(
+            json.dumps(
+                fluid_schemas,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        assert fluid_schema_bytes < 48 * 1024
+        fluid_state_bytes = len(
+            json.dumps(
+                fluid_context["native_state"],
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
 
         print(
             "VIBECAD_NATIVE_ANALYZE_PROVIDER_SURFACE_GUI_OK "
             f"actions={len(inventory.plans)} contexts={len(context_actions)} "
             f"tools={len(provider.tool_names)} schemas={schema_bytes}B "
-            "exact_targets=true runtimes=true full_surface_call=true",
+            f"fluid_scoped={fluid_schema_bytes}B "
+            f"state={initial_state_bytes}B->{fluid_state_bytes}B "
+            "exact_targets=true runtimes=true full_surface_call=true "
+            "automatic_scope_loop=true",
             flush=True,
         )
         exit_code = 0
     except Exception:
         traceback.print_exc(file=sys.__stderr__)
     finally:
+        if runner is not None:
+            runner.close()
         if document is not None and document.Name in App.listDocuments():
             App.closeDocument(document.Name)
         application.exit(exit_code)

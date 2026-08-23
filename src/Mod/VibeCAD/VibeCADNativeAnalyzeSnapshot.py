@@ -22,7 +22,8 @@ from VibeCADNativeAnalyzeSolverState import solver_state
 from VibeCADNativeAnalyzeEquationState import equation_state
 from VibeCADNativeAnalyzeResultState import result_reference_state
 from VibeCADNativeAnalyzeResults import result_purge_state
-from VibeCADNativeAnalyzeStudyState import study_state
+from VibeCADNativeAnalyzeStudy import STUDY_PHYSICS, study_intent_state
+from VibeCADNativeAnalyzeStudyState import study_inventory, study_state
 from VibeCADNativeAnalyzeClipping import (
     clipping_face_source_state,
     clipping_state,
@@ -119,6 +120,7 @@ def _analysis_workflows(
     mesh_states: dict[str, dict[str, Any]],
     solver_states: dict[str, dict[str, Any]],
     result_states: dict[str, dict[str, Any]],
+    study_states: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     summary_by_name = {state["object_name"]: state for state in summarized}
     workflows = []
@@ -170,7 +172,7 @@ def _analysis_workflows(
         if not generated_meshes:
             blockers.append("missing_generated_mesh")
         result_graph = dict(analysis_summary["result_graph"])
-        study = study_state(analysis)
+        study = study_states[name]
         workflows.append(
             {
                 "analysis": {
@@ -208,6 +210,44 @@ def _analysis_workflows(
             }
         )
     return workflows
+
+
+def _provider_scope(
+    analyses: list[Any],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    physics = set()
+    undeclared = 0
+    totals = {
+        "mesh_definition_count": 0,
+        "generated_mesh_count": 0,
+        "solver_count": 0,
+        "result_count": 0,
+    }
+    states = {}
+    for index, analysis in enumerate(analyses):
+        if index < MAX_ANALYSES:
+            state = study_state(analysis)
+            states[str(analysis.Name)] = state
+            intent = state["intent"]
+            inventory = state["inventory"]
+        else:
+            intent = study_intent_state(analysis)
+            inventory = study_inventory(analysis)
+        if intent.get("declared") is True:
+            physics.update(intent["physics"])
+        else:
+            undeclared += 1
+        for name in totals:
+            totals[name] += int(inventory[name])
+    return (
+        {
+            "analysis_count": len(analyses),
+            "undeclared_analysis_count": undeclared,
+            "physics": [name for name in STUDY_PHYSICS if name in physics],
+            **totals,
+        },
+        states,
+    )
 
 
 def _run_status(
@@ -585,12 +625,14 @@ def build_analyze_snapshot(
     solver_count, solvers, solver_states = _solvers(document)
     equation_count, equations = _equations(document)
     result_count, results, result_states = _results(document)
+    provider_scope, study_states = _provider_scope(analyses)
     workflows = _analysis_workflows(
         analyses,
         summarized,
         mesh_states,
         solver_states,
         result_states,
+        study_states,
     )
     try:
         clipping = clipping_state(document)
@@ -604,6 +646,7 @@ def build_analyze_snapshot(
         "analysis_workflow_count": len(analyses),
         "analysis_workflows": workflows,
         "analysis_workflows_truncated": len(analyses) > len(workflows),
+        "provider_scope": provider_scope,
         "run_status": _run_status(
             document,
             list(solver_states.values()),

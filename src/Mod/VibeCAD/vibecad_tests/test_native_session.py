@@ -224,7 +224,7 @@ class _Ledger:
         self.ended.append(run_id)
 
 
-def _provider_runner(*, changed=False, cancelled=False, result=None):
+def _provider_runner(*, changed=False, scope_changed=False, cancelled=False, result=None):
     _turn, schemas, frozen = _common_turn()
     dispatcher = _Dispatcher(result)
     ledger = _Ledger()
@@ -232,6 +232,8 @@ def _provider_runner(*, changed=False, cancelled=False, result=None):
     live = dict(frozen)
     if changed:
         live["surface_id"] = "vibecad/surface/native/mesh/10/bbbbbbbbbbbb"
+    if scope_changed:
+        live["schema_sha256"] = "b" * 64
     events = []
     traces = []
     context = {
@@ -286,6 +288,21 @@ def test_provider_runner_reports_only_a_successful_exact_turn_transition() -> No
     )
     transition("sketch.open", "{}", "provider-call-2")
     assert transition.turn_transition_requested() is True
+
+
+def test_provider_runner_starts_a_new_loop_when_same_ribbon_scope_changes() -> None:
+    runner, _dispatcher, _ledger, traces, _events = _provider_runner(
+        scope_changed=True,
+    )
+
+    result = runner("analyze.model", '{"operation":"create_analysis"}', "create")
+
+    assert result["ok"] is True
+    assert result["next_turn_required"] is True
+    assert result["next_surface"] == "model"
+    assert result["provider_surface_changed"] is True
+    assert traces[-1]["result"]["next_turn_required"] is True
+    assert runner.turn_transition_requested() is True
 
 
 def test_provider_update_keeps_state_only_while_frozen_surface_is_live() -> None:
