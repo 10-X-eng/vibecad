@@ -11,8 +11,6 @@ try:
     from PySide import QtWidgets
 except ImportError:  # pragma: no cover - PySide1 compatibility
     QtWidgets = QtGui
-from pivy import coin
-
 import VibeCADSectionView
 
 
