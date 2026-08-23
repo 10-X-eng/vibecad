@@ -413,3 +413,40 @@ def test_preferred_installation_honors_explicit_then_uses_newest() -> None:
         )
         is old
     )
+
+
+def test_prusa_backend_caches_all_queries_until_invalidated(monkeypatch) -> None:
+    installation = _installation()
+    printers = VibeCADPrint.parse_printer_models(PRINTERS_JSON)
+    catalog = VibeCADPrint.parse_compatible_profiles(PROFILES_JSON)
+    calls = {"discover": 0, "printers": 0, "profiles": 0}
+
+    def discover(_override=""):
+        calls["discover"] += 1
+        return (installation,)
+
+    def query_printers(_installation):
+        calls["printers"] += 1
+        return printers
+
+    def query_profiles(_installation, _printer_name):
+        calls["profiles"] += 1
+        return catalog
+
+    monkeypatch.setattr(VibeCADPrint, "discover_prusaslicer_installations", discover)
+    monkeypatch.setattr(VibeCADPrint, "query_printer_profiles", query_printers)
+    monkeypatch.setattr(VibeCADPrint, "query_compatible_profiles", query_profiles)
+    backend = VibeCADPrint.PrusaSlicerBackend()
+
+    assert backend.discover() is backend.discover()
+    assert backend.query_printers(installation) is backend.query_printers(installation)
+    assert backend.query_profiles(installation, "Printer") is backend.query_profiles(
+        installation, "Printer"
+    )
+    assert calls == {"discover": 1, "printers": 1, "profiles": 1}
+
+    backend.invalidate_cache()
+    backend.discover()
+    backend.query_printers(installation)
+    backend.query_profiles(installation, "Printer")
+    assert calls == {"discover": 2, "printers": 2, "profiles": 2}

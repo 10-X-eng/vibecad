@@ -395,7 +395,7 @@ class _OpenInPrusaSlicerCommand:
             "MenuText": "Print",
             "ToolTip": (
                 "Export the explicitly selected printable objects as 3MF and open "
-                "them with the confirmed PrusaSlicer setup"
+                "them with the confirmed external slicer setup"
             ),
         }
 

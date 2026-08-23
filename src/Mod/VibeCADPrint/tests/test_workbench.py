@@ -67,6 +67,7 @@ def test_commands_have_specific_labels_tooltips_and_repo_icons(monkeypatch) -> N
 
     assert resources["VibeCADPrint_OpenInPrusaSlicer"]["MenuText"] == "Print"
     assert "selected" in resources["VibeCADPrint_OpenInPrusaSlicer"]["ToolTip"].lower()
+    assert "external slicer" in resources["VibeCADPrint_OpenInPrusaSlicer"]["ToolTip"].lower()
     assert resources["VibeCADPrint_Save3MF"]["MenuText"] == "Save 3MF"
     assert resources["VibeCADPrint_Setup"]["MenuText"] == "Print Setup"
     assert all(Path(value["Pixmap"]).is_file() for value in resources.values())
@@ -80,6 +81,7 @@ def test_cmake_installs_module_tests_and_icons() -> None:
     for filename in (
         "InitGui.py",
         "BambuStudio.py",
+        "OrcaSlicer.py",
         "VibeCADPrint.py",
         "PrintPreferences.py",
         "PrintPanel.py",
@@ -91,6 +93,7 @@ def test_cmake_installs_module_tests_and_icons() -> None:
     assert "icons/vibecad-print-open.svg" in cmake
     assert "tests/test_backend.py" in cmake
     assert "tests/test_bambu_backend.py" in cmake
+    assert "tests/test_orca_backend.py" in cmake
     assert "tests/qt_bambu_setup_integration.py" in cmake
     assert "tests/qt_backend_switch_integration.py" in cmake
     assert "tests/qt_selection_integration.py" in cmake

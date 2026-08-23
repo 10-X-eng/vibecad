@@ -30,16 +30,28 @@ def _setup(prefix: str) -> VibeCADPrint.PrintSetup:
 
 
 def _backend_data(backend_id: str):
-    prefix = "Prusa" if backend_id == "prusaslicer" else "Bambu"
+    prefix = {
+        "prusaslicer": "Prusa",
+        "bambustudio": "Bambu",
+        "orcaslicer": "Orca",
+    }[backend_id]
     setup = _setup(prefix)
     installation = VibeCADPrint.SlicerInstallation(
         backend_id=backend_id,
-        version="2.9.6" if backend_id == "prusaslicer" else "2.8.2.61",
+        version={
+            "prusaslicer": "2.9.6",
+            "bambustudio": "2.8.2.61",
+            "orcaslicer": "2.4.2",
+        }[backend_id],
         gui_command=(backend_id,),
         cli_command=(backend_id,),
         source="test",
         display_name=f"{prefix} Installed",
-        tested_version=(2, 9, 6) if backend_id == "prusaslicer" else (2, 8, 2),
+        tested_version={
+            "prusaslicer": (2, 9, 6),
+            "bambustudio": (2, 8, 2),
+            "orcaslicer": (2, 4, 2),
+        }[backend_id],
     )
     material = VibeCADPrint.MaterialProfile(setup.material_profiles[0])
     quality = VibeCADPrint.PrintProfile(setup.print_profile, (material,))
@@ -55,10 +67,18 @@ def _backend_data(backend_id: str):
 class _Backend:
     def __init__(self, backend_id: str) -> None:
         self.backend_id = backend_id
-        self.display_name = "PrusaSlicer" if backend_id == "prusaslicer" else "Bambu Studio"
+        self.display_name = {
+            "prusaslicer": "PrusaSlicer",
+            "bambustudio": "Bambu Studio",
+            "orcaslicer": "OrcaSlicer",
+        }[backend_id]
         self.setup, self.installation, self.printer, self.catalog = _backend_data(
             backend_id
         )
+        self.invalidations = 0
+
+    def invalidate_cache(self):
+        self.invalidations += 1
 
     def discover(self, _override=""):
         return (self.installation,)
@@ -77,7 +97,7 @@ def _run() -> None:
     try:
         backends = {
             backend_id: _Backend(backend_id)
-            for backend_id in ("prusaslicer", "bambustudio")
+            for backend_id in ("prusaslicer", "bambustudio", "orcaslicer")
         }
         state = {
             "active": "prusaslicer",
@@ -132,6 +152,19 @@ def _run() -> None:
         assert panel.printer_combo.currentText() == "Bambu Printer"
         assert panel.print_combo.currentText() == "Bambu Quality"
         assert panel.material_combos[0].currentText() == "Bambu Material"
+        assert panel.object_checkboxes[0].isChecked()
+
+        orca_index = panel.slicer_combo.findData("orcaslicer")
+        assert orca_index >= 0
+        panel.slicer_combo.setCurrentIndex(orca_index)
+        application.processEvents()
+        assert state["active"] == "orcaslicer"
+        assert panel.backend.backend_id == "orcaslicer"
+        assert panel.printer_combo.currentText() == "Orca Printer"
+        assert panel.print_combo.currentText() == "Orca Quality"
+        assert panel.material_combos[0].currentText() == "Orca Material"
+        panel._manual_refresh()
+        assert backends["orcaslicer"].invalidations == 1
         assert panel.object_checkboxes[0].isChecked()
         print("VIBECAD_PRINT_BACKEND_SWITCH_OK", flush=True)
         exit_code = 0

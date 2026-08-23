@@ -4,6 +4,7 @@ SET(VibeCADPrint_SRCS
     Init.py
     InitGui.py
     BambuStudio.py
+    OrcaSlicer.py
     Commands.py
     PrintCommandLoader.py
     PrintIcons.py
@@ -32,6 +33,7 @@ SET(VibeCADPrint_Tests
     tests/qt_workbench_panel_integration.py
     tests/test_backend.py
     tests/test_bambu_backend.py
+    tests/test_orca_backend.py
     tests/test_commands.py
     tests/test_export.py
     tests/test_preferences.py

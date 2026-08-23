@@ -4,10 +4,10 @@
 
 
 class VibeCADPrintWorkbench(Workbench):
-    """PrusaSlicer profile selection and explicit 3MF handoff."""
+    """External slicer profile selection and explicit 3MF handoff."""
 
     MenuText = "3D Print"
-    ToolTip = "Prepare selected CAD objects and open them in PrusaSlicer"
+    ToolTip = "Prepare selected CAD objects and open them in an external slicer"
 
     def __init__(self):
         self.__class__.Icon = (

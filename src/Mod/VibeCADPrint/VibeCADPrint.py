@@ -1097,18 +1097,50 @@ class PrusaSlicerBackend:
     display_name = "PrusaSlicer"
     capabilities = BACKEND_CAPABILITIES
 
+    def __init__(self) -> None:
+        self._installation_cache: dict[str, tuple[SlicerInstallation, ...]] = {}
+        self._printer_cache: dict[
+            SlicerInstallation,
+            tuple[PrinterProfile, ...],
+        ] = {}
+        self._catalog_cache: dict[
+            tuple[SlicerInstallation, str],
+            ProfileCatalog,
+        ] = {}
+
+    def invalidate_cache(self) -> None:
+        """Forget query results so an explicit Refresh rereads PrusaSlicer."""
+
+        self._installation_cache.clear()
+        self._printer_cache.clear()
+        self._catalog_cache.clear()
+
     def discover(self, explicit_executable: str = "") -> tuple[SlicerInstallation, ...]:
-        return discover_prusaslicer_installations(explicit_executable)
+        key = str(explicit_executable or "").strip()
+        value = self._installation_cache.get(key)
+        if value is None:
+            value = discover_prusaslicer_installations(key)
+            self._installation_cache[key] = value
+        return value
 
     def query_printers(
         self, installation: SlicerInstallation
     ) -> tuple[PrinterProfile, ...]:
-        return query_printer_profiles(installation)
+        value = self._printer_cache.get(installation)
+        if value is None:
+            value = query_printer_profiles(installation)
+            self._printer_cache[installation] = value
+        return value
 
     def query_profiles(
         self, installation: SlicerInstallation, printer_profile: str
     ) -> ProfileCatalog:
-        return query_compatible_profiles(installation, printer_profile)
+        key = (installation, printer_profile)
+        value = self._catalog_cache.get(key)
+        if value is None:
+            value = query_compatible_profiles(installation, printer_profile)
+            self._catalog_cache[key] = value
+        return value
 
     def launch(
         self,

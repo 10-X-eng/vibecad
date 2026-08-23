@@ -16,6 +16,7 @@ import VibeCADPrint
 
 DOCK_NAME = "VibeCADPrintPanel"
 _EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vibecad-print-panel")
+_BACKEND_INSTANCES: dict[str, Any] = {}
 
 
 def _wrapped(label: Any) -> Any:
@@ -43,13 +44,23 @@ def _active_print_selection() -> tuple[Any, tuple[Any, ...]]:
 def _backend_for_id(backend_id: str) -> Any:
     """Create a supported slicer adapter without loading unused integrations."""
 
+    cached = _BACKEND_INSTANCES.get(backend_id)
+    if cached is not None:
+        return cached
     if backend_id == "bambustudio":
         import BambuStudio
 
-        return BambuStudio.BambuStudioBackend()
-    if backend_id == "prusaslicer":
-        return VibeCADPrint.PrusaSlicerBackend()
-    raise ValueError(f"Unsupported slicer backend: {backend_id}")
+        backend = BambuStudio.BambuStudioBackend()
+    elif backend_id == "orcaslicer":
+        import OrcaSlicer
+
+        backend = OrcaSlicer.OrcaSlicerBackend()
+    elif backend_id == "prusaslicer":
+        backend = VibeCADPrint.PrusaSlicerBackend()
+    else:
+        raise ValueError(f"Unsupported slicer backend: {backend_id}")
+    _BACKEND_INSTANCES[backend_id] = backend
+    return backend
 
 
 def _backend_display_name(backend: Any) -> str:
@@ -58,6 +69,7 @@ def _backend_display_name(backend: Any) -> str:
         return value
     return {
         "bambustudio": "Bambu Studio",
+        "orcaslicer": "OrcaSlicer",
         "prusaslicer": "PrusaSlicer",
     }.get(str(getattr(backend, "backend_id", "")), "PrusaSlicer")
 
@@ -127,7 +139,7 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self.title_label = QtWidgets.QLabel("<b>3D Print</b>", self)
         header.addWidget(self.title_label, 1)
         self.refresh_button = QtWidgets.QPushButton("Refresh", self)
-        self.refresh_button.clicked.connect(self.refresh)
+        self.refresh_button.clicked.connect(self._manual_refresh)
         self.setup_button = QtWidgets.QPushButton("Setup…", self)
         self.setup_button.clicked.connect(self._initial_setup)
         header.addWidget(self.refresh_button)
@@ -140,6 +152,7 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self.slicer_combo.setObjectName("VibeCADPrintSlicerBackend")
         self.slicer_combo.addItem("PrusaSlicer", "prusaslicer")
         self.slicer_combo.addItem("Bambu Studio", "bambustudio")
+        self.slicer_combo.addItem("OrcaSlicer", "orcaslicer")
         selected_backend = self.slicer_combo.findData(self.backend_id)
         self.slicer_combo.setCurrentIndex(max(0, selected_backend))
         self.slicer_combo.currentIndexChanged.connect(self._slicer_changed)
@@ -286,6 +299,12 @@ class PrintPanelWidget(QtWidgets.QWidget):
             lambda: self.backend.discover(override),
             self._installations_loaded,
         )
+
+    def _manual_refresh(self, *_args) -> None:
+        invalidate = getattr(self.backend, "invalidate_cache", None)
+        if callable(invalidate):
+            invalidate()
+        self.refresh()
 
     def _update_backend_ui(self) -> None:
         display_name = _backend_display_name(self.backend)

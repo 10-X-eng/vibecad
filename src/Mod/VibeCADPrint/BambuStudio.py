@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import ntpath
 import os
@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
 import xml.etree.ElementTree as ET
@@ -64,14 +65,40 @@ class _ProfileRecord:
 @dataclass(frozen=True)
 class _ProfileStore:
     records: tuple[_ProfileRecord, ...]
+    _by_type: Mapping[str, tuple[_ProfileRecord, ...]] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _by_type_name: Mapping[tuple[str, str], tuple[_ProfileRecord, ...]] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        by_type: dict[str, list[_ProfileRecord]] = {}
+        by_type_name: dict[tuple[str, str], list[_ProfileRecord]] = {}
+        for record in self.records:
+            by_type.setdefault(record.profile_type, []).append(record)
+            by_type_name.setdefault((record.profile_type, record.name), []).append(
+                record
+            )
+        object.__setattr__(
+            self,
+            "_by_type",
+            {key: tuple(values) for key, values in by_type.items()},
+        )
+        object.__setattr__(
+            self,
+            "_by_type_name",
+            {key: tuple(values) for key, values in by_type_name.items()},
+        )
 
     def records_for(self, profile_type: str, name: str = "") -> tuple[_ProfileRecord, ...]:
-        return tuple(
-            record
-            for record in self.records
-            if record.profile_type == profile_type
-            and (not name or record.name == name)
-        )
+        if name:
+            return self._by_type_name.get((profile_type, name), ())
+        return self._by_type.get(profile_type, ())
 
 
 def _truthy(value: Any) -> bool:
@@ -170,6 +197,7 @@ def _resolve_record(
     record: _ProfileRecord,
     *,
     stack: tuple[tuple[str, str, str], ...] = (),
+    cache: dict[tuple[str, str, str, str, bool], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     key = (record.profile_type, record.vendor, record.name)
     if key in stack:
@@ -177,6 +205,12 @@ def _resolve_record(
         raise VibeCADPrint.SlicerQueryError(
             f"Bambu Studio profile inheritance contains a cycle: {chain}."
         )
+    if cache is None:
+        cache = {}
+    cache_key = (*key, str(record.path), record.is_user)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return dict(cached)
     resolved: dict[str, Any] = {}
     for relation in ("inherits", "include"):
         for name in _references(record.data.get(relation)):
@@ -186,10 +220,18 @@ def _resolve_record(
                 name,
                 vendor=record.vendor,
             )
-            resolved.update(_resolve_record(store, parent, stack=(*stack, key)))
+            resolved.update(
+                _resolve_record(
+                    store,
+                    parent,
+                    stack=(*stack, key),
+                    cache=cache,
+                )
+            )
     resolved.update(record.data)
     resolved.pop("inherits", None)
     resolved.pop("include", None)
+    cache[cache_key] = dict(resolved)
     return resolved
 
 
@@ -216,8 +258,9 @@ def _instantiated_profiles(
             current = selected.get(record.name)
             if current is None or (record.is_user and not current.is_user):
                 selected[record.name] = record
+    cache: dict[tuple[str, str, str, str, bool], dict[str, Any]] = {}
     return tuple(
-        (record, _resolve_record(store, record))
+        (record, _resolve_record(store, record, cache=cache))
         for _name, record in sorted(selected.items(), key=lambda item: item[0].casefold())
     )
 
@@ -253,12 +296,11 @@ def _bed_info(profile: Mapping[str, Any]) -> VibeCADPrint.BedInfo:
     )
 
 
-def query_printer_profiles(
-    installation: VibeCADPrint.SlicerInstallation,
+def _printer_profiles_from_instantiated(
+    profiles: tuple[tuple[_ProfileRecord, dict[str, Any]], ...],
 ) -> tuple[VibeCADPrint.PrinterProfile, ...]:
-    store = _load_profile_store(installation)
     printers: list[VibeCADPrint.PrinterProfile] = []
-    for record, profile in _instantiated_profiles(store, "machine"):
+    for record, profile in profiles:
         diameters = profile.get("nozzle_diameter", ())
         extruders = (
             len(diameters)
@@ -283,6 +325,15 @@ def query_printer_profiles(
     return tuple(printers)
 
 
+def query_printer_profiles(
+    installation: VibeCADPrint.SlicerInstallation,
+) -> tuple[VibeCADPrint.PrinterProfile, ...]:
+    store = _load_profile_store(installation)
+    return _printer_profiles_from_instantiated(
+        _instantiated_profiles(store, "machine")
+    )
+
+
 def _is_compatible(profile: Mapping[str, Any], printer_name: str) -> bool:
     compatible = profile.get("compatible_printers", ())
     if not isinstance(compatible, Sequence) or isinstance(compatible, (str, bytes)):
@@ -290,11 +341,12 @@ def _is_compatible(profile: Mapping[str, Any], printer_name: str) -> bool:
     return printer_name in {str(value) for value in compatible}
 
 
-def query_compatible_profiles(
-    installation: VibeCADPrint.SlicerInstallation,
+def _compatible_profile_catalog(
+    store: _ProfileStore,
     printer_name: str,
+    materials_data: tuple[tuple[_ProfileRecord, dict[str, Any]], ...],
+    processes_data: tuple[tuple[_ProfileRecord, dict[str, Any]], ...],
 ) -> VibeCADPrint.ProfileCatalog:
-    store = _load_profile_store(installation)
     printer = _select_record(store, "machine", printer_name)
     if not _truthy(printer.data.get("instantiation")):
         raise VibeCADPrint.SlicerQueryError(
@@ -302,7 +354,7 @@ def query_compatible_profiles(
         )
     materials = tuple(
         VibeCADPrint.MaterialProfile(name=record.name, is_user=record.is_user)
-        for record, profile in _instantiated_profiles(store, "filament")
+        for record, profile in materials_data
         if _is_compatible(profile, printer_name)
     )
     profiles = tuple(
@@ -311,12 +363,25 @@ def query_compatible_profiles(
             materials=materials,
             is_user=record.is_user,
         )
-        for record, profile in _instantiated_profiles(store, "process")
+        for record, profile in processes_data
         if _is_compatible(profile, printer_name)
     )
     return VibeCADPrint.ProfileCatalog(
         printer_profile=printer_name,
         print_profiles=profiles,
+    )
+
+
+def query_compatible_profiles(
+    installation: VibeCADPrint.SlicerInstallation,
+    printer_name: str,
+) -> VibeCADPrint.ProfileCatalog:
+    store = _load_profile_store(installation)
+    return _compatible_profile_catalog(
+        store,
+        printer_name,
+        _instantiated_profiles(store, "filament"),
+        _instantiated_profiles(store, "process"),
     )
 
 
@@ -522,13 +587,17 @@ def discover_bambu_installations(
         if gui is None or cli is None or gui in seen:
             continue
         try:
-            completed = runner(
-                [*cli, "--help"],
-                capture_output=True,
-                text=True,
-                timeout=15.0,
-                check=False,
-            )
+            with tempfile.TemporaryDirectory(
+                prefix="vibecad-slicer-probe-"
+            ) as working_directory:
+                completed = runner(
+                    [*cli, "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15.0,
+                    check=False,
+                    cwd=working_directory,
+                )
         except (OSError, subprocess.SubprocessError):
             continue
         output = "\n".join(
@@ -688,13 +757,18 @@ def prepare_bambu_project(
             profile_paths[1],
             profile_paths[2:],
         )
-        completed = runner(
-            list(command),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory(
+            prefix=".vibecad-slicer-",
+            dir=target.parent,
+        ) as working_directory:
+            completed = runner(
+                list(command),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                cwd=working_directory,
+            )
         if completed.returncode != 0 or not partial.is_file():
             details = " ".join(
                 value.strip()
@@ -756,22 +830,94 @@ class BambuStudioBackend:
     display_name = "Bambu Studio"
     capabilities = BAMBU_CAPABILITIES
 
+    def __init__(self) -> None:
+        self._installation_cache: dict[
+            str, tuple[VibeCADPrint.SlicerInstallation, ...]
+        ] = {}
+        self._store_cache: dict[
+            VibeCADPrint.SlicerInstallation, _ProfileStore
+        ] = {}
+        self._resolved_cache: dict[
+            tuple[VibeCADPrint.SlicerInstallation, str],
+            tuple[tuple[_ProfileRecord, dict[str, Any]], ...],
+        ] = {}
+        self._printer_cache: dict[
+            VibeCADPrint.SlicerInstallation,
+            tuple[VibeCADPrint.PrinterProfile, ...],
+        ] = {}
+        self._catalog_cache: dict[
+            tuple[VibeCADPrint.SlicerInstallation, str],
+            VibeCADPrint.ProfileCatalog,
+        ] = {}
+
+    def invalidate_cache(self) -> None:
+        """Forget all slicer data so an explicit Refresh rereads disk and CLI state."""
+
+        self._installation_cache.clear()
+        self._store_cache.clear()
+        self._resolved_cache.clear()
+        self._printer_cache.clear()
+        self._catalog_cache.clear()
+
+    def _store(
+        self,
+        installation: VibeCADPrint.SlicerInstallation,
+    ) -> _ProfileStore:
+        value = self._store_cache.get(installation)
+        if value is None:
+            value = _load_profile_store(installation)
+            self._store_cache[installation] = value
+        return value
+
+    def _resolved(
+        self,
+        installation: VibeCADPrint.SlicerInstallation,
+        profile_type: str,
+    ) -> tuple[tuple[_ProfileRecord, dict[str, Any]], ...]:
+        key = (installation, profile_type)
+        value = self._resolved_cache.get(key)
+        if value is None:
+            value = _instantiated_profiles(self._store(installation), profile_type)
+            self._resolved_cache[key] = value
+        return value
+
     def discover(
         self, explicit_executable: str = ""
     ) -> tuple[VibeCADPrint.SlicerInstallation, ...]:
-        return discover_bambu_installations(explicit_executable)
+        key = str(explicit_executable or "").strip()
+        value = self._installation_cache.get(key)
+        if value is None:
+            value = discover_bambu_installations(key)
+            self._installation_cache[key] = value
+        return value
 
     def query_printers(
         self, installation: VibeCADPrint.SlicerInstallation
     ) -> tuple[VibeCADPrint.PrinterProfile, ...]:
-        return query_printer_profiles(installation)
+        value = self._printer_cache.get(installation)
+        if value is None:
+            value = _printer_profiles_from_instantiated(
+                self._resolved(installation, "machine")
+            )
+            self._printer_cache[installation] = value
+        return value
 
     def query_profiles(
         self,
         installation: VibeCADPrint.SlicerInstallation,
         printer_profile: str,
     ) -> VibeCADPrint.ProfileCatalog:
-        return query_compatible_profiles(installation, printer_profile)
+        key = (installation, printer_profile)
+        value = self._catalog_cache.get(key)
+        if value is None:
+            value = _compatible_profile_catalog(
+                self._store(installation),
+                printer_profile,
+                self._resolved(installation, "filament"),
+                self._resolved(installation, "process"),
+            )
+            self._catalog_cache[key] = value
+        return value
 
     def prepare_project(
         self,

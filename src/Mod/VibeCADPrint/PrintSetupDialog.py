@@ -21,6 +21,7 @@ DOWNLOAD_URL = "https://www.prusa3d.com/page/prusaslicer_424/"
 DOWNLOAD_URLS = {
     "prusaslicer": DOWNLOAD_URL,
     "bambustudio": "https://github.com/bambulab/BambuStudio/releases",
+    "orcaslicer": "https://github.com/OrcaSlicer/OrcaSlicer/releases",
 }
 _EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vibecad-print-setup")
 
@@ -223,7 +224,7 @@ class PrintSetupDialog(QtWidgets.QDialog):
         download.setEnabled(bool(self.download_url))
         download.clicked.connect(self._download)
         retry = QtWidgets.QPushButton("Retry", action_row)
-        retry.clicked.connect(self._detect)
+        retry.clicked.connect(self._retry_detect)
         action_layout.addWidget(self.open_slicer_button)
         action_layout.addWidget(download)
         action_layout.addWidget(retry)
@@ -443,6 +444,12 @@ class PrintSetupDialog(QtWidgets.QDialog):
 
     def _auto_detect(self) -> None:
         self.executable.clear()
+        self._retry_detect()
+
+    def _retry_detect(self, *_args) -> None:
+        invalidate = getattr(self.backend, "invalidate_cache", None)
+        if callable(invalidate):
+            invalidate()
         self._detect()
 
     def _detect(self) -> None:

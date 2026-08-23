@@ -180,6 +180,58 @@ def test_bambu_catalog_resolves_inheritance_and_exact_compatibility(
     assert resolved["printer_model"] == "Test Printer"
 
 
+def test_profile_store_uses_its_index_for_exact_name_queries(tmp_path: Path) -> None:
+    root = tmp_path / "profiles"
+    _profile_store(root)
+    store = BambuStudio._load_profile_store(_installation(root))
+
+    class NoFullScan:
+        def __iter__(self):
+            raise AssertionError("exact profile lookup scanned the complete store")
+
+    object.__setattr__(store, "records", NoFullScan())
+
+    records = store.records_for("machine", "Test Printer 0.4 nozzle")
+    assert len(records) == 1
+    assert records[0].name == "Test Printer 0.4 nozzle"
+
+
+def test_backend_caches_discovery_and_all_profile_data_until_invalidated(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "profiles"
+    _profile_store(root)
+    installation = _installation(root)
+    calls = {"discover": 0, "store": 0}
+    real_load = BambuStudio._load_profile_store
+
+    def discover(_override=""):
+        calls["discover"] += 1
+        return (installation,)
+
+    def load(actual_installation):
+        calls["store"] += 1
+        return real_load(actual_installation)
+
+    monkeypatch.setattr(BambuStudio, "discover_bambu_installations", discover)
+    monkeypatch.setattr(BambuStudio, "_load_profile_store", load)
+    backend = BambuStudio.BambuStudioBackend()
+
+    assert backend.discover() == (installation,)
+    assert backend.discover() == (installation,)
+    printers = backend.query_printers(installation)
+    assert backend.query_printers(installation) is printers
+    catalog = backend.query_profiles(installation, printers[0].name)
+    assert backend.query_profiles(installation, printers[0].name) is catalog
+    assert calls == {"discover": 1, "store": 1}
+
+    backend.invalidate_cache()
+    backend.discover()
+    backend.query_printers(installation)
+    assert calls == {"discover": 2, "store": 2}
+
+
 @pytest.mark.parametrize(
     ("auto_arrange", "arrange_value"),
     [(True, "1"), (False, "0")],
@@ -202,9 +254,14 @@ def test_prepare_bambu_project_uses_full_profiles_and_preserves_named_objects(
         ensure_on_bed=True,
     )
     commands = []
+    working_directories = []
 
-    def runner(command, **_kwargs):
+    def runner(command, **kwargs):
         commands.append(tuple(command))
+        working_directory = Path(kwargs["cwd"])
+        working_directories.append(working_directory)
+        assert working_directory.parent == destination.parent
+        assert working_directory.name.startswith(".vibecad-slicer-")
         settings = command[command.index("--load-settings") + 1].split(";")
         machine = json.loads(Path(settings[0]).read_text(encoding="utf-8"))
         process = json.loads(Path(settings[1]).read_text(encoding="utf-8"))
@@ -231,6 +288,7 @@ def test_prepare_bambu_project_uses_full_profiles_and_preserves_named_objects(
     assert commands[0][arrange_index + 1] == arrange_value
     assert "--ensure-on-bed" in commands[0]
     assert destination.is_file()
+    assert all(not path.exists() for path in working_directories)
     assert not list(tmp_path.glob("*.partial.3mf"))
     assert not list(tmp_path.glob("*.profile.json"))
 
