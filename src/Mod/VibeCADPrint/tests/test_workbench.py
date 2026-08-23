@@ -65,9 +65,7 @@ def test_commands_have_specific_labels_tooltips_and_repo_icons(monkeypatch) -> N
     PrintCommandLoader.ensure_commands_registered(gui=gui)
     resources = {name: command.GetResources() for name, command in registered.items()}
 
-    assert resources["VibeCADPrint_OpenInPrusaSlicer"]["MenuText"] == (
-        "Open in PrusaSlicer"
-    )
+    assert resources["VibeCADPrint_OpenInPrusaSlicer"]["MenuText"] == "Print"
     assert "selected" in resources["VibeCADPrint_OpenInPrusaSlicer"]["ToolTip"].lower()
     assert resources["VibeCADPrint_Save3MF"]["MenuText"] == "Save 3MF"
     assert resources["VibeCADPrint_Setup"]["MenuText"] == "Print Setup"
@@ -136,9 +134,44 @@ def test_print_workbench_registers_and_opens_persistent_panel() -> None:
     assert "PrintPanel.ensure_panel_registered()" in init_gui
     assert "PrintPanel.show_panel()" in init_gui
     assert "PrintPanel.hide_panel()" in init_gui
-    assert "PrintPanel.show_panel()" in commands
+    assert "PrintPanel.open_setup_dialog" in commands
+    assert "PrintPanel.show_panel(refresh=False)" in commands
+    resolver = commands.split("def _resolve_handoff_configuration", 1)[1].split(
+        "def _managed_cache_directory", 1
+    )[0]
+    assert "choose_print_setup" not in resolver
     assert 'DOCK_NAME = "VibeCADPrintPanel"' in panel
-    assert "Managed VibeCAD cache" in panel
-    assert "Choose a folder" in panel
+    assert 'QPushButton("Print"' in panel
+    assert 'QPushButton("Export 3MF…"' in panel
+    assert "Selections are saved automatically" in panel
+    assert "ScrollBarAlwaysOff" in panel
     assert "Auto-arrange" in panel
     assert "Ensure on bed" in panel
+
+
+def test_print_and_setup_commands_use_separate_daily_and_configuration_surfaces(
+    monkeypatch,
+) -> None:
+    registered = {}
+    gui = SimpleNamespace(
+        addCommand=lambda name, command: registered.__setitem__(name, command),
+        listCommands=lambda: list(registered),
+        getMainWindow=lambda: "main-window",
+    )
+    calls = []
+    daily_panel = SimpleNamespace(print_selected=lambda: calls.append("print"))
+    print_panel = SimpleNamespace(
+        show_panel=lambda *, refresh: calls.append(("show", refresh)) or daily_panel,
+        open_setup_dialog=lambda *, parent: calls.append(("setup", parent)),
+    )
+    monkeypatch.setitem(sys.modules, "FreeCADGui", gui)
+    monkeypatch.setitem(sys.modules, "PrintPanel", print_panel)
+    monkeypatch.delitem(sys.modules, "_vibecad_print_commands", raising=False)
+
+    import PrintCommandLoader
+
+    PrintCommandLoader.ensure_commands_registered(gui=gui)
+    registered["VibeCADPrint_OpenInPrusaSlicer"].Activated()
+    registered["VibeCADPrint_Setup"].Activated()
+
+    assert calls == [("show", False), "print", ("setup", "main-window")]

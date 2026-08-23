@@ -44,6 +44,12 @@ def _load_command_module() -> Any:
     return module
 
 
+def command_module() -> Any:
+    """Return the exact VibeCAD print command module without name collisions."""
+
+    return _load_command_module()
+
+
 def ensure_commands_registered(gui: Any | None = None) -> None:
     if gui is None:
         import FreeCADGui as gui  # type: ignore[no-redef]

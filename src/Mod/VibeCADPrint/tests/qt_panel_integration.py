@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 
@@ -14,7 +15,7 @@ REPO = MODULE.parents[2]
 if str(MODULE) not in sys.path:
     sys.path.insert(0, str(MODULE))
 
-from PySide import QtWidgets  # noqa: E402
+from PySide import QtCore, QtWidgets  # noqa: E402
 
 import PrintPanel  # noqa: E402
 import PrintPreferences  # noqa: E402
@@ -38,14 +39,14 @@ def main() -> None:
         ensure_on_bed=True,
     )
     storage = PrintPreferences.HandoffStorage("folder", "/tmp/print-projects")
-    saved: dict[str, object] = {}
-    PrintPanel.PrintPreferences.load_confirmed_setup = lambda: setup
-    PrintPanel.PrintPreferences.load_handoff_storage = lambda: storage
+    saved: dict[str, object] = {"setup": setup, "storage": storage}
+    PrintPanel.PrintPreferences.load_confirmed_setup = lambda: saved["setup"]
+    PrintPanel.PrintPreferences.load_handoff_storage = lambda: saved["storage"]
     PrintPanel.PrintPreferences.executable_override = lambda: ""
-    PrintPanel.PrintPreferences.save_confirmed_setup = lambda value: saved.setdefault(
+    PrintPanel.PrintPreferences.save_confirmed_setup = lambda value: saved.__setitem__(
         "setup", value
     )
-    PrintPanel.PrintPreferences.save_handoff_storage = lambda value: saved.setdefault(
+    PrintPanel.PrintPreferences.save_handoff_storage = lambda value: saved.__setitem__(
         "storage", value
     )
 
@@ -103,13 +104,40 @@ def main() -> None:
     assert panel.print_combo.currentData() == profile
     assert len(panel.material_combos) == 1
     assert panel.material_combos[0].currentData() == material.name
-    assert panel.folder_storage.isChecked()
-    assert panel.folder_edit.text() == storage.directory
+    assert panel.output_location.text() == storage.directory
+    assert panel.print_button.text() == "Print"
+    assert panel.setup_button.text().startswith("Setup")
+    assert panel.export_button.text() == "Export 3MF…"
+    assert not panel.apply_button.isVisible()
     assert panel._save()
     assert saved == {"setup": setup, "storage": storage}
-    assert panel.findChild(QtWidgets.QScrollArea, "VibeCADPrintPanelScroll") is not None
+    scroll = panel.findChild(QtWidgets.QScrollArea, "VibeCADPrintPanelScroll")
+    assert scroll is not None
+    assert scroll.horizontalScrollBarPolicy() == QtCore.Qt.ScrollBarAlwaysOff
+    assert scroll.horizontalScrollBar().maximum() == 0
+
+    panel.auto_arrange.setChecked(False)
+    app.processEvents()
+    assert saved["setup"].auto_arrange is False
 
     panel.close()
+
+    remembered = PrintPanel.PrintPanelWidget()
+    remembered.backend = Backend()
+    remembered._start_job = immediate
+    remembered.resize(320, 720)
+    remembered.show()
+    remembered.refresh()
+    app.processEvents()
+
+    assert remembered.printer_combo.currentData() == printer
+    assert remembered.print_combo.currentData() == profile
+    assert remembered.material_combos[0].currentData() == material.name
+    assert not remembered.auto_arrange.isChecked()
+    screenshot = os.environ.get("VIBECAD_PRINT_PANEL_SCREENSHOT")
+    if screenshot:
+        assert remembered.grab().save(screenshot)
+    remembered.close()
 
 
 if __name__ == "__main__":

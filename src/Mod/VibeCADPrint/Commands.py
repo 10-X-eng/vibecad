@@ -142,32 +142,28 @@ def _resolve_handoff_configuration(
     backend: VibeCADPrint.PrusaSlicerBackend,
     parent: Any,
 ) -> tuple[VibeCADPrint.SlicerInstallation, VibeCADPrint.PrintSetup | None] | None:
-    import PrintSetupDialog
-
     override = PrintPreferences.executable_override()
     installations = backend.discover(override)
     installation = VibeCADPrint.preferred_installation(installations)
+    if installation is None:
+        _warning(
+            "Print Setup Required",
+            "PrusaSlicer is not configured. Click Setup before printing.",
+        )
+        return None
     if installation is not None and not installation.tested:
         if _confirm_old_installation(installation, parent):
             return installation, None
         return None
 
-    reason = ""
-    if installation is not None:
-        setup, reason = _validated_saved_setup(installation, backend, parent)
-        if setup is not None:
-            return installation, setup
-
-    choice = PrintSetupDialog.choose_print_setup(
-        parent=parent,
-        backend=backend,
-        open_after_save=True,
-        initial_installation=installation,
-        initial_message=reason,
+    setup, reason = _validated_saved_setup(installation, backend, parent)
+    if setup is not None:
+        return installation, setup
+    _warning(
+        "Print Setup Required",
+        reason + "\n\nClick Setup to review the exact installed profiles.",
     )
-    if not choice.accepted or choice.installation is None:
-        return None
-    return choice.installation, choice.setup
+    return None
 
 
 def _managed_cache_directory() -> Path:
@@ -202,18 +198,24 @@ def _handoff_destination(
     )
 
 
-def _open_selected_in_prusaslicer() -> None:
+def open_selected_in_prusaslicer(
+    *,
+    installation: VibeCADPrint.SlicerInstallation | None = None,
+    setup: VibeCADPrint.PrintSetup | None = None,
+) -> bool:
+    """Export and open the selection, optionally using panel-validated choices."""
+
     try:
         document, objects = _active_selection()
     except VibeCADPrint.PrintSelectionError as exc:
         _warning("Open in PrusaSlicer", str(exc))
-        return
-    parent = _main_window()
+        return False
     backend = VibeCADPrint.PrusaSlicerBackend()
-    resolved = _resolve_handoff_configuration(backend, parent)
-    if resolved is None:
-        return
-    installation, setup = resolved
+    if installation is None:
+        resolved = _resolve_handoff_configuration(backend, _main_window())
+        if resolved is None:
+            return False
+        installation, setup = resolved
     try:
         destination, managed = _handoff_destination(document, objects)
         VibeCADPrint.export_selection_3mf(objects, destination)
@@ -225,7 +227,7 @@ def _open_selected_in_prusaslicer() -> None:
             )
     except (OSError, VibeCADPrint.SlicerError) as exc:
         _warning("Open in PrusaSlicer", str(exc))
-        return
+        return False
     profile = (
         setup.printer_profile
         if setup is not None
@@ -235,6 +237,11 @@ def _open_selected_in_prusaslicer() -> None:
         f"Opened {len(objects)} selected object(s) in {installation.display_name} "
         f"using {profile}. 3MF: {destination}. Process {result.process_id or 'started'}."
     )
+    return True
+
+
+def _open_selected_in_prusaslicer() -> None:
+    open_selected_in_prusaslicer()
 
 
 def _save_selected_3mf() -> None:
@@ -246,7 +253,9 @@ def _save_selected_3mf() -> None:
     from PySide import QtWidgets
 
     label = str(getattr(document, "Label", "") or "Selection")
-    initial = str(Path.home() / f"{label}.3mf")
+    storage = PrintPreferences.load_handoff_storage()
+    initial_root = Path(storage.directory) if storage.mode == "folder" else Path.home()
+    initial = str(initial_root / f"{label}.3mf")
     selected, _filter = QtWidgets.QFileDialog.getSaveFileName(
         _main_window(),
         "Save selected objects as 3MF",
@@ -260,7 +269,7 @@ def _save_selected_3mf() -> None:
         destination = destination.with_suffix(".3mf")
     try:
         VibeCADPrint.export_selection_3mf(objects, destination)
-    except VibeCADPrint.SlicerError as exc:
+    except (OSError, VibeCADPrint.SlicerError) as exc:
         _warning("Save 3MF", str(exc))
         return
     _status(f"Saved {len(objects)} selected object(s) to {destination}.")
@@ -270,7 +279,7 @@ class _OpenInPrusaSlicerCommand:
     def GetResources(self) -> dict[str, str]:
         return {
             "Pixmap": PrintIcons.icon_path("open"),
-            "MenuText": "Open in PrusaSlicer",
+            "MenuText": "Print",
             "ToolTip": (
                 "Export the explicitly selected printable objects as 3MF and open "
                 "them with the confirmed PrusaSlicer setup"
@@ -281,7 +290,11 @@ class _OpenInPrusaSlicerCommand:
         return _selection_available()
 
     def Activated(self) -> None:
-        _open_selected_in_prusaslicer()
+        import PrintPanel
+
+        panel = PrintPanel.show_panel(refresh=False)
+        if panel is not None:
+            panel.print_selected()
 
 
 class _Save3MFCommand:
@@ -316,7 +329,7 @@ class _PrintSetupCommand:
     def Activated(self) -> None:
         import PrintPanel
 
-        PrintPanel.show_panel()
+        PrintPanel.open_setup_dialog(parent=_main_window())
 
 
 def register_commands(gui: Any | None = None) -> None:
