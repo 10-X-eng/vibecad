@@ -2575,7 +2575,7 @@ VibeCADCmdSectionView::VibeCADCmdSectionView()
 {
     sGroup = "Standard-View";
     sMenuText = QT_TR_NOOP("Section View");
-    sToolTipText = QT_TR_NOOP("Cuts the model with a draggable section plane");
+    sToolTipText = QT_TR_NOOP("Cuts the model with a Front, Top, or Right section plane");
     sStatusTip = sToolTipText;
     sWhatsThis = "VibeCAD_SectionView";
     sPixmap = "Std_ToggleClipPlane";

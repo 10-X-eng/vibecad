@@ -26,6 +26,7 @@ set(VibeCAD_Scripts
     VibeCADFastenerAssembly.py
     VibeCADGrid.py
     VibeCADSectionView.py
+    VibeCADSectionViewGui.py
     VibeCADGrokAuth.py
     VibeCADGeometry.py
     VibeCADGeometryFallback.py
