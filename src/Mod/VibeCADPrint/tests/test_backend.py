@@ -243,7 +243,7 @@ def test_launch_command_maps_explicit_placement_choices(
 
     assert expected in command
     assert unexpected not in command
-    assert command[-1] == "/tmp/Plate With Spaces.3mf"
+    assert command[-1] == str(Path("/tmp/Plate With Spaces.3mf"))
     material_index = command.index("--material-profile")
     assert command[material_index + 1] == ";".join(("Generic PLA @XL",) * 5)
 
@@ -253,7 +253,7 @@ def test_basic_launch_does_not_invent_profiles() -> None:
         _installation(version="2.7.2"), Path("/tmp/part.3mf"), None
     )
 
-    assert command == ("prusa-slicer", "/tmp/part.3mf")
+    assert command == ("prusa-slicer", str(Path("/tmp/part.3mf")))
 
 
 @pytest.mark.parametrize(

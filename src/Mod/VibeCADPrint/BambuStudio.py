@@ -40,6 +40,9 @@ _BAMBU_VERSION_RE = re.compile(
 _POINT_RE = re.compile(r"^\s*(-?(?:\d+(?:\.\d*)?|\.\d+))x"
                        r"(-?(?:\d+(?:\.\d*)?|\.\d+))\s*$")
 _PROFILE_TYPES = {"machine", "process", "filament"}
+_PLAIN_VERSION_RE = re.compile(
+    r"(?<!\d)(\d+)\.(\d+)(?:\.(\d+))?(?:\.(\d+))?"
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,121 @@ class _ProfileStore:
         if name:
             return self._by_type_name.get((profile_type, name), ())
         return self._by_type.get(profile_type, ())
+
+
+def _normalized_version(value: str) -> str:
+    match = _PLAIN_VERSION_RE.search(str(value or ""))
+    if match is None:
+        return ""
+    parts = [str(int(part or 0)) for part in match.groups()]
+    return ".".join(parts[:3] + ([parts[3]] if match.group(4) else []))
+
+
+def _windows_file_version(executable: str) -> str:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class VS_FIXEDFILEINFO(ctypes.Structure):
+            _fields_ = [
+                ("dwSignature", wintypes.DWORD),
+                ("dwStrucVersion", wintypes.DWORD),
+                ("dwFileVersionMS", wintypes.DWORD),
+                ("dwFileVersionLS", wintypes.DWORD),
+                ("dwProductVersionMS", wintypes.DWORD),
+                ("dwProductVersionLS", wintypes.DWORD),
+                ("dwFileFlagsMask", wintypes.DWORD),
+                ("dwFileFlags", wintypes.DWORD),
+                ("dwFileOS", wintypes.DWORD),
+                ("dwFileType", wintypes.DWORD),
+                ("dwFileSubtype", wintypes.DWORD),
+                ("dwFileDateMS", wintypes.DWORD),
+                ("dwFileDateLS", wintypes.DWORD),
+            ]
+
+        api = ctypes.windll.version
+        ignored = wintypes.DWORD()
+        size = api.GetFileVersionInfoSizeW(str(executable), ctypes.byref(ignored))
+        if not size:
+            return ""
+        buffer = ctypes.create_string_buffer(size)
+        if not api.GetFileVersionInfoW(str(executable), 0, size, buffer):
+            return ""
+        pointer = ctypes.c_void_p()
+        length = wintypes.UINT()
+        if not api.VerQueryValueW(
+            buffer,
+            "\\",
+            ctypes.byref(pointer),
+            ctypes.byref(length),
+        ):
+            return ""
+        info = ctypes.cast(pointer, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
+        if info.dwSignature != 0xFEEF04BD:
+            return ""
+        return ".".join(
+            str(part)
+            for part in (
+                info.dwFileVersionMS >> 16,
+                info.dwFileVersionMS & 0xFFFF,
+                info.dwFileVersionLS >> 16,
+                info.dwFileVersionLS & 0xFFFF,
+            )
+        )
+    except (AttributeError, ImportError, OSError, TypeError, ValueError):
+        return ""
+
+
+def _windows_registry_versions(product_name: str) -> tuple[str, ...]:
+    try:
+        import winreg
+    except ImportError:
+        return ()
+
+    expected = str(product_name or "").strip().casefold()
+    if not expected:
+        return ()
+    versions: list[str] = []
+    uninstall = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                key = winreg.OpenKey(root, uninstall, 0, winreg.KEY_READ | view)
+            except OSError:
+                continue
+            with key:
+                for index in range(winreg.QueryInfoKey(key)[0]):
+                    try:
+                        name = winreg.EnumKey(key, index)
+                        with winreg.OpenKey(key, name) as product:
+                            display_name = str(
+                                winreg.QueryValueEx(product, "DisplayName")[0]
+                            ).strip()
+                            if display_name.casefold() != expected:
+                                continue
+                            versions.append(
+                                str(
+                                    winreg.QueryValueEx(product, "DisplayVersion")[0]
+                                ).strip()
+                            )
+                    except OSError:
+                        continue
+    return tuple(versions)
+
+
+def windows_installed_version(executable: str, product_name: str) -> str:
+    """Read a Windows GUI slicer's version without relying on console output."""
+
+    candidates = (
+        _windows_file_version(executable),
+        *_windows_registry_versions(product_name),
+    )
+    normalized = tuple(
+        value
+        for value in (_normalized_version(candidate) for candidate in candidates)
+        if VibeCADPrint.version_key(value) != (0, 0, 0)
+    )
+    return max(normalized, key=VibeCADPrint.version_key, default="")
 
 
 def _truthy(value: Any) -> bool:
@@ -570,6 +688,7 @@ def discover_bambu_installations(
     environ: Mapping[str, str] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     which: Callable[[str], str | None] = shutil.which,
+    windows_version_reader: Callable[[str, str], str] = windows_installed_version,
 ) -> tuple[VibeCADPrint.SlicerInstallation, ...]:
     """Discover current native and Flatpak Bambu Studio installations."""
 
@@ -604,10 +723,19 @@ def discover_bambu_installations(
             str(value or "") for value in (completed.stdout, completed.stderr)
         )
         match = _BAMBU_VERSION_RE.search(output)
-        if match is None:
+        if match is not None:
+            pieces = [str(int(value or 0)) for value in match.groups()]
+            version = ".".join(
+                pieces[:3] + ([pieces[3]] if match.group(4) else [])
+            )
+        elif platform == "win32" and completed.returncode == 0:
+            version = _normalized_version(
+                windows_version_reader(gui[0], candidate.display_name)
+            )
+        else:
+            version = ""
+        if not version:
             continue
-        pieces = [str(int(value or 0)) for value in match.groups()]
-        version = ".".join(pieces[:3] + ([pieces[3]] if match.group(4) else []))
         resource_dir = candidate.resource_dir or _flatpak_resource_dir(
             candidate.source,
             runner=runner,
@@ -814,13 +942,15 @@ def launch_bambu_studio(
     handoff_file: str | os.PathLike[str],
     *,
     popen: Callable[..., subprocess.Popen[Any]] = subprocess.Popen,
+    platform: str | None = None,
 ) -> VibeCADPrint.LaunchResult:
-    command = (*installation.gui_command, str(Path(handoff_file)))
-    try:
-        process = popen(list(command), close_fds=(os.name != "nt"))
-    except OSError as exc:
-        raise VibeCADPrint.SlicerError(f"Could not start Bambu Studio: {exc}") from exc
-    return VibeCADPrint.LaunchResult(command=command, process_id=process.pid)
+    return VibeCADPrint.launch_slicer_gui(
+        installation,
+        handoff_file,
+        slicer_name="Bambu Studio",
+        popen=popen,
+        platform=platform,
+    )
 
 
 class BambuStudioBackend:

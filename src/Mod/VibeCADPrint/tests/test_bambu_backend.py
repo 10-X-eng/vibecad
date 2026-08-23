@@ -129,6 +129,61 @@ def _installation(root: Path) -> VibeCADPrint.SlicerInstallation:
     )
 
 
+def test_windows_discovery_uses_file_version_when_gui_help_is_silent(
+    tmp_path: Path,
+) -> None:
+    program_files = tmp_path / "Program Files"
+    executable = program_files / "Bambu Studio" / "bambu-studio.exe"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"MZ")
+    profiles = executable.parent / "resources" / "profiles"
+    profiles.mkdir(parents=True)
+    appdata = tmp_path / "Donn\u00fd User" / "AppData" / "Roaming"
+
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    installations = BambuStudio.discover_bambu_installations(
+        platform="win32",
+        environ={"ProgramFiles": str(program_files), "APPDATA": str(appdata)},
+        runner=runner,
+        which=lambda _name: None,
+        windows_version_reader=lambda _path, _product: "2.7.1.62",
+    )
+
+    assert len(installations) == 1
+    assert installations[0].version == "2.7.1.62"
+    assert installations[0].gui_command == (str(executable),)
+    assert installations[0].resource_dir == str(profiles)
+    assert installations[0].config_dir == str(appdata / "BambuStudio")
+
+
+def test_windows_launch_is_detached_and_preserves_unicode_path(tmp_path: Path) -> None:
+    handoff = tmp_path / "M\u00f8del With Spaces.3mf"
+    calls = []
+
+    class Process:
+        pid = 42
+
+    def popen(command, **kwargs):
+        calls.append((tuple(command), kwargs))
+        return Process()
+
+    result = BambuStudio.launch_bambu_studio(
+        _installation(tmp_path),
+        handoff,
+        popen=popen,
+        platform="win32",
+    )
+
+    assert result.command[-1] == str(handoff)
+    assert result.process_id == 42
+    assert calls[0][0][-1] == str(handoff)
+    assert calls[0][1]["creationflags"]
+    assert calls[0][1]["close_fds"] is True
+    assert calls[0][1]["start_new_session"] is False
+
+
 def _source_3mf(path: Path) -> None:
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(

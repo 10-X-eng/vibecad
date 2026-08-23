@@ -922,6 +922,38 @@ def launch_prusaslicer(
     return LaunchResult(command=command, process_id=getattr(process, "pid", None))
 
 
+def launch_slicer_gui(
+    installation: SlicerInstallation,
+    handoff_file: str | os.PathLike[str],
+    *,
+    slicer_name: str,
+    popen: Callable[..., subprocess.Popen[Any]] = subprocess.Popen,
+    platform: str | None = None,
+) -> LaunchResult:
+    """Launch a GUI slicer detached and preserve the path as one argument."""
+
+    command = (*installation.gui_command, str(Path(handoff_file)))
+    current_platform = platform or sys.platform
+    creationflags = 0
+    if current_platform == "win32":
+        creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    try:
+        process = popen(
+            list(command),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=(current_platform != "win32"),
+            creationflags=creationflags,
+        )
+    except OSError as exc:
+        raise SlicerError(f"Could not start {slicer_name}: {exc}") from exc
+    return LaunchResult(command=command, process_id=getattr(process, "pid", None))
+
+
 def _is_printable_object(obj: Any) -> bool:
     shape = getattr(obj, "Shape", None)
     if shape is not None:

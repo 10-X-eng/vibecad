@@ -102,14 +102,20 @@ def _candidate_specs(
             )
         )
     if platform == "win32":
-        standard = (
-            (environ.get("ProgramFiles", r"C:\Program Files"), "OrcaSlicer.exe"),
-            (environ.get("LOCALAPPDATA", ""), r"Programs\OrcaSlicer\OrcaSlicer.exe"),
-        )
-        for root, suffix in standard:
-            if not root:
-                continue
-            executable = ntpath.join(root, "OrcaSlicer", suffix) if "\\" not in suffix else ntpath.join(root, suffix)
+        standard: list[str] = []
+        program_files = environ.get("ProgramFiles", r"C:\Program Files")
+        if program_files:
+            standard.extend(
+                ntpath.join(program_files, "OrcaSlicer", name)
+                for name in ("OrcaSlicer.exe", "orca-slicer.exe")
+            )
+        local_app_data = environ.get("LOCALAPPDATA", "")
+        if local_app_data:
+            standard.extend(
+                ntpath.join(local_app_data, "Programs", "OrcaSlicer", name)
+                for name in ("OrcaSlicer.exe", "orca-slicer.exe")
+            )
+        for executable in standard:
             values.append(
                 _Candidate(
                     (executable,),
@@ -217,6 +223,9 @@ def discover_orca_installations(
     environ: Mapping[str, str] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     which: Callable[[str], str | None] = shutil.which,
+    windows_version_reader: Callable[
+        [str, str], str
+    ] = BambuStudio.windows_installed_version,
 ) -> tuple[VibeCADPrint.SlicerInstallation, ...]:
     """Discover current native and Flatpak OrcaSlicer installations."""
 
@@ -251,10 +260,19 @@ def discover_orca_installations(
             str(value or "") for value in (completed.stdout, completed.stderr)
         )
         match = _ORCA_VERSION_RE.search(output)
-        if match is None:
+        if match is not None:
+            pieces = [str(int(value or 0)) for value in match.groups()]
+            version = ".".join(
+                pieces[:3] + ([pieces[3]] if match.group(4) else [])
+            )
+        elif platform == "win32" and completed.returncode == 0:
+            version = BambuStudio._normalized_version(
+                windows_version_reader(gui[0], candidate.display_name)
+            )
+        else:
+            version = ""
+        if not version:
             continue
-        pieces = [str(int(value or 0)) for value in match.groups()]
-        version = ".".join(pieces[:3] + ([pieces[3]] if match.group(4) else []))
         resource_dir = candidate.resource_dir or _flatpak_resource_dir(
             candidate.source,
             runner=runner,
@@ -350,13 +368,15 @@ def launch_orca_slicer(
     handoff_file: str | os.PathLike[str],
     *,
     popen: Callable[..., subprocess.Popen[Any]] = subprocess.Popen,
+    platform: str | None = None,
 ) -> VibeCADPrint.LaunchResult:
-    command = (*installation.gui_command, str(Path(handoff_file)))
-    try:
-        process = popen(list(command), close_fds=(os.name != "nt"))
-    except OSError as exc:
-        raise VibeCADPrint.SlicerError(f"Could not start OrcaSlicer: {exc}") from exc
-    return VibeCADPrint.LaunchResult(command=command, process_id=process.pid)
+    return VibeCADPrint.launch_slicer_gui(
+        installation,
+        handoff_file,
+        slicer_name="OrcaSlicer",
+        popen=popen,
+        platform=platform,
+    )
 
 
 class OrcaSlicerBackend(BambuStudio.BambuStudioBackend):

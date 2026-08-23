@@ -39,8 +39,9 @@ def test_orca_flatpak_discovery_uses_its_own_profile_and_config_roots(
     assert all(value.resource_dir == str(profiles) for value in installations)
     assert all("com.orcaslicer.OrcaSlicer" in value.gui_command for value in installations)
     assert all(value.tested_version == (2, 4, 2) for value in installations)
-    assert installations[0].config_dir == (
-        "/home/test/.var/app/com.orcaslicer.OrcaSlicer/config/OrcaSlicer"
+    assert installations[0].config_dir == str(
+        Path("/home/test")
+        / ".var/app/com.orcaslicer.OrcaSlicer/config/OrcaSlicer"
     )
     assert probe_directories
     assert all(not path.exists() for path in probe_directories)
@@ -65,6 +66,35 @@ def test_orca_discovery_has_native_macos_and_windows_candidates() -> None:
     assert any("/Applications/OrcaSlicer.app/" in value.gui_command[0] for value in mac)
     assert any(value.gui_command[0].lower().endswith("orcaslicer.exe") for value in windows)
     assert any(value.gui_command[0].lower().endswith("orca-slicer.exe") for value in windows)
+
+
+def test_windows_discovery_finds_hyphenated_installer_and_registry_version(
+    tmp_path: Path,
+) -> None:
+    program_files = tmp_path / "Program Files"
+    executable = program_files / "OrcaSlicer" / "orca-slicer.exe"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"MZ")
+    profiles = executable.parent / "resources" / "profiles"
+    profiles.mkdir(parents=True)
+    appdata = tmp_path / "Donn\u00fd User" / "AppData" / "Roaming"
+
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    installations = OrcaSlicer.discover_orca_installations(
+        platform="win32",
+        environ={"ProgramFiles": str(program_files), "APPDATA": str(appdata)},
+        runner=runner,
+        which=lambda _name: None,
+        windows_version_reader=lambda _path, _product: "2.4.2",
+    )
+
+    assert len(installations) == 1
+    assert installations[0].version == "2.4.2"
+    assert installations[0].gui_command == (str(executable),)
+    assert installations[0].resource_dir == str(profiles)
+    assert installations[0].config_dir == str(appdata / "OrcaSlicer")
 
 
 def test_orca_project_command_keeps_explicit_placement_and_profiles(
