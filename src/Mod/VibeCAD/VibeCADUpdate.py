@@ -222,6 +222,215 @@ class InstallPlan:
     current_install_root: Path | None = None
 
 
+MACOS_INSTALL_HELPER_SCRIPT = r"""#!/bin/sh
+set -eu
+pid="$1"
+package="$2"
+app="$3"
+backup="$4"
+receipt="$5"
+pending="$6"
+
+log="$(dirname "$receipt")/install-helper.log"
+health_wait="${VIBECAD_UPDATE_HEALTH_WAIT:-120}"
+open_bin="${VIBECAD_UPDATE_OPEN:-open}"
+log_msg() {
+    printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >> "$log"
+}
+
+bundle_executable() {
+    candidate="$1/Contents/MacOS/FreeCAD"
+    if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    candidate="$1/Contents/MacOS/VibeCAD"
+    if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    find "$1/Contents/MacOS" -type f \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -n 1
+}
+
+find_new_pid() {
+    ps -axo pid=,command= | awk -v prefix="$app/" 'index($0, prefix) { print $1; exit }'
+}
+
+while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+done
+if [ -e "$backup" ]; then
+    log_msg "backup already exists at $backup"
+    exit 20
+fi
+
+mount=$(mktemp -d "${TMPDIR:-/tmp}/vibecad-dmg.XXXXXX")
+attached=0
+new_pid=""
+detach_mount() {
+    if [ "$attached" -eq 1 ]; then
+        hdiutil detach "$mount" -quiet >/dev/null 2>&1 || true
+        attached=0
+    fi
+    rmdir "$mount" >/dev/null 2>&1 || true
+}
+terminate_new_app() {
+    if [ -z "${new_pid:-}" ]; then
+        new_pid=$(find_new_pid || true)
+    fi
+    if [ -z "$new_pid" ] || ! kill -0 "$new_pid" 2>/dev/null; then
+        return
+    fi
+    kill "$new_pid" 2>/dev/null || true
+    stop_attempt=0
+    while kill -0 "$new_pid" 2>/dev/null && [ "$stop_attempt" -lt 10 ]; do
+        sleep 1
+        stop_attempt=$((stop_attempt + 1))
+    done
+    kill -9 "$new_pid" 2>/dev/null || true
+    wait "$new_pid" 2>/dev/null || true
+}
+rollback_install() {
+    log_msg "rolling back macOS install"
+    terminate_new_app
+    if [ -e "$backup" ]; then
+        rm -rf "$app"
+        mv "$backup" "$app"
+        printf '%s\n' '{"status":"rolled-back","platform":"macos-dmg"}' > "$receipt"
+        executable=$(bundle_executable "$app" || true)
+        if [ -n "$executable" ]; then
+            "$executable" >/dev/null 2>&1 &
+        else
+            "$open_bin" "$app" >/dev/null 2>&1 || true
+        fi
+    fi
+}
+trap detach_mount EXIT
+
+if ! hdiutil attach "$package" -nobrowse -readonly -noverify -mountpoint "$mount" >/dev/null 2>&1; then
+    if ! printf 'Y\n' | hdiutil attach "$package" -nobrowse -readonly -mountpoint "$mount" >/dev/null 2>&1; then
+        log_msg "hdiutil attach failed for $package"
+        exit 23
+    fi
+fi
+attached=1
+
+new_app=""
+if [ -d "$mount/VibeCAD.app" ]; then
+    new_app="$mount/VibeCAD.app"
+else
+    new_app=$(find "$mount" -maxdepth 2 -name '*.app' -type d 2>/dev/null | head -n 1)
+fi
+if [ -z "$new_app" ] || [ ! -d "$new_app" ]; then
+    log_msg "disk image does not contain VibeCAD.app"
+    exit 24
+fi
+
+if [ -e "$app" ]; then
+    if ! mv "$app" "$backup"; then
+        log_msg "could not move $app aside"
+        exit 21
+    fi
+fi
+if ! ditto "$new_app" "$app"; then
+    rollback_install
+    exit 21
+fi
+xattr -dr com.apple.quarantine "$app" >/dev/null 2>&1 || true
+detach_mount
+
+printf '%s\n' '{"status":"installed","platform":"macos-dmg"}' > "$receipt"
+executable=$(bundle_executable "$app" || true)
+if [ -x "$executable" ]; then
+    "$executable" >/dev/null 2>&1 &
+    new_pid=$!
+else
+    if ! "$open_bin" -n "$app"; then
+        rollback_install
+        exit 25
+    fi
+    attempt=0
+    while [ "$attempt" -lt 60 ]; do
+        new_pid=$(find_new_pid || true)
+        if [ -n "$new_pid" ]; then
+            break
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+fi
+if [ -z "${new_pid:-}" ] || ! kill -0 "$new_pid" 2>/dev/null; then
+    log_msg "updated application did not start"
+    rollback_install
+    exit 25
+fi
+
+healthy=0
+attempt=0
+while [ "$attempt" -lt "$health_wait" ]; do
+    if [ ! -f "$pending" ]; then
+        healthy=1
+        break
+    fi
+    if ! kill -0 "$new_pid" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+done
+if [ "$healthy" -eq 1 ]; then
+    cleanup_attempt=0
+    while [ -e "$backup" ] && [ "$cleanup_attempt" -lt 10 ]; do
+        sleep 1
+        cleanup_attempt=$((cleanup_attempt + 1))
+    done
+    rm -rf "$backup"
+    exit 0
+fi
+if kill -0 "$new_pid" 2>/dev/null; then
+    log_msg "keeping live updated application; health receipt still pending"
+    exit 0
+fi
+log_msg "updated application exited before health receipt"
+rollback_install
+exit 25
+"""
+
+
+def write_macos_install_helper(helper_path: Path) -> Path:
+    """Write the detached macOS install helper used after VibeCAD exits."""
+
+    helper_path.parent.mkdir(parents=True, exist_ok=True)
+    helper_path.write_bytes(MACOS_INSTALL_HELPER_SCRIPT.encode("utf-8"))
+    helper_path.chmod(0o700)
+    return helper_path
+
+
+def macos_install_helper_command(
+    helper: Path,
+    plan: InstallPlan,
+    *,
+    process_id: int,
+    update_directory: Path | None = None,
+) -> list[str]:
+    """Return the argv used to apply a staged macOS .dmg after this process exits."""
+
+    application = plan.current_install_root
+    if application is None:
+        raise UpdateError("The staged macOS plan has no application bundle.")
+    root = (update_directory or default_update_directory()).resolve()
+    return [
+        "/bin/sh",
+        str(helper),
+        str(process_id),
+        str(plan.package),
+        str(application),
+        f"{application}.vibecad-rollback",
+        str(root / "install-receipt.json"),
+        str(root / "pending-install.json"),
+    ]
+
+
 def normalize_architecture(value: str) -> str:
     normalized = str(value).strip().casefold().replace("-", "_")
     aliases = {
