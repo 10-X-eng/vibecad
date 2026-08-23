@@ -121,7 +121,8 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
     *fluid << "FEM_ConstraintInitialFlowVelocity"
            << "FEM_ConstraintInitialPressure"
            << "Separator"
-           << "FEM_ConstraintFlowVelocity";
+           << "FEM_ConstraintFlowVelocity"
+           << "FEM_ConstraintFluidBoundary";
 
     Gui::ToolBarItem* geom = new Gui::ToolBarItem(root);
     geom->setCommand("Geometrical Analysis Features");
@@ -247,7 +248,8 @@ Gui::MenuItem* Workbench::setupMenuBar() const
     *fluid << "FEM_ConstraintInitialFlowVelocity"
            << "FEM_ConstraintInitialPressure"
            << "Separator"
-           << "FEM_ConstraintFlowVelocity";
+           << "FEM_ConstraintFlowVelocity"
+           << "FEM_ConstraintFluidBoundary";
 
     Gui::MenuItem* geom = new Gui::MenuItem;
     geom->setCommand("&Geometrical Analysis Features");

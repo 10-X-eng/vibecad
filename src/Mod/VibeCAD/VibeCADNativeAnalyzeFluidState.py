@@ -88,6 +88,11 @@ def _velocity_components(obj: Any) -> dict[str, dict[str, Any]]:
 
 
 def fluid_constraint_kind(obj: Any) -> str:
+    try:
+        if obj.isDerivedFrom("Fem::ConstraintFluidBoundary"):
+            return "fluid_boundary"
+    except Exception:
+        pass
     proxy_type = str(getattr(getattr(obj, "Proxy", None), "Type", "") or "")
     kind = _KINDS.get(proxy_type)
     if kind is None:
@@ -99,6 +104,10 @@ def fluid_constraint_kind(obj: Any) -> str:
 
 
 def _definition(obj: Any, kind: str) -> dict[str, Any]:
+    if kind == "fluid_boundary":
+        from VibeCADNativeAnalyzeFluidValues import fluid_boundary_definition
+
+        return fluid_boundary_definition(obj)
     if kind == "initial_pressure":
         return {"pressure_pa": _finite(obj.Pressure.getValueAs("Pa").Value)}
     result: dict[str, Any] = {"components": _velocity_components(obj)}
@@ -108,6 +117,35 @@ def _definition(obj: Any, kind: str) -> dict[str, Any]:
 
 
 def _native_values(obj: Any, kind: str) -> dict[str, Any]:
+    if kind == "fluid_boundary":
+        direction = getattr(obj, "Direction", None)
+        if isinstance(direction, tuple) and len(direction) == 2:
+            linked, subelements = direction
+            subelements = (
+                (subelements,)
+                if isinstance(subelements, str)
+                else tuple(subelements or ())
+            )
+            direction_state = {
+                "object_name": str(getattr(linked, "Name", "") or ""),
+                "subelements": [str(item) for item in subelements],
+            }
+        else:
+            direction_state = None
+        return {
+            "BoundaryType": str(obj.BoundaryType),
+            "Subtype": str(obj.Subtype),
+            "BoundaryValue": _finite(obj.BoundaryValue),
+            "Direction": direction_state,
+            "Reversed": bool(obj.Reversed),
+            "TurbulenceSpecification": str(obj.TurbulenceSpecification),
+            "TurbulentIntensityValue": _finite(obj.TurbulentIntensityValue),
+            "TurbulentLengthValue": _finite(obj.TurbulentLengthValue),
+            "ThermalBoundaryType": str(obj.ThermalBoundaryType),
+            "TemperatureValue": _finite(obj.TemperatureValue),
+            "HeatFluxValue": _finite(obj.HeatFluxValue),
+            "HTCoeffValue": _finite(obj.HTCoeffValue),
+        }
     if kind == "initial_pressure":
         return {"Pressure": _finite(obj.Pressure.getValueAs("Pa").Value)}
     result: dict[str, Any] = {}

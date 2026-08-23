@@ -39,11 +39,13 @@ CREATE_OPERATIONS = (
     "create_initial_flow_velocity",
     "create_initial_pressure",
     "create_flow_velocity",
+    "create_fluid_boundary",
 )
 UPDATE_OPERATIONS = (
     "update_initial_flow_velocity",
     "update_initial_pressure",
     "update_flow_velocity",
+    "update_fluid_boundary",
 )
 
 
@@ -70,6 +72,7 @@ def _select_analyze_ribbon(main_window):
         "FEM_ConstraintInitialFlowVelocity",
         "FEM_ConstraintInitialPressure",
         "FEM_ConstraintFlowVelocity",
+        "FEM_ConstraintFluidBoundary",
     } <= set(surface.command_ids)
     return controller, surface
 
@@ -83,6 +86,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
         "FEM_ConstraintInitialFlowVelocity": "create_initial_flow_velocity",
         "FEM_ConstraintInitialPressure": "create_initial_pressure",
         "FEM_ConstraintFlowVelocity": "create_flow_velocity",
+        "FEM_ConstraintFluidBoundary": "create_fluid_boundary",
     }
     plans = {
         plan.command_id: plan
@@ -119,6 +123,10 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
         "VibeCAD_AnalyzeUpdateFlowVelocity": (
             ANALYZE_FLUID_CAPABILITY_NAME,
             "update_flow_velocity",
+        ),
+        "VibeCAD_AnalyzeUpdateFluidBoundary": (
+            ANALYZE_FLUID_CAPABILITY_NAME,
+            "update_fluid_boundary",
         ),
     }
     for action_id, expected in expected_contexts.items():
@@ -335,6 +343,45 @@ def _run() -> None:
             },
         )
         flow = document.getObject(flow_result["created_constraint"]["object_name"])
+        current_analysis = flow_result["analysis_target"]
+
+        boundary_result = call(
+            ANALYZE_FLUID_CAPABILITY_NAME,
+            {
+                "operation": "create_fluid_boundary",
+                "analysis": _analysis_target(current_analysis),
+                "label": "Cooling Inlet",
+                "references": [_reference(source, "Face3")],
+                "constraint": {
+                    "condition": {
+                        "kind": "inlet_velocity",
+                        "velocity_m_s": 12.5,
+                    },
+                    "turbulence": {
+                        "kind": "intensity_length_scale",
+                        "intensity_ratio": 0.05,
+                        "length_scale_m": 0.02,
+                    },
+                    "thermal": {
+                        "kind": "fixed_temperature",
+                        "temperature_k": 300.0,
+                    },
+                },
+            },
+        )
+        boundary = document.getObject(
+            boundary_result["created_constraint"]["object_name"]
+        )
+        assert boundary_result["created_constraint"]["definition"] == {
+            "condition": {"kind": "inlet_velocity", "velocity_m_s": 12.5},
+            "turbulence": {
+                "kind": "intensity_length_scale",
+                "intensity_ratio": 0.05,
+                "length_scale_m": 0.02,
+            },
+            "thermal": {"kind": "fixed_temperature", "temperature_k": 300.0},
+        }
+        assert boundary.Reversed
 
         flow_before_invalid = fluid_constraint_state(flow)
         invalid_formula = call(
@@ -380,6 +427,32 @@ def _run() -> None:
                 "constraint": {"pressure_pa": 95000.0},
             },
         )
+        boundary_update = call(
+            ANALYZE_FLUID_CAPABILITY_NAME,
+            {
+                "operation": "update_fluid_boundary",
+                "target": _constraint_target(fluid_constraint_state(boundary)),
+                "label": "Pressure Outlet",
+                "references": [_reference(source, "Face4")],
+                "constraint": {
+                    "condition": {
+                        "kind": "outlet_static_pressure",
+                        "pressure_pa": 101325.0,
+                    },
+                    "turbulence": {"kind": "none"},
+                    "thermal": {"kind": "adiabatic"},
+                },
+            },
+        )
+        assert boundary_update["updated_constraint"]["definition"] == {
+            "condition": {
+                "kind": "outlet_static_pressure",
+                "pressure_pa": 101325.0,
+            },
+            "turbulence": {"kind": "none"},
+            "thermal": {"kind": "adiabatic"},
+        }
+        assert not boundary.Reversed
         flow_before_update = fluid_constraint_state(flow)
         flow_update = call(
             ANALYZE_FLUID_CAPABILITY_NAME,
@@ -424,7 +497,7 @@ def _run() -> None:
         assert stale["error_code"] == "NATIVE_ANALYZE_STATE_STALE"
         assert str(flow.Label) == "Profiled Inlet Velocity"
 
-        constraints = (initial_velocity, initial_pressure, flow)
+        constraints = (initial_velocity, initial_pressure, flow, boundary)
         read_revision = state.current_revision(str(document.Uid))
         for constraint in constraints:
             current = fluid_constraint_state(constraint)
@@ -439,12 +512,13 @@ def _run() -> None:
         assert state.current_revision(str(document.Uid)) == read_revision
 
         snapshot = build_analyze_snapshot(document)
-        assert snapshot["fluid_constraint_count"] == 3
+        assert snapshot["fluid_constraint_count"] == 4
         assert not snapshot["fluid_constraints_truncated"]
         assert {item["constraint_kind"] for item in snapshot["fluid_constraints"]} == {
             "initial_flow_velocity",
             "initial_pressure",
             "flow_velocity",
+            "fluid_boundary",
         }
         assert tuple(analysis.Group) == constraints
         operation_names = tuple(obj.Name for obj in document.VibeCADTimeline.Operations)
@@ -487,7 +561,7 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_ANALYZE_FLUID_GUI_OK "
-            "actions=3 edits=3 reads=1 exact_references=true typed_velocity=true "
+            "actions=4 edits=4 reads=1 exact_references=true typed_boundaries=true "
             "history=true undo_redo=true reopen=true read_revision_stable=true",
             flush=True,
         )

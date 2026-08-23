@@ -139,6 +139,10 @@ def _factory(document: Any, kind: str) -> Any:
             ObjectsFem.makeConstraintInitialPressure,
         ),
         "flow_velocity": ("FlowVelocity", ObjectsFem.makeConstraintFlowVelocity),
+        "fluid_boundary": (
+            "FluidBoundary",
+            ObjectsFem.makeConstraintFluidBoundary,
+        ),
     }
     try:
         stem, factory = factories[kind]

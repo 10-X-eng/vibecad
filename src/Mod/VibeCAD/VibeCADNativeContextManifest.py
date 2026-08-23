@@ -294,6 +294,12 @@ NATIVE_CONTEXT_ACTIONS = (
         source_command_id="FEM_ConstraintFlowVelocity",
     ),
     _action(
+        "VibeCAD_AnalyzeUpdateFluidBoundary", ("analyze",), ("task_panel",),
+        "mutation", "analyze.fluid", "update_fluid_boundary",
+        "ExactFemFluidBoundaryAndGeometry", "document",
+        source_command_id="FEM_ConstraintFluidBoundary",
+    ),
+    _action(
         "VibeCAD_AnalyzeReadGeometricalFeature", ("analyze",), ("task_panel",),
         "read", "analyze.inspect", "geometrical_feature",
         "ExactFemGeometricalFeatureState", "none",
