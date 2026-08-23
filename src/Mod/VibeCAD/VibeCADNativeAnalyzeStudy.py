@@ -178,7 +178,7 @@ def evaluate_study_readiness(
         if int(inventory.get("fluid_material_count", 0) or 0) < 1:
             blockers.append("missing_fluid_material")
         fluid_kinds = set(inventory.get("fluid_constraint_kinds") or ())
-        if "flow_velocity" not in fluid_kinds:
+        if "fluid_boundary" not in fluid_kinds:
             blockers.append("missing_fluid_boundary")
         if regime == "transient" and not fluid_kinds.intersection(
             {"initial_flow_velocity", "initial_pressure"}

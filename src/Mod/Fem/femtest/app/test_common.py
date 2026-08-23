@@ -94,8 +94,9 @@ class TestFemCommon(unittest.TestCase):
             "ElmerGrid": "/opt/elmer/bin/ElmerGrid",
             "mystran": "/opt/mystran/bin/mystran",
             "z88r": "/opt/z88/bin/z88r",
-            "blockMesh": "/opt/openfoam/bin/blockMesh",
-            "snappyHexMesh": "/opt/openfoam/bin/snappyHexMesh",
+            "ideasUnvToFoam": "/opt/openfoam/bin/ideasUnvToFoam",
+            "transformPoints": "/opt/openfoam/bin/transformPoints",
+            "checkMesh": "/opt/openfoam/bin/checkMesh",
             "foamToVTK": "/opt/openfoam/bin/foamToVTK",
             "foamRun": "/opt/openfoam/bin/foamRun",
         }
@@ -162,7 +163,13 @@ class TestFemCommon(unittest.TestCase):
         self.assertEqual(statuses["z88"]["missing"], ["z88r"])
         self.assertEqual(
             statuses["openfoam"]["missing"],
-            ["blockMesh", "snappyHexMesh", "foamToVTK", "foamRun|simpleFoam"],
+            [
+                "ideasUnvToFoam",
+                "transformPoints",
+                "checkMesh",
+                "foamRun",
+                "foamToVTK",
+            ],
         )
         self.assertEqual(statuses["elmer"]["programs"], {})
         self.assertEqual(statuses["openfoam"]["programs"], {})
@@ -174,7 +181,13 @@ class TestFemCommon(unittest.TestCase):
             root_path = Path(root)
             binary_path = root_path / "platforms" / "bin"
             binary_path.mkdir(parents=True)
-            for name in ("blockMesh", "snappyHexMesh", "foamToVTK", "foamRun"):
+            for name in (
+                "ideasUnvToFoam",
+                "transformPoints",
+                "checkMesh",
+                "foamRun",
+                "foamToVTK",
+            ):
                 program = binary_path / name
                 program.write_text("#!/bin/sh\n", encoding="utf-8")
                 program.chmod(0o700)
@@ -190,10 +203,10 @@ class TestFemCommon(unittest.TestCase):
             self.assertEqual(environment["WM_PROJECT_DIR"], str(root_path))
             self.assertEqual(
                 runtime.resolve_executable(
-                    "blockMesh",
+                    "ideasUnvToFoam",
                     search_path=environment["PATH"],
                 ),
-                str(binary_path / "blockMesh"),
+                str(binary_path / "ideasUnvToFoam"),
             )
 
     def test_solver_runtime_honors_configured_elmer_binaries(self):

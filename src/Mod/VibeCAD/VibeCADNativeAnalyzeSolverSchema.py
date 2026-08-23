@@ -73,6 +73,7 @@ def analyze_solver_capability_definition() -> NativeCapabilityDefinition:
         variants=(
             _variant("create_calculix", "CalculiX", "FEM_SolverCalculiX"),
             _variant("create_elmer", "Elmer", "FEM_SolverElmer"),
+            _variant("create_openfoam", "OpenFOAM", "FEM_SolverOpenFOAM"),
             _variant("create_mystran", "Mystran", "FEM_SolverMystran"),
             _variant("create_z88", "Z88", "FEM_SolverZ88"),
         ),

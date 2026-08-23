@@ -112,6 +112,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeMeshRuntime.py
     VibeCADNativeAnalyzeMeshSchema.py
     VibeCADNativeAnalyzeMeshState.py
+    VibeCADNativeAnalyzeOpenFOAMExecution.py
     VibeCADNativeAnalyzeMeshValues.py
     VibeCADNativeAnalyzeSolverBindings.py
     VibeCADNativeAnalyzeSolverControlBindings.py
@@ -121,6 +122,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeSolverControlValues.py
     VibeCADNativeAnalyzeSolverCreate.py
     VibeCADNativeAnalyzeSolverExecution.py
+    VibeCADAnalyzeSolverGui.py
     VibeCADNativeAnalyzeSolverExecutionBindings.py
     VibeCADNativeAnalyzeSolverExecutionProcess.py
     VibeCADNativeAnalyzeSolverExecutionRuntime.py
@@ -1189,6 +1191,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_analyze_solver_gui_integration.py
     vibecad_tests/native_analyze_solver_control_gui_integration.py
     vibecad_tests/native_analyze_solver_execution_gui_integration.py
+    vibecad_tests/native_analyze_openfoam_gui_integration.py
     vibecad_tests/native_analyze_result_inspect_gui_integration.py
     vibecad_tests/native_analyze_clipping_gui_integration.py
     vibecad_tests/native_analyze_post_pipeline_gui_integration.py

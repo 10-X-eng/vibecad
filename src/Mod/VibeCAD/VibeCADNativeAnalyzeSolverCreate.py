@@ -29,6 +29,7 @@ from VibeCADNativeTargets import object_identity
 _FACTORY_NAMES = {
     "calculix": "CalculiX",
     "elmer": "Elmer",
+    "openfoam": "OpenFOAM",
     "mystran": "Mystran",
     "z88": "Z88",
 }

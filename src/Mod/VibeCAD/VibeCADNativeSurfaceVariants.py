@@ -111,6 +111,7 @@ _ANALYZE_BASE_COMPOSITES = {
         "FEM_SolverElmer",
         "FEM_SolverMystran",
         "FEM_SolverZ88",
+        "FEM_SolverOpenFOAM",
     ),
     "FEM_CompMechEquations": (
         "FEM_EquationElasticity",

@@ -130,7 +130,7 @@ def test_study_readiness_uses_declared_physics_and_exact_solver_status() -> None
         "thermal_condition_count": 2,
         "thermal_condition_families": ["initial_temperature", "surface_heat_flux"],
         "fluid_constraint_count": 2,
-        "fluid_constraint_kinds": ["flow_velocity", "initial_pressure"],
+        "fluid_constraint_kinds": ["fluid_boundary", "initial_pressure"],
         "electromagnetic_constraint_count": 0,
         "mesh_definition_count": 1,
         "generated_mesh_count": 1,

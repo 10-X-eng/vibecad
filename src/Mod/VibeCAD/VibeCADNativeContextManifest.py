@@ -687,6 +687,12 @@ NATIVE_CONTEXT_ACTIONS = (
         source_command_id="FEM_SolverControl",
     ),
     _action(
+        "VibeCAD_AnalyzeUpdateOpenFOAMSolver", ("analyze",), ("task_panel",),
+        "mutation", "analyze.solver_control", "update_openfoam",
+        "ExactFemSolverSettingsAndHistory", "document",
+        source_command_id="FEM_SolverControl",
+    ),
+    _action(
         "VibeCAD_AnalyzeUpdateZ88Solver", ("analyze",), ("task_panel",),
         "mutation", "analyze.solver_control", "update_z88",
         "ExactFemSolverSettingsAndHistory", "document",

@@ -112,6 +112,7 @@ EXPECTED_CONTEXT_ACTION_IDS = {
     "VibeCAD_AnalyzeReadSolver",
     "VibeCAD_AnalyzeUpdateCalculiXSolver",
     "VibeCAD_AnalyzeUpdateElmerSolver",
+    "VibeCAD_AnalyzeUpdateOpenFOAMSolver",
     "VibeCAD_AnalyzeUpdateZ88Solver",
     "VibeCAD_AnalyzeReadEquation",
     "VibeCAD_AnalyzeReadResult",
@@ -183,8 +184,9 @@ def test_context_inventory_is_complete_unique_and_small() -> None:
     assert {action.action_id for action in NATIVE_CONTEXT_ACTIONS} == (
         EXPECTED_CONTEXT_ACTION_IDS
     )
-    assert len(NATIVE_CONTEXT_ACTIONS) == 128
-    assert len({action.action_id for action in NATIVE_CONTEXT_ACTIONS}) == 128
+    assert len({action.action_id for action in NATIVE_CONTEXT_ACTIONS}) == len(
+        NATIVE_CONTEXT_ACTIONS
+    )
     assert (
         sum(action.classification.human_only for action in NATIVE_CONTEXT_ACTIONS) == 5
     )
@@ -292,6 +294,7 @@ def test_surface_filtering_never_leaks_context_actions() -> None:
         "VibeCAD_AnalyzeReadSolver",
         "VibeCAD_AnalyzeUpdateCalculiXSolver",
         "VibeCAD_AnalyzeUpdateElmerSolver",
+        "VibeCAD_AnalyzeUpdateOpenFOAMSolver",
         "VibeCAD_AnalyzeUpdateZ88Solver",
         "VibeCAD_AnalyzeReadEquation",
         "VibeCAD_AnalyzeReadResult",

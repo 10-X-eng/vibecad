@@ -176,23 +176,14 @@ def solver_runtime_statuses(solvers=None):
         foam_path = foam_environment.get("PATH")
         openfoam_programs, openfoam_missing = _required_programs(
             (
-                ("mesh", "blockMesh"),
-                ("surface_mesh", "snappyHexMesh"),
+                ("mesh_import", "ideasUnvToFoam"),
+                ("mesh_scale", "transformPoints"),
+                ("mesh_check", "checkMesh"),
+                ("solver", "foamRun"),
                 ("result_export", "foamToVTK"),
             ),
             search_path=foam_path,
         )
-        for program in ("foamRun", "simpleFoam"):
-            resolved = (
-                resolve_executable(program, search_path=foam_path)
-                if foam_path
-                else resolve_executable(program)
-            )
-            if resolved:
-                openfoam_programs["solver"] = resolved
-                break
-        else:
-            openfoam_missing.append("foamRun|simpleFoam")
         statuses.append(
             {
                 "solver": "openfoam",

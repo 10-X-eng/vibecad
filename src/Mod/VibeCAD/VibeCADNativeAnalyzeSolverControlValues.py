@@ -61,6 +61,12 @@ _ELMER_NAMES = {
     "binary_output": "BinaryOutput",
     "save_geometry_index": "SaveGeometryIndex",
 }
+_OPENFOAM_NAMES = {
+    "max_iterations": "MaxIterations",
+    "write_every_iterations": "WriteEveryIterations",
+    "pressure_tolerance": "PressureTolerance",
+    "velocity_tolerance": "VelocityTolerance",
+}
 _Z88_NAMES = {
     "analysis_type": "AnalysisType",
     "displace_mesh": "DisplaceMesh",
@@ -81,6 +87,7 @@ _Z88_NAMES = {
 NAMES_BY_KIND = {
     "calculix": _CALCULIX_NAMES,
     "elmer": _ELMER_NAMES,
+    "openfoam": _OPENFOAM_NAMES,
     "z88": _Z88_NAMES,
 }
 
@@ -271,6 +278,12 @@ def _z88(field: str, value: Any) -> Any:
     return _integer(field, value, 1, 1_000_000_000)
 
 
+def _openfoam(field: str, value: Any) -> Any:
+    if field in {"max_iterations", "write_every_iterations"}:
+        return _integer(field, value, 1, 1_000_000_000)
+    return _number(field, value, 1.0e-15, 1.0)
+
+
 def _native_value(kind: str, field: str, value: Any) -> Any:
     if kind == "z88" and field.startswith("integration_order_"):
         return str(value)
@@ -299,7 +312,12 @@ def prepare_solver_changes(
             + ", ".join(names)
             + "."
         )
-    converter = {"calculix": _calculix, "elmer": _elmer, "z88": _z88}[kind]
+    converter = {
+        "calculix": _calculix,
+        "elmer": _elmer,
+        "openfoam": _openfoam,
+        "z88": _z88,
+    }[kind]
     normalized = {field: converter(field, item) for field, item in value.items()}
     native = {
         names[field]: _native_value(kind, field, item)

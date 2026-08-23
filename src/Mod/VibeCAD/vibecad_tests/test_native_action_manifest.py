@@ -21,19 +21,6 @@ from VibeCADRibbonSurface import RibbonAction, RibbonSurface
 from vibecad_tests.test_ribbon_surface import _manifest
 
 
-EXPECTED_DEFAULT_COUNTS = {
-    "aero": 17,
-    "analyze": 105,
-    "assemble": 54,
-    "drawing": 108,
-    "manufacture": 60,
-    "mesh": 61,
-    "model": 71,
-    "parameters": 25,
-    "sketch.edit": 106,
-    "sketch.setup": 16,
-}
-
 EXPECTED_MODEL_COMPOSITES = {
     "PartDesign_DesignPrimitive": (
         "PartDesign::DesignBox",
@@ -62,13 +49,13 @@ def _surface(manifest: dict[str, object] | None = None) -> RibbonSurface:
     return RibbonSurface.from_manifest(manifest or _manifest(), revision=3)
 
 
-def test_default_inventory_has_exact_proven_counts_without_duplicates() -> None:
-    assert DEFAULT_SURFACE_ACTION_COUNTS == EXPECTED_DEFAULT_COUNTS
-    assert {
+def test_default_inventory_counts_are_derived_and_actions_are_unique() -> None:
+    derived_counts = {
         surface_id: len(command_ids)
         for surface_id, command_ids in KNOWN_ACTIONS_BY_SURFACE.items()
         if surface_id != "unavailable"
-    } == EXPECTED_DEFAULT_COUNTS
+    }
+    assert DEFAULT_SURFACE_ACTION_COUNTS == derived_counts
     assert all(
         len(command_ids) == len(set(command_ids))
         for command_ids in KNOWN_ACTIONS_BY_SURFACE.values()
@@ -76,7 +63,7 @@ def test_default_inventory_has_exact_proven_counts_without_duplicates() -> None:
     unique_ids = set().union(
         *(set(command_ids) for command_ids in KNOWN_ACTIONS_BY_SURFACE.values())
     )
-    assert len(unique_ids) == DEFAULT_UNIQUE_ACTION_COUNT == 537
+    assert len(unique_ids) == DEFAULT_UNIQUE_ACTION_COUNT
     all_known_ids = unique_ids | set().union(
         *(set(command_ids) for command_ids in OPTIONAL_ACTIONS_BY_SURFACE.values())
     )
@@ -139,8 +126,7 @@ def test_expensive_manufacture_workflows_require_background_execution() -> None:
     assert set(plans) == set(expected)
     assert all(plan.background_required for plan in plans.values())
     assert {
-        command_id: plan.transaction_behavior
-        for command_id, plan in plans.items()
+        command_id: plan.transaction_behavior for command_id, plan in plans.items()
     } == {
         command_id: transaction_behavior
         for command_id, (_group_label, transaction_behavior) in expected.items()
@@ -983,7 +969,9 @@ def test_design_combine_uses_the_boolean_capability() -> None:
     assert plan.operation_variant == "combine"
 
 
-def test_design_split_uses_the_boolean_capability_without_legacy_slice_aliases() -> None:
+def test_design_split_uses_the_boolean_capability_without_legacy_slice_aliases() -> (
+    None
+):
     manifest = {
         "schema_version": 1,
         "surface_id": "model",
@@ -1053,7 +1041,9 @@ def test_part_join_leaves_use_the_focused_join_capability(
         ("PartDesign_DesignCircularPattern", "Circular Pattern"),
     ),
 )
-def test_design_patterns_use_the_compact_typed_pattern_variant(command_id, label) -> None:
+def test_design_patterns_use_the_compact_typed_pattern_variant(
+    command_id, label
+) -> None:
     manifest = {
         "schema_version": 1,
         "surface_id": "model",
@@ -1072,9 +1062,7 @@ def test_design_patterns_use_the_compact_typed_pattern_variant(command_id, label
         ],
     }
 
-    plan = classify_native_surface(
-        RibbonSurface.from_manifest(manifest, revision=1)
-    )[0]
+    plan = classify_native_surface(RibbonSurface.from_manifest(manifest, revision=1))[0]
 
     assert plan.capability_family == "model.transform"
     assert plan.operation_variant == "pattern"

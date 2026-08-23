@@ -7,17 +7,17 @@ part, assembly, thermal problem, or flow problem; VibeCAD should inspect the
 document, prepare the study, and ask only for engineering inputs that cannot be
 determined from the model.
 
-The current ribbon still exposes many finite-element building blocks directly.
-A guided, study-first workflow and higher-quality AI analysis tools are under
-development.
+The ribbon and VibeCAD assistant use the same document operations. Switching to
+the **Analyze** ribbon changes the assistant's tools on the next message without
+changing conversations or modifying the source CAD geometry.
 
 ## Current solver support
 
 | Solver | VibeCAD integration | Runtime availability |
 | --- | --- | --- |
 | CalculiX | Structural writer, runner, and result import | Included in packaged builds |
-| Elmer | Multiphysics writer, runner, and result import | Install `ElmerSolver` and `ElmerGrid` separately |
-| OpenFOAM | Not yet connected to VibeCAD studies | Not included |
+| Elmer | Multiphysics writer, background runner, and result import | Install `ElmerSolver` and `ElmerGrid` separately |
+| OpenFOAM | Steady incompressible laminar case writer, background runner, and VTK result import | Install OpenFOAM Foundation 14 on Linux |
 
 Elmer support in the document model does not mean the Elmer applications are
 installed. VibeCAD must be able to resolve both `ElmerSolver` and `ElmerGrid`.
@@ -25,13 +25,14 @@ Put them on the operating-system executable path or set their exact locations in
 **Preferences > FEM > Elmer**. MPI is optional; parallel Elmer runs also require
 the configured MPI launcher.
 
-OpenFOAM is currently a platform integration limitation, not merely a missing
-executable setting. VibeCAD does not yet write an OpenFOAM case, execute it, or
-import its results. OpenFOAM runs natively on Linux; the OpenFOAM Foundation's
-supported Windows route uses WSL and its macOS route uses Multipass. VibeCAD
-needs explicit runners for those environments before it can offer the same CFD
-workflow on all three platforms. See the [official OpenFOAM downloads](https://openfoam.org/download/)
-and the [official Elmer project](https://github.com/ElmerCSC/elmerfem).
+The current OpenFOAM integration is native Linux only. It resolves and runs
+`ideasUnvToFoam`, `transformPoints`, `checkMesh`, `foamRun`, and `foamToVTK`
+from the installed OpenFOAM environment. On Ubuntu 24.04, follow the
+[OpenFOAM Foundation package instructions](https://openfoam.org/download/ubuntu/)
+and install `openfoam14`. The Foundation's supported Windows route uses WSL and
+its macOS route uses Multipass; VibeCAD does not yet bridge those environments.
+See the [official Elmer project](https://github.com/ElmerCSC/elmerfem) for Elmer
+packages and source builds.
 
 ## Starting an analysis today
 
@@ -42,13 +43,38 @@ and the [official Elmer project](https://github.com/ElmerCSC/elmerfem).
 4. Add the material and physics equation required by the study.
 5. Select exact model faces or bodies and add loads and boundary conditions.
 6. Create a Gmsh or Netgen FEM mesh and inspect its quality.
-7. Open solver control, verify prerequisites, and run the solver.
+7. Select the solver and choose **Run Solver**. A progress window remains
+   cancellable while the solver runs outside the UI thread.
 8. Inspect the imported result and create post-processing views as needed.
 
 The solver does not infer missing engineering inputs. A generated mesh and a
 solver object alone are not a ready study: material properties, physics, units,
 loads, and boundary conditions must form a complete and physically meaningful
 problem.
+
+## Current OpenFOAM workflow
+
+The initial OpenFOAM path solves one steady, incompressible, isothermal,
+laminar fluid domain:
+
+1. Create or select the solid that represents the fluid volume, not the
+   surrounding hardware.
+2. Declare a steady fluid study and add one whole-domain fluid material with
+   positive density and kinematic viscosity.
+3. Create and generate one first-order Gmsh volume mesh from that domain.
+4. Assign one typed fluid boundary to every domain face. Each face belongs to
+   exactly one boundary; at least one inlet or outlet must define pressure.
+5. Add an OpenFOAM solver, adjust iteration and residual settings if needed,
+   then choose **Run Solver**.
+6. Inspect the imported FEM post pipeline and its durable solver-output record.
+
+Supported face conditions are no-slip and slip walls, symmetry, velocity,
+volumetric-flow and mass-flow inlets, total-pressure inlet/outlet, static-
+pressure outlet, velocity outlet, and outflow outlet. Turbulence, heat transfer,
+compressible flow, transient flow, moving/rotating regions, multiphase flow,
+multiple fluid regions, automatic exterior-fluid construction, and Windows or
+macOS runtime bridges are not implemented yet. VibeCAD rejects those study
+definitions instead of silently changing their physics.
 
 ## What VibeCAD assistance must provide
 
@@ -87,7 +113,7 @@ The FEA/CFD work is being delivered in this order:
 2. packaged or explicitly bridged Elmer and OpenFOAM runtimes;
 3. a study-first Analyze entry flow;
 4. visible, inspectable boundary and load assignments;
-5. OpenFOAM case generation, cancellable execution, and result import;
+5. expand OpenFOAM beyond the current Linux steady-laminar path;
 6. unsteered Qwen and GPT-5.6 Terra validation against real solver artifacts.
 
 The tool-tuning method and acceptance rules are recorded in

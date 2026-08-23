@@ -77,7 +77,9 @@ def _input_digest(root: Path) -> tuple[str, int]:
     size = 0
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
-            raise NativeAnalyzeError("A detached FEM input contains an unsafe symbolic link.")
+            raise NativeAnalyzeError(
+                "A detached FEM input contains an unsafe symbolic link."
+            )
         if not path.is_file():
             continue
         count += 1
@@ -146,9 +148,9 @@ def _ccx_tools_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]
         )
     program = _executable(settings.require_binary("Calculix"), "CalculiX")
     environment = dict(os.environ)
-    threads = FreeCAD.ParamGet(
-        "User parameter:BaseApp/Preferences/Mod/Fem/Ccx"
-    ).GetInt("AnalysisNumCPUs", 1)
+    threads = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Ccx").GetInt(
+        "AnalysisNumCPUs", 1
+    )
     environment["OMP_NUM_THREADS"] = str(max(1, threads))
     environment["PASTIX_MIXED_PRECISION"] = (
         "1" if bool(getattr(solver, "PastixMixedPrecision", False)) else "0"
@@ -196,9 +198,13 @@ def _z88_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
     tool.prepare()
     program = _executable(settings.require_binary("Z88"), "Z88")
     test = (program, ("-t", "-" + str(solver.SolverType)))
-    commands = (test,) if str(solver.AnalysisType) == "test" else (
-        test,
-        (program, ("-c", "-" + str(solver.SolverType))),
+    commands = (
+        (test,)
+        if str(solver.AnalysisType) == "test"
+        else (
+            test,
+            (program, ("-c", "-" + str(solver.SolverType))),
+        )
     )
     return tool, commands, dict(os.environ), {}
 
@@ -231,6 +237,12 @@ def _mystran_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
     )
 
 
+def _openfoam_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
+    from VibeCADNativeAnalyzeOpenFOAMExecution import prepare_openfoam_request
+
+    return prepare_openfoam_request(solver, root)
+
+
 def prepare_solver_execution_request(
     document: Any,
     document_uid: str,
@@ -254,6 +266,7 @@ def prepare_solver_execution_request(
             ),
             "elmer": _elmer_request,
             "mystran": _mystran_request,
+            "openfoam": _openfoam_request,
             "z88": _z88_request,
         }[prepared.kind]
         _tool, commands, environment, importer_state = maker(prepared.solver, root)
@@ -346,6 +359,15 @@ def _import_tool(request: SolverExecutionRequest) -> Any:
         tool = MystranTools(solver, working_directory=root)
         tool.input_deck = str(request.importer_state["input_deck"])
         return tool
+    if request.target.kind == "openfoam":
+        from femsolver.openfoam.openfoamtools import OpenFOAMTools
+
+        return OpenFOAMTools(
+            solver,
+            root,
+            result_glob=str(request.importer_state["result_glob"]),
+            solver_log=str(request.importer_state["solver_log"]),
+        )
     from femsolver.z88.z88tools import Z88Tools
 
     return Z88Tools(solver, detached=True, working_directory=root)
@@ -353,7 +375,9 @@ def _import_tool(request: SolverExecutionRequest) -> Any:
 
 def _unpack_result_graph(value: Any) -> tuple[Any, tuple[Any, ...], bool, Any]:
     if not isinstance(value, tuple) or len(value) not in {2, 3, 4}:
-        raise NativeAnalyzeError("The FEM result importer returned no exact result graph.")
+        raise NativeAnalyzeError(
+            "The FEM result importer returned no exact result graph."
+        )
     root = value[0]
     resources = tuple(value[1])
     root_is_new = bool(value[2]) if len(value) >= 3 else True
@@ -409,7 +433,9 @@ def commit_solver_execution(
     )
 
 
-def _result_summary(root: Any, resources: tuple[Any, ...], solver: Any) -> dict[str, Any]:
+def _result_summary(
+    root: Any, resources: tuple[Any, ...], solver: Any
+) -> dict[str, Any]:
     return {
         "object_name": str(root.Name),
         "object_id": int(root.ID),
@@ -418,13 +444,19 @@ def _result_summary(root: Any, resources: tuple[Any, ...], solver: Any) -> dict[
         "solver": str(solver.Name),
         "resource_count": len(resources),
         "resources": [
-            {"object_name": str(value.Name), "object_id": int(value.ID), "type_id": str(value.TypeId)}
+            {
+                "object_name": str(value.Name),
+                "object_id": int(value.ID),
+                "type_id": str(value.TypeId),
+            }
             for value in resources
         ],
     }
 
 
-def verify_solver_execution(document: Any, draft: NativeMutationDraft) -> dict[str, Any]:
+def verify_solver_execution(
+    document: Any, draft: NativeMutationDraft
+) -> dict[str, Any]:
     from femcommands.manager import (
         _canonical_timeline_resource_order,
         _result_solver_matches,
@@ -441,8 +473,7 @@ def verify_solver_execution(document: Any, draft: NativeMutationDraft) -> dict[s
     solver_resources = tuple(
         candidate
         for candidate in timeline
-        if candidate is not solver
-        and _timeline_root(candidate, document) is solver
+        if candidate is not solver and _timeline_root(candidate, document) is solver
     )
     solver_index = timeline.index(solver) if solver in timeline else -1
     checks = {
@@ -457,9 +488,7 @@ def verify_solver_execution(document: Any, draft: NativeMutationDraft) -> dict[s
             for value in resources
         ),
         "canonical History block": solver_index >= len(solver_resources)
-        and tuple(
-            timeline[solver_index - len(solver_resources) : solver_index]
-        )
+        and tuple(timeline[solver_index - len(solver_resources) : solver_index])
         == solver_resources
         and tuple(
             _canonical_timeline_resource_order(

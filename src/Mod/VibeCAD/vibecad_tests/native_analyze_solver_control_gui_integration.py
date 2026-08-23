@@ -34,7 +34,7 @@ from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
 
 
-OPERATIONS = ("update_calculix", "update_elmer", "update_z88")
+OPERATIONS = ("update_calculix", "update_elmer", "update_openfoam", "update_z88")
 
 
 def _events(rounds: int = 8) -> None:
@@ -110,6 +110,7 @@ def _create_model(document):
         for kind, factory in (
             ("calculix", "CalculiX"),
             ("elmer", "Elmer"),
+            ("openfoam", "OpenFOAM"),
             ("z88", "Z88"),
         ):
             solver = createDefaultSolverFeature(document, factory)
@@ -249,10 +250,17 @@ def _run() -> None:
             "matrix_maximum": 456789,
             "vector_maximum": 234567,
         }
+        openfoam_changes = {
+            "max_iterations": 800,
+            "write_every_iterations": 80,
+            "pressure_tolerance": 5.0e-7,
+            "velocity_tolerance": 2.0e-6,
+        }
         states_after = {}
         for operation, kind, changes in (
             ("update_calculix", "calculix", calculix_changes),
             ("update_elmer", "elmer", elmer_changes),
+            ("update_openfoam", "openfoam", openfoam_changes),
             ("update_z88", "z88", z88_changes),
         ):
             result = call(
@@ -272,6 +280,8 @@ def _run() -> None:
         assert states_after["calculix"]["settings"]["TimeInitialIncrement"] == 0.1
         assert states_after["elmer"]["settings"]["TimestepIntervals"] == [10, 20]
         assert states_after["elmer"]["settings"]["TimestepSizes"] == [0.05, 0.1]
+        assert states_after["openfoam"]["settings"]["MaxIterations"] == 800
+        assert states_after["openfoam"]["settings"]["PressureTolerance"] == 5.0e-7
         assert states_after["z88"]["settings"]["IntegrationOrderTria"] == "7"
         assert states_after["z88"]["settings"]["MatrixMaximum"] == 456789
 
@@ -340,8 +350,9 @@ def _run() -> None:
         App.closeDocument(document.Name)
         document = App.openDocument(str(path))
         _events(20)
-        assert tuple(document.VibeCADTimeline.Operations)[-3:] == tuple(
-            document.getObject(names[kind]) for kind in ("calculix", "elmer", "z88")
+        assert tuple(document.VibeCADTimeline.Operations)[-4:] == tuple(
+            document.getObject(names[kind])
+            for kind in ("calculix", "elmer", "openfoam", "z88")
         )
         for kind, expected in states_after.items():
             assert solver_state(document.getObject(names[kind]))["state_sha256"] == expected[
@@ -350,7 +361,7 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_ANALYZE_SOLVER_CONTROL_GUI_OK "
-            "actions=1 variants=3 typed_settings=54 exact_backend=true "
+            "actions=1 variants=4 typed_settings=58 exact_backend=true "
             "cross_field_validation=true wrong_backend_rejection=true no_op_rejection=true "
             "stale_rejection=true history_stable=true inspect=true "
             "read_revision_stable=true undo_redo=true reopen=true",

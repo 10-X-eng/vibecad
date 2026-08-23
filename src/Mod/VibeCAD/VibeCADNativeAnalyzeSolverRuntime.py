@@ -20,6 +20,7 @@ from VibeCADNativeState import NativeCallTicket
 _VARIANTS = {
     "create_calculix": frozenset({"analysis", "label"}),
     "create_elmer": frozenset({"analysis", "label"}),
+    "create_openfoam": frozenset({"analysis", "label"}),
     "create_mystran": frozenset({"analysis", "label"}),
     "create_z88": frozenset({"analysis", "label"}),
 }
