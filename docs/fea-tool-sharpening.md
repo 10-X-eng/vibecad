@@ -53,3 +53,17 @@ same prepared geometry, create the intended study without guessing VibeCAD
 internals, run the real selected solver, understand failures, inspect meaningful
 results, save and reopen the document, and repeat the task without rejected tool
 calls caused by VibeCAD's contract.
+
+## Evidence log
+
+### Analyze provider state
+
+- A blank Analyze turn previously serialized 2,068 bytes of empty FEM
+  collections. Its decision state is now 210 bytes.
+- One declared steady-fluid study with no assignments previously serialized
+  4,618 bytes, including duplicate analysis records and empty state for every
+  FEM family. The same exact study now serializes 786 bytes: one study target,
+  its intent, and its readiness blockers.
+- The durable document snapshot, ribbon state, and human Study Setup data are
+  unchanged. Compaction occurs only after the full state has authorized the
+  provider surface.

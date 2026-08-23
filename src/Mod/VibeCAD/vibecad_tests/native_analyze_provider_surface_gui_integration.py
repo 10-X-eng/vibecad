@@ -358,7 +358,7 @@ def _run() -> None:
         runner = None
 
         fluid_context = Session._context_for_provider(service)
-        assert fluid_context["native_state"]["domain"]["provider_scope"] == {
+        assert service.native_active_snapshot()["domain"]["provider_scope"] == {
             "analysis_count": 1,
             "undeclared_analysis_count": 0,
             "physics": ["fluid"],

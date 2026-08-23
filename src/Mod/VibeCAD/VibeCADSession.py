@@ -1142,6 +1142,7 @@ def _capture_context_for_provider(
         from VibeCADNativeProviderContext import (
             native_active_state,
             provider_authorized_native_surface,
+            provider_visible_native_state,
             resolve_production_native_surface,
         )
 
@@ -1188,7 +1189,9 @@ def _capture_context_for_provider(
         context.pop("document", None)
         context.pop("selection", None)
         if resolution.available:
-            context["native_state"] = captured_native_state
+            context["native_state"] = provider_visible_native_state(
+                captured_native_state
+            )
     if resolution.engine == "vibescript" and resolution.available and resolution.domain:
         context["editable_sources"] = _capture_editable_sources_for_workbench(
             service,

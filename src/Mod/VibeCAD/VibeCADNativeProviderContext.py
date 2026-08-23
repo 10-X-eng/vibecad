@@ -92,3 +92,15 @@ def native_active_state(service: Any) -> dict[str, Any]:
     if not isinstance(state, dict):
         raise RuntimeError("Native active state did not return an object.")
     return state
+
+
+def provider_visible_native_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Return only live facts that affect the provider's next decision."""
+
+    if not isinstance(state, dict):
+        raise TypeError("state must be a Native active-state object")
+    if state.get("surface_id") == "analyze":
+        from VibeCADNativeAnalyzeProviderState import compact_analyze_provider_state
+
+        return compact_analyze_provider_state(state)
+    return state

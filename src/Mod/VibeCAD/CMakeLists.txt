@@ -58,6 +58,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeAssignmentViewRuntime.py
     VibeCADNativeAnalyzeAssignmentViewSchema.py
     VibeCADNativeAnalyzeProviderScope.py
+    VibeCADNativeAnalyzeProviderState.py
     VibeCADNativeAnalyzeErrors.py
     VibeCADNativeAnalyzeElementState.py
     VibeCADNativeAnalyzeElementValues.py
