@@ -25,7 +25,9 @@ from VibeCADUpdate import (
     current_release_identity,
     default_update_directory,
     load_update_policy,
+    macos_install_helper_command,
     record_pending_install,
+    write_macos_install_helper,
 )
 
 
@@ -90,6 +92,7 @@ class UpdateController(QtCore.QObject):
         self.downloaded_package: Path | None = None
         self.pending_plan: InstallPlan | None = None
         self._exit_connected = False
+        self._helper_launched = False
 
     @property
     def busy(self) -> bool:
@@ -247,12 +250,19 @@ class UpdateController(QtCore.QObject):
         except Exception as exc:
             self.operation_failed.emit(str(exc))
 
+    def launch_pending_install_now(self) -> None:
+        """Start the detached installer before the GUI begins tearing down."""
+
+        self._launch_pending_install()
+
     @QtCore.Slot()
     def _launch_pending_install(self) -> None:
+        if self._helper_launched:
+            return
         plan = self.pending_plan
-        self.pending_plan = None
         if plan is None:
             return
+        self._helper_launched = True
         try:
             if plan.kind == "windows-installer":
                 _launch_windows_install_helper(plan)
@@ -263,6 +273,7 @@ class UpdateController(QtCore.QObject):
             else:
                 raise RuntimeError(f"Unsupported staged update plan: {plan.kind}")
         except Exception as exc:
+            self._helper_launched = False
             App.Console.PrintError(f"VibeCAD could not launch the staged update: {exc}\n")
 
 
@@ -398,149 +409,14 @@ def _launch_macos_install_helper(plan: InstallPlan) -> None:
         raise RuntimeError("The staged macOS plan has no application bundle.")
     update_dir = default_update_directory()
     helper_dir = update_dir / "install-helper"
-    helper_dir.mkdir(parents=True, exist_ok=True)
-    helper = helper_dir / "install-macos-update.sh"
-    receipt = update_dir / "install-receipt.json"
-    backup = Path(f"{application}.vibecad-rollback")
-    helper.write_text(
-        """#!/bin/sh
-set -eu
-pid="$1"
-package="$2"
-app="$3"
-backup="$4"
-receipt="$5"
-pending="$6"
-
-while kill -0 "$pid" 2>/dev/null; do sleep 1; done
-if [ -e "$backup" ]; then
-    exit 20
-fi
-
-mount=$(mktemp -d "${TMPDIR:-/tmp}/vibecad-dmg.XXXXXX")
-attached=0
-new_pid=""
-detach_mount() {
-    if [ "$attached" -eq 1 ]; then
-        hdiutil detach "$mount" -quiet >/dev/null 2>&1 || true
-        attached=0
-    fi
-    rmdir "$mount" >/dev/null 2>&1 || true
-}
-terminate_new_app() {
-    if [ -z "$new_pid" ] || ! kill -0 "$new_pid" 2>/dev/null; then
-        return
-    fi
-    kill "$new_pid" 2>/dev/null || true
-    stop_attempt=0
-    while kill -0 "$new_pid" 2>/dev/null && [ "$stop_attempt" -lt 10 ]; do
-        sleep 1
-        stop_attempt=$((stop_attempt + 1))
-    done
-    kill -9 "$new_pid" 2>/dev/null || true
-    wait "$new_pid" 2>/dev/null || true
-}
-rollback_install() {
-    terminate_new_app
-    if [ -e "$backup" ]; then
-        rm -rf "$app"
-        mv "$backup" "$app"
-        printf '{"status":"rolled-back","platform":"macos-dmg"}\\n' > "$receipt"
-        open "$app" >/dev/null 2>&1 || true
-    fi
-}
-find_new_pid() {
-    ps -axo pid=,command= | awk -v executable="$app/Contents/MacOS/FreeCAD" \\
-        'index($0, executable) { print $1; exit }'
-}
-trap detach_mount EXIT
-
-if ! printf 'Y\\n' | hdiutil attach "$package" -nobrowse -readonly -mountpoint "$mount" >/dev/null; then
-    exit 23
-fi
-attached=1
-
-new_app="$mount/VibeCAD.app"
-if [ ! -d "$new_app" ]; then
-    exit 24
-fi
-
-if [ -e "$app" ]; then
-    if ! mv "$app" "$backup"; then
-        exit 21
-    fi
-fi
-if ! ditto "$new_app" "$app"; then
-    rollback_install
-    exit 21
-fi
-xattr -dr com.apple.quarantine "$app" >/dev/null 2>&1 || true
-detach_mount
-
-printf '{"status":"installed","platform":"macos-dmg"}\\n' > "$receipt"
-if ! open -n "$app"; then
-    rollback_install
-    exit 25
-fi
-
-healthy=0
-attempt=0
-while [ "$attempt" -lt 15 ]; do
-    if [ ! -f "$pending" ]; then
-        healthy=1
-        break
-    fi
-    new_pid=$(find_new_pid)
-    if [ -n "$new_pid" ]; then
-        break
-    fi
-    sleep 1
-    attempt=$((attempt + 1))
-done
-if [ "$healthy" -ne 1 ] && [ -z "$new_pid" ]; then
-    rollback_install
-    exit 25
-fi
-
-attempt=0
-while [ "$attempt" -lt 120 ]; do
-    if [ ! -f "$pending" ]; then
-        healthy=1
-        break
-    fi
-    if ! kill -0 "$new_pid" 2>/dev/null; then
-        break
-    fi
-    sleep 1
-    attempt=$((attempt + 1))
-done
-if [ "$healthy" -eq 1 ]; then
-    cleanup_attempt=0
-    while [ -e "$backup" ] && [ "$cleanup_attempt" -lt 10 ]; do
-        sleep 1
-        cleanup_attempt=$((cleanup_attempt + 1))
-    done
-    rm -rf "$backup"
-    exit 0
-fi
-rollback_install
-exit 25
-""",
-        encoding="utf-8",
-        newline="\n",
-    )
-    helper.chmod(0o700)
+    helper = write_macos_install_helper(helper_dir / "install-macos-update.sh")
     subprocess.Popen(
-        [
-            "/bin/sh",
-            str(helper),
-            str(os.getpid()),
-            str(plan.package),
-            str(application),
-            str(backup),
-            str(receipt),
-            str(update_dir / "pending-install.json"),
-        ],
+        macos_install_helper_command(
+            helper,
+            plan,
+            process_id=os.getpid(),
+            update_directory=update_dir,
+        ),
         close_fds=True,
         start_new_session=True,
     )
@@ -753,8 +629,10 @@ class UpdateCenterDialog(QtWidgets.QDialog):
 
     def _install_and_restart(self) -> None:
         self.controller.stage_install()
-        if self.controller.pending_plan is not None:
-            QtWidgets.QApplication.instance().quit()
+        if self.controller.pending_plan is None:
+            return
+        self.controller.launch_pending_install_now()
+        _quit_application_for_update()
 
 
 def _show_update_notification(result: UpdateCheckResult) -> None:
@@ -820,6 +698,17 @@ def show_update_center() -> None:
 def _clear_update_center(*_args: Any) -> None:
     global _update_center
     _update_center = None
+
+
+def _quit_application_for_update() -> None:
+    """Leave through FreeCAD's main-window close path, then stop Qt."""
+
+    main_window = Gui.getMainWindow()
+    if main_window is not None:
+        main_window.close()
+    application = QtWidgets.QApplication.instance()
+    if application is not None:
+        application.quit()
 
 
 def get_update_controller() -> UpdateController:
@@ -896,7 +785,8 @@ def ensure_registered() -> None:
     for delay in (0, 250, 1000, 5000):
         QtCore.QTimer.singleShot(delay, _add_help_menu_action)
     QtCore.QTimer.singleShot(15000, get_update_controller().automatic_check)
-    QtCore.QTimer.singleShot(30000, _complete_startup_health_check)
+    QtCore.QTimer.singleShot(0, _complete_startup_health_check)
+    QtCore.QTimer.singleShot(2000, _complete_startup_health_check)
     _registered = True
 
 
