@@ -8,7 +8,13 @@ from VibeCADNativeAnalyzeProviderScope import (
     analyze_provider_tool_names,
     scope_analyze_provider_surface,
 )
-from VibeCADNativeCapabilityRegistry import NativeProviderSurface
+from VibeCADNativeAnalyzeFluidSchema import analyze_fluid_capability_definition
+from VibeCADNativeAnalyzeInspectSchema import analyze_inspect_capability_definition
+from VibeCADNativeAnalyzeModelSchema import analyze_model_capability_definition
+from VibeCADNativeCapabilityRegistry import (
+    NativeCapabilityRegistry,
+    NativeProviderSurface,
+)
 from VibeCADNativeProviderContext import provider_authorized_native_surface
 from VibeCADNativeSurface import NativeSurfaceSnapshot
 
@@ -308,3 +314,106 @@ def test_human_keeps_ribbon_control_on_every_native_surface() -> None:
     authorized = provider_authorized_native_surface(surface)
 
     assert authorized.tool_names == ("model.design", "document.query")
+
+
+def _schema_operations(schema: dict) -> set[str]:
+    parameters = schema["parameters"]
+    branches = parameters.get("oneOf", [parameters])
+    result = set()
+    for branch in branches:
+        operation = branch["properties"]["operation"]
+        result.update(operation.get("enum", [operation.get("const")]))
+    return result
+
+
+def test_operation_scope_publishes_only_calls_that_match_current_study_state() -> None:
+    registry = NativeCapabilityRegistry()
+    definitions = (
+        analyze_model_capability_definition(),
+        analyze_inspect_capability_definition(),
+        analyze_fluid_capability_definition(),
+    )
+    for definition in definitions:
+        registry.register_definition(definition)
+    snapshot = NativeSurfaceSnapshot(
+        surface_id="analyze",
+        revision=7,
+        manifest_sha256="c" * 64,
+        command_ids=("FEM_Analysis",),
+        available_command_ids=("FEM_Analysis",),
+        unavailable_command_ids=(),
+    )
+    surface = NativeProviderSurface(
+        snapshot=snapshot,
+        available=True,
+        unavailable_reason="",
+        tool_names=tuple(definition.name for definition in definitions),
+        schemas=tuple(
+            definition.provider_schema(
+                tuple(variant.operation for variant in definition.variants)
+            )
+            for definition in definitions
+        ),
+        human_only_action_ids=(),
+        missing_definition_names=(),
+        missing_implementation_names=(),
+        incomplete_definition_names=(),
+    )
+
+    blank = scope_analyze_provider_surface(
+        surface,
+        {"surface_id": "analyze", "domain": _domain(analysis_count=0)},
+        registry=registry,
+    )
+    fluid_domain = _domain("fluid")
+    fluid_domain.update(
+        {
+            "materials": [],
+            "fluid_constraints": [],
+            "element_definitions": [],
+        }
+    )
+    fluid = scope_analyze_provider_surface(
+        surface,
+        {"surface_id": "analyze", "domain": fluid_domain},
+        registry=registry,
+    )
+    fluid_domain["fluid_constraint_count"] = 1
+    fluid_domain["fluid_constraints"] = [
+        {"constraint_kind": "fluid_boundary"}
+    ]
+    editable_fluid = scope_analyze_provider_surface(
+        surface,
+        {"surface_id": "analyze", "domain": fluid_domain},
+        registry=registry,
+    )
+
+    blank_operations = {
+        schema["name"]: _schema_operations(schema) for schema in blank.schemas
+    }
+    fluid_operations = {
+        schema["name"]: _schema_operations(schema) for schema in fluid.schemas
+    }
+    editable_fluid_operations = {
+        schema["name"]: _schema_operations(schema)
+        for schema in editable_fluid.schemas
+    }
+    assert blank_operations == {
+        "analyze.model": {"create_analysis"},
+        "analyze.inspect": {"material_catalog"},
+    }
+    assert fluid_operations["analyze.model"] == {
+        "create_analysis",
+        "update_study",
+        "create_fluid_material",
+    }
+    assert {
+        operation
+        for operation in fluid_operations["analyze.fluid"]
+        if operation.startswith("update_")
+    } == set()
+    assert {
+        operation
+        for operation in editable_fluid_operations["analyze.fluid"]
+        if operation.startswith("update_")
+    } == {"update_fluid_boundary"}

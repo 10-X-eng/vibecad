@@ -17,6 +17,8 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistryError,
     NativeCapabilityRegistry,
     NativeProviderSurface,
+    _provider_schema_operations,
+    project_native_provider_operations,
     project_native_provider_surface,
     resolve_native_provider_surface,
 )
@@ -129,11 +131,20 @@ def freeze_native_turn(
     controller: Any | None = None,
     registry: NativeCapabilityRegistry | None = None,
     tool_names: tuple[str, ...] | None = None,
+    active_state: dict[str, Any] | None = None,
 ) -> NativeTurnSnapshot:
     """Freeze an exact validated Native surface without changing UI state."""
 
     surface = read_active_ribbon_surface(controller)
     provider_surface = resolve_native_provider_surface(surface, registry)
+    if active_state is not None:
+        from VibeCADNativeProviderContext import provider_authorized_native_surface
+
+        provider_surface = provider_authorized_native_surface(
+            provider_surface,
+            active_state,
+            registry=registry,
+        )
     if tool_names is not None:
         try:
             provider_surface = project_native_provider_surface(
@@ -162,6 +173,17 @@ def require_frozen_native_turn(
             current_provider,
             expected.tool_names,
         )
+        if registry is not None:
+            operations_by_tool = {
+                str(schema.get("name") or ""): operations
+                for schema in expected.provider_schemas
+                if (operations := _provider_schema_operations(schema))
+            }
+            current_provider = project_native_provider_operations(
+                current_provider,
+                registry,
+                operations_by_tool,
+            )
         current = NativeTurnSnapshot.from_provider_surface(current_provider)
     except (NativeCapabilityRegistryError, NativeTurnUnavailable) as exc:
         raise NativeTurnChanged(current_surface.surface_id) from exc

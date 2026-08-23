@@ -726,7 +726,7 @@ def is_provider_safe_tool(
         )
 
         try:
-            _registry, surface = resolve_production_native_surface()
+            registry, surface = resolve_production_native_surface()
         except Exception:
             return False
         state_reader = getattr(service, "native_active_snapshot", None)
@@ -734,6 +734,7 @@ def is_provider_safe_tool(
             surface = provider_authorized_native_surface(
                 surface,
                 state_reader() if callable(state_reader) else None,
+                registry=registry,
             )
         clean_name = str(tool_name)
         if not surface.available or clean_name not in surface.tool_names:
@@ -798,10 +799,11 @@ def _live_provider_surface_state(
             resolve_production_native_surface,
         )
 
-        _registry, provider_surface = resolve_production_native_surface()
+        registry, provider_surface = resolve_production_native_surface()
         provider_surface = provider_authorized_native_surface(
             provider_surface,
             native_active_state(service) if provider_surface.available else None,
+            registry=registry,
         )
         resolution = modeling_surface_from_native_provider(
             workbench,
@@ -1146,7 +1148,7 @@ def _capture_context_for_provider(
             resolve_production_native_surface,
         )
 
-        _, native_provider_surface = resolve_production_native_surface()
+        native_registry, native_provider_surface = resolve_production_native_surface()
         resolution = modeling_surface_from_native_provider(
             workbench,
             native_provider_surface,
@@ -1156,6 +1158,7 @@ def _capture_context_for_provider(
             native_provider_surface = provider_authorized_native_surface(
                 native_provider_surface,
                 captured_native_state,
+                registry=native_registry,
             )
             resolution = modeling_surface_from_native_provider(
                 workbench,

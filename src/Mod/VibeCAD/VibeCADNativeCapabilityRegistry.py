@@ -910,6 +910,92 @@ def project_native_provider_surface(
     )
 
 
+def _provider_schema_operations(schema: Mapping[str, Any]) -> tuple[str, ...]:
+    parameters = schema.get("parameters")
+    if not isinstance(parameters, Mapping):
+        return ()
+    branches = parameters.get("oneOf")
+    candidates = branches if isinstance(branches, list) else [parameters]
+    result = []
+    for branch in candidates:
+        if not isinstance(branch, Mapping):
+            continue
+        properties = branch.get("properties")
+        operation = (
+            properties.get("operation")
+            if isinstance(properties, Mapping)
+            else None
+        )
+        if not isinstance(operation, Mapping):
+            continue
+        values = (
+            [operation.get("const")]
+            if "const" in operation
+            else list(operation.get("enum") or ())
+        )
+        for value in values:
+            clean = str(value or "").strip()
+            if clean and clean not in result:
+                result.append(clean)
+    return tuple(result)
+
+
+def project_native_provider_operations(
+    surface: NativeProviderSurface,
+    registry: NativeCapabilityRegistry,
+    operations_by_tool: Mapping[str, tuple[str, ...]],
+) -> NativeProviderSurface:
+    """Select exact operation variants from an already-authorized surface."""
+
+    if not isinstance(surface, NativeProviderSurface):
+        raise TypeError("surface must be a NativeProviderSurface")
+    if not isinstance(registry, NativeCapabilityRegistry):
+        raise TypeError("registry must be a NativeCapabilityRegistry")
+    if not isinstance(operations_by_tool, Mapping):
+        raise TypeError("operations_by_tool must be a mapping")
+    if not surface.available:
+        return surface
+    names = []
+    schemas = []
+    for name, schema in zip(surface.tool_names, surface.schemas, strict=True):
+        requested = operations_by_tool.get(name)
+        if requested is None:
+            names.append(name)
+            schemas.append(schema)
+            continue
+        operations = tuple(dict.fromkeys(str(value) for value in requested if value))
+        if not operations:
+            continue
+        allowed = set(_provider_schema_operations(schema))
+        if not set(operations) <= allowed:
+            raise NativeCapabilityRegistryError(
+                f"Projected operations for {name!r} exceed its authorized surface."
+            )
+        definition = registry.definition(name)
+        if definition is None:
+            raise NativeCapabilityRegistryError(
+                f"Projected Native capability {name!r} has no definition."
+            )
+        names.append(name)
+        schemas.append(definition.provider_schema(operations))
+    if not names:
+        raise NativeCapabilityRegistryError(
+            "A projected Native operation surface requires at least one tool."
+        )
+    return NativeProviderSurface(
+        snapshot=surface.snapshot,
+        available=True,
+        unavailable_reason="",
+        tool_names=tuple(names),
+        schemas=tuple(schemas),
+        human_only_action_ids=surface.human_only_action_ids,
+        missing_definition_names=(),
+        missing_implementation_names=(),
+        incomplete_definition_names=(),
+        missing_action_ids=(),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _RequiredAction:
     action_id: str

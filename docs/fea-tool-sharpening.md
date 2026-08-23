@@ -67,3 +67,17 @@ calls caused by VibeCAD's contract.
 - The durable document snapshot, ribbon state, and human Study Setup data are
   unchanged. Compaction occurs only after the full state has authorized the
   provider surface.
+
+### Analyze operation surface
+
+- A declared steady-fluid study with no assignments previously advertised
+  31,186 bytes of family schemas. Exact study-state projection now advertises
+  23,254 bytes: creation operations remain, while edits without a live target
+  are absent.
+- The production GUI gate creates an analysis, continues on the new setup
+  surface, declares steady fluid physics, and continues again on the fluid
+  surface. Its frozen dispatch contract matches the provider-visible contract
+  at each turn.
+- Registered capabilities and human ribbon actions are unchanged. The provider
+  projection is rebuilt between turns from durable physics, inventory counts,
+  exact target kinds, and explicit truncation state.

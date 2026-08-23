@@ -151,7 +151,19 @@ def create_native_session_execution(
     expected_names = tuple(
         str(value) for value in expected_surface.get("tool_names") or ()
     )
-    turn = freeze_native_turn(controller, selected_registry, expected_names)
+    active_state_reader = getattr(service, "native_active_snapshot", None)
+    active_state = (
+        active_state_reader()
+        if callable(active_state_reader)
+        and str(expected_surface.get("domain") or "") == "analyze"
+        else None
+    )
+    turn = freeze_native_turn(
+        controller,
+        selected_registry,
+        expected_names,
+        active_state,
+    )
     _validate_expected_turn(expected_surface, expected_schemas, turn)
     state = service.native_document_state_store()
     uid = document_uid(document)
