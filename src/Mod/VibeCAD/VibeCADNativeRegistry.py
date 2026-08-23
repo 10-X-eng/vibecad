@@ -142,6 +142,12 @@ from VibeCADNativeAnalyzeGeometrySchema import (
 from VibeCADNativeAnalyzeInspectSchema import (
     register_analyze_inspect_capability_definition,
 )
+from VibeCADNativeAnalyzeAssignmentViewBindings import (
+    register_analyze_assignment_view_capability_implementation,
+)
+from VibeCADNativeAnalyzeAssignmentViewSchema import (
+    register_analyze_assignment_view_capability_definition,
+)
 from VibeCADNativeAnalyzeModelBindings import (
     register_analyze_model_capability_implementation,
 )
@@ -682,6 +688,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_analyze_model_capability_implementation(registry)
     register_analyze_inspect_capability_definition(registry)
     register_analyze_inspect_capability_implementation(registry)
+    register_analyze_assignment_view_capability_definition(registry)
+    register_analyze_assignment_view_capability_implementation(registry)
     register_analyze_geometry_capability_definition(registry)
     register_analyze_geometry_capability_implementation(registry)
     register_analyze_electromagnetic_capability_definition(registry)

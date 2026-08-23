@@ -198,6 +198,36 @@ NATIVE_CONTEXT_ACTIONS = (
         source_command_id="FEM_Analysis",
     ),
     _action(
+        "VibeCAD_AnalyzeReadAssignments", ("analyze",), ("task_panel",),
+        "read", "analyze.inspect", "assignments",
+        "BoundedExactFemAssignmentPage", "none",
+        source_command_id="VibeCAD_AnalyzeStudySetup",
+    ),
+    _action(
+        "VibeCAD_AnalyzeValidateAssignments", ("analyze",), ("task_panel",),
+        "read", "analyze.inspect", "validate_assignments",
+        "ExactFemAssignmentValidation", "none",
+        source_command_id="VibeCAD_AnalyzeStudySetup",
+    ),
+    _action(
+        "VibeCAD_AnalyzeHighlightAssignment", ("analyze",), ("task_panel",),
+        "view", "analyze.assignment_view", "highlight",
+        "ExactFemAssignmentAndViewportPresentation", "presentation",
+        source_command_id="VibeCAD_AnalyzeStudySetup",
+    ),
+    _action(
+        "VibeCAD_AnalyzeIsolateAssignment", ("analyze",), ("task_panel",),
+        "view", "analyze.assignment_view", "isolate",
+        "ExactFemAssignmentAndViewportPresentation", "presentation",
+        source_command_id="VibeCAD_AnalyzeStudySetup",
+    ),
+    _action(
+        "VibeCAD_AnalyzeRestoreAssignmentView", ("analyze",), ("task_panel",),
+        "view", "analyze.assignment_view", "restore",
+        "ExactFemAssignmentAndViewportPresentation", "presentation",
+        source_command_id="VibeCAD_AnalyzeStudySetup",
+    ),
+    _action(
         "VibeCAD_AnalyzeReadMaterial", ("analyze",), ("task_panel",),
         "read", "analyze.inspect", "material",
         "ExactFemMaterialState", "none",

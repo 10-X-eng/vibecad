@@ -24,7 +24,14 @@ _SHARED = frozenset(
     }
 )
 _SETUP = frozenset({"analyze.model", "analyze.inspect"})
-_STUDY = frozenset({"analyze.geometry", "analyze.mesh", "analyze.solver"})
+_STUDY = frozenset(
+    {
+        "analyze.assignment_view",
+        "analyze.geometry",
+        "analyze.mesh",
+        "analyze.solver",
+    }
+)
 _PHYSICS = {
     "mechanical": frozenset(
         {

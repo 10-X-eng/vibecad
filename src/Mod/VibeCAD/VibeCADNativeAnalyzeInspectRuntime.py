@@ -8,6 +8,8 @@ from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeInspect import (
     inspect_analysis,
+    inspect_assignments,
+    inspect_assignment_validation,
     inspect_study,
     inspect_electromagnetic_constraint,
     inspect_fluid_constraint,
@@ -34,6 +36,8 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 _VARIANTS = {
     "study": frozenset({"target"}),
     "analysis": frozenset({"target"}),
+    "assignments": frozenset({"target", "category", "offset", "page_size"}),
+    "validate_assignments": frozenset({"target"}),
     "material": frozenset({"target"}),
     "material_catalog": frozenset({"query", "category", "limit"}),
     "element_definition": frozenset({"target"}),
@@ -72,6 +76,19 @@ class NativeAnalyzeInspectRuntime:
             )
         elif operation == "analysis":
             result = inspect_analysis(
+                context.document,
+                context.document_uid,
+                values["target"],
+            )
+        elif operation == "assignments":
+            result = inspect_assignments(
+                context.document,
+                context.document_uid,
+                values.pop("target"),
+                **values,
+            )
+        elif operation == "validate_assignments":
+            result = inspect_assignment_validation(
                 context.document,
                 context.document_uid,
                 values["target"],

@@ -10,6 +10,12 @@ from VibeCADNativeAeroBindings import aero_solve_runtime_bindings
 from VibeCADNativeAeroRuntime import NativeAeroRuntime
 from VibeCADNativeAnalyzeInspectBindings import analyze_inspect_runtime_bindings
 from VibeCADNativeAnalyzeInspectRuntime import NativeAnalyzeInspectRuntime
+from VibeCADNativeAnalyzeAssignmentViewBindings import (
+    analyze_assignment_view_runtime_bindings,
+)
+from VibeCADNativeAnalyzeAssignmentViewRuntime import (
+    NativeAnalyzeAssignmentViewRuntime,
+)
 from VibeCADNativeAnalyzeGeometryBindings import analyze_geometry_runtime_bindings
 from VibeCADNativeAnalyzeGeometryRuntime import NativeAnalyzeGeometryRuntime
 from VibeCADNativeAnalyzeElectromagneticBindings import (
@@ -410,6 +416,7 @@ def build_native_runtime_bindings(
         raise TypeError("context must be a NativeRuntimeContext")
     analyze_model = NativeAnalyzeModelRuntime(context)
     analyze_inspect = NativeAnalyzeInspectRuntime(context)
+    analyze_assignment_view = NativeAnalyzeAssignmentViewRuntime(context)
     analyze_geometry = NativeAnalyzeGeometryRuntime(context)
     analyze_electromagnetic = NativeAnalyzeElectromagneticRuntime(context)
     analyze_fluid = NativeAnalyzeFluidRuntime(context)
@@ -533,6 +540,7 @@ def build_native_runtime_bindings(
     available = {
         **analyze_model_runtime_bindings(analyze_model),
         **analyze_inspect_runtime_bindings(analyze_inspect),
+        **analyze_assignment_view_runtime_bindings(analyze_assignment_view),
         **analyze_geometry_runtime_bindings(analyze_geometry),
         **analyze_electromagnetic_runtime_bindings(analyze_electromagnetic),
         **analyze_fluid_runtime_bindings(analyze_fluid),

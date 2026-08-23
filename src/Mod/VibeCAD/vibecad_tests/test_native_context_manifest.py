@@ -23,6 +23,11 @@ EXPECTED_CONTEXT_ACTION_IDS = {
     "VibeCAD_NativeSketchState",
     "SketchEditDeleteGeometry",
     "VibeCAD_AnalyzeReadAnalysis",
+    "VibeCAD_AnalyzeReadAssignments",
+    "VibeCAD_AnalyzeValidateAssignments",
+    "VibeCAD_AnalyzeHighlightAssignment",
+    "VibeCAD_AnalyzeIsolateAssignment",
+    "VibeCAD_AnalyzeRestoreAssignmentView",
     "VibeCAD_AnalyzeReadMaterial",
     "VibeCAD_AnalyzeSearchMaterialCatalog",
     "VibeCAD_AnalyzeReadElementDefinition",
@@ -205,6 +210,11 @@ def test_surface_filtering_never_leaks_context_actions() -> None:
     analyze = context_actions_for_surface("analyze")
     assert tuple(action.action_id for action in analyze) == (
         "VibeCAD_AnalyzeReadAnalysis",
+        "VibeCAD_AnalyzeReadAssignments",
+        "VibeCAD_AnalyzeValidateAssignments",
+        "VibeCAD_AnalyzeHighlightAssignment",
+        "VibeCAD_AnalyzeIsolateAssignment",
+        "VibeCAD_AnalyzeRestoreAssignmentView",
         "VibeCAD_AnalyzeReadMaterial",
         "VibeCAD_AnalyzeSearchMaterialCatalog",
         "VibeCAD_AnalyzeReadElementDefinition",
@@ -347,6 +357,12 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
     assert provider_actions["VibeCAD_AnalyzeReadAnalysis"].operation_variant == (
         "analysis"
     )
+    assert provider_actions["VibeCAD_AnalyzeReadAssignments"].operation_variant == (
+        "assignments"
+    )
+    assert provider_actions[
+        "VibeCAD_AnalyzeValidateAssignments"
+    ].operation_variant == "validate_assignments"
     assert provider_actions["VibeCAD_AnalyzeReadMaterial"].operation_variant == (
         "material"
     )
@@ -364,10 +380,21 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
         and provider_actions[action_id].transaction_behavior == "none"
         for action_id in {
             "VibeCAD_AnalyzeReadAnalysis",
+            "VibeCAD_AnalyzeReadAssignments",
+            "VibeCAD_AnalyzeValidateAssignments",
             "VibeCAD_AnalyzeReadMaterial",
             "VibeCAD_AnalyzeSearchMaterialCatalog",
             "VibeCAD_AnalyzeReadElementDefinition",
             "VibeCAD_AnalyzeReadResult",
+        }
+    )
+    assert all(
+        provider_actions[action_id].classification.view
+        and provider_actions[action_id].transaction_behavior == "presentation"
+        for action_id in {
+            "VibeCAD_AnalyzeHighlightAssignment",
+            "VibeCAD_AnalyzeIsolateAssignment",
+            "VibeCAD_AnalyzeRestoreAssignmentView",
         }
     )
     assert {

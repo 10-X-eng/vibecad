@@ -41,12 +41,16 @@ packages and source builds.
 3. Choose **Study Setup**, name the study, and select its physics and study type.
    The same panel shows the exact geometry, material, condition, mesh, solver,
    and result state as the study is completed.
-4. Add the material and physics equation required by the study.
-5. Select exact model faces or bodies and add loads and boundary conditions.
-6. Create a Gmsh or Netgen FEM mesh and inspect its quality.
-7. Select the solver and choose **Run Solver**. A progress window remains
+4. Use the **Assignments** section to inspect each material, load, boundary,
+   connection, and mesh region. **Highlight** selects its exact geometry,
+   **Isolate** hides the other study geometry until **Show All**, **Edit** opens
+   its native editor, and **Validate** checks every live reference.
+5. Add the material and physics equation required by the study.
+6. Select exact model faces or bodies and add loads and boundary conditions.
+7. Create a Gmsh or Netgen FEM mesh and inspect its quality.
+8. Select the solver and choose **Run Solver**. A progress window remains
    cancellable while the solver runs outside the UI thread.
-8. Inspect the imported result and create post-processing views as needed.
+9. Inspect the imported result and create post-processing views as needed.
 
 The solver does not infer missing engineering inputs. A generated mesh and a
 solver object alone are not a ready study: material properties, physics, units,

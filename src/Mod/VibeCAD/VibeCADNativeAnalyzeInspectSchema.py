@@ -24,6 +24,7 @@ from VibeCADNativeAnalyzeMeshOutputSchema import FEM_MESH_OBJECT_TARGET
 from VibeCADNativeAnalyzeSolverSchema import SOLVER_TARGET
 from VibeCADNativeAnalyzeEquationSchema import EQUATION_TARGET
 from VibeCADNativeAnalyzeResultState import RESULT_TARGET
+from VibeCADNativeAnalyzeAssignments import ASSIGNMENT_CATEGORIES
 
 
 ANALYZE_INSPECT_CAPABILITY_NAME = "analyze.inspect"
@@ -31,6 +32,8 @@ ANALYZE_INSPECT_CAPABILITY_NAME = "analyze.inspect"
 _EXACT_TARGET_BY_OPERATION = {
     "study": "ExactFemStudyState",
     "analysis": "ExactFemAnalysisState",
+    "assignments": "BoundedExactFemAssignmentPage",
+    "validate_assignments": "ExactFemAssignmentValidation",
     "material": "ExactFemMaterialState",
     "material_catalog": "BoundedMaterialCatalogQuery",
     "element_definition": "ExactFemElementDefinitionState",
@@ -100,6 +103,40 @@ def analyze_inspect_capability_definition() -> NativeCapabilityDefinition:
                 "analysis",
                 "Read exact membership and readiness counts for one current FEM analysis.",
                 "VibeCAD_AnalyzeReadAnalysis",
+                {
+                    "type": "object",
+                    "properties": {"target": _ANALYSIS_TARGET},
+                    "required": ["target"],
+                    "additionalProperties": False,
+                },
+            ),
+            _variant(
+                "assignments",
+                "List exact physical values and geometry targets for current study assignments.",
+                "VibeCAD_AnalyzeReadAssignments",
+                {
+                    "type": "object",
+                    "properties": {
+                        "target": _ANALYSIS_TARGET,
+                        "category": {
+                            "type": "string",
+                            "enum": ["all", *ASSIGNMENT_CATEGORIES],
+                        },
+                        "offset": {"type": "integer", "minimum": 0},
+                        "page_size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 64,
+                        },
+                    },
+                    "required": ["target", "category", "offset", "page_size"],
+                    "additionalProperties": False,
+                },
+            ),
+            _variant(
+                "validate_assignments",
+                "Validate every current assignment object and referenced geometry target.",
+                "VibeCAD_AnalyzeValidateAssignments",
                 {
                     "type": "object",
                     "properties": {"target": _ANALYSIS_TARGET},

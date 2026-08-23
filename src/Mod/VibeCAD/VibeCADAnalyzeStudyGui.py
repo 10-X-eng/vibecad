@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import FreeCAD as App
@@ -23,6 +24,18 @@ from VibeCADNativeAnalyzeStudy import (
     study_intent_state,
 )
 from VibeCADNativeAnalyzeStudyState import study_inventory
+from VibeCADNativeAnalyzeAssignments import (
+    assignment_records,
+    prepare_assignment_target,
+    validate_assignments,
+)
+from VibeCADNativeAnalyzeAssignmentView import (
+    active_isolation_token,
+    highlight_assignment,
+    isolate_assignment,
+    restore_assignment_view,
+)
+from VibeCADNativeAnalyzeState import analysis_state
 
 
 COMMAND_NAME = "VibeCAD_AnalyzeStudySetup"
@@ -104,6 +117,7 @@ class StudySetupWidget(QtWidgets.QWidget):
         self._inventory: dict[str, Any] = {}
         self._intent: dict[str, Any] = {"declared": False}
         self._runtime_statuses: tuple[dict[str, Any], ...] = ()
+        self._assignment_records: dict[str, dict[str, Any]] = {}
         self._build()
         self.refresh()
 
@@ -181,6 +195,45 @@ class StudySetupWidget(QtWidgets.QWidget):
         self.runtime_label.setWordWrap(True)
         progress_layout.addWidget(self.runtime_label)
         layout.addWidget(progress)
+
+        assignments = QtWidgets.QGroupBox("Assignments")
+        assignments_layout = QtWidgets.QVBoxLayout(assignments)
+        self.assignment_table = QtWidgets.QTreeWidget()
+        self.assignment_table.setObjectName("VibeCADAnalyzeAssignments")
+        self.assignment_table.setHeaderLabels(("Assignment", "Type", "Targets"))
+        self.assignment_table.setRootIsDecorated(False)
+        self.assignment_table.setAlternatingRowColors(True)
+        self.assignment_table.setMinimumHeight(190)
+        self.assignment_table.currentItemChanged.connect(self._assignment_selected)
+        assignments_layout.addWidget(self.assignment_table)
+        self.assignment_detail = QtWidgets.QPlainTextEdit()
+        self.assignment_detail.setObjectName("VibeCADAnalyzeAssignmentDetail")
+        self.assignment_detail.setReadOnly(True)
+        self.assignment_detail.setMaximumHeight(130)
+        assignments_layout.addWidget(self.assignment_detail)
+        assignment_actions = QtWidgets.QHBoxLayout()
+        self.highlight_button = QtWidgets.QPushButton("Highlight")
+        self.highlight_button.clicked.connect(self._highlight_assignment)
+        assignment_actions.addWidget(self.highlight_button)
+        self.isolate_button = QtWidgets.QPushButton("Isolate")
+        self.isolate_button.clicked.connect(self._isolate_assignment)
+        assignment_actions.addWidget(self.isolate_button)
+        self.restore_button = QtWidgets.QPushButton("Show All")
+        self.restore_button.clicked.connect(self._restore_assignment_view)
+        assignment_actions.addWidget(self.restore_button)
+        self.edit_button = QtWidgets.QPushButton("Edit")
+        self.edit_button.clicked.connect(self._edit_assignment)
+        assignment_actions.addWidget(self.edit_button)
+        assignments_layout.addLayout(assignment_actions)
+        validation_row = QtWidgets.QHBoxLayout()
+        validate_button = QtWidgets.QPushButton("Validate")
+        validate_button.clicked.connect(self._validate_assignments)
+        validation_row.addWidget(validate_button)
+        self.assignment_validation = QtWidgets.QLabel()
+        self.assignment_validation.setWordWrap(True)
+        validation_row.addWidget(self.assignment_validation, 1)
+        assignments_layout.addLayout(validation_row)
+        layout.addWidget(assignments)
         layout.addStretch(1)
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
@@ -249,6 +302,7 @@ class StudySetupWidget(QtWidgets.QWidget):
             self.label_edit.setText("Analysis")
             self._inventory = {}
             self._intent = {"declared": False}
+            self._set_assignments(())
             self._render("Open a document to create a study.")
             self.apply_button.setEnabled(False)
             return
@@ -257,6 +311,7 @@ class StudySetupWidget(QtWidgets.QWidget):
             self.label_edit.setText("Analysis")
             self._inventory = {}
             self._intent = {"declared": False}
+            self._set_assignments(())
             for physics, check in self.physics_checks.items():
                 check.setChecked(physics == "mechanical")
             self.regime_combo.setCurrentIndex(self.regime_combo.findData("steady"))
@@ -270,9 +325,11 @@ class StudySetupWidget(QtWidgets.QWidget):
             self.label_edit.setText(str(analysis.Label))
             self._intent = study_intent_state(analysis)
             self._inventory = study_inventory(analysis)
+            self._set_assignments(assignment_records(analysis))
         except Exception as exc:
             self._inventory = {}
             self._intent = {"declared": False}
+            self._set_assignments(())
             self._render(str(exc))
             return
         declared_physics = set(self._intent.get("physics") or ())
@@ -287,6 +344,145 @@ class StudySetupWidget(QtWidgets.QWidget):
             probe = _RuntimeProbe(self._generation, solvers)
             probe.signals.finished.connect(self._runtime_finished)
             QtCore.QThreadPool.globalInstance().start(probe)
+
+    def _set_assignments(self, records: Any) -> None:
+        self._assignment_records = {
+            str(record.get("object_name") or ""): dict(record)
+            for record in tuple(records or ())
+            if record.get("object_name")
+        }
+        self.assignment_table.clear()
+        for record in self._assignment_records.values():
+            references = record.get("references") or ()
+            target_count = sum(
+                max(1, len(reference.get("subelements") or ()))
+                for reference in references
+            )
+            kind = str(record.get("kind") or record.get("category") or "")
+            if record.get("valid") is False:
+                kind = "Invalid " + kind
+            item = QtWidgets.QTreeWidgetItem(
+                (
+                    str(record.get("label") or record["object_name"]),
+                    kind.replace("_", " ").title(),
+                    str(target_count),
+                )
+            )
+            item.setData(0, QtCore.Qt.UserRole, str(record["object_name"]))
+            self.assignment_table.addTopLevelItem(item)
+        self.assignment_table.resizeColumnToContents(0)
+        self.assignment_table.resizeColumnToContents(1)
+        if self.assignment_table.topLevelItemCount():
+            self.assignment_table.setCurrentItem(self.assignment_table.topLevelItem(0))
+        else:
+            self.assignment_detail.clear()
+            self._update_assignment_buttons(None)
+        document = _active_document()
+        self.restore_button.setEnabled(
+            document is not None and active_isolation_token(document) is not None
+        )
+
+    def _selected_assignment(self) -> dict[str, Any] | None:
+        item = self.assignment_table.currentItem()
+        name = str(item.data(0, QtCore.Qt.UserRole) or "") if item else ""
+        return self._assignment_records.get(name)
+
+    def _assignment_selected(self, current: Any, _previous: Any) -> None:
+        record = self._selected_assignment() if current is not None else None
+        self.assignment_detail.setPlainText(
+            json.dumps(record, indent=2, sort_keys=True) if record else ""
+        )
+        self._update_assignment_buttons(record)
+
+    def _update_assignment_buttons(self, record: dict[str, Any] | None) -> None:
+        valid = bool(record) and record.get("valid") is not False
+        references = tuple(record.get("references") or ()) if record else ()
+        self.highlight_button.setEnabled(valid)
+        self.isolate_button.setEnabled(valid and bool(references))
+        self.edit_button.setEnabled(valid)
+
+    def _prepared_assignment(self) -> Any:
+        document, analysis = self._document_and_analysis()
+        record = self._selected_assignment()
+        if document is None or analysis is None or record is None:
+            raise RuntimeError("Select one current study assignment.")
+        state = analysis_state(analysis)
+        return prepare_assignment_target(
+            document,
+            str(document.Uid),
+            analysis={
+                "object_name": str(analysis.Name),
+                "expected_state_sha256": str(state["state_sha256"]),
+                "expected_member_count": int(state["member_count"]),
+            },
+            assignment={
+                "object_name": str(record["object_name"]),
+                "expected_state_sha256": str(record["state_sha256"]),
+            },
+        )
+
+    def _show_assignment_error(self, exc: BaseException) -> None:
+        QtWidgets.QMessageBox.critical(
+            Gui.getMainWindow(),
+            "Study Assignment",
+            str(exc),
+        )
+
+    def _highlight_assignment(self) -> None:
+        try:
+            highlight_assignment(self._prepared_assignment())
+        except Exception as exc:
+            self._show_assignment_error(exc)
+
+    def _isolate_assignment(self) -> None:
+        try:
+            result = isolate_assignment(self._prepared_assignment())
+            self.restore_button.setEnabled(bool(result.get("restore_token")))
+        except Exception as exc:
+            self._show_assignment_error(exc)
+
+    def _restore_assignment_view(self) -> None:
+        document = _active_document()
+        token = active_isolation_token(document) if document is not None else None
+        if document is None or token is None:
+            return
+        try:
+            restore_assignment_view(document, token)
+            self.restore_button.setEnabled(False)
+        except Exception as exc:
+            self._show_assignment_error(exc)
+
+    def _edit_assignment(self) -> None:
+        try:
+            target = self._prepared_assignment()
+            highlight_assignment(target)
+            gui_document = Gui.activeDocument()
+            if gui_document is None or not gui_document.setEdit(
+                str(target.assignment.Name)
+            ):
+                raise RuntimeError("This assignment has no interactive editor.")
+        except Exception as exc:
+            self._show_assignment_error(exc)
+
+    def _validate_assignments(self) -> None:
+        _document, analysis = self._document_and_analysis()
+        if analysis is None:
+            return
+        try:
+            result = validate_assignments(analysis)
+            if result["valid"]:
+                self.assignment_validation.setText(
+                    f"{result['assignment_count']} assignments valid"
+                )
+            else:
+                first = (
+                    result["issues"][0]["message"] if result["issues"] else "Invalid"
+                )
+                self.assignment_validation.setText(
+                    f"{result['issue_count']} issues · {first}"
+                )
+        except Exception as exc:
+            self._show_assignment_error(exc)
 
     def _runtime_finished(self, generation: int, statuses: Any, error: str) -> None:
         if generation != self._generation:
