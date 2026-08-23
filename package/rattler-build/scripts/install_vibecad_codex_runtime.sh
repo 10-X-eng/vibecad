@@ -66,12 +66,28 @@ case "${platform}:${machine}" in
 esac
 
 archive_url="${release_root}/${archive}"
+
+# Portable SHA-256 helpers (GNU coreutils on Linux; BSD sha256sum on macOS).
+# macOS /sbin/sha256sum rejects GNU long options such as --check/--status and
+# does not read checksum lines from stdin the same way.
+sha256_file() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+sha256_matches() {
+    local expected="$1"
+    local path="$2"
+    local actual
+    actual="$(sha256_file "${path}")"
+    [[ "${actual}" == "${expected}" ]]
+}
+
 runtime_spec="$({
     printf '%s\n' \
         "version=${codex_version}" \
         "archive=${archive}:${archive_sha256}" \
         "license=${license_sha256}"
-    sha256sum "$0"
+    sha256_file "$0"
 } | sha256sum | awk '{print $1}')"
 
 smoke_runtime() {
@@ -99,14 +115,19 @@ download_verified() {
     local url="$1"
     local expected="$2"
     local destination="$3"
-    if [[ -f "${destination}" ]] \
-      && echo "${expected}  ${destination}" | sha256sum --check --status; then
+    if [[ -f "${destination}" ]] && sha256_matches "${expected}" "${destination}"; then
         return
     fi
     local temporary="${destination}.tmp"
     rm -f "${temporary}"
     curl --fail --location --retry 4 --retry-all-errors --output "${temporary}" "${url}"
-    echo "${expected}  ${temporary}" | sha256sum --check
+    if ! sha256_matches "${expected}" "${temporary}"; then
+        local actual
+        actual="$(sha256_file "${temporary}")"
+        rm -f "${temporary}"
+        echo "SHA-256 mismatch for ${url}: expected ${expected}, got ${actual}" >&2
+        exit 1
+    fi
     mv "${temporary}" "${destination}"
 }
 
