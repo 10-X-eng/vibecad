@@ -34,8 +34,34 @@ def _compact_combo(combo: Any) -> Any:
     return combo
 
 
+def _active_print_selection() -> tuple[Any, tuple[Any, ...]]:
+    import PrintCommandLoader
+
+    return PrintCommandLoader.command_module()._active_selection()
+
+
 class _Bridge(QtCore.QObject):
     finished = QtCore.Signal(int, object, object)
+
+
+class _SelectionObserver:
+    def __init__(self, panel: "PrintPanelWidget") -> None:
+        self.panel = panel
+
+    def _changed(self) -> None:
+        QtCore.QTimer.singleShot(0, self.panel._update_selection_summary)
+
+    def addSelection(self, *_args) -> None:
+        self._changed()
+
+    def removeSelection(self, *_args) -> None:
+        self._changed()
+
+    def setSelection(self, *_args) -> None:
+        self._changed()
+
+    def clearSelection(self, *_args) -> None:
+        self._changed()
 
 
 class PrintPanelWidget(QtWidgets.QWidget):
@@ -56,6 +82,8 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self._callback: Callable[[Any], None] | None = None
         self._futures: set[Future[Any]] = set()
         self._busy = False
+        self._print_selection_ready = False
+        self._selection_observer: _SelectionObserver | None = None
         self._bridge = _Bridge(self)
         self._bridge.finished.connect(self._job_finished)
 
@@ -92,6 +120,12 @@ class PrintPanelWidget(QtWidgets.QWidget):
         content_layout = QtWidgets.QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(8)
+
+        content_layout.addWidget(QtWidgets.QLabel("<b>SELECTED OBJECTS</b>", content))
+        self.selection_summary = _wrapped(QtWidgets.QLabel(content))
+        self.selection_summary.setObjectName("VibeCADPrintSelectionSummary")
+        self.selection_summary.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        content_layout.addWidget(self.selection_summary)
 
         content_layout.addWidget(QtWidgets.QLabel("<b>PRINT SETTINGS</b>", content))
         profiles = QtWidgets.QFormLayout()
@@ -188,6 +222,8 @@ class PrintPanelWidget(QtWidgets.QWidget):
 
         self._update_output_location()
         self._clear_profiles()
+        self._attach_selection_observer()
+        self._update_selection_summary()
         self._update_actions()
 
     def sizeHint(self):
@@ -212,6 +248,55 @@ class PrintPanelWidget(QtWidgets.QWidget):
         text = storage.directory if storage.mode == "folder" else "Managed VibeCAD cache"
         self.output_location.setText(text)
         self.output_location.setToolTip(text)
+
+    def _attach_selection_observer(self) -> None:
+        try:
+            import FreeCADGui
+
+            observer = _SelectionObserver(self)
+            FreeCADGui.Selection.addObserver(observer)
+            self._selection_observer = observer
+            self.destroyed.connect(self._detach_selection_observer)
+        except Exception:
+            self._selection_observer = None
+
+    def _detach_selection_observer(self, *_args) -> None:
+        observer = self._selection_observer
+        self._selection_observer = None
+        if observer is None:
+            return
+        try:
+            import FreeCADGui
+
+            FreeCADGui.Selection.removeObserver(observer)
+        except Exception:
+            pass
+
+    def _update_selection_summary(self) -> None:
+        try:
+            _document, objects = _active_print_selection()
+        except (VibeCADPrint.PrintSelectionError, RuntimeError) as exc:
+            self._print_selection_ready = False
+            self.selection_summary.setText(str(exc))
+            self.selection_summary.setToolTip(str(exc))
+        except Exception:
+            self._print_selection_ready = False
+            message = "Select one or more printable objects."
+            self.selection_summary.setText(message)
+            self.selection_summary.setToolTip(message)
+        else:
+            labels = tuple(
+                str(getattr(obj, "Label", "") or getattr(obj, "Name", "") or "Object")
+                for obj in objects
+            )
+            count = len(labels)
+            heading = f"{count} object{'s' if count != 1 else ''} will be sent"
+            self.selection_summary.setText(
+                heading + "\n" + "\n".join(f"• {label}" for label in labels)
+            )
+            self.selection_summary.setToolTip("\n".join(labels))
+            self._print_selection_ready = bool(objects)
+        self._update_actions()
 
     def _start_job(
         self,
@@ -462,8 +547,14 @@ class PrintPanelWidget(QtWidgets.QWidget):
 
     def _update_actions(self, *_args) -> None:
         setup = self._current_setup()
-        ready = setup is not None and self.installation is not None and not self._busy
+        ready = (
+            setup is not None
+            and self.installation is not None
+            and self._print_selection_ready
+            and not self._busy
+        )
         self.print_button.setEnabled(ready)
+        self.export_button.setEnabled(self._print_selection_ready)
         if setup is not None:
             PrintPreferences.save_confirmed_setup(setup)
             self._remembered = setup
@@ -485,6 +576,9 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self._initial_setup()
 
     def print_selected(self) -> None:
+        self._update_selection_summary()
+        if not self._print_selection_ready:
+            return
         if not self._save() or self.installation is None:
             return
         import PrintCommandLoader
@@ -529,11 +623,9 @@ def ensure_panel_registered() -> Any:
     main = _main_window()
     if main is None:
         raise RuntimeError("FreeCAD main window is unavailable.")
-    dock = QtWidgets.QDockWidget("3D Print", main)
-    dock.setObjectName(DOCK_NAME)
+    contents = PrintPanelWidget()
+    dock = main.addDockWindow(contents, DOCK_NAME, area="right")
     dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
-    dock.setWidget(PrintPanelWidget(dock))
-    main.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
     dock.toggleViewAction().setVisible(True)
     dock.hide()
     return dock
@@ -545,6 +637,7 @@ def show_panel(*, refresh: bool = True) -> PrintPanelWidget | None:
     dock.raise_()
     widget = dock.widget()
     if isinstance(widget, PrintPanelWidget):
+        widget._update_selection_summary()
         if refresh:
             widget.refresh()
         return widget

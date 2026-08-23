@@ -23,6 +23,8 @@ SET(VibeCADPrint_Tests
     tests/conftest.py
     tests/qt_dialog_layout.py
     tests/qt_panel_integration.py
+    tests/qt_panel_persistence_integration.py
+    tests/qt_selection_integration.py
     tests/qt_workbench_panel_integration.py
     tests/test_backend.py
     tests/test_commands.py

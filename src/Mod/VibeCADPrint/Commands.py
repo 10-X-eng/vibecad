@@ -34,6 +34,32 @@ def _main_window() -> Any:
     return FreeCADGui.getMainWindow()
 
 
+def _whole_object_for_selection(entry: Any) -> Any | None:
+    """Resolve a picked body subelement to the complete printable body."""
+
+    obj = getattr(entry, "Object", None)
+    if obj is None or not tuple(getattr(entry, "SubElementNames", ()) or ()):
+        return obj
+    parent_getter = getattr(obj, "getParentGeoFeatureGroup", None)
+    if not callable(parent_getter):
+        return obj
+    try:
+        parent = parent_getter()
+    except Exception:
+        return obj
+    if parent is None:
+        return obj
+    type_id = str(getattr(parent, "TypeId", ""))
+    is_derived_from = getattr(parent, "isDerivedFrom", None)
+    try:
+        is_body = type_id == "PartDesign::Body" or (
+            callable(is_derived_from) and is_derived_from("PartDesign::Body")
+        )
+    except Exception:
+        is_body = type_id == "PartDesign::Body"
+    return parent if is_body else obj
+
+
 def _warning(title: str, message: str) -> None:
     _console(message, "warning")
     from PySide import QtWidgets
@@ -57,7 +83,14 @@ def _active_selection() -> tuple[Any, tuple[Any, ...]]:
     import FreeCADGui
 
     document = FreeCAD.ActiveDocument
-    selected = tuple(FreeCADGui.Selection.getSelection() or ())
+    selected = tuple(
+        obj
+        for obj in (
+            _whole_object_for_selection(entry)
+            for entry in (FreeCADGui.Selection.getSelectionEx() or ())
+        )
+        if obj is not None
+    )
     objects = VibeCADPrint.collect_printable_objects(
         selected,
         active_document=document,
@@ -219,6 +252,19 @@ def open_selected_in_prusaslicer(
     try:
         destination, managed = _handoff_destination(document, objects)
         VibeCADPrint.export_selection_3mf(objects, destination)
+        if installation.tested and setup is not None:
+            import PrintSetupDialog
+
+            PrintSetupDialog.run_with_progress(
+                _main_window(),
+                "Arranging objects and preparing the PrusaSlicer project…",
+                lambda: backend.prepare_project(
+                    installation,
+                    destination,
+                    destination,
+                    setup,
+                ),
+            )
         result = backend.launch(installation, destination, setup)
         if managed:
             VibeCADPrint.prune_managed_handoffs(

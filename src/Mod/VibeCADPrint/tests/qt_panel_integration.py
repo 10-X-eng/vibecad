@@ -7,6 +7,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import traceback
+from types import SimpleNamespace
 
 
 TESTS = Path(__file__).resolve().parent
@@ -48,6 +50,13 @@ def main() -> None:
     )
     PrintPanel.PrintPreferences.save_handoff_storage = lambda value: saved.__setitem__(
         "storage", value
+    )
+    PrintPanel._active_print_selection = lambda: (
+        SimpleNamespace(Name="FanDocument"),
+        (
+            SimpleNamespace(Name="Body", Label="120 mm Fan Frame"),
+            SimpleNamespace(Name="Body001", Label="120 mm Fan Rotor"),
+        ),
     )
 
     installation = VibeCADPrint.SlicerInstallation(
@@ -105,6 +114,9 @@ def main() -> None:
     assert len(panel.material_combos) == 1
     assert panel.material_combos[0].currentData() == material.name
     assert panel.output_location.text() == storage.directory
+    assert "120 mm Fan Frame" in panel.selection_summary.text()
+    assert "120 mm Fan Rotor" in panel.selection_summary.text()
+    assert "BodyResult" not in panel.selection_summary.text()
     assert panel.print_button.text() == "Print"
     assert panel.setup_button.text().startswith("Setup")
     assert panel.export_button.text() == "Export 3MF…"
@@ -140,5 +152,17 @@ def main() -> None:
     remembered.close()
 
 
-if __name__ == "__main__":
-    main()
+def _run() -> None:
+    application = QtWidgets.QApplication.instance()
+    exit_code = 1
+    try:
+        main()
+        print("VIBECAD_PRINT_PANEL_GUI_OK", flush=True)
+        exit_code = 0
+    except Exception:
+        traceback.print_exc(file=sys.__stderr__)
+    finally:
+        application.exit(exit_code)
+
+
+QtCore.QTimer.singleShot(1200, _run)

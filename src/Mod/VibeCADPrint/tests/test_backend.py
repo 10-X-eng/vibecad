@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import zipfile
 
 import pytest
 
@@ -253,6 +254,98 @@ def test_basic_launch_does_not_invent_profiles() -> None:
     )
 
     assert command == ("prusa-slicer", "/tmp/part.3mf")
+
+
+@pytest.mark.parametrize(
+    ("auto_arrange", "expected", "unexpected"),
+    [
+        (True, "--duplicate", "--dont-arrange"),
+        (False, "--dont-arrange", "--duplicate"),
+    ],
+)
+def test_prepare_project_preserves_objects_and_maps_arrangement_choice(
+    tmp_path: Path,
+    auto_arrange: bool,
+    expected: str,
+    unexpected: str,
+) -> None:
+    source = tmp_path / "geometry.3mf"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(
+            "3D/3dmodel.model",
+            '<model><resources><object id="1"/><object id="2"/></resources></model>',
+        )
+    destination = tmp_path / "prepared.3mf"
+    setup = VibeCADPrint.PrintSetup(
+        printer_profile="Original Prusa MK4S 0.4 nozzle",
+        print_profile="0.20mm QUALITY @MK4S 0.4",
+        material_profiles=("Generic PLA @MK4S",),
+        auto_arrange=auto_arrange,
+        ensure_on_bed=True,
+    )
+    commands = []
+
+    def runner(command, **_kwargs):
+        commands.append(tuple(command))
+        output = Path(command[command.index("--output") + 1])
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("3D/3dmodel.model", "<model/>")
+            archive.writestr(
+                "Metadata/Slic3r_PE_model.config",
+                '<config><object id="1"/><object id="2"/></config>',
+            )
+        return subprocess.CompletedProcess(command, 0, "prepared", "")
+
+    result = VibeCADPrint.prepare_prusaslicer_project(
+        _installation(),
+        source,
+        destination,
+        setup,
+        runner=runner,
+    )
+
+    assert result == destination
+    assert expected in commands[0]
+    assert unexpected not in commands[0]
+    assert commands[0][-1] == str(source)
+    assert "--export-3mf" in commands[0]
+    assert destination.is_file()
+    assert not list(tmp_path.glob("*.partial.3mf"))
+
+
+def test_prepare_project_rejects_object_collapse_and_preserves_source(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "plate.3mf"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(
+            "3D/3dmodel.model",
+            '<model><resources><object id="1"/><object id="2"/></resources></model>',
+        )
+    original = source.read_bytes()
+    setup = VibeCADPrint.PrintSetup("Printer", "Quality", ("Material",))
+
+    def runner(command, **_kwargs):
+        output = Path(command[command.index("--output") + 1])
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("3D/3dmodel.model", "<model/>")
+            archive.writestr(
+                "Metadata/Slic3r_PE_model.config",
+                '<config><object id="1"/></config>',
+            )
+        return subprocess.CompletedProcess(command, 0, "prepared", "")
+
+    with pytest.raises(VibeCADPrint.SlicerError, match="object count"):
+        VibeCADPrint.prepare_prusaslicer_project(
+            _installation(),
+            source,
+            source,
+            setup,
+            runner=runner,
+        )
+
+    assert source.read_bytes() == original
+    assert not list(tmp_path.glob("*.partial.3mf"))
 
 
 def test_validate_setup_requires_exact_compatible_names_and_each_extruder() -> None:

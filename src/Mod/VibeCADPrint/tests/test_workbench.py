@@ -89,6 +89,8 @@ def test_cmake_installs_module_tests_and_icons() -> None:
         assert filename in cmake
     assert "icons/vibecad-print-open.svg" in cmake
     assert "tests/test_backend.py" in cmake
+    assert "tests/qt_selection_integration.py" in cmake
+    assert "tests/qt_panel_persistence_integration.py" in cmake
     assert "Mod/VibeCADPrint/icons" in cmake
 
 
@@ -141,9 +143,12 @@ def test_print_workbench_registers_and_opens_persistent_panel() -> None:
     )[0]
     assert "choose_print_setup" not in resolver
     assert 'DOCK_NAME = "VibeCADPrintPanel"' in panel
+    assert "main.addDockWindow(contents, DOCK_NAME" in panel
     assert 'QPushButton("Print"' in panel
     assert 'QPushButton("Export 3MF…"' in panel
     assert "Selections are saved automatically" in panel
+    assert "SELECTED OBJECTS" in panel
+    assert 'setObjectName("VibeCADPrintSelectionSummary")' in panel
     assert "ScrollBarAlwaysOff" in panel
     assert "Auto-arrange" in panel
     assert "Ensure on bed" in panel

@@ -23,6 +23,8 @@ import sys
 import tempfile
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
+import xml.etree.ElementTree as ET
+import zipfile
 
 
 TESTED_PRUSASLICER_VERSION = (2, 9, 6)
@@ -775,6 +777,120 @@ def build_launch_command(
     return tuple(command)
 
 
+def build_prepare_project_command(
+    installation: SlicerInstallation,
+    source_file: str | os.PathLike[str],
+    output_file: str | os.PathLike[str],
+    setup: PrintSetup,
+) -> tuple[str, ...]:
+    """Build a shell-free command that turns generic 3MF into a slicer project."""
+
+    command = list(installation.cli_command)
+    if installation.config_dir:
+        command.extend(("--datadir", installation.config_dir))
+    if setup.auto_arrange:
+        # PrusaSlicer 2.9 has no standalone --arrange switch. Its one-copy
+        # transform invokes the same bed-aware arranger without adding copies.
+        command.extend(("--duplicate", "1"))
+    else:
+        command.append("--dont-arrange")
+    command.append("--ensure-on-bed" if setup.ensure_on_bed else "--no-ensure-on-bed")
+    command.extend(("--printer-profile", setup.printer_profile))
+    command.extend(("--print-profile", setup.print_profile))
+    command.extend(("--material-profile", ";".join(setup.material_profiles)))
+    command.extend(
+        (
+            "--export-3mf",
+            "--output",
+            str(Path(output_file)),
+            str(Path(source_file)),
+        )
+    )
+    return tuple(command)
+
+
+def prepare_prusaslicer_project(
+    installation: SlicerInstallation,
+    source_file: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    setup: PrintSetup,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    timeout: float = 120.0,
+) -> Path:
+    """Atomically prepare a named, multi-object PrusaSlicer 3MF project."""
+
+    source = Path(source_file)
+    target = Path(destination)
+    try:
+        with zipfile.ZipFile(source) as archive:
+            source_model = ET.fromstring(archive.read("3D/3dmodel.model"))
+    except (ET.ParseError, OSError, KeyError, zipfile.BadZipFile) as exc:
+        raise SlicerError(
+            "Could not prepare the PrusaSlicer project because the source 3MF "
+            "does not contain a valid object model."
+        ) from exc
+    source_object_count = len(source_model.findall("./{*}resources/{*}object"))
+    if source_object_count == 0:
+        raise SlicerError(
+            "Could not prepare the PrusaSlicer project because the source 3MF "
+            "does not contain printable objects."
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(f"{target.stem}.{uuid4().hex}.partial.3mf")
+    command = build_prepare_project_command(installation, source, partial, setup)
+    try:
+        completed = runner(
+            list(command),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if completed.returncode != 0 or not partial.is_file():
+            details = " ".join(
+                value.strip()
+                for value in (completed.stdout or "", completed.stderr or "")
+                if value.strip()
+            )
+            suffix = f" {details}" if details else ""
+            raise SlicerError(
+                "PrusaSlicer could not prepare the 3MF project "
+                f"(status {completed.returncode}).{suffix}"
+            )
+        try:
+            with zipfile.ZipFile(partial) as archive:
+                metadata = archive.read("Metadata/Slic3r_PE_model.config")
+            prepared_metadata = ET.fromstring(metadata)
+        except (ET.ParseError, OSError, KeyError, zipfile.BadZipFile) as exc:
+            raise SlicerError(
+                "PrusaSlicer produced an invalid project 3MF without object metadata."
+            ) from exc
+        prepared_object_count = len(prepared_metadata.findall("./{*}object"))
+        if prepared_object_count == 0:
+            raise SlicerError(
+                "PrusaSlicer produced a project 3MF without printable objects."
+            )
+        if prepared_object_count != source_object_count:
+            raise SlicerError(
+                "PrusaSlicer changed the project object count from "
+                f"{source_object_count} to {prepared_object_count}; the original "
+                "3MF was preserved."
+            )
+        os.replace(partial, target)
+    except SlicerError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SlicerError(f"Could not prepare the PrusaSlicer project: {exc}") from exc
+    finally:
+        if partial.exists():
+            try:
+                partial.unlink()
+            except OSError:
+                pass
+    return target
+
+
 def launch_prusaslicer(
     installation: SlicerInstallation,
     handoff_file: str | os.PathLike[str],
@@ -841,9 +957,15 @@ def collect_printable_objects(
             "Open an active document before exporting for printing."
         )
     unique: list[Any] = []
-    seen: set[int] = set()
+    seen: set[tuple[Any, ...]] = set()
     for obj in selection:
-        identity = id(obj)
+        document = getattr(obj, "Document", None)
+        name = str(getattr(obj, "Name", "") or "")
+        identity = (
+            ("document-object", id(document), name)
+            if document is not None and name
+            else ("python-object", id(obj))
+        )
         if identity not in seen:
             seen.add(identity)
             unique.append(obj)
@@ -992,3 +1114,17 @@ class PrusaSlicerBackend:
         setup: PrintSetup | None,
     ) -> LaunchResult:
         return launch_prusaslicer(installation, handoff_file, setup)
+
+    def prepare_project(
+        self,
+        installation: SlicerInstallation,
+        source_file: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        setup: PrintSetup,
+    ) -> Path:
+        return prepare_prusaslicer_project(
+            installation,
+            source_file,
+            destination,
+            setup,
+        )

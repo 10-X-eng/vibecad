@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import PrintCommandLoader
@@ -38,6 +39,23 @@ def test_panel_validated_print_does_not_reopen_or_revalidate_setup(
     events = []
 
     class Backend:
+        def prepare_project(
+            self,
+            actual_installation,
+            source,
+            destination,
+            actual_setup,
+        ):
+            events.append(
+                (
+                    "prepare",
+                    actual_installation,
+                    source,
+                    destination,
+                    actual_setup,
+                )
+            )
+
         def launch(self, actual_installation, actual_handoff, actual_setup):
             events.append(
                 ("launch", actual_installation, actual_handoff, actual_setup)
@@ -55,6 +73,7 @@ def test_panel_validated_print_does_not_reopen_or_revalidate_setup(
         "_handoff_destination",
         lambda _document, _objects: (handoff, False),
     )
+    monkeypatch.setattr(commands, "_main_window", lambda: "main-window")
     monkeypatch.setattr(
         commands.VibeCADPrint,
         "export_selection_3mf",
@@ -68,11 +87,65 @@ def test_panel_validated_print_does_not_reopen_or_revalidate_setup(
         ),
     )
     monkeypatch.setattr(commands, "_status", lambda message: events.append(("status", message)))
+    monkeypatch.setitem(
+        sys.modules,
+        "PrintSetupDialog",
+        SimpleNamespace(run_with_progress=lambda _parent, _label, operation: operation()),
+    )
 
     assert commands.open_selected_in_prusaslicer(
         installation=installation,
         setup=setup,
     )
     assert events[0][0] == "export"
-    assert events[1] == ("launch", installation, handoff, setup)
-    assert events[2][0] == "status"
+    assert events[1] == ("prepare", installation, handoff, handoff, setup)
+    assert events[2] == ("launch", installation, handoff, setup)
+    assert events[3][0] == "status"
+
+
+def test_active_selection_deduplicates_a_body_and_its_picked_subelement(
+    monkeypatch,
+) -> None:
+    commands = PrintCommandLoader.command_module()
+    document = SimpleNamespace(Name="FanDocument")
+
+    class Shape:
+        def isNull(self):
+            return False
+
+    frame = SimpleNamespace(
+        Name="Body",
+        Label="120 mm Fan Frame",
+        TypeId="PartDesign::Body",
+        Document=document,
+        Shape=Shape(),
+    )
+    rotor = SimpleNamespace(
+        Name="Body001",
+        Label="120 mm Fan Rotor",
+        TypeId="PartDesign::Body",
+        Document=document,
+        Shape=Shape(),
+    )
+    frame_result = SimpleNamespace(
+        Name="BodyResult",
+        Label="BodyResult",
+        TypeId="PartDesign::DesignBodyPublication",
+        Document=document,
+        Shape=Shape(),
+        getParentGeoFeatureGroup=lambda: frame,
+    )
+    selection = SimpleNamespace(
+        getSelectionEx=lambda: (
+            SimpleNamespace(Object=frame, SubElementNames=()),
+            SimpleNamespace(Object=rotor, SubElementNames=()),
+            SimpleNamespace(Object=frame_result, SubElementNames=("Edge1",)),
+        )
+    )
+    monkeypatch.setitem(sys.modules, "FreeCAD", SimpleNamespace(ActiveDocument=document))
+    monkeypatch.setitem(sys.modules, "FreeCADGui", SimpleNamespace(Selection=selection))
+
+    actual_document, objects = commands._active_selection()
+
+    assert actual_document is document
+    assert objects == (frame, rotor)

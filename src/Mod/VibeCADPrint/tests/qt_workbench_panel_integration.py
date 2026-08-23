@@ -36,6 +36,7 @@ def _run() -> None:
         )
         assert dock is not None
         assert dock.isVisible()
+        assert dock.toggleViewAction().data() == PrintPanel.DOCK_NAME
         assert isinstance(dock.widget(), PrintPanel.PrintPanelWidget)
         assert dock.widget().findChild(
             QtWidgets.QScrollArea,
