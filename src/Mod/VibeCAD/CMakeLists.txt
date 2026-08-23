@@ -5,6 +5,8 @@ set(VibeCAD_Scripts
     InitGui.py
     VibeCADAgentCli.py
     VibeCADAgentControl.py
+    VibeCADAnalyzeStudyGui.py
+    VibeCADAnalyzeStudySetup.py
     VibeCADAeroContext.py
     VibeCADAeroRibbon.py
     vibecad-agent.cmd
@@ -1177,6 +1179,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/mcp_gui_integration.py
     vibecad_tests/native_background_gui_integration.py
     vibecad_tests/native_analyze_model_gui_integration.py
+    vibecad_tests/analyze_study_setup_gui_integration.py
     vibecad_tests/native_analyze_geometry_gui_integration.py
     vibecad_tests/native_analyze_electromagnetic_gui_integration.py
     vibecad_tests/native_analyze_fluid_gui_integration.py

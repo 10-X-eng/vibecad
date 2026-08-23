@@ -38,8 +38,9 @@ packages and source builds.
 
 1. Open a saved document containing valid analysis geometry.
 2. Select the **Analyze** ribbon.
-3. Choose **New Analysis**. This creates an analysis container and, if configured
-   in FEM preferences, its default solver.
+3. Choose **Study Setup**, name the study, and select its physics and study type.
+   The same panel shows the exact geometry, material, condition, mesh, solver,
+   and result state as the study is completed.
 4. Add the material and physics equation required by the study.
 5. Select exact model faces or bodies and add loads and boundary conditions.
 6. Create a Gmsh or Netgen FEM mesh and inspect its quality.

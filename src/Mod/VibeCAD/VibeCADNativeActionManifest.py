@@ -31,6 +31,7 @@ KNOWN_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "Std_ViewIsometric",
         "VibeCAD_ToggleGrid",
         "VibeCAD_SectionView",
+        "VibeCAD_AnalyzeStudySetup",
         "FEM_Analysis",
         "FEM_MaterialSolid",
         "FEM_MaterialFluid",
@@ -822,6 +823,7 @@ DEFAULT_UNIQUE_ACTION_COUNT = len(
 _HUMAN_ONLY_COMMAND_IDS = frozenset(
     {
         "Assembly_ActivateAssembly",
+        "VibeCAD_AnalyzeStudySetup",
         "FEM_Examples",
         "Sketcher_CancelSketch",
     }

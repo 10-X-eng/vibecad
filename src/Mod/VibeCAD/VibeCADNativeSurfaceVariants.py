@@ -44,7 +44,7 @@ class NativeSurfaceVariant:
 
 _ANALYZE_GROUP_ANCHORS = (
     ("View", "Std_ViewFitAll"),
-    ("Model", "FEM_Analysis"),
+    ("Model", "VibeCAD_AnalyzeStudySetup"),
     ("Electromagnetics", "FEM_CompEmConstraints"),
     ("Fluids", "FEM_ConstraintInitialFlowVelocity"),
     ("Geometry", "FEM_ConstraintPlaneRotation"),

@@ -191,7 +191,10 @@ def _run() -> None:
             for plan in inventory.plans
             if plan.classification.human_only
         )
-        assert ribbon_human_only == ("FEM_Examples",)
+        assert ribbon_human_only == (
+            "VibeCAD_AnalyzeStudySetup",
+            "FEM_Examples",
+        )
 
         for plan in inventory.plans:
             if plan.classification.parent_only or plan.classification.human_only:
