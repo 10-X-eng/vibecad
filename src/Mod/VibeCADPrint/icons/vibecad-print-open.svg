@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="VibeCAD open in slicer">
+  <path d="M12 10h34v11H12z" fill="#343a40" stroke="#74c0fc" stroke-width="3"/>
+  <path d="M17 21v27h24V21M21 42h16l-3-14H24z" fill="#212529" stroke="#adb5bd" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M38 47h14M47 41l6 6-6 6" fill="none" stroke="#51cf66" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
