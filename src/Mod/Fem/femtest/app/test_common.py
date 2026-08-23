@@ -89,15 +89,27 @@ class TestFemCommon(unittest.TestCase):
         from femsolver import runtime
 
         resolved = {
+            "ccx": "/opt/calculix/bin/ccx",
             "ElmerSolver": "/opt/elmer/bin/ElmerSolver",
             "ElmerGrid": "/opt/elmer/bin/ElmerGrid",
+            "mystran": "/opt/mystran/bin/mystran",
+            "z88r": "/opt/z88/bin/z88r",
             "blockMesh": "/opt/openfoam/bin/blockMesh",
             "snappyHexMesh": "/opt/openfoam/bin/snappyHexMesh",
             "foamToVTK": "/opt/openfoam/bin/foamToVTK",
             "foamRun": "/opt/openfoam/bin/foamRun",
         }
         with (
-            mock.patch("femsolver.settings.get_binary", return_value=None),
+            mock.patch(
+                "femsolver.settings.get_binary",
+                side_effect=lambda name, _silent: {
+                    "Calculix": resolved["ccx"],
+                    "ElmerSolver": resolved["ElmerSolver"],
+                    "ElmerGrid": resolved["ElmerGrid"],
+                    "Mystran": resolved["mystran"],
+                    "Z88": resolved["z88r"],
+                }.get(name),
+            ),
             mock.patch.object(runtime, "openfoam_environment", return_value={}),
             mock.patch.object(runtime, "resolve_executable", side_effect=resolved.get),
         ):
@@ -105,7 +117,13 @@ class TestFemCommon(unittest.TestCase):
                 status["solver"]: status for status in runtime.solver_runtime_statuses()
             }
 
-        self.assertEqual(set(statuses), {"elmer", "openfoam"})
+        self.assertEqual(
+            set(statuses),
+            {"calculix", "elmer", "mystran", "z88", "openfoam"},
+        )
+        self.assertEqual(statuses["calculix"]["programs"], {"solver": resolved["ccx"]})
+        self.assertEqual(statuses["mystran"]["programs"], {"solver": resolved["mystran"]})
+        self.assertEqual(statuses["z88"]["programs"], {"solver": resolved["z88r"]})
         self.assertEqual(
             statuses["elmer"],
             {
@@ -139,6 +157,9 @@ class TestFemCommon(unittest.TestCase):
             statuses["elmer"]["missing"],
             ["ElmerGrid", "ElmerSolver"],
         )
+        self.assertEqual(statuses["calculix"]["missing"], ["ccx"])
+        self.assertEqual(statuses["mystran"]["missing"], ["mystran"])
+        self.assertEqual(statuses["z88"]["missing"], ["z88r"])
         self.assertEqual(
             statuses["openfoam"]["missing"],
             ["blockMesh", "snappyHexMesh", "foamToVTK", "foamRun|simpleFoam"],
@@ -200,6 +221,28 @@ class TestFemCommon(unittest.TestCase):
             "solver": configured["ElmerSolver"],
         })
         self.assertTrue(statuses["elmer"]["engine_ready"])
+
+    def test_solver_runtime_filter_does_not_probe_unselected_engines(self):
+        from femsolver import runtime
+
+        configured = {
+            "ElmerGrid": "/configured/elmer/ElmerGrid",
+            "ElmerSolver": "/configured/elmer/ElmerSolver",
+        }
+        with (
+            mock.patch(
+                "femsolver.settings.get_binary",
+                side_effect=lambda name, _silent: configured.get(name),
+            ),
+            mock.patch.object(
+                runtime,
+                "openfoam_environment",
+                side_effect=AssertionError("OpenFOAM must not be probed"),
+            ),
+        ):
+            statuses = runtime.solver_runtime_statuses({"elmer"})
+
+        self.assertEqual(tuple(item["solver"] for item in statuses), ("elmer",))
 
     def test_solver_executable_resolution_falls_back_to_the_application_bundle(self):
         from femsolver import runtime

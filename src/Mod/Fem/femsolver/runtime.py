@@ -131,50 +131,79 @@ def _elmer_programs():
     return programs, missing
 
 
-def solver_runtime_statuses():
+def _single_solver_status(solver, setting_name, program):
+    from femsolver import settings
+
+    resolved = settings.get_binary(setting_name, True) or resolve_executable(program)
+    return {
+        "solver": solver,
+        "transport": "native",
+        "engine_ready": resolved is not None,
+        "programs": {"solver": resolved} if resolved is not None else {},
+        "missing": [] if resolved is not None else [program],
+    }
+
+
+def solver_runtime_statuses(solvers=None):
     """Return exact external-program readiness for supported solver engines."""
 
-    elmer_programs, elmer_missing = _elmer_programs()
+    supported = ("calculix", "elmer", "mystran", "z88", "openfoam")
+    requested = set(supported if solvers is None else tuple(solvers))
+    unknown = requested - set(supported)
+    if unknown:
+        raise ValueError(f"Unsupported FEM solver engines: {sorted(unknown)}")
 
-    foam_environment = openfoam_environment()
-    foam_path = foam_environment.get("PATH")
-    openfoam_programs, openfoam_missing = _required_programs(
-        (
-            ("mesh", "blockMesh"),
-            ("surface_mesh", "snappyHexMesh"),
-            ("result_export", "foamToVTK"),
-        ),
-        search_path=foam_path,
-    )
-    for program in ("foamRun", "simpleFoam"):
-        resolved = (
-            resolve_executable(program, search_path=foam_path)
-            if foam_path
-            else resolve_executable(program)
+    statuses = []
+    if "calculix" in requested:
+        statuses.append(_single_solver_status("calculix", "Calculix", "ccx"))
+    if "elmer" in requested:
+        elmer_programs, elmer_missing = _elmer_programs()
+        statuses.append(
+            {
+                "solver": "elmer",
+                "transport": "native",
+                "engine_ready": not elmer_missing,
+                "programs": elmer_programs,
+                "missing": elmer_missing,
+            }
         )
-        if resolved:
-            openfoam_programs["solver"] = resolved
-            break
-    else:
-        openfoam_missing.append("foamRun|simpleFoam")
-
-    return (
-        {
-            "solver": "elmer",
-            "transport": "native",
-            "engine_ready": not elmer_missing,
-            "programs": elmer_programs,
-            "missing": elmer_missing,
-        },
-        {
-            "solver": "openfoam",
-            "transport": "native",
-            "engine_ready": not openfoam_missing,
-            "programs": openfoam_programs,
-            "missing": openfoam_missing,
-            "environment_file": foam_environment.get(
-                "VIBECAD_OPENFOAM_ENVIRONMENT_FILE",
-                "",
+    if "mystran" in requested:
+        statuses.append(_single_solver_status("mystran", "Mystran", "mystran"))
+    if "z88" in requested:
+        statuses.append(_single_solver_status("z88", "Z88", "z88r"))
+    if "openfoam" in requested:
+        foam_environment = openfoam_environment()
+        foam_path = foam_environment.get("PATH")
+        openfoam_programs, openfoam_missing = _required_programs(
+            (
+                ("mesh", "blockMesh"),
+                ("surface_mesh", "snappyHexMesh"),
+                ("result_export", "foamToVTK"),
             ),
-        },
-    )
+            search_path=foam_path,
+        )
+        for program in ("foamRun", "simpleFoam"):
+            resolved = (
+                resolve_executable(program, search_path=foam_path)
+                if foam_path
+                else resolve_executable(program)
+            )
+            if resolved:
+                openfoam_programs["solver"] = resolved
+                break
+        else:
+            openfoam_missing.append("foamRun|simpleFoam")
+        statuses.append(
+            {
+                "solver": "openfoam",
+                "transport": "native",
+                "engine_ready": not openfoam_missing,
+                "programs": openfoam_programs,
+                "missing": openfoam_missing,
+                "environment_file": foam_environment.get(
+                    "VIBECAD_OPENFOAM_ENVIRONMENT_FILE",
+                    "",
+                ),
+            }
+        )
+    return tuple(statuses)

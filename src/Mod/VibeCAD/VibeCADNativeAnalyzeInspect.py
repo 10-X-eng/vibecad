@@ -22,6 +22,7 @@ from VibeCADNativeAnalyzeSolverState import prepare_solver_target, solver_state
 from VibeCADNativeAnalyzeEquationState import prepare_equation_target, equation_state
 from VibeCADNativeAnalyzeResultState import prepare_result_target, result_state
 from VibeCADNativeAnalyzeResults import result_purge_state
+from VibeCADNativeAnalyzeStudyState import study_state
 from VibeCADNativeAnalyzeMeshOutputState import (
     inspect_fem_mesh_elements as _inspect_fem_mesh_elements,
 )
@@ -51,6 +52,15 @@ def inspect_analysis(
         "analysis": analysis_state(prepared.analysis),
         "result_graph": result_purge_state(prepared.analysis),
     }
+
+
+def inspect_study(
+    document: Any,
+    document_uid: str,
+    target: Any,
+) -> dict[str, Any]:
+    prepared = prepare_analysis_target(document, document_uid, target)
+    return {"study": study_state(prepared.analysis)}
 
 
 def inspect_material(

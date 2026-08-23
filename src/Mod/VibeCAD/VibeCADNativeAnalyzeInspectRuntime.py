@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeInspect import (
     inspect_analysis,
+    inspect_study,
     inspect_electromagnetic_constraint,
     inspect_fluid_constraint,
     inspect_geometrical_feature,
@@ -31,6 +32,7 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 
 
 _VARIANTS = {
+    "study": frozenset({"target"}),
     "analysis": frozenset({"target"}),
     "material": frozenset({"target"}),
     "material_catalog": frozenset({"query", "category", "limit"}),
@@ -62,7 +64,13 @@ class NativeAnalyzeInspectRuntime:
         operation, values = strict_variant_arguments(arguments, _VARIANTS)
         context = self._context
         context.guard()
-        if operation == "analysis":
+        if operation == "study":
+            result = inspect_study(
+                context.document,
+                context.document_uid,
+                values["target"],
+            )
+        elif operation == "analysis":
             result = inspect_analysis(
                 context.document,
                 context.document_uid,

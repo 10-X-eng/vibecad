@@ -9,6 +9,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
 )
+from VibeCADNativeAnalyzeStudy import STUDY_INTENT_SCHEMA
 
 
 ANALYZE_MODEL_CAPABILITY_NAME = "analyze.model"
@@ -129,7 +130,14 @@ _YIELD_POINTS = {
 }
 
 
-def _variant(operation: str, description: str, action_id: str, parameters: dict) -> NativeCapabilityVariant:
+def _variant(
+    operation: str,
+    description: str,
+    action_id: str,
+    parameters: dict,
+    *,
+    provider_supplemental: bool = False,
+) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
         description=description,
@@ -139,6 +147,7 @@ def _variant(operation: str, description: str, action_id: str, parameters: dict)
         transaction_behavior="document",
         background_required=False,
         parameters=parameters,
+        provider_supplemental=provider_supplemental,
     )
 
 
@@ -198,10 +207,26 @@ def analyze_model_capability_definition() -> NativeCapabilityDefinition:
                             "type": "string",
                             "enum": ["user_preference", "none"],
                         },
+                        "study": STUDY_INTENT_SCHEMA,
                     },
                     "required": ["label", "default_solver_policy"],
                     "additionalProperties": False,
                 },
+            ),
+            _variant(
+                "update_study",
+                "Set the physics and regime for one analysis.",
+                "VibeCAD_AnalyzeConfigureStudy",
+                {
+                    "type": "object",
+                    "properties": {
+                        "target": _ANALYSIS_TARGET,
+                        "study": STUDY_INTENT_SCHEMA,
+                    },
+                    "required": ["target", "study"],
+                    "additionalProperties": False,
+                },
+                provider_supplemental=True,
             ),
             _variant(
                 "create_solid_material",

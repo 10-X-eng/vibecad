@@ -22,6 +22,7 @@ from VibeCADNativeAnalyzeSolverState import solver_state
 from VibeCADNativeAnalyzeEquationState import equation_state
 from VibeCADNativeAnalyzeResultState import result_reference_state
 from VibeCADNativeAnalyzeResults import result_purge_state
+from VibeCADNativeAnalyzeStudyState import study_state
 from VibeCADNativeAnalyzeClipping import (
     clipping_face_source_state,
     clipping_state,
@@ -169,6 +170,7 @@ def _analysis_workflows(
         if not generated_meshes:
             blockers.append("missing_generated_mesh")
         result_graph = dict(analysis_summary["result_graph"])
+        study = study_state(analysis)
         workflows.append(
             {
                 "analysis": {
@@ -190,6 +192,10 @@ def _analysis_workflows(
                     "runnable_solver_count": runnable_solvers,
                     "blockers": blockers,
                 },
+                "study": study["intent"],
+                "study_inventory": study["inventory"],
+                "solver_runtimes": study["solver_runtimes"],
+                "engineering_readiness": study["readiness"],
                 "meshes": member_meshes,
                 "mesh_count": len(all_member_meshes),
                 "meshes_truncated": len(all_member_meshes) > len(member_meshes),

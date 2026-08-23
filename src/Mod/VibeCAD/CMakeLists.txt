@@ -196,6 +196,9 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeModelRuntime.py
     VibeCADNativeAnalyzeModelSchema.py
     VibeCADNativeAnalyzeSnapshot.py
+    VibeCADNativeAnalyzeStudy.py
+    VibeCADNativeAnalyzeStudyEdit.py
+    VibeCADNativeAnalyzeStudyState.py
     VibeCADNativeAeroSnapshot.py
     VibeCADNativeAeroSchema.py
     VibeCADNativeAeroRuntime.py

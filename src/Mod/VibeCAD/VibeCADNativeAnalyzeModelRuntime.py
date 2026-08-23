@@ -25,6 +25,11 @@ from VibeCADNativeAnalyzeMaterialEdit import (
     update_material,
     verify_material_update,
 )
+from VibeCADNativeAnalyzeStudyEdit import (
+    prepare_study_update,
+    update_study_intent,
+    verify_study_update,
+)
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
@@ -50,7 +55,11 @@ _MATERIAL_UPDATE_FIELDS = frozenset(
 _FIELDS = {
     "create_analysis": (
         frozenset({"label", "default_solver_policy"}),
-        frozenset({"label", "default_solver_policy"}),
+        frozenset({"label", "default_solver_policy", "study"}),
+    ),
+    "update_study": (
+        frozenset({"target", "study"}),
+        frozenset({"target", "study"}),
     ),
     "create_solid_material": (
         frozenset({"analysis", "label", "references"}),
@@ -142,6 +151,19 @@ class NativeAnalyzeModelRuntime:
                 transaction_name="Create FEM Analysis",
                 mutate=lambda document: create_analysis(document, prepared),
                 verify=verify_analysis_create,
+            )
+        if operation == "update_study":
+            prepared = prepare_study_update(
+                context.document,
+                context.document_uid,
+                **values,
+            )
+            return run_immediate_mutation(
+                context,
+                ticket=ticket,
+                transaction_name="Edit FEM Study",
+                mutate=lambda document: update_study_intent(document, prepared),
+                verify=verify_study_update,
             )
         if operation in _KINDS:
             prepared = prepare_material_create(

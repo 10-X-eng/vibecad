@@ -29,6 +29,7 @@ from VibeCADNativeAnalyzeResultState import RESULT_TARGET
 ANALYZE_INSPECT_CAPABILITY_NAME = "analyze.inspect"
 
 _EXACT_TARGET_BY_OPERATION = {
+    "study": "ExactFemStudyState",
     "analysis": "ExactFemAnalysisState",
     "material": "ExactFemMaterialState",
     "material_catalog": "BoundedMaterialCatalogQuery",
@@ -50,7 +51,12 @@ _EXACT_TARGET_BY_OPERATION = {
 
 
 def _variant(
-    operation: str, description: str, action_id: str, parameters: dict
+    operation: str,
+    description: str,
+    action_id: str,
+    parameters: dict,
+    *,
+    provider_supplemental: bool = False,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
@@ -64,6 +70,7 @@ def _variant(
         transaction_behavior="none",
         background_required=False,
         parameters=parameters,
+        provider_supplemental=provider_supplemental,
     )
 
 
@@ -77,6 +84,18 @@ def analyze_inspect_capability_definition() -> NativeCapabilityDefinition:
         ),
         primary_classification="read",
         variants=(
+            _variant(
+                "study",
+                "Read intent, completeness, runtimes, and next requirements for one study.",
+                "VibeCAD_AnalyzeReadStudy",
+                {
+                    "type": "object",
+                    "properties": {"target": _ANALYSIS_TARGET},
+                    "required": ["target"],
+                    "additionalProperties": False,
+                },
+                provider_supplemental=True,
+            ),
             _variant(
                 "analysis",
                 "Read exact membership and readiness counts for one current FEM analysis.",

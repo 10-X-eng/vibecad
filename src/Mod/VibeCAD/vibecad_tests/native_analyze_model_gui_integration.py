@@ -19,6 +19,7 @@ from VibeCADCore import get_service
 from VibeCADNativeAnalyzeInspectSchema import ANALYZE_INSPECT_CAPABILITY_NAME
 from VibeCADNativeAnalyzeModelSchema import ANALYZE_MODEL_CAPABILITY_NAME
 from VibeCADNativeAnalyzeState import analysis_state, material_kind, material_state
+from VibeCADNativeAnalyzeSnapshot import build_analyze_snapshot
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeContextManifest import provider_context_actions_for_surface
@@ -35,13 +36,14 @@ from VibeCADRibbonSurface import read_active_ribbon_surface
 
 MODEL_OPERATIONS = (
     "create_analysis",
+    "update_study",
     "create_solid_material",
     "create_fluid_material",
     "create_nonlinear_material",
     "create_reinforced_material",
     "update_material",
 )
-INSPECT_OPERATIONS = ("analysis", "material", "material_catalog")
+INSPECT_OPERATIONS = ("study", "analysis", "material", "material_catalog")
 
 
 def _process_events(rounds: int = 16) -> None:
@@ -256,6 +258,7 @@ def _run() -> None:
                     "operation": "create_analysis",
                     "label": "Structural Analysis",
                     "default_solver_policy": "user_preference",
+                    "study": {"physics": ["mechanical"], "regime": "modal"},
                 },
             )
         finally:
@@ -267,6 +270,16 @@ def _run() -> None:
         assert analysis is not None and solver is not None
         assert solver in tuple(analysis.Group)
         current_analysis = analysis_result["created_analysis"]
+        study_update = call(
+            ANALYZE_MODEL_CAPABILITY_NAME,
+            {
+                "operation": "update_study",
+                "target": _analysis_target(current_analysis),
+                "study": {"physics": ["mechanical"], "regime": "steady"},
+            },
+        )
+        current_analysis = study_update["analysis"]
+        assert current_analysis["study"]["regime"] == "steady"
 
         reference = _reference(source)
         solid_result = call(
@@ -407,6 +420,13 @@ def _run() -> None:
                 "target": _analysis_target(analysis_state(analysis)),
             },
         )
+        study_read = call(
+            ANALYZE_INSPECT_CAPABILITY_NAME,
+            {
+                "operation": "study",
+                "target": _analysis_target(analysis_state(analysis)),
+            },
+        )
         material_read = call(
             ANALYZE_INSPECT_CAPABILITY_NAME,
             {
@@ -415,6 +435,12 @@ def _run() -> None:
             },
         )
         assert analysis_read["analysis"]["member_count"] == 4
+        assert study_read["study"]["intent"]["physics"] == ["mechanical"]
+        assert study_read["study"]["readiness"]["ready_to_solve"] is False
+        assert "missing_support" in study_read["study"]["readiness"]["blockers"]
+        workflow = build_analyze_snapshot(document)["analysis_workflows"][0]
+        assert workflow["study"]["physics"] == ["mechanical"]
+        assert workflow["engineering_readiness"] == study_read["study"]["readiness"]
         assert material_read["material"]["material_kind"] == "reinforced"
         assert state.current_revision(str(document.Uid)) == read_revision
 
@@ -434,7 +460,7 @@ def _run() -> None:
         assert solver.VibeCADTimelineRole == "resource"
         assert solver.VibeCADTimelineOwner is analysis
         assert tuple(analysis.Group) == (solver, solid, fluid, reinforced)
-        assert int(document.UndoCount) == 7
+        assert int(document.UndoCount) == 8
 
         document.undo()
         assert str(fluid.Label) == "Ambient Air"
@@ -481,10 +507,12 @@ def _run() -> None:
         assert material_kind(reopened["fluid"]) == "fluid"
         assert material_kind(reopened["reinforced"]) == "reinforced"
         assert material_kind(reopened["nonlinear"]) == "nonlinear"
+        assert list(reopened["analysis"].StudyPhysics) == ["mechanical"]
+        assert str(reopened["analysis"].StudyRegime) == "steady"
 
         print(
             "VIBECAD_NATIVE_ANALYZE_MODEL_GUI_OK "
-            "actions=6 reads=3 exact_targets=true catalog=true history=true "
+            "actions=7 reads=4 exact_targets=true study=true catalog=true history=true "
             "undo_redo=true reopen=true read_revision_stable=true",
             flush=True,
         )
