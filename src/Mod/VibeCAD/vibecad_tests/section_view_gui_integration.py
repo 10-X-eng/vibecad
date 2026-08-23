@@ -7,6 +7,10 @@ import unittest
 import FreeCAD as App
 import FreeCADGui as Gui
 from PySide import QtCore, QtGui
+try:
+    from PySide import QtWidgets
+except ImportError:  # pragma: no cover - PySide1 compatibility
+    QtWidgets = QtGui
 from pivy import coin
 
 import VibeCADSectionView
@@ -34,6 +38,12 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
             view = Gui.ActiveDocument.ActiveView
         except Exception:
             view = None
+        try:
+            import VibeCADSectionViewGui
+
+            VibeCADSectionViewGui.close_section_view_dialog()
+        except Exception:
+            pass
         if view is not None and VibeCADSectionView.is_section_view_active(view):
             VibeCADSectionView.set_section_view(False, view=view, document=self.document)
         self._process_events()
@@ -68,10 +78,24 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         return actions[0]
 
     @staticmethod
-    def _scene_has_clip_plane(view):
+    def _scene_clip_nodes(view):
         scene = view.getSceneGraph()
         children = tuple(scene.getChildren()) if scene is not None else ()
-        return any(isinstance(node, coin.SoClipPlane) for node in children)
+        return tuple(
+            node
+            for node in children
+            if type(node).__name__ in {"SoClipPlane", "SoClipPlaneManip"}
+        )
+
+    @staticmethod
+    def _section_dialog():
+        application = QtGui.QApplication.instance()
+        if application is None:
+            return None
+        for widget in application.topLevelWidgets():
+            if widget.objectName() == "VibeCADSectionViewDialog":
+                return widget
+        return None
 
     def test_native_command_toggles_clip_plane_action_and_scene(self):
         command_name = "VibeCAD_SectionView"
@@ -90,7 +114,26 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         self.assertTrue(Gui.isCommandActive(command_name))
         Gui.Command.get(command_name).getAction()[0]
         self.assertTrue(view.hasClippingPlane())
-        self.assertTrue(self._scene_has_clip_plane(view) or view.hasClippingPlane())
+        clip_nodes = self._scene_clip_nodes(view)
+        self.assertTrue(clip_nodes or view.hasClippingPlane())
+        self.assertFalse(
+            any(type(node).__name__ == "SoClipPlaneManip" for node in clip_nodes),
+            "Section View must not use the Coin clip manipulator.",
+        )
+        dialog = self._section_dialog()
+        self.assertIsNotNone(dialog)
+        self.assertTrue(dialog.isVisible())
+        self.assertIsNotNone(dialog.findChild(QtWidgets.QRadioButton, "planeFront"))
+        self.assertIsNotNone(dialog.findChild(QtWidgets.QRadioButton, "planeTop"))
+        self.assertIsNotNone(dialog.findChild(QtWidgets.QRadioButton, "planeRight"))
+        self.assertIsNotNone(dialog.findChild(QtWidgets.QDoubleSpinBox, "sectionOffset"))
+        self.assertIsNotNone(dialog.findChild(QtWidgets.QPushButton, "sectionFlip"))
+
+        top = dialog.findChild(QtWidgets.QRadioButton, "planeTop")
+        top.setChecked(True)
+        self._process_events()
+        self.assertEqual(VibeCADSectionView.current_section_view_settings().plane, "top")
+        self.assertTrue(view.hasClippingPlane())
 
         Gui.runCommand(command_name, 0)
         self.assertTrue(
@@ -101,3 +144,7 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         )
         self.assertTrue(Gui.isCommandActive(command_name))
         self.assertFalse(view.hasClippingPlane())
+        self.assertTrue(
+            self._wait_until(lambda: self._section_dialog() is None),
+            "Section View did not close its editor dialog.",
+        )
