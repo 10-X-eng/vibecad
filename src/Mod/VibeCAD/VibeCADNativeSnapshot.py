@@ -200,6 +200,32 @@ def build_active_snapshot(
     selection: Mapping[str, Any] | None = None,
     background_job: Any | None = None,
 ) -> dict[str, Any]:
+    base = capture_active_snapshot_base(
+        document,
+        surface_id,
+        native_state,
+        selection=selection,
+    )
+    selected = dict(base.pop("_selection"))
+    domain = dict(
+        _domain_builder(
+            surface_id,
+            background_job,
+            selected,
+        )(document)
+    )
+    return complete_active_snapshot(base, domain)
+
+
+def capture_active_snapshot_base(
+    document: Any,
+    surface_id: str,
+    native_state: Mapping[str, Any],
+    *,
+    selection: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Capture detached active-surface identity before domain preparation."""
+
     if surface_id not in SURFACE_IDS or surface_id == "unavailable":
         raise NativeSnapshotError(f"Invalid active Native surface {surface_id!r}.")
     if not isinstance(native_state, Mapping):
@@ -210,13 +236,6 @@ def build_active_snapshot(
     selected = dict(selection) if selection is not None else read_current_selection(document)
     if str(selected.get("document_uid") or "") != uid:
         raise NativeSnapshotError("Native selection belongs to another document.")
-    domain = dict(
-        _domain_builder(
-            surface_id,
-            background_job,
-            selected,
-        )(document)
-    )
     result: dict[str, Any] = {
         "surface_id": surface_id,
         "document": {
@@ -224,18 +243,35 @@ def build_active_snapshot(
             "document_name": str(getattr(document, "Name", "") or ""),
         },
         "structural_revision": int(native_state.get("structural_revision") or 0),
-        "domain": domain,
         "working_set": live_working_set(document, selected, native_state),
+        "_selection": selected,
     }
-    if surface_id == "sketch.edit":
-        revision = domain.pop("revision", None)
+    if selected.get("items"):
+        result["selection"] = selected
+    return result
+
+
+def complete_active_snapshot(
+    base_snapshot: Mapping[str, Any],
+    domain: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bound and freeze a detached domain under its captured active identity."""
+
+    if not isinstance(base_snapshot, Mapping) or not isinstance(domain, Mapping):
+        raise TypeError("Active snapshot completion requires mappings.")
+    result = {
+        str(name): value
+        for name, value in dict(base_snapshot).items()
+        if name != "_selection"
+    }
+    result["domain"] = dict(domain)
+    if result.get("surface_id") == "sketch.edit":
+        revision = result["domain"].pop("revision", None)
         if not isinstance(revision, str) or not revision.startswith("sketch-v1:"):
             raise NativeSnapshotError(
                 "The active Sketch did not provide an exact provider revision."
             )
         result["revision"] = revision
-    if selected.get("items"):
-        result["selection"] = selected
     encoded = json.dumps(
         result,
         ensure_ascii=True,
