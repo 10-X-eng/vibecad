@@ -671,7 +671,7 @@ def test_unsaved_run_prompt_reaches_provider_and_includes_active_thread_once(
     monkeypatch.setattr(
         session,
         "_build_context_for_provider",
-        lambda active_service, trigger, dispatch: dict(context),
+        lambda active_service, trigger, dispatch, **_kwargs: dict(context),
     )
     monkeypatch.setattr(
         session,

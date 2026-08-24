@@ -164,6 +164,75 @@ class TestStageAwareFailureRendering:
         assert covered == VibeCADTools.FAILURE_STAGES
 
 
+class TestAnalyzeContextStatusRendering:
+    @staticmethod
+    def _gui():
+        import VibeCADGui
+
+        return VibeCADGui
+
+    def test_analyze_capture_progress_reports_phase_count_and_percent(self) -> None:
+        gui = self._gui()
+        event = {
+            "event": "analyze_context_progress",
+            "percent": 45,
+            "message": "Analyzing objects 24 of 80",
+        }
+
+        assert gui._format_progress_event(event) == "Analyzing objects 24 of 80"
+        assert gui._progress_event_should_update_status(event) is True
+
+    def test_analyze_cache_hit_is_visible_in_the_status_line(self) -> None:
+        gui = self._gui()
+        event = {
+            "event": "analyze_context_cache_hit",
+            "structural_revision": 12,
+        }
+
+        assert gui._format_progress_event(event) == (
+            "Analyze context is ready for document revision 12."
+        )
+        assert gui._progress_event_should_update_status(event) is True
+
+    def test_analyze_progress_reaches_the_application_status_bar(
+        self,
+        monkeypatch,
+    ) -> None:
+        gui = self._gui()
+        shown: list[tuple[str, int]] = []
+        status_bar = SimpleNamespace(
+            showMessage=lambda text, timeout=0: shown.append((text, timeout))
+        )
+        main_window = SimpleNamespace(statusBar=lambda: status_bar)
+        monkeypatch.setattr(
+            gui.Gui,
+            "getMainWindow",
+            lambda: main_window,
+            raising=False,
+        )
+
+        gui._show_analyze_context_application_status(
+            {
+                "event": "analyze_context_progress",
+                "percent": 45,
+                "message": "Analyzing objects 24 of 80",
+            },
+            "Analyzing objects 24 of 80",
+        )
+        gui._show_analyze_context_application_status(
+            {
+                "event": "analyze_context_ready",
+                "structural_revision": 12,
+            },
+            "Analyze context is ready for document revision 12.",
+        )
+
+        assert shown == [
+            ("Analyzing objects 24 of 80", 0),
+            ("Analyze context is ready for document revision 12.", 5000),
+        ]
+
+
 def test_private_vibescript_carriers_are_not_provider_document_objects() -> None:
     from VibeCADCore import VibeCADService
 

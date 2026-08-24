@@ -11,7 +11,7 @@ import re
 import shutil
 import threading
 import time
-from typing import Any
+from typing import Any, Mapping, Sequence
 import uuid
 
 from VibeCADAuth import (
@@ -34,6 +34,7 @@ from VibeCADIntentMemory import (
 )
 from VibeCADModelingSurface import resolve_modeling_surface
 from VibeCADNativeBackground import NativeBackgroundManager
+from VibeCADNativeAnalyzeContext import AnalyzeContextCoordinator
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADNativeStatePersistence import (
@@ -224,6 +225,7 @@ class VibeCADService:
         self._native_document_states = NativeDocumentStateStore()
         self._native_assistant_undo = NativeAssistantUndoLedger()
         self._native_background_jobs = NativeBackgroundManager()
+        self._native_analyze_contexts = AnalyzeContextCoordinator()
         self._native_state_restores: set[tuple[str, str]] = set()
         self._native_state_restore_errors: dict[str, str] = {}
         self._new_document_authoring_pending: set[str] = set()
@@ -697,6 +699,8 @@ class VibeCADService:
         revision = (
             self._native_document_states.note_structural_change(uid) if uid else None
         )
+        if uid:
+            self._native_analyze_contexts.invalidate_document(uid)
         self._sync_native_authority_metadata_if_active(uid)
         return revision
 
@@ -705,6 +709,8 @@ class VibeCADService:
         revision = (
             self._native_document_states.note_structural_change(uid) if uid else None
         )
+        if uid:
+            self._native_analyze_contexts.invalidate_document(uid)
         self._sync_native_authority_metadata_if_active(uid)
         return revision
 
@@ -735,6 +741,7 @@ class VibeCADService:
             property_name,
         )
         if revision != previous_revision:
+            self._native_analyze_contexts.invalidate_document(uid)
             self._sync_native_authority_metadata_if_active(uid)
         return revision
 
@@ -784,9 +791,109 @@ class VibeCADService:
             background_job=background_job,
         )
 
+    def begin_native_analyze_context_request(self) -> dict[str, Any] | None:
+        """Capture detached identity for one bounded Analyze context read."""
+
+        document = self._active_document()
+        if document is None:
+            return None
+        from VibeCADModelingSurface import provider_engine_for_ribbon
+        from VibeCADNativeAnalyzeSnapshot import begin_analyze_snapshot_capture
+        from VibeCADNativeSnapshot import capture_active_snapshot_base
+        from VibeCADRibbonSurface import read_active_ribbon_surface
+
+        surface = read_active_ribbon_surface()
+        if surface.surface_id != "analyze" or provider_engine_for_ribbon(
+            self.modeling_engine(),
+            surface.surface_id,
+        ) != "native":
+            return None
+        native_state = self.native_document_state()
+        background_job = self._native_background_jobs.latest_document_snapshot(
+            str(document.Uid),
+            capability_prefix="analyze.",
+        )
+        base = capture_active_snapshot_base(
+            document,
+            "analyze",
+            native_state,
+        )
+        details = begin_analyze_snapshot_capture(
+            document,
+            background_job=background_job,
+            defer_brep_validation=True,
+        )
+        return {
+            **details,
+            "structural_revision": int(
+                native_state.get("structural_revision", 0) or 0
+            ),
+            "base_snapshot": base,
+            "cacheable": bool(
+                background_job is None or bool(getattr(background_job, "terminal", False))
+            ),
+        }
+
+    def _validate_native_analyze_context_request(
+        self,
+        request: Mapping[str, Any],
+    ) -> Any:
+        from VibeCADModelingSurface import provider_engine_for_ribbon
+        from VibeCADNativeAnalyzeContext import AnalyzeContextStale
+        from VibeCADRibbonSurface import read_active_ribbon_surface
+
+        document = self._active_document()
+        uid = str(request.get("document_uid") or "")
+        revision = int(request.get("structural_revision", -1) or 0)
+        current_uid = str(getattr(document, "Uid", "") or "")
+        current_revision = int(
+            self.native_document_state().get("structural_revision", 0) or 0
+        )
+        surface = read_active_ribbon_surface()
+        if (
+            document is None
+            or current_uid != uid
+            or current_revision != revision
+            or surface.surface_id != "analyze"
+            or provider_engine_for_ribbon(
+                self.modeling_engine(),
+                surface.surface_id,
+            )
+            != "native"
+        ):
+            raise AnalyzeContextStale(
+                "The active Analyze document changed during context capture."
+            )
+        return document
+
+    def capture_native_analyze_context_batch(
+        self,
+        request: Mapping[str, Any],
+        object_names: Sequence[str],
+    ) -> dict[str, Any]:
+        from VibeCADNativeAnalyzeSnapshot import capture_analyze_snapshot_batch
+
+        document = self._validate_native_analyze_context_request(request)
+        return capture_analyze_snapshot_batch(document, request, object_names)
+
+    def capture_native_analyze_context_clipping(
+        self,
+        request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        from VibeCADNativeAnalyzeSnapshot import capture_analyze_clipping
+
+        document = self._validate_native_analyze_context_request(request)
+        return capture_analyze_clipping(document, request)
+
+    def native_analyze_context_coordinator(self) -> AnalyzeContextCoordinator:
+        """Return the read-only Analyze context lane; never a provider tool."""
+
+        return self._native_analyze_contexts
+
     def close_native_document_state(self, document_uid: str) -> None:
         uid = str(document_uid or "").strip()
         self._native_background_jobs.cancel_document(uid)
+        self._native_analyze_contexts.close_document(uid)
         if uid:
             self._native_assistant_undo.close_document(uid)
         self._native_document_states.close_document(uid)

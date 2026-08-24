@@ -37,8 +37,25 @@ def _is_internal_resource(obj: Any) -> bool:
     return role in {"internal", "resource"} and not _is_body(obj)
 
 
-def active_analyze_geometry_sources(document: Any) -> tuple[Any, ...]:
-    """Return each usable engineering source once at its public Body boundary."""
+def active_analyze_geometry_sources(
+    document: Any,
+    *,
+    filter_analysis_sources: bool = True,
+    validate_brep: bool = True,
+) -> tuple[Any, ...]:
+    """Return each usable engineering source once at its public Body boundary.
+
+    BREP validity remains the default usable-source contract. Responsive
+    provider discovery may defer that unbounded check; exact operations still
+    validate their chosen geometry before execution. The optional filtering
+    switch only lets bounded capture defer cross-batch domain/source
+    de-duplication until every batch has been read.
+    """
+
+    if type(filter_analysis_sources) is not bool:
+        raise TypeError("filter_analysis_sources must be a boolean")
+    if type(validate_brep) is not bool:
+        raise TypeError("validate_brep must be a boolean")
 
     try:
         import PartGui
@@ -53,9 +70,12 @@ def active_analyze_geometry_sources(document: Any) -> tuple[Any, ...]:
         try:
             if (
                 shape.isNull()
-                or not shape.isValid()
+                or (validate_brep and not shape.isValid())
                 or not PartGui.isModelingObjectActive(obj)
-                or not any((len(shape.Solids), len(shape.Faces), len(shape.Edges)))
+                or (
+                    validate_brep
+                    and not any((len(shape.Solids), len(shape.Faces), len(shape.Edges)))
+                )
             ):
                 continue
             identity = (str(document.Uid), int(obj.ID))
@@ -65,6 +85,8 @@ def active_analyze_geometry_sources(document: Any) -> tuple[Any, ...]:
             continue
         seen.add(identity)
         candidates.append(obj)
+    if not filter_analysis_sources:
+        return tuple(candidates)
     domain_sources = {
         source
         for domain in candidates

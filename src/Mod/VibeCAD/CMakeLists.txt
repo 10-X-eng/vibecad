@@ -69,6 +69,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeGeometryEdit.py
     VibeCADNativeAnalyzeGeometryRead.py
     VibeCADNativeAnalyzeGeometrySources.py
+    VibeCADNativeAnalyzeContext.py
     VibeCADNativeAnalyzeGeometryRuntime.py
     VibeCADNativeAnalyzeGeometrySchema.py
     VibeCADNativeAnalyzeFaceBindings.py
@@ -1213,6 +1214,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/link_override_visibility_gui_integration.py
         vibecad_tests/mcp_gui_integration.py
     vibecad_tests/native_background_gui_integration.py
+    vibecad_tests/native_analyze_context_responsiveness_gui_integration.py
     vibecad_tests/native_analyze_model_gui_integration.py
     vibecad_tests/analyze_study_setup_gui_integration.py
     vibecad_tests/native_analyze_geometry_gui_integration.py

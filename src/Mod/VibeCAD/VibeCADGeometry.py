@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,10 +14,269 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 
 DEFAULT_DEADLINE_SECONDS = 30.0
+BREP_VALIDATION_CACHE_SCHEMA = "vibecad-brep-validation-cache-v1"
+GEOMETRY_WORKER_CPU_PERCENT = 75
+
+
+def parallel_geometry_worker_count(task_count: int) -> int:
+    """Use up to 75% of logical CPUs for isolated geometry processes."""
+
+    if isinstance(task_count, bool) or type(task_count) is not int or task_count < 0:
+        raise ValueError("task_count must be a non-negative integer")
+    if task_count == 0:
+        return 0
+    logical_cpu_count = max(1, int(os.cpu_count() or 1))
+    cpu_budget = max(
+        1,
+        logical_cpu_count * GEOMETRY_WORKER_CPU_PERCENT // 100,
+    )
+    return min(task_count, cpu_budget)
+
+
+def _validate_brep_artifact(
+    artifact: Mapping[str, Any],
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+) -> dict[str, Any]:
+    """Validate one already-detached BREP in an isolated process."""
+
+    shape_path = Path(str(artifact.get("shape_path") or ""))
+    identity = artifact.get("identity")
+    if not shape_path.is_file() or shape_path.stat().st_size <= 0:
+        return {
+            "ok": False,
+            "valid": None,
+            "validation_status": "unknown",
+            "failure_code": "BREP_ARTIFACT_UNAVAILABLE",
+            "failure_stage": "brep_capture",
+            "error": f"The detached BREP artifact is unavailable: {shape_path}",
+            "identity": identity,
+        }
+    deadline = max(0.1, float(deadline_seconds))
+    with tempfile.TemporaryDirectory(prefix="vibecad-validation-job-") as temporary:
+        directory = Path(temporary)
+        request_path = directory / "request.json"
+        result_path = directory / "result.json"
+        request_path.write_text(
+            json.dumps(
+                {
+                    "schema": "vibecad-geometry-job-v1",
+                    "operation": "validate_brep",
+                    "shape": {"format": "brep", "path": str(shape_path)},
+                    "include_bop": False,
+                    "result_path": str(result_path),
+                    "deadline_ms": round(deadline * 1000.0),
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        result = execute_job(
+            request_path,
+            result_path,
+            cancellation_check=cancellation_check,
+            deadline_seconds=deadline,
+        )
+    normalized = dict(result)
+    if normalized.get("ok") is True and isinstance(normalized.get("valid"), bool):
+        normalized["validation_status"] = (
+            "valid" if normalized["valid"] else "invalid"
+        )
+    else:
+        normalized["valid"] = None
+        normalized["validation_status"] = "unknown"
+    normalized["identity"] = identity
+    return normalized
+
+
+def _brep_content_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while True:
+            block = stream.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _validation_cache_root(value: str | Path | None) -> Path:
+    if value is not None:
+        return Path(value)
+    import FreeCAD as App
+
+    return (
+        Path(str(App.getUserAppDataDir()))
+        / "VibeCAD"
+        / "cache"
+        / BREP_VALIDATION_CACHE_SCHEMA
+    )
+
+
+def _validation_cache_path(root: Path, brep_sha256: str) -> Path:
+    return root / brep_sha256[:2] / f"{brep_sha256}.json"
+
+
+def _read_cached_validation(path: Path, brep_sha256: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != BREP_VALIDATION_CACHE_SCHEMA
+        or payload.get("brep_sha256") != brep_sha256
+        or not isinstance(payload.get("result"), dict)
+    ):
+        return None
+    result = dict(payload["result"])
+    if result.get("ok") is not True or not isinstance(result.get("valid"), bool):
+        return None
+    result["cache_hit"] = True
+    return result
+
+
+def _write_cached_validation(
+    path: Path,
+    brep_sha256: str,
+    result: Mapping[str, Any],
+) -> None:
+    if result.get("ok") is not True or not isinstance(result.get("valid"), bool):
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": BREP_VALIDATION_CACHE_SCHEMA,
+        "brep_sha256": brep_sha256,
+        "result": {
+            str(name): value
+            for name, value in result.items()
+            if name not in {"identity", "cache_hit", "coalesced"}
+        },
+    }
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=True, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+    except BaseException:
+        try:
+            Path(temporary_name).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def validate_brep_artifacts_parallel(
+    artifacts: Sequence[Mapping[str, Any]],
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+    deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
+    cache_root: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Validate detached BREPs concurrently with CPU-sized process fan-out.
+
+    The executor threads only supervise isolated worker processes. They never
+    touch live FreeCAD document objects or TopoShape wrappers.
+    """
+
+    captured = list(artifacts)
+    if any(not isinstance(artifact, Mapping) for artifact in captured):
+        raise TypeError("artifacts must contain only mappings")
+    if not captured:
+        return []
+    if cancellation_check is not None and cancellation_check():
+        return [
+            {
+                "ok": False,
+                "valid": None,
+                "validation_status": "unknown",
+                "failure_code": "RUN_CANCELLED",
+                "failure_stage": "external_process",
+                "error": "The isolated geometry operation was stopped by the user.",
+                "identity": artifact.get("identity"),
+            }
+            for artifact in captured
+        ]
+    root = _validation_cache_root(cache_root)
+    entries: list[tuple[Mapping[str, Any], str]] = []
+    unique: dict[str, Mapping[str, Any]] = {}
+    resolved: dict[str, dict[str, Any]] = {}
+    for artifact in captured:
+        path = Path(str(artifact.get("shape_path") or ""))
+        if not path.is_file() or path.stat().st_size <= 0:
+            digest = ""
+        else:
+            digest = _brep_content_sha256(path)
+        entries.append((artifact, digest))
+        if not digest:
+            continue
+        cached = _read_cached_validation(_validation_cache_path(root, digest), digest)
+        if cached is not None:
+            resolved[digest] = cached
+        elif digest not in unique:
+            unique[digest] = artifact
+    worker_count = parallel_geometry_worker_count(len(unique))
+    if worker_count:
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="VibeCAD-geometry-worker",
+        ) as executor:
+            futures = {
+                executor.submit(
+                    _validate_brep_artifact,
+                    artifact,
+                    cancellation_check=cancellation_check,
+                    deadline_seconds=deadline_seconds,
+                ): digest
+                for digest, artifact in unique.items()
+            }
+            for future in as_completed(futures):
+                digest = futures[future]
+                result = dict(future.result())
+                result["cache_hit"] = False
+                result["brep_sha256"] = digest
+                resolved[digest] = result
+                _write_cached_validation(
+                    _validation_cache_path(root, digest),
+                    digest,
+                    result,
+                )
+    results = []
+    seen: set[str] = set()
+    for artifact, digest in entries:
+        if digest:
+            result = dict(resolved[digest])
+            result["coalesced"] = digest in seen
+            result["brep_sha256"] = digest
+        else:
+            result = {
+                "ok": False,
+                "valid": None,
+                "validation_status": "unknown",
+                "failure_code": "BREP_ARTIFACT_UNAVAILABLE",
+                "failure_stage": "brep_capture",
+                "error": "The detached BREP artifact is unavailable.",
+                "cache_hit": False,
+                "coalesced": False,
+            }
+        result["identity"] = artifact.get("identity")
+        results.append(result)
+        if digest:
+            seen.add(digest)
+    return results
 
 
 def worker_executable() -> Path:

@@ -1124,6 +1124,7 @@ def _capture_context_for_provider(
     service: VibeCADService,
     session_trigger: dict[str, Any] | None = None,
     prepared_component_catalog: Mapping[str, Any] | None = None,
+    prepared_native_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw_context = service.provider_context_summary()
     allowed_turn_facts = (
@@ -1154,7 +1155,11 @@ def _capture_context_for_provider(
             native_provider_surface,
         )
         if resolution.available:
-            captured_native_state = native_active_state(service)
+            captured_native_state = (
+                dict(prepared_native_state)
+                if prepared_native_state is not None
+                else native_active_state(service)
+            )
             native_provider_surface = provider_authorized_native_surface(
                 native_provider_surface,
                 captured_native_state,
@@ -1346,16 +1351,174 @@ def _build_context_for_provider(
     session_trigger: dict[str, Any] | None,
     document_thread_dispatch: DocumentThreadDispatch | None,
     prepared_component_catalog: Mapping[str, Any] | None = None,
+    cancellation_check: CancellationCheck | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    prepared_native_state = _build_responsive_analyze_native_state(
+        service,
+        document_thread_dispatch,
+        cancellation_check=cancellation_check,
+        progress_callback=progress_callback,
+    )
     captured = _on_document_thread(
         document_thread_dispatch,
         lambda: _capture_context_for_provider(
             service,
             session_trigger,
             prepared_component_catalog,
+            prepared_native_state,
         ),
     )
     return _complete_context_for_provider(captured)
+
+
+def _build_responsive_analyze_native_state(
+    service: VibeCADService,
+    document_thread_dispatch: DocumentThreadDispatch | None,
+    *,
+    cancellation_check: CancellationCheck | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any] | None:
+    """Build Analyze state in bounded UI dispatches from a provider worker."""
+
+    from VibeCADNativeAnalyzeContext import (
+        AnalyzeContextStale,
+        capture_responsive_analyze_snapshot,
+    )
+    from VibeCADNativeAnalyzeSnapshot import (
+        discard_analyze_snapshot_capture,
+        finish_analyze_snapshot_capture,
+        validate_analyze_snapshot_geometry,
+    )
+    from VibeCADNativeSnapshot import complete_active_snapshot
+
+    begin = getattr(service, "begin_native_analyze_context_request", None)
+    coordinator_reader = getattr(service, "native_analyze_context_coordinator", None)
+    capture_batch = getattr(service, "capture_native_analyze_context_batch", None)
+    capture_clipping = getattr(
+        service,
+        "capture_native_analyze_context_clipping",
+        None,
+    )
+    if not all(
+        callable(callback)
+        for callback in (begin, coordinator_reader, capture_batch, capture_clipping)
+    ):
+        return None
+
+    def emit_progress(percent: int, message: str) -> None:
+        _emit(
+            progress_callback,
+            {
+                "event": "analyze_context_progress",
+                "percent": int(percent),
+                "message": str(message or ""),
+            },
+        )
+
+    for attempt in range(2):
+        request = _on_document_thread(document_thread_dispatch, begin)
+        if request is None:
+            return None
+        if not isinstance(request, Mapping):
+            raise RuntimeError("Analyze context request returned no object.")
+        uid = str(request.get("document_uid") or "")
+        revision = int(request.get("structural_revision", 0) or 0)
+        cache_variant = str(request.get("active_analysis_name") or "")
+        coordinator = coordinator_reader()
+
+        def build(cancelled, report):
+            try:
+                return capture_responsive_analyze_snapshot(
+                    request,
+                    dispatch_to_document_thread=lambda operation: _on_document_thread(
+                        document_thread_dispatch,
+                        operation,
+                    ),
+                    capture_batch=capture_batch,
+                    capture_clipping=capture_clipping,
+                    finalize=finish_analyze_snapshot_capture,
+                    cancellation_check=cancelled,
+                    progress_callback=report,
+                    postprocess_parts=validate_analyze_snapshot_geometry,
+                )
+            finally:
+                discard_analyze_snapshot_capture(request)
+
+        try:
+            if request.get("cacheable") is False:
+                domain = build(
+                    lambda: bool(
+                        cancellation_check is not None and cancellation_check()
+                    ),
+                    emit_progress,
+                )
+                _emit(
+                    progress_callback,
+                    {
+                        "event": "analyze_context_ready",
+                        "structural_revision": revision,
+                    },
+                )
+                return complete_active_snapshot(request["base_snapshot"], domain)
+            cache_hit = coordinator.has_cached(
+                uid,
+                revision,
+                variant=cache_variant,
+            )
+            domain = coordinator.get_or_build(
+                uid,
+                revision,
+                build,
+                variant=cache_variant,
+                cancellation_check=cancellation_check,
+                progress_callback=emit_progress,
+            )
+            if cache_hit:
+                current_clipping = _on_document_thread(
+                    document_thread_dispatch,
+                    lambda: capture_clipping(request),
+                )
+                domain = dict(domain)
+                domain["clipping"] = dict(current_clipping)
+                _emit(
+                    progress_callback,
+                    {
+                        "event": "analyze_context_cache_hit",
+                        "structural_revision": revision,
+                    },
+                )
+            else:
+                _emit(
+                    progress_callback,
+                    {
+                        "event": "analyze_context_ready",
+                        "structural_revision": revision,
+                    },
+                )
+            return complete_active_snapshot(request["base_snapshot"], domain)
+        except AnalyzeContextStale:
+            if attempt == 0 and not (
+                cancellation_check is not None and cancellation_check()
+            ):
+                continue
+            raise
+    raise RuntimeError("Analyze context changed repeatedly during capture.")
+
+
+def prewarm_analyze_context(
+    service: VibeCADService,
+    document_thread_dispatch: DocumentThreadDispatch | None,
+    *,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any] | None:
+    """Populate the read-only Analyze cache before the human presses Send."""
+
+    return _build_responsive_analyze_native_state(
+        service,
+        document_thread_dispatch,
+        progress_callback=progress_callback,
+    )
 
 
 def _consume_context_view_attachment(
@@ -5488,6 +5651,8 @@ def _run_session_turn(
         active_service,
         session_trigger,
         document_thread_dispatch,
+        cancellation_check=cancellation_check,
+        progress_callback=progress_callback,
     )
     if turn_conversation_id:
         context["_vibecad_codex_session"] = {

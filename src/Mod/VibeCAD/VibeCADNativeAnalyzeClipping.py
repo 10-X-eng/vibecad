@@ -80,9 +80,15 @@ def clipping_state(document) -> dict[str, Any]:
     }
 
 
-def clipping_face_source_state(obj) -> dict[str, Any]:
+def clipping_face_source_state(
+    obj,
+    *,
+    prevalidated: bool = False,
+) -> dict[str, Any]:
     """Return an exact face-source token without serializing shape geometry."""
 
+    if type(prevalidated) is not bool:
+        raise TypeError("prevalidated must be a boolean")
     document = getattr(obj, "Document", None)
     shape = getattr(obj, "Shape", None)
     try:
@@ -91,7 +97,7 @@ def clipping_face_source_state(obj) -> dict[str, Any]:
             or document.getObject(str(obj.Name)) is not obj
             or shape is None
             or shape.isNull()
-            or not shape.isValid()
+            or (not prevalidated and not shape.isValid())
         ):
             raise ValueError
         face_count = len(shape.Faces)
