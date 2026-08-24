@@ -1339,6 +1339,7 @@ def _run():
             "Drawing",
             "Parameters",
             "Aero",
+            "3D Print",
         ]
         actual_tabs = [tabs.tabText(index) for index in range(tabs.count())]
         assert actual_tabs == expected_tabs, {
@@ -1625,6 +1626,7 @@ def _run():
                 "TechDrawWorkbench": "drawing",
                 "SpreadsheetWorkbench": "parameters",
                 "VibeCADAeroWorkbench": "aero",
+                "VibeCADPrintWorkbench": "print",
             }[workbench]
             _assert_ribbon_surface(
                 ribbon_controller,
@@ -1671,7 +1673,31 @@ def _run():
             assert page_overflow.isVisible() == bool(hidden_page_groups)
             if page_overflow.isVisible():
                 _assert_visible_inside(page_overflow, page)
-            if workbench == "VibeCADAeroWorkbench":
+            if workbench == "VibeCADPrintWorkbench":
+                print_group_labels = _page_group_labels(page)
+                assert print_group_labels == [
+                    "VIEW",
+                    "SEND",
+                    "SETUP",
+                    "INSPECT",
+                ], print_group_labels
+                send_group = main_window.findChild(
+                    QtWidgets.QFrame, "VibeCADRibbonGroup_Send"
+                )
+                setup_group = main_window.findChild(
+                    QtWidgets.QFrame, "VibeCADRibbonGroup_Setup"
+                )
+                assert send_group is not None
+                assert setup_group is not None
+                assert _group_commands(send_group) == {
+                    "VibeCADPrint_OpenInPrusaSlicer",
+                    "VibeCADPrint_Save3MF",
+                }
+                assert _group_commands(setup_group) == {
+                    "VibeCADPrint_Setup",
+                }
+                del print_group_labels, send_group, setup_group
+            elif workbench == "VibeCADAeroWorkbench":
                 aero_group_labels = _page_group_labels(page)
                 assert aero_group_labels == [
                     "VIEW",

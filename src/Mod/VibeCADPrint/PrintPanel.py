@@ -1,0 +1,947 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+"""Persistent daily-use 3D Print panel backed by exact slicer profiles."""
+
+from __future__ import annotations
+
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, Callable
+
+from PySide import QtCore, QtWidgets
+
+import PrintPreferences
+import PrintSetupDialog
+import VibeCADPrint
+
+
+DOCK_NAME = "VibeCADPrintPanel"
+_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vibecad-print-panel")
+_BACKEND_INSTANCES: dict[str, Any] = {}
+
+
+def _wrapped(label: Any) -> Any:
+    label.setWordWrap(True)
+    policy = label.sizePolicy()
+    policy.setVerticalPolicy(QtWidgets.QSizePolicy.Minimum)
+    label.setSizePolicy(policy)
+    return label
+
+
+def _compact_combo(combo: Any) -> Any:
+    combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(12)
+    combo.setMinimumWidth(0)
+    combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+    return combo
+
+
+def _active_print_selection() -> tuple[Any, tuple[Any, ...]]:
+    import PrintCommandLoader
+
+    return PrintCommandLoader.command_module()._active_selection()
+
+
+def _backend_for_id(backend_id: str) -> Any:
+    """Create a supported slicer adapter without loading unused integrations."""
+
+    cached = _BACKEND_INSTANCES.get(backend_id)
+    if cached is not None:
+        return cached
+    if backend_id == "bambustudio":
+        import BambuStudio
+
+        backend = BambuStudio.BambuStudioBackend()
+    elif backend_id == "orcaslicer":
+        import OrcaSlicer
+
+        backend = OrcaSlicer.OrcaSlicerBackend()
+    elif backend_id == "prusaslicer":
+        backend = VibeCADPrint.PrusaSlicerBackend()
+    else:
+        raise ValueError(f"Unsupported slicer backend: {backend_id}")
+    _BACKEND_INSTANCES[backend_id] = backend
+    return backend
+
+
+def _backend_display_name(backend: Any) -> str:
+    value = str(getattr(backend, "display_name", "") or "").strip()
+    if value:
+        return value
+    return {
+        "bambustudio": "Bambu Studio",
+        "orcaslicer": "OrcaSlicer",
+        "prusaslicer": "PrusaSlicer",
+    }.get(str(getattr(backend, "backend_id", "")), "PrusaSlicer")
+
+
+class _Bridge(QtCore.QObject):
+    finished = QtCore.Signal(int, object, object)
+
+
+class _SelectionObserver:
+    def __init__(self, panel: "PrintPanelWidget") -> None:
+        self.panel = panel
+
+    def _changed(self) -> None:
+        QtCore.QTimer.singleShot(0, self.panel._update_selection_summary)
+
+    def addSelection(self, *_args) -> None:
+        self._changed()
+
+    def removeSelection(self, *_args) -> None:
+        self._changed()
+
+    def setSelection(self, *_args) -> None:
+        self._changed()
+
+    def clearSelection(self, *_args) -> None:
+        self._changed()
+
+
+class PrintPanelWidget(QtWidgets.QWidget):
+    """Remembered, non-modal controls for the normal print workflow."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("VibeCADPrintPanelContents")
+        self.setWindowTitle("3D Print")
+        self.setMinimumWidth(280)
+        self.backend_id = PrintPreferences.active_backend()
+        try:
+            self.backend = _backend_for_id(self.backend_id)
+        except ValueError:
+            self.backend_id = "prusaslicer"
+            self.backend = _backend_for_id(self.backend_id)
+        self.installation: VibeCADPrint.SlicerInstallation | None = None
+        self.printers: tuple[VibeCADPrint.PrinterProfile, ...] = ()
+        self.catalog: VibeCADPrint.ProfileCatalog | None = None
+        self.material_combos: list[Any] = []
+        self._remembered = PrintPreferences.load_confirmed_setup(
+            backend_id=self.backend_id
+        )
+        self._job = 0
+        self._callback: Callable[[Any], None] | None = None
+        self._futures: set[Future[Any]] = set()
+        self._busy = False
+        self._print_selection_ready = False
+        self._selection_document: Any | None = None
+        self._selection_items: list[tuple[Any, Any, tuple[Any, ...]]] = []
+        self.object_checkboxes: list[Any] = []
+        self.object_filament_combos: list[Any] = []
+        self._selection_observer: _SelectionObserver | None = None
+        self._bridge = _Bridge(self)
+        self._bridge.finished.connect(self._job_finished)
+
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
+
+        header = QtWidgets.QHBoxLayout()
+        self.title_label = QtWidgets.QLabel("<b>3D Print</b>", self)
+        header.addWidget(self.title_label, 1)
+        self.refresh_button = QtWidgets.QPushButton("Refresh", self)
+        self.refresh_button.clicked.connect(self._manual_refresh)
+        self.setup_button = QtWidgets.QPushButton("Setup…", self)
+        self.setup_button.clicked.connect(self._initial_setup)
+        header.addWidget(self.refresh_button)
+        header.addWidget(self.setup_button)
+        outer.addLayout(header)
+
+        slicer_row = QtWidgets.QFormLayout()
+        slicer_row.setContentsMargins(0, 0, 0, 0)
+        self.slicer_combo = _compact_combo(QtWidgets.QComboBox(self))
+        self.slicer_combo.setObjectName("VibeCADPrintSlicerBackend")
+        self.slicer_combo.addItem("PrusaSlicer", "prusaslicer")
+        self.slicer_combo.addItem("Bambu Studio", "bambustudio")
+        self.slicer_combo.addItem("OrcaSlicer", "orcaslicer")
+        selected_backend = self.slicer_combo.findData(self.backend_id)
+        self.slicer_combo.setCurrentIndex(max(0, selected_backend))
+        self.slicer_combo.currentIndexChanged.connect(self._slicer_changed)
+        slicer_row.addRow("Slicer", self.slicer_combo)
+        outer.addLayout(slicer_row)
+
+        self.installation_label = _wrapped(QtWidgets.QLabel(self))
+        self.installation_label.setObjectName("VibeCADPrintInstallationSummary")
+        outer.addWidget(self.installation_label)
+
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setObjectName("VibeCADPrintPanelScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        content = QtWidgets.QWidget(scroll)
+        content.setMinimumWidth(0)
+        content_layout = QtWidgets.QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
+
+        content_layout.addWidget(QtWidgets.QLabel("<b>PRINT SETTINGS</b>", content))
+        profiles = QtWidgets.QFormLayout()
+        profiles.setContentsMargins(0, 0, 0, 0)
+        profiles.setSpacing(6)
+        profiles.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+        profiles.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
+
+        self.printer_combo = _compact_combo(QtWidgets.QComboBox(content))
+        self.printer_combo.setObjectName("VibeCADPrintPrinterProfile")
+        self.printer_combo.currentIndexChanged.connect(self._printer_changed)
+        profiles.addRow("Printer", self.printer_combo)
+
+        self.bed_details = _wrapped(QtWidgets.QLabel(content))
+        self.bed_details.setObjectName("VibeCADPrintBuildVolume")
+        profiles.addRow("", self.bed_details)
+
+        self.print_combo = _compact_combo(QtWidgets.QComboBox(content))
+        self.print_combo.setObjectName("VibeCADPrintPrintProfile")
+        self.print_combo.currentIndexChanged.connect(self._print_changed)
+        profiles.addRow("Quality", self.print_combo)
+
+        self.material_widget = QtWidgets.QWidget(content)
+        self.material_layout = QtWidgets.QFormLayout(self.material_widget)
+        self.material_layout.setContentsMargins(0, 0, 0, 0)
+        self.material_layout.setSpacing(6)
+        self.material_layout.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.AllNonFixedFieldsGrow
+        )
+        self.material_layout.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
+        profiles.addRow("Material", self.material_widget)
+        content_layout.addLayout(profiles)
+
+        content_layout.addWidget(QtWidgets.QLabel("<b>PLACEMENT</b>", content))
+        placement = QtWidgets.QHBoxLayout()
+        placement.setContentsMargins(0, 0, 0, 0)
+        self.auto_arrange = QtWidgets.QCheckBox("Auto-arrange", content)
+        self.ensure_on_bed = QtWidgets.QCheckBox("Ensure on bed", content)
+        remembered = self._remembered
+        self.auto_arrange.setChecked(
+            remembered.auto_arrange if remembered is not None else True
+        )
+        self.ensure_on_bed.setChecked(
+            remembered.ensure_on_bed if remembered is not None else True
+        )
+        self.auto_arrange.toggled.connect(self._update_actions)
+        self.ensure_on_bed.toggled.connect(self._update_actions)
+        placement.addWidget(self.auto_arrange)
+        placement.addWidget(self.ensure_on_bed)
+        placement.addStretch(1)
+        content_layout.addLayout(placement)
+
+        self.selection_group = QtWidgets.QGroupBox("Objects to be sent", content)
+        self.selection_group.setObjectName("VibeCADPrintObjectChoices")
+        selection_layout = QtWidgets.QVBoxLayout(self.selection_group)
+        selection_layout.setContentsMargins(8, 8, 8, 8)
+        selection_layout.setSpacing(4)
+        self.selection_summary = _wrapped(QtWidgets.QLabel(self.selection_group))
+        self.selection_summary.setObjectName("VibeCADPrintSelectionSummary")
+        selection_layout.addWidget(self.selection_summary)
+        self.selection_choices_layout = QtWidgets.QVBoxLayout()
+        self.selection_choices_layout.setContentsMargins(0, 0, 0, 0)
+        self.selection_choices_layout.setSpacing(2)
+        selection_layout.addLayout(self.selection_choices_layout)
+        content_layout.addWidget(self.selection_group)
+
+        # Kept as a hidden compatibility surface for prototype callers. The
+        # everyday panel no longer spends space describing its output path;
+        # that choice remains available in Setup.
+        self.output_location = _wrapped(QtWidgets.QLabel(self))
+        self.output_location.setObjectName("VibeCADPrintOutputLocation")
+        self.output_location.hide()
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
+
+        self.status = _wrapped(QtWidgets.QLabel(self))
+        self.status.setObjectName("VibeCADPrintPanelStatus")
+        self.status.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        outer.addWidget(self.status)
+
+        self.print_button = QtWidgets.QPushButton("Print", self)
+        self.print_button.setObjectName("VibeCADPrintPrimaryAction")
+        self.print_button.setMinimumHeight(38)
+        self.print_button.setToolTip(
+            "Export the selection and open it with these exact profiles"
+        )
+        self.print_button.clicked.connect(self._open_selected)
+        outer.addWidget(self.print_button)
+
+        self.export_button = QtWidgets.QPushButton("Export 3MF…", self)
+        self.export_button.clicked.connect(self._save_selected)
+        outer.addWidget(self.export_button)
+
+        # Compatibility aliases for callers of the prototype widget.
+        self.open_button = self.print_button
+        self.apply_button = QtWidgets.QPushButton(self)
+        self.apply_button.hide()
+        self.installation_combo = QtWidgets.QComboBox(self)
+        self.installation_combo.hide()
+
+        self._update_backend_ui()
+        self._update_output_location()
+        self._clear_profiles()
+        self._attach_selection_observer()
+        self._update_selection_summary()
+        self._update_actions()
+
+    def sizeHint(self):
+        return QtCore.QSize(360, 640)
+
+    def refresh(self) -> None:
+        self._remembered = PrintPreferences.load_confirmed_setup(
+            backend_id=self.backend_id
+        )
+        if self._remembered is not None:
+            self.auto_arrange.setChecked(self._remembered.auto_arrange)
+            self.ensure_on_bed.setChecked(self._remembered.ensure_on_bed)
+        self._update_output_location()
+        override = PrintPreferences.executable_override(backend_id=self.backend_id)
+        self._clear_profiles()
+        self._start_job(
+            f"Loading installed {_backend_display_name(self.backend)} profiles…",
+            lambda: self.backend.discover(override),
+            self._installations_loaded,
+        )
+
+    def _manual_refresh(self, *_args) -> None:
+        invalidate = getattr(self.backend, "invalidate_cache", None)
+        if callable(invalidate):
+            invalidate()
+        self.refresh()
+
+    def _update_backend_ui(self) -> None:
+        display_name = _backend_display_name(self.backend)
+        self.refresh_button.setToolTip(
+            f"Reload profiles installed by {display_name}"
+        )
+        self.setup_button.setToolTip(
+            f"Locate {display_name} and configure profiles and 3MF storage"
+        )
+        self.print_button.setToolTip(
+            f"Export the selection and open it in {display_name} with these exact profiles"
+        )
+
+    def _slicer_changed(self, _index: int) -> None:
+        backend_id = str(self.slicer_combo.currentData() or "")
+        if not backend_id or backend_id == self.backend_id:
+            return
+        try:
+            backend = _backend_for_id(backend_id)
+        except ValueError as exc:
+            self.status.setText(str(exc))
+            return
+        PrintPreferences.set_active_backend(backend_id)
+        self.backend_id = backend_id
+        self.backend = backend
+        self.installation = None
+        self._remembered = PrintPreferences.load_confirmed_setup(
+            backend_id=self.backend_id
+        )
+        remembered = self._remembered
+        self.auto_arrange.blockSignals(True)
+        self.ensure_on_bed.blockSignals(True)
+        self.auto_arrange.setChecked(
+            remembered.auto_arrange if remembered is not None else True
+        )
+        self.ensure_on_bed.setChecked(
+            remembered.ensure_on_bed if remembered is not None else True
+        )
+        self.auto_arrange.blockSignals(False)
+        self.ensure_on_bed.blockSignals(False)
+        self._update_backend_ui()
+        self.refresh()
+
+    def _update_output_location(self) -> None:
+        storage = PrintPreferences.load_handoff_storage()
+        text = storage.directory if storage.mode == "folder" else "Managed VibeCAD cache"
+        self.output_location.setText(text)
+        self.output_location.setToolTip(text)
+
+    def _attach_selection_observer(self) -> None:
+        try:
+            import FreeCADGui
+
+            observer = _SelectionObserver(self)
+            FreeCADGui.Selection.addObserver(observer)
+            self._selection_observer = observer
+            self.destroyed.connect(self._detach_selection_observer)
+        except Exception:
+            self._selection_observer = None
+
+    def _detach_selection_observer(self, *_args) -> None:
+        observer = self._selection_observer
+        self._selection_observer = None
+        if observer is None:
+            return
+        try:
+            import FreeCADGui
+
+            FreeCADGui.Selection.removeObserver(observer)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _selection_key(obj: Any) -> tuple[Any, ...]:
+        document = getattr(obj, "Document", None)
+        name = str(getattr(obj, "Name", "") or "")
+        if document is not None and name:
+            return ("document-object", id(document), name)
+        return ("python-object", id(obj))
+
+    def _clear_object_choices(self) -> None:
+        self._selection_items.clear()
+        self.object_checkboxes.clear()
+        self.object_filament_combos.clear()
+        while self.selection_choices_layout.count():
+            item = self.selection_choices_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _selection_choices_changed(self, *_args) -> None:
+        selected = sum(choice.isChecked() for choice in self.object_checkboxes)
+        total = len(self.object_checkboxes)
+        for choice, combo in zip(
+            self.object_checkboxes,
+            self.object_filament_combos,
+        ):
+            combo.setEnabled(choice.isChecked())
+        if total:
+            self.selection_summary.setText(
+                f"{selected} of {total} object{'s' if total != 1 else ''} will be sent"
+            )
+            self.selection_summary.setToolTip(
+                "Uncheck any selected object you do not want to send."
+            )
+        self._print_selection_ready = selected > 0
+        self._update_actions()
+
+    def _checked_print_selection(self) -> tuple[Any, tuple[Any, ...]]:
+        objects = tuple(
+            obj for choice, obj, _key in self._selection_items if choice.isChecked()
+        )
+        if self._selection_document is None or not objects:
+            raise VibeCADPrint.PrintSelectionError(
+                "Check at least one printable object to send."
+            )
+        return self._selection_document, objects
+
+    def _update_selection_summary(self) -> None:
+        previous = {
+            key: choice.isChecked() for choice, _obj, key in self._selection_items
+        }
+        previous_filaments = {
+            key: combo.currentData()
+            for (_choice, _obj, key), combo in zip(
+                self._selection_items,
+                self.object_filament_combos,
+            )
+        }
+        self._selection_document = None
+        self._clear_object_choices()
+        try:
+            document, objects = _active_print_selection()
+        except (VibeCADPrint.PrintSelectionError, RuntimeError) as exc:
+            self._print_selection_ready = False
+            self.selection_summary.setText(str(exc))
+            self.selection_summary.setToolTip(str(exc))
+        except Exception:
+            self._print_selection_ready = False
+            message = "Select one or more printable objects."
+            self.selection_summary.setText(message)
+            self.selection_summary.setToolTip(message)
+        else:
+            self._selection_document = document
+            for obj in objects:
+                key = self._selection_key(obj)
+                label = str(
+                    getattr(obj, "Label", "") or getattr(obj, "Name", "") or "Object"
+                )
+                choice = QtWidgets.QCheckBox(label, self.selection_group)
+                choice.setObjectName("VibeCADPrintObjectChoice")
+                choice.setChecked(previous.get(key, True))
+                choice.toggled.connect(self._selection_choices_changed)
+                filament = _compact_combo(QtWidgets.QComboBox(self.selection_group))
+                filament.setObjectName("VibeCADPrintObjectFilament")
+                filament.currentIndexChanged.connect(self._update_actions)
+                row = QtWidgets.QWidget(self.selection_group)
+                row_layout = QtWidgets.QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(6)
+                row_layout.addWidget(choice, 1)
+                row_layout.addWidget(filament)
+                self.selection_choices_layout.addWidget(row)
+                self.object_checkboxes.append(choice)
+                self.object_filament_combos.append(filament)
+                self._selection_items.append((choice, obj, key))
+            self._refresh_object_filament_choices(previous_filaments)
+            self._selection_choices_changed()
+            return
+        self._update_actions()
+
+    def _start_job(
+        self,
+        message: str,
+        operation: Callable[[], Any],
+        callback: Callable[[Any], None],
+    ) -> None:
+        self._job += 1
+        job = self._job
+        self._callback = callback
+        self._set_busy(True)
+        self.status.setText(message)
+        future = _EXECUTOR.submit(operation)
+        self._futures.add(future)
+
+        def complete(value: Future[Any]) -> None:
+            self._futures.discard(value)
+            try:
+                result, error = value.result(), None
+            except Exception as exc:
+                result, error = None, exc
+            try:
+                self._bridge.finished.emit(job, result, error)
+            except RuntimeError:
+                pass
+
+        future.add_done_callback(complete)
+
+    def _job_finished(self, job: int, result: Any, error: Any) -> None:
+        if job != self._job:
+            return
+        callback = self._callback
+        self._callback = None
+        self._set_busy(False)
+        if error is not None:
+            self.status.setText(str(error))
+            self._update_actions()
+            return
+        if callback is not None:
+            callback(result)
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self.slicer_combo.setEnabled(not busy)
+        self.refresh_button.setEnabled(not busy)
+        self.printer_combo.setEnabled(not busy)
+        self.print_combo.setEnabled(not busy)
+        if busy:
+            self.print_button.setEnabled(False)
+
+    def _installations_loaded(self, values: Any) -> None:
+        installations = tuple(values or ())
+        preferred = VibeCADPrint.preferred_installation(installations)
+        self.installation_combo.blockSignals(True)
+        self.installation_combo.clear()
+        for installation in installations:
+            self.installation_combo.addItem(installation.display_name, installation)
+        self.installation_combo.blockSignals(False)
+        self.installation = preferred
+        if preferred is None:
+            self.installation_label.setText(
+                f"{_backend_display_name(self.backend)} is not configured"
+            )
+            self.status.setText(
+                f"Click Setup to locate {_backend_display_name(self.backend)} and "
+                "choose profiles."
+            )
+            self._update_actions()
+            return
+        self.installation_label.setText(preferred.display_name)
+        if not preferred.tested:
+            baseline = ".".join(str(part) for part in preferred.tested_version)
+            self.status.setText(
+                f"{_backend_display_name(self.backend)} {preferred.version} is below the "
+                f"tested {baseline} baseline."
+            )
+            self._update_actions()
+            return
+        self._start_job(
+            "Loading printer profiles…",
+            lambda: self.backend.query_printers(preferred),
+            self._printers_loaded,
+        )
+
+    def _selected_installation(self) -> VibeCADPrint.SlicerInstallation | None:
+        return self.installation
+
+    def _installation_changed(self, _index: int) -> None:
+        value = self.installation_combo.currentData()
+        self.installation = (
+            value if isinstance(value, VibeCADPrint.SlicerInstallation) else None
+        )
+        self._clear_profiles()
+        self._update_actions()
+
+    def _clear_profiles(self) -> None:
+        self.printers = ()
+        self.catalog = None
+        self.printer_combo.blockSignals(True)
+        self.printer_combo.clear()
+        self.printer_combo.addItem("Choose printer…", None)
+        self.printer_combo.blockSignals(False)
+        self.print_combo.blockSignals(True)
+        self.print_combo.clear()
+        self.print_combo.addItem("Choose quality…", None)
+        self.print_combo.blockSignals(False)
+        self.bed_details.setText("")
+        self._clear_materials()
+
+    def _printers_loaded(self, values: Any) -> None:
+        self.printers = tuple(values or ())
+        self.printer_combo.blockSignals(True)
+        self.printer_combo.clear()
+        self.printer_combo.addItem("Choose printer…", None)
+        selected = 0
+        for index, printer in enumerate(self.printers, start=1):
+            self.printer_combo.addItem(
+                printer.name + (" — user" if printer.is_user else ""), printer
+            )
+            if self._remembered and printer.name == self._remembered.printer_profile:
+                selected = index
+        self.printer_combo.setCurrentIndex(selected)
+        self.printer_combo.blockSignals(False)
+        if selected:
+            self._printer_changed(selected)
+        else:
+            self.status.setText("Choose the exact printer profile.")
+            self._update_actions()
+
+    def _selected_printer(self) -> VibeCADPrint.PrinterProfile | None:
+        value = self.printer_combo.currentData()
+        return value if isinstance(value, VibeCADPrint.PrinterProfile) else None
+
+    def _printer_changed(self, _index: int) -> None:
+        printer = self._selected_printer()
+        self.catalog = None
+        self.print_combo.blockSignals(True)
+        self.print_combo.clear()
+        self.print_combo.addItem("Choose quality…", None)
+        self.print_combo.blockSignals(False)
+        self._clear_materials()
+        if printer is None:
+            self.bed_details.setText("")
+            self.status.setText("Choose the exact printer profile.")
+            self._update_actions()
+            return
+        bed = printer.bed
+        self.bed_details.setText(
+            f"{bed.width:g} × {bed.height:g} × {bed.max_print_height:g} mm · "
+            f"{printer.extruders} extruder(s)"
+        )
+        if self.installation is None:
+            return
+        self._start_job(
+            f"Loading profiles for {printer.name}…",
+            lambda: self.backend.query_profiles(self.installation, printer.name),
+            self._profiles_loaded,
+        )
+
+    def _profiles_loaded(self, value: Any) -> None:
+        if not isinstance(value, VibeCADPrint.ProfileCatalog):
+            self.status.setText(
+                f"{_backend_display_name(self.backend)} returned an invalid profile catalog."
+            )
+            return
+        printer = self._selected_printer()
+        if printer is None or value.printer_profile != printer.name:
+            self.status.setText(
+                f"{_backend_display_name(self.backend)} returned profiles for another printer."
+            )
+            return
+        self.catalog = value
+        self.print_combo.blockSignals(True)
+        self.print_combo.clear()
+        self.print_combo.addItem("Choose quality…", None)
+        selected = 0
+        for index, profile in enumerate(value.print_profiles, start=1):
+            self.print_combo.addItem(
+                profile.name + (" — user" if profile.is_user else ""), profile
+            )
+            if (
+                self._remembered
+                and self._remembered.printer_profile == printer.name
+                and profile.name == self._remembered.print_profile
+            ):
+                selected = index
+        self.print_combo.setCurrentIndex(selected)
+        self.print_combo.blockSignals(False)
+        if selected:
+            self._print_changed(selected)
+        else:
+            self.status.setText("Choose the exact compatible quality profile.")
+            self._update_actions()
+
+    def _selected_print(self) -> VibeCADPrint.PrintProfile | None:
+        value = self.print_combo.currentData()
+        return value if isinstance(value, VibeCADPrint.PrintProfile) else None
+
+    def _clear_materials(self) -> None:
+        self.material_combos.clear()
+        while self.material_layout.count():
+            item = self.material_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._refresh_object_filament_choices()
+
+    def _supports_object_filament_assignment(self) -> bool:
+        return "object_filament_assignment" in tuple(
+            getattr(self.backend, "capabilities", ()) or ()
+        )
+
+    def _refresh_object_filament_choices(
+        self,
+        remembered: dict[tuple[Any, ...], Any] | None = None,
+    ) -> None:
+        materials = tuple(
+            str(combo.currentData() or "") for combo in self.material_combos
+        )
+        available = (
+            self._supports_object_filament_assignment()
+            and bool(materials)
+            and all(materials)
+        )
+        for index, combo in enumerate(self.object_filament_combos):
+            key = self._selection_items[index][2]
+            previous = (
+                remembered.get(key)
+                if remembered is not None
+                else combo.currentData()
+            )
+            combo.blockSignals(True)
+            combo.clear()
+            if available and len(materials) == 1:
+                combo.addItem(materials[0], 1)
+                combo.hide()
+            elif available:
+                combo.addItem("Choose filament…", None)
+                for filament_id, material in enumerate(materials, start=1):
+                    combo.addItem(f"Filament {filament_id} — {material}", filament_id)
+                selected = combo.findData(previous)
+                combo.setCurrentIndex(selected if selected >= 0 else 0)
+                combo.show()
+            else:
+                combo.hide()
+            combo.blockSignals(False)
+
+    def _materials_changed(self, *_args) -> None:
+        self._refresh_object_filament_choices()
+        self._update_actions()
+
+    def _print_changed(self, _index: int) -> None:
+        self._clear_materials()
+        printer = self._selected_printer()
+        profile = self._selected_print()
+        if printer is None or profile is None:
+            self._update_actions()
+            return
+        for extruder in range(printer.extruders):
+            combo = _compact_combo(QtWidgets.QComboBox(self.material_widget))
+            combo.addItem("Choose material…", None)
+            for material in profile.materials:
+                combo.addItem(
+                    material.name + (" — user" if material.is_user else ""),
+                    material.name,
+                )
+            if (
+                self._remembered
+                and self._remembered.printer_profile == printer.name
+                and self._remembered.print_profile == profile.name
+                and extruder < len(self._remembered.material_profiles)
+            ):
+                index = combo.findData(self._remembered.material_profiles[extruder])
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            combo.currentIndexChanged.connect(self._materials_changed)
+            label = "" if printer.extruders == 1 else f"Extruder {extruder + 1}"
+            self.material_layout.addRow(label, combo)
+            self.material_combos.append(combo)
+        self._refresh_object_filament_choices()
+        self._update_actions()
+
+    def _current_setup(
+        self,
+        *,
+        require_object_assignments: bool = False,
+    ) -> VibeCADPrint.PrintSetup | None:
+        printer = self._selected_printer()
+        profile = self._selected_print()
+        if printer is None or profile is None or self.catalog is None:
+            return None
+        materials = tuple(str(combo.currentData() or "") for combo in self.material_combos)
+        if len(materials) != printer.extruders or any(not value for value in materials):
+            return None
+        object_filament_ids: tuple[int, ...] = ()
+        if self._supports_object_filament_assignment():
+            selected_ids = tuple(
+                combo.currentData()
+                for (choice, _obj, _key), combo in zip(
+                    self._selection_items,
+                    self.object_filament_combos,
+                )
+                if choice.isChecked()
+            )
+            if selected_ids and all(isinstance(value, int) for value in selected_ids):
+                object_filament_ids = tuple(int(value) for value in selected_ids)
+            elif require_object_assignments and selected_ids:
+                return None
+        setup = VibeCADPrint.PrintSetup(
+            printer_profile=printer.name,
+            print_profile=profile.name,
+            material_profiles=materials,
+            auto_arrange=self.auto_arrange.isChecked(),
+            ensure_on_bed=self.ensure_on_bed.isChecked(),
+            object_filament_ids=object_filament_ids,
+        )
+        return None if VibeCADPrint.validate_setup(setup, printer, self.catalog) else setup
+
+    def _current_storage(self) -> PrintPreferences.HandoffStorage:
+        return PrintPreferences.load_handoff_storage()
+
+    def _storage_changed(self, *_args) -> None:
+        self._update_output_location()
+        self._update_actions()
+
+    def _update_actions(self, *_args) -> None:
+        setup = self._current_setup()
+        print_setup = self._current_setup(require_object_assignments=True)
+        ready = (
+            print_setup is not None
+            and self.installation is not None
+            and self._print_selection_ready
+            and not self._busy
+        )
+        self.print_button.setEnabled(ready)
+        self.export_button.setEnabled(self._print_selection_ready)
+        if setup is not None:
+            PrintPreferences.save_confirmed_setup(
+                setup,
+                backend_id=self.backend_id,
+            )
+            self._remembered = setup
+            if print_setup is not None:
+                self.status.setText("Ready · selections saved automatically")
+            elif self._print_selection_ready:
+                self.status.setText("Assign a filament to each checked object.")
+        elif not self._busy and self.status.text().startswith("Ready"):
+            self.status.setText("Choose a printer, quality, and material.")
+
+    def _save(self) -> bool:
+        setup = self._current_setup(require_object_assignments=True)
+        if setup is None:
+            if self._current_setup() is not None and self._print_selection_ready:
+                self.status.setText("Assign a filament to each checked object.")
+            else:
+                self.status.setText("Choose a printer, quality, and material.")
+            return False
+        PrintPreferences.save_confirmed_setup(
+            setup,
+            backend_id=self.backend_id,
+        )
+        self._remembered = setup
+        self.status.setText("Ready · selections saved automatically")
+        return True
+
+    def _browse_folder(self) -> None:
+        self._initial_setup()
+
+    def print_selected(self) -> None:
+        self._update_selection_summary()
+        if not self._print_selection_ready:
+            return
+        selection = self._checked_print_selection()
+        if not self._save() or self.installation is None:
+            return
+        import PrintCommandLoader
+
+        commands = PrintCommandLoader.command_module()
+        commands.open_selected_in_slicer(
+            backend=self.backend,
+            installation=self.installation,
+            setup=self._current_setup(require_object_assignments=True),
+            selection=selection,
+        )
+
+    def _open_selected(self) -> None:
+        self.print_selected()
+
+    def _save_selected(self) -> None:
+        self._update_selection_summary()
+        if not self._print_selection_ready:
+            return
+        import PrintCommandLoader
+
+        commands = PrintCommandLoader.command_module()
+        commands._save_selected_3mf(selection=self._checked_print_selection())
+
+    def _initial_setup(self) -> None:
+        open_setup_dialog(parent=self, backend=self.backend)
+
+
+def _main_window() -> Any:
+    import FreeCADGui
+
+    return FreeCADGui.getMainWindow()
+
+
+def _find_dock() -> Any | None:
+    main = _main_window()
+    if main is None:
+        return None
+    return main.findChild(QtWidgets.QDockWidget, DOCK_NAME)
+
+
+def ensure_panel_registered() -> Any:
+    """Create the native dock once so View > Panels can also control it."""
+
+    dock = _find_dock()
+    if dock is not None:
+        return dock
+    main = _main_window()
+    if main is None:
+        raise RuntimeError("FreeCAD main window is unavailable.")
+    contents = PrintPanelWidget()
+    dock = main.addDockWindow(contents, DOCK_NAME, area="right")
+    dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+    dock.toggleViewAction().setVisible(True)
+    dock.hide()
+    return dock
+
+
+def show_panel(*, refresh: bool = True) -> PrintPanelWidget | None:
+    dock = ensure_panel_registered()
+    dock.show()
+    dock.raise_()
+    widget = dock.widget()
+    if isinstance(widget, PrintPanelWidget):
+        widget._update_selection_summary()
+        if refresh:
+            widget.refresh()
+        return widget
+    return None
+
+
+def hide_panel() -> None:
+    dock = _find_dock()
+    if dock is not None:
+        dock.hide()
+
+
+def open_setup_dialog(
+    *,
+    parent: Any | None = None,
+    backend: Any | None = None,
+) -> Any:
+    """Open explicit slicer configuration and refresh the daily-use panel."""
+
+    panel_dock = _find_dock()
+    panel = panel_dock.widget() if panel_dock is not None else None
+    initial = panel.installation if isinstance(panel, PrintPanelWidget) else None
+    choice = PrintSetupDialog.choose_print_setup(
+        parent=parent or _main_window(),
+        backend=backend or VibeCADPrint.PrusaSlicerBackend(),
+        open_after_save=False,
+        initial_installation=initial,
+    )
+    if choice.accepted and isinstance(panel, PrintPanelWidget):
+        panel.refresh()
+    return choice

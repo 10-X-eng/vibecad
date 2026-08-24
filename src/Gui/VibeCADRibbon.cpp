@@ -77,7 +77,7 @@ struct DomainDefinition
     const char* surface;
 };
 
-constexpr std::array<DomainDefinition, 8> domains = {{
+constexpr std::array<DomainDefinition, 9> domains = {{
     {"Model", "PartDesignWorkbench", "model"},
     {"Assemble", "AssemblyWorkbench", "assemble"},
     {"Mesh", "MeshWorkbench", "mesh"},
@@ -86,6 +86,7 @@ constexpr std::array<DomainDefinition, 8> domains = {{
     {"Drawing", "TechDrawWorkbench", "drawing"},
     {"Parameters", "SpreadsheetWorkbench", "parameters"},
     {"Aero", "VibeCADAeroWorkbench", "aero"},
+    {"3D Print", "VibeCADPrintWorkbench", "print"},
 }};
 
 constexpr auto chromePreferencesPath = "User parameter:BaseApp/Preferences/VibeCAD/Chrome";

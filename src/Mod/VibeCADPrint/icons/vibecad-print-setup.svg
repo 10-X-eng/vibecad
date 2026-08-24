@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="VibeCAD print setup">
+  <path d="M8 10h38v12H8zM14 22v28h26V22" fill="#212529" stroke="#74c0fc" stroke-width="3"/>
+  <path d="M20 43h15l-3-14h-9z" fill="#343a40" stroke="#adb5bd" stroke-width="3" stroke-linejoin="round"/>
+  <circle cx="47" cy="45" r="9" fill="#343a40" stroke="#51cf66" stroke-width="3"/>
+  <path d="M47 32v5M47 53v5M34 45h5M55 45h5M38 36l4 4M52 50l4 4M38 54l4-4M52 40l4-4" stroke="#51cf66" stroke-width="3" stroke-linecap="round"/>
+</svg>

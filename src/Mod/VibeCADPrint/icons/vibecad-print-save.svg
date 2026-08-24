@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="VibeCAD save 3MF">
+  <path d="M10 47h44v8H10z" fill="#343a40" stroke="#adb5bd" stroke-width="3"/>
+  <path d="M20 38h24l-4-18H24z" fill="#212529" stroke="#74c0fc" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M32 7v25M24 24l8 8 8-8" fill="none" stroke="#51cf66" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
