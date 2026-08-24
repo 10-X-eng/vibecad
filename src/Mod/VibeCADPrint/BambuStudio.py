@@ -732,6 +732,7 @@ def discover_bambu_installations(
                     timeout=15.0,
                     check=False,
                     cwd=working_directory,
+                    **VibeCADPrint.background_subprocess_kwargs(platform=platform),
                 )
         except (OSError, subprocess.SubprocessError):
             continue
@@ -1085,7 +1086,12 @@ def prepare_bambu_project(
             f"Bambu Studio printer profile '{setup.printer_profile}' is not available."
         )
     catalog = backend.query_profiles(installation, printer.name)
-    errors = VibeCADPrint.validate_setup(setup, printer, catalog)
+    errors = VibeCADPrint.validate_setup(
+        setup,
+        printer,
+        catalog,
+        allow_additional_materials=True,
+    )
     if errors:
         raise VibeCADPrint.SlicerError("\n".join(errors))
     resolved = (
@@ -1144,6 +1150,7 @@ def prepare_bambu_project(
                 timeout=timeout,
                 check=False,
                 cwd=working_directory,
+                **VibeCADPrint.background_subprocess_kwargs(),
             )
         if completed.returncode != 0 or not partial.is_file():
             details = " ".join(

@@ -384,3 +384,26 @@ def test_explicit_panel_choices_override_the_live_selection(
     )
     assert exported == [(rotor,)]
     assert frame not in exported[0]
+
+
+def test_ribbon_save_uses_the_panels_checked_object_subset(monkeypatch) -> None:
+    commands = PrintCommandLoader.command_module()
+    document = SimpleNamespace(Name="Fan")
+    rotor = SimpleNamespace(Name="Rotor")
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "PrintPanel",
+        SimpleNamespace(
+            checked_panel_selection=lambda: (document, (rotor,)),
+        ),
+    )
+    monkeypatch.setattr(
+        commands,
+        "_save_selected_3mf",
+        lambda *, selection=None: calls.append(selection),
+    )
+
+    commands._Save3MFCommand().Activated()
+
+    assert calls == [(document, (rotor,))]

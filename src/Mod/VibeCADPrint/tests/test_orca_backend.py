@@ -68,7 +68,7 @@ def test_orca_discovery_has_native_macos_and_windows_candidates() -> None:
     assert any(value.gui_command[0].lower().endswith("orca-slicer.exe") for value in windows)
 
 
-def test_windows_discovery_finds_hyphenated_installer_and_registry_version(
+def test_windows_discovery_uses_metadata_without_launching_orca(
     tmp_path: Path,
 ) -> None:
     program_files = tmp_path / "Program Files"
@@ -79,7 +79,10 @@ def test_windows_discovery_finds_hyphenated_installer_and_registry_version(
     profiles.mkdir(parents=True)
     appdata = tmp_path / "Donn\u00fd User" / "AppData" / "Roaming"
 
-    def runner(command, **_kwargs):
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(kwargs)
         return subprocess.CompletedProcess(command, 0, "", "")
 
     installations = OrcaSlicer.discover_orca_installations(
@@ -95,6 +98,7 @@ def test_windows_discovery_finds_hyphenated_installer_and_registry_version(
     assert installations[0].gui_command == (str(executable),)
     assert installations[0].resource_dir == str(profiles)
     assert installations[0].config_dir == str(appdata / "OrcaSlicer")
+    assert calls == []
 
 
 def test_orca_project_command_keeps_explicit_placement_and_profiles(

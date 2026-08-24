@@ -205,6 +205,21 @@ class PrintPanelWidget(QtWidgets.QWidget):
         )
         self.material_layout.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
         profiles.addRow("Material", self.material_widget)
+        self.material_actions = QtWidgets.QWidget(content)
+        material_actions_layout = QtWidgets.QHBoxLayout(self.material_actions)
+        material_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self.add_material_button = QtWidgets.QPushButton(
+            "Add filament", self.material_actions
+        )
+        self.add_material_button.clicked.connect(self._add_material)
+        self.remove_material_button = QtWidgets.QPushButton(
+            "Remove filament", self.material_actions
+        )
+        self.remove_material_button.clicked.connect(self._remove_material)
+        material_actions_layout.addWidget(self.add_material_button)
+        material_actions_layout.addWidget(self.remove_material_button)
+        material_actions_layout.addStretch(1)
+        profiles.addRow("", self.material_actions)
         content_layout.addLayout(profiles)
 
         content_layout.addWidget(QtWidgets.QLabel("<b>PLACEMENT</b>", content))
@@ -318,6 +333,7 @@ class PrintPanelWidget(QtWidgets.QWidget):
         self.print_button.setToolTip(
             f"Export the selection and open it in {display_name} with these exact profiles"
         )
+        self.material_actions.setVisible(self._supports_object_filament_assignment())
 
     def _slicer_changed(self, _index: int) -> None:
         backend_id = str(self.slicer_combo.currentData() or "")
@@ -550,7 +566,7 @@ class PrintPanelWidget(QtWidgets.QWidget):
             baseline = ".".join(str(part) for part in preferred.tested_version)
             self.status.setText(
                 f"{_backend_display_name(self.backend)} {preferred.version} is below the "
-                f"tested {baseline} baseline."
+                f"tested {baseline} baseline; basic 3MF handoff is available."
             )
             self._update_actions()
             return
@@ -683,6 +699,57 @@ class PrintPanelWidget(QtWidgets.QWidget):
                 widget.deleteLater()
         self._refresh_object_filament_choices()
 
+    def _append_material_combo(
+        self,
+        profile: VibeCADPrint.PrintProfile,
+        *,
+        selected_material: str = "",
+    ) -> None:
+        combo = _compact_combo(QtWidgets.QComboBox(self.material_widget))
+        combo.addItem("Choose material…", None)
+        for material in profile.materials:
+            combo.addItem(
+                material.name + (" — user" if material.is_user else ""),
+                material.name,
+            )
+        if selected_material:
+            selected_index = combo.findData(selected_material)
+            if selected_index >= 0:
+                combo.setCurrentIndex(selected_index)
+        combo.currentIndexChanged.connect(self._materials_changed)
+        slot = len(self.material_combos) + 1
+        printer = self._selected_printer()
+        if self._supports_object_filament_assignment():
+            label = f"Filament {slot}"
+        else:
+            label = (
+                ""
+                if printer is not None and printer.extruders == 1
+                else f"Extruder {slot}"
+            )
+        self.material_layout.addRow(label, combo)
+        self.material_combos.append(combo)
+
+    def _add_material(self, *_args) -> None:
+        profile = self._selected_print()
+        if profile is None or not self._supports_object_filament_assignment():
+            return
+        self._append_material_combo(profile)
+        self._materials_changed()
+
+    def _remove_material(self, *_args) -> None:
+        printer = self._selected_printer()
+        minimum = max(1, printer.extruders if printer is not None else 1)
+        if (
+            not self._supports_object_filament_assignment()
+            or len(self.material_combos) <= minimum
+        ):
+            return
+        combo = self.material_combos.pop()
+        self.material_layout.removeRow(combo)
+        combo.deleteLater()
+        self._materials_changed()
+
     def _supports_object_filament_assignment(self) -> bool:
         return "object_filament_assignment" in tuple(
             getattr(self.backend, "capabilities", ()) or ()
@@ -723,6 +790,19 @@ class PrintPanelWidget(QtWidgets.QWidget):
                 combo.hide()
             combo.blockSignals(False)
 
+    def _remembered_object_filaments(self) -> dict[tuple[Any, ...], int]:
+        setup = self._remembered
+        if setup is None or not setup.object_filament_ids:
+            return {}
+        selected = (item for item in self._selection_items if item[0].isChecked())
+        return {
+            key: filament_id
+            for (_choice, _obj, key), filament_id in zip(
+                selected,
+                setup.object_filament_ids,
+            )
+        }
+
     def _materials_changed(self, *_args) -> None:
         self._refresh_object_filament_choices()
         self._update_actions()
@@ -734,28 +814,27 @@ class PrintPanelWidget(QtWidgets.QWidget):
         if printer is None or profile is None:
             self._update_actions()
             return
-        for extruder in range(printer.extruders):
-            combo = _compact_combo(QtWidgets.QComboBox(self.material_widget))
-            combo.addItem("Choose material…", None)
-            for material in profile.materials:
-                combo.addItem(
-                    material.name + (" — user" if material.is_user else ""),
-                    material.name,
-                )
-            if (
-                self._remembered
-                and self._remembered.printer_profile == printer.name
-                and self._remembered.print_profile == profile.name
-                and extruder < len(self._remembered.material_profiles)
-            ):
-                index = combo.findData(self._remembered.material_profiles[extruder])
-                if index >= 0:
-                    combo.setCurrentIndex(index)
-            combo.currentIndexChanged.connect(self._materials_changed)
-            label = "" if printer.extruders == 1 else f"Extruder {extruder + 1}"
-            self.material_layout.addRow(label, combo)
-            self.material_combos.append(combo)
-        self._refresh_object_filament_choices()
+        remembered_materials: tuple[str, ...] = ()
+        if (
+            self._remembered
+            and self._remembered.printer_profile == printer.name
+            and self._remembered.print_profile == profile.name
+        ):
+            remembered_materials = self._remembered.material_profiles
+        slot_count = printer.extruders
+        if self._supports_object_filament_assignment():
+            slot_count = max(slot_count, len(remembered_materials), 1)
+        for slot in range(slot_count):
+            selected_material = (
+                remembered_materials[slot]
+                if slot < len(remembered_materials)
+                else ""
+            )
+            self._append_material_combo(
+                profile,
+                selected_material=selected_material,
+            )
+        self._refresh_object_filament_choices(self._remembered_object_filaments())
         self._update_actions()
 
     def _current_setup(
@@ -768,7 +847,7 @@ class PrintPanelWidget(QtWidgets.QWidget):
         if printer is None or profile is None or self.catalog is None:
             return None
         materials = tuple(str(combo.currentData() or "") for combo in self.material_combos)
-        if len(materials) != printer.extruders or any(not value for value in materials):
+        if len(materials) < printer.extruders or any(not value for value in materials):
             return None
         object_filament_ids: tuple[int, ...] = ()
         if self._supports_object_filament_assignment():
@@ -792,7 +871,16 @@ class PrintPanelWidget(QtWidgets.QWidget):
             ensure_on_bed=self.ensure_on_bed.isChecked(),
             object_filament_ids=object_filament_ids,
         )
-        return None if VibeCADPrint.validate_setup(setup, printer, self.catalog) else setup
+        return (
+            None
+            if VibeCADPrint.validate_setup(
+                setup,
+                printer,
+                self.catalog,
+                allow_additional_materials=self._supports_object_filament_assignment(),
+            )
+            else setup
+        )
 
     def _current_storage(self) -> PrintPreferences.HandoffStorage:
         return PrintPreferences.load_handoff_storage()
@@ -810,8 +898,22 @@ class PrintPanelWidget(QtWidgets.QWidget):
             and self._print_selection_ready
             and not self._busy
         )
-        self.print_button.setEnabled(ready)
+        basic_handoff_ready = (
+            self.installation is not None
+            and not self.installation.tested
+            and self._print_selection_ready
+            and not self._busy
+        )
+        self.print_button.setEnabled(ready or basic_handoff_ready)
         self.export_button.setEnabled(self._print_selection_ready)
+        printer = self._selected_printer()
+        minimum_materials = max(1, printer.extruders if printer is not None else 1)
+        self.remove_material_button.setEnabled(
+            self._supports_object_filament_assignment()
+            and len(self.material_combos) > minimum_materials
+        )
+        if basic_handoff_ready:
+            return
         if setup is not None:
             PrintPreferences.save_confirmed_setup(
                 setup,
@@ -849,6 +951,16 @@ class PrintPanelWidget(QtWidgets.QWidget):
         if not self._print_selection_ready:
             return
         selection = self._checked_print_selection()
+        if self.installation is not None and not self.installation.tested:
+            import PrintCommandLoader
+
+            PrintCommandLoader.command_module().open_selected_in_slicer(
+                backend=self.backend,
+                installation=self.installation,
+                setup=None,
+                selection=selection,
+            )
+            return
         if not self._save() or self.installation is None:
             return
         import PrintCommandLoader
@@ -926,6 +1038,17 @@ def hide_panel() -> None:
         dock.hide()
 
 
+def checked_panel_selection() -> tuple[Any, tuple[Any, ...]] | None:
+    """Return the visible panel's checked subset, or use live selection if absent."""
+
+    dock = _find_dock()
+    panel = dock.widget() if dock is not None else None
+    if not isinstance(panel, PrintPanelWidget):
+        return None
+    panel._update_selection_summary()
+    return panel._checked_print_selection()
+
+
 def open_setup_dialog(
     *,
     parent: Any | None = None,
@@ -936,9 +1059,14 @@ def open_setup_dialog(
     panel_dock = _find_dock()
     panel = panel_dock.widget() if panel_dock is not None else None
     initial = panel.installation if isinstance(panel, PrintPanelWidget) else None
+    selected_backend = backend
+    if selected_backend is None and isinstance(panel, PrintPanelWidget):
+        selected_backend = panel.backend
+    if selected_backend is None:
+        selected_backend = _backend_for_id(PrintPreferences.active_backend())
     choice = PrintSetupDialog.choose_print_setup(
         parent=parent or _main_window(),
-        backend=backend or VibeCADPrint.PrusaSlicerBackend(),
+        backend=selected_backend,
         open_after_save=False,
         initial_installation=initial,
     )

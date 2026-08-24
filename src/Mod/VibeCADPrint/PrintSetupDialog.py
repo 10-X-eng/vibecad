@@ -191,7 +191,23 @@ class PrintSetupDialog(QtWidgets.QDialog):
         _configure_wrapped_label(intro)
         layout.addWidget(intro)
 
-        executable_group = QtWidgets.QGroupBox(self.slicer_name, self)
+        self.setup_scroll = QtWidgets.QScrollArea(self)
+        self.setup_scroll.setObjectName("VibeCADPrintSetupScroll")
+        self.setup_scroll.setWidgetResizable(True)
+        self.setup_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setup_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        setup_content = QtWidgets.QWidget(self.setup_scroll)
+        setup_layout = QtWidgets.QGridLayout(setup_content)
+        setup_layout.setContentsMargins(0, 0, 0, 0)
+        setup_layout.setHorizontalSpacing(12)
+        setup_layout.setVerticalSpacing(8)
+        setup_layout.setColumnStretch(0, 1)
+        setup_layout.setColumnStretch(1, 1)
+        self.setup_scroll.setWidget(setup_content)
+        layout.addWidget(self.setup_scroll, 1)
+
+        executable_group = QtWidgets.QGroupBox(self.slicer_name, setup_content)
+        executable_group.setObjectName("VibeCADPrintExecutableGroup")
         executable_layout = QtWidgets.QFormLayout(executable_group)
         executable_row = QtWidgets.QWidget(executable_group)
         executable_row_layout = QtWidgets.QHBoxLayout(executable_row)
@@ -230,9 +246,10 @@ class PrintSetupDialog(QtWidgets.QDialog):
         action_layout.addWidget(retry)
         action_layout.addStretch(1)
         executable_layout.addRow("Actions", action_row)
-        layout.addWidget(executable_group)
+        setup_layout.addWidget(executable_group, 0, 0)
 
-        profiles_group = QtWidgets.QGroupBox("Installed profiles", self)
+        profiles_group = QtWidgets.QGroupBox("Installed profiles", setup_content)
+        profiles_group.setObjectName("VibeCADPrintProfilesGroup")
         profiles_layout = QtWidgets.QFormLayout(profiles_group)
         profiles_layout.setRowWrapPolicy(QtWidgets.QFormLayout.DontWrapRows)
         self.printer_combo = QtWidgets.QComboBox(profiles_group)
@@ -255,9 +272,10 @@ class PrintSetupDialog(QtWidgets.QDialog):
         )
         _configure_wrapped_label(material_note)
         profiles_layout.addRow("Multi-extruder", material_note)
-        layout.addWidget(profiles_group)
+        setup_layout.addWidget(profiles_group, 0, 1)
 
-        placement_group = QtWidgets.QGroupBox("Placement", self)
+        placement_group = QtWidgets.QGroupBox("Placement", setup_content)
+        placement_group.setObjectName("VibeCADPrintPlacementGroup")
         placement_layout = QtWidgets.QVBoxLayout(placement_group)
         self.auto_arrange = QtWidgets.QCheckBox("Auto-arrange", placement_group)
         self.auto_arrange.setToolTip(
@@ -279,9 +297,10 @@ class PrintSetupDialog(QtWidgets.QDialog):
         self.ensure_on_bed.toggled.connect(self._update_summary)
         placement_layout.addWidget(self.auto_arrange)
         placement_layout.addWidget(self.ensure_on_bed)
-        layout.addWidget(placement_group)
+        setup_layout.addWidget(placement_group, 1, 0)
 
-        storage_group = QtWidgets.QGroupBox("3MF handoff location", self)
+        storage_group = QtWidgets.QGroupBox("3MF handoff location", setup_content)
+        storage_group.setObjectName("VibeCADPrintStorageGroup")
         storage_layout = QtWidgets.QVBoxLayout(storage_group)
         self.managed_storage = QtWidgets.QRadioButton(
             "Managed VibeCAD cache", storage_group
@@ -313,7 +332,7 @@ class PrintSetupDialog(QtWidgets.QDialog):
         self.folder_storage.setChecked(storage.mode == "folder")
         self.managed_storage.toggled.connect(self._storage_changed)
         self.folder_storage.toggled.connect(self._storage_changed)
-        layout.addWidget(storage_group)
+        setup_layout.addWidget(storage_group, 1, 1)
 
         self.summary = QtWidgets.QLabel(self)
         _configure_wrapped_label(self.summary)
@@ -343,18 +362,30 @@ class PrintSetupDialog(QtWidgets.QDialog):
         self._clear_profiles()
         self._storage_changed()
         self._update_summary()
-        self.resize(700, 590)
+        self.resize(1040, 680)
         self._ensure_layout_room()
         QtCore.QTimer.singleShot(0, self._detect)
 
     def _ensure_layout_room(self) -> None:
-        """Grow to the current styled size hint; never compress wrapped rows."""
+        """Keep the two-column setup readable without exceeding the desktop."""
 
         current_layout = self.layout()
         if current_layout is not None:
             current_layout.activate()
         hint = self.sizeHint()
-        self.resize(max(self.width(), hint.width()), max(self.height(), hint.height()))
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        if screen is None:
+            self.resize(max(self.width(), hint.width()), max(self.height(), hint.height()))
+            return
+        available = screen.availableGeometry()
+        max_width = max(1, available.width() - 48)
+        max_height = max(1, available.height() - 48)
+        preferred_width = max(self.width(), min(hint.width(), 1040), 900)
+        preferred_height = max(self.height(), min(hint.height(), 700))
+        self.resize(
+            min(preferred_width, max_width),
+            min(preferred_height, max_height),
+        )
 
     def _set_status(self, message: str) -> None:
         self.status.setText(message)
@@ -781,11 +812,6 @@ class PrintSetupDialog(QtWidgets.QDialog):
         installation = self._selected_installation()
         if installation is None:
             return
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
-                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            )
         try:
             subprocess.Popen(
                 list(installation.gui_command),
@@ -793,7 +819,7 @@ class PrintSetupDialog(QtWidgets.QDialog):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=(sys.platform != "win32"),
-                creationflags=creationflags,
+                **VibeCADPrint.gui_subprocess_kwargs(),
             )
             self._set_status(
                 f"{self.slicer_name} opened. Complete its Configuration Wizard if needed, "

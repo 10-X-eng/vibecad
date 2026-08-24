@@ -252,35 +252,43 @@ def discover_orca_installations(
         cli = BambuStudio._resolve_command(candidate.cli_command, which)
         if gui is None or cli is None or gui in seen:
             continue
-        try:
-            with tempfile.TemporaryDirectory(
-                prefix="vibecad-slicer-probe-"
-            ) as working_directory:
-                completed = runner(
-                    [*cli, "--help"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15.0,
-                    check=False,
-                    cwd=working_directory,
-                )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        output = "\n".join(
-            str(value or "") for value in (completed.stdout, completed.stderr)
-        )
-        match = _ORCA_VERSION_RE.search(output)
-        if match is not None:
-            pieces = [str(int(value or 0)) for value in match.groups()]
-            version = ".".join(
-                pieces[:3] + ([pieces[3]] if match.group(4) else [])
-            )
-        elif platform == "win32" and completed.returncode == 0:
+        if platform == "win32":
+            # OrcaSlicer allocates its own transient console for --help, even
+            # when Windows starts it with CREATE_NO_WINDOW. Read installed
+            # metadata instead so merely opening Print Setup cannot flash a
+            # console window.
             version = BambuStudio._normalized_version(
                 windows_version_reader(gui[0], candidate.display_name)
             )
         else:
-            version = ""
+            try:
+                with tempfile.TemporaryDirectory(
+                    prefix="vibecad-slicer-probe-"
+                ) as working_directory:
+                    completed = runner(
+                        [*cli, "--help"],
+                        capture_output=True,
+                        text=True,
+                        timeout=15.0,
+                        check=False,
+                        cwd=working_directory,
+                        **VibeCADPrint.background_subprocess_kwargs(
+                            platform=platform
+                        ),
+                    )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            output = "\n".join(
+                str(value or "") for value in (completed.stdout, completed.stderr)
+            )
+            match = _ORCA_VERSION_RE.search(output)
+            if match is not None:
+                pieces = [str(int(value or 0)) for value in match.groups()]
+                version = ".".join(
+                    pieces[:3] + ([pieces[3]] if match.group(4) else [])
+                )
+            else:
+                version = ""
         if not version:
             continue
         resource_dir = candidate.resource_dir or _flatpak_resource_dir(
