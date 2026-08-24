@@ -197,7 +197,8 @@ def _run() -> None:
         service.select_modeling_engine("native")
         state_store = service.native_document_state_store()
         ledger = NativeAssistantUndoLedger()
-        ledger.begin_run("native-analyze-mesh-generation-gui")
+        run_id = "native-analyze-mesh-generation-gui"
+        ledger.begin_run(run_id)
 
         def authorize() -> None:
             require_frozen_native_surface(frozen, controller)
@@ -213,6 +214,7 @@ def _run() -> None:
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
             background_manager=service.native_background_manager(),
             document_thread_dispatch=VibeGui._dispatch_to_document_thread,
+            run_id=run_id,
         )
         dispatcher = NativeTurnDispatcher(
             document=document,
@@ -287,6 +289,7 @@ def _run() -> None:
 
         gmsh_mesh, gmsh_region = create_mesh(gmsh_source, "gmsh")
         netgen_mesh, netgen_region = create_mesh(netgen_source, "netgen")
+        ledger.end_run(run_id)
 
         ui_ticks = 0
         timer = QtCore.QTimer()
@@ -330,13 +333,6 @@ def _run() -> None:
 
         assert ui_ticks >= 10, ui_ticks
         netgen_before_undo = fem_mesh_definition_state(netgen_mesh)
-        document.undo()
-        assert not fem_mesh_definition_state(netgen_mesh)["generated"]
-        document.redo()
-        assert fem_mesh_definition_state(netgen_mesh)["state_sha256"] == netgen_before_undo[
-            "state_sha256"
-        ]
-
         gmsh_before_cancel = fem_mesh_definition_state(gmsh_mesh)
         revision_before_cancel = state_store.current_revision(str(document.Uid))
         started = call(
@@ -358,6 +354,13 @@ def _run() -> None:
             "state_sha256"
         ]
         assert state_store.current_revision(str(document.Uid)) == revision_before_cancel
+
+        document.undo()
+        assert not fem_mesh_definition_state(netgen_mesh)["generated"]
+        document.redo()
+        assert fem_mesh_definition_state(netgen_mesh)["state_sha256"] == netgen_before_undo[
+            "state_sha256"
+        ]
 
         expected = {
             gmsh_mesh.Name: fem_mesh_definition_state(gmsh_mesh),

@@ -9,6 +9,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
 )
+from VibeCADNativeAnalyzeStudy import STUDY_INTENT_SCHEMA
 
 
 ANALYZE_MODEL_CAPABILITY_NAME = "analyze.model"
@@ -82,6 +83,7 @@ _COMMON_PROPERTIES = {
         "density_kg_m3": {"type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0e9},
         "young_modulus_mpa": {"type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0e12},
         "poisson_ratio": {"type": "number", "exclusiveMinimum": -1.0, "exclusiveMaximum": 0.5},
+        "yield_strength_mpa": {"type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0e12},
         "thermal_conductivity_w_m_k": {"type": "number", "minimum": 0.0, "maximum": 1.0e9},
         "thermal_expansion_per_k": {"type": "number", "minimum": -1.0, "maximum": 1.0},
         "reference_temperature_k": {"type": "number", "minimum": 0.0, "maximum": 100_000.0},
@@ -99,6 +101,7 @@ _CLEAR_PROPERTIES = {
             "density_kg_m3",
             "young_modulus_mpa",
             "poisson_ratio",
+            "yield_strength_mpa",
             "thermal_conductivity_w_m_k",
             "thermal_expansion_per_k",
             "reference_temperature_k",
@@ -106,7 +109,7 @@ _CLEAR_PROPERTIES = {
             "kinematic_viscosity_m2_s",
         ],
     },
-    "maxItems": 9,
+    "maxItems": 10,
     "uniqueItems": True,
 }
 _YIELD_POINTS = {
@@ -129,7 +132,14 @@ _YIELD_POINTS = {
 }
 
 
-def _variant(operation: str, description: str, action_id: str, parameters: dict) -> NativeCapabilityVariant:
+def _variant(
+    operation: str,
+    description: str,
+    action_id: str,
+    parameters: dict,
+    *,
+    provider_supplemental: bool = False,
+) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
         description=description,
@@ -139,6 +149,7 @@ def _variant(operation: str, description: str, action_id: str, parameters: dict)
         transaction_behavior="document",
         background_required=False,
         parameters=parameters,
+        provider_supplemental=provider_supplemental,
     )
 
 
@@ -149,11 +160,11 @@ def _material_create_parameters(*, reinforced: bool = False) -> dict:
         "references": _REFERENCES,
         "material_uuid": {
             **_UUID,
-            "description": "Installed card UUID; typed property overrides clear card identity.",
+            "description": "Material card UUID.",
         },
         "properties": {
             **_COMMON_PROPERTIES,
-            "description": "Typed custom values; any override clears material_uuid.",
+            "description": "Custom material values.",
         },
     }
     if reinforced:
@@ -161,11 +172,11 @@ def _material_create_parameters(*, reinforced: bool = False) -> dict:
             {
                 "reinforcement_uuid": {
                     **_UUID,
-                    "description": "Installed solid card UUID for reinforcement.",
+                    "description": "Reinforcement card UUID.",
                 },
                 "reinforcement_properties": {
                     **_COMMON_PROPERTIES,
-                    "description": "Typed overrides; any override clears reinforcement_uuid.",
+                    "description": "Custom reinforcement values.",
                 },
             }
         )
@@ -180,15 +191,12 @@ def _material_create_parameters(*, reinforced: bool = False) -> dict:
 def analyze_model_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ANALYZE_MODEL_CAPABILITY_NAME,
-        description=(
-            "Create exact FEM analyses and typed materials, or edit one exact material "
-            "without modal UI or ambient selection."
-        ),
+        description="Create analyses and materials; edit materials.",
         primary_classification="mutation",
         variants=(
             _variant(
                 "create_analysis",
-                "Create one analysis and optionally its human-preference default solver.",
+                "Create an analysis.",
                 "FEM_Analysis",
                 {
                     "type": "object",
@@ -198,26 +206,42 @@ def analyze_model_capability_definition() -> NativeCapabilityDefinition:
                             "type": "string",
                             "enum": ["user_preference", "none"],
                         },
+                        "study": STUDY_INTENT_SCHEMA,
                     },
                     "required": ["label", "default_solver_policy"],
                     "additionalProperties": False,
                 },
             ),
             _variant(
+                "update_study",
+                "Set the physics and regime for one analysis.",
+                "VibeCAD_AnalyzeConfigureStudy",
+                {
+                    "type": "object",
+                    "properties": {
+                        "target": _ANALYSIS_TARGET,
+                        "study": STUDY_INTENT_SCHEMA,
+                    },
+                    "required": ["target", "study"],
+                    "additionalProperties": False,
+                },
+                provider_supplemental=True,
+            ),
+            _variant(
                 "create_solid_material",
-                "Create a solid material in one exact analysis from an optional card plus typed overrides.",
+                "Create a solid material.",
                 "FEM_MaterialSolid",
                 _material_create_parameters(),
             ),
             _variant(
                 "create_fluid_material",
-                "Create a fluid material in one exact analysis from an optional card plus typed overrides.",
+                "Create a fluid material.",
                 "FEM_MaterialFluid",
                 _material_create_parameters(),
             ),
             _variant(
                 "create_nonlinear_material",
-                "Attach typed isotropic or kinematic hardening data to one exact solid material.",
+                "Add nonlinear hardening data.",
                 "FEM_MaterialMechanicalNonlinear",
                 {
                     "type": "object",
@@ -236,13 +260,13 @@ def analyze_model_capability_definition() -> NativeCapabilityDefinition:
             ),
             _variant(
                 "create_reinforced_material",
-                "Create a reinforced solid material with explicit matrix and reinforcement cards or overrides.",
+                "Create a reinforced material.",
                 "FEM_MaterialReinforced",
                 _material_create_parameters(reinforced=True),
             ),
             _variant(
                 "update_material",
-                "Edit one exact common, reinforced, or nonlinear FEM material with typed changes.",
+                "Edit a material.",
                 "FEM_MaterialEditor",
                 {
                     "type": "object",

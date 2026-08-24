@@ -152,6 +152,121 @@ def _recompute_exact(document: Any, targets: tuple[Any, ...]) -> None:
         )
 
 
+def run_human_mutation(
+    *,
+    document: Any,
+    transaction_name: str,
+    mutate: MutationHandler,
+    verify: PostconditionHandler,
+    transaction_factory: TransactionFactory = _default_transaction_factory,
+    document_is_live: DocumentLiveness = _default_document_is_live,
+    after_abort: AbortStabilizer | None = None,
+) -> dict[str, Any]:
+    """Run the same exact domain mutation contract from a human command."""
+
+    if not all(callable(item) for item in (mutate, verify, transaction_factory)):
+        raise TypeError("Human mutation callbacks must be callable")
+    if not callable(document_is_live):
+        raise TypeError("document_is_live must be callable")
+    if after_abort is not None and not callable(after_abort):
+        raise TypeError("after_abort must be callable or None")
+    name = str(transaction_name or "").strip()
+    if not name or len(name) > 80:
+        raise ValueError("transaction_name must contain 1 to 80 characters")
+    if not document_is_live(document):
+        raise NativeMutationError(
+            NATIVE_DOCUMENT_UNAVAILABLE,
+            "The target document is no longer open.",
+        )
+    if _transaction_is_open(document):
+        raise NativeMutationError(
+            NATIVE_TRANSACTION_ACTIVE,
+            "Finish or cancel the active document transaction before retrying.",
+        )
+
+    transaction = None
+    stage = NATIVE_TRANSACTION_FAILED
+    try:
+        transaction = transaction_factory(document, name)
+        stage = NATIVE_EXECUTION_FAILED
+        draft = mutate(document)
+        if not isinstance(draft, NativeMutationDraft):
+            raise TypeError("Native mutation handler returned an invalid draft.")
+        if not document_is_live(document):
+            raise NativeMutationError(
+                NATIVE_DOCUMENT_UNAVAILABLE,
+                "The target document closed during the operation.",
+            )
+        stage = NATIVE_RECOMPUTE_FAILED
+        _recompute_exact(document, draft.recompute_targets)
+        stage = NATIVE_POSTCONDITION_FAILED
+        if draft.after_recompute is not None:
+            if not callable(draft.after_recompute):
+                raise TypeError("Native after-recompute stabilization must be callable.")
+            draft.after_recompute(document)
+        verified = verify(document, draft)
+        if not isinstance(verified, Mapping):
+            raise TypeError("Native postcondition must return a result object.")
+        if not document_is_live(document):
+            raise NativeMutationError(
+                NATIVE_DOCUMENT_UNAVAILABLE,
+                "The target document closed before commit.",
+            )
+        stage = NATIVE_TRANSACTION_FAILED
+        transaction.commit()
+        transaction = None
+        return dict(verified)
+    except NativeMutationError:
+        abort_error = None
+        if transaction is not None:
+            try:
+                transaction.abort()
+            except BaseException as exc:
+                abort_error = exc
+        if abort_error is None and after_abort is not None:
+            try:
+                after_abort(document)
+            except BaseException as exc:
+                abort_error = exc
+        if abort_error is not None:
+            raise NativeMutationError(
+                NATIVE_TRANSACTION_FAILED,
+                "The document transaction failed and could not be cleanly aborted.",
+            ) from abort_error
+        raise
+    except Exception as exc:
+        abort_error = None
+        if transaction is not None:
+            try:
+                transaction.abort()
+            except BaseException as abort_exc:
+                abort_error = abort_exc
+        if abort_error is None and after_abort is not None:
+            try:
+                after_abort(document)
+            except BaseException as stabilization_error:
+                abort_error = stabilization_error
+        if abort_error is not None:
+            raise NativeMutationError(
+                NATIVE_TRANSACTION_FAILED,
+                "The document transaction failed and could not be cleanly aborted.",
+            ) from abort_error
+        messages = {
+            NATIVE_EXECUTION_FAILED: "The document operation failed before commit.",
+            NATIVE_RECOMPUTE_FAILED: (
+                "The affected document graph failed to recompute."
+            ),
+            NATIVE_POSTCONDITION_FAILED: (
+                "The document operation did not satisfy its postcondition."
+            ),
+            NATIVE_TRANSACTION_FAILED: "The document transaction could not commit.",
+        }
+        raise NativeMutationError(
+            stage,
+            _controlled_failure_message(exc) or messages[stage],
+        ) from exc
+
+
 def _abort_owned_transaction(
     transaction: Any | None,
     state: NativeDocumentStateStore,

@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping
 MAX_BACKGROUND_JOBS = 32
 MAX_BACKGROUND_RESULT_BYTES = 32 * 1024
 MAX_PROGRESS_MESSAGE_CHARS = 160
+MAX_FAILURE_MESSAGE_CHARS = 320
 _TERMINAL_PHASES = frozenset({"completed", "cancelled", "failed"})
 
 
@@ -37,10 +38,15 @@ class NativeBackgroundSnapshot:
     result: dict[str, Any] | None
     error: dict[str, Any] | None
     cancel_requested: bool
+    changes_document: bool = False
 
     @property
     def terminal(self) -> bool:
         return self.phase in _TERMINAL_PHASES
+
+    @property
+    def document_changed(self) -> bool:
+        return self.phase == "completed" and self.changes_document
 
 
 @dataclass(slots=True)
@@ -53,6 +59,7 @@ class _Job:
     progress_message: str = "Queued"
     result_json: str | None = None
     error: dict[str, Any] | None = None
+    changes_document: bool = False
     cancellation: threading.Event = field(default_factory=threading.Event)
     completed: threading.Event = field(default_factory=threading.Event)
 
@@ -85,6 +92,16 @@ def _canonical_result(result: Mapping[str, Any]) -> str:
     return encoded
 
 
+def _bounded_failure_message(value: Any) -> str:
+    message = str(value or "").strip()
+    if len(message) <= MAX_FAILURE_MESSAGE_CHARS:
+        return message
+    head = message[:96].rstrip()
+    separator = " ... "
+    tail_length = MAX_FAILURE_MESSAGE_CHARS - len(head) - len(separator)
+    return head + separator + message[-tail_length:].lstrip()
+
+
 def _error_summary(exc: Exception, diagnostic_id: str | None) -> dict[str, Any]:
     failure = getattr(exc, "failure", None)
     if callable(failure):
@@ -92,7 +109,7 @@ def _error_summary(exc: Exception, diagnostic_id: str | None) -> dict[str, Any]:
         if isinstance(value, Mapping):
             result = {
                 "error_code": str(value.get("error_code") or "")[:80],
-                "message": str(value.get("message") or "")[:320],
+                "message": _bounded_failure_message(value.get("message")),
             }
             for key in ("current_surface", "current_revision", "exact_target"):
                 if key in value and isinstance(value[key], (str, int)):
@@ -149,6 +166,7 @@ class NativeBackgroundManager:
         dispatch_to_document_thread: DocumentThreadDispatcher,
         finalize_message: str | None = None,
         cleanup: CleanupHandler | None = None,
+        changes_document: bool = False,
     ) -> NativeBackgroundSnapshot:
         uid = str(document_uid or "").strip()
         capability = str(capability_name or "").strip()
@@ -168,6 +186,8 @@ class NativeBackgroundManager:
             raise TypeError("Native background callbacks must be callable")
         if cleanup is not None and not callable(cleanup):
             raise TypeError("Native background cleanup must be callable")
+        if type(changes_document) is not bool:
+            raise TypeError("changes_document must be a boolean")
         clean_finalize_message = str(finalize_message or "").strip()
         if len(clean_finalize_message) > MAX_PROGRESS_MESSAGE_CHARS:
             raise NativeBackgroundError(
@@ -198,7 +218,12 @@ class NativeBackgroundManager:
                 raise NativeBackgroundError(
                     "The bounded Native background queue is full."
                 )
-            job = _Job(secrets.token_hex(16), uid, capability)
+            job = _Job(
+                secrets.token_hex(16),
+                uid,
+                capability,
+                changes_document=changes_document,
+            )
             self._jobs[job.job_id] = job
             self._active_documents[uid] = job.job_id
             self._trim_jobs_locked()
@@ -380,6 +405,7 @@ class NativeBackgroundManager:
             result=result,
             error=dict(job.error) if job.error is not None else None,
             cancel_requested=job.cancellation.is_set(),
+            changes_document=job.changes_document,
         )
 
     def wait(self, job_id: str, timeout: float | None = None) -> NativeBackgroundSnapshot:

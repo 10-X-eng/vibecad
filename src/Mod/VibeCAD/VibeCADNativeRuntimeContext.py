@@ -50,6 +50,7 @@ class NativeRuntimeContext:
         repr=False,
         compare=False,
     )
+    run_id: str | None = field(default=None, repr=False, compare=False)
     document_uid: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -73,6 +74,26 @@ class NativeRuntimeContext:
             self.document_thread_dispatch
         ):
             raise TypeError("Native document-thread dispatcher must be callable")
+        if self.run_id is not None:
+            clean_run_id = str(self.run_id).strip()
+            if not clean_run_id:
+                raise TypeError("run_id must be non-empty when provided")
+            dispatch = self.document_thread_dispatch
+            if dispatch is not None:
+                ledger = self.undo_ledger
+
+                def dispatch_owned(operation: Callable[[], Any]) -> Any:
+                    def apply() -> Any:
+                        with ledger.run_scope(clean_run_id):
+                            return operation()
+
+                    return dispatch(apply)
+
+                object.__setattr__(
+                    self,
+                    "document_thread_dispatch",
+                    dispatch_owned,
+                )
         object.__setattr__(self, "document_uid", document_uid(self.document))
 
     def guard(

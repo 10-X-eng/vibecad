@@ -114,6 +114,26 @@ _ELMER_CHANGES = {
     "binary_output": _BOOL,
     "save_geometry_index": _BOOL,
 }
+_OPENFOAM_CHANGES = {
+    "momentum_model": _enum("laminar", "k_omega_sst"),
+    "max_iterations": _POSITIVE_INTEGER,
+    "write_every_iterations": _POSITIVE_INTEGER,
+    "pressure_tolerance": {
+        "type": "number",
+        "minimum": 1.0e-15,
+        "maximum": 1.0,
+    },
+    "velocity_tolerance": {
+        "type": "number",
+        "minimum": 1.0e-15,
+        "maximum": 1.0,
+    },
+    "turbulence_tolerance": {
+        "type": "number",
+        "minimum": 1.0e-15,
+        "maximum": 1.0,
+    },
+}
 _Z88_CHANGES = {
     "analysis_type": _enum("static", "test"),
     "displace_mesh": _BOOL,
@@ -134,6 +154,7 @@ _Z88_CHANGES = {
 SOLVER_CONTROL_FIELDS_BY_BACKEND = {
     "calculix": _CALCULIX_CHANGES,
     "elmer": _ELMER_CHANGES,
+    "openfoam": _OPENFOAM_CHANGES,
     "z88": _Z88_CHANGES,
 }
 
@@ -143,7 +164,7 @@ def _parameters(properties: dict) -> dict:
         "type": "object",
         "properties": {"target": SOLVER_TARGET, **properties},
         "required": ["target"],
-        "minProperties": 3,
+        "minProperties": 2,
         "additionalProperties": False,
     }
 
@@ -189,6 +210,12 @@ def analyze_solver_control_capability_definition() -> NativeCapabilityDefinition
                 "Elmer",
                 "VibeCAD_AnalyzeUpdateElmerSolver",
                 _ELMER_CHANGES,
+            ),
+            _variant(
+                "update_openfoam",
+                "OpenFOAM",
+                "VibeCAD_AnalyzeUpdateOpenFOAMSolver",
+                _OPENFOAM_CHANGES,
             ),
             _variant(
                 "update_z88",

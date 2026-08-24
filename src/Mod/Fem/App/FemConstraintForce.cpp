@@ -47,6 +47,20 @@ ConstraintForce::ConstraintForce()
 
     ADD_PROPERTY(Reversed, (0));
     ADD_PROPERTY_TYPE(
+        UseCustomDirection,
+        (false),
+        "ConstraintForce",
+        (App::PropertyType)(App::Prop_None),
+        "Use CustomDirection instead of a geometry reference"
+    );
+    ADD_PROPERTY_TYPE(
+        CustomDirection,
+        (Base::Vector3d(0, 0, 1)),
+        "ConstraintForce",
+        (App::PropertyType)(App::Prop_None),
+        "Explicit force direction"
+    );
+    ADD_PROPERTY_TYPE(
         DirectionVector,
         (Base::Vector3d(0, 0, 1)),
         "ConstraintForce",
@@ -103,6 +117,26 @@ void ConstraintForce::onChanged(const App::Property* prop)
     // Note: If we call this at the end, then the arrows are not oriented correctly initially
     // because the NormalDirection has not been calculated yet
     Constraint::onChanged(prop);
+    if (UseCustomDirection.getValue()) {
+        if (prop == &UseCustomDirection || prop == &CustomDirection || prop == &Reversed
+            || prop == &Direction || prop == &NormalDirection) {
+            Base::Vector3d direction = CustomDirection.getValue();
+            if (direction.Length() >= Precision::Confusion()) {
+                direction.Normalize();
+                if (Reversed.getValue()) {
+                    direction = -direction;
+                }
+            }
+            DirectionVector.setValue(direction);
+        }
+        return;
+    }
+    if (prop == &UseCustomDirection) {
+        naturalDirectionVector = Base::Vector3d(0, 0, 0);
+        Direction.touch();
+        NormalDirection.touch();
+        return;
+    }
     if (prop == &Direction) {
         Base::Vector3d direction = getDirection(Direction);
         if (direction.Length() < Precision::Confusion()) {

@@ -41,6 +41,7 @@ from VibeCADNativeView import (
     set_object_visibility,
     set_grid_visible,
     set_isometric,
+    set_standard_view,
     set_section_view_visible,
 )
 
@@ -145,11 +146,21 @@ class NativeCommonRuntime:
         return self._snapshot()
 
     def control_view(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = dict(arguments)
+        if normalized.get("operation") == "set_grid" and "visible" not in normalized:
+            normalized["visible"] = True
         operation, values = strict_variant_arguments(
-            arguments,
+            normalized,
             {
                 "fit_all": frozenset(),
                 "isometric": frozenset(),
+                "set_isometric": frozenset(),
+                "set_front": frozenset(),
+                "set_rear": frozenset(),
+                "set_left": frozenset(),
+                "set_right": frozenset(),
+                "set_top": frozenset(),
+                "set_bottom": frozenset(),
                 "set_grid": frozenset({"visible"}),
                 "set_section_view": frozenset({"visible"}),
                 "set_object_visibility": frozenset({"targets", "visible"}),
@@ -162,8 +173,20 @@ class NativeCommonRuntime:
         self._guard(allow_owned_playback=True)
         if operation == "fit_all":
             return fit_all(self._document)
-        if operation == "isometric":
+        if operation in {"isometric", "set_isometric"}:
             return set_isometric(self._document)
+        if operation.startswith("set_") and operation.removeprefix("set_") in {
+            "front",
+            "rear",
+            "left",
+            "right",
+            "top",
+            "bottom",
+        }:
+            return set_standard_view(
+                self._document,
+                operation.removeprefix("set_"),
+            )
         if operation == "set_grid":
             return set_grid_visible(self._document, values["visible"])
         if operation == "set_section_view":

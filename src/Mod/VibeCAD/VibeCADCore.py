@@ -755,20 +755,27 @@ class VibeCADService:
     def native_active_snapshot(self) -> dict[str, Any]:
         """Build only the live state for the human-selected Native surface."""
 
-        if self.modeling_engine() != "native":
-            raise RuntimeError("The active document is not under Native authority.")
         document = self._active_document()
         if document is None:
             raise RuntimeError("No active document is available.")
         from VibeCADNativeSnapshot import build_active_snapshot
+        from VibeCADModelingSurface import provider_engine_for_ribbon
         from VibeCADRibbonSurface import read_active_ribbon_surface
 
         surface = read_active_ribbon_surface()
+        if (
+            provider_engine_for_ribbon(
+                self.modeling_engine(),
+                surface.surface_id,
+            )
+            != "native"
+        ):
+            raise RuntimeError("The active ribbon has no Native provider surface.")
         background_job = None
         if surface.surface_id == "analyze":
             background_job = self._native_background_jobs.latest_document_snapshot(
                 str(document.Uid),
-                capability_prefix="analyze.solver_execution",
+                capability_prefix="analyze.",
             )
         return build_active_snapshot(
             document,
@@ -4433,17 +4440,36 @@ class VibeCADService:
         """Accept an off-thread read only while the same project/thread is selected."""
 
         scope = self.project_scope_snapshot()
-        current_identity = (
-            str(scope.get("root") or ""),
-            str(self._active_document_uid() or ""),
-            str(self._conversation_cache_key or ""),
-        )
-        expected_identity = (
-            str(prepared.get("project_root") or ""),
-            str(prepared.get("document_uid") or ""),
-            str(prepared.get("cache_key") or ""),
-        )
-        if current_identity != expected_identity:
+        project_root = str(scope.get("root") or "")
+        document_uid = str(self._active_document_uid() or "")
+        if (
+            project_root != str(prepared.get("project_root") or "")
+            or document_uid != str(prepared.get("document_uid") or "")
+        ):
+            return {"accepted": False, "reason": "active_conversation_changed"}
+
+        prepared_id = str(prepared.get("conversation_id") or "").lower()
+        loaded_id = str(history.get("conversation_id") or "").lower()
+        if prepared_id and loaded_id != prepared_id:
+            return {"accepted": False, "reason": "active_conversation_changed"}
+
+        current_id = ""
+        cache_key = str(self._conversation_cache_key or "")
+        if cache_key:
+            cache_path = Path(cache_key)
+            candidate = cache_path.stem.lower()
+            if (
+                self._conversation_cache_document_uid != document_uid
+                or cache_path.parent.parent != Path(project_root)
+                or re.fullmatch(r"[0-9a-f]{32}", candidate) is None
+            ):
+                return {"accepted": False, "reason": "active_conversation_changed"}
+            current_id = candidate
+
+        expected_id = prepared_id or loaded_id
+        if (prepared_id and current_id != prepared_id) or (
+            not prepared_id and current_id and current_id != expected_id
+        ):
             return {"accepted": False, "reason": "active_conversation_changed"}
         self._set_conversation_cache(history)
         return {

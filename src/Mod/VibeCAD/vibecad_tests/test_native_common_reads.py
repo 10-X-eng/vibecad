@@ -25,6 +25,7 @@ from VibeCADNativeView import (
     fit_all,
     set_grid_visible,
     set_isometric,
+    set_standard_view,
     set_section_view_visible,
 )
 
@@ -238,13 +239,15 @@ def test_view_operations_call_direct_view_api_without_command_dispatch() -> None
     view = SimpleNamespace(
         fitAll=lambda: calls.append("fit"),
         viewAxonometric=lambda: calls.append("isometric"),
+        viewTop=lambda: calls.append("top"),
     )
     gui_document = SimpleNamespace(Document=document, activeView=lambda: view)
     gui = SimpleNamespace(activeDocument=lambda: gui_document)
 
     assert fit_all(document, gui=gui) == {"fit_all": True}
     assert set_isometric(document, gui=gui) == {"orientation": "isometric"}
-    assert calls == ["fit", "isometric"]
+    assert set_standard_view(document, "top", gui=gui) == {"orientation": "top"}
+    assert calls == ["fit", "isometric", "top"]
 
     other = _Document()
     with pytest.raises(NativeViewError, match="another document"):
@@ -401,3 +404,39 @@ def test_screenshot_wrapper_rejects_unverified_or_inconsistent_artifacts(
     }
     with pytest.raises(NativeViewError, match="inconsistent"):
         capture_screenshot(service, document)
+
+
+def test_view_capture_ignores_fem_shape_link_properties() -> None:
+    from tool_impl.service import core_capture_view_screenshot, core_set_view
+
+    bounds = SimpleNamespace(
+        XMin=0.0,
+        YMin=0.0,
+        ZMin=0.0,
+        XMax=10.0,
+        YMax=20.0,
+        ZMax=30.0,
+    )
+    solid_shape = SimpleNamespace(
+        isNull=lambda: False,
+        BoundBox=bounds,
+        hashCode=lambda: 123,
+    )
+    solid = SimpleNamespace(
+        Name="FluidDomain",
+        TypeId="Part::Feature",
+        Shape=solid_shape,
+        ViewObject=None,
+    )
+    mesh = SimpleNamespace(
+        Name="FEMMeshGmsh",
+        TypeId="Fem::FemMeshShapeBaseObjectPython",
+        Shape=solid,
+        ViewObject=None,
+    )
+    document = SimpleNamespace(Objects=[solid, mesh])
+
+    assert core_set_view.model_display_target_names(document) == ["FluidDomain"]
+    fingerprint = core_capture_view_screenshot._document_visual_fingerprint(document)
+    assert fingerprint["complete"] is True
+    assert fingerprint["errors"] == []

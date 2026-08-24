@@ -5,6 +5,10 @@ set(VibeCAD_Scripts
     InitGui.py
     VibeCADAgentCli.py
     VibeCADAgentControl.py
+    VibeCADAnalyzeStudyGui.py
+    VibeCADAnalyzeGeometryGui.py
+    VibeCADAnalyzeResultsGui.py
+    VibeCADAnalyzeStudySetup.py
     VibeCADAeroContext.py
     VibeCADAeroRibbon.py
     vibecad-agent.cmd
@@ -50,14 +54,28 @@ set(VibeCAD_Scripts
     VibeCADNativeActionManifest.py
     VibeCADNativeArguments.py
     VibeCADNativeAnalyzeAnalysis.py
+    VibeCADNativeAnalyzeAssignments.py
+    VibeCADNativeAnalyzeAssignmentView.py
+    VibeCADNativeAnalyzeAssignmentViewBindings.py
+    VibeCADNativeAnalyzeAssignmentViewRuntime.py
+    VibeCADNativeAnalyzeAssignmentViewSchema.py
+    VibeCADNativeAnalyzeProviderScope.py
+    VibeCADNativeAnalyzeProviderState.py
     VibeCADNativeAnalyzeErrors.py
     VibeCADNativeAnalyzeElementState.py
     VibeCADNativeAnalyzeElementValues.py
     VibeCADNativeAnalyzeGeometryBindings.py
     VibeCADNativeAnalyzeGeometryCreate.py
     VibeCADNativeAnalyzeGeometryEdit.py
+    VibeCADNativeAnalyzeGeometryRead.py
+    VibeCADNativeAnalyzeGeometrySources.py
     VibeCADNativeAnalyzeGeometryRuntime.py
     VibeCADNativeAnalyzeGeometrySchema.py
+    VibeCADNativeAnalyzeFaceBindings.py
+    VibeCADNativeAnalyzeFaceSchema.py
+    VibeCADNativeAnalyzeFlowResultBindings.py
+    VibeCADNativeAnalyzeFlowResultSchema.py
+    VibeCADNativeAnalyzeFlowPresentation.py
     VibeCADNativeAnalyzeConstraintCreate.py
     VibeCADNativeAnalyzeConstraintEdit.py
     VibeCADNativeAnalyzeConstraintState.py
@@ -73,7 +91,12 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeElectromagneticRuntime.py
     VibeCADNativeAnalyzeElectromagneticSchema.py
     VibeCADNativeAnalyzeFluidBindings.py
+    VibeCADNativeAnalyzeFluidCreateBindings.py
     VibeCADNativeAnalyzeFluidCreate.py
+    VibeCADNativeAnalyzeFluidCreateSchema.py
+    VibeCADNativeAnalyzeCfdLifecycleBindings.py
+    VibeCADNativeAnalyzeCfdLifecycleSchema.py
+    VibeCADNativeAnalyzeCurrentTargets.py
     VibeCADNativeAnalyzeFluidEdit.py
     VibeCADNativeAnalyzeFluidRuntime.py
     VibeCADNativeAnalyzeFluidSchema.py
@@ -102,6 +125,16 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeThermalState.py
     VibeCADNativeAnalyzeThermalValues.py
     VibeCADNativeAnalyzeMeshBindings.py
+    VibeCADNativeAnalyzeMeshLifecycleBindings.py
+    VibeCADNativeAnalyzeMeshLifecycleSchema.py
+    VibeCADNativeAnalyzeLocalMeshBindings.py
+    VibeCADNativeAnalyzeLocalMeshSchema.py
+    VibeCADNativeAnalyzeMechanicalResultBindings.py
+    VibeCADNativeAnalyzeMechanicalResultSchema.py
+    VibeCADNativeAnalyzeThermalResultBindings.py
+    VibeCADNativeAnalyzeThermalResultSchema.py
+    VibeCADNativeAnalyzeRunBindings.py
+    VibeCADNativeAnalyzeRunSchema.py
     VibeCADNativeAnalyzeMeshCreate.py
     VibeCADNativeAnalyzeMeshEdit.py
     VibeCADNativeAnalyzeMeshDisplacement.py
@@ -112,6 +145,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeMeshRuntime.py
     VibeCADNativeAnalyzeMeshSchema.py
     VibeCADNativeAnalyzeMeshState.py
+    VibeCADNativeAnalyzeOpenFOAMExecution.py
     VibeCADNativeAnalyzeMeshValues.py
     VibeCADNativeAnalyzeSolverBindings.py
     VibeCADNativeAnalyzeSolverControlBindings.py
@@ -121,10 +155,13 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeSolverControlValues.py
     VibeCADNativeAnalyzeSolverCreate.py
     VibeCADNativeAnalyzeSolverExecution.py
+    VibeCADAnalyzeSolverGui.py
     VibeCADNativeAnalyzeSolverExecutionBindings.py
     VibeCADNativeAnalyzeSolverExecutionProcess.py
     VibeCADNativeAnalyzeSolverExecutionRuntime.py
     VibeCADNativeAnalyzeSolverExecutionSchema.py
+    VibeCADNativeAnalyzeStructuralLifecycleBindings.py
+    VibeCADNativeAnalyzeStructuralLifecycleSchema.py
     VibeCADNativeAnalyzeSolverRuntime.py
     VibeCADNativeAnalyzeSolverSchema.py
     VibeCADNativeAnalyzeSolverState.py
@@ -195,7 +232,13 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeModelBindings.py
     VibeCADNativeAnalyzeModelRuntime.py
     VibeCADNativeAnalyzeModelSchema.py
+    VibeCADNativeAnalyzeSolidDomain.py
+    VibeCADNativeAnalyzeSolidDomainBindings.py
+    VibeCADNativeAnalyzeSolidDomainSchema.py
     VibeCADNativeAnalyzeSnapshot.py
+    VibeCADNativeAnalyzeStudy.py
+    VibeCADNativeAnalyzeStudyEdit.py
+    VibeCADNativeAnalyzeStudyState.py
     VibeCADNativeAeroSnapshot.py
     VibeCADNativeAeroSchema.py
     VibeCADNativeAeroRuntime.py
@@ -1171,8 +1214,10 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/mcp_gui_integration.py
     vibecad_tests/native_background_gui_integration.py
     vibecad_tests/native_analyze_model_gui_integration.py
+    vibecad_tests/analyze_study_setup_gui_integration.py
     vibecad_tests/native_analyze_geometry_gui_integration.py
     vibecad_tests/native_analyze_electromagnetic_gui_integration.py
+    vibecad_tests/native_analyze_elmer_execution_gui_integration.py
     vibecad_tests/native_analyze_fluid_gui_integration.py
     vibecad_tests/native_analyze_geometrical_gui_integration.py
     vibecad_tests/native_analyze_load_gui_integration.py
@@ -1186,6 +1231,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_analyze_solver_gui_integration.py
     vibecad_tests/native_analyze_solver_control_gui_integration.py
     vibecad_tests/native_analyze_solver_execution_gui_integration.py
+    vibecad_tests/native_analyze_openfoam_gui_integration.py
     vibecad_tests/native_analyze_result_inspect_gui_integration.py
     vibecad_tests/native_analyze_clipping_gui_integration.py
     vibecad_tests/native_analyze_post_pipeline_gui_integration.py
@@ -1195,6 +1241,10 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_analyze_mesh_refinement_gui_integration.py
     vibecad_tests/native_analyze_structured_mesh_gui_integration.py
     vibecad_tests/native_analyze_provider_surface_gui_integration.py
+    vibecad_tests/native_analyze_solid_domain_gui_integration.py
+    vibecad_tests/native_analyze_multipart_structural_gui_integration.py
+    vibecad_tests/native_analyze_thermomechanical_execution_gui_integration.py
+    vibecad_tests/native_analyze_high_entity_gui_integration.py
     vibecad_tests/native_manufacture_inspect_gui_integration.py
     vibecad_tests/native_manufacture_adaptive_gui_integration.py
     vibecad_tests/native_manufacture_drilling_gui_integration.py

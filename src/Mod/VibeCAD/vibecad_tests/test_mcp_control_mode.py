@@ -282,6 +282,8 @@ def test_host_surface_is_exact_internal_schema_plus_controller_tools() -> None:
         "FreeCAD": SimpleNamespace(ActiveDocument=None),
         "VibeCADCore": SimpleNamespace(get_service=lambda: service),
         "VibeCADModelingSurface": SimpleNamespace(
+            provider_engine_from_service=lambda _service: "vibescript",
+            resolve_modeling_surface=lambda _workbench, _engine: resolution,
             resolve_service_surface=lambda _service, _workbench: resolution
         ),
         "VibeCADSession": SimpleNamespace(
@@ -303,6 +305,64 @@ def test_host_surface_is_exact_internal_schema_plus_controller_tools() -> None:
         mcp.RECOVER_DOCUMENTS_TOOL,
         mcp.MANAGE_DOCUMENT_TOOL,
     ]
+
+
+def test_host_surface_uses_analyze_provider_without_changing_source_authority() -> None:
+    schemas = [
+        {
+            "name": "analyze.inspect",
+            "description": "Inspect the active study.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        }
+    ]
+    service = SimpleNamespace(active_workbench_name=lambda: "FemWorkbench")
+    authoring_resolution = SimpleNamespace(
+        workbench="FemWorkbench",
+        engine="vibescript",
+        domain="fem",
+        surface_id="vibescript-fem",
+        available=True,
+        unavailable_reason="",
+    )
+    provider_resolution = SimpleNamespace(
+        workbench="FemWorkbench",
+        engine="native",
+        domain="analyze",
+        surface_id="native-analyze",
+        available=True,
+        unavailable_reason="",
+    )
+    modules = {
+        "FreeCAD": SimpleNamespace(ActiveDocument=None),
+        "VibeCADCore": SimpleNamespace(get_service=lambda: service),
+        "VibeCADModelingSurface": SimpleNamespace(
+            provider_engine_from_service=lambda _service: "native",
+            resolve_modeling_surface=(
+                lambda _workbench, _engine: provider_resolution
+            ),
+            resolve_service_surface=(
+                lambda _service, _workbench: authoring_resolution
+            ),
+        ),
+        "VibeCADSession": SimpleNamespace(
+            _minimal_runtime_state=lambda _service: {},
+            provider_tool_schemas=lambda *_args, **_kwargs: schemas,
+        ),
+        "VibeCADVibeScriptDomains": SimpleNamespace(
+            get_vibescript_pack=lambda _workbench: None
+        ),
+    }
+    with mock.patch.dict(sys.modules, modules):
+        session = mcp._HostToolSession(lambda operation: operation(), threading.Event())
+        listed = session.list_tools()
+
+    assert listed["modeling_surface"]["engine"] == "native"
+    assert listed["modeling_surface"]["domain"] == "analyze"
+    assert listed["tools"][0]["name"] == "analyze.inspect"
 
 
 def test_host_runner_forwards_the_exact_frozen_provider_surface() -> None:

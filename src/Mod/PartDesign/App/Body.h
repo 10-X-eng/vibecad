@@ -181,6 +181,8 @@ protected:
 
 private:
     fastsignals::scoped_connection connection;
+    App::DocumentObject* restoredTip = nullptr;
+    bool preserveRestoredShape = false;
     bool showTip = false;
 };
 

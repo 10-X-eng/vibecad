@@ -42,6 +42,8 @@ public:
     App::PropertyForce Force;
     App::PropertyLinkSub Direction;
     App::PropertyBool Reversed;
+    App::PropertyBool UseCustomDirection;
+    App::PropertyVector CustomDirection;
     App::PropertyVector DirectionVector;
 
     /// recalculate the object

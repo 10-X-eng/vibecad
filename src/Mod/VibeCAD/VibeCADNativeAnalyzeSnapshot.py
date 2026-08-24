@@ -22,10 +22,13 @@ from VibeCADNativeAnalyzeSolverState import solver_state
 from VibeCADNativeAnalyzeEquationState import equation_state
 from VibeCADNativeAnalyzeResultState import result_reference_state
 from VibeCADNativeAnalyzeResults import result_purge_state
+from VibeCADNativeAnalyzeStudy import STUDY_PHYSICS, study_intent_state
+from VibeCADNativeAnalyzeStudyState import study_inventory, study_state
 from VibeCADNativeAnalyzeClipping import (
     clipping_face_source_state,
     clipping_state,
 )
+from VibeCADNativeAnalyzeGeometrySources import active_analyze_geometry_sources
 from VibeCADNativeMeshState import mesh_object_state
 from VibeCADNativeSnapshot import objects_of_type
 
@@ -94,7 +97,7 @@ def _compact_solver(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _compact_result(state: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         key: state[key]
         for key in (
             "object_name",
@@ -106,10 +109,13 @@ def _compact_result(state: dict[str, Any]) -> dict[str, Any]:
             "field_count",
             "field_names",
             "field_names_truncated",
+            "flow_boundaries",
+            "flow_boundaries_truncated",
             "state_sha256",
         )
         if key in state
     }
+    return result
 
 
 def _analysis_workflows(
@@ -118,6 +124,7 @@ def _analysis_workflows(
     mesh_states: dict[str, dict[str, Any]],
     solver_states: dict[str, dict[str, Any]],
     result_states: dict[str, dict[str, Any]],
+    study_states: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     summary_by_name = {state["object_name"]: state for state in summarized}
     workflows = []
@@ -169,6 +176,7 @@ def _analysis_workflows(
         if not generated_meshes:
             blockers.append("missing_generated_mesh")
         result_graph = dict(analysis_summary["result_graph"])
+        study = study_states[name]
         workflows.append(
             {
                 "analysis": {
@@ -190,6 +198,10 @@ def _analysis_workflows(
                     "runnable_solver_count": runnable_solvers,
                     "blockers": blockers,
                 },
+                "study": study["intent"],
+                "study_inventory": study["inventory"],
+                "solver_runtimes": study["solver_runtimes"],
+                "engineering_readiness": study["readiness"],
                 "meshes": member_meshes,
                 "mesh_count": len(all_member_meshes),
                 "meshes_truncated": len(all_member_meshes) > len(member_meshes),
@@ -202,6 +214,44 @@ def _analysis_workflows(
             }
         )
     return workflows
+
+
+def _provider_scope(
+    analyses: list[Any],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    physics = set()
+    undeclared = 0
+    totals = {
+        "mesh_definition_count": 0,
+        "generated_mesh_count": 0,
+        "solver_count": 0,
+        "result_count": 0,
+    }
+    states = {}
+    for index, analysis in enumerate(analyses):
+        if index < MAX_ANALYSES:
+            state = study_state(analysis)
+            states[str(analysis.Name)] = state
+            intent = state["intent"]
+            inventory = state["inventory"]
+        else:
+            intent = study_intent_state(analysis)
+            inventory = study_inventory(analysis)
+        if intent.get("declared") is True:
+            physics.update(intent["physics"])
+        else:
+            undeclared += 1
+        for name in totals:
+            totals[name] += int(inventory[name])
+    return (
+        {
+            "analysis_count": len(analyses),
+            "undeclared_analysis_count": undeclared,
+            "physics": [name for name in STUDY_PHYSICS if name in physics],
+            **totals,
+        },
+        states,
+    )
 
 
 def _run_status(
@@ -279,29 +329,20 @@ def _materials(document: Any) -> tuple[int, list[dict[str, Any]]]:
 def _geometry_sources(document: Any) -> tuple[int, list[dict[str, Any]]]:
     result = []
     count = 0
-    try:
-        import PartGui
-    except ImportError:
-        return 0, result
-    for obj in list(getattr(document, "Objects", ()) or ()):
-        shape = getattr(obj, "Shape", None)
-        if shape is None:
-            continue
+    for obj in active_analyze_geometry_sources(document):
         try:
-            if (
-                shape.isNull()
-                or not shape.isValid()
-                or not PartGui.isModelingObjectActive(obj)
-            ):
-                continue
             state = mesh_object_state(obj)
             topology = dict(state.get("topology") or {})
-            if not any(
-                int(topology.get(name, 0) or 0) > 0
-                for name in ("solids", "faces", "edges")
-            ):
-                continue
             state["clipping_face_target"] = clipping_face_source_state(obj)
+            if bool(getattr(obj, "VibeCADAnalysisDomain", False)):
+                mode = str(getattr(obj, "AnalysisInterfaceMode", "") or "")
+                state["interface_mode"] = mode
+                shape = obj.Shape
+                state["all_solids_conformal"] = bool(
+                    mode == "shared"
+                    and len(shape.CompSolids) == 1
+                    and len(shape.CompSolids[0].Solids) == len(shape.Solids)
+                )
         except Exception:
             continue
         count += 1
@@ -579,12 +620,14 @@ def build_analyze_snapshot(
     solver_count, solvers, solver_states = _solvers(document)
     equation_count, equations = _equations(document)
     result_count, results, result_states = _results(document)
+    provider_scope, study_states = _provider_scope(analyses)
     workflows = _analysis_workflows(
         analyses,
         summarized,
         mesh_states,
         solver_states,
         result_states,
+        study_states,
     )
     try:
         clipping = clipping_state(document)
@@ -598,6 +641,7 @@ def build_analyze_snapshot(
         "analysis_workflow_count": len(analyses),
         "analysis_workflows": workflows,
         "analysis_workflows_truncated": len(analyses) > len(workflows),
+        "provider_scope": provider_scope,
         "run_status": _run_status(
             document,
             list(solver_states.values()),

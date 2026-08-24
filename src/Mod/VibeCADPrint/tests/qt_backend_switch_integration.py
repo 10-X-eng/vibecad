@@ -23,7 +23,7 @@ import VibeCADPrint  # noqa: E402
 
 def _setup(prefix: str) -> VibeCADPrint.PrintSetup:
     materials = (
-        (f"{prefix} Material 1", f"{prefix} Material 2")
+        (f"{prefix} Material 1",)
         if prefix in {"Bambu", "Orca"}
         else (f"{prefix} Material",)
     )
@@ -58,13 +58,16 @@ def _backend_data(backend_id: str):
             "orcaslicer": (2, 4, 2),
         }[backend_id],
     )
-    materials = tuple(
-        VibeCADPrint.MaterialProfile(name) for name in setup.material_profiles
+    material_names = (
+        (f"{prefix} Material 1", f"{prefix} Material 2")
+        if prefix in {"Bambu", "Orca"}
+        else setup.material_profiles
     )
+    materials = tuple(VibeCADPrint.MaterialProfile(name) for name in material_names)
     quality = VibeCADPrint.PrintProfile(setup.print_profile, materials)
     printer = VibeCADPrint.PrinterProfile(
         setup.printer_profile,
-        extruders=len(materials),
+        extruders=1,
         bed=VibeCADPrint.BedInfo(width=250, height=250, max_print_height=250),
     )
     catalog = VibeCADPrint.ProfileCatalog(printer.name, (quality,))
@@ -168,6 +171,15 @@ def _run() -> None:
         assert panel.print_combo.currentText() == "Bambu Quality"
         assert [combo.currentText() for combo in panel.material_combos] == [
             "Bambu Material 1",
+        ]
+        assert not panel.add_material_button.isHidden()
+        panel.add_material_button.click()
+        panel.material_combos[1].setCurrentIndex(
+            panel.material_combos[1].findData("Bambu Material 2")
+        )
+        application.processEvents()
+        assert [combo.currentText() for combo in panel.material_combos] == [
+            "Bambu Material 1",
             "Bambu Material 2",
         ]
         assert panel.object_checkboxes[0].isChecked()
@@ -184,6 +196,17 @@ def _run() -> None:
             require_object_assignments=True
         ).object_filament_ids == (1, 2)
         assert panel.print_button.isEnabled()
+        panel._manual_refresh()
+        application.processEvents()
+        assert [combo.currentData() for combo in panel.object_filament_combos] == [1, 2]
+
+        setup_calls = []
+        PrintPanel._find_dock = lambda: SimpleNamespace(widget=lambda: panel)
+        PrintPanel.PrintSetupDialog.choose_print_setup = lambda **kwargs: (
+            setup_calls.append(kwargs) or SimpleNamespace(accepted=False)
+        )
+        PrintPanel.open_setup_dialog(parent=panel)
+        assert setup_calls[0]["backend"] is panel.backend
 
         orca_index = panel.slicer_combo.findData("orcaslicer")
         assert orca_index >= 0
@@ -195,8 +218,12 @@ def _run() -> None:
         assert panel.print_combo.currentText() == "Orca Quality"
         assert [combo.currentText() for combo in panel.material_combos] == [
             "Orca Material 1",
-            "Orca Material 2",
         ]
+        panel.add_material_button.click()
+        panel.material_combos[1].setCurrentIndex(
+            panel.material_combos[1].findData("Orca Material 2")
+        )
+        application.processEvents()
         assert len(panel.object_filament_combos) == 2
         assert not panel.print_button.isEnabled()
         panel.object_filament_combos[0].setCurrentIndex(
@@ -213,6 +240,35 @@ def _run() -> None:
         panel._manual_refresh()
         assert backends["orcaslicer"].invalidations == 1
         assert panel.object_checkboxes[0].isChecked()
+
+        legacy = _Backend("bambustudio")
+        legacy.installation = VibeCADPrint.SlicerInstallation(
+            backend_id="bambustudio",
+            version="2.7.1.62",
+            gui_command=("bambu-studio",),
+            cli_command=("bambu-studio",),
+            source="test",
+            display_name="Bambu Studio 2.7.1.62",
+            tested_version=(2, 8, 2),
+        )
+        panel.backend = legacy
+        panel.backend_id = "bambustudio"
+        panel._clear_profiles()
+        panel._installations_loaded((legacy.installation,))
+        application.processEvents()
+        assert panel.print_button.isEnabled()
+        assert "basic 3MF" in panel.status.text()
+        handoffs = []
+        import PrintCommandLoader
+
+        PrintCommandLoader.command_module = lambda: SimpleNamespace(
+            open_selected_in_slicer=lambda **kwargs: handoffs.append(kwargs)
+        )
+        panel.print_selected()
+        assert len(handoffs) == 1
+        assert handoffs[0]["backend"] is legacy
+        assert handoffs[0]["installation"] is legacy.installation
+        assert handoffs[0]["setup"] is None
         print("VIBECAD_PRINT_BACKEND_SWITCH_OK", flush=True)
         exit_code = 0
     except Exception:

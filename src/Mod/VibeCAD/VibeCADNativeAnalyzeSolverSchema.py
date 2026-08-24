@@ -38,12 +38,22 @@ def _variant(
     operation: str,
     backend: str,
     action_id: str,
+    purpose: str,
 ) -> NativeCapabilityVariant:
+    properties = {
+        "analysis": _ANALYSIS_TARGET,
+        "label": {"type": "string", "minLength": 1, "maxLength": 160},
+    }
+    if operation == "create_openfoam":
+        properties["momentum_model"] = {
+            "type": "string",
+            "enum": ["laminar", "k_omega_sst"],
+            "default": "laminar",
+        }
     return NativeCapabilityVariant(
         operation=operation,
         description=(
-            f"Add one {backend} solver, configured from the user's FEM preferences, "
-            "to an exact analysis."
+            f"Add one {backend} solver for {purpose} to an exact analysis."
         ),
         action_ids=frozenset({action_id}),
         surface_ids=frozenset({"analyze"}),
@@ -52,10 +62,7 @@ def _variant(
         background_required=False,
         parameters={
             "type": "object",
-            "properties": {
-                "analysis": _ANALYSIS_TARGET,
-                "label": {"type": "string", "minLength": 1, "maxLength": 160},
-            },
+            "properties": properties,
             "required": ["analysis", "label"],
             "additionalProperties": False,
         },
@@ -71,10 +78,36 @@ def analyze_solver_capability_definition() -> NativeCapabilityDefinition:
         ),
         primary_classification="mutation",
         variants=(
-            _variant("create_calculix", "CalculiX", "FEM_SolverCalculiX"),
-            _variant("create_elmer", "Elmer", "FEM_SolverElmer"),
-            _variant("create_mystran", "Mystran", "FEM_SolverMystran"),
-            _variant("create_z88", "Z88", "FEM_SolverZ88"),
+            _variant(
+                "create_calculix",
+                "CalculiX",
+                "FEM_SolverCalculiX",
+                "structural mechanics or heat transfer",
+            ),
+            _variant(
+                "create_elmer",
+                "Elmer",
+                "FEM_SolverElmer",
+                "equation-based multiphysics",
+            ),
+            _variant(
+                "create_openfoam",
+                "OpenFOAM",
+                "FEM_SolverOpenFOAM",
+                "computational fluid dynamics",
+            ),
+            _variant(
+                "create_mystran",
+                "Mystran",
+                "FEM_SolverMystran",
+                "linear structural mechanics",
+            ),
+            _variant(
+                "create_z88",
+                "Z88",
+                "FEM_SolverZ88",
+                "structural mechanics",
+            ),
         ),
     )
 

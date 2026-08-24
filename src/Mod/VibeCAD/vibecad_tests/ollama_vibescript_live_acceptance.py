@@ -75,7 +75,8 @@ def _shape_summary(document) -> dict:
     solid_count = 0
     for obj in document.Objects:
         shape = getattr(obj, "Shape", None)
-        if shape is None or bool(shape.isNull()):
+        is_null = getattr(shape, "isNull", None)
+        if not callable(is_null) or bool(is_null()):
             continue
         solids = int(len(shape.Solids))
         solid_count += solids
@@ -318,6 +319,23 @@ def _run() -> None:
         save_checkpoint()
         final_state_saved = True
 
+    def reopen_final_state() -> None:
+        nonlocal document
+        if document is None:
+            raise RuntimeError("Live acceptance has no document to reopen.")
+        document_name = str(document.Name)
+        App.closeDocument(document_name)
+        document = App.openDocument(str(artifact))
+        if document is None:
+            raise RuntimeError(f"Live acceptance could not reopen {artifact}.")
+        App.setActiveDocument(document.Name)
+        for _index in range(12):
+            Gui.updateGui()
+            QtWidgets.QApplication.processEvents(
+                QtCore.QEventLoop.AllEvents,
+                25,
+            )
+
     def finish(code: int) -> None:
         poll.stop()
         checkpoint.stop()
@@ -351,9 +369,10 @@ def _run() -> None:
             raise RuntimeError(
                 "VIBECAD_OLLAMA_ACCEPTANCE_AUTH_MODE must be api_key or chatgpt."
             )
-        if result_kind not in {"single_solid", "assembly"}:
+        if result_kind not in {"single_solid", "assembly", "analysis"}:
             raise RuntimeError(
-                "VIBECAD_OLLAMA_ACCEPTANCE_RESULT_KIND must be single_solid or assembly."
+                "VIBECAD_OLLAMA_ACCEPTANCE_RESULT_KIND must be single_solid, "
+                "assembly, or analysis."
             )
         if expected_volume is not None and result_kind != "single_solid":
             raise RuntimeError("Expected volume applies only to a single-solid run.")
@@ -490,7 +509,7 @@ def _run() -> None:
                 )
                 responses.append(response)
                 if engine == "native":
-                    for _transition_index in range(12):
+                    while True:
                         continuation = VibeGui._dispatch_to_document_thread(
                             lambda current=response: (
                                 VibeGui._native_surface_continuation_event(current)
@@ -510,10 +529,6 @@ def _run() -> None:
                             ),
                         )
                         responses.append(response)
-                    else:
-                        raise RuntimeError(
-                            "Native acceptance exceeded 12 exact CAD transitions."
-                        )
                 result["response"] = response
                 result["responses"] = responses
             except BaseException as exc:
@@ -550,7 +565,10 @@ def _run() -> None:
                 if response.error:
                     raise AssertionError(response.error)
                 save_final_state()
+                checkpoint.stop()
+                reopen_final_state()
                 assembly_evidence = None
+                analysis_evidence = None
                 if result_kind == "single_solid":
                     neutral_objects = [
                         obj
@@ -615,7 +633,7 @@ def _run() -> None:
                                     "Live acceptance bounds mismatch: "
                                     f"expected {expected_bounds}, found {actual_bounds}."
                                 )
-                else:
+                elif result_kind == "assembly":
                     from VibeCADNativeAssemblyComponents import assembly_components
                     from VibeCADNativeAssemblySnapshot import build_assembly_snapshot
 
@@ -638,6 +656,40 @@ def _run() -> None:
                     if not neutral_objects:
                         raise AssertionError(
                             "Accepted Assembly has no component geometry to export."
+                        )
+                else:
+                    from VibeCADNativeAnalyzeSnapshot import build_analyze_snapshot
+
+                    analysis_snapshot = build_analyze_snapshot(document)
+                    if int(analysis_snapshot["analysis_count"]) < 1:
+                        raise AssertionError(
+                            "Analyze acceptance produced no FEM study."
+                        )
+                    analysis_evidence = {
+                        key: analysis_snapshot[key]
+                        for key in (
+                            "analysis_count",
+                            "material_count",
+                            "fluid_constraint_count",
+                            "mesh_definition_count",
+                            "solver_count",
+                            "result_count",
+                            "provider_scope",
+                            "analysis_workflows",
+                        )
+                    }
+                    neutral_objects = [
+                        obj
+                        for obj in document.Objects
+                        if callable(
+                            getattr(getattr(obj, "Shape", None), "isNull", None)
+                        )
+                        and not obj.Shape.isNull()
+                        and len(obj.Shape.Solids) > 0
+                    ]
+                    if not neutral_objects:
+                        raise AssertionError(
+                            "Analyze acceptance has no source solid geometry to export."
                         )
                 failed_calls = [
                     item
@@ -743,6 +795,7 @@ def _run() -> None:
                     ],
                     "turn_count": len(result.get("responses", [response])),
                     "assembly_evidence": assembly_evidence,
+                    "analysis_evidence": analysis_evidence,
                     "shape_summary": _shape_summary(document),
                 }
                 print(

@@ -74,9 +74,7 @@ def _references(kind: str) -> dict:
         "type": "array",
         "items": _reference(kind),
         "maxItems": 64,
-        "description": (
-            f"Exact current {kind} assignments; use an empty list to apply globally."
-        ),
+        "description": f"{kind} scope; empty is global.",
     }
 
 
@@ -311,45 +309,42 @@ def _variant(
 def analyze_geometry_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ANALYZE_GEOMETRY_CAPABILITY_NAME,
-        description=(
-            "Create or precisely edit beam, shell, and 1D fluid element definitions "
-            "inside one exact FEM analysis."
-        ),
+        description="Create or edit element definitions.",
         primary_classification="mutation",
         variants=(
             _variant(
                 "create_beam_section",
-                "Create one typed beam cross-section assignment on exact current edges.",
+                "Create a beam section.",
                 "FEM_ElementGeometry1D",
                 _create("section", _BEAM_SECTION, "Edge"),
             ),
             _variant(
                 "create_beam_rotation",
-                "Create one beam cross-section rotation assignment on exact current edges.",
+                "Create a beam rotation.",
                 "FEM_ElementRotation1D",
                 _create("rotation_degrees", _SIGNED, "Edge"),
             ),
             _variant(
                 "create_shell_thickness",
-                "Create one positive shell thickness assignment on exact current faces.",
+                "Create a shell thickness.",
                 "FEM_ElementGeometry2D",
                 _create("thickness_mm", _POSITIVE, "Face"),
             ),
             _variant(
                 "create_fluid_section",
-                "Create one typed CalculiX liquid-section assignment on exact current edges.",
+                "Create a CalculiX fluid section.",
                 "FEM_ElementFluid1D",
                 _create("section", _FLUID_SECTION, "Edge"),
             ),
             _variant(
                 "update_beam_section",
-                "Edit one exact beam section without creating a replacement operation.",
+                "Edit a beam section.",
                 "VibeCAD_AnalyzeUpdateBeamSection",
                 _update({"references": _references("Edge"), "section": _BEAM_SECTION}),
             ),
             _variant(
                 "update_beam_rotation",
-                "Edit one exact beam rotation without creating a replacement operation.",
+                "Edit a beam rotation.",
                 "VibeCAD_AnalyzeUpdateBeamRotation",
                 _update(
                     {"references": _references("Edge"), "rotation_degrees": _SIGNED}
@@ -357,13 +352,13 @@ def analyze_geometry_capability_definition() -> NativeCapabilityDefinition:
             ),
             _variant(
                 "update_shell_thickness",
-                "Edit one exact shell thickness without creating a replacement operation.",
+                "Edit a shell thickness.",
                 "VibeCAD_AnalyzeUpdateShellThickness",
                 _update({"references": _references("Face"), "thickness_mm": _POSITIVE}),
             ),
             _variant(
                 "update_fluid_section",
-                "Edit one exact 1D fluid section without creating a replacement operation.",
+                "Edit a fluid section.",
                 "VibeCAD_AnalyzeUpdateFluidSection",
                 _update({"references": _references("Edge"), "section": _FLUID_SECTION}),
             ),

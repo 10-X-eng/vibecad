@@ -10,6 +10,7 @@ from typing import Any
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeProviderSurface,
+    project_native_provider_surface,
     provider_visible_native_schema,
     resolve_native_provider_surface,
 )
@@ -45,8 +46,42 @@ def resolve_production_native_surface(
     return registry, surface
 
 
-def native_provider_tool_schemas() -> list[dict[str, Any]]:
-    _registry, surface = resolve_production_native_surface()
+def provider_authorized_native_surface(
+    surface: NativeProviderSurface,
+    active_state: dict[str, Any] | None = None,
+    *,
+    registry: NativeCapabilityRegistry | None = None,
+) -> NativeProviderSurface:
+    """Keep ribbon choice human-owned, then apply exact document scope."""
+
+    if not isinstance(surface, NativeProviderSurface):
+        raise TypeError("surface must be a NativeProviderSurface")
+    if not surface.available:
+        return surface
+    surface = project_native_provider_surface(
+        surface,
+        tuple(name for name in surface.tool_names if name != "workspace.switch"),
+    )
+    if active_state is not None and surface.snapshot.surface_id == "analyze":
+        from VibeCADNativeAnalyzeProviderScope import scope_analyze_provider_surface
+
+        surface = scope_analyze_provider_surface(
+            surface,
+            active_state,
+            registry=registry,
+        )
+    return surface
+
+
+def native_provider_tool_schemas(
+    active_state: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    registry, surface = resolve_production_native_surface()
+    surface = provider_authorized_native_surface(
+        surface,
+        active_state,
+        registry=registry,
+    )
     return schemas_for_native_provider_surface(surface)
 
 
@@ -66,4 +101,16 @@ def native_active_state(service: Any) -> dict[str, Any]:
     state = service.native_active_snapshot()
     if not isinstance(state, dict):
         raise RuntimeError("Native active state did not return an object.")
+    return state
+
+
+def provider_visible_native_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Return only live facts that affect the provider's next decision."""
+
+    if not isinstance(state, dict):
+        raise TypeError("state must be a Native active-state object")
+    if state.get("surface_id") == "analyze":
+        from VibeCADNativeAnalyzeProviderState import compact_analyze_provider_state
+
+        return compact_analyze_provider_state(state)
     return state

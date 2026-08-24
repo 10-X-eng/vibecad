@@ -129,7 +129,7 @@ _CAPACITANCE_BODY = {
     "type": "integer",
     "minimum": 1,
     "maximum": 1_000_000,
-    "description": "Optional one-based capacitance-body counter.",
+    "description": "One-based body index.",
 }
 _ELECTROMAGNETIC = {
     "oneOf": [
@@ -140,7 +140,7 @@ _ELECTROMAGNETIC = {
                 "scalar_potential": _COMPLEX_V,
                 "vector_potential": _components(
                     _COMPLEX_WB_M,
-                    "Enabled magnetic-vector-potential components in webers per metre.",
+                    "Enabled vector-potential components.",
                 ),
                 "potential_constant": _BOOLEAN,
                 "far_field": _BOOLEAN,
@@ -154,7 +154,7 @@ _ELECTROMAGNETIC = {
                 "electric_flux_density_c_m2": _SIGNED,
                 "magnetic_flux_density": _components(
                     _COMPLEX_WB_M2,
-                    "Enabled magnetic-flux-density components in webers per square metre.",
+                    "Enabled flux-density components.",
                 ),
                 "capacitance_body": _CAPACITANCE_BODY,
             },
@@ -169,7 +169,7 @@ _CURRENT_DENSITY = {
                 "kind": {"type": "string", "const": "cartesian"},
                 "components": _components(
                     _COMPLEX_A_M2,
-                    "One or more enabled Cartesian current-density components.",
+                    "Enabled current-density components.",
                 ),
             },
             ("kind", "components"),
@@ -188,7 +188,7 @@ _MAGNETIZATION = _closed(
     {
         "components": _components(
             _COMPLEX_A_M,
-            "One or more enabled Cartesian magnetization components.",
+            "Enabled magnetization components.",
         )
     },
     ("components",),
@@ -232,22 +232,22 @@ _REFERENCE_SCHEMAS = {
     "electromagnetic": _references(
         ("Solid", "Face", "Edge", "Vertex"),
         allow_empty=False,
-        description="One or more exact current geometry assignments; mixed supported subelement kinds are allowed.",
+        description="Assigned geometry.",
     ),
     "current_density": _references(
         ("Solid", "Face"),
         allow_empty=True,
-        description="Exact solid or face assignments, with global Cartesian body current density support.",
+        description="Solid or face scope; empty is global.",
     ),
     "magnetization": _references(
         ("Solid", "Face"),
         allow_empty=True,
-        description="Exact solid/face assignments; an empty list deliberately applies the sole magnetization globally.",
+        description="Solid or face scope; empty is global.",
     ),
     "electric_charge_density": _references(
         ("Solid", "Face", "Edge", "Vertex"),
         allow_empty=False,
-        description="Exact assignments. Runtime enforces mode-appropriate source or interface subelements.",
+        description="Charge geometry.",
     ),
 }
 _CONSTRAINT_SCHEMAS = {
@@ -319,17 +319,17 @@ def _variant(
 
 def analyze_electromagnetic_capability_definition() -> NativeCapabilityDefinition:
     descriptions = {
-        "electromagnetic": "electromagnetic Dirichlet or Neumann boundary constraint",
-        "current_density": "normal or enabled Cartesian current-density constraint",
-        "magnetization": "enabled complex Cartesian magnetization constraint",
-        "electric_charge_density": "interface, source, or total electric-charge constraint",
+        "electromagnetic": "electromagnetic boundary",
+        "current_density": "current density",
+        "magnetization": "magnetization",
+        "electric_charge_density": "electric charge density",
     }
     variants = []
     for kind, action_id in _CREATE_ACTIONS.items():
         variants.append(
             _variant(
                 f"constraint_{kind}",
-                f"Create one strongly typed {descriptions[kind]} in an exact FEM analysis.",
+                f"Create {descriptions[kind]}.",
                 action_id,
                 _create(kind),
             )
@@ -338,17 +338,14 @@ def analyze_electromagnetic_capability_definition() -> NativeCapabilityDefinitio
         variants.append(
             _variant(
                 f"update_{kind}",
-                f"Edit one exact {descriptions[kind]} without creating a replacement operation.",
+                f"Edit {descriptions[kind]}.",
                 action_id,
                 _update(kind),
             )
         )
     return NativeCapabilityDefinition(
         name=ANALYZE_ELECTROMAGNETIC_CAPABILITY_NAME,
-        description=(
-            "Create or precisely edit the four live FEM electromagnetic constraint types "
-            "using explicit SI values and exact current geometry."
-        ),
+        description="Create or edit electromagnetic conditions.",
         primary_classification="mutation",
         variants=tuple(variants),
     )

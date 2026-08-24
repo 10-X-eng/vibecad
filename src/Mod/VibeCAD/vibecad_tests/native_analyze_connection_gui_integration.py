@@ -309,10 +309,36 @@ def _run() -> None:
             },
         )
         tie = document.getObject(tie_result["created_connection"]["object_name"])
+        current_analysis = analysis_state(analysis)
+        same_source_result = call(
+            ANALYZE_CONNECTION_CAPABILITY_NAME,
+            {
+                "operation": "create_tie",
+                "analysis": _analysis_target(current_analysis),
+                "label": "Same Source Bonded Interface",
+                "slave": _endpoint(first, "Face5"),
+                "master": _endpoint(first, "Face6"),
+                "connection": {"tolerance_mm": 0.1, "adjust": False},
+            },
+        )
+        same_source_tie = document.getObject(
+            same_source_result["created_connection"]["object_name"]
+        )
         assert str(contact.SurfaceBehavior) == "Linear"
         assert not bool(contact.Friction)
         assert math.isclose(contact.Slope.getValueAs("GPa/m").Value, 1.0e6)
         assert math.isclose(tie.Tolerance.getValueAs("mm").Value, 0.1)
+
+        same_source_update = call(
+            ANALYZE_CONNECTION_CAPABILITY_NAME,
+            {
+                "operation": "update_tie",
+                "target": _connection_target(connection_state(same_source_tie)),
+                "connection": {"tolerance_mm": 0.2, "adjust": True},
+            },
+        )
+        assert same_source_update["updated_connection"]["slave"]["subelement"] == "Face5"
+        assert same_source_update["updated_connection"]["master"]["subelement"] == "Face6"
 
         contact_before = connection_state(contact)
         contact_update = call(
@@ -369,7 +395,7 @@ def _run() -> None:
         assert stale["error_code"] == "NATIVE_ANALYZE_STATE_STALE"
         assert str(tie.Label) == "Adjusted 2D Tie"
 
-        connections = (contact, tie)
+        connections = (contact, tie, same_source_tie)
         read_revision = state.current_revision(str(document.Uid))
         for connection in connections:
             current = connection_state(connection)
@@ -384,7 +410,7 @@ def _run() -> None:
         assert state.current_revision(str(document.Uid)) == read_revision
 
         snapshot = build_analyze_snapshot(document)
-        assert snapshot["connection_count"] == 2
+        assert snapshot["connection_count"] == 3
         assert not snapshot["connections_truncated"]
         assert {item["connection_kind"] for item in snapshot["connections"]} == {
             "contact",
@@ -398,6 +424,7 @@ def _run() -> None:
             analysis.Name,
             contact.Name,
             tie.Name,
+            same_source_tie.Name,
         )
 
         document.undo()
@@ -427,8 +454,9 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_ANALYZE_CONNECTION_GUI_OK "
-            "actions=2 edits=2 reads=1 exact_roles=true typed_contact=true "
-            "history=true undo_redo=true reopen=true read_revision_stable=true",
+            "actions=2 edits=3 reads=1 exact_roles=true typed_contact=true "
+            "same_source_pair=true history=true undo_redo=true reopen=true "
+            "read_revision_stable=true",
             flush=True,
         )
         exit_code = 0

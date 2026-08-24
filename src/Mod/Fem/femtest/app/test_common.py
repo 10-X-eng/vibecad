@@ -25,7 +25,11 @@ __title__ = "Common FEM unit tests"
 __author__ = "Bernd Hahnebach"
 __url__ = "https://www.freecad.org"
 
+import os
+from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 import FreeCAD
 
@@ -80,6 +84,192 @@ class TestFemCommon(unittest.TestCase):
             )
         )
         self.assertEqual(cf.References, expected_reflist, assert_err_message)
+
+    def test_solver_runtime_status_reports_exact_engine_requirements(self):
+        from femsolver import runtime
+
+        resolved = {
+            "ccx": "/opt/calculix/bin/ccx",
+            "ElmerSolver": "/opt/elmer/bin/ElmerSolver",
+            "ElmerGrid": "/opt/elmer/bin/ElmerGrid",
+            "mystran": "/opt/mystran/bin/mystran",
+            "z88r": "/opt/z88/bin/z88r",
+            "ideasUnvToFoam": "/opt/openfoam/bin/ideasUnvToFoam",
+            "transformPoints": "/opt/openfoam/bin/transformPoints",
+            "checkMesh": "/opt/openfoam/bin/checkMesh",
+            "foamToVTK": "/opt/openfoam/bin/foamToVTK",
+            "foamRun": "/opt/openfoam/bin/foamRun",
+        }
+        with (
+            mock.patch(
+                "femsolver.settings.get_binary",
+                side_effect=lambda name, _silent: {
+                    "Calculix": resolved["ccx"],
+                    "ElmerSolver": resolved["ElmerSolver"],
+                    "ElmerGrid": resolved["ElmerGrid"],
+                    "Mystran": resolved["mystran"],
+                    "Z88": resolved["z88r"],
+                }.get(name),
+            ),
+            mock.patch.object(runtime, "openfoam_environment", return_value={}),
+            mock.patch.object(runtime, "resolve_executable", side_effect=resolved.get),
+        ):
+            statuses = {
+                status["solver"]: status for status in runtime.solver_runtime_statuses()
+            }
+
+        self.assertEqual(
+            set(statuses),
+            {"calculix", "elmer", "mystran", "z88", "openfoam"},
+        )
+        self.assertEqual(statuses["calculix"]["programs"], {"solver": resolved["ccx"]})
+        self.assertEqual(statuses["mystran"]["programs"], {"solver": resolved["mystran"]})
+        self.assertEqual(statuses["z88"]["programs"], {"solver": resolved["z88r"]})
+        self.assertEqual(
+            statuses["elmer"],
+            {
+                "solver": "elmer",
+                "transport": "native",
+                "engine_ready": True,
+                "programs": {
+                    "grid": "/opt/elmer/bin/ElmerGrid",
+                    "solver": "/opt/elmer/bin/ElmerSolver",
+                },
+                "missing": [],
+            },
+        )
+        self.assertEqual(statuses["openfoam"]["engine_ready"], True)
+        self.assertEqual(statuses["openfoam"]["programs"]["solver"], resolved["foamRun"])
+        self.assertEqual(statuses["openfoam"]["missing"], [])
+
+    def test_solver_runtime_status_names_missing_capabilities(self):
+        from femsolver import runtime
+
+        with (
+            mock.patch("femsolver.settings.get_binary", return_value=None),
+            mock.patch.object(runtime, "openfoam_environment", return_value={}),
+            mock.patch.object(runtime, "resolve_executable", return_value=None),
+        ):
+            statuses = {
+                status["solver"]: status for status in runtime.solver_runtime_statuses()
+            }
+
+        self.assertEqual(
+            statuses["elmer"]["missing"],
+            ["ElmerGrid", "ElmerSolver"],
+        )
+        self.assertEqual(statuses["calculix"]["missing"], ["ccx"])
+        self.assertEqual(statuses["mystran"]["missing"], ["mystran"])
+        self.assertEqual(statuses["z88"]["missing"], ["z88r"])
+        self.assertEqual(
+            statuses["openfoam"]["missing"],
+            [
+                "ideasUnvToFoam",
+                "transformPoints",
+                "checkMesh",
+                "foamRun",
+                "foamToVTK",
+            ],
+        )
+        self.assertEqual(statuses["elmer"]["programs"], {})
+        self.assertEqual(statuses["openfoam"]["programs"], {})
+
+    def test_openfoam_environment_file_exposes_its_exact_programs(self):
+        from femsolver import runtime
+
+        with tempfile.TemporaryDirectory(prefix="vibecad-openfoam-runtime-") as root:
+            root_path = Path(root)
+            binary_path = root_path / "platforms" / "bin"
+            binary_path.mkdir(parents=True)
+            for name in (
+                "ideasUnvToFoam",
+                "transformPoints",
+                "checkMesh",
+                "foamRun",
+                "foamToVTK",
+            ):
+                program = binary_path / name
+                program.write_text("#!/bin/sh\n", encoding="utf-8")
+                program.chmod(0o700)
+            environment_file = root_path / "bashrc"
+            environment_file.write_text(
+                f"export WM_PROJECT_DIR='{root_path}'\n"
+                f"export PATH='{binary_path}':\"$PATH\"\n",
+                encoding="utf-8",
+            )
+
+            environment = runtime.load_openfoam_environment(environment_file)
+
+            self.assertEqual(environment["WM_PROJECT_DIR"], str(root_path))
+            self.assertEqual(
+                runtime.resolve_executable(
+                    "ideasUnvToFoam",
+                    search_path=environment["PATH"],
+                ),
+                str(binary_path / "ideasUnvToFoam"),
+            )
+
+    def test_solver_runtime_honors_configured_elmer_binaries(self):
+        from femsolver import runtime
+
+        configured = {
+            "ElmerGrid": "/configured/elmer/ElmerGrid",
+            "ElmerSolver": "/configured/elmer/ElmerSolver",
+        }
+        with (
+            mock.patch(
+                "femsolver.settings.get_binary",
+                side_effect=lambda name, _silent: configured.get(name),
+            ),
+            mock.patch.object(runtime, "openfoam_environment", return_value={}),
+            mock.patch.object(runtime, "resolve_executable", return_value=None),
+        ):
+            statuses = {
+                status["solver"]: status
+                for status in runtime.solver_runtime_statuses()
+            }
+
+        self.assertEqual(statuses["elmer"]["programs"], {
+            "grid": configured["ElmerGrid"],
+            "solver": configured["ElmerSolver"],
+        })
+        self.assertTrue(statuses["elmer"]["engine_ready"])
+
+    def test_solver_runtime_filter_does_not_probe_unselected_engines(self):
+        from femsolver import runtime
+
+        configured = {
+            "ElmerGrid": "/configured/elmer/ElmerGrid",
+            "ElmerSolver": "/configured/elmer/ElmerSolver",
+        }
+        with (
+            mock.patch(
+                "femsolver.settings.get_binary",
+                side_effect=lambda name, _silent: configured.get(name),
+            ),
+            mock.patch.object(
+                runtime,
+                "openfoam_environment",
+                side_effect=AssertionError("OpenFOAM must not be probed"),
+            ),
+        ):
+            statuses = runtime.solver_runtime_statuses({"elmer"})
+
+        self.assertEqual(tuple(item["solver"] for item in statuses), ("elmer",))
+
+    def test_solver_executable_resolution_falls_back_to_the_application_bundle(self):
+        from femsolver import runtime
+
+        with tempfile.TemporaryDirectory(prefix="vibecad-fem-runtime-") as root:
+            program = Path(root) / "bin" / "ElmerGrid"
+            program.parent.mkdir()
+            program.write_text("#!/bin/sh\n", encoding="utf-8")
+            program.chmod(0o700)
+            with (
+                mock.patch.dict(os.environ, {"PATH": ""}),
+                mock.patch.object(FreeCAD, "getHomePath", return_value=root + os.sep),
+            ):
+                self.assertEqual(runtime.resolve_executable("ElmerGrid"), str(program))
 
     # ********************************************************************************************
     def test_pyimport_all_FEM_modules(self):
