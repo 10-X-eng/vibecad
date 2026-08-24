@@ -75,6 +75,54 @@ _FEM_COMPOSITES = {
     ),
 }
 
+_ANALYZE_RESULT_PRIMARY_ACTIONS = (
+    (
+        "FEM_ResultShow",
+        "FEM_PostPipelineFromResult",
+        "FEM_PostFilterWarp",
+        "FEM_PostFilterContours",
+    )
+    if "BUILD_FEM_VTK" in App.__cmake__
+    else ("FEM_ResultShow", "FEM_ResultsPurge")
+)
+
+_ANALYZE_PRIMARY_ACTIONS = {
+    "MODEL": (
+        "VibeCAD_AnalyzeStudySetup",
+        "FEM_MaterialSolid",
+        "FEM_MaterialFluid",
+    ),
+    "ELECTROMAGNETICS": ("FEM_CompEmConstraints",),
+    "FLUIDS": (
+        "FEM_ConstraintFluidBoundary",
+        "FEM_ConstraintInitialFlowVelocity",
+    ),
+    "GEOMETRY": ("FEM_ConstraintTransform",),
+    "MECHANICS": (
+        "FEM_ConstraintFixed",
+        "FEM_ConstraintDisplacement",
+        "FEM_ConstraintForce",
+        "FEM_ConstraintPressure",
+    ),
+    "THERMAL": (
+        "FEM_ConstraintTemperature",
+        "FEM_ConstraintHeatflux",
+        "FEM_ConstraintBodyHeatSource",
+    ),
+    "MESH": (
+        "FEM_MeshGmshFromShape",
+        "FEM_MeshRegion",
+        "FEM_MeshGMSHRefinement",
+    ),
+    "SOLVE": (
+        "FEM_CompSolvers",
+        "FEM_SolverControl",
+        "FEM_SolverRun",
+    ),
+    "RESULTS": _ANALYZE_RESULT_PRIMARY_ACTIONS,
+    "UTILITIES": ("FEM_Examples",),
+}
+
 _COMPOSED_GROUP_COMMANDS = {
     "PartDesignWorkbench": {
         "SURFACE": (
@@ -342,6 +390,50 @@ def _primary_action_graph(group):
     return tuple(graph)
 
 
+def _assert_analyze_primary_actions(page):
+    groups = {}
+    for group in _ordered_page_groups(page):
+        menu = group.findChild(
+            QtWidgets.QToolButton,
+            "VibeCADRibbonGroupMenu",
+        )
+        assert menu is not None
+        semantic_title = str(group.property("VibeCADSemanticGroupTitle") or "")
+        assert semantic_title
+        groups[semantic_title.upper()] = group
+
+    electromagnetics = groups["ELECTROMAGNETICS"]
+    em_menu = electromagnetics.findChild(
+        QtWidgets.QToolButton,
+        "VibeCADRibbonGroupMenu",
+    )
+    em_collapsed = electromagnetics.findChild(
+        QtWidgets.QToolButton,
+        "VibeCADRibbonCollapsedGroup",
+    )
+    assert em_menu is not None and em_collapsed is not None
+    assert em_menu.text() == "EM"
+    assert em_collapsed.text() == "EM"
+    assert em_menu.accessibleName() == "Electromagnetics"
+    assert em_collapsed.accessibleName() == "Electromagnetics"
+
+    for label, expected in _ANALYZE_PRIMARY_ACTIONS.items():
+        group = groups.get(label)
+        assert group is not None, label
+        observed = tuple(
+            command_id for command_id, _children in _primary_action_graph(group)
+        )
+        assert observed == expected, {
+            "group": label,
+            "observed": observed,
+            "expected": expected,
+        }
+
+    # Analyze curation must not alter the primary actions shared by every tab.
+    assert len(_primary_action_graph(groups["VIEW"])) == 4
+    assert len(_primary_action_graph(groups["INSPECT"])) == 4
+
+
 def _ordered_page_groups(page):
     groups = [
         child
@@ -528,6 +620,8 @@ def _assert_page_action_integrity(page):
         )
         assert group_menu is not None and group_menu.menu() is not None
         assert collapsed is not None and collapsed.menu() is not None
+        assert str(group_menu.accessibleName() or "").strip()
+        assert str(collapsed.accessibleName() or "").strip()
         assert group_menu.y() >= group_menu.parentWidget().height() // 2
         assert len(group_menu.text().split()) == 1
         assert not any(
@@ -542,7 +636,9 @@ def _assert_page_action_integrity(page):
         )
         group_graph = _menu_action_graph(group_menu.menu())
         assert _menu_action_graph(collapsed.menu()) == group_graph
-        assert _primary_action_graph(group) == group_graph[:4]
+        primary_graph = _primary_action_graph(group)
+        assert 1 <= len(primary_graph) <= 4
+        assert primary_graph == group_graph[: len(primary_graph)]
         command_ids.extend(_flatten_action_graph(group_graph))
     assert len(command_ids) == len(set(command_ids)), command_ids
 
@@ -1087,7 +1183,9 @@ def _assert_ribbon_surface(controller, page, expected_surface_id):
     assert surface.surface_id == expected_surface_id
     assert surface.revision > 0
     assert surface.command_ids == _page_command_ids(page)
-    assert [group.label.upper() for group in surface.groups] == _page_group_labels(page)
+    assert [group.label.upper() for group in surface.groups] == (
+        _page_semantic_group_labels(page)
+    )
     return surface
 
 
@@ -1100,6 +1198,13 @@ def _page_group_labels(page):
         assert group_menu is not None
         labels.append(group_menu.text())
     return labels
+
+
+def _page_semantic_group_labels(page):
+    return [
+        str(group.property("VibeCADSemanticGroupTitle") or "").upper()
+        for group in _ordered_page_groups(page)
+    ]
 
 
 def _ribbon_page(main_window):
@@ -1647,6 +1752,7 @@ def _run():
                 ).isEnabled()
             elif workbench == "FemWorkbench":
                 _assert_fem_composite_children(page)
+                _assert_analyze_primary_actions(page)
                 assert not _page_menu_action(
                     page,
                     "FEM_PostFilterLinearizedStresses",
@@ -1947,6 +2053,7 @@ def _run():
             "FemWorkbench",
         )
         _assert_fem_composite_children(fem_page)
+        _assert_analyze_primary_actions(fem_page)
         assert not _page_menu_action(
             fem_page,
             "FEM_PostFilterLinearizedStresses",
