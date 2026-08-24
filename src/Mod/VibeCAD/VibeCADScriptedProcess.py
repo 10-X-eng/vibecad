@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Cancellable, windowless process runner for scripted CAD engines."""
+"""Cancellable, windowless process runner for scripted and Native engines."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 import os
 from pathlib import Path
 import signal
@@ -13,6 +14,50 @@ import sys
 import tempfile
 import time
 from typing import Any
+
+
+DEFAULT_PROCESS_POLL_SECONDS = 0.1
+DEFAULT_PROCESS_TAIL_BYTES = 2400
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalProcessStage:
+    stage: int
+    program: str
+    exit_code: int
+    log_path: str
+
+
+class ExternalProcessCancelled(RuntimeError):
+    """A host cancellation request stopped an external process sequence."""
+
+
+class ExternalProcessError(RuntimeError):
+    """Bounded process failure for translation by a domain adapter."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        stage: int,
+        program: str,
+        exit_code: int | None = None,
+        detail: str = "",
+    ) -> None:
+        clean_reason = str(reason or "").strip()
+        if clean_reason not in {
+            "start_failed",
+            "timeout",
+            "output_limit",
+            "backend_failed",
+        }:
+            raise ValueError("Unsupported external-process failure reason.")
+        self.reason = clean_reason
+        self.stage = int(stage)
+        self.program = str(program)
+        self.exit_code = None if exit_code is None else int(exit_code)
+        self.detail = str(detail or "")[:DEFAULT_PROCESS_TAIL_BYTES]
+        super().__init__(clean_reason)
 
 
 def process_memory_bytes(pid: int) -> int | None:
@@ -92,7 +137,9 @@ def _windows_process_memory_bytes(pid: int) -> int | None:
         kernel32.CloseHandle(handle)
 
 
-def _terminate(process: subprocess.Popen[str]) -> None:
+def terminate_process(process: subprocess.Popen[Any], *, timeout_seconds: float = 3.0) -> None:
+    """Terminate a child process or process group and escalate to kill."""
+
     if process.poll() is not None:
         return
     try:
@@ -100,10 +147,16 @@ def _terminate(process: subprocess.Popen[str]) -> None:
             process.terminate()
         else:
             os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=3.0)
+        process.wait(timeout=timeout_seconds)
     except Exception:
         process.kill()
-        process.wait(timeout=3.0)
+        process.wait(timeout=timeout_seconds)
+
+
+def _terminate(process: subprocess.Popen[Any]) -> None:
+    """Compatibility alias for the original scripted-process runner."""
+
+    terminate_process(process)
 
 
 def _read_output_tail(stream: Any, *, max_bytes: int = 64_000) -> str:
@@ -112,6 +165,154 @@ def _read_output_tail(stream: Any, *, max_bytes: int = 64_000) -> str:
     size = int(stream.tell())
     stream.seek(max(0, size - max_bytes), os.SEEK_SET)
     return stream.read().decode("utf-8", errors="replace")[-16_000:]
+
+
+def bounded_log_tail(
+    path: Path,
+    *,
+    maximum_bytes: int = DEFAULT_PROCESS_TAIL_BYTES,
+) -> str:
+    bound = max(0, int(maximum_bytes))
+    if bound == 0:
+        return ""
+    try:
+        with path.open("rb") as stream:
+            stream.seek(max(0, path.stat().st_size - bound))
+            return stream.read(bound).decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def _process_creation_kwargs() -> dict[str, Any]:
+    return {
+        "start_new_session": sys.platform != "win32",
+        "creationflags": (
+            int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if sys.platform == "win32"
+            else 0
+        ),
+    }
+
+
+def run_process_sequence(
+    commands: Sequence[tuple[str, Sequence[str]]],
+    *,
+    working_directory: str | Path,
+    environment: Mapping[str, str],
+    timeout_seconds: int,
+    cancellation_check: Callable[[], bool],
+    log_name: Callable[[int], str] | None = None,
+    stage_started: Callable[[int, int], None] | None = None,
+    maximum_log_bytes: int | None = None,
+    poll_seconds: float = DEFAULT_PROCESS_POLL_SECONDS,
+) -> tuple[ExternalProcessStage, ...]:
+    """Run an exact shell-free command sequence under one wall-time bound.
+
+    This is the shared process primitive for domain-specific adapters. It owns
+    child lifecycle and bounded log capture, but it deliberately owns no FEM,
+    mesh, Aero, document, evidence, or transaction semantics.
+    """
+
+    exact_commands = tuple(
+        (str(program), tuple(str(argument) for argument in arguments))
+        for program, arguments in commands
+    )
+    if not exact_commands:
+        raise ValueError("An external process sequence needs at least one command.")
+    if not callable(cancellation_check):
+        raise TypeError("cancellation_check must be callable")
+    if stage_started is not None and not callable(stage_started):
+        raise TypeError("stage_started must be callable")
+    if type(timeout_seconds) is not int or timeout_seconds < 1:
+        raise ValueError("timeout_seconds must be a positive integer")
+    if maximum_log_bytes is not None and (
+        type(maximum_log_bytes) is not int or maximum_log_bytes < 1
+    ):
+        raise ValueError("maximum_log_bytes must be a positive integer")
+    if poll_seconds <= 0:
+        raise ValueError("poll_seconds must be positive")
+
+    root = Path(working_directory)
+    if not root.is_dir():
+        raise ValueError("working_directory must be an existing directory")
+    make_log_name = log_name or (lambda stage: f"process-{stage}.log")
+    started = time.monotonic()
+    completed: list[ExternalProcessStage] = []
+
+    for index, (program, arguments) in enumerate(exact_commands, start=1):
+        if cancellation_check():
+            raise ExternalProcessCancelled()
+        if stage_started is not None:
+            stage_started(index, len(exact_commands))
+        log_path = root / str(make_log_name(index))
+        process: subprocess.Popen[Any] | None = None
+        try:
+            with log_path.open("wb") as log:
+                process = subprocess.Popen(
+                    [program, *arguments],
+                    cwd=root,
+                    env=dict(environment),
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    shell=False,
+                    **_process_creation_kwargs(),
+                )
+                while process.poll() is None:
+                    if cancellation_check():
+                        terminate_process(process)
+                        raise ExternalProcessCancelled()
+                    if time.monotonic() - started > timeout_seconds:
+                        terminate_process(process)
+                        raise ExternalProcessError(
+                            "timeout",
+                            stage=index,
+                            program=program,
+                        )
+                    if (
+                        maximum_log_bytes is not None
+                        and log_path.stat().st_size > maximum_log_bytes
+                    ):
+                        terminate_process(process)
+                        raise ExternalProcessError(
+                            "output_limit",
+                            stage=index,
+                            program=program,
+                        )
+                    time.sleep(poll_seconds)
+                exit_code = int(process.returncode or 0)
+        except (ExternalProcessCancelled, ExternalProcessError):
+            raise
+        except Exception as exc:
+            if process is not None:
+                try:
+                    terminate_process(process)
+                except Exception:
+                    pass
+            raise ExternalProcessError(
+                "start_failed",
+                stage=index,
+                program=program,
+            ) from exc
+
+        if exit_code != 0:
+            raise ExternalProcessError(
+                "backend_failed",
+                stage=index,
+                program=program,
+                exit_code=exit_code,
+                detail=bounded_log_tail(log_path),
+            )
+        completed.append(
+            ExternalProcessStage(
+                stage=index,
+                program=program,
+                exit_code=exit_code,
+                log_path=str(log_path),
+            )
+        )
+
+    return tuple(completed)
 
 
 def run_process(

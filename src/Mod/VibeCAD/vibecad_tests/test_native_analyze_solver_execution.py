@@ -15,6 +15,8 @@ from VibeCADNativeAnalyzeSolverExecutionSchema import (
     analyze_solver_execution_capability_definition,
 )
 from VibeCADNativeBackground import NativeBackgroundCancelled
+from VibeCADNativeBackgroundSchema import native_background_capability_definition
+from VibeCADScriptedProcess import ExternalProcessError, run_process_sequence
 
 
 def _program(path: Path, source: str) -> str:
@@ -31,6 +33,19 @@ def test_solver_execution_schema_is_one_sharp_background_operation() -> None:
     assert variant.background_required
     assert variant.transaction_behavior == "background"
     assert set(variant.parameters["properties"]) == {"target", "timeout_seconds"}
+
+
+def test_host_job_control_is_available_on_aero_surface() -> None:
+    definition = native_background_capability_definition()
+    assert definition.name == "native.job"
+    assert tuple(variant.operation for variant in definition.variants) == (
+        "status",
+        "cancel",
+    )
+    for variant in definition.variants:
+        assert "aero" in variant.surface_ids
+        assert variant.transaction_behavior == "none"
+        assert variant.background_required is False
 
 
 def test_process_sequence_is_exact_bounded_and_shell_free(tmp_path: Path) -> None:
@@ -54,6 +69,25 @@ def test_process_sequence_is_exact_bounded_and_shell_free(tmp_path: Path) -> Non
     assert [stage["exit_code"] for stage in result] == [0, 0]
     assert (tmp_path / "second.out").read_text(encoding="utf-8") == "second"
     assert progress[-1] == (84, "Test result artifacts ready")
+
+
+def test_shared_process_sequence_reports_domain_neutral_timeout(tmp_path: Path) -> None:
+    program = _program(tmp_path / "slow-generic", "sleep 30\n")
+
+    with pytest.raises(ExternalProcessError) as caught:
+        run_process_sequence(
+            ((program, ()),),
+            working_directory=tmp_path,
+            environment=os.environ,
+            timeout_seconds=1,
+            cancellation_check=lambda: False,
+            maximum_log_bytes=1024,
+            poll_seconds=0.01,
+        )
+
+    assert caught.value.reason == "timeout"
+    assert caught.value.stage == 1
+    assert caught.value.exit_code is None
 
 
 def test_process_sequence_cooperatively_terminates_on_cancel(tmp_path: Path) -> None:
@@ -90,7 +124,6 @@ def test_fem_solve_is_model_unqualified() -> None:
     created = stamp_created_fem_graph({"created_analysis": {"name": "Analysis"}})
     assert created["claim_ceiling"] == "not_solved"
     assert created["claim_ceiling"] != stamped["claim_ceiling"]
-
 
 
 def test_process_failure_returns_only_bounded_tail(tmp_path: Path) -> None:

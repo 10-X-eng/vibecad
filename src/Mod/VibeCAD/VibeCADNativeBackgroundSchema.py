@@ -27,7 +27,7 @@ def native_background_capability_definition() -> NativeCapabilityDefinition:
             operation=operation,
             description=description,
             action_ids=frozenset({_ACTION_ID}),
-            surface_ids=frozenset({"mesh", "analyze", "manufacture", "drawing"}),
+            surface_ids=frozenset({"mesh", "analyze", "manufacture", "drawing", "aero"}),
             exact_target_type="NativeBackgroundJobId",
             transaction_behavior="none",
             background_required=False,
