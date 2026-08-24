@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 import re
 from typing import Any
 
@@ -87,13 +88,18 @@ def _generated_gmsh_mesh(members: tuple[Any, ...]) -> tuple[Any, Any]:
             "The OpenFOAM Gmsh mesh contains no volume elements.",
             error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
         )
+    if dict(state.get("settings") or {}).get("element_order") != "first":
+        raise NativeAnalyzeError(
+            "OpenFOAM requires first-order Gmsh elements.",
+            error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
+        )
     source = getattr(mesh, "Shape", None)
     if not is_live(mesh.Document, source):
         raise NativeAnalyzeError("The OpenFOAM mesh has no live geometry source.")
     return mesh, source
 
 
-def _fluid_material(members: tuple[Any, ...]) -> dict[str, Any]:
+def _fluid_material(members: tuple[Any, ...], source: Any) -> dict[str, Any]:
     states = []
     for member in members:
         try:
@@ -110,9 +116,16 @@ def _fluid_material(members: tuple[Any, ...]) -> dict[str, Any]:
             error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
         )
     state = states[0]
-    if state.get("references"):
+    references = tuple(state.get("references") or ())
+    covers_domain = not references or references == (
+        {
+            "object_name": str(source.Name),
+            "subelements": ["Solid1"],
+        },
+    )
+    if not covers_domain:
         raise NativeAnalyzeError(
-            "OpenFOAM currently requires the fluid material to apply to the whole domain.",
+            "OpenFOAM requires the fluid material to apply to the meshed solid domain.",
             error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
         )
     properties = dict(state.get("properties") or {})
@@ -174,6 +187,10 @@ def _initial_fields(states: list[dict[str, Any]]) -> tuple[tuple[float, ...], fl
 def _boundary_patches(
     states: list[dict[str, Any]],
     source: Any,
+    *,
+    turbulence_model: str,
+    density_kg_m3: float,
+    initial_velocity_m_s: tuple[float, ...],
 ) -> dict[str, dict[str, Any]]:
     face_count = len(tuple(source.Shape.Faces))
     expected = {f"Face{index}" for index in range(1, face_count + 1)}
@@ -187,7 +204,8 @@ def _boundary_patches(
                 )
             continue
         definition = dict(state["definition"])
-        if definition["turbulence"] != {"kind": "none"}:
+        turbulence = dict(definition["turbulence"])
+        if turbulence_model == "laminar" and turbulence != {"kind": "none"}:
             raise NativeAnalyzeError(
                 f"Fluid boundary {state['object_name']} requires turbulence not supported "
                 "by the selected laminar solver."
@@ -212,7 +230,9 @@ def _boundary_patches(
                     raise NativeAnalyzeError(
                         f"Fluid face {name} has more than one boundary."
                     )
-                assigned[name] = dict(definition["condition"])
+                condition = dict(definition["condition"])
+                condition["turbulence"] = turbulence
+                assigned[name] = condition
     missing = sorted(expected - set(assigned), key=lambda item: int(item[4:]))
     if missing:
         raise NativeAnalyzeError(
@@ -226,6 +246,38 @@ def _boundary_patches(
             "OpenFOAM requires at least one pressure-defining inlet or outlet boundary.",
             error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
         )
+    if turbulence_model == "kOmegaSST":
+        initial_speed = math.sqrt(
+            sum(float(value) ** 2 for value in initial_velocity_m_s)
+        )
+        for name, condition in assigned.items():
+            if not str(condition["kind"]).startswith("inlet_"):
+                continue
+            turbulence = dict(condition["turbulence"])
+            if turbulence.get("kind") != "intensity_length_scale":
+                raise NativeAnalyzeError(
+                    f"Fluid inlet {name} requires turbulence intensity and length scale "
+                    "for k-omega SST.",
+                    error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
+                )
+            kind = str(condition["kind"])
+            area_m2 = float(source.Shape.getElement(name).Area) * 1.0e-6
+            if kind == "inlet_velocity":
+                reference_speed = float(condition["velocity_m_s"])
+            elif kind == "inlet_volumetric_flow":
+                reference_speed = float(condition["flow_m3_s"]) / area_m2
+            elif kind == "inlet_mass_flow":
+                reference_speed = (
+                    float(condition["flow_kg_s"]) / density_kg_m3 / area_m2
+                )
+            else:
+                reference_speed = initial_speed
+            if reference_speed <= 0.0:
+                raise NativeAnalyzeError(
+                    f"Fluid inlet {name} requires a positive velocity scale for k-omega SST.",
+                    error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
+                )
+            condition["turbulence_reference_speed_m_s"] = reference_speed
     return {
         name: assigned[name]
         for name in sorted(assigned, key=lambda item: int(item[4:]))
@@ -274,8 +326,14 @@ def prepare_openfoam_request(
     dict[str, str],
     dict[str, Any],
 ]:
-    if str(solver.FlowRegime) != "steady" or str(solver.TurbulenceModel) != "laminar":
-        raise NativeAnalyzeError("This OpenFOAM solver supports steady laminar flow.")
+    turbulence_model = str(solver.TurbulenceModel)
+    if str(solver.FlowRegime) != "steady" or turbulence_model not in {
+        "laminar",
+        "kOmegaSST",
+    }:
+        raise NativeAnalyzeError(
+            "This OpenFOAM solver supports steady laminar or k-omega SST flow."
+        )
     analysis = _analysis_for_solver(solver)
     intent = study_intent_state(analysis)
     if (
@@ -289,7 +347,7 @@ def prepare_openfoam_request(
         )
     members = _active_members(analysis)
     mesh, source = _generated_gmsh_mesh(members)
-    material = _fluid_material(members)
+    material = _fluid_material(members, source)
     fluid_states = []
     for member in members:
         try:
@@ -298,8 +356,14 @@ def prepare_openfoam_request(
         except NativeAnalyzeError as exc:
             if exc.error_code != "NATIVE_ANALYZE_TARGET_TYPE_INVALID":
                 raise
-    patches = _boundary_patches(fluid_states, source)
     initial_velocity, initial_pressure = _initial_fields(fluid_states)
+    patches = _boundary_patches(
+        fluid_states,
+        source,
+        turbulence_model=turbulence_model,
+        density_kg_m3=float(material["density_kg_m3"]),
+        initial_velocity_m_s=initial_velocity,
+    )
 
     from femsolver.openfoam.case import SteadyIncompressibleCase, build_case_files
 
@@ -313,6 +377,8 @@ def prepare_openfoam_request(
         initial_velocity_m_s=initial_velocity,
         initial_pressure_pa=initial_pressure,
         patches=patches,
+        turbulence_model=turbulence_model,
+        turbulence_tolerance=float(solver.TurbulenceTolerance),
     )
     for relative, content in build_case_files(case).items():
         destination = root / relative
@@ -333,19 +399,55 @@ def prepare_openfoam_request(
             error_code="NATIVE_ANALYZE_SOLVER_UNAVAILABLE",
         )
     programs = status["programs"]
-    commands = (
-        (programs["mesh_import"], (str(mesh_path),)),
-        (programs["mesh_scale"], ("scale=(0.001 0.001 0.001)",)),
-        (programs["mesh_check"], ("-allGeometry",)),
-        (programs["solver"], ()),
-        (programs["result_export"], ("-latestTime", "-ascii")),
+    commands = [(programs["mesh_import"], (str(mesh_path),))]
+    requires_boundary_update = turbulence_model == "kOmegaSST" or any(
+        str(condition["kind"]) == "symmetry" for condition in patches.values()
+    )
+    if requires_boundary_update:
+        boundary_update = programs.get("boundary_update")
+        if not boundary_update:
+            raise NativeAnalyzeError(
+                "This OpenFOAM case requires changeDictionary.",
+                error_code="NATIVE_ANALYZE_SOLVER_UNAVAILABLE",
+            )
+        commands.append((boundary_update, ()))
+    commands.extend(
+        (
+            (programs["mesh_scale"], ("scale=(0.001 0.001 0.001)",)),
+            (programs["mesh_check"], ("-allGeometry",)),
+            (programs["solver"], ()),
+            (programs["result_export"], ("-latestTime", "-ascii")),
+        )
     )
     return (
         None,
-        commands,
+        tuple(commands),
         environment,
         {
             "result_glob": "VTK/*.vtk",
-            "solver_log": "solver-4.log",
+            "solver_log": "solver-5.log" if requires_boundary_update else "solver-4.log",
+            "summary_context": {
+                "density_kg_m3": float(material["density_kg_m3"]),
+                "kinematic_viscosity_m2_s": float(
+                    material["kinematic_viscosity_m2_s"]
+                ),
+                "turbulence_model": turbulence_model,
+                "patches": {
+                    name: str(condition["kind"])
+                    for name, condition in patches.items()
+                },
+                "patch_areas_m2": {
+                    name: float(source.Shape.getElement(name).Area) * 1.0e-6
+                    for name in patches
+                },
+                "patch_conditions": {
+                    name: {
+                        key: value
+                        for key, value in condition.items()
+                        if key != "turbulence_reference_speed_m_s"
+                    }
+                    for name, condition in patches.items()
+                },
+            },
         },
     )

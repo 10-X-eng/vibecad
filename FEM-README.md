@@ -17,7 +17,7 @@ changing conversations or modifying the source CAD geometry.
 | --- | --- | --- |
 | CalculiX | Structural writer, runner, and result import | Included in packaged builds |
 | Elmer | Multiphysics writer, background runner, and result import | Install `ElmerSolver` and `ElmerGrid` separately |
-| OpenFOAM | Steady incompressible laminar case writer, background runner, and VTK result import | Install OpenFOAM Foundation 14 on Linux |
+| OpenFOAM | Steady incompressible laminar and k-omega SST case writer, background runner, and VTK result import | Install OpenFOAM Foundation 14 on Linux |
 
 Elmer support in the document model does not mean the Elmer applications are
 installed. VibeCAD must be able to resolve both `ElmerSolver` and `ElmerGrid`.
@@ -64,8 +64,8 @@ problem.
 
 ## Current OpenFOAM workflow
 
-The initial OpenFOAM path solves one steady, incompressible, isothermal,
-laminar fluid domain:
+The OpenFOAM path solves one steady, incompressible, isothermal fluid domain
+using either laminar flow or the k-omega SST RANS model:
 
 1. Create or select the solid that represents the fluid volume, not the
    surrounding hardware.
@@ -80,11 +80,13 @@ laminar fluid domain:
 
 Supported face conditions are no-slip and slip walls, symmetry, velocity,
 volumetric-flow and mass-flow inlets, total-pressure inlet/outlet, static-
-pressure outlet, velocity outlet, and outflow outlet. Turbulence, heat transfer,
-compressible flow, transient flow, moving/rotating regions, multiphase flow,
-multiple fluid regions, automatic exterior-fluid construction, and Windows or
-macOS runtime bridges are not implemented yet. VibeCAD rejects those study
-definitions instead of silently changing their physics.
+pressure outlet, velocity outlet, and outflow outlet. k-omega SST accepts
+explicit inlet turbulence intensity and length scale and writes the required
+`k`, `omega`, and turbulent-viscosity fields. Other turbulence models, heat
+transfer, compressible flow, transient flow, moving/rotating regions,
+multiphase flow, multiple fluid regions, automatic exterior-fluid construction,
+and Windows or macOS runtime bridges are not implemented yet. VibeCAD rejects
+those study definitions instead of silently changing their physics.
 
 ## What VibeCAD assistance must provide
 
@@ -115,16 +117,14 @@ outlet or far-field boundaries, walls, and any rotating or moving regions.
 VibeCAD must make those regions visible and preserve their identities when the
 CAD model changes.
 
-## Work in progress
+## Next coverage
 
-The FEA/CFD work is being delivered in this order:
+The remaining FEA/CFD expansion is being delivered in this order:
 
-1. reliable solver discovery and diagnostics shared by the ribbon and AI;
-2. packaged or explicitly bridged Elmer and OpenFOAM runtimes;
-3. a study-first Analyze entry flow;
-4. visible, inspectable boundary and load assignments;
-5. expand OpenFOAM beyond the current Linux steady-laminar path;
-6. unsteered Qwen and GPT-5.6 Terra validation against real solver artifacts.
+1. package or explicitly bridge Elmer and OpenFOAM on more platforms;
+2. expand OpenFOAM beyond steady incompressible single-region flow;
+3. add rotating-region and conjugate heat-transfer workflows;
+4. broaden benchmark geometry, materials, and nonlinear physics coverage.
 
 The tool-tuning method and acceptance rules are recorded in
 [docs/fea-tool-sharpening.md](docs/fea-tool-sharpening.md).

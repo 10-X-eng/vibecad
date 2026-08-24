@@ -30,6 +30,11 @@ from VibeCADNativeAnalyzeStudyEdit import (
     update_study_intent,
     verify_study_update,
 )
+from VibeCADNativeAnalyzeSolidDomain import (
+    create_solid_domain,
+    prepare_solid_domain,
+    verify_solid_domain,
+)
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
@@ -53,6 +58,10 @@ _MATERIAL_UPDATE_FIELDS = frozenset(
 )
 
 _FIELDS = {
+    "create_solid_domain": (
+        frozenset({"sources", "interface_mode", "label"}),
+        frozenset({"sources", "interface_mode", "label"}),
+    ),
     "create_analysis": (
         frozenset({"label", "default_solver_policy"}),
         frozenset({"label", "default_solver_policy", "study"}),
@@ -143,6 +152,19 @@ class NativeAnalyzeModelRuntime:
         operation, values = _arguments(arguments)
         context = self._context
         context.guard()
+        if operation == "create_solid_domain":
+            prepared = prepare_solid_domain(
+                context.document,
+                context.document_uid,
+                **values,
+            )
+            return run_immediate_mutation(
+                context,
+                ticket=ticket,
+                transaction_name="Create Solid Analysis Domain",
+                mutate=lambda document: create_solid_domain(document, prepared),
+                verify=verify_solid_domain,
+            )
         if operation == "create_analysis":
             prepared = prepare_analysis_create(context.document, **values)
             return run_immediate_mutation(

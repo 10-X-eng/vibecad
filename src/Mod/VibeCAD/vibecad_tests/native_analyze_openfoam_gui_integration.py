@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -20,10 +21,18 @@ from femsolver.run import run_fem_solver
 from VibeCADCore import get_service
 import VibeCADGui
 from VibeCADNativeAnalyzeFluidValues import apply_fluid_values, prepare_fluid_values
+from VibeCADNativeAnalyzeFlowPresentation import present_flow_result
+from VibeCADNativeAnalyzePostFunctions import (
+    create_post_function,
+    prepare_post_function,
+    verify_post_function,
+)
+from VibeCADNativeAnalyzeResultState import result_reference_state, result_state
 from VibeCADNativeAnalyzeStudy import configure_study_intent
+from VibeCADNativeMutation import run_human_mutation
 
 
-def _boundary(document, domain, name, faces, condition):
+def _boundary(document, domain, name, faces, condition, turbulence=None):
     obj = ObjectsFem.makeConstraintFluidBoundary(document, name)
     apply_fluid_values(
         obj,
@@ -31,7 +40,7 @@ def _boundary(document, domain, name, faces, condition):
             "fluid_boundary",
             {
                 "condition": condition,
-                "turbulence": {"kind": "none"},
+                "turbulence": turbulence or {"kind": "none"},
                 "thermal": {"kind": "adiabatic"},
             },
         ),
@@ -52,6 +61,7 @@ def _create_case(document, root):
         "Density": "1.204 kg/m^3",
         "KinematicViscosity": "1.506e-5 m^2/s",
     }
+    material.References = [(domain, ("Solid1",))]
     mesh = ObjectsFem.makeMeshGmsh(document, "FluidMesh")
     mesh.Shape = domain
     mesh.WorkingDirectory = str(root / "gmsh")
@@ -63,6 +73,11 @@ def _create_case(document, root):
         "Inlet",
         ("Face1",),
         {"kind": "inlet_velocity", "velocity_m_s": 1.0},
+        {
+            "kind": "intensity_length_scale",
+            "intensity_ratio": 0.05,
+            "length_scale_m": 0.001,
+        },
     )
     outlet = _boundary(
         document,
@@ -78,7 +93,15 @@ def _create_case(document, root):
         ("Face3", "Face4", "Face5", "Face6"),
         {"kind": "wall_no_slip"},
     )
-    for obj in (material, mesh, inlet, outlet, walls):
+    initial = ObjectsFem.makeConstraintInitialFlowVelocity(document, "InitialVelocity")
+    apply_fluid_values(
+        initial,
+        prepare_fluid_values(
+            "initial_flow_velocity",
+            {"components": {"x": {"kind": "value", "value_m_s": 1.0}}},
+        ),
+    )
+    for obj in (material, mesh, inlet, outlet, walls, initial):
         analysis.addObject(obj)
     document.recompute()
     GmshTools(mesh).create_mesh()
@@ -89,6 +112,7 @@ def _create_case(document, root):
         solver = ObjectsFem.makeSolverOpenFOAM(document)
         solver.MaxIterations = 300
         solver.WriteEveryIterations = 100
+        solver.TurbulenceModel = "kOmegaSST"
         analysis.addObject(solver)
         from femcommands import manager
 
@@ -148,7 +172,7 @@ def _run():
                 assert ticks >= 2
                 result = snapshot.result
                 assert result["execution"]["backend"] == "openfoam"
-                assert len(result["execution"]["stages"]) == 5
+                assert len(result["execution"]["stages"]) == 6
                 assert all(
                     stage["exit_code"] == 0 for stage in result["execution"]["stages"]
                 )
@@ -157,6 +181,101 @@ def _run():
                 assert result_object is not None
                 assert result_object.isDerivedFrom("Fem::FemPostPipeline")
                 assert result_object.VibeCADTimelineOwner is solver
+                assert "VibeCADOpenFOAMSummary" in result_object.PropertiesList
+                flow_summary = json.loads(result_object.VibeCADOpenFOAMSummary)
+                assert flow_summary["pressure_unit"] == "Pa"
+                assert flow_summary["velocity_unit"] == "m/s"
+                assert flow_summary["turbulence_model"] == "kOmegaSST"
+                assert flow_summary["converged"] is True
+                assert flow_summary["kinematic_viscosity_m2_s"] == 1.506e-5
+                assert flow_summary["maximum_velocity_m_s"] >= 1.0
+                assert flow_summary["static_pressure_drop_pa"] > 0.0
+                assert [
+                    boundary["name"] for boundary in flow_summary["boundaries"]
+                ] == ["Face1", "Face2", "Face3", "Face4", "Face5", "Face6"]
+                assert flow_summary["boundaries"][0]["kind"] == "inlet_velocity"
+                assert flow_summary["boundaries"][1]["kind"] == "outlet_static_pressure"
+                assert flow_summary["boundaries"][0]["condition"] == {
+                    "kind": "inlet_velocity",
+                    "turbulence": {
+                        "intensity_ratio": 0.05,
+                        "kind": "intensity_length_scale",
+                        "length_scale_m": 0.001,
+                    },
+                    "velocity_m_s": 1.0,
+                }
+                from femsolver.openfoam.results import openfoam_flow_performance
+
+                performance = openfoam_flow_performance(
+                    flow_summary,
+                    upstream_boundary="Face1",
+                    downstream_boundary="Face2",
+                    flow_boundary="Face2",
+                )
+                assert abs(performance["geometric_flow_area_m2"] - 1.0e-4) < 1.0e-10
+                assert performance["volumetric_flow_rate_m3_s"] > 0.0
+                assert performance["mass_flow_rate_kg_s"] > 0.0
+                assert performance["effective_flow_area_m2"] > 0.0
+                assert performance["discharge_coefficient"] > 0.0
+                assert performance["continuity_error_percent"] < 1.0
+                fields = {
+                    (field["name"], field.get("unit"))
+                    for field in result_state(result_object)["fields"]
+                }
+                assert ("Pressure", "Pa") in fields
+                assert ("Velocity", "m/s") in fields
+                assert ("Turbulent Kinetic Energy", "m^2/s^2") in fields
+                assert ("Specific Dissipation Rate", "1/s") in fields
+                assert ("Turbulent Kinematic Viscosity", "m^2/s") in fields
+                exact_flow = result_state(result_object)["flow"]
+                assert exact_flow["kinematic_viscosity_m2_s"] == 1.506e-5
+                assert exact_flow["boundaries"][0]["condition"]["kind"] == (
+                    "inlet_velocity"
+                )
+                pressure_view = present_flow_result(result_object, "pressure")
+                assert pressure_view["presentation"]["field"] == "Pressure"
+                velocity_view = present_flow_result(result_object, "velocity")
+                assert velocity_view["presentation"]["field"] == "Velocity"
+                assert velocity_view["presentation"]["component"] == "Magnitude"
+                turbulence_view = present_flow_result(
+                    result_object, "turbulent_kinetic_energy"
+                )
+                assert turbulence_view["presentation"]["field"] == (
+                    "Turbulent Kinetic Energy"
+                )
+                assert str(result_object.VibeCADDataLengthUnit) == "m"
+                result_target = result_reference_state(result_object)
+                prepared_plane = prepare_post_function(
+                    document,
+                    str(document.Uid),
+                    kind="plane",
+                    pipeline={
+                        "object_name": result_target["object_name"],
+                        "expected_state_sha256": result_target["state_sha256"],
+                    },
+                    label="Mid-plane",
+                    origin_mm={"x": 10.0, "y": 5.0, "z": 5.0},
+                    normal={"x": 0.0, "y": 0.0, "z": 1.0},
+                )
+                plane_result = run_human_mutation(
+                    document=document,
+                    transaction_name="Create OpenFOAM mid-plane",
+                    mutate=lambda current: create_post_function(
+                        current, prepared_plane
+                    ),
+                    verify=verify_post_function,
+                )
+                plane = document.getObject(
+                    plane_result["created_function"]["object_name"]
+                )
+                assert plane is not None
+                assert getattr(plane, "VibeCADTimelineOwner", None) is None
+                assert plane_result["function_provider"][
+                    "timeline_owner_chain"
+                ] == [result_object.Name, solver.Name]
+                assert abs(float(plane.PlaneOrigin.x) - 0.01) < 1.0e-12
+                assert abs(float(plane.PlaneOrigin.y) - 0.005) < 1.0e-12
+                assert abs(float(plane.PlaneOrigin.z) - 0.005) < 1.0e-12
                 resources = result["result"]["resources"]
                 assert len(resources) == 1
                 log = document.getObject(resources[0]["object_name"])
@@ -168,7 +287,9 @@ def _run():
                 print(
                     "VIBECAD_NATIVE_ANALYZE_OPENFOAM_GUI_OK "
                     "human_command=true shared_pipeline=true real_solver=true "
-                    "background=true ui_responsive=true result_import=true reopen=true",
+                    "background=true ui_responsive=true result_import=true reopen=true "
+                    "gfa_efa=true surface_flux=true turbulence=kOmegaSST "
+                    "post_function=true millimeter_coordinates=true nested_history=true",
                     flush=True,
                 )
                 finish(0)

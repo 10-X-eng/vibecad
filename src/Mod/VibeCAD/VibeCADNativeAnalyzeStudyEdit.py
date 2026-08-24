@@ -71,4 +71,11 @@ def verify_study_update(document: Any, draft: NativeMutationDraft) -> dict[str, 
         or intent.get("regime") != prepared.regime
     ):
         raise NativeAnalyzeError("The FEM study intent failed its exact postcondition.")
-    return {"analysis": state}
+    return {
+        "analysis": state,
+        "analysis_target": {
+            "object_name": state["object_name"],
+            "expected_state_sha256": state["state_sha256"],
+            "expected_member_count": state["member_count"],
+        },
+    }

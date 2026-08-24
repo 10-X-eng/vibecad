@@ -46,6 +46,8 @@ class SteadyIncompressibleCase:
     initial_velocity_m_s: tuple[float, float, float]
     initial_pressure_pa: float
     patches: Mapping[str, Mapping[str, object]]
+    turbulence_model: str = "laminar"
+    turbulence_tolerance: float = 1.0e-3
 
 
 def _number(value: object, name: str, *, positive: bool = False) -> str:
@@ -168,6 +170,117 @@ def _boundary_field(
     return "".join(result)
 
 
+_INLET_CONDITIONS = frozenset(
+    {
+        "inlet_total_pressure",
+        "inlet_velocity",
+        "inlet_volumetric_flow",
+        "inlet_mass_flow",
+    }
+)
+
+
+def _inlet_turbulence(
+    name: str,
+    kind: str,
+    condition: Mapping[str, object],
+) -> tuple[float, float] | None:
+    specification = condition.get("turbulence", {"kind": "none"})
+    if not isinstance(specification, Mapping):
+        raise ValueError(f"{name}.turbulence must be an object")
+    specification_kind = str(specification.get("kind") or "")
+    if kind not in _INLET_CONDITIONS:
+        if specification_kind != "none":
+            raise ValueError(f"{name}.turbulence is only valid on an inlet")
+        return None
+    if specification_kind != "intensity_length_scale":
+        raise ValueError(
+            f"{name}.turbulence must specify intensity_length_scale for kOmegaSST"
+        )
+    intensity = float(
+        _number(
+            specification.get("intensity_ratio"),
+            f"{name}.turbulence.intensity_ratio",
+            positive=True,
+        )
+    )
+    if intensity > 1.0:
+        raise ValueError(f"{name}.turbulence.intensity_ratio must not exceed 1")
+    length_scale = float(
+        _number(
+            specification.get("length_scale_m"),
+            f"{name}.turbulence.length_scale_m",
+            positive=True,
+        )
+    )
+    speed = condition.get("turbulence_reference_speed_m_s")
+    if speed is None and kind == "inlet_velocity":
+        speed = condition.get("velocity_m_s")
+    reference_speed = float(
+        _number(speed, f"{name}.turbulence_reference_speed_m_s", positive=True)
+    )
+    kinetic_energy = 1.5 * (reference_speed * intensity) ** 2
+    omega = math.sqrt(kinetic_energy) / (0.09 ** 0.25 * length_scale)
+    return kinetic_energy, omega
+
+
+def _turbulence_fields(
+    patches: Mapping[str, Mapping[str, object]],
+    kinds: Mapping[str, str],
+) -> tuple[dict[str, tuple[float, float]], tuple[float, float]]:
+    inlet_values = {
+        name: values
+        for name, condition in patches.items()
+        if (
+            values := _inlet_turbulence(name, kinds[name], condition)
+        ) is not None
+    }
+    if not inlet_values:
+        raise ValueError("kOmegaSST requires at least one turbulent inlet")
+    initial_values = next(iter(inlet_values.values()))
+    if any(values != initial_values for values in inlet_values.values()):
+        raise ValueError(
+            "kOmegaSST inlets must use one common intensity and length scale"
+        )
+    return inlet_values, initial_values
+
+
+def _transport_patch(
+    field: str,
+    kind: str,
+    inlet_values: tuple[float, float] | None,
+) -> str:
+    if kind == "symmetry":
+        return "        type            symmetry;\n"
+    if inlet_values is not None:
+        value = inlet_values[0] if field == "k" else inlet_values[1]
+        return (
+            "        type            fixedValue;\n"
+            f"        value           uniform {_number(value, field, positive=True)};\n"
+        )
+    if kind == "wall_no_slip":
+        boundary_type = "kqRWallFunction" if field == "k" else "omegaWallFunction"
+        return (
+            f"        type            {boundary_type};\n"
+            "        value           $internalField;\n"
+        )
+    return "        type            zeroGradient;\n"
+
+
+def _nut_patch(kind: str) -> str:
+    if kind == "symmetry":
+        return "        type            symmetry;\n"
+    if kind == "wall_no_slip":
+        return (
+            "        type            nutkWallFunction;\n"
+            "        value           uniform 0;\n"
+        )
+    return (
+        "        type            calculated;\n"
+        "        value           uniform 0;\n"
+    )
+
+
 def build_case_files(case: SteadyIncompressibleCase) -> dict[str, str]:
     density = float(case.density_kg_m3)
     density_text = _number(density, "density_kg_m3", positive=True)
@@ -191,6 +304,11 @@ def build_case_files(case: SteadyIncompressibleCase) -> dict[str, str]:
         "velocity_tolerance",
         positive=True,
     )
+    turbulence_tolerance = _number(
+        case.turbulence_tolerance,
+        "turbulence_tolerance",
+        positive=True,
+    )
     velocity = tuple(
         _number(value, f"initial_velocity_m_s[{index}]")
         for index, value in enumerate(case.initial_velocity_m_s)
@@ -212,6 +330,10 @@ def build_case_files(case: SteadyIncompressibleCase) -> dict[str, str]:
             "OpenFOAM requires a pressure-defining inlet or outlet boundary"
         )
 
+    turbulence_model = str(case.turbulence_model)
+    if turbulence_model not in {"laminar", "kOmegaSST"}:
+        raise ValueError("turbulence_model must be laminar or kOmegaSST")
+
     u_boundary = _boundary_field(
         patches,
         lambda name, condition: _u_patch(kinds[name], condition, density_text),
@@ -220,7 +342,16 @@ def build_case_files(case: SteadyIncompressibleCase) -> dict[str, str]:
         patches,
         lambda name, condition: _p_patch(kinds[name], condition, density),
     )
-    return {
+    patch_type_updates = "".join(
+        f"    {name} {{ type {patch_type}; }}\n"
+        for name, kind in kinds.items()
+        for patch_type in (
+            (("wall" if kind == "wall_no_slip" else "symmetry"),)
+            if kind in {"wall_no_slip", "symmetry"}
+            else ()
+        )
+    )
+    files = {
         "system/controlDict": _header("system", "controlDict")
         + "solver          incompressibleFluid;\n"
         + "startFrom       startTime;\nstartTime       0;\n"
@@ -236,25 +367,60 @@ def build_case_files(case: SteadyIncompressibleCase) -> dict[str, str]:
         + "gradSchemes { default Gauss linear; }\n"
         + "divSchemes\n{\n    default none;\n"
         + "    div(phi,U) bounded Gauss linearUpwind grad(U);\n"
+        + (
+            "    div(phi,k) bounded Gauss limitedLinear 1;\n"
+            "    div(phi,omega) bounded Gauss limitedLinear 1;\n"
+            if turbulence_model == "kOmegaSST"
+            else ""
+        )
         + "    div((nuEff*dev2(T(grad(U))))) Gauss linear;\n}\n"
         + "laplacianSchemes { default Gauss linear corrected; }\n"
         + "interpolationSchemes { default linear; }\n"
-        + "snGradSchemes { default corrected; }\n",
+        + "snGradSchemes { default corrected; }\n"
+        + ("wallDist { method meshWave; }\n" if turbulence_model == "kOmegaSST" else ""),
         "system/fvSolution": _header("system", "fvSolution")
         + "solvers\n{\n"
         + "    p { solver GAMG; smoother GaussSeidel; "
         + f"tolerance {pressure_tolerance}; relTol 0.1; }}\n"
-        + "    U { solver smoothSolver; smoother symGaussSeidel; "
+        + (
+            '    "(U|k|omega)" { solver smoothSolver; smoother symGaussSeidel; '
+            if turbulence_model == "kOmegaSST"
+            else "    U { solver smoothSolver; smoother symGaussSeidel; "
+        )
         + f"tolerance {velocity_tolerance}; relTol 0.1; }}\n"
-        + "}\nSIMPLE\n{\n    nNonOrthogonalCorrectors 0;\n"
-        + "    consistent yes;\n    residualControl\n    {\n"
+        + "}\nSIMPLE\n{\n"
+        + (
+            "    nNonOrthogonalCorrectors 2;\n"
+            if turbulence_model == "kOmegaSST"
+            else "    nNonOrthogonalCorrectors 0;\n    consistent yes;\n"
+        )
+        + "    residualControl\n    {\n"
         + f"        p {pressure_tolerance};\n        U {velocity_tolerance};\n"
-        + "    }\n}\nrelaxationFactors\n{\n    equations\n"
-        + '    {\n        U 0.9;\n        ".*" 0.9;\n    }\n}\n',
+        + (
+            f'        "(k|omega)" {turbulence_tolerance};\n'
+            if turbulence_model == "kOmegaSST"
+            else ""
+        )
+        + "    }\n}\nrelaxationFactors\n{\n"
+        + (
+            "    fields { p 0.3; }\n"
+            "    equations { U 0.5; k 0.5; omega 0.5; }\n"
+            if turbulence_model == "kOmegaSST"
+            else '    equations\n    {\n        U 0.9;\n        ".*" 0.9;\n    }\n'
+        )
+        + "}\n",
         "constant/physicalProperties": _header("constant", "physicalProperties")
         + f"viscosityModel  constant;\nnu              {viscosity};\n",
         "constant/momentumTransport": _header("constant", "momentumTransport")
-        + "simulationType  laminar;\n",
+        + (
+            "simulationType  RAS;\nRAS\n{\n"
+            "    model           kOmegaSST;\n"
+            "    turbulence      on;\n"
+            "    viscosityModel  Newtonian;\n"
+            "}\n"
+            if turbulence_model == "kOmegaSST"
+            else "simulationType  laminar;\n"
+        ),
         "0/U": _header("0", "U", "volVectorField")
         + "dimensions      [0 1 -1 0 0 0 0];\n"
         + f"internalField   uniform ({' '.join(velocity)});\n"
@@ -264,3 +430,46 @@ def build_case_files(case: SteadyIncompressibleCase) -> dict[str, str]:
         + f"internalField   uniform {pressure};\n"
         + p_boundary,
     }
+    if patch_type_updates:
+        files["system/changeDictionaryDict"] = (
+            _header("system", "changeDictionaryDict")
+            + "boundary\n{\n"
+            + patch_type_updates
+            + "}\n"
+        )
+    if turbulence_model == "kOmegaSST":
+        inlet_turbulence, initial_turbulence = _turbulence_fields(patches, kinds)
+        kinetic_energy, omega = initial_turbulence
+        k_boundary = _boundary_field(
+            patches,
+            lambda name, _condition: _transport_patch(
+                "k", kinds[name], inlet_turbulence.get(name)
+            ),
+        )
+        omega_boundary = _boundary_field(
+            patches,
+            lambda name, _condition: _transport_patch(
+                "omega", kinds[name], inlet_turbulence.get(name)
+            ),
+        )
+        nut_boundary = _boundary_field(
+            patches,
+            lambda name, _condition: _nut_patch(kinds[name]),
+        )
+        files.update(
+            {
+                "0/k": _header("0", "k", "volScalarField")
+                + "dimensions      [0 2 -2 0 0 0 0];\n"
+                + f"internalField   uniform {_number(kinetic_energy, 'k', positive=True)};\n"
+                + k_boundary,
+                "0/omega": _header("0", "omega", "volScalarField")
+                + "dimensions      [0 0 -1 0 0 0 0];\n"
+                + f"internalField   uniform {_number(omega, 'omega', positive=True)};\n"
+                + omega_boundary,
+                "0/nut": _header("0", "nut", "volScalarField")
+                + "dimensions      [0 2 -1 0 0 0 0];\n"
+                + "internalField   uniform 0;\n"
+                + nut_boundary,
+            }
+        )
+    return files

@@ -104,18 +104,42 @@ def _validate_expected_turn(
     visible_turn_digest = hashlib.sha256(
         visible_turn_encoded.encode("utf-8")
     ).hexdigest()
+    changed = []
+    if expected_names != turn.tool_names:
+        changed.append("tool names")
+    if expected_surface.get("schema_count") != len(expected_schemas):
+        changed.append("schema count")
+    if expected_surface.get("schema_sha256") != digest:
+        changed.append("captured schema digest")
+    if digest not in {turn.schema_sha256, visible_turn_digest}:
+        expected_by_name = {
+            str(schema.get("name") or ""): schema for schema in expected_schemas
+        }
+        turn_by_name = {
+            str(schema.get("name") or ""): schema for schema in visible_turn_schemas
+        }
+        mismatched = sorted(
+            name
+            for name in set(expected_by_name) | set(turn_by_name)
+            if expected_by_name.get(name) != turn_by_name.get(name)
+        )
+        changed.append(
+            "registry schema digest"
+            + (f" ({', '.join(mismatched)})" if mismatched else "")
+        )
+    if str(expected_surface.get("domain") or "") != turn.surface.surface_id:
+        changed.append("ribbon domain")
     if (
-        expected_names != turn.tool_names
-        or expected_surface.get("schema_count") != len(expected_schemas)
-        or expected_surface.get("schema_sha256") != digest
-        or digest not in {turn.schema_sha256, visible_turn_digest}
-        or str(expected_surface.get("domain") or "") != turn.surface.surface_id
-        or str(expected_surface.get("surface_id") or "")
+        str(expected_surface.get("surface_id") or "")
         != turn.surface.modeling_surface_id
     ):
+        changed.append("ribbon identity")
+    if changed:
         raise NativeDispatchError(
             "NATIVE_TURN_CHANGED",
-            "The Native ribbon contract changed before dispatch was created.",
+            "The Native ribbon contract changed before dispatch was created: "
+            + ", ".join(changed)
+            + ".",
         )
 
 
@@ -151,18 +175,11 @@ def create_native_session_execution(
     expected_names = tuple(
         str(value) for value in expected_surface.get("tool_names") or ()
     )
-    active_state_reader = getattr(service, "native_active_snapshot", None)
-    active_state = (
-        active_state_reader()
-        if callable(active_state_reader)
-        and str(expected_surface.get("domain") or "") == "analyze"
-        else None
-    )
     turn = freeze_native_turn(
-        controller,
-        selected_registry,
-        expected_names,
-        active_state,
+        controller=controller,
+        registry=selected_registry,
+        tool_names=expected_names,
+        provider_schemas=tuple(expected_schemas),
     )
     _validate_expected_turn(expected_surface, expected_schemas, turn)
     state = service.native_document_state_store()
@@ -224,6 +241,7 @@ def create_native_session_execution(
                 else None
             ),
             document_thread_dispatch=document_thread_dispatch,
+            run_id=run_id,
         )
         dispatcher = NativeTurnDispatcher(
             document=document,

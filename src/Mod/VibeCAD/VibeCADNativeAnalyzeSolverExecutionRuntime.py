@@ -78,6 +78,7 @@ class NativeAnalyzeSolverExecutionRuntime:
                 dispatch_to_document_thread=dispatcher,
                 finalize_message="Importing verified FEM results",
                 cleanup=cleanup,
+                changes_document=True,
             )
         except NativeBackgroundError as exc:
             discard_solver_execution_request(request)

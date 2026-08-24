@@ -128,14 +128,16 @@ def test_declared_study_is_not_duplicated_or_padded_with_empty_collections() -> 
 
     assert set(compact["domain"]) == {"kind", "study_count", "studies"}
     study = compact["domain"]["studies"][0]
-    assert study["analysis"] == {
+    assert study["analysis_name"] == "Analysis"
+    assert study["analysis_target"] == {
         "object_name": "Analysis",
-        "label": "Airflow",
-        "active": True,
-        "state_sha256": "analysis-state",
-        "member_count": 0,
+        "expected_state_sha256": "analysis-state",
+        "expected_member_count": 0,
     }
+    assert study["label"] == "Airflow"
+    assert study["active"] is True
     assert study["intent"]["physics"] == ["fluid"]
+    assert "state_sha256" not in study["intent"]
     assert study["readiness"]["blockers"] == [
         "missing_geometry",
         "missing_fluid_material",
@@ -146,3 +148,103 @@ def test_declared_study_is_not_duplicated_or_padded_with_empty_collections() -> 
     ]
     assert "inventory" not in study
     assert "working_set" not in compact
+
+
+def test_geometry_source_is_published_as_one_ready_to_use_exact_target() -> None:
+    state = _state(with_study=True)
+    state["domain"]["geometry_source_count"] = 1
+    state["domain"]["geometry_sources"] = [
+        {
+            "object_name": "FluidDomain",
+            "label": "Fluid domain",
+            "state_sha256": "shape-state",
+            "clipping_face_target": {
+                "object_name": "FluidDomain",
+                "object_id": 42,
+                "face_count": 6,
+                "state_sha256": "clipping-state",
+            },
+            "topology": {"solids": 1, "faces": 6},
+        }
+    ]
+
+    source = compact_analyze_provider_state(state)["domain"]["geometry_sources"][0]
+
+    assert source == {
+        "label": "Fluid domain",
+        "source_name": "FluidDomain",
+        "source_target": {
+            "object_name": "FluidDomain",
+            "expected_state_sha256": "shape-state",
+        },
+        "topology": {"solids": 1, "faces": 6},
+    }
+
+
+def test_study_resources_publish_one_ready_to_use_exact_target() -> None:
+    state = _state(with_study=True)
+    state["domain"]["fluid_constraints"] = [
+        {
+            "object_name": "Inlet",
+            "label": "Inlet",
+            "constraint_kind": "fluid_boundary",
+            "state_sha256": "constraint-state",
+            "definition": {"condition": {"kind": "inlet_velocity"}},
+        }
+    ]
+
+    constraint = compact_analyze_provider_state(state)["domain"][
+        "fluid_constraints"
+    ][0]
+
+    assert constraint == {
+        "label": "Inlet",
+        "constraint_kind": "fluid_boundary",
+        "target": {
+            "object_name": "Inlet",
+            "expected_state_sha256": "constraint-state",
+        },
+        "definition": {"condition": {"kind": "inlet_velocity"}},
+    }
+
+
+def test_mesh_and_solver_resources_publish_their_focused_names() -> None:
+    state = _state(with_study=True)
+    state["domain"]["mesh_definitions"] = [
+        {
+            "object_name": "FEMMeshGmsh",
+            "label": "Flow mesh",
+            "state_sha256": "mesh-state",
+            "mesher": "gmsh",
+        }
+    ]
+    state["domain"]["solvers"] = [
+        {
+            "object_name": "SolverOpenFOAM",
+            "label": "OpenFOAM",
+            "state_sha256": "solver-state",
+            "solver_kind": "openfoam",
+        }
+    ]
+
+    domain = compact_analyze_provider_state(state)["domain"]
+
+    assert domain["mesh_definitions"][0]["mesh_name"] == "FEMMeshGmsh"
+    assert domain["solvers"][0]["solver_name"] == "SolverOpenFOAM"
+
+
+def test_flow_result_publishes_the_name_required_by_focused_tools() -> None:
+    state = _state(with_study=True)
+    state["domain"]["results"] = [
+        {
+            "object_name": "SolverOpenFOAMResult",
+            "label": "OpenFOAM Flow Result",
+            "state_sha256": "result-state",
+            "result_kind": "pipeline",
+            "flow_results": True,
+        }
+    ]
+
+    result = compact_analyze_provider_state(state)["domain"]["results"][0]
+
+    assert result["result_name"] == "SolverOpenFOAMResult"

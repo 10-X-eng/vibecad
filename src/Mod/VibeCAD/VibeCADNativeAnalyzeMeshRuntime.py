@@ -196,6 +196,7 @@ class NativeAnalyzeMeshRuntime:
                 dispatch_to_document_thread=dispatcher,
                 finalize_message="Importing verified FEM mesh",
                 cleanup=cleanup,
+                changes_document=True,
             )
         except NativeBackgroundError as exc:
             discard(request)

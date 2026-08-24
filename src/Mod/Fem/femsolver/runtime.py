@@ -184,6 +184,13 @@ def solver_runtime_statuses(solvers=None):
             ),
             search_path=foam_path,
         )
+        boundary_update = (
+            resolve_executable("changeDictionary", search_path=foam_path)
+            if foam_path
+            else resolve_executable("changeDictionary")
+        )
+        if boundary_update:
+            openfoam_programs["boundary_update"] = boundary_update
         statuses.append(
             {
                 "solver": "openfoam",

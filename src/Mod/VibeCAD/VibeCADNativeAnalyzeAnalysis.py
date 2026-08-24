@@ -147,7 +147,15 @@ def verify_analysis_create(
     import FemGui
 
     FemGui.setActiveAnalysis(analysis)
-    result = {"created_analysis": analysis_state(analysis)}
+    current_analysis = analysis_state(analysis)
+    result = {
+        "created_analysis": current_analysis,
+        "analysis_target": {
+            "object_name": current_analysis["object_name"],
+            "expected_state_sha256": current_analysis["state_sha256"],
+            "expected_member_count": current_analysis["member_count"],
+        },
+    }
     if solver is not None:
         result["created_solver"] = concise_object(solver)
     else:

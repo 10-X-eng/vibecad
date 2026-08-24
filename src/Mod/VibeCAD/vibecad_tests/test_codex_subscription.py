@@ -82,6 +82,25 @@ def test_codex_dynamic_tools_require_a_frozen_turn_start_surface() -> None:
         provider._codex_dynamic_tool_surface(context)
 
 
+def test_resumed_surface_turn_reanchors_the_exact_user_request() -> None:
+    prompt = (
+        "VIBECAD_CONTEXT_JSON\n{}\nEND_VIBECAD_CONTEXT_JSON\n\n"
+        "RECENT_CONVERSATION_JSON\n"
+        '{"turns":[{"role":"user","content":"Solve the duct and report pressure drop."}],'
+        '"omitted_turn_count":0,"truncated_turn_count":0}\n'
+        "END_RECENT_CONVERSATION_JSON\n\n"
+        "CURRENT_SESSION_EVENT\nAnalysis tools now match the study."
+    )
+
+    resumed = provider._codex_prompt_without_replayed_conversation(prompt)
+
+    assert "ACTIVE_USER_REQUEST\nSolve the duct and report pressure drop." in resumed
+    assert '"turns":[]' in resumed
+    assert resumed.endswith(
+        "CURRENT_SESSION_EVENT\nAnalysis tools now match the study."
+    )
+
+
 def test_turn_start_surface_accepts_one_workbench_vibescript_domain() -> None:
     schemas = _part_vibescript_context()["provider_tool_schemas"]
     surface = session._turn_start_tool_surface("PartWorkbench", schemas)
@@ -370,7 +389,9 @@ def test_codex_ends_a_frozen_turn_after_an_exact_cad_transition(
         lambda *_args, **_kwargs: {"detected": False, "ok": True},
     )
     interrupted = threading.Event()
+    runner_started = threading.Event()
     calls = []
+    queued_results = []
 
     class _Client:
         def __init__(
@@ -427,17 +448,36 @@ def test_codex_ends_a_frozen_turn_after_an_exact_cad_transition(
             raise AssertionError(method)
 
         def _call_transition(self):
-            self.server_request_handler(
-                "item/tool/call",
-                {
-                    "callId": "transition-call",
-                    "namespace": self.namespace,
-                    "tool": self.tool,
-                    "arguments": {"workspace": "assembly"},
-                },
+            responses = {}
+
+            def call(key, call_id, workspace):
+                responses[key] = self.server_request_handler(
+                    "item/tool/call",
+                    {
+                        "callId": call_id,
+                        "namespace": self.namespace,
+                        "tool": self.tool,
+                        "arguments": {"workspace": workspace},
+                    },
+                )
+
+            first = threading.Thread(
+                target=call,
+                args=("first", "transition-call", "assembly"),
             )
+            queued = threading.Thread(
+                target=call,
+                args=("queued", "queued-after-transition", "model"),
+            )
+            first.start()
+            assert runner_started.wait(1.0)
+            queued.start()
+            first.join(1.0)
+            queued.join(1.0)
+            assert not first.is_alive() and not queued.is_alive()
             assert self.response_handler is not None
             self.response_handler("item/tool/call")
+            queued_results.append(responses["queued"])
 
         def close(self):
             self.alive = False
@@ -449,6 +489,9 @@ def test_codex_ends_a_frozen_turn_after_an_exact_cad_transition(
 
         def __call__(self, tool_name, arguments_json, provider_call_id):
             calls.append((tool_name, json.loads(arguments_json), provider_call_id))
+            if provider_call_id == "transition-call":
+                runner_started.set()
+                time.sleep(0.05)
             self.transition = True
             return {
                 "ok": True,
@@ -506,6 +549,8 @@ def test_codex_ends_a_frozen_turn_after_an_exact_cad_transition(
     assert calls == [
         ("workspace.switch", {"workspace": "assembly"}, "transition-call")
     ]
+    queued_payload = json.loads(queued_results[0]["contentItems"][0]["text"])
+    assert queued_payload["error_code"] == "NATIVE_TURN_TRANSITION_PENDING"
     assert result.final_output == ""
     assert result.raw["cad_transition"] is True
 

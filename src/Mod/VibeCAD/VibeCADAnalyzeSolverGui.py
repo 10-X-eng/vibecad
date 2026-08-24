@@ -26,7 +26,13 @@ import VibeCADGui
 
 
 _ACTIVE_RUNS: dict[str, "_SolverRunUi"] = {}
-_BACKEND_LABELS = {"elmer": "Elmer", "openfoam": "OpenFOAM"}
+_BACKEND_LABELS = {
+    "calculix": "CalculiX",
+    "elmer": "Elmer",
+    "mystran": "Mystran",
+    "openfoam": "OpenFOAM",
+    "z88": "Z88",
+}
 
 
 def _document_is_live(document: Any) -> bool:
@@ -181,7 +187,7 @@ def run_solver_detached(solver: Any) -> str:
 
     state = solver_state(solver)
     if state["solver_kind"] not in _BACKEND_LABELS:
-        raise TypeError("run_solver_detached requires an Elmer or OpenFOAM solver")
+        raise TypeError("run_solver_detached requires a supported FEM solver")
     document = solver.Document
     VibeCADGui._ensure_document_thread_invoker()
     request = prepare_solver_execution_request(

@@ -23,6 +23,7 @@ STUDY_INTENT_SCHEMA = {
             "minItems": 1,
             "maxItems": len(STUDY_PHYSICS),
             "uniqueItems": True,
+            "description": "Domains explicitly solved by this study.",
         },
         "regime": {"type": "string", "enum": list(STUDY_REGIMES)},
     },
@@ -131,6 +132,39 @@ def study_intent_state(analysis: Any) -> dict[str, Any]:
     return result
 
 
+def solver_configuration_blockers(
+    intent: Mapping[str, Any],
+    solver_states: list[Mapping[str, Any]],
+) -> list[str]:
+    """Return exact solver settings that conflict with declared study intent."""
+
+    if intent.get("declared") is not True:
+        return []
+    physics = set(intent.get("physics") or ())
+    regime = str(intent.get("regime") or "")
+    blockers = []
+    for state in solver_states:
+        if state.get("suppressed") is True or state.get("solver_kind") != "calculix":
+            continue
+        settings = state.get("settings")
+        settings = settings if isinstance(settings, Mapping) else {}
+        if "thermal" not in physics:
+            continue
+        if str(settings.get("AnalysisType") or "").casefold() != "thermomech":
+            blockers.append("calculix_requires_thermomech")
+        thermal_mode = str(settings.get("ThermoMechType") or "").casefold()
+        if physics == {"thermal"} and thermal_mode != "pure heat transfer":
+            blockers.append("calculix_requires_pure_heat_transfer")
+        elif "mechanical" in physics and thermal_mode not in {"coupled", "uncoupled"}:
+            blockers.append("calculix_requires_thermomechanical_mode")
+        steady = settings.get("ThermoMechSteadyState")
+        if regime == "steady" and steady is not True:
+            blockers.append("calculix_requires_steady_thermal")
+        elif regime == "transient" and steady is not False:
+            blockers.append("calculix_requires_transient_thermal")
+    return list(dict.fromkeys(blockers))
+
+
 def evaluate_study_readiness(
     intent: Mapping[str, Any],
     inventory: Mapping[str, Any],
@@ -155,6 +189,11 @@ def evaluate_study_readiness(
                 blockers.append("missing_support")
             if int(inventory.get("load_count", 0) or 0) < 1:
                 blockers.append("missing_mechanical_load")
+        if "elmer" in set(inventory.get("solver_kinds") or ()) and not {
+            "elasticity",
+            "deformation",
+        }.intersection(set(inventory.get("equation_kinds") or ())):
+            blockers.append("missing_mechanical_equation")
 
     if "thermal" in physics:
         material_key = (
@@ -167,7 +206,10 @@ def evaluate_study_readiness(
         thermal_families = set(inventory.get("thermal_condition_families") or ())
         if int(inventory.get("thermal_condition_count", 0) or 0) < 1:
             blockers.append("missing_thermal_condition")
-        elif regime == "transient" and "initial_temperature" not in thermal_families:
+        elif (
+            regime == "transient"
+            or "calculix" in set(inventory.get("solver_kinds") or ())
+        ) and "initial_temperature" not in thermal_families:
             blockers.append("missing_initial_temperature")
         if "elmer" in set(inventory.get("solver_kinds") or ()) and "heat" not in set(
             inventory.get("equation_kinds") or ()
@@ -221,6 +263,12 @@ def evaluate_study_readiness(
         status = runtimes.get(solver)
         if status is None or status.get("engine_ready") is not True:
             blockers.append(f"solver_runtime_unavailable:{solver}")
+
+    blockers.extend(
+        blocker
+        for blocker in inventory.get("solver_configuration_blockers", ())
+        if isinstance(blocker, str)
+    )
 
     ready_to_mesh_blockers = {
         "missing_study_intent",

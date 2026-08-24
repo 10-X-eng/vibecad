@@ -42,6 +42,7 @@ class PreparedSolverCreate:
     members_before: tuple[Any, ...]
     kind: str
     label: str
+    momentum_model: str | None
 
 
 def _label(value: Any) -> str:
@@ -58,6 +59,7 @@ def prepare_solver_create(
     kind: str,
     analysis: Any,
     label: Any,
+    momentum_model: Any = None,
 ) -> PreparedSolverCreate:
     if kind not in _FACTORY_NAMES:
         raise NativeAnalyzeError("The requested FEM solver kind is unavailable.")
@@ -65,12 +67,23 @@ def prepare_solver_create(
     members = tuple(getattr(prepared_analysis.analysis, "Group", ()) or ())
     if len(members) != prepared_analysis.expected_member_count:
         raise NativeAnalyzeError("The exact FEM analysis membership changed during preflight.")
+    selected_model = None
+    if kind == "openfoam":
+        model = str(momentum_model or "laminar")
+        if model not in {"laminar", "k_omega_sst"}:
+            raise NativeAnalyzeError(
+                "momentum_model must be laminar or k_omega_sst."
+            )
+        selected_model = model
+    elif momentum_model is not None:
+        raise NativeAnalyzeError("momentum_model applies only to OpenFOAM.")
     return PreparedSolverCreate(
         creation_boundary(document),
         prepared_analysis,
         members,
         kind,
         _label(label),
+        selected_model,
     )
 
 
@@ -104,6 +117,12 @@ def create_solver(
         raise NativeAnalyzeError("The FEM solver factory returned the wrong solver kind.")
 
     solver.Label = prepared.label
+    if prepared.kind == "openfoam":
+        solver.TurbulenceModel = (
+            "kOmegaSST"
+            if prepared.momentum_model == "k_omega_sst"
+            else "laminar"
+        )
     analysis = prepared.analysis.analysis
     analysis.addObject(solver)
     if tuple(getattr(analysis, "Group", ()) or ()) != (*prepared.members_before, solver):
@@ -131,6 +150,9 @@ def verify_solver_create(
         "live solver": is_live(document, solver),
         "solver kind": state["solver_kind"] == prepared.kind,
         "solver label": str(solver.Label) == prepared.label,
+        "momentum model": prepared.kind != "openfoam"
+        or str(solver.TurbulenceModel)
+        == ("kOmegaSST" if prepared.momentum_model == "k_omega_sst" else "laminar"),
         "analysis membership": tuple(getattr(analysis, "Group", ()) or ())
         == (*prepared.members_before, solver),
         "analysis count": current_analysis["member_count"]
@@ -146,4 +168,12 @@ def verify_solver_create(
             + ", ".join(failures)
             + "."
         )
-    return {"created_solver": state, "analysis": current_analysis}
+    return {
+        "created_solver": state,
+        "analysis": current_analysis,
+        "analysis_target": {
+            "object_name": current_analysis["object_name"],
+            "expected_state_sha256": current_analysis["state_sha256"],
+            "expected_member_count": current_analysis["member_count"],
+        },
+    }

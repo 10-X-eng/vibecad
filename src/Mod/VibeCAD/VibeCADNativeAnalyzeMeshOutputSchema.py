@@ -16,6 +16,7 @@ ANALYZE_MESH_OUTPUT_CAPABILITY_NAME = "analyze.mesh_output"
 
 FEM_MESH_OBJECT_TARGET = {
     "type": "object",
+    "description": "Copy target from a generated mesh in mesh_definitions.",
     "properties": {
         "object_name": {"type": "string", "minLength": 1, "maxLength": 160},
         "expected_state_sha256": {

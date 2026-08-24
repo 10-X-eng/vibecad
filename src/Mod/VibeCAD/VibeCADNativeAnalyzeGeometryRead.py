@@ -25,6 +25,8 @@ _SURFACE_KINDS = {
     "OffsetSurface": "offset",
 }
 
+ANALYZE_FACE_PAGE_LIMIT = 128
+
 
 def _number(value: Any) -> float:
     result = float(value)
@@ -63,6 +65,7 @@ def _face_state(face: Any, index: int) -> dict[str, Any]:
         result["normal"] = _vector(
             face.normalAt((u_min + u_max) * 0.5, (v_min + v_max) * 0.5)
         )
+        result["reference_direction"] = _vector(surface.Axis)
     axis = getattr(surface, "Axis", None)
     if axis is not None and kind != "plane":
         result["axis"] = _vector(axis)
@@ -89,8 +92,13 @@ def inspect_geometry_source(
         )
     if type(offset) is not int or offset < 0:
         raise NativeAnalyzeError("offset must be a non-negative integer.")
-    if type(page_size) is not int or not 1 <= page_size <= 64:
-        raise NativeAnalyzeError("page_size must be an integer from 1 to 64.")
+    if (
+        type(page_size) is not int
+        or not 1 <= page_size <= ANALYZE_FACE_PAGE_LIMIT
+    ):
+        raise NativeAnalyzeError(
+            f"page_size must be an integer from 1 to {ANALYZE_FACE_PAGE_LIMIT}."
+        )
     source = resolve_object(
         document,
         NativeObjectRef(document_uid, str(target["object_name"])),
@@ -130,7 +138,7 @@ def inspect_geometry_source(
         "face_page": {
             "source": {
                 "object_name": str(source.Name),
-                "state_sha256": state["state_sha256"],
+                "expected_state_sha256": state["state_sha256"],
             },
             "offset": offset,
             "returned": max(0, stop - offset),

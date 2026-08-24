@@ -134,8 +134,41 @@ def test_view_runtime_uses_fixed_operations_and_exact_injected_document(
         return {"captured": True}
 
     monkeypatch.setattr(runtime_module, "capture_screenshot", capture)
+    monkeypatch.setattr(
+        runtime_module,
+        "set_isometric",
+        lambda target: {"document": target.Name, "orientation": "isometric"},
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "set_standard_view",
+        lambda target, orientation: {
+            "document": target.Name,
+            "orientation": orientation,
+        },
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "set_grid_visible",
+        lambda target, visible: {
+            "document": target.Name,
+            "grid_visible": visible,
+        },
+    )
 
     assert runtime.control_view({"operation": "fit_all"})["fit"] is True
+    assert runtime.control_view({"operation": "set_isometric"}) == {
+        "document": document.Name,
+        "orientation": "isometric",
+    }
+    assert runtime.control_view({"operation": "set_top"}) == {
+        "document": document.Name,
+        "orientation": "top",
+    }
+    assert runtime.control_view({"operation": "set_grid"}) == {
+        "document": document.Name,
+        "grid_visible": True,
+    }
     assert runtime.control_view(
         {
             "operation": "capture_objects",

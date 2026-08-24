@@ -191,7 +191,7 @@ def analyze_mesh_field_capability_definition() -> NativeCapabilityDefinition:
         variants.append(
             _variant(
                 f"create_{kind}",
-                f"Create one typed {title} Gmsh field with an exact acyclic input graph.",
+                f"Create a {title} Gmsh field.",
                 _CREATE_ACTIONS[kind],
                 _create(kind),
             )
@@ -199,17 +199,14 @@ def analyze_mesh_field_capability_definition() -> NativeCapabilityDefinition:
         variants.append(
             _variant(
                 f"update_{kind}",
-                f"Edit one exact {title} Gmsh field and invalidate stale generated mesh data.",
+                f"Edit a {title} Gmsh field.",
                 _update_action(kind),
                 _update(kind),
             )
         )
     return NativeCapabilityDefinition(
         name=ANALYZE_MESH_FIELD_CAPABILITY_NAME,
-        description=(
-            "Compose exact Gmsh size fields using typed manipulation, anisotropic, "
-            "math, and distance operations with bounded dependency graphs."
-        ),
+        description="Create or edit Gmsh size fields.",
         primary_classification="mutation",
         variants=tuple(variants),
     )

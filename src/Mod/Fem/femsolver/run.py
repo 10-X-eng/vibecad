@@ -72,6 +72,16 @@ DONE = 4
 
 _machines = {}
 _dirTypes = {}
+_DETACHED_GUI_SOLVER_TYPES = frozenset(
+    {
+        "Fem::SolverCalculiX",
+        "Fem::SolverCcxTools",
+        "Fem::SolverElmer",
+        "Fem::SolverMystran",
+        "Fem::SolverOpenFOAM",
+        "Fem::SolverZ88",
+    }
+)
 
 
 def _required_solver_binaries(solver):
@@ -142,7 +152,11 @@ def run_fem_solver(solver, working_dir=None, blocking=False):
     if membertools._is_suppressed(solver):
         raise ValueError("A suppressed FEM solver cannot be run")
 
-    if solver.Proxy.Type in {"Fem::SolverElmer", "Fem::SolverOpenFOAM"}:
+    if (
+        App.GuiUp
+        and not blocking
+        and solver.Proxy.Type in _DETACHED_GUI_SOLVER_TYPES
+    ):
         from VibeCADAnalyzeSolverGui import run_solver_detached
 
         try:

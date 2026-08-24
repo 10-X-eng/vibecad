@@ -105,6 +105,7 @@ def prepare_material_create(
 ) -> PreparedMaterialCreate:
     if kind not in {"solid", "fluid", "reinforced"}:
         raise NativeAnalyzeError("The requested FEM material kind is unavailable.")
+    clean_label = _label(label)
     target = prepare_analysis_target(document, document_uid, analysis)
     prepared_references = prepare_geometry_references(
         document,
@@ -118,6 +119,7 @@ def prepare_material_create(
         material_uuid=material_uuid,
         properties=properties,
     )
+    matrix.setdefault("Name", clean_label)
     reinforcement: dict[str, str] = {}
     resolved_reinforcement_uuid = ""
     if kind == "reinforced":
@@ -127,6 +129,7 @@ def prepare_material_create(
             material_uuid=reinforcement_uuid,
             properties=reinforcement_properties,
         )
+        reinforcement.setdefault("Name", clean_label)
     elif reinforcement_uuid is not None or reinforcement_properties is not None:
         raise NativeAnalyzeError(
             "Reinforcement fields are valid only for a reinforced material."
@@ -137,7 +140,7 @@ def prepare_material_create(
         tuple(target.analysis.Group or ()),
         prepared_references,
         kind,
-        _label(label),
+        clean_label,
         _pairs(matrix),
         matrix_uuid,
         _pairs(reinforcement),
@@ -246,8 +249,14 @@ def verify_material_create(
         raise NativeAnalyzeError(
             "The new reinforced FEM material failed its exact postcondition."
         )
+    current_analysis = analysis_state(analysis)
     return {
-        "analysis": analysis_state(analysis),
+        "analysis": current_analysis,
+        "analysis_target": {
+            "object_name": current_analysis["object_name"],
+            "expected_state_sha256": current_analysis["state_sha256"],
+            "expected_member_count": current_analysis["member_count"],
+        },
         "created_material": material_state(material),
     }
 

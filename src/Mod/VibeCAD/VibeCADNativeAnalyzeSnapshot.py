@@ -28,6 +28,7 @@ from VibeCADNativeAnalyzeClipping import (
     clipping_face_source_state,
     clipping_state,
 )
+from VibeCADNativeAnalyzeGeometrySources import active_analyze_geometry_sources
 from VibeCADNativeMeshState import mesh_object_state
 from VibeCADNativeSnapshot import objects_of_type
 
@@ -96,7 +97,7 @@ def _compact_solver(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _compact_result(state: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         key: state[key]
         for key in (
             "object_name",
@@ -108,10 +109,13 @@ def _compact_result(state: dict[str, Any]) -> dict[str, Any]:
             "field_count",
             "field_names",
             "field_names_truncated",
+            "flow_boundaries",
+            "flow_boundaries_truncated",
             "state_sha256",
         )
         if key in state
     }
+    return result
 
 
 def _analysis_workflows(
@@ -325,29 +329,20 @@ def _materials(document: Any) -> tuple[int, list[dict[str, Any]]]:
 def _geometry_sources(document: Any) -> tuple[int, list[dict[str, Any]]]:
     result = []
     count = 0
-    try:
-        import PartGui
-    except ImportError:
-        return 0, result
-    for obj in list(getattr(document, "Objects", ()) or ()):
-        shape = getattr(obj, "Shape", None)
-        if shape is None:
-            continue
+    for obj in active_analyze_geometry_sources(document):
         try:
-            if (
-                shape.isNull()
-                or not shape.isValid()
-                or not PartGui.isModelingObjectActive(obj)
-            ):
-                continue
             state = mesh_object_state(obj)
             topology = dict(state.get("topology") or {})
-            if not any(
-                int(topology.get(name, 0) or 0) > 0
-                for name in ("solids", "faces", "edges")
-            ):
-                continue
             state["clipping_face_target"] = clipping_face_source_state(obj)
+            if bool(getattr(obj, "VibeCADAnalysisDomain", False)):
+                mode = str(getattr(obj, "AnalysisInterfaceMode", "") or "")
+                state["interface_mode"] = mode
+                shape = obj.Shape
+                state["all_solids_conformal"] = bool(
+                    mode == "shared"
+                    and len(shape.CompSolids) == 1
+                    and len(shape.CompSolids[0].Solids) == len(shape.Solids)
+                )
         except Exception:
             continue
         count += 1

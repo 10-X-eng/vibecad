@@ -7,7 +7,11 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
-from VibeCADNativeAnalyzeStudy import evaluate_study_readiness, study_intent_state
+from VibeCADNativeAnalyzeStudy import (
+    evaluate_study_readiness,
+    solver_configuration_blockers,
+    study_intent_state,
+)
 from VibeCADNativeSnapshot import concise_object
 
 
@@ -122,6 +126,9 @@ def study_inventory(analysis: Any) -> dict[str, Any]:
     active_solver_states = [
         state for state in states["solver"] if not bool(state.get("suppressed"))
     ]
+    configuration_blockers = solver_configuration_blockers(
+        study_intent_state(analysis), active_solver_states
+    )
     return {
         "geometry_source_count": len(geometry_sources),
         "geometry_sources": sorted(geometry_sources),
@@ -152,6 +159,7 @@ def study_inventory(analysis: Any) -> dict[str, Any]:
         ),
         "solver_count": len(states["solver"]),
         "solver_kinds": [str(state["solver_kind"]) for state in active_solver_states],
+        "solver_configuration_blockers": configuration_blockers,
         "result_count": sum(
             int(state.get("result_count", 0) or 0) for state in states["solver"]
         ),

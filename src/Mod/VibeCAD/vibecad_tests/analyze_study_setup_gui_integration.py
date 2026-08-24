@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import json
+from copy import deepcopy
 from pathlib import Path
 import sys
 import tempfile
@@ -121,6 +123,29 @@ def _run() -> None:
         widget = dock.widget()
         assert isinstance(widget, StudySetupWidget)
         assert widget.apply_button.isVisible()
+        assert widget.results_browser.result_combo.count() == 0
+        assert widget.geometry_browser.source_combo.count() == 2
+        assert widget.geometry_browser.face_table.topLevelItemCount() == 6
+        widget.geometry_browser.face_table.setCurrentItem(
+            widget.geometry_browser.face_table.topLevelItem(0)
+        )
+        widget.geometry_browser.highlight_button.click()
+        _events(8)
+        selected_face = Gui.Selection.getSelectionEx(document.Name)
+        assert len(selected_face) == 1
+        assert selected_face[0].Object is first_source
+        assert tuple(selected_face[0].SubElementNames) == ("Face1",)
+        first_source.ViewObject.Visibility = True
+        second_source.ViewObject.Visibility = False
+        widget.geometry_browser.isolate_button.click()
+        _events(8)
+        assert first_source.ViewObject.Visibility
+        assert not second_source.ViewObject.Visibility
+        assert widget.geometry_browser.restore_button.isEnabled()
+        widget.geometry_browser.restore_button.click()
+        _events(8)
+        assert first_source.ViewObject.Visibility
+        assert not second_source.ViewObject.Visibility
 
         widget.label_edit.setText("Fan Flow")
         widget.physics_checks["mechanical"].setChecked(False)
@@ -167,8 +192,104 @@ def _run() -> None:
             "Outlet Air",
         )
         assert first_material is not None and second_material is not None
+        flow_result = document.addObject("Fem::FemPostPipeline", "FlowResult")
+        flow_result.Label = "Fan Flow Result"
+        flow_result.addProperty(
+            "App::PropertyString",
+            "VibeCADOpenFOAMSummary",
+            "Results",
+        )
+        flow_summary = {
+            "format_version": 1,
+            "pressure_unit": "Pa",
+            "velocity_unit": "m/s",
+            "density_kg_m3": 1.2,
+            "kinematic_viscosity_m2_s": 1.5e-5,
+            "turbulence_model": "laminar",
+            "converged": True,
+            "pressure_range_pa": [0.0, 12.0],
+            "velocity_magnitude_range_m_s": [0.0, 2.0],
+            "maximum_velocity_m_s": 2.0,
+            "boundaries": [
+                {
+                    "name": "inlet",
+                    "kind": "inlet_velocity",
+                    "area_m2": 1.0,
+                    "geometric_area_m2": 1.0,
+                    "pressure_area_average_pa": 12.0,
+                    "velocity_area_average_m_s": [2.0, 0.0, 0.0],
+                    "outward_volumetric_flow_rate_m3_s": -2.0,
+                    "outward_mass_flow_rate_kg_s": -2.4,
+                    "condition": {
+                        "kind": "inlet_velocity",
+                        "velocity_m_s": 2.0,
+                        "turbulence": {"kind": "none"},
+                    },
+                },
+                {
+                    "name": "outlet",
+                    "kind": "outlet_static_pressure",
+                    "area_m2": 1.0,
+                    "geometric_area_m2": 1.0,
+                    "pressure_area_average_pa": 0.0,
+                    "velocity_area_average_m_s": [2.0, 0.0, 0.0],
+                    "outward_volumetric_flow_rate_m3_s": 2.0,
+                    "outward_mass_flow_rate_kg_s": 2.4,
+                    "condition": {
+                        "kind": "outlet_static_pressure",
+                        "pressure_pa": 0.0,
+                        "turbulence": {"kind": "none"},
+                    },
+                },
+            ],
+        }
+        flow_result.VibeCADOpenFOAMSummary = json.dumps(flow_summary)
+        analysis.addObject(flow_result)
+        candidate_result = document.addObject(
+            "Fem::FemPostPipeline", "CandidateFlowResult"
+        )
+        candidate_result.Label = "Candidate Flow Result"
+        candidate_result.addProperty(
+            "App::PropertyString",
+            "VibeCADOpenFOAMSummary",
+            "Results",
+        )
+        candidate_summary = deepcopy(flow_summary)
+        candidate_summary["boundaries"][0]["pressure_area_average_pa"] = 10.0
+        candidate_result.VibeCADOpenFOAMSummary = json.dumps(candidate_summary)
+        analysis.addObject(candidate_result)
         widget.refresh()
         _events(12)
+        assert widget.results_browser.result_combo.count() == 2
+        assert widget.results_browser.upstream_combo.count() == 2
+        assert widget.results_browser.downstream_combo.count() == 2
+        assert widget.results_browser.flow_boundary_combo.count() == 2
+        widget.results_browser.upstream_combo.setCurrentIndex(
+            widget.results_browser.upstream_combo.findData("inlet")
+        )
+        widget.results_browser.downstream_combo.setCurrentIndex(
+            widget.results_browser.downstream_combo.findData("outlet")
+        )
+        widget.results_browser.flow_boundary_combo.setCurrentIndex(
+            widget.results_browser.flow_boundary_combo.findData("outlet")
+        )
+        widget.results_browser.measure_button.click()
+        assert "GFA 1 m²" in widget.results_browser.performance_label.text()
+        assert "EFA 0.447214 m²" in widget.results_browser.performance_label.text()
+        assert "Cd 0.447214" in widget.results_browser.performance_label.text()
+        assert widget.results_browser.compare_result_combo.count() == 2
+        assert widget.results_browser.compare_button.isEnabled()
+        widget.results_browser.compare_upstream_combo.setCurrentIndex(
+            widget.results_browser.compare_upstream_combo.findData("inlet")
+        )
+        widget.results_browser.compare_downstream_combo.setCurrentIndex(
+            widget.results_browser.compare_downstream_combo.findData("outlet")
+        )
+        widget.results_browser.compare_flow_combo.setCurrentIndex(
+            widget.results_browser.compare_flow_combo.findData("outlet")
+        )
+        widget.results_browser.compare_button.click()
+        assert "Δp -2 Pa" in widget.results_browser.comparison_label.text()
         assert widget.assignment_table.topLevelItemCount() == 2
         first_item = next(
             widget.assignment_table.topLevelItem(index)
@@ -213,7 +334,9 @@ def _run() -> None:
             "VIBECAD_ANALYZE_STUDY_SETUP_GUI_OK "
             "ribbon=true create=true update=true exact_operations=true "
             "undo_redo=true reopen=true controls_visible=true "
+            "geometry_faces=true face_highlight=true face_isolate_restore=true "
             "assignments=true highlight=true isolate_restore=true validation=true",
+            "results=true comparison=true",
             flush=True,
         )
         exit_code = 0

@@ -365,6 +365,7 @@ SET(FemSolverOpenFOAM_SRCS
     femsolver/openfoam/__init__.py
     femsolver/openfoam/case.py
     femsolver/openfoam/openfoamtools.py
+    femsolver/openfoam/results.py
 )
 
 SET(FemSolverZ88_SRCS

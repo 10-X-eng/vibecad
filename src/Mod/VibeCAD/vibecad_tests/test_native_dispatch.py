@@ -192,6 +192,52 @@ def test_dispatch_refuses_a_document_change_outside_the_frozen_turn() -> None:
     assert calls == []
 
 
+def test_background_job_status_survives_its_owned_document_commit() -> None:
+    definition = NativeCapabilityDefinition(
+        name="native.job",
+        description="Read one exact background job.",
+        primary_classification="read",
+        variants=(
+            NativeCapabilityVariant(
+                operation="status",
+                description="Read one exact background job.",
+                action_ids=frozenset({"VibeCAD_NativeBackgroundJob"}),
+                surface_ids=frozenset({"analyze"}),
+                exact_target_type="NativeBackgroundJobId",
+                transaction_behavior="none",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "job_id": {
+                            "type": "string",
+                            "minLength": 32,
+                            "maxLength": 32,
+                        },
+                    },
+                    "required": ["job_id"],
+                    "additionalProperties": False,
+                },
+            ),
+        ),
+    )
+    calls = []
+    dispatcher, state, _debug = _dispatcher(
+        lambda call: calls.append(call) or {"phase": "completed"},
+        definition=definition,
+    )
+    state.note_structural_change(_Document.Uid)
+
+    result = dispatcher.call(
+        "native.job",
+        json.dumps({"operation": "status", "job_id": "a" * 32}),
+        "background-status-call",
+    )
+
+    assert result == {"ok": True, "phase": "completed"}
+    assert len(calls) == 1
+
+
 def test_dispatch_advances_with_its_own_successful_mutations() -> None:
     holder = {}
     tickets = []

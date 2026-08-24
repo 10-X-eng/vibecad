@@ -34,7 +34,7 @@ class SolverOpenFOAM(base_fempythonobject.BaseFemPythonObject):
                 name="TurbulenceModel",
                 group="Solver",
                 doc="Momentum transport model",
-                value=["laminar"],
+                value=["laminar", "kOmegaSST"],
             ),
             _PropHelper(
                 type="App::PropertyIntegerConstraint",
@@ -64,6 +64,13 @@ class SolverOpenFOAM(base_fempythonobject.BaseFemPythonObject):
                 doc="Velocity residual tolerance",
                 value={"value": 1.0e-5, "min": 1.0e-15, "max": 1.0},
             ),
+            _PropHelper(
+                type="App::PropertyFloatConstraint",
+                name="TurbulenceTolerance",
+                group="Solver",
+                doc="Turbulence residual tolerance",
+                value={"value": 1.0e-3, "min": 1.0e-15, "max": 1.0},
+            ),
         )
 
     def onDocumentRestored(self, obj):
@@ -74,3 +81,8 @@ class SolverOpenFOAM(base_fempythonobject.BaseFemPythonObject):
                 obj.getPropertyByName(prop.name)
             except Base.PropertyError:
                 prop.add_to_object(obj)
+        selected_model = str(obj.TurbulenceModel)
+        models = ["laminar", "kOmegaSST"]
+        if obj.getEnumerationsOfProperty("TurbulenceModel") != models:
+            obj.TurbulenceModel = models
+            obj.TurbulenceModel = selected_model if selected_model in models else "laminar"

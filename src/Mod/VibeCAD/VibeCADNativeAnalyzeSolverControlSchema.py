@@ -115,6 +115,7 @@ _ELMER_CHANGES = {
     "save_geometry_index": _BOOL,
 }
 _OPENFOAM_CHANGES = {
+    "momentum_model": _enum("laminar", "k_omega_sst"),
     "max_iterations": _POSITIVE_INTEGER,
     "write_every_iterations": _POSITIVE_INTEGER,
     "pressure_tolerance": {
@@ -123,6 +124,11 @@ _OPENFOAM_CHANGES = {
         "maximum": 1.0,
     },
     "velocity_tolerance": {
+        "type": "number",
+        "minimum": 1.0e-15,
+        "maximum": 1.0,
+    },
+    "turbulence_tolerance": {
         "type": "number",
         "minimum": 1.0e-15,
         "maximum": 1.0,

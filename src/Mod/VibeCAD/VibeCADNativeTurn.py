@@ -18,6 +18,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeProviderSurface,
     _provider_schema_operations,
+    provider_visible_native_schema,
     project_native_provider_operations,
     project_native_provider_surface,
     resolve_native_provider_surface,
@@ -72,6 +73,34 @@ def _canonical_schemas(schemas: tuple[dict[str, Any], ...]) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _captured_schema_operations(
+    registry: NativeCapabilityRegistry,
+    schema: dict[str, Any],
+) -> tuple[str, ...]:
+    operations = _provider_schema_operations(schema)
+    if operations:
+        return operations
+    name = str(schema.get("name") or "")
+    definition = registry.definition(name)
+    if definition is None:
+        raise NativeTurnUnavailable(
+            f"The captured Native capability {name!r} has no definition."
+        )
+    matches = tuple(
+        variant.operation
+        for variant in definition.variants
+        if provider_visible_native_schema(
+            definition.provider_schema((variant.operation,))
+        )
+        == schema
+    )
+    if len(matches) != 1:
+        raise NativeTurnUnavailable(
+            f"The captured Native schema for {name!r} does not identify one exact operation."
+        )
+    return matches
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +161,7 @@ def freeze_native_turn(
     registry: NativeCapabilityRegistry | None = None,
     tool_names: tuple[str, ...] | None = None,
     active_state: dict[str, Any] | None = None,
+    provider_schemas: tuple[dict[str, Any], ...] | None = None,
 ) -> NativeTurnSnapshot:
     """Freeze an exact validated Native surface without changing UI state."""
 
@@ -150,6 +180,32 @@ def freeze_native_turn(
             provider_surface = project_native_provider_surface(
                 provider_surface,
                 tool_names,
+            )
+        except NativeCapabilityRegistryError as exc:
+            raise NativeTurnUnavailable(str(exc)) from exc
+    if provider_schemas is not None:
+        if registry is None:
+            raise NativeTurnUnavailable(
+                "Freezing exact Native operations requires a capability registry."
+            )
+        operations_by_tool = {}
+        for schema in provider_schemas:
+            name = str(schema.get("name") or "")
+            definition = registry.definition(name)
+            if definition is None:
+                raise NativeTurnUnavailable(
+                    f"The captured Native capability {name!r} has no definition."
+                )
+            if len(definition.variants) > 1:
+                operations_by_tool[name] = _captured_schema_operations(
+                    registry,
+                    schema,
+                )
+        try:
+            provider_surface = project_native_provider_operations(
+                provider_surface,
+                registry,
+                operations_by_tool,
             )
         except NativeCapabilityRegistryError as exc:
             raise NativeTurnUnavailable(str(exc)) from exc

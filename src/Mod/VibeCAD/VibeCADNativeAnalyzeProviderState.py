@@ -62,6 +62,51 @@ def _analysis_by_name(domain: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]
     return result
 
 
+def _analysis_target(source: Mapping[str, Any], member_count: int) -> dict[str, Any]:
+    return {
+        "object_name": str(source.get("object_name") or ""),
+        "expected_state_sha256": str(source.get("state_sha256") or ""),
+        "expected_member_count": member_count,
+    }
+
+
+def _compact_geometry_source(value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    result = {
+        str(name): item
+        for name, item in value.items()
+        if name not in {"object_name", "state_sha256", "clipping_face_target"}
+    }
+    result["source_name"] = str(value.get("object_name") or "")
+    result["source_target"] = {
+        "object_name": str(value.get("object_name") or ""),
+        "expected_state_sha256": str(value.get("state_sha256") or ""),
+    }
+    return result
+
+
+def _compact_resource(value: Any, *, name_key: str = "") -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    object_name = str(value.get("object_name") or "")
+    state_sha256 = str(value.get("state_sha256") or "")
+    if not object_name or not state_sha256:
+        return value
+    result = {
+        str(name): item
+        for name, item in value.items()
+        if name not in {"object_name", "state_sha256"}
+    }
+    result["target"] = {
+        "object_name": object_name,
+        "expected_state_sha256": state_sha256,
+    }
+    if name_key:
+        result[name_key] = object_name
+    return result
+
+
 def _compact_study(
     workflow: Mapping[str, Any],
     analysis_state: Mapping[str, Any] | None,
@@ -72,19 +117,20 @@ def _compact_study(
     source = analysis_state or workflow_analysis
     graph = workflow.get("graph")
     graph = graph if isinstance(graph, Mapping) else {}
-    analysis = {
-        name: source[name]
-        for name in ("object_name", "label", "active", "state_sha256")
-        if name in source
-    }
-    analysis["member_count"] = int(
+    member_count = int(
         source.get("member_count", graph.get("member_count", 0)) or 0
     )
+    intent = dict(workflow.get("study") or {})
+    intent.pop("state_sha256", None)
     result: dict[str, Any] = {
-        "analysis": analysis,
-        "intent": dict(workflow.get("study") or {}),
+        "analysis_name": str(source.get("object_name") or ""),
+        "analysis_target": _analysis_target(source, member_count),
+        "intent": intent,
         "readiness": dict(workflow.get("engineering_readiness") or {}),
     }
+    for name in ("label", "active"):
+        if name in source:
+            result[name] = source[name]
     inventory = _nonempty_values(workflow.get("study_inventory"))
     if inventory:
         result["inventory"] = inventory
@@ -149,15 +195,31 @@ def compact_analyze_provider_state(state: Mapping[str, Any]) -> dict[str, Any]:
     if studies:
         compact_domain["studies"] = studies
 
-    represented_names = {
-        str(study["analysis"].get("object_name") or "") for study in studies
-    }
+    represented_names = {str(study.get("analysis_name") or "") for study in studies}
     for values_name, count_name, truncated_name in _COLLECTIONS:
-        values = list(domain.get(values_name) or ())
-        if not values:
+        raw_values = list(domain.get(values_name) or ())
+        if not raw_values:
             continue
+        values = (
+            [_compact_geometry_source(value) for value in raw_values]
+            if values_name == "geometry_sources"
+            else [
+                _compact_resource(
+                    value,
+                    name_key={
+                        "materials": "material_name",
+                        "support_conditions": "support_name",
+                        "loads": "load_name",
+                        "mesh_definitions": "mesh_name",
+                        "solvers": "solver_name",
+                        "results": "result_name",
+                    }.get(values_name, ""),
+                )
+                for value in raw_values
+            ]
+        )
         compact_domain[values_name] = values
-        represented_names.update(_object_names(values))
+        represented_names.update(_object_names(raw_values))
         if domain.get(truncated_name) is True:
             compact_domain[count_name] = int(domain.get(count_name, len(values)) or 0)
             compact_domain[truncated_name] = True

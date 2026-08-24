@@ -21,6 +21,7 @@ _COMMON_PROPERTIES = (
     ("Density", "density_kg_m3", "kg/m^3"),
     ("YoungsModulus", "young_modulus_mpa", "MPa"),
     ("PoissonRatio", "poisson_ratio", None),
+    ("YieldStrength", "yield_strength_mpa", "MPa"),
     ("ThermalConductivity", "thermal_conductivity_w_m_k", "W/m/K"),
     ("ThermalExpansionCoefficient", "thermal_expansion_per_k", "1/K"),
     ("ThermalExpansionReferenceTemperature", "reference_temperature_k", "K"),

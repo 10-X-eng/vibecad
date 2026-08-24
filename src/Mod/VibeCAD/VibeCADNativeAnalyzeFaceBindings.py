@@ -6,8 +6,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from VibeCADNativeAnalyzeCurrentTargets import current_target
 from VibeCADNativeAnalyzeFaceSchema import ANALYZE_FACE_CAPABILITY_NAME
 from VibeCADNativeAnalyzeInspectRuntime import NativeAnalyzeInspectRuntime
+from VibeCADNativeMeshState import mesh_object_state
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityImplementation,
     NativeCapabilityRegistry,
@@ -24,6 +26,11 @@ def _read(call: Any) -> Mapping[str, Any]:
     values = dict(arguments)
     if values.pop("operation", None) != "read":
         raise ValueError("An Analyze face call requires the read operation.")
+    values["target"] = current_target(
+        runtime,
+        values.pop("source_name"),
+        mesh_object_state,
+    )
     values.setdefault("offset", 0)
     values.setdefault("page_size", 64)
     return runtime.inspect({"operation": "geometry_source", **values})

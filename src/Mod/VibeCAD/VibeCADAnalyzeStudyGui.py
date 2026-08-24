@@ -36,6 +36,8 @@ from VibeCADNativeAnalyzeAssignmentView import (
     restore_assignment_view,
 )
 from VibeCADNativeAnalyzeState import analysis_state
+from VibeCADAnalyzeGeometryGui import AnalyzeGeometryBrowser
+from VibeCADAnalyzeResultsGui import AnalyzeResultsBrowser
 
 
 COMMAND_NAME = "VibeCAD_AnalyzeStudySetup"
@@ -196,6 +198,9 @@ class StudySetupWidget(QtWidgets.QWidget):
         progress_layout.addWidget(self.runtime_label)
         layout.addWidget(progress)
 
+        self.geometry_browser = AnalyzeGeometryBrowser()
+        layout.addWidget(self.geometry_browser)
+
         assignments = QtWidgets.QGroupBox("Assignments")
         assignments_layout = QtWidgets.QVBoxLayout(assignments)
         self.assignment_table = QtWidgets.QTreeWidget()
@@ -234,6 +239,9 @@ class StudySetupWidget(QtWidgets.QWidget):
         validation_row.addWidget(self.assignment_validation, 1)
         assignments_layout.addLayout(validation_row)
         layout.addWidget(assignments)
+
+        self.results_browser = AnalyzeResultsBrowser()
+        layout.addWidget(self.results_browser)
         layout.addStretch(1)
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
@@ -299,6 +307,8 @@ class StudySetupWidget(QtWidgets.QWidget):
             "Create Study" if analysis is None else "Update Study"
         )
         if document is None:
+            self.geometry_browser.refresh(None)
+            self.results_browser.refresh(None, None)
             self.label_edit.setText("Analysis")
             self._inventory = {}
             self._intent = {"declared": False}
@@ -306,8 +316,10 @@ class StudySetupWidget(QtWidgets.QWidget):
             self._render("Open a document to create a study.")
             self.apply_button.setEnabled(False)
             return
+        self.geometry_browser.refresh(document)
         self.apply_button.setEnabled(True)
         if analysis is None:
+            self.results_browser.refresh(document, None)
             self.label_edit.setText("Analysis")
             self._inventory = {}
             self._intent = {"declared": False}
@@ -326,10 +338,12 @@ class StudySetupWidget(QtWidgets.QWidget):
             self._intent = study_intent_state(analysis)
             self._inventory = study_inventory(analysis)
             self._set_assignments(assignment_records(analysis))
+            self.results_browser.refresh(document, analysis)
         except Exception as exc:
             self._inventory = {}
             self._intent = {"declared": False}
             self._set_assignments(())
+            self.results_browser.refresh(document, None)
             self._render(str(exc))
             return
         declared_physics = set(self._intent.get("physics") or ())

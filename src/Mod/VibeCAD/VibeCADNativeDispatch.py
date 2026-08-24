@@ -638,7 +638,8 @@ class NativeTurnDispatcher:
                     )
 
                 self._guard()
-                self._guard_revision()
+                if name != "native.job":
+                    self._guard_revision()
                 ticket = self._state.begin_call(self._document_uid, name)
                 record = _CallRecord(name, canonical, ticket=ticket)
                 self._calls[call_id] = record
@@ -687,9 +688,10 @@ class NativeTurnDispatcher:
                     label="result",
                     byte_limit=MAX_NATIVE_RESULT_JSON_BYTES,
                 )
-                self._expected_revision = self._state.current_revision(
-                    self._document_uid
-                )
+                if name != "native.job":
+                    self._expected_revision = self._state.current_revision(
+                        self._document_uid
+                    )
                 return json.loads(record.result_json)
             except Exception as exc:
                 self._debug(name, exc)

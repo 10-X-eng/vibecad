@@ -104,6 +104,15 @@ _DIRECTION = {
                 "reversed",
             ),
         ),
+        _closed(
+            {
+                "kind": {"type": "string", "const": "vector"},
+                "x": {"type": "number", "minimum": -1.0e30, "maximum": 1.0e30},
+                "y": {"type": "number", "minimum": -1.0e30, "maximum": 1.0e30},
+                "z": {"type": "number", "minimum": -1.0e30, "maximum": 1.0e30},
+            },
+            ("kind", "x", "y", "z"),
+        ),
     ]
 }
 _AXIS = _closed(

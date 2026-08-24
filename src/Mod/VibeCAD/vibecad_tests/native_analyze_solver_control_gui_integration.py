@@ -251,10 +251,12 @@ def _run() -> None:
             "vector_maximum": 234567,
         }
         openfoam_changes = {
+            "momentum_model": "k_omega_sst",
             "max_iterations": 800,
             "write_every_iterations": 80,
             "pressure_tolerance": 5.0e-7,
             "velocity_tolerance": 2.0e-6,
+            "turbulence_tolerance": 8.0e-4,
         }
         states_after = {}
         for operation, kind, changes in (
@@ -282,6 +284,8 @@ def _run() -> None:
         assert states_after["elmer"]["settings"]["TimestepSizes"] == [0.05, 0.1]
         assert states_after["openfoam"]["settings"]["MaxIterations"] == 800
         assert states_after["openfoam"]["settings"]["PressureTolerance"] == 5.0e-7
+        assert states_after["openfoam"]["settings"]["TurbulenceModel"] == "kOmegaSST"
+        assert states_after["openfoam"]["settings"]["TurbulenceTolerance"] == 8.0e-4
         assert states_after["z88"]["settings"]["IntegrationOrderTria"] == "7"
         assert states_after["z88"]["settings"]["MatrixMaximum"] == 456789
 
@@ -361,7 +365,7 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_ANALYZE_SOLVER_CONTROL_GUI_OK "
-            "actions=1 variants=4 typed_settings=58 exact_backend=true "
+            "actions=1 variants=4 typed_settings=60 exact_backend=true "
             "cross_field_validation=true wrong_backend_rejection=true no_op_rejection=true "
             "stale_rejection=true history_stable=true inspect=true "
             "read_revision_stable=true undo_redo=true reopen=true",

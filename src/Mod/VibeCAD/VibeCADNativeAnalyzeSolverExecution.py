@@ -110,12 +110,29 @@ def _executable(program: str, label: str) -> str:
     return str(resolved)
 
 
+def _prepare_calculix(tool: Any) -> None:
+    try:
+        tool.prepare()
+    except RuntimeError as exc:
+        detail = " ".join(str(exc).split())
+        prefix = "CalculiX prerequisites failed:"
+        if detail.startswith(prefix):
+            detail = detail.removeprefix(prefix).strip()
+        message = "CalculiX prerequisites are incomplete"
+        if detail:
+            message += ": " + detail
+        raise NativeAnalyzeError(
+            message + "." if not message.endswith(".") else message,
+            error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
+        ) from exc
+
+
 def _calculix_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
     from femsolver import settings
     from femsolver.calculix.calculixtools import CalculiXTools
 
     tool = CalculiXTools(solver, detached=True, working_directory=str(root))
-    tool.prepare()
+    _prepare_calculix(tool)
     program = _executable(settings.require_binary("Calculix"), "CalculiX")
     arguments = ("-i", str(root / tool.input_deck))
     environment = dict(os.environ)
@@ -169,6 +186,7 @@ def _elmer_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
 
     tool = ElmerTools(solver, detached=True, working_directory=str(root))
     tool.prepare(run_grid=False)
+    _require_no_ignored_elmer_constraints(tool)
     commands = [
         (_executable(program, "ElmerGrid"), tuple(arguments))
         for program, arguments in tool.grid_commands
@@ -188,6 +206,17 @@ def _elmer_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
     threads = tool.fem_param.GetGroup("Elmer").GetInt("ThreadsPerTask", 1)
     environment["OMP_NUM_THREADS"] = str(max(1, threads))
     return tool, tuple(commands), environment, {"result_format": result_format}
+
+
+def _require_no_ignored_elmer_constraints(tool: Any) -> None:
+    ignored = tuple(getattr(tool, "ignored_constraints", ()) or ())
+    if not ignored:
+        return
+    labels = ", ".join(str(getattr(value, "Label", "") or value.Name) for value in ignored)
+    raise NativeAnalyzeError(
+        "Elmer has no active equation for these study conditions: " + labels + ".",
+        error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
+    )
 
 
 def _z88_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
@@ -367,6 +396,7 @@ def _import_tool(request: SolverExecutionRequest) -> Any:
             root,
             result_glob=str(request.importer_state["result_glob"]),
             solver_log=str(request.importer_state["solver_log"]),
+            summary_context=request.importer_state.get("summary_context"),
         )
     from femsolver.z88.z88tools import Z88Tools
 
@@ -383,6 +413,15 @@ def _unpack_result_graph(value: Any) -> tuple[Any, tuple[Any, ...], bool, Any]:
     root_is_new = bool(value[2]) if len(value) >= 3 else True
     reconciliation = value[3] if len(value) == 4 else None
     return root, resources, root_is_new, reconciliation
+
+
+def _select_final_result_frame(root: Any) -> None:
+    try:
+        frames = tuple(root.getFrameValues())
+    except (AttributeError, RuntimeError, TypeError):
+        return
+    if frames:
+        root.Frame = len(frames) - 1
 
 
 def commit_solver_execution(
@@ -422,6 +461,7 @@ def commit_solver_execution(
         root_is_new=root_is_new,
         reconciliation=reconciliation,
     )
+    _select_final_result_frame(root)
     return NativeMutationDraft(
         value={"prepared": prepared, "root": root, "resources": resources},
         recompute_targets=(root, solver),
@@ -454,6 +494,15 @@ def _result_summary(
     }
 
 
+def _require_meaningful_result_state(state: Mapping[str, Any]) -> None:
+    if int(state.get("field_count", 0) or 0) > 0:
+        return
+    raise NativeAnalyzeError(
+        "The FEM solver produced no result fields.",
+        error_code="NATIVE_ANALYZE_RESULT_DATA_MISSING",
+    )
+
+
 def verify_solver_execution(
     document: Any, draft: NativeMutationDraft
 ) -> dict[str, Any]:
@@ -468,6 +517,9 @@ def verify_solver_execution(
     solver = request.target.solver
     root = draft.value["root"]
     resources = draft.value["resources"]
+    from VibeCADNativeAnalyzeResultState import result_state
+
+    _require_meaningful_result_state(result_state(root))
     timeline = tuple(getattr(document.VibeCADTimeline, "Operations", ()) or ())
     result_list = tuple(getattr(solver, "Results", ()) or ())
     solver_resources = tuple(

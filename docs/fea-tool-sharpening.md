@@ -116,3 +116,50 @@ calls caused by VibeCAD's contract.
   results expose the next analysis target inconsistently, and the multi-operation
   mesh/inspection families invite fields from the wrong operation. The saved
   artifact is retained for the next production correction.
+
+### Production corrections
+
+- Analyze now publishes only operations applicable to the exact current study
+  between turns. A fully conformal shared solid domain omits redundant
+  connection creation; separate solids and existing connections retain the
+  connection tool.
+- Whole-domain shared and separate solid creation is available through the same
+  production operation used by the ribbon and assistant. Shared creation uses a
+  conformal Boolean-fragment CompSolid while preserving the source geometry.
+- Repeated face references stored by FreeCAD in one `PropertyLinkSubList` entry
+  are flattened into exact endpoints for create, inspect, and edit. This covers
+  connections between two faces of one analysis domain without a special case.
+- CalculiX result ranges now carry explicit pipeline provenance: the modern
+  CalculiX pipeline remains in FreeCAD engineering units (mm and MPa), while the
+  legacy CcxTools importer is converted from SI. Empty result graphs are
+  rejected.
+- Load values use the same numeric canonicalization for preflight, document
+  storage, readback, and postcondition verification.
+- High-entity provider state was exercised with 256 solids. Exact assignments,
+  contextual tool transitions, save, and reopen remained usable while the
+  provider state contracted from 16,900 to 5,368 bytes after study completion.
+
+### Real solver gates
+
+- A three-solid conformal bridge gate generated a real Gmsh mesh, ran CalculiX,
+  imported displacement and stress, and reopened with all three source solids
+  represented by one stable analysis domain.
+- A two-material bimetal gate ran coupled thermal-mechanical CalculiX and
+  reopened with temperature and displacement fields in exact units.
+- ElmerGrid and ElmerSolver run as detached processes, import a real result,
+  rerun without blocking the interface, and preserve the result after reopen.
+- OpenFOAM Foundation 14 runs both laminar and k-omega SST cases in the shared
+  background lifecycle. Imported pressure, velocity, turbulence, oriented
+  boundary flux, continuity, GFA, EFA, and discharge coefficient survive
+  save/reopen and use the same result state for the ribbon and assistant.
+
+### Unsteered cross-model acceptance
+
+- Qwen 3.5 9B and GPT-5.6 Terra high received the same ordinary bridge request
+  with no tool names, call order, retries, or benchmark instructions. Both chose
+  a shared conformal domain, applied steel, support, deck pressure, gravity,
+  meshing, and a real solver from the contextual surface.
+- The final Terra artifact reopened with 10,203 result points and 5,647 cells.
+  Its exact ranges were 0.738 mm maximum displacement and 628.5 MPa maximum von
+  Mises stress. The final Qwen artifact independently completed a real Elmer
+  solve and reopened with imported results.

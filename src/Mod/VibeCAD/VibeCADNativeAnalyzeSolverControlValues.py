@@ -62,10 +62,12 @@ _ELMER_NAMES = {
     "save_geometry_index": "SaveGeometryIndex",
 }
 _OPENFOAM_NAMES = {
+    "momentum_model": "TurbulenceModel",
     "max_iterations": "MaxIterations",
     "write_every_iterations": "WriteEveryIterations",
     "pressure_tolerance": "PressureTolerance",
     "velocity_tolerance": "VelocityTolerance",
+    "turbulence_tolerance": "TurbulenceTolerance",
 }
 _Z88_NAMES = {
     "analysis_type": "AnalysisType",
@@ -279,12 +281,16 @@ def _z88(field: str, value: Any) -> Any:
 
 
 def _openfoam(field: str, value: Any) -> Any:
+    if field == "momentum_model":
+        return _text(field, value, ("laminar", "k_omega_sst"))
     if field in {"max_iterations", "write_every_iterations"}:
         return _integer(field, value, 1, 1_000_000_000)
     return _number(field, value, 1.0e-15, 1.0)
 
 
 def _native_value(kind: str, field: str, value: Any) -> Any:
+    if kind == "openfoam" and field == "momentum_model":
+        return "kOmegaSST" if value == "k_omega_sst" else "laminar"
     if kind == "z88" and field.startswith("integration_order_"):
         return str(value)
     return value

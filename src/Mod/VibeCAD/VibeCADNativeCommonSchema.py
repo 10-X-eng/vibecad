@@ -157,12 +157,33 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                 transaction_behavior="presentation",
             ),
             _variant(
+                "set_isometric",
+                "Set the active 3D view to isometric.",
+                ("Std_ViewIsometric",),
+                transaction_behavior="presentation",
+            ),
+            *(
+                _variant(
+                    f"set_{orientation}",
+                    f"Set the active 3D view to {orientation}.",
+                    (action_id,),
+                    transaction_behavior="presentation",
+                )
+                for orientation, action_id in (
+                    ("front", "Std_ViewFront"),
+                    ("rear", "Std_ViewRear"),
+                    ("left", "Std_ViewLeft"),
+                    ("right", "Std_ViewRight"),
+                    ("top", "Std_ViewTop"),
+                    ("bottom", "Std_ViewBottom"),
+                )
+            ),
+            _variant(
                 "set_grid",
                 "Set grid visibility explicitly.",
                 ("VibeCAD_ToggleGrid",),
                 parameters=_parameters(
-                    {"visible": {"type": "boolean"}},
-                    ("visible",),
+                    {"visible": {"type": "boolean", "default": True}},
                 ),
                 transaction_behavior="presentation",
             ),

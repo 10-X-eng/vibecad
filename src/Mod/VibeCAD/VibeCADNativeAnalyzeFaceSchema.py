@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from VibeCADNativeAnalyzeMeshSchema import _SOURCE
+from VibeCADNativeAnalyzeModelSchema import _OBJECT_NAME
+from VibeCADNativeAnalyzeGeometryRead import ANALYZE_FACE_PAGE_LIMIT
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityDefinition,
     NativeCapabilityRegistry,
@@ -32,7 +33,10 @@ def analyze_face_capability_definition() -> NativeCapabilityDefinition:
                 parameters={
                     "type": "object",
                     "properties": {
-                        "target": _SOURCE,
+                        "source_name": {
+                            **_OBJECT_NAME,
+                            "description": "Geometry object name.",
+                        },
                         "offset": {
                             "type": "integer",
                             "minimum": 0,
@@ -41,11 +45,11 @@ def analyze_face_capability_definition() -> NativeCapabilityDefinition:
                         "page_size": {
                             "type": "integer",
                             "minimum": 1,
-                            "maximum": 64,
+                            "maximum": ANALYZE_FACE_PAGE_LIMIT,
                             "default": 64,
                         },
                     },
-                    "required": ["target"],
+                    "required": ["source_name"],
                     "additionalProperties": False,
                 },
                 provider_supplemental=True,

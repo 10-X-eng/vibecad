@@ -24,6 +24,16 @@ def _frozen_copy(value: Any) -> Any:
     return json.loads(json.dumps(value))
 
 
+def _completed_document_change(name: str, result: Mapping[str, Any]) -> bool:
+    job = result.get("job")
+    return bool(
+        name == "native.job"
+        and isinstance(job, Mapping)
+        and job.get("terminal") is True
+        and job.get("document_changed") is True
+    )
+
+
 class NativeProviderToolRunner:
     """Expose a dispatcher to providers without exposing host bookkeeping."""
 
@@ -145,6 +155,18 @@ class NativeProviderToolRunner:
                         "next_surface": str(live.get("domain") or ""),
                     }
                     self._turn_transition_requested = True
+        if (
+            result.get("ok") is True
+            and result.get("next_turn_required") is not True
+            and _completed_document_change(name, result)
+        ):
+            result = {
+                **result,
+                "provider_surface_changed": True,
+                "next_turn_required": True,
+                "next_surface": str(self._frozen_surface.get("domain") or ""),
+            }
+            self._turn_transition_requested = True
         steering = []
         if self._steering is not None:
             try:

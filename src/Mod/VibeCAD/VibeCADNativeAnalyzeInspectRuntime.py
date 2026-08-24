@@ -30,7 +30,7 @@ from VibeCADNativeAnalyzeInspect import (
 )
 from VibeCADNativeAnalyzePostSampling import linearized_stress_summary
 from VibeCADNativeAnalyzeGeometryRead import inspect_geometry_source
-from VibeCADNativeArguments import strict_variant_arguments
+from VibeCADNativeArguments import NativeArgumentError, strict_variant_arguments
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 
 
@@ -67,7 +67,25 @@ class NativeAnalyzeInspectRuntime:
         self._context = context
 
     def inspect(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _VARIANTS)
+        if isinstance(arguments, Mapping) and arguments.get("operation") == "material_catalog":
+            values = dict(arguments)
+            operation = str(values.pop("operation"))
+            if not {"query", "category"} <= set(values) <= {
+                "query",
+                "category",
+                "limit",
+            }:
+                raise NativeArgumentError(
+                    "Material catalog arguments require query and category."
+                )
+            values.setdefault("limit", 25)
+        elif isinstance(arguments, Mapping) and arguments.get("operation") == "fem_mesh_elements":
+            normalized = dict(arguments)
+            normalized.setdefault("offset", 0)
+            normalized.setdefault("page_size", 64)
+            operation, values = strict_variant_arguments(normalized, _VARIANTS)
+        else:
+            operation, values = strict_variant_arguments(arguments, _VARIANTS)
         context = self._context
         context.guard()
         if operation == "study":

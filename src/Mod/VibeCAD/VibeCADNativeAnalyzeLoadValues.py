@@ -32,7 +32,7 @@ def _finite(value: Any, *, field: str, positive: bool = False) -> float:
         raise NativeAnalyzeError(f"{field} must be finite and within +/-1e30.")
     if positive and number <= 0.0:
         raise NativeAnalyzeError(f"{field} must be greater than zero.")
-    return number
+    return float(format(number, ".15g"))
 
 
 def _boolean(value: Any, *, field: str) -> bool:

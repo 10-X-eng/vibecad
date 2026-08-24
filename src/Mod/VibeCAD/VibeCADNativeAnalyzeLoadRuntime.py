@@ -86,7 +86,7 @@ def _create_values(kind: str, values: dict[str, Any]) -> dict[str, Any]:
         direction = dict(prepared["direction"])
         prepared["load"] = {
             "force_n": prepared.pop("force_n"),
-            "reversed": direction.pop("reversed"),
+            "reversed": direction.pop("reversed", False),
         }
         prepared["direction"] = direction
     elif kind == "pressure":

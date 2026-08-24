@@ -238,6 +238,7 @@ def _run() -> None:
             created = result["created_solver"]
             expected_states[operation] = created
             current_analysis = result["analysis"]
+            assert result["analysis_target"] == _analysis_target(current_analysis)
             assert created["solver_kind"] == operation.removeprefix("create_")
             assert created["analysis"] == analysis.Name
             assert created["timeline_role"] == "operation"
@@ -252,6 +253,7 @@ def _run() -> None:
             "MaxIterations": 1000,
             "PressureTolerance": 1.0e-6,
             "TurbulenceModel": "laminar",
+            "TurbulenceTolerance": 1.0e-3,
             "VelocityTolerance": 1.0e-5,
             "WriteEveryIterations": 100,
         }

@@ -106,7 +106,7 @@ def inspect_material_catalog(
     *,
     query: Any,
     category: Any,
-    limit: Any,
+    limit: Any = 25,
 ) -> dict[str, Any]:
     return search_material_catalog(query, category, limit)
 

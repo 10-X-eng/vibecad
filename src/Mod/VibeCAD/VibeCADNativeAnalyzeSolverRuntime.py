@@ -20,7 +20,7 @@ from VibeCADNativeState import NativeCallTicket
 _VARIANTS = {
     "create_calculix": frozenset({"analysis", "label"}),
     "create_elmer": frozenset({"analysis", "label"}),
-    "create_openfoam": frozenset({"analysis", "label"}),
+    "create_openfoam": frozenset({"analysis", "label", "momentum_model"}),
     "create_mystran": frozenset({"analysis", "label"}),
     "create_z88": frozenset({"analysis", "label"}),
 }
@@ -39,7 +39,10 @@ class NativeAnalyzeSolverRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _VARIANTS)
+        request = dict(arguments)
+        if request.get("operation") == "create_openfoam":
+            request.setdefault("momentum_model", "laminar")
+        operation, values = strict_variant_arguments(request, _VARIANTS)
         context = self._context
         context.guard()
         prepared = prepare_solver_create(

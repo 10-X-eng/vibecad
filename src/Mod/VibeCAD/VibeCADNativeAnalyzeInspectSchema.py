@@ -28,6 +28,26 @@ from VibeCADNativeAnalyzeAssignments import ASSIGNMENT_CATEGORIES
 
 
 ANALYZE_INSPECT_CAPABILITY_NAME = "analyze.inspect"
+ANALYZE_MATERIAL_CATALOG = "analyze.material_catalog"
+
+_MATERIAL_CATALOG_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string", "maxLength": 160},
+        "category": {
+            "type": "string",
+            "enum": ["solid", "fluid", "any"],
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 25,
+            "default": 25,
+        },
+    },
+    "required": ["query", "category"],
+    "additionalProperties": False,
+}
 
 _EXACT_TARGET_BY_OPERATION = {
     "study": "ExactFemStudyState",
@@ -159,19 +179,7 @@ def analyze_inspect_capability_definition() -> NativeCapabilityDefinition:
                 "material_catalog",
                 "Search installed material cards by words and category; returns at most 25 exact UUIDs.",
                 "VibeCAD_AnalyzeSearchMaterialCatalog",
-                {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "maxLength": 160},
-                        "category": {
-                            "type": "string",
-                            "enum": ["any", "solid", "fluid"],
-                        },
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 25},
-                    },
-                    "required": ["query", "category", "limit"],
-                    "additionalProperties": False,
-                },
+                _MATERIAL_CATALOG_PARAMETERS,
             ),
             _variant(
                 "element_definition",
@@ -295,10 +303,15 @@ def analyze_inspect_capability_definition() -> NativeCapabilityDefinition:
                             "type": "string",
                             "enum": ["primary", "volume", "face", "edge", "zero_d", "ball"],
                         },
-                        "offset": {"type": "integer", "minimum": 0},
-                        "page_size": {"type": "integer", "minimum": 1, "maximum": 64},
+                        "offset": {"type": "integer", "minimum": 0, "default": 0},
+                        "page_size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 64,
+                            "default": 64,
+                        },
                     },
-                    "required": ["target", "element_kind", "offset", "page_size"],
+                    "required": ["target", "element_kind"],
                     "additionalProperties": False,
                 },
             ),
@@ -356,9 +369,34 @@ def analyze_inspect_capability_definition() -> NativeCapabilityDefinition:
     )
 
 
+def analyze_material_catalog_capability_definition() -> NativeCapabilityDefinition:
+    description = "Find material_name values and properties."
+    return NativeCapabilityDefinition(
+        name=ANALYZE_MATERIAL_CATALOG,
+        description=description,
+        primary_classification="read",
+        variants=(
+            NativeCapabilityVariant(
+                operation="search",
+                description=description,
+                action_ids=frozenset(
+                    {"VibeCAD_AnalyzeSearchMaterialCatalogFocused"}
+                ),
+                surface_ids=frozenset({"analyze"}),
+                exact_target_type="BoundedMaterialCatalogQuery",
+                transaction_behavior="none",
+                background_required=False,
+                parameters=_MATERIAL_CATALOG_PARAMETERS,
+                provider_supplemental=True,
+            ),
+        ),
+    )
+
+
 def register_analyze_inspect_capability_definition(
     registry: NativeCapabilityRegistry,
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
     registry.register_definition(analyze_inspect_capability_definition())
+    registry.register_definition(analyze_material_catalog_capability_definition())

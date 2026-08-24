@@ -31,19 +31,10 @@ from VibeCADNativeSchemaRules import (
 from VibeCADRibbonSurface import RibbonSurface, SURFACE_IDS
 
 
-MAX_NATIVE_TOOLS_PER_SURFACE = 28
-MAX_NATIVE_TOOLS_BY_SURFACE = {
-    "analyze": 33,
-    "assemble": 38,
-    "drawing": 41,
-    "model": 32,
-    "sketch.edit": 39,
-}
 MAX_NATIVE_SCHEMAS_JSON_BYTES = 64 * 1024
-# Analyze owns more than one hundred semantically distinct human actions across
-# structural, thermal, fluid, electromagnetic, meshing, solver, and post domains.
-# Its exact schemas remain below the session's 128-KiB transport ceiling while
-# this tighter surface budget preserves measurable headroom against regression.
+# Analyze resolves its complete registry before exact study state projects the
+# much smaller turn surface. This ceiling protects registry completeness; the
+# scoped turn still obeys the session's 128-KiB transport limit.
 # Manufacture's CAM operations and dress-ups require exact, operation-specific
 # geometry, process, depth, entry, and toolpath contracts. Keeping those fields
 # strongly typed is more useful and safer than replacing them with one generic
@@ -56,7 +47,7 @@ MAX_NATIVE_SCHEMAS_JSON_BYTES = 64 * 1024
 # transport ceiling while retaining the focused tools requested during live
 # acceptance.
 MAX_NATIVE_SCHEMAS_JSON_BYTES_BY_SURFACE = {
-    "analyze": 120 * 1024,
+    "analyze": 160 * 1024,
     "manufacture": 120 * 1024,
     "drawing": 120 * 1024,
 }
@@ -1133,16 +1124,6 @@ def resolve_native_provider_surface(
         *_required_actions(surface, action_inventory.plans),
     )
     families = tuple(dict.fromkeys(item.capability_family for item in requirements))
-    tool_limit = MAX_NATIVE_TOOLS_BY_SURFACE.get(
-        surface.surface_id,
-        MAX_NATIVE_TOOLS_PER_SURFACE,
-    )
-    if len(families) > tool_limit:
-        raise NativeCapabilityRegistryError(
-            f"Native surface {surface.surface_id!r} requires {len(families)} tools; "
-            f"limit is {tool_limit}."
-        )
-
     family_classes: dict[str, set[str]] = {}
     for requirement in requirements:
         family_classes.setdefault(requirement.capability_family, set()).add(

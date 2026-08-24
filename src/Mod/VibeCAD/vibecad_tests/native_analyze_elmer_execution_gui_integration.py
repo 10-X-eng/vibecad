@@ -50,7 +50,7 @@ def _run() -> None:
     preferences = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Elmer")
     original = {
         "elmerBinaryPath": preferences.GetString("elmerBinaryPath", ""),
-        "elmerGridBinaryPath": preferences.GetString("elmerGridBinaryPath", ""),
+        "gridBinaryPath": preferences.GetString("gridBinaryPath", ""),
         "NumberOfTasks": preferences.GetInt("NumberOfTasks", 1),
         "ThreadsPerTask": preferences.GetInt("ThreadsPerTask", 1),
     }
@@ -79,7 +79,7 @@ def _run() -> None:
             "/opt/elmer-26.2/bin/ElmerSolver",
         )
         preferences.SetString(
-            "elmerGridBinaryPath",
+            "gridBinaryPath",
             "/opt/elmer-26.2/bin/ElmerGrid",
         )
         preferences.SetInt("NumberOfTasks", 1)

@@ -19,6 +19,10 @@ from VibeCADNativeCapabilityRegistry import (
 ANALYZE_ASSIGNMENT_VIEW_CAPABILITY_NAME = "analyze.assignment_view"
 _ASSIGNMENT_TARGET = {
     "type": "object",
+    "description": (
+        "Copy target from materials, support_conditions, connections, loads, "
+        "thermal_conditions, fluid_constraints, or mesh_refinements."
+    ),
     "properties": {
         "object_name": _OBJECT_NAME,
         "expected_state_sha256": _STATE_SHA256,
@@ -52,7 +56,10 @@ def analyze_assignment_view_capability_definition() -> NativeCapabilityDefinitio
     target = {"analysis": _ANALYSIS_TARGET, "assignment": _ASSIGNMENT_TARGET}
     return NativeCapabilityDefinition(
         name=ANALYZE_ASSIGNMENT_VIEW_CAPABILITY_NAME,
-        description="Show exact FEM assignment targets in the current viewport.",
+        description=(
+            "Highlight or isolate one material, support, connection, load, "
+            "boundary condition, or mesh refinement."
+        ),
         primary_classification="view",
         variants=(
             _variant(
