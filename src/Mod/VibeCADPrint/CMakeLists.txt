@@ -3,6 +3,7 @@
 SET(VibeCADPrint_SRCS
     Init.py
     InitGui.py
+    PrintInstallUI.py
     BambuStudio.py
     OrcaSlicer.py
     Commands.py
@@ -36,6 +37,7 @@ SET(VibeCADPrint_Tests
     tests/test_orca_backend.py
     tests/test_commands.py
     tests/test_export.py
+    tests/test_install_ui.py
     tests/test_preferences.py
     tests/test_workbench.py
 )

@@ -23,6 +23,8 @@ def test_initgui_registers_first_class_print_workbench_and_preferences() -> None
         in source
     )
     assert "Gui.addWorkbench(VibeCADPrintWorkbench())" in source
+    assert "PrintInstallUI.install_with_retry" in source
+    assert "import InstallUI" not in source
 
 
 def test_workbench_commands_are_registered_without_global_commands_collision(

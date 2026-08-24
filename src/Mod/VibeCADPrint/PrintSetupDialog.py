@@ -80,44 +80,78 @@ class SetupChoice:
 
 
 class VibeCADPrintPreferencesPage:
-    """Persistent executable override; profile choices stay in Print Setup."""
+    """Persistent slicer backend and executable override."""
+
+    _BACKENDS = (
+        ("PrusaSlicer", "prusaslicer"),
+        ("Bambu Studio", "bambustudio"),
+        ("OrcaSlicer", "orcaslicer"),
+    )
 
     def __init__(self, parent=None) -> None:
         self.form = QtWidgets.QWidget(parent)
         self.form.setObjectName("VibeCADPrintPreferencesPage")
         self.form.setWindowTitle("3D Printing")
         layout = QtWidgets.QFormLayout(self.form)
+        self.backend = QtWidgets.QComboBox(self.form)
+        self.backend.setObjectName("VibeCADPrintSlicerPreference")
+        for label, value in self._BACKENDS:
+            self.backend.addItem(label, value)
+        self.backend.currentIndexChanged.connect(self._backend_changed)
+        layout.addRow("Slicer", self.backend)
         row = QtWidgets.QWidget(self.form)
         row_layout = QtWidgets.QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
         self.executable = QtWidgets.QLineEdit(row)
         self.executable.setObjectName("VibeCADPrintExecutablePreference")
-        self.executable.setPlaceholderText("Auto-detect PrusaSlicer")
+        self.executable.setPlaceholderText("Auto-detect")
         browse = QtWidgets.QPushButton("Locate", row)
         browse.clicked.connect(self._browse)
         row_layout.addWidget(self.executable, 1)
         row_layout.addWidget(browse)
-        layout.addRow("PrusaSlicer executable", row)
+        layout.addRow("Executable", row)
         note = QtWidgets.QLabel(
-            "Leave this empty to auto-detect native installations and the official "
-            "Linux Flatpak. Printer, print, and material profiles are confirmed in "
-            "the 3D Print ribbon's Print Setup dialog.",
+            "Leave Executable empty to auto-detect. Switch slicer here or on the "
+            "3D Print ribbon. Printer, print, and material profiles are confirmed "
+            "in Print Setup.",
             self.form,
         )
         note.setWordWrap(True)
         layout.addRow("Detection", note)
         self.loadSettings()
 
+    def _selected_backend(self) -> str:
+        return str(self.backend.currentData() or "prusaslicer")
+
+    def _backend_changed(self, _index: int = 0) -> None:
+        backend_id = self._selected_backend()
+        self.executable.setText(
+            PrintPreferences.executable_override(backend_id=backend_id)
+        )
+
     def _browse(self) -> None:
-        selected = _browse_for_prusaslicer(self.form, self.executable.text())
+        display = self.backend.currentText() or "slicer"
+        selected = _browse_for_slicer(self.form, display, self.executable.text())
         if selected:
             self.executable.setText(selected)
 
     def saveSettings(self) -> None:
-        PrintPreferences.set_executable_override(self.executable.text())
+        backend_id = self._selected_backend()
+        PrintPreferences.set_active_backend(backend_id)
+        PrintPreferences.set_executable_override(
+            self.executable.text(),
+            backend_id=backend_id,
+        )
 
     def loadSettings(self) -> None:
-        self.executable.setText(PrintPreferences.executable_override())
+        backend_id = PrintPreferences.active_backend()
+        index = self.backend.findData(backend_id)
+        self.backend.blockSignals(True)
+        self.backend.setCurrentIndex(max(0, index))
+        self.backend.blockSignals(False)
+        self.executable.setText(
+            PrintPreferences.executable_override(backend_id=backend_id)
+        )
 
 
 def _browse_for_prusaslicer(parent: Any, initial: str = "") -> str:
