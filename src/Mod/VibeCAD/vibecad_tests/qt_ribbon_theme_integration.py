@@ -1445,6 +1445,7 @@ def _run():
             "Parameters",
             "Aero",
             "3D Print",
+            "McMaster",
         ]
         actual_tabs = [tabs.tabText(index) for index in range(tabs.count())]
         assert actual_tabs == expected_tabs, {
