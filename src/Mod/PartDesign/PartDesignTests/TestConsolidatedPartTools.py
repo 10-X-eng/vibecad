@@ -1059,28 +1059,11 @@ class TestConsolidatedPartTools(unittest.TestCase):
     def test_body_native_finish_tools_require_explicit_geometry(self):
         self._box("FinishSelectionSource")
         for command_name in (
+            "PartDesign_Fillet",
+            "PartDesign_Chamfer",
             "PartDesign_Draft",
             "PartDesign_Thickness",
         ):
-            Gui.Selection.clearSelection()
-            original_names = tuple(obj.Name for obj in self.document.Objects)
-            original_group = tuple(self.body.Group)
-            original_tip = self.body.Tip
-
-            self.assertFalse(Gui.isCommandActive(command_name), command_name)
-            Gui.runCommand(command_name, 0)
-            self._process_events()
-
-            self.assertFalse(Gui.Control.activeDialog(), command_name)
-            self.assertEqual(
-                tuple(obj.Name for obj in self.document.Objects),
-                original_names,
-                command_name,
-            )
-            self.assertEqual(tuple(self.body.Group), original_group, command_name)
-            self.assertEqual(self.body.Tip, original_tip, command_name)
-
-        for command_name in ("PartDesign_Fillet", "PartDesign_Chamfer"):
             Gui.Selection.clearSelection()
             original_names = tuple(obj.Name for obj in self.document.Objects)
             original_group = tuple(self.body.Group)
@@ -1102,8 +1085,6 @@ class TestConsolidatedPartTools(unittest.TestCase):
     def test_body_native_finish_tools_preserve_rejected_geometry_selection(self):
         source = self._box("RejectedFinishSelectionSource")
         for command_name, subelement in (
-            ("PartDesign_Fillet", "Vertex1"),
-            ("PartDesign_Chamfer", "Vertex1"),
             ("PartDesign_Draft", "Edge1"),
             ("PartDesign_Thickness", "Edge1"),
         ):
