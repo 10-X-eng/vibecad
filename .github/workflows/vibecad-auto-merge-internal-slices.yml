@@ -70,6 +70,27 @@ jobs:
                 continue;
               }
 
+              const comparison = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: pr.base.sha,
+                head: pr.head.sha,
+              });
+              if (!['ahead', 'identical'].includes(comparison.data.status)) {
+                try {
+                  await github.rest.pulls.updateBranch({
+                    owner,
+                    repo,
+                    pull_number: number,
+                    expected_head_sha: pr.head.sha,
+                  });
+                  core.info(`PR #${number}: base advanced; updated the branch and waiting for fresh CI.`);
+                } catch (error) {
+                  core.warning(`PR #${number}: could not update the branch automatically: ${error.message}`);
+                }
+                continue;
+              }
+
               const workflowResponse = await github.rest.actions.listWorkflowRunsForRepo({
                 owner,
                 repo,
@@ -107,4 +128,19 @@ jobs:
                 continue;
               }
               core.info(`Merged internal VibeCAD slice PR #${number} at ${merge.data.sha}.`);
+
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `heads/${pr.head.ref}`,
+                });
+                core.info(`Deleted merged slice branch ${pr.head.ref}.`);
+              } catch (error) {
+                if (error.status === 404 || error.status === 422) {
+                  core.info(`Merged slice branch ${pr.head.ref} was already removed.`);
+                } else {
+                  throw error;
+                }
+              }
             }
