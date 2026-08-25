@@ -127,33 +127,6 @@ def test_elmer_timeout_mapping_is_legacy_exact(
     }
 
 
-def test_mystran_remains_on_legacy_runner(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    request = _request(tmp_path, kind="mystran")
-    prepared = adapter.PreparedFEMSolverExecution(object(), request)
-    sentinel = object()
-    called: list[object] = []
-
-    monkeypatch.setattr(
-        adapter._LOCAL_PROCESS_PROVIDER,
-        "run_sequence",
-        lambda *_args, **_kwargs: pytest.fail(
-            "Mystran is not migrated in the Z88 PR"
-        ),
-    )
-
-    def legacy_run(request_value, *, cancelled, progress):
-        called.append(request_value)
-        return sentinel
-
-    monkeypatch.setattr(legacy, "run_solver_execution", legacy_run)
-    completed = adapter.run_solver_execution(
-        prepared,
-        cancelled=lambda: False,
-        progress=lambda _percent, _message: None,
-    )
-
-    assert called == [request]
-    assert completed.legacy_prepared is sentinel
+def test_elmer_and_mystran_are_both_host_provider_migrated(tmp_path: Path) -> None:
+    assert adapter._uses_host_local_provider(_request(tmp_path)) is True
+    assert adapter._uses_host_local_provider(_request(tmp_path, kind="mystran")) is True
