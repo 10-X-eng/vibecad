@@ -13,8 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from VibeCADAnalysisArtifacts import AnalysisArtifactError, seal_directory
 from VibeCADAnalysisContracts import (
     AnalysisCommand,
+    AnalysisContractError,
     DependencyRecord,
     DependencySnapshot,
     ExecutionSpec,
@@ -23,6 +25,7 @@ from VibeCADAnalysisContracts import (
     environment_sha256,
     json_sha256,
 )
+from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 import VibeCADNativeAnalyzeSolverExecution as _legacy
 
 
@@ -41,6 +44,39 @@ def _history_identity(history_operations: tuple[Any, ...]) -> list[list[Any]]:
     ]
 
 
+def _seal_legacy_input(request: _legacy.SolverExecutionRequest) -> Any:
+    """Re-seal the legacy FEM input with the host primitive and prove parity."""
+
+    try:
+        sealed = seal_directory(request.working_directory)
+    except AnalysisArtifactError as exc:
+        if exc.reason == "unsafe_symlink":
+            raise NativeAnalyzeError(
+                "A detached FEM input contains an unsafe symbolic link."
+            ) from exc
+        if exc.reason == "bounds":
+            raise NativeAnalyzeError(
+                "The detached FEM input exceeds 4096 files or 4 GiB.",
+                error_code="NATIVE_ANALYZE_SOLVER_INPUT_LIMIT",
+            ) from exc
+        if exc.reason == "empty":
+            raise NativeAnalyzeError(
+                "The FEM solver input writer produced no artifacts."
+            ) from exc
+        raise NativeAnalyzeError(
+            "The detached FEM input could not be sealed for execution."
+        ) from exc
+
+    if (
+        sealed.sha256 != request.input_sha256
+        or sealed.file_count != request.input_file_count
+    ):
+        raise AnalysisContractError(
+            "Host Analysis sealing does not match the legacy FEM input identity."
+        )
+    return sealed
+
+
 def _prepared_contract(
     request: _legacy.SolverExecutionRequest,
     *,
@@ -48,6 +84,7 @@ def _prepared_contract(
 ) -> PreparedAnalysis:
     target = request.target
     solver = target.solver
+    sealed = _seal_legacy_input(request)
     dependencies = DependencySnapshot(
         (
             DependencyRecord(
@@ -99,9 +136,9 @@ def _prepared_contract(
         },
         dependency_snapshot=dependencies,
         input_manifest=PreparedInputManifest(
-            storage_reference=str(request.working_directory),
-            sha256=str(request.input_sha256),
-            file_count=int(request.input_file_count),
+            storage_reference=sealed.root,
+            sha256=sealed.sha256,
+            file_count=sealed.file_count,
         ),
         execution_spec=execution,
         expected_outputs=("fem_result_graph",),
@@ -115,6 +152,8 @@ def _prepared_contract(
         provenance={
             "legacy_module": "VibeCADNativeAnalyzeSolverExecution",
             "input_sha256": str(request.input_sha256),
+            "input_total_bytes": sealed.total_bytes,
+            "input_digest_algorithm": sealed.digest_algorithm,
             "compatibility_mode": True,
         },
     )
