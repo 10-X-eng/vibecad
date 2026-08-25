@@ -592,9 +592,19 @@ class TestCatalogLaunch(unittest.TestCase):
         self.assertIn("WebView2LoaderStatic.lib", cmake)
         self.assertIn("INSTALL(TARGETS McMasterCatalogWebView2", cmake)
         self.assertIn('McMasterCatalogWebView2.exe" --smoke-test', bundle)
+        self.assertIn(
+            'McMasterCatalogWebView2.exe" --argument-parser-smoke-test '
+            '--inbox=parser-smoke-inbox --profile parser-smoke-profile',
+            bundle,
+        )
         webview_source = source.read_text(encoding="utf-8")
         self.assertIn('L".download"', webview_source)
         self.assertIn("std::filesystem::rename", webview_source)
+        self.assertIn('L"--argument-parser-smoke-test"', webview_source)
+        self.assertIn('const std::wstring prefix = option + L"=";', webview_source)
+        self.assertIn(
+            "argument.compare(0, prefix.size(), prefix) == 0", webview_source
+        )
         self.assertTrue(source.is_file())
 
     def test_linux_build_packages_webkit_helper(self):
