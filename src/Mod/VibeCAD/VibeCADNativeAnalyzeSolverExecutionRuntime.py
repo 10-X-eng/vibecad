@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
-from VibeCADNativeAnalyzeSolverExecution import (
+from VibeCADNativeAnalyzeSolverExecutionAdapter import (
     commit_solver_execution,
     discard_solver_execution_request,
     prepare_solver_execution_request,
@@ -53,14 +53,23 @@ class NativeAnalyzeSolverExecutionRuntime:
         )
 
         def prepare(cancelled: Any, progress: Any) -> Any:
-            return run_solver_execution(request, cancelled=cancelled, progress=progress)
+            return run_solver_execution(
+                request,
+                cancelled=cancelled,
+                progress=progress,
+            )
 
         def commit(prepared: Any) -> Mapping[str, Any]:
             return run_immediate_mutation(
                 context,
                 ticket=ticket,
-                transaction_name=f"Import {request.target.kind.title()} FEM Results",
-                mutate=lambda document: commit_solver_execution(document, prepared),
+                transaction_name=(
+                    f"Import {request.target.kind.title()} FEM Results"
+                ),
+                mutate=lambda document: commit_solver_execution(
+                    document,
+                    prepared,
+                ),
                 verify=verify_solver_execution,
             )
 
