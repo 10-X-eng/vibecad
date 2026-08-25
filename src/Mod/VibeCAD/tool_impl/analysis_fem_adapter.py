@@ -13,8 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from VibeCADAnalysisArtifacts import AnalysisArtifactError, seal_directory
-from VibeCADAnalysisContracts import (
+from tool_impl.analysis_artifacts import AnalysisArtifactError, seal_directory
+from tool_impl.analysis_contracts import (
     AnalysisCommand,
     AnalysisContractError,
     DependencyRecord,
