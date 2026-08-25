@@ -214,9 +214,9 @@ def discard_solver_execution_request(
 
 
 def _uses_host_local_provider(request: _legacy.SolverExecutionRequest) -> bool:
-    """Migrated CalculiX, Elmer, and Z88 execution use the host local provider."""
+    """All currently supported FEM solver execution uses the host local provider."""
 
-    return str(request.target.kind) in {"calculix", "elmer", "z88"}
+    return str(request.target.kind) in {"calculix", "elmer", "z88", "mystran"}
 
 
 def _run_local_solver(
