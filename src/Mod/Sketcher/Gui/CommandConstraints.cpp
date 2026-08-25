@@ -1292,6 +1292,10 @@ protected:
      */
     std::vector<std::vector<SketcherGui::SelType>> allowedSelSequences;
 
+    // Fusion/SolidWorks entity constraints select a whole curve when the
+    // click hits both that curve and one of its endpoints.
+    bool preferCurveOverEndpoint {false};
+
     virtual void applyConstraint(std::vector<SelIdPair>&, int)
     {}
     void activated(int /*iMsg*/) override;
@@ -1314,6 +1318,8 @@ public:
     static constexpr const char* PICK_SYMMETRY_POINT = "%1 pick symmetry point";
     static constexpr const char* PICK_SYMMETRY_LINE_OR_POINT = "%1 pick symmetry line or point";
     static constexpr const char* PICK_SYMMETRY_LINE = "%1 pick symmetry line";
+    static constexpr const char* PICK_SECOND_LINE_OR_SYMMETRY =
+        "%1 pick second line, symmetry line, or point";
     static constexpr const char* PICK_SECOND_LINE = "%1 pick second line";
     static constexpr const char* PICK_SECOND_POINT_OR_EDGE = "%1 pick second point or edge";
     static constexpr const char* PICK_POINT_OR_EDGE = "%1 pick point or edge";
@@ -1361,13 +1367,17 @@ public:
         int VtId = getPreselectPoint();
         int CrvId = getPreselectCurve();
         int CrsId = getPreselectCross();
+        const bool allowVertex = (allowedSelTypes & SelVertex) && VtId >= 0;
+        const bool allowEdge = (allowedSelTypes & (SelEdge | SelArc)) && CrvId >= 0;
+        const bool preferCurve = cmd->preferCurveOverEndpoint && allowEdge && allowVertex
+            && vertexBelongsToCurve(sketchgui->getSketchObject(), VtId, CrvId);
         if (allowedSelTypes & SelRoot && CrsId == 0) {
             selIdPair.GeoId = Sketcher::GeoEnum::RtPnt;
             selIdPair.PosId = Sketcher::PointPos::start;
             newSelType = SelRoot;
             ss << "RootPoint";
         }
-        else if (allowedSelTypes & SelVertex && VtId >= 0) {
+        else if (allowVertex && !preferCurve) {
             sketchgui->getSketchObject()->getGeoVertexIndex(VtId, selIdPair.GeoId, selIdPair.PosId);
             newSelType = SelVertex;
             ss << "Vertex" << VtId + 1;
@@ -1588,8 +1598,8 @@ public:
                 // Point + Edge + Point or Point + Point + Edge/Point workflow
                 return {{QObject::tr(PICK_EDGE_OR_SECOND_POINT), {Gui::InputHint::UserInput::MouseLeft}}};
             } else {
-                // Edge + Point workflow
-                return {{QObject::tr(PICK_SYMMETRY_POINT), {Gui::InputHint::UserInput::MouseLeft}}};
+                // Whole line first: second line + axis, or this line about an axis/point
+                return {{QObject::tr(PICK_SECOND_LINE_OR_SYMMETRY), {Gui::InputHint::UserInput::MouseLeft}}};
             }
         } else if (selectionStep == 2 && !selSeq.empty()) {
             if (isVertex(selSeq[0].GeoId, selSeq[0].PosId) && isVertex(selSeq[1].GeoId, selSeq[1].PosId)) {
@@ -1598,6 +1608,9 @@ public:
             } else if (isVertex(selSeq[0].GeoId, selSeq[0].PosId) && !isVertex(selSeq[1].GeoId, selSeq[1].PosId)) {
                 // Point + Edge + Point workflow
                 return {{QObject::tr(PICK_POINT), {Gui::InputHint::UserInput::MouseLeft}}};
+            } else if (!isVertex(selSeq[0].GeoId, selSeq[0].PosId)
+                       && !isVertex(selSeq[1].GeoId, selSeq[1].PosId)) {
+                return {{QObject::tr(PICK_SYMMETRY_LINE), {Gui::InputHint::UserInput::MouseLeft}}};
             }
         }
     }
@@ -1727,11 +1740,11 @@ private:
             // Symmetry
             {.commandName = "Sketcher_ConstrainSymmetric",
             .selectionStep = 0,
-            .hints = {{QObject::tr(PICK_POINT), {Gui::InputHint::UserInput::MouseLeft}}}},
+            .hints = {{QObject::tr(PICK_EDGE_OR_FIRST_POINT), {Gui::InputHint::UserInput::MouseLeft}}}},
 
             {.commandName = "Sketcher_ConstrainSymmetric",
             .selectionStep = 1,
-            .hints = {{QObject::tr(PICK_SECOND_POINT), {Gui::InputHint::UserInput::MouseLeft}}}},
+            .hints = {{QObject::tr(PICK_SECOND_LINE_OR_SYMMETRY), {Gui::InputHint::UserInput::MouseLeft}}}},
 
             {.commandName = "Sketcher_ConstrainSymmetric",
             .selectionStep = 2,
@@ -1845,6 +1858,17 @@ protected:
     std::set<int> ongoingSequences, _tempOnSequences;
     /// Index within the selection sequences active
     unsigned int seqIndex;
+
+    static bool vertexBelongsToCurve(Sketcher::SketchObject* obj, int vertexId, int curveId)
+    {
+        if (!obj || vertexId < 0) {
+            return false;
+        }
+        int geoId = GeoEnum::GeoUndef;
+        Sketcher::PointPos posId = Sketcher::PointPos::none;
+        obj->getGeoVertexIndex(vertexId, geoId, posId);
+        return geoId == curveId;
+    }
 
     void resetOngoingSequences()
     {
@@ -4107,6 +4131,7 @@ CmdSketcherConstrainHorVer::CmdSketcherConstrainHorVer()
     eType = ForEdit;
 
     allowedSelSequences = { {SelEdge}, {SelVertexOrRoot, SelVertexOrRoot} };
+    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainHorVer::activated(int iMsg)
@@ -4153,6 +4178,7 @@ CmdSketcherConstrainHorizontal::CmdSketcherConstrainHorizontal()
     eType = ForEdit;
 
     allowedSelSequences = {{SelEdge}, {SelVertexOrRoot, SelVertexOrRoot}};
+    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainHorizontal::activated(int iMsg)
@@ -4198,6 +4224,7 @@ CmdSketcherConstrainVertical::CmdSketcherConstrainVertical()
     eType = ForEdit;
 
     allowedSelSequences = {{SelEdge}, {SelVertexOrRoot, SelVertexOrRoot}};
+    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainVertical::activated(int iMsg)
@@ -6602,6 +6629,7 @@ CmdSketcherConstrainParallel::CmdSketcherConstrainParallel()
                            {SelEdgeOrAxis, SelEdge},
                            {SelEdge, SelExternalEdge},
                            {SelExternalEdge, SelEdge}};
+    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainParallel::activated(int iMsg)
@@ -6773,7 +6801,7 @@ CmdSketcherConstrainPerpendicular::CmdSketcherConstrainPerpendicular()
                            {SelEdgeOrAxis, SelVertexOrRoot, SelEdge},
                            {SelEdge, SelVertexOrRoot, SelExternalEdge},
                            {SelExternalEdge, SelVertexOrRoot, SelEdge}};
-    ;
+    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainPerpendicular::activated(int iMsg)
@@ -7558,6 +7586,7 @@ CmdSketcherConstrainTangent::CmdSketcherConstrainTangent()
         {SelEdge, SelVertexOrRoot, SelExternalEdge},
         {SelExternalEdge, SelVertexOrRoot, SelEdge}, /* Two Curves and a Point */
         {SelVertexOrRoot, SelVertex} /*Two Endpoints*/ /*No Place for One Endpoint and One Curve*/};
+    preferCurveOverEndpoint = true;
 }
 
 bool CmdSketcherConstrainTangent::substituteConstraintCombinations(SketchObject* Obj,
@@ -10158,6 +10187,7 @@ CmdSketcherConstrainEqual::CmdSketcherConstrainEqual()
     allowedSelSequences = {{SelEdge, SelEdge},
                            {SelEdge, SelExternalEdge},
                            {SelExternalEdge, SelEdge}};// Only option for equal constraint
+    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainEqual::activated(int iMsg)
@@ -10367,6 +10397,130 @@ void CmdSketcherConstrainEqual::applyConstraint(std::vector<SelIdPair>& selSeq, 
 
 // ======================================================================================
 
+namespace
+{
+
+Base::Vector3d mirrorPointAboutLine(const Base::Vector3d& point,
+                                    const Base::Vector3d& axisStart,
+                                    const Base::Vector3d& axisEnd)
+{
+    const double dx = axisEnd.x - axisStart.x;
+    const double dy = axisEnd.y - axisStart.y;
+    const double len2 = dx * dx + dy * dy;
+    const double t =
+        (len2 > 0.0)
+            ? ((point.x - axisStart.x) * dx + (point.y - axisStart.y) * dy) / len2
+            : 0.0;
+    const double qx = axisStart.x + t * dx;
+    const double qy = axisStart.y + t * dy;
+    return Base::Vector3d(2.0 * qx - point.x, 2.0 * qy - point.y, 0.0);
+}
+
+Base::Vector3d mirrorPointAboutPoint(const Base::Vector3d& point, const Base::Vector3d& center)
+{
+    return Base::Vector3d(2.0 * center.x - point.x, 2.0 * center.y - point.y, 0.0);
+}
+
+double planarDistanceSquared(const Base::Vector3d& first, const Base::Vector3d& second)
+{
+    const double dx = first.x - second.x;
+    const double dy = first.y - second.y;
+    return dx * dx + dy * dy;
+}
+
+bool constrainTwoWholeCurvesSymmetric(
+    Gui::Command* cmd,
+    Sketcher::SketchObject* Obj,
+    int geo1,
+    int geo2,
+    int geo3,
+    Sketcher::PointPos pos3)
+{
+    const Part::Geometry* geom1 = Obj->getGeometry(geo1);
+    const Part::Geometry* geom2 = Obj->getGeometry(geo2);
+    const Part::Geometry* geom3 =
+        pos3 == Sketcher::PointPos::none ? Obj->getGeometry(geo3) : nullptr;
+    if (!geom1 || !geom2 || !isLineSegment(*geom1) || !isLineSegment(*geom2)
+        || (pos3 == Sketcher::PointPos::none && (!geom3 || !isLineSegment(*geom3)))) {
+        return false;
+    }
+    if (geo1 == geo2 || geo1 == geo3 || geo2 == geo3) {
+        return false;
+    }
+
+    const auto start1 = Obj->getPoint(geo1, Sketcher::PointPos::start);
+    const auto end1 = Obj->getPoint(geo1, Sketcher::PointPos::end);
+    const auto start2 = Obj->getPoint(geo2, Sketcher::PointPos::start);
+    const auto end2 = Obj->getPoint(geo2, Sketcher::PointPos::end);
+    auto mirrored = [&](const Base::Vector3d& point) {
+        if (pos3 == Sketcher::PointPos::none) {
+            return mirrorPointAboutLine(
+                point,
+                Obj->getPoint(geo3, Sketcher::PointPos::start),
+                Obj->getPoint(geo3, Sketcher::PointPos::end)
+            );
+        }
+        return mirrorPointAboutPoint(point, Obj->getPoint(geo3, pos3));
+    };
+    const double same = planarDistanceSquared(mirrored(start1), start2)
+        + planarDistanceSquared(mirrored(end1), end2);
+    const double crossed = planarDistanceSquared(mirrored(start1), end2)
+        + planarDistanceSquared(mirrored(end1), start2);
+    const auto secondStart =
+        (crossed < same) ? Sketcher::PointPos::end : Sketcher::PointPos::start;
+    const auto secondEnd =
+        (crossed < same) ? Sketcher::PointPos::start : Sketcher::PointPos::end;
+
+    cmd->openCommand(QT_TRANSLATE_NOOP("Command", "Add symmetric constraint"));
+    if (pos3 == Sketcher::PointPos::none) {
+        Gui::cmdAppObjectArgs(
+            Obj,
+            "addConstraint(Sketcher.Constraint('Symmetric',%d,%d,%d,%d,%d))",
+            geo1,
+            static_cast<int>(Sketcher::PointPos::start),
+            geo2,
+            static_cast<int>(secondStart),
+            geo3
+        );
+        Gui::cmdAppObjectArgs(
+            Obj,
+            "addConstraint(Sketcher.Constraint('Symmetric',%d,%d,%d,%d,%d))",
+            geo1,
+            static_cast<int>(Sketcher::PointPos::end),
+            geo2,
+            static_cast<int>(secondEnd),
+            geo3
+        );
+    }
+    else {
+        Gui::cmdAppObjectArgs(
+            Obj,
+            "addConstraint(Sketcher.Constraint('Symmetric',%d,%d,%d,%d,%d,%d))",
+            geo1,
+            static_cast<int>(Sketcher::PointPos::start),
+            geo2,
+            static_cast<int>(secondStart),
+            geo3,
+            static_cast<int>(pos3)
+        );
+        Gui::cmdAppObjectArgs(
+            Obj,
+            "addConstraint(Sketcher.Constraint('Symmetric',%d,%d,%d,%d,%d,%d))",
+            geo1,
+            static_cast<int>(Sketcher::PointPos::end),
+            geo2,
+            static_cast<int>(secondEnd),
+            geo3,
+            static_cast<int>(pos3)
+        );
+    }
+    cmd->commitCommand();
+    tryAutoRecompute(Obj);
+    return true;
+}
+
+}  // namespace
+
 class CmdSketcherConstrainSymmetric: public CmdSketcherConstraint
 {
 public:
@@ -10397,7 +10551,9 @@ CmdSketcherConstrainSymmetric::CmdSketcherConstrainSymmetric()
     sAppModule = "Sketcher";
     sGroup = "Sketcher";
     sMenuText = QT_TR_NOOP("Symmetric Constraint");
-    sToolTipText = QT_TR_NOOP("Constrains the selected elements to be symmetric");
+    sToolTipText = QT_TR_NOOP(
+        "Constrains two points or two whole lines to be symmetric about a line or point"
+    );
     sWhatsThis = "Sketcher_ConstrainSymmetric";
     sStatusTip = sToolTipText;
     sPixmap = "Constraint_Symmetric";
@@ -10413,10 +10569,15 @@ CmdSketcherConstrainSymmetric::CmdSketcherConstrainSymmetric()
                            {SelVertexOrRoot, SelVertexOrRoot, SelExternalEdge},
                            {SelVertex, SelVertex, SelEdgeOrAxis},
                            {SelVertexOrRoot, SelVertexOrRoot, SelVertexOrRoot},
-                           {SelEdge, SelEdgeOrAxis},
+                           {SelEdge, SelHAxis},
+                           {SelEdge, SelVAxis},
                            {SelEdge, SelExternalEdge},
                            {SelExternalEdge, SelEdge},
-                           {SelEdgeOrAxis, SelEdge}};
+                           {SelHAxis, SelEdge},
+                           {SelVAxis, SelEdge},
+                           {SelEdge, SelEdge, SelEdgeOrAxis},
+                           {SelEdge, SelEdge, SelExternalEdge}};
+    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainSymmetric::activated(int iMsg)
@@ -10440,7 +10601,8 @@ void CmdSketcherConstrainSymmetric::activated(int iMsg)
             Gui::TranslatedUserWarning(
                 getActiveGuiDocument()->getDocument(),
                 QObject::tr("Wrong selection"),
-                QObject::tr("Select two points and a symmetry line, "
+                QObject::tr("Select two lines and a symmetry line, "
+                            "two points and a symmetry line, "
                             "two points and a symmetry point, "
                             "an element and a symmetry line "
                             "or an element and a symmetry point from the sketch."));
@@ -10548,6 +10710,24 @@ void CmdSketcherConstrainSymmetric::activated(int iMsg)
     }
 
     getIdsFromName(SubNames[2], Obj, GeoId3, PosId3);
+
+    if (isEdge(GeoId1, PosId1) && isEdge(GeoId2, PosId2)
+        && (isEdge(GeoId3, PosId3) || isVertex(GeoId3, PosId3))) {
+        if (areAllPointsOrSegmentsFixed(Obj, GeoId1, GeoId2, GeoId3)) {
+            showNoConstraintBetweenFixedGeometry(Obj);
+            return;
+        }
+        if (!constrainTwoWholeCurvesSymmetric(this, Obj, GeoId1, GeoId2, GeoId3, PosId3)) {
+            Gui::TranslatedUserWarning(
+                Obj,
+                QObject::tr("Wrong selection"),
+                QObject::tr("Cannot add a symmetry constraint between these two lines "
+                            "and a symmetry line."));
+            return;
+        }
+        getSelection().clearSelection();
+        return;
+    }
 
     if (isEdge(GeoId1, PosId1) && isVertex(GeoId3, PosId3)) {
         std::swap(GeoId1, GeoId3);
@@ -10772,10 +10952,12 @@ void CmdSketcherConstrainSymmetric::applyConstraint(std::vector<SelIdPair>& selS
             getSelection().clearSelection();
             return;
         }
-        case 9:// {SelEdge, SelEdgeOrAxis}
-        case 10:// {SelEdge, SelExternalEdge}
-        case 11:// {SelExternalEdge, SelEdge}
-        case 12:// {SelEdgeOrAxis, SelEdge}
+        case 9:// {SelEdge, SelHAxis}
+        case 10:// {SelEdge, SelVAxis}
+        case 11:// {SelEdge, SelExternalEdge}
+        case 12:// {SelExternalEdge, SelEdge}
+        case 13:// {SelHAxis, SelEdge}
+        case 14:// {SelVAxis, SelEdge}
         {
             if (selSeq.at(0).GeoId == Sketcher::GeoEnum::HAxis || selSeq.at(0).GeoId == Sketcher::GeoEnum::VAxis) {
                 GeoId1 = GeoId2 = selSeq.at(1).GeoId;
@@ -10823,6 +11005,36 @@ void CmdSketcherConstrainSymmetric::applyConstraint(std::vector<SelIdPair>& selS
                 return;
             }
             break;
+        }
+        case 15:// {SelEdge, SelEdge, SelEdgeOrAxis}
+        case 16:// {SelEdge, SelEdge, SelExternalEdge}
+        {
+            if (areAllPointsOrSegmentsFixed(
+                    Obj,
+                    selSeq.at(0).GeoId,
+                    selSeq.at(1).GeoId,
+                    selSeq.at(2).GeoId
+                )) {
+                showNoConstraintBetweenFixedGeometry(Obj);
+                getSelection().clearSelection();
+                return;
+            }
+            if (!constrainTwoWholeCurvesSymmetric(
+                    this,
+                    Obj,
+                    selSeq.at(0).GeoId,
+                    selSeq.at(1).GeoId,
+                    selSeq.at(2).GeoId,
+                    selSeq.at(2).PosId
+                )) {
+                Gui::TranslatedUserWarning(
+                    Obj,
+                    QObject::tr("Wrong selection"),
+                    QObject::tr("Cannot add a symmetry constraint between these two lines "
+                                "and a symmetry line."));
+            }
+            getSelection().clearSelection();
+            return;
         }
         default:
             break;
