@@ -10,6 +10,7 @@ SET(VibeCADAero_SRCS
     AeroAirfoil.py
     AeroIcons.py
     AeroSolvers.py
+    AeroDetachedAnalysis.py
     AeroResults.py
     AeroJSBSim.py
     AeroWorkspace.py
@@ -36,6 +37,7 @@ SET(VibeCADAero_Tests
     tests/test_airfoil.py
     tests/test_assistant_push.py
     tests/test_config.py
+    tests/test_detached_analysis.py
     tests/test_icons.py
     tests/test_jsbsim.py
     tests/test_public_api.py
