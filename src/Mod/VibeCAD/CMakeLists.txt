@@ -158,9 +158,12 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeSolverExecution.py
     VibeCADAnalyzeSolverGui.py
     VibeCADNativeAnalyzeSolverExecutionBindings.py
+    VibeCADNativeAnalyzeSolverExecutionChild.py
+    VibeCADNativeAnalyzeSolverExecutionInput.py
     VibeCADNativeAnalyzeSolverExecutionProcess.py
     VibeCADNativeAnalyzeSolverExecutionRuntime.py
     VibeCADNativeAnalyzeSolverExecutionSchema.py
+    VibeCADNativeAnalyzeSolverExecutionWorker.py
     VibeCADNativeAnalyzeStructuralLifecycleBindings.py
     VibeCADNativeAnalyzeStructuralLifecycleSchema.py
     VibeCADNativeAnalyzeSolverRuntime.py

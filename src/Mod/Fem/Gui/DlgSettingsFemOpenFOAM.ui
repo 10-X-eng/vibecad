@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>FemGui::DlgSettingsFemOpenFOAMImp</class>
+ <widget class="QWidget" name="FemGui::DlgSettingsFemOpenFOAMImp">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>480</width>
+    <height>180</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>OpenFOAM</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_2">
+   <item>
+    <widget class="QGroupBox" name="gb_openfoam_environment">
+     <property name="title">
+      <string>OpenFOAM Environment</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout">
+      <item>
+       <widget class="QLabel" name="l_openfoam_description">
+        <property name="text">
+         <string>Select the OpenFOAM shell environment file, normally etc/bashrc inside the OpenFOAM installation.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QGridLayout" name="gridLayout">
+        <item row="0" column="0">
+         <widget class="QLabel" name="l_openfoam_environment_file">
+          <property name="text">
+           <string>Environment file</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="Gui::PrefFileChooser" name="fc_openfoam_environment_file" native="true">
+          <property name="toolTip">
+           <string>Leave blank to use the current OpenFOAM environment or automatically detect one installation</string>
+          </property>
+          <property name="prefEntry" stdset="0">
+           <cstring>EnvironmentFile</cstring>
+          </property>
+          <property name="prefPath" stdset="0">
+           <cstring>Mod/Fem/OpenFOAM</cstring>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+  </layout>
+ </widget>
+ <layoutdefault spacing="6" margin="11"/>
+ <customwidgets>
+  <customwidget>
+   <class>Gui::PrefFileChooser</class>
+   <extends>Gui::FileChooser</extends>
+   <header>Gui/PrefWidgets.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources>
+  <include location="Resources/Fem.qrc"/>
+ </resources>
+</ui>

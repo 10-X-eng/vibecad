@@ -44,7 +44,9 @@ def _surface(main_window):
     controller = main_window.findChild(QtCore.QObject, "VibeCADRibbonController")
     tabs = main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
     assert controller is not None and tabs is not None
-    index = next(i for i in range(tabs.count()) if str(tabs.tabData(i)) == "FemWorkbench")
+    index = next(
+        i for i in range(tabs.count()) if str(tabs.tabData(i)) == "FemWorkbench"
+    )
     tabs.setCurrentIndex(index)
     _events(24)
     surface = read_active_ribbon_surface(controller)
@@ -201,6 +203,7 @@ def _run() -> None:
     active_status_seen = False
     original_require_binary = None
     original_import_tool = execution_module._import_tool
+    original_ccx_binary_path = None
 
     def finish(code: int) -> None:
         nonlocal exit_code
@@ -211,6 +214,10 @@ def _run() -> None:
             from femsolver import settings
 
             settings.require_binary = original_require_binary
+        if original_ccx_binary_path is not None:
+            App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Ccx").SetString(
+                "ccxBinaryPath", original_ccx_binary_path
+            )
         execution_module._import_tool = original_import_tool
         if document is not None and document.Name in App.listDocuments():
             App.closeDocument(document.Name)
@@ -224,12 +231,19 @@ def _run() -> None:
             prefix="vibecad-native-analyze-solver-execution-"
         )
         temporary_path = Path(temporary.name)
-        fake_solver = temporary_path / "fake-ccx"
-        fake_solver.write_text(
-            "#!/bin/sh\nsleep 0.25\nprintf 'solver completed'\n",
-            encoding="utf-8",
-        )
-        fake_solver.chmod(0o700)
+        if sys.platform == "win32":
+            fake_solver = temporary_path / "fake-ccx.cmd"
+            fake_solver.write_text(
+                "@echo off\r\nping -n 2 127.0.0.1 >nul\r\necho solver completed\r\n",
+                encoding="utf-8",
+            )
+        else:
+            fake_solver = temporary_path / "fake-ccx"
+            fake_solver.write_text(
+                "#!/bin/sh\nsleep 0.25\nprintf 'solver completed'\n",
+                encoding="utf-8",
+            )
+            fake_solver.chmod(0o700)
         output = temporary_path / "native-analyze-solver-execution.FCStd"
         document = App.newDocument("NativeAnalyzeSolverExecutionGate")
         document.UndoMode = 1
@@ -244,6 +258,12 @@ def _run() -> None:
         from femsolver import settings
 
         original_require_binary = settings.require_binary
+        ccx_preferences = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Ccx")
+        original_ccx_binary_path = ccx_preferences.GetString(
+            "ccxBinaryPath",
+            "",
+        )
+        ccx_preferences.SetString("ccxBinaryPath", str(fake_solver))
         settings.require_binary = lambda name: (
             str(fake_solver) if name == "Calculix" else original_require_binary(name)
         )
@@ -335,9 +355,7 @@ def _run() -> None:
                     domain = service.native_active_snapshot()["domain"]
                     run_status = domain["run_status"]
                     assert run_status["job_id"] == job_id
-                    assert run_status["capability"] == (
-                        "analyze.solver_execution.run"
-                    )
+                    assert run_status["capability"] == ("analyze.solver_execution.run")
                     assert domain["analysis_workflow_count"] == 1
                     workflow = domain["analysis_workflows"][0]
                     assert workflow["readiness"]["ready"] is True
@@ -376,9 +394,7 @@ def _run() -> None:
                 assert "NodeNumbers" not in encoded_domain
                 result_resources = result["result"]["resources"]
                 assert len(result_resources) == 1
-                output_object = document.getObject(
-                    result_resources[0]["object_name"]
-                )
+                output_object = document.getObject(result_resources[0]["object_name"])
                 assert output_object is not None
                 output_name = str(output_object.Name)
                 assert result_object.VibeCADTimelineRole == "resource"
@@ -411,9 +427,7 @@ def _run() -> None:
                         live_root,
                     )
 
-                old_solver_name, old_root_name, old_output_name = (
-                    completed_results[0]
-                )
+                old_solver_name, old_root_name, old_output_name = completed_results[0]
                 replacement_solver = document.getObject(old_solver_name)
                 document.openTransaction("Replace exact FEM result graph")
                 try:

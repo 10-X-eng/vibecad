@@ -92,18 +92,37 @@ def _windows_process_memory_bytes(pid: int) -> int | None:
         kernel32.CloseHandle(handle)
 
 
-def _terminate(process: subprocess.Popen[str]) -> None:
+def terminate_process_tree(process: subprocess.Popen[Any]) -> None:
+    """Terminate a worker and every subprocess it owns."""
+
     if process.poll() is not None:
         return
     try:
         if sys.platform == "win32":
-            process.terminate()
+            system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+            taskkill = system_root / "System32" / "taskkill.exe"
+            subprocess.run(
+                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+                timeout=3.0,
+                check=False,
+            )
         else:
             os.killpg(process.pid, signal.SIGTERM)
         process.wait(timeout=3.0)
     except Exception:
         process.kill()
         process.wait(timeout=3.0)
+
+
+def _terminate(process: subprocess.Popen[Any]) -> None:
+    """Compatibility wrapper for existing internal callers and tests."""
+
+    terminate_process_tree(process)
 
 
 def _read_output_tail(stream: Any, *, max_bytes: int = 64_000) -> str:
@@ -122,6 +141,7 @@ def run_process(
     cancellation_check: Callable[[], bool] | None,
     timeout_seconds: float,
     memory_limit_bytes: int,
+    poll_callback: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Run one child process without a console window and enforce hard bounds."""
     creation_flags = (
@@ -160,6 +180,12 @@ def run_process(
             if cancellation_check is not None and cancellation_check():
                 cancelled = True
                 break
+            if poll_callback is not None:
+                try:
+                    poll_callback()
+                except Exception:
+                    terminate_process_tree(process)
+                    raise
             now = time.monotonic()
             if now - started > timeout_seconds:
                 timed_out = True
@@ -172,7 +198,7 @@ def run_process(
                     break
             time.sleep(0.05)
         if cancelled or timed_out or memory_exceeded:
-            _terminate(process)
+            terminate_process_tree(process)
         process.wait()
         cpu_exceeded = bool(
             sys.platform != "win32"
@@ -182,13 +208,15 @@ def run_process(
         termination_reason = (
             "host_cancellation_request"
             if cancelled
-            else "wall_time_limit"
-            if timed_out
-            else "memory_limit"
-            if memory_exceeded
-            else "cpu_time_limit"
-            if cpu_exceeded
-            else "process_exit"
+            else (
+                "wall_time_limit"
+                if timed_out
+                else (
+                    "memory_limit"
+                    if memory_exceeded
+                    else "cpu_time_limit" if cpu_exceeded else "process_exit"
+                )
+            )
         )
         return {
             "started": True,
@@ -203,11 +231,11 @@ def run_process(
             "limit_reached": (
                 "wall_time_seconds"
                 if timed_out
-                else "memory_bytes"
-                if memory_exceeded
-                else "cpu_seconds"
-                if cpu_exceeded
-                else None
+                else (
+                    "memory_bytes"
+                    if memory_exceeded
+                    else "cpu_seconds" if cpu_exceeded else None
+                )
             ),
             "termination_reason": termination_reason,
             "timeout_seconds": float(timeout_seconds),

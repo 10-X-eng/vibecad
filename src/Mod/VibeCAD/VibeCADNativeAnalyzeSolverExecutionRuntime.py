@@ -8,11 +8,18 @@ from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeSolverExecution import (
+    capture_solver_execution_request,
     commit_solver_execution,
-    discard_solver_execution_request,
-    prepare_solver_execution_request,
-    run_solver_execution,
+    validate_captured_solver_execution,
     verify_solver_execution,
+)
+from VibeCADNativeAnalyzeSolverExecutionInput import (
+    create_solver_execution_workspace,
+    freeze_solver_execution_snapshot,
+    materialize_solver_execution_snapshot,
+)
+from VibeCADNativeAnalyzeSolverExecutionWorker import (
+    execute_frozen_solver_execution,
 )
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeBackground import NativeBackgroundError
@@ -46,26 +53,45 @@ class NativeAnalyzeSolverExecutionRuntime:
                 "Background FEM solver execution is unavailable in this session.",
                 error_code="NATIVE_ANALYZE_SOLVER_BACKGROUND_UNAVAILABLE",
             )
-        request = prepare_solver_execution_request(
+        captured = capture_solver_execution_request(
             context.document,
             context.document_uid,
             **values,
         )
+        workspace = create_solver_execution_workspace()
 
         def prepare(cancelled: Any, progress: Any) -> Any:
-            return run_solver_execution(request, cancelled=cancelled, progress=progress)
+            progress(3, "Capturing exact FEM document")
+            materialized = dispatcher(
+                lambda: materialize_solver_execution_snapshot(
+                    context.document,
+                    captured,
+                    workspace,
+                )
+            )
+            progress(5, "Authenticating exact FEM document snapshot")
+            frozen = freeze_solver_execution_snapshot(materialized)
+            return execute_frozen_solver_execution(
+                frozen,
+                cancelled=cancelled,
+                progress=progress,
+            )
+
+        def validate() -> None:
+            context.guard()
+            validate_captured_solver_execution(context.document, captured)
 
         def commit(prepared: Any) -> Mapping[str, Any]:
             return run_immediate_mutation(
                 context,
                 ticket=ticket,
-                transaction_name=f"Import {request.target.kind.title()} FEM Results",
+                transaction_name=(f"Import {captured.target.kind.title()} FEM Results"),
                 mutate=lambda document: commit_solver_execution(document, prepared),
                 verify=verify_solver_execution,
             )
 
         def cleanup(_prepared: Any) -> None:
-            discard_solver_execution_request(request)
+            workspace.cleanup()
             context.state.cancel_mutation(ticket)
 
         try:
@@ -73,7 +99,7 @@ class NativeAnalyzeSolverExecutionRuntime:
                 document_uid=context.document_uid,
                 capability_name="analyze.solver_execution.run",
                 prepare=prepare,
-                validate_before_commit=context.guard,
+                validate_before_commit=validate,
                 commit=commit,
                 dispatch_to_document_thread=dispatcher,
                 finalize_message="Importing verified FEM results",
@@ -81,13 +107,13 @@ class NativeAnalyzeSolverExecutionRuntime:
                 changes_document=True,
             )
         except NativeBackgroundError as exc:
-            discard_solver_execution_request(request)
+            workspace.cleanup()
             raise NativeAnalyzeError(
                 str(exc),
                 error_code="NATIVE_ANALYZE_SOLVER_QUEUE_FAILED",
             ) from exc
         except Exception:
-            discard_solver_execution_request(request)
+            workspace.cleanup()
             raise
         return {
             "job": {
