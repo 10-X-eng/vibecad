@@ -1,23 +1,54 @@
-name: C/C++ CI
+name: VibeCAD CMake C++ CI
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibecad-cmake-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  build-vibecad-cpp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
 
-    runs-on: ubuntu-latest
+    env:
+      CC: /usr/bin/gcc
+      CXX: /usr/bin/g++
 
     steps:
-    - uses: actions/checkout@v4
-    - name: configure
-      run: ./configure
-    - name: make
-      run: make
-    - name: make check
-      run: make check
-    - name: make distcheck
-      run: make distcheck
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install FreeCAD build dependencies
+        run: ./package/ubuntu/install-apt-packages.sh
+
+      - name: Configure with CMake
+        run: |
+          cmake \
+            -S . \
+            -B build/release \
+            -G Ninja \
+            --preset release \
+            -DFREECAD_USE_EXTERNAL_COIN_PIVY=ON \
+            -DFREECAD_USE_EXTERNAL_PYCXX=ON \
+            -DFREECAD_USE_EXTERNAL_JSON=ON \
+            -DBUILD_TEST=OFF
+
+      - name: Build VibeCAD C++ integration
+        run: |
+          cmake --build build/release \
+            --target VibeCADGeometryWorker VibeCADScripts \
+            --parallel 2
+
+      - name: Compile-check VibeCAD Python sources
+        run: python3 -m compileall -q src/Mod/VibeCAD
