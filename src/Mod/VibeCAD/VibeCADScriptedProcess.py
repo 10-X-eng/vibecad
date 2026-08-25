@@ -183,6 +183,12 @@ def bounded_log_tail(
         return ""
 
 
+def _log_exceeds_limit(path: Path, maximum_log_bytes: int | None) -> bool:
+    """Return whether a process log crossed its configured hard byte bound."""
+
+    return maximum_log_bytes is not None and path.stat().st_size > maximum_log_bytes
+
+
 def _process_creation_kwargs() -> dict[str, Any]:
     return {
         "start_new_session": sys.platform != "win32",
@@ -269,10 +275,7 @@ def run_process_sequence(
                             stage=index,
                             program=program,
                         )
-                    if (
-                        maximum_log_bytes is not None
-                        and log_path.stat().st_size > maximum_log_bytes
-                    ):
+                    if _log_exceeds_limit(log_path, maximum_log_bytes):
                         terminate_process(process)
                         raise ExternalProcessError(
                             "output_limit",
@@ -295,6 +298,12 @@ def run_process_sequence(
                 program=program,
             ) from exc
 
+        if _log_exceeds_limit(log_path, maximum_log_bytes):
+            raise ExternalProcessError(
+                "output_limit",
+                stage=index,
+                program=program,
+            )
         if exit_code != 0:
             raise ExternalProcessError(
                 "backend_failed",
