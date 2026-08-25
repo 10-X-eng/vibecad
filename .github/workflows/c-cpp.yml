@@ -59,7 +59,7 @@ jobs:
           python3 -m compileall -q src/Mod/VibeCAD
           python3 -m compileall -q src/Mod/VibeCADAero
 
-      - name: Run Host Analysis stabilization tests
+      - name: Run Host Analysis FEM stabilization tests
         id: host-analysis-fem-tests
         shell: bash
         run: |
@@ -88,7 +88,7 @@ jobs:
           set -e
           if [ "$status" -ne 0 ]; then
             {
-              echo "### Host Analysis stabilization failure"
+              echo "### Host Analysis FEM stabilization failure"
               echo
               echo '```text'
               tail -n 120 build/test-results/host-analysis-fem-pytest.log
@@ -97,11 +97,11 @@ jobs:
           fi
           exit "$status"
 
-      - name: Preserve Host Analysis failure diagnostics
+      - name: Preserve Host Analysis FEM failure diagnostics
         if: failure() && steps.host-analysis-fem-tests.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
-          name: host-analysis-pytest-failure
+          name: host-analysis-fem-pytest-failure
           path: |
             build/test-results/host-analysis-fem-pytest.log
             build/test-results/host-analysis-fem-pytest.xml
