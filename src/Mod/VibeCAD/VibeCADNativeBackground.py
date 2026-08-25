@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import json
 from typing import Any, Callable, Mapping
 
-from VibeCADAnalysisRuntime import (
+from tool_impl.analysis_runtime import (
     AnalysisRuntimeManager,
     AnalysisRuntimeMessages,
     _AnalysisJob,
