@@ -22,7 +22,7 @@ jobs:
     env:
       CC: /usr/bin/gcc
       CXX: /usr/bin/g++
-      PYTHONPATH: ${{ github.workspace }}/src/Mod/VibeCAD
+      PYTHONPATH: ${{ github.workspace }}/src/Mod/VibeCAD:${{ github.workspace }}/src/Mod/VibeCADAero
 
     steps:
       - name: Check out source
@@ -55,7 +55,9 @@ jobs:
             --parallel 2
 
       - name: Compile-check VibeCAD Python sources
-        run: python3 -m compileall -q src/Mod/VibeCAD
+        run: |
+          python3 -m compileall -q src/Mod/VibeCAD
+          python3 -m compileall -q src/Mod/VibeCADAero
 
       - name: Run Host Analysis FEM stabilization tests
         id: host-analysis-fem-tests
@@ -77,6 +79,7 @@ jobs:
             src/Mod/VibeCAD/vibecad_tests/test_mystran_analysis_local_provider.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_architecture_boundaries.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_error_mapping.py \
+            src/Mod/VibeCADAero/tests/test_detached_analysis.py \
             2>&1 | tee build/test-results/host-analysis-fem-pytest.log
           status=${PIPESTATUS[0]}
           set -e
