@@ -127,13 +127,11 @@ def test_elmer_timeout_mapping_is_legacy_exact(
     }
 
 
-@pytest.mark.parametrize("kind", ["z88", "mystran"])
-def test_unmigrated_fem_solvers_remain_on_legacy_runner(
+def test_mystran_remains_on_legacy_runner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    kind: str,
 ) -> None:
-    request = _request(tmp_path, kind=kind)
+    request = _request(tmp_path, kind="mystran")
     prepared = adapter.PreparedFEMSolverExecution(object(), request)
     sentinel = object()
     called: list[object] = []
@@ -142,7 +140,7 @@ def test_unmigrated_fem_solvers_remain_on_legacy_runner(
         adapter._LOCAL_PROCESS_PROVIDER,
         "run_sequence",
         lambda *_args, **_kwargs: pytest.fail(
-            f"{kind} is not migrated in the Elmer PR"
+            "Mystran is not migrated in the Z88 PR"
         ),
     )
 
