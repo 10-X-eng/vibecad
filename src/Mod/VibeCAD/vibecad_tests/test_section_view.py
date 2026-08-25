@@ -228,3 +228,80 @@ def test_section_view_dialog_matches_solidworks_and_fusion_controls() -> None:
     assert "SoClipPlaneManip" not in helper
     assert "show_section_view_dialog" in gui
     assert "close_section_view_dialog" in gui
+
+
+class _RejectingSbVec3f:
+    """Mimic macOS Pivy SWIG rejecting starred-tuple SbVec3f construction."""
+
+    def __init__(self, *args):
+        if args:
+            raise TypeError(
+                "Wrong number or type of arguments for overloaded function "
+                "'new_SbVec3f'."
+            )
+        self.value = (0.0, 0.0, 0.0)
+
+    def setValue(self, x, y, z) -> None:
+        self.value = (float(x), float(y), float(z))
+
+
+def test_section_view_does_not_star_unpack_into_sbvec3f() -> None:
+    helper = (REPO / "src/Mod/VibeCAD/VibeCADSectionView.py").read_text(
+        encoding="utf-8"
+    )
+    assert "SbVec3f(*" not in helper
+    assert "point.set1Value(index, coin.SbVec3f" not in helper
+
+
+def test_coin_vec3_uses_empty_constructor_and_setvalue() -> None:
+    coin = SimpleNamespace(SbVec3f=_RejectingSbVec3f)
+    vec = section._coin_vec3(coin, (10.0, 4.0, -2.5))
+    assert vec.value == (10.0, 4.0, -2.5)
+
+
+def test_install_overlay_writes_corners_as_three_floats() -> None:
+    recorded: list[tuple[int, tuple[float, ...]]] = []
+
+    class _Points:
+        def set1Value(self, index, *xyz) -> None:
+            recorded.append((int(index), tuple(float(v) for v in xyz)))
+
+    class _Node:
+        BASE_COLOR = "base"
+        LINES = "lines"
+
+        def __init__(self) -> None:
+            self.point = _Points()
+            self.coordIndex = _Points()
+            self.model = None
+            self.diffuseColor = SimpleNamespace(setValue=lambda *_a: None)
+            self.transparency = SimpleNamespace(setValue=lambda *_a: None)
+            self.emissiveColor = SimpleNamespace(setValue=lambda *_a: None)
+            self.style = None
+            self.lineWidth = None
+
+        def setName(self, _name) -> None:
+            return None
+
+        def addChild(self, _child) -> None:
+            return None
+
+    class _Scene:
+        def insertChild(self, _node, _index) -> None:
+            return None
+
+    coin = SimpleNamespace(
+        SoSeparator=_Node,
+        SoLightModel=_Node,
+        SoMaterial=_Node,
+        SoCoordinate3=_Node,
+        SoIndexedFaceSet=_Node,
+        SoDrawStyle=_Node,
+        SoIndexedLineSet=_Node,
+        SbVec3f=_RejectingSbVec3f,
+    )
+    corners = section.section_plane_corners((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), 10.0, 5.0)
+    section._overlay_node = None
+    section._install_overlay_node(coin, _Scene(), corners)
+    assert [item[0] for item in recorded[:4]] == [0, 1, 2, 3]
+    assert all(len(item[1]) == 3 for item in recorded[:4])
