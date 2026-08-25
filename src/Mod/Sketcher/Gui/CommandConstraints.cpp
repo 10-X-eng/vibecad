@@ -5381,7 +5381,6 @@ CmdSketcherConstrainDistance::CmdSketcherConstrainDistance()
                            {SelRoot, SelEdge},
                            {SelVertexOrRoot, SelExternalEdge},
                            {SelEdge, SelEdge}};
-    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainDistance::activated(int iMsg)
@@ -6033,7 +6032,6 @@ CmdSketcherConstrainDistanceX::CmdSketcherConstrainDistanceX()
     allowedSelSequences = {{SelVertexOrRoot, SelVertexOrRoot},
                            {SelEdge},
                            {SelExternalEdge}};
-    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainDistanceX::activated(int iMsg)
@@ -6335,7 +6333,6 @@ CmdSketcherConstrainDistanceY::CmdSketcherConstrainDistanceY()
     allowedSelSequences = {{SelVertexOrRoot, SelVertexOrRoot},
                            {SelEdge},
                            {SelExternalEdge}};
-    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainDistanceY::activated(int iMsg)
@@ -9715,7 +9712,6 @@ CmdSketcherConstrainAngle::CmdSketcherConstrainAngle()
                            {SelVertexOrRoot, SelExternalEdge, SelExternalEdge},
                            {SelArc},
                            {SelExternalArc}};
-    preferCurveOverEndpoint = true;
 }
 
 void CmdSketcherConstrainAngle::activated(int iMsg)
@@ -10442,16 +10438,13 @@ bool constrainTwoWholeCurvesSymmetric(
 {
     const Part::Geometry* geom1 = Obj->getGeometry(geo1);
     const Part::Geometry* geom2 = Obj->getGeometry(geo2);
-    if (!geom1 || !geom2) {
+    const Part::Geometry* geom3 =
+        pos3 == Sketcher::PointPos::none ? Obj->getGeometry(geo3) : nullptr;
+    if (!geom1 || !geom2 || !isLineSegment(*geom1) || !isLineSegment(*geom2)
+        || (pos3 == Sketcher::PointPos::none && (!geom3 || !isLineSegment(*geom3)))) {
         return false;
     }
-    auto hasOpenEndpoints = [](const Part::Geometry& geom) {
-        return isLineSegment(geom) || isArcOfCircle(geom) || isArcOfEllipse(geom)
-            || isArcOfHyperbola(geom) || isArcOfParabola(geom)
-            || (isBSplineCurve(geom) && !isPeriodicBSplineCurve(geom));
-    };
-    if (!hasOpenEndpoints(*geom1) || !hasOpenEndpoints(*geom2) || geo1 == geo2 || geo1 == geo3
-        || geo2 == geo3) {
+    if (geo1 == geo2 || geo1 == geo3 || geo2 == geo3) {
         return false;
     }
 
@@ -11016,6 +11009,16 @@ void CmdSketcherConstrainSymmetric::applyConstraint(std::vector<SelIdPair>& selS
         case 15:// {SelEdge, SelEdge, SelEdgeOrAxis}
         case 16:// {SelEdge, SelEdge, SelExternalEdge}
         {
+            if (areAllPointsOrSegmentsFixed(
+                    Obj,
+                    selSeq.at(0).GeoId,
+                    selSeq.at(1).GeoId,
+                    selSeq.at(2).GeoId
+                )) {
+                showNoConstraintBetweenFixedGeometry(Obj);
+                getSelection().clearSelection();
+                return;
+            }
             if (!constrainTwoWholeCurvesSymmetric(
                     this,
                     Obj,

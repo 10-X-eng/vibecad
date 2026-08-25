@@ -16,6 +16,13 @@ _REPOSITORY = Path(__file__).resolve().parents[4]
 _CONSTRAINTS = (
     _REPOSITORY / "src" / "Mod" / "Sketcher" / "Gui" / "CommandConstraints.cpp"
 )
+_SCHEMA = (
+    _REPOSITORY
+    / "src"
+    / "Mod"
+    / "VibeCAD"
+    / "VibeCADNativeSketchConstraintSchema.py"
+)
 
 
 def _source() -> str:
@@ -65,14 +72,23 @@ def test_entity_constraints_prefer_whole_curves_like_fusion() -> None:
         "Sketcher_ConstrainPerpendicular",
         "Sketcher_ConstrainEqual",
         "Sketcher_ConstrainTangent",
+    )
+    for command in entity_commands:
+        constructor = _command_constructor(source, command)
+        assert "preferCurveOverEndpoint = true" in constructor, command
+
+
+def test_dimensional_constraints_keep_endpoint_selection_behavior() -> None:
+    source = _source()
+    dimensional_commands = (
         "Sketcher_ConstrainDistance",
         "Sketcher_ConstrainDistanceX",
         "Sketcher_ConstrainDistanceY",
         "Sketcher_ConstrainAngle",
     )
-    for command in entity_commands:
+    for command in dimensional_commands:
         constructor = _command_constructor(source, command)
-        assert "preferCurveOverEndpoint = true" in constructor, command
+        assert "preferCurveOverEndpoint = true" not in constructor, command
 
 
 def test_point_constraints_still_prefer_vertices() -> None:
@@ -99,6 +115,32 @@ def test_symmetric_accepts_two_whole_lines_and_a_symmetry_line() -> None:
     assert "constrainTwoWholeCurvesSymmetric" in activated
     assert "constrainTwoWholeCurvesSymmetric" in apply
     assert "two lines and a symmetry line" in activated
+
+
+def test_two_whole_curve_symmetry_is_limited_to_straight_lines() -> None:
+    source = _source()
+    helper = _function_section(source, "bool constrainTwoWholeCurvesSymmetric(")
+    assert "isLineSegment(*geom1)" in helper
+    assert "isLineSegment(*geom2)" in helper
+    assert "isLineSegment(*geom3)" in helper
+    assert "isArcOfCircle" not in helper
+    assert "isBSplineCurve" not in helper
+
+    schema = _SCHEMA.read_text(encoding="utf-8")
+    assert "whole straight lines about" in schema
+    assert "two whole open curves" not in schema
+
+
+def test_interactive_whole_line_symmetry_refuses_all_fixed_geometry() -> None:
+    source = _source()
+    apply = _function_section(
+        source, "void CmdSketcherConstrainSymmetric::applyConstraint("
+    )
+    whole_line_cases = apply.split(
+        "case 15:// {SelEdge, SelEdge, SelEdgeOrAxis}", 1
+    )[1].split("default:", 1)[0]
+    assert "areAllPointsOrSegmentsFixed" in whole_line_cases
+    assert "showNoConstraintBetweenFixedGeometry" in whole_line_cases
 
 
 def test_symmetric_hints_allow_a_second_line_instead_of_only_a_point() -> None:

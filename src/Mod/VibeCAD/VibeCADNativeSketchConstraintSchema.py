@@ -738,7 +738,7 @@ def sketch_constraint_capability_definition() -> NativeCapabilityDefinition:
                 operation="constrain_symmetric",
                 description=(
                     "Reflect two exact points, one open curve's endpoints, or two "
-                    "whole open curves about one exact whole straight line, Sketch "
+                    "whole straight lines about one exact whole straight line, Sketch "
                     "axis, or exact point."
                 ),
                 action_ids=frozenset({"Sketcher_ConstrainSymmetric"}),
