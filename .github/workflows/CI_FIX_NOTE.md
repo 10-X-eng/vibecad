@@ -1,0 +1,1 @@
+The C/C++ workflow was corrected from a generic Autotools template to the repository's actual CMake/Ninja build flow. The workflow validates the VibeCAD C++ worker and script integration on Ubuntu 24.04 using the repository's FreeCAD dependency installer and release preset.
