@@ -9,15 +9,24 @@ import json
 from pathlib import Path
 import sys
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 import zipfile
 
-from VibeCADAeroAnalysisRuntime import (
-    prepare_document_input,
-    publish_document_result,
-    run_detached,
-    validate_document_input,
-)
+_AERO_DIR = Path(__file__).resolve().parent.parent / "VibeCADAero"
+if _AERO_DIR.is_dir() and str(_AERO_DIR) not in sys.path:
+    sys.path.insert(0, str(_AERO_DIR))
+
+import AeroAirfoil
+import AeroConfig
+import AeroDetachedAnalysis
+import AeroFlightCard
+import AeroMass
+import AeroPreview
+import AeroRepair
+import AeroResults
+import AeroStamp
+import VibeCADAero
+
 from VibeCADNativeBackground import NativeBackgroundError
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeMutation import NativeMutationDraft
@@ -28,10 +37,6 @@ from VibeCADNativeOutput import (
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 from VibeCADNativeTargets import object_identity
-
-_AERO_DIR = Path(__file__).resolve().parent.parent / "VibeCADAero"
-if _AERO_DIR.is_dir() and str(_AERO_DIR) not in sys.path:
-    sys.path.insert(0, str(_AERO_DIR))
 
 _SOLVE_OPS = frozenset({"analyze", "section", "vlm", "report", "propose_repairs", "apply_repairs"})
 _BACKGROUND_SOLVE_OPS = frozenset({"analyze", "section", "vlm"})
@@ -66,6 +71,113 @@ _JSBSIM_MEMBERS = (
 )
 
 
+class AeroAnalysisRuntimeError(RuntimeError):
+    """A prepared Aero solve cannot be published against the exact document."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str,
+        current_revision: str | None = None,
+    ) -> None:
+        super().__init__(str(message).strip())
+        self.error_code = str(error_code or "AERO_ANALYSIS_RUNTIME")
+        self.current_revision = str(current_revision or "").strip() or None
+
+    def failure(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "error_code": self.error_code,
+            "message": str(self),
+        }
+        if self.current_revision is not None:
+            result["current_revision"] = self.current_revision
+        return result
+
+
+def prepare_document_input(
+    document: Any,
+    operation: str,
+) -> tuple[AeroDetachedAnalysis.PreparedAeroAnalysis, str]:
+    """Freeze document-bound Aero inputs before detached execution starts."""
+
+    clean_operation = str(operation or "").strip().lower()
+    if clean_operation not in _BACKGROUND_SOLVE_OPS:
+        raise AeroAnalysisRuntimeError(
+            "Aero background operation must be analyze, section, or vlm.",
+            error_code="AERO_OPERATION_INVALID",
+        )
+    cfg = AeroConfig.resolve_geometry(document)
+    revision = AeroPreview.geometry_revision(document, cfg)
+    coordinates, airfoil_source = AeroAirfoil.load_airfoil_coordinates(cfg["airfoil"])
+    prepared = AeroDetachedAnalysis.PreparedAeroAnalysis.create(
+        operation=clean_operation,
+        config=cfg,
+        coordinates=coordinates,
+        airfoil_source=airfoil_source,
+    )
+    return prepared, revision
+
+
+def run_detached(
+    prepared: AeroDetachedAnalysis.PreparedAeroAnalysis,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[int, str], None] | None = None,
+) -> AeroDetachedAnalysis.CompletedAeroAnalysis:
+    """Run only the document-free Aero computation."""
+
+    return AeroDetachedAnalysis.execute(
+        prepared,
+        cancelled=cancelled,
+        progress=progress,
+    )
+
+
+def validate_document_input(document: Any, expected_revision: str) -> None:
+    """Reject publication when Aero geometry changed after preparation."""
+
+    current_cfg = AeroConfig.resolve_geometry(document)
+    current_revision = AeroPreview.geometry_revision(document, current_cfg)
+    if current_revision != str(expected_revision or ""):
+        raise AeroAnalysisRuntimeError(
+            "The Aero geometry changed while analysis was running; stale results were not published.",
+            error_code="AERO_ANALYSIS_STALE",
+            current_revision=current_revision,
+        )
+
+
+def publish_document_result(
+    document: Any,
+    completed: AeroDetachedAnalysis.CompletedAeroAnalysis,
+) -> dict[str, Any]:
+    """Publish detached physics through the existing synchronous result contract."""
+
+    if not isinstance(completed, AeroDetachedAnalysis.CompletedAeroAnalysis):
+        raise TypeError("completed must be CompletedAeroAnalysis")
+    cfg = completed.prepared.config()
+    payload = completed.payload()
+    VibeCADAero._ensure_aeroconfig(document, cfg)
+    changes: list[dict[str, Any]] = []
+    payload["changes"] = changes
+    payload["RepairPasses"] = 0
+    payload["Corrections"] = []
+    payload["user_message"] = AeroRepair.format_user_message(changes, payload, 0)
+    mass = AeroMass.measure_document(document, cfg)
+    payload["mass"] = mass
+    payload["flight_card"] = AeroFlightCard.build_card(cfg, payload, mass)
+    payload.update(AeroStamp.analysis_stamp(payload.get("source")))
+    AeroResults.write_report(document, payload)
+    return {
+        "ok": True,
+        **payload,
+        "changes": changes,
+        "user_message": payload["user_message"],
+        "jsbsim_path": None,
+        "jsbsim_boot_error": "",
+    }
+
+
 def native_payload(result: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(result, Mapping):
         raise RuntimeError("Aero wrapper returned a non-object result.")
@@ -89,10 +201,15 @@ class NativeAeroRuntime:
         operation = str(arguments.get("operation") or "")
         if operation not in _SOLVE_OPS:
             raise ValueError(f"Unsupported Aero operation {operation!r}.")
+        background = arguments.get("background", False)
+        if type(background) is not bool:
+            raise ValueError("Aero background must be true or false.")
+        if background and operation not in _BACKGROUND_SOLVE_OPS:
+            raise ValueError("Aero background execution is only available for analyze, section, or vlm.")
         context = self._context
         context.guard()
         self._require_ticket_identity(ticket, "aero.solve")
-        if operation in _BACKGROUND_SOLVE_OPS:
+        if background:
             self._require_current_ticket(ticket, "aero.solve")
             return self._solve_background(operation, ticket)
         return run_immediate_mutation(
@@ -200,8 +317,6 @@ class NativeAeroRuntime:
                 raise ValueError(f"Unsupported Aero operation {operation!r}.")
         self._context.guard()
         self._require_current_ticket(ticket, "aero.inspect")
-        import VibeCADAero
-
         return native_payload(VibeCADAero.flight_card(self._context.document))
 
     def _require_ticket_identity(
@@ -273,8 +388,6 @@ class NativeAeroRuntime:
 
 
 def _invoke_aero(document: Any, operation: str) -> dict[str, Any]:
-    import VibeCADAero
-
     if operation == "analyze":
         return native_payload(VibeCADAero.run_analyze(document, repair=False))
     if operation == "section":
@@ -376,8 +489,6 @@ def _safe_identity(obj: Any) -> Any | None:
 
 
 def _prepare_jsbsim_payload(document: Any) -> dict[str, Any]:
-    import VibeCADAero
-
     payload = VibeCADAero.prepare_jsbsim_payload(document)
     if payload is None:
         raise RuntimeError("No AeroReport. Run Analyze before exporting JSBSim.")
