@@ -14,6 +14,7 @@ from VibeCADNativeMutation import (
     NativeMutationDraft,
     NativeMutationError,
     NativeMutationRunner,
+    run_human_mutation,
 )
 from VibeCADNativeState import (
     NativeDocumentStateStore,
@@ -193,6 +194,47 @@ def test_after_recompute_stabilizes_before_postcondition() -> None:
         ("verify", (("Box",),)),
     ]
     assert (transactions.commits, transactions.aborts) == (1, 0)
+
+
+def test_human_mutation_uses_the_same_draft_recompute_and_postcondition_contract() -> None:
+    _state, document, transactions, _runner, _ticket = _host()
+
+    result = run_human_mutation(
+        document=document,
+        transaction_name="Create exact feature",
+        mutate=lambda target: _successful_mutation(
+            NativeDocumentStateStore(), target
+        ),
+        verify=_verify,
+        transaction_factory=transactions,
+        document_is_live=lambda target: target.open,
+    )
+
+    assert result["valid"] is True
+    assert document.recompute_calls == [("Box",)]
+    assert (transactions.opens, transactions.commits, transactions.aborts) == (1, 1, 0)
+
+
+def test_human_mutation_aborts_when_the_postcondition_fails() -> None:
+    _state, document, transactions, _runner, _ticket = _host()
+
+    with pytest.raises(NativeMutationError) as caught:
+        run_human_mutation(
+            document=document,
+            transaction_name="Create exact feature",
+            mutate=lambda target: _successful_mutation(
+                NativeDocumentStateStore(), target
+            ),
+            verify=lambda _target, _draft: (_ for _ in ()).throw(
+                RuntimeError("bad result")
+            ),
+            transaction_factory=transactions,
+            document_is_live=lambda target: target.open,
+        )
+
+    assert caught.value.error_code == NATIVE_POSTCONDITION_FAILED
+    assert document.objects == {}
+    assert (transactions.commits, transactions.aborts) == (0, 1)
 
 
 def test_abort_stabilizes_after_document_rollback() -> None:

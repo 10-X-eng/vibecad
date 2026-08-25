@@ -71,6 +71,34 @@ def set_isometric(document: Any, *, gui: Any | None = None) -> dict[str, str]:
     return {"orientation": "isometric"}
 
 
+def set_standard_view(
+    document: Any,
+    orientation: str,
+    *,
+    gui: Any | None = None,
+) -> dict[str, str]:
+    document_uid(document)
+    methods = {
+        "front": "viewFront",
+        "rear": "viewRear",
+        "left": "viewLeft",
+        "right": "viewRight",
+        "top": "viewTop",
+        "bottom": "viewBottom",
+    }
+    method_name = methods.get(str(orientation))
+    if method_name is None:
+        raise NativeViewError("The requested standard orientation is unavailable.")
+    view = _active_view(document, gui)
+    orient = getattr(view, method_name, None)
+    if not callable(orient):
+        raise NativeViewError(
+            f"The active 3D view cannot set {orientation} orientation."
+        )
+    orient()
+    return {"orientation": str(orientation)}
+
+
 def set_grid_visible(document: Any, visible: bool) -> dict[str, bool]:
     document_uid(document)
     if type(visible) is not bool:

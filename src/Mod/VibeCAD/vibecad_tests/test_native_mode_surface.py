@@ -6,10 +6,27 @@ from types import SimpleNamespace
 
 import pytest
 
-from VibeCADModelingSurface import resolve_modeling_surface
+from VibeCADModelingSurface import provider_engine_for_ribbon, resolve_modeling_surface
 import VibeCADRibbonSurface as ribbon_module
 
 from vibecad_tests.test_ribbon_surface import _manifest
+
+
+@pytest.mark.parametrize(
+    ("authoring_engine", "surface_id", "expected"),
+    (
+        ("vibescript", "model", "vibescript"),
+        ("vibescript", "analyze", "native"),
+        ("native", "analyze", "native"),
+        ("native", "model", "native"),
+    ),
+)
+def test_analyze_uses_native_tools_without_changing_geometry_authority(
+    authoring_engine: str,
+    surface_id: str,
+    expected: str,
+) -> None:
+    assert provider_engine_for_ribbon(authoring_engine, surface_id) == expected
 
 
 def test_native_mode_uses_live_ribbon_identity_and_stays_fail_closed(
@@ -108,6 +125,39 @@ def test_native_schema_assembly_never_reads_the_legacy_service_registry(
         _NativeService(),
         "PartDesignWorkbench",
     ) == schemas
+
+
+def test_analyze_ribbon_selects_native_schemas_for_vibescript_geometry(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeProviderContext as provider_context
+    import VibeCADSession as session
+
+    schemas = [
+        {
+            "name": "analyze.model",
+            "description": "Create or update a study.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        }
+    ]
+    monkeypatch.setattr(
+        ribbon_module,
+        "read_active_ribbon_surface",
+        lambda: SimpleNamespace(surface_id="analyze"),
+    )
+    monkeypatch.setattr(
+        provider_context,
+        "native_provider_tool_schemas",
+        lambda: schemas,
+    )
+    service = SimpleNamespace(modeling_engine=lambda: "vibescript")
+
+    assert session.provider_tool_schemas(service, "FemWorkbench") == schemas
+    assert service.modeling_engine() == "vibescript"
 
 
 def test_native_availability_queries_use_the_manifest_surface(

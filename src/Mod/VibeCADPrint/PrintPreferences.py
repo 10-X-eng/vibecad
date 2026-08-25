@@ -18,6 +18,7 @@ BAMBU_EXECUTABLE_KEY = "BambuStudioExecutable"
 PRINTER_PROFILE_KEY = "PrinterProfile"
 PRINT_PROFILE_KEY = "PrintProfile"
 MATERIAL_PROFILES_KEY = "MaterialProfilesJson"
+OBJECT_FILAMENT_IDS_KEY = "ObjectFilamentIdsJson"
 AUTO_ARRANGE_KEY = "AutoArrange"
 ENSURE_ON_BED_KEY = "EnsureOnBed"
 HANDOFF_STORAGE_MODE_KEY = "HandoffStorageMode"
@@ -30,6 +31,7 @@ _BACKEND_KEYS = {
         PRINTER_PROFILE_KEY,
         PRINT_PROFILE_KEY,
         MATERIAL_PROFILES_KEY,
+        OBJECT_FILAMENT_IDS_KEY,
         AUTO_ARRANGE_KEY,
         ENSURE_ON_BED_KEY,
     ),
@@ -38,6 +40,7 @@ _BACKEND_KEYS = {
         "BambuStudioPrinterProfile",
         "BambuStudioPrintProfile",
         "BambuStudioMaterialProfilesJson",
+        "BambuStudioObjectFilamentIdsJson",
         "BambuStudioAutoArrange",
         "BambuStudioEnsureOnBed",
     ),
@@ -46,6 +49,7 @@ _BACKEND_KEYS = {
         "OrcaSlicerPrinterProfile",
         "OrcaSlicerPrintProfile",
         "OrcaSlicerMaterialProfilesJson",
+        "OrcaSlicerObjectFilamentIdsJson",
         "OrcaSlicerAutoArrange",
         "OrcaSlicerEnsureOnBed",
     ),
@@ -66,7 +70,7 @@ def preferences() -> Any:
     return FreeCAD.ParamGet(PREFERENCES_PATH)
 
 
-def _keys(backend_id: str) -> tuple[str, str, str, str, str, str]:
+def _keys(backend_id: str) -> tuple[str, str, str, str, str, str, str]:
     try:
         return _BACKEND_KEYS[str(backend_id)]
     except KeyError as exc:
@@ -145,6 +149,7 @@ def load_confirmed_setup(
         printer_key,
         print_key,
         materials_key,
+        object_filaments_key,
         arrange_key,
         bed_key,
     ) = _keys(backend_id)
@@ -162,12 +167,25 @@ def load_confirmed_setup(
     materials = tuple(str(value or "").strip() for value in decoded)
     if not materials or any(not value for value in materials):
         return None
+    object_filament_ids: tuple[int, ...] = ()
+    raw_object_filaments = str(group.GetString(object_filaments_key, "") or "").strip()
+    if raw_object_filaments:
+        try:
+            decoded_object_filaments = json.loads(raw_object_filaments)
+            if isinstance(decoded_object_filaments, list) and all(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in decoded_object_filaments
+            ):
+                object_filament_ids = tuple(decoded_object_filaments)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
     return VibeCADPrint.PrintSetup(
         printer_profile=printer,
         print_profile=print_profile,
         material_profiles=materials,
         auto_arrange=bool(group.GetBool(arrange_key, True)),
         ensure_on_bed=bool(group.GetBool(bed_key, True)),
+        object_filament_ids=object_filament_ids,
     )
 
 
@@ -183,12 +201,17 @@ def save_confirmed_setup(
         printer_key,
         print_key,
         materials_key,
+        object_filaments_key,
         arrange_key,
         bed_key,
     ) = _keys(backend_id)
     group.SetString(printer_key, setup.printer_profile)
     group.SetString(print_key, setup.print_profile)
     group.SetString(materials_key, json.dumps(list(setup.material_profiles)))
+    group.SetString(
+        object_filaments_key,
+        json.dumps(list(setup.object_filament_ids)),
+    )
     group.SetBool(arrange_key, bool(setup.auto_arrange))
     group.SetBool(bed_key, bool(setup.ensure_on_bed))
 
@@ -204,10 +227,11 @@ def clear_confirmed_setup(
         printer_key,
         print_key,
         materials_key,
+        object_filaments_key,
         arrange_key,
         bed_key,
     ) = _keys(backend_id)
-    for key in (printer_key, print_key, materials_key):
+    for key in (printer_key, print_key, materials_key, object_filaments_key):
         group.RemString(key)
     for key in (arrange_key, bed_key):
         group.RemBool(key)

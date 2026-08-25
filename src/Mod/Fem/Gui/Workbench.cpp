@@ -99,10 +99,12 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
 
     Gui::ToolBarItem* model = new Gui::ToolBarItem(root);
     model->setCommand("Model");
-    *model << "FEM_Analysis"
+    *model << "VibeCAD_AnalyzeStudySetup"
            << "Separator"
            << "FEM_MaterialSolid"
            << "FEM_MaterialFluid"
+           << "Separator"
+           << "FEM_Analysis"
            << "FEM_MaterialMechanicalNonlinear"
            << "FEM_MaterialReinforced"
            << "FEM_MaterialEditor"
@@ -118,47 +120,49 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
 
     Gui::ToolBarItem* fluid = new Gui::ToolBarItem(root);
     fluid->setCommand("Fluid Boundary Conditions");
-    *fluid << "FEM_ConstraintInitialFlowVelocity"
+    *fluid << "FEM_ConstraintFluidBoundary"
+           << "FEM_ConstraintInitialFlowVelocity"
            << "FEM_ConstraintInitialPressure"
            << "Separator"
            << "FEM_ConstraintFlowVelocity";
 
     Gui::ToolBarItem* geom = new Gui::ToolBarItem(root);
     geom->setCommand("Geometrical Analysis Features");
-    *geom << "FEM_ConstraintPlaneRotation"
-          << "FEM_ConstraintSectionPrint"
-          << "FEM_ConstraintTransform";
+    *geom << "FEM_ConstraintTransform"
+          << "FEM_ConstraintPlaneRotation"
+          << "FEM_ConstraintSectionPrint";
 
     Gui::ToolBarItem* mech = new Gui::ToolBarItem(root);
     mech->setCommand("Mechanical Boundary Conditions and Loads");
     *mech << "FEM_ConstraintFixed"
-          << "FEM_ConstraintRigidBody"
           << "FEM_ConstraintDisplacement"
+          << "FEM_ConstraintForce"
+          << "FEM_ConstraintPressure"
+          << "Separator"
+          << "FEM_ConstraintRigidBody"
           << "FEM_ConstraintContact"
           << "FEM_ConstraintTie"
           << "FEM_ConstraintSpring"
           << "Separator"
-          << "FEM_ConstraintForce"
-          << "FEM_ConstraintPressure"
           << "FEM_ConstraintCentrif"
           << "FEM_ConstraintSelfWeight";
 
     Gui::ToolBarItem* thermal = new Gui::ToolBarItem(root);
     thermal->setCommand("Thermal Boundary Conditions and Loads");
-    *thermal << "FEM_ConstraintInitialTemperature"
-             << "Separator"
+    *thermal << "FEM_ConstraintTemperature"
              << "FEM_ConstraintHeatflux"
-             << "FEM_ConstraintTemperature"
-             << "FEM_ConstraintBodyHeatSource";
+             << "FEM_ConstraintBodyHeatSource"
+             << "Separator"
+             << "FEM_ConstraintInitialTemperature";
 
     Gui::ToolBarItem* mesh = new Gui::ToolBarItem(root);
     mesh->setCommand("Mesh");
-    *mesh << "FEM_MeshNetgenFromShape"
-          << "FEM_MeshGmshFromShape"
-          << "Separator"
+    *mesh << "FEM_MeshGmshFromShape"
           << "FEM_MeshRegion"
-          << "FEM_MeshGroup"
           << "FEM_MeshGMSHRefinement"
+          << "Separator"
+          << "FEM_MeshNetgenFromShape"
+          << "FEM_MeshGroup"
           << "Separator"
           << "FEM_CreateElementsSet"
           << "FEM_FEMMesh2Mesh";
@@ -166,31 +170,28 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
     Gui::ToolBarItem* solve = new Gui::ToolBarItem(root);
     solve->setCommand("Solve");
     *solve << "FEM_CompSolvers"
+           << "FEM_SolverControl"
+           << "FEM_SolverRun"
            << "Separator"
            << "FEM_CompMechEquations"
            << "FEM_CompEmEquations"
            << "FEM_EquationFlow"
            << "FEM_EquationFlux"
-           << "FEM_EquationHeat"
-           << "Separator"
-           << "FEM_SolverControl"
-           << "FEM_SolverRun";
+           << "FEM_EquationHeat";
 
     Gui::ToolBarItem* results = new Gui::ToolBarItem(root);
     results->setCommand("Results");
-    *results << "FEM_ResultsPurge"
-             << "FEM_ResultShow";
+    *results << "FEM_ResultShow";
 #ifdef FC_USE_VTK
-    *results << "Separator"
-             << "FEM_PostApplyChanges"
-             << "FEM_PostPipelineFromResult"
-             << "FEM_PostBranchFilter"
-             << "Separator"
+    *results << "FEM_PostPipelineFromResult"
              << "FEM_PostFilterWarp"
+             << "FEM_PostFilterContours"
+             << "Separator"
+             << "FEM_PostApplyChanges"
+             << "FEM_PostBranchFilter"
              << "FEM_PostFilterClipScalar"
              << "FEM_PostFilterCutFunction"
              << "FEM_PostFilterClipRegion"
-             << "FEM_PostFilterContours"
 # ifdef FC_USE_VTK_PYTHON
              << "FEM_PostFilterGlyph"
 # endif
@@ -205,12 +206,15 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
 # endif
         ;
 #endif
+    *results << "Separator"
+             << "FEM_ResultsPurge";
 
     Gui::ToolBarItem* utils = new Gui::ToolBarItem(root);
     utils->setCommand("Utilities");
-    *utils << "FEM_ClippingPlaneAdd"
-           << "FEM_ClippingPlaneRemoveAll"
-           << "FEM_Examples";
+    *utils << "FEM_Examples"
+           << "Separator"
+           << "FEM_ClippingPlaneAdd"
+           << "FEM_ClippingPlaneRemoveAll";
 
     return root;
 }
@@ -247,7 +251,8 @@ Gui::MenuItem* Workbench::setupMenuBar() const
     *fluid << "FEM_ConstraintInitialFlowVelocity"
            << "FEM_ConstraintInitialPressure"
            << "Separator"
-           << "FEM_ConstraintFlowVelocity";
+           << "FEM_ConstraintFlowVelocity"
+           << "FEM_ConstraintFluidBoundary";
 
     Gui::MenuItem* geom = new Gui::MenuItem;
     geom->setCommand("&Geometrical Analysis Features");

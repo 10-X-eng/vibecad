@@ -21,6 +21,7 @@ from VibeCADNativeState import NativeCallTicket
 _KINDS = {
     "update_calculix": "calculix",
     "update_elmer": "elmer",
+    "update_openfoam": "openfoam",
     "update_z88": "z88",
 }
 

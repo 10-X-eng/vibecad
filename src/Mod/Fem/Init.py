@@ -106,6 +106,11 @@ FreeCAD.addTranslatableExportType(
 FreeCAD.addImportType("FEM result Z88 displacements (*.txt *.TXT)", "feminout.importZ88O2Results")
 
 if "BUILD_FEM_VTK" in FreeCAD.__cmake__:
+    if "BUILD_FEM_VTK_PYTHON" in FreeCAD.__cmake__:
+        # Register VTK's wrapped data types before a document restores an
+        # embedded, compressed post-processing dataset.
+        from vtkmodules import vtkCommonDataModel as _vtkCommonDataModel
+
     FreeCAD.addImportType(
         "FEM result VTK (*.vtk *.VTK *.vtu *.VTU *.pvtu *.PVTU *.vtm *.VTM *.pvd *.PVD)",
         "feminout.importVTKResults",

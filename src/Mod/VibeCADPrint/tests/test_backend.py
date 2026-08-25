@@ -285,7 +285,7 @@ def test_prepare_project_preserves_objects_and_maps_arrangement_choice(
     )
     commands = []
 
-    def runner(command, **_kwargs):
+    def runner(command, **kwargs):
         commands.append(tuple(command))
         output = Path(command[command.index("--output") + 1])
         with zipfile.ZipFile(output, "w") as archive:
@@ -375,6 +375,51 @@ def test_validate_setup_requires_exact_compatible_names_and_each_extruder() -> N
         "Generic ABS @XL"
         in VibeCADPrint.validate_setup(incompatible, printer, catalog)[0]
     )
+
+
+def test_object_filament_backend_can_add_material_slots_to_one_nozzle() -> None:
+    printer = VibeCADPrint.PrinterProfile("Bambu X1C", extruders=1)
+    profile = VibeCADPrint.PrintProfile(
+        "Quality",
+        (
+            VibeCADPrint.MaterialProfile("PLA"),
+            VibeCADPrint.MaterialProfile("PETG"),
+        ),
+    )
+    catalog = VibeCADPrint.ProfileCatalog(printer.name, (profile,))
+    setup = VibeCADPrint.PrintSetup(
+        printer.name,
+        profile.name,
+        ("PLA", "PETG"),
+        object_filament_ids=(1, 2),
+    )
+
+    assert VibeCADPrint.validate_setup(setup, printer, catalog)
+    assert (
+        VibeCADPrint.validate_setup(
+            setup,
+            printer,
+            catalog,
+            allow_additional_materials=True,
+        )
+        == ()
+    )
+
+
+def test_windows_background_subprocesses_suppress_console_windows() -> None:
+    no_window = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    process_group = int(
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    )
+
+    assert VibeCADPrint.background_subprocess_kwargs(platform="win32") == {
+        "creationflags": no_window,
+    }
+    assert VibeCADPrint.background_subprocess_kwargs(platform="linux") == {}
+    assert VibeCADPrint.gui_subprocess_kwargs(platform="win32") == {
+        "creationflags": no_window | process_group,
+    }
+    assert VibeCADPrint.gui_subprocess_kwargs(platform="linux") == {}
 
 
 def test_default_candidates_cover_all_supported_platforms() -> None:

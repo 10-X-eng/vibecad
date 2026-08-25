@@ -12,7 +12,6 @@ from VibeCADNativeRobotTrajectoryBindings import (
 )
 from VibeCADNativeActionManifest import _capability_family, _operation_variant
 from VibeCADNativeCapabilityRegistry import (
-    MAX_NATIVE_TOOLS_BY_SURFACE,
     NativeCapabilityRegistry,
     provider_visible_native_schema,
 )
@@ -217,7 +216,6 @@ def test_derived_robot_paths_have_focused_create_and_edit_tools() -> None:
 
 
 def test_derived_robot_human_actions_publish_the_focused_provider_tools() -> None:
-    assert MAX_NATIVE_TOOLS_BY_SURFACE["assemble"] == 38
     assert _capability_family("assemble", "Trajectory", "Robot_Edge2Trac") == (
         ROBOT_EDGE_PATH_CAPABILITY_NAME
     )

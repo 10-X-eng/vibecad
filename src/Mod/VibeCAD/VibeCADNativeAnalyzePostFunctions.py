@@ -18,7 +18,11 @@ from VibeCADNativeAnalyzeHistory import (
     stage_operation_resource_reconciliation,
     verify_operation_block,
 )
-from VibeCADNativeAnalyzePost import _label
+from VibeCADNativeAnalyzePost import (
+    _label,
+    _mm_to_post_data_length,
+    _mm_to_post_data_vector,
+)
 from VibeCADNativeAnalyzeResultState import (
     PreparedResultTarget,
     prepare_result_target,
@@ -99,29 +103,49 @@ def _positive(value: Any, field: str) -> float:
     return result
 
 
-def _normalize_parameters(kind: str, values: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
+def _normalize_parameters(
+    kind: str, values: Mapping[str, Any], pipeline: Any
+) -> tuple[tuple[str, Any], ...]:
     if kind == "plane":
         parameters = {
-            "PlaneOrigin": _vector(values["origin_mm"], "origin_mm"),
+            "PlaneOrigin": _mm_to_post_data_vector(
+                pipeline, _vector(values["origin_mm"], "origin_mm")
+            ),
             "PlaneNormal": _vector(values["normal"], "normal", unit=True),
         }
     elif kind == "sphere":
         parameters = {
-            "SphereCenter": _vector(values["center_mm"], "center_mm"),
-            "SphereRadius": _positive(values["radius_mm"], "radius_mm"),
+            "SphereCenter": _mm_to_post_data_vector(
+                pipeline, _vector(values["center_mm"], "center_mm")
+            ),
+            "SphereRadius": _mm_to_post_data_length(
+                pipeline, _positive(values["radius_mm"], "radius_mm")
+            ),
         }
     elif kind == "cylinder":
         parameters = {
-            "CylinderCenter": _vector(values["center_mm"], "center_mm"),
+            "CylinderCenter": _mm_to_post_data_vector(
+                pipeline, _vector(values["center_mm"], "center_mm")
+            ),
             "CylinderAxis": _vector(values["axis"], "axis", unit=True),
-            "CylinderRadius": _positive(values["radius_mm"], "radius_mm"),
+            "CylinderRadius": _mm_to_post_data_length(
+                pipeline, _positive(values["radius_mm"], "radius_mm")
+            ),
         }
     elif kind == "box":
         parameters = {
-            "BoxCenter": _vector(values["center_mm"], "center_mm"),
-            "BoxLength": _positive(values["length_mm"], "length_mm"),
-            "BoxWidth": _positive(values["width_mm"], "width_mm"),
-            "BoxHeight": _positive(values["height_mm"], "height_mm"),
+            "BoxCenter": _mm_to_post_data_vector(
+                pipeline, _vector(values["center_mm"], "center_mm")
+            ),
+            "BoxLength": _mm_to_post_data_length(
+                pipeline, _positive(values["length_mm"], "length_mm")
+            ),
+            "BoxWidth": _mm_to_post_data_length(
+                pipeline, _positive(values["width_mm"], "width_mm")
+            ),
+            "BoxHeight": _mm_to_post_data_length(
+                pipeline, _positive(values["height_mm"], "height_mm")
+            ),
         }
     else:
         raise AssertionError(f"Unhandled post-function kind: {kind}")
@@ -177,7 +201,7 @@ def prepare_post_function(
         provider_children,
         kind,
         _label(label),
-        _normalize_parameters(kind, values),
+        _normalize_parameters(kind, values, pipeline_target.result),
     )
 
 

@@ -12,13 +12,16 @@ import traceback
 
 import FreeCAD as App
 import FreeCADGui as Gui
+import PartDesign
 from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeAnalyzeInspectSchema import ANALYZE_INSPECT_CAPABILITY_NAME
+from VibeCADNativeAnalyzeCfdLifecycleSchema import ANALYZE_FLUID_MATERIAL
 from VibeCADNativeAnalyzeModelSchema import ANALYZE_MODEL_CAPABILITY_NAME
 from VibeCADNativeAnalyzeState import analysis_state, material_kind, material_state
+from VibeCADNativeAnalyzeSnapshot import build_analyze_snapshot
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeContextManifest import provider_context_actions_for_surface
@@ -35,13 +38,14 @@ from VibeCADRibbonSurface import read_active_ribbon_surface
 
 MODEL_OPERATIONS = (
     "create_analysis",
+    "update_study",
     "create_solid_material",
     "create_fluid_material",
     "create_nonlinear_material",
     "create_reinforced_material",
     "update_material",
 )
-INSPECT_OPERATIONS = ("analysis", "material", "material_catalog")
+INSPECT_OPERATIONS = ("study", "analysis", "material", "material_catalog")
 
 
 def _process_events(rounds: int = 16) -> None:
@@ -78,7 +82,8 @@ def _select_analyze_ribbon(main_window):
 def _turn(surface, registry) -> NativeTurnSnapshot:
     model = registry.definition(ANALYZE_MODEL_CAPABILITY_NAME)
     inspect = registry.definition(ANALYZE_INSPECT_CAPABILITY_NAME)
-    assert model is not None and inspect is not None
+    fluid_material = registry.definition(ANALYZE_FLUID_MATERIAL)
+    assert model is not None and inspect is not None and fluid_material is not None
     expected_actions = {
         "FEM_Analysis": "create_analysis",
         "FEM_MaterialSolid": "create_solid_material",
@@ -130,10 +135,12 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             tool_names=(
                 ANALYZE_MODEL_CAPABILITY_NAME,
                 ANALYZE_INSPECT_CAPABILITY_NAME,
+                ANALYZE_FLUID_MATERIAL,
             ),
             schemas=(
                 model.provider_schema(MODEL_OPERATIONS),
                 inspect.provider_schema(INSPECT_OPERATIONS),
+                fluid_material.provider_schema(("create", "update")),
             ),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -169,14 +176,31 @@ def _reference(source) -> dict:
 def _create_geometry_source(document):
     document.openTransaction("Create FEM geometry source")
     try:
-        source = document.addObject("Part::Box", "AnalysisGeometry")
+        box = document.addObject("PartDesign::DesignBox", "AnalysisGeometry")
+        edit = PartDesign.beginDesignOperationEdit(box)
+        box.Length = 30.0
+        box.Width = 20.0
+        box.Height = 10.0
+        PartDesign.setDesignOperationTargets(edit, "New Body", [])
+        assert document.recompute([box], True, True) is not False
+        source = list(PartDesign.finalizeDesignOperationEdit(edit) or ())[0]
+
+        cylinder = document.addObject("PartDesign::DesignCylinder", "AnalysisHole")
+        edit = PartDesign.beginDesignOperationEdit(cylinder)
+        cylinder.Radius = 3.0
+        cylinder.Height = 10.0
+        cylinder.Placement.Base = App.Vector(15.0, 10.0, 0.0)
+        PartDesign.setDesignOperationTargets(edit, "New Body", [])
+        assert document.recompute([cylinder], True, True) is not False
+        tool = list(PartDesign.finalizeDesignOperationEdit(edit) or ())[0]
+
+        combine = document.addObject("PartDesign::DesignCombine", "AnalysisCut")
+        edit = PartDesign.beginDesignOperationEdit(combine)
+        PartDesign.setDesignCombineBodies(edit, "Cut", source, [tool], False)
+        assert document.recompute([combine], True, True) is not False
+        assert list(PartDesign.finalizeDesignOperationEdit(edit) or ())[0] is source
         source.Label = "Analysis Geometry"
-        source.Length = 30.0
-        source.Width = 20.0
-        source.Height = 10.0
-        assert document.recompute([source], True, True) is not False
         assert not source.Shape.isNull() and source.Shape.isValid()
-        document.publishProvisionalTimelineOperationBlock(source, (), ())
         document.commitTransaction()
     except Exception:
         document.abortTransaction()
@@ -199,6 +223,17 @@ def _run() -> None:
         VibeGui._connect_document_observer()
         controller, surface = _select_analyze_ribbon(Gui.getMainWindow())
         source = _create_geometry_source(document)
+        source_name = source.Name
+        document.save()
+        App.closeDocument(document.Name)
+        document = App.openDocument(str(save_path))
+        App.setActiveDocument(document.Name)
+        _process_events(12)
+        source = document.getObject(source_name)
+        assert source is not None
+        source_operation_names = tuple(
+            obj.Name for obj in document.VibeCADTimeline.Operations
+        )
         frozen = NativeSurfaceSnapshot.from_surface(surface)
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -256,6 +291,7 @@ def _run() -> None:
                     "operation": "create_analysis",
                     "label": "Structural Analysis",
                     "default_solver_policy": "user_preference",
+                    "study": {"physics": ["mechanical"], "regime": "modal"},
                 },
             )
         finally:
@@ -267,6 +303,18 @@ def _run() -> None:
         assert analysis is not None and solver is not None
         assert solver in tuple(analysis.Group)
         current_analysis = analysis_result["created_analysis"]
+        assert analysis_result["analysis_target"] == _analysis_target(current_analysis)
+        study_update = call(
+            ANALYZE_MODEL_CAPABILITY_NAME,
+            {
+                "operation": "update_study",
+                "target": _analysis_target(current_analysis),
+                "study": {"physics": ["mechanical"], "regime": "steady"},
+            },
+        )
+        current_analysis = study_update["analysis"]
+        assert study_update["analysis_target"] == _analysis_target(current_analysis)
+        assert current_analysis["study"]["regime"] == "steady"
 
         reference = _reference(source)
         solid_result = call(
@@ -277,7 +325,6 @@ def _run() -> None:
                 "label": "Custom Structural Steel",
                 "references": [reference],
                 "properties": {
-                    "name": "Custom Structural Steel",
                     "density_kg_m3": 7850.0,
                     "young_modulus_mpa": 210000.0,
                     "poisson_ratio": 0.3,
@@ -286,7 +333,9 @@ def _run() -> None:
         )
         solid = document.getObject(solid_result["created_material"]["object_name"])
         current_analysis = solid_result["analysis"]
+        assert solid_result["analysis_target"] == _analysis_target(current_analysis)
         assert solid is not None and solid_result["created_material"]["material_uuid"] == ""
+        assert solid.Material["Name"] == "Custom Structural Steel"
 
         read_revision = state.current_revision(str(document.Uid))
         air_search = call(
@@ -334,6 +383,19 @@ def _run() -> None:
         fluid = document.getObject(fluid_result["created_material"]["object_name"])
         current_analysis = fluid_result["analysis"]
         assert fluid is not None and str(fluid.UUID) == air_uuid
+        duplicate_fluid = call(
+            ANALYZE_FLUID_MATERIAL,
+            {
+                "operation": "create",
+                "analysis_name": analysis.Name,
+                "source_name": source.Name,
+                "name": "Air",
+                "density_kg_m3": 1.2,
+                "kinematic_viscosity_m2_s": 1.5e-5,
+            },
+            succeeds=False,
+        )
+        assert "already has" in duplicate_fluid["error"]
 
         reinforced_result = call(
             ANALYZE_MODEL_CAPABILITY_NAME,
@@ -376,12 +438,12 @@ def _run() -> None:
 
         fluid_before_update = material_state(fluid)
         update_result = call(
-            ANALYZE_MODEL_CAPABILITY_NAME,
+            ANALYZE_FLUID_MATERIAL,
             {
-                "operation": "update_material",
-                "target": _material_target(fluid_before_update),
+                "operation": "update",
+                "material_name": fluid.Name,
                 "label": "Ambient Air at Test Condition",
-                "properties": {"density_kg_m3": 1.18},
+                "density_kg_m3": 1.18,
             },
         )
         assert update_result["updated_material"]["material_uuid"] == ""
@@ -407,6 +469,13 @@ def _run() -> None:
                 "target": _analysis_target(analysis_state(analysis)),
             },
         )
+        study_read = call(
+            ANALYZE_INSPECT_CAPABILITY_NAME,
+            {
+                "operation": "study",
+                "target": _analysis_target(analysis_state(analysis)),
+            },
+        )
         material_read = call(
             ANALYZE_INSPECT_CAPABILITY_NAME,
             {
@@ -415,18 +484,28 @@ def _run() -> None:
             },
         )
         assert analysis_read["analysis"]["member_count"] == 4
+        assert study_read["study"]["intent"]["physics"] == ["mechanical"]
+        assert study_read["study"]["readiness"]["ready_to_solve"] is False
+        assert "missing_support" in study_read["study"]["readiness"]["blockers"]
+        workflow = build_analyze_snapshot(document)["analysis_workflows"][0]
+        assert workflow["study"]["physics"] == ["mechanical"]
+        assert workflow["engineering_readiness"] == study_read["study"]["readiness"]
         assert material_read["material"]["material_kind"] == "reinforced"
         assert state.current_revision(str(document.Uid)) == read_revision
 
         operation_names = tuple(obj.Name for obj in document.VibeCADTimeline.Operations)
-        assert operation_names == (
-            source.Name,
+        expected_operation_names = (
+            *source_operation_names,
             solver.Name,
             analysis.Name,
             nonlinear.Name,
             solid.Name,
             fluid.Name,
             reinforced.Name,
+        )
+        assert operation_names == expected_operation_names, (
+            operation_names,
+            expected_operation_names,
         )
         assert nonlinear.VibeCADTimelineRole == "resource"
         assert nonlinear.VibeCADTimelineOwner is solid
@@ -457,6 +536,13 @@ def _run() -> None:
             "reinforced": reinforced.Name,
             "nonlinear": nonlinear.Name,
         }
+        # Result import advances History and can touch this unchanged
+        # Body/state/publication chain. Recomputing it must preserve every
+        # downstream subelement reference.
+        source.Tip.CurrentState.touch()
+        source.Tip.touch()
+        source.touch()
+        assert document.recompute() is not False
         document.save()
         App.closeDocument(document.Name)
         document = App.openDocument(str(save_path))
@@ -481,10 +567,16 @@ def _run() -> None:
         assert material_kind(reopened["fluid"]) == "fluid"
         assert material_kind(reopened["reinforced"]) == "reinforced"
         assert material_kind(reopened["nonlinear"]) == "nonlinear"
+        for key in ("solid", "reinforced"):
+            assert tuple(reopened[key].References) == (
+                (reopened["source"], ("Solid1",)),
+            )
+        assert list(reopened["analysis"].StudyPhysics) == ["mechanical"]
+        assert str(reopened["analysis"].StudyRegime) == "steady"
 
         print(
             "VIBECAD_NATIVE_ANALYZE_MODEL_GUI_OK "
-            "actions=6 reads=3 exact_targets=true catalog=true history=true "
+            "actions=7 reads=4 exact_targets=true study=true catalog=true history=true "
             "undo_redo=true reopen=true read_revision_stable=true",
             flush=True,
         )

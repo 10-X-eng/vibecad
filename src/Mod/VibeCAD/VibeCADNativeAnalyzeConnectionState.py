@@ -71,7 +71,13 @@ def _endpoint(raw: Any) -> tuple[dict[str, str], dict[str, Any]]:
 
 
 def _endpoints(obj: Any) -> tuple[dict[str, str], dict[str, str], list[dict[str, Any]]]:
-    references = tuple(getattr(obj, "References", ()) or ())
+    references = []
+    for raw in tuple(getattr(obj, "References", ()) or ()):
+        if not isinstance(raw, tuple) or len(raw) != 2:
+            raise NativeAnalyzeError("A FEM connection contains a malformed endpoint.")
+        source, raw_names = raw
+        names = (raw_names,) if isinstance(raw_names, str) else tuple(raw_names or ())
+        references.extend((source, (name,)) for name in names)
     if len(references) != 2:
         raise NativeAnalyzeError(
             "A paired FEM connection must contain exactly one slave and one master endpoint."

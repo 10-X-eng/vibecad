@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeFluidCreate import (
     fluid_label,
+    require_unassigned_boundary_faces,
     require_unambiguous_initial_assignment,
 )
 from VibeCADNativeAnalyzeFluidState import fluid_constraint_state
@@ -179,6 +180,12 @@ def prepare_fluid_update(
     require_unambiguous_initial_assignment(
         analysis, kind, references, ignore=constraint
     )
+    if kind == "fluid_boundary":
+        require_unassigned_boundary_faces(
+            analysis,
+            references,
+            ignore=constraint,
+        )
     expected_definition = values.normalized()
     if (
         label == str(constraint.Label)
@@ -233,6 +240,12 @@ def update_fluid_constraint(
         prepared.references,
         ignore=prepared.target.constraint,
     )
+    if prepared.target.kind == "fluid_boundary":
+        require_unassigned_boundary_faces(
+            prepared.analysis,
+            prepared.references,
+            ignore=prepared.target.constraint,
+        )
     constraint = prepared.target.constraint
     constraint.Label = prepared.label
     constraint.References = reference_value(prepared.references)

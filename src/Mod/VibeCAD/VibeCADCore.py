@@ -11,7 +11,7 @@ import re
 import shutil
 import threading
 import time
-from typing import Any
+from typing import Any, Mapping, Sequence
 import uuid
 
 from VibeCADAuth import (
@@ -34,6 +34,7 @@ from VibeCADIntentMemory import (
 )
 from VibeCADModelingSurface import resolve_modeling_surface
 from VibeCADNativeBackground import NativeBackgroundManager
+from VibeCADNativeAnalyzeContext import AnalyzeContextCoordinator
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADNativeStatePersistence import (
@@ -224,6 +225,7 @@ class VibeCADService:
         self._native_document_states = NativeDocumentStateStore()
         self._native_assistant_undo = NativeAssistantUndoLedger()
         self._native_background_jobs = NativeBackgroundManager()
+        self._native_analyze_contexts = AnalyzeContextCoordinator()
         self._native_state_restores: set[tuple[str, str]] = set()
         self._native_state_restore_errors: dict[str, str] = {}
         self._new_document_authoring_pending: set[str] = set()
@@ -697,6 +699,8 @@ class VibeCADService:
         revision = (
             self._native_document_states.note_structural_change(uid) if uid else None
         )
+        if uid:
+            self._native_analyze_contexts.invalidate_document(uid)
         self._sync_native_authority_metadata_if_active(uid)
         return revision
 
@@ -705,6 +709,8 @@ class VibeCADService:
         revision = (
             self._native_document_states.note_structural_change(uid) if uid else None
         )
+        if uid:
+            self._native_analyze_contexts.invalidate_document(uid)
         self._sync_native_authority_metadata_if_active(uid)
         return revision
 
@@ -735,6 +741,7 @@ class VibeCADService:
             property_name,
         )
         if revision != previous_revision:
+            self._native_analyze_contexts.invalidate_document(uid)
             self._sync_native_authority_metadata_if_active(uid)
         return revision
 
@@ -755,20 +762,27 @@ class VibeCADService:
     def native_active_snapshot(self) -> dict[str, Any]:
         """Build only the live state for the human-selected Native surface."""
 
-        if self.modeling_engine() != "native":
-            raise RuntimeError("The active document is not under Native authority.")
         document = self._active_document()
         if document is None:
             raise RuntimeError("No active document is available.")
         from VibeCADNativeSnapshot import build_active_snapshot
+        from VibeCADModelingSurface import provider_engine_for_ribbon
         from VibeCADRibbonSurface import read_active_ribbon_surface
 
         surface = read_active_ribbon_surface()
+        if (
+            provider_engine_for_ribbon(
+                self.modeling_engine(),
+                surface.surface_id,
+            )
+            != "native"
+        ):
+            raise RuntimeError("The active ribbon has no Native provider surface.")
         background_job = None
         if surface.surface_id == "analyze":
             background_job = self._native_background_jobs.latest_document_snapshot(
                 str(document.Uid),
-                capability_prefix="analyze.solver_execution",
+                capability_prefix="analyze.",
             )
         return build_active_snapshot(
             document,
@@ -777,9 +791,109 @@ class VibeCADService:
             background_job=background_job,
         )
 
+    def begin_native_analyze_context_request(self) -> dict[str, Any] | None:
+        """Capture detached identity for one bounded Analyze context read."""
+
+        document = self._active_document()
+        if document is None:
+            return None
+        from VibeCADModelingSurface import provider_engine_for_ribbon
+        from VibeCADNativeAnalyzeSnapshot import begin_analyze_snapshot_capture
+        from VibeCADNativeSnapshot import capture_active_snapshot_base
+        from VibeCADRibbonSurface import read_active_ribbon_surface
+
+        surface = read_active_ribbon_surface()
+        if surface.surface_id != "analyze" or provider_engine_for_ribbon(
+            self.modeling_engine(),
+            surface.surface_id,
+        ) != "native":
+            return None
+        native_state = self.native_document_state()
+        background_job = self._native_background_jobs.latest_document_snapshot(
+            str(document.Uid),
+            capability_prefix="analyze.",
+        )
+        base = capture_active_snapshot_base(
+            document,
+            "analyze",
+            native_state,
+        )
+        details = begin_analyze_snapshot_capture(
+            document,
+            background_job=background_job,
+            defer_brep_validation=True,
+        )
+        return {
+            **details,
+            "structural_revision": int(
+                native_state.get("structural_revision", 0) or 0
+            ),
+            "base_snapshot": base,
+            "cacheable": bool(
+                background_job is None or bool(getattr(background_job, "terminal", False))
+            ),
+        }
+
+    def _validate_native_analyze_context_request(
+        self,
+        request: Mapping[str, Any],
+    ) -> Any:
+        from VibeCADModelingSurface import provider_engine_for_ribbon
+        from VibeCADNativeAnalyzeContext import AnalyzeContextStale
+        from VibeCADRibbonSurface import read_active_ribbon_surface
+
+        document = self._active_document()
+        uid = str(request.get("document_uid") or "")
+        revision = int(request.get("structural_revision", -1) or 0)
+        current_uid = str(getattr(document, "Uid", "") or "")
+        current_revision = int(
+            self.native_document_state().get("structural_revision", 0) or 0
+        )
+        surface = read_active_ribbon_surface()
+        if (
+            document is None
+            or current_uid != uid
+            or current_revision != revision
+            or surface.surface_id != "analyze"
+            or provider_engine_for_ribbon(
+                self.modeling_engine(),
+                surface.surface_id,
+            )
+            != "native"
+        ):
+            raise AnalyzeContextStale(
+                "The active Analyze document changed during context capture."
+            )
+        return document
+
+    def capture_native_analyze_context_batch(
+        self,
+        request: Mapping[str, Any],
+        object_names: Sequence[str],
+    ) -> dict[str, Any]:
+        from VibeCADNativeAnalyzeSnapshot import capture_analyze_snapshot_batch
+
+        document = self._validate_native_analyze_context_request(request)
+        return capture_analyze_snapshot_batch(document, request, object_names)
+
+    def capture_native_analyze_context_clipping(
+        self,
+        request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        from VibeCADNativeAnalyzeSnapshot import capture_analyze_clipping
+
+        document = self._validate_native_analyze_context_request(request)
+        return capture_analyze_clipping(document, request)
+
+    def native_analyze_context_coordinator(self) -> AnalyzeContextCoordinator:
+        """Return the read-only Analyze context lane; never a provider tool."""
+
+        return self._native_analyze_contexts
+
     def close_native_document_state(self, document_uid: str) -> None:
         uid = str(document_uid or "").strip()
         self._native_background_jobs.cancel_document(uid)
+        self._native_analyze_contexts.close_document(uid)
         if uid:
             self._native_assistant_undo.close_document(uid)
         self._native_document_states.close_document(uid)
@@ -4433,17 +4547,36 @@ class VibeCADService:
         """Accept an off-thread read only while the same project/thread is selected."""
 
         scope = self.project_scope_snapshot()
-        current_identity = (
-            str(scope.get("root") or ""),
-            str(self._active_document_uid() or ""),
-            str(self._conversation_cache_key or ""),
-        )
-        expected_identity = (
-            str(prepared.get("project_root") or ""),
-            str(prepared.get("document_uid") or ""),
-            str(prepared.get("cache_key") or ""),
-        )
-        if current_identity != expected_identity:
+        project_root = str(scope.get("root") or "")
+        document_uid = str(self._active_document_uid() or "")
+        if (
+            project_root != str(prepared.get("project_root") or "")
+            or document_uid != str(prepared.get("document_uid") or "")
+        ):
+            return {"accepted": False, "reason": "active_conversation_changed"}
+
+        prepared_id = str(prepared.get("conversation_id") or "").lower()
+        loaded_id = str(history.get("conversation_id") or "").lower()
+        if prepared_id and loaded_id != prepared_id:
+            return {"accepted": False, "reason": "active_conversation_changed"}
+
+        current_id = ""
+        cache_key = str(self._conversation_cache_key or "")
+        if cache_key:
+            cache_path = Path(cache_key)
+            candidate = cache_path.stem.lower()
+            if (
+                self._conversation_cache_document_uid != document_uid
+                or cache_path.parent.parent != Path(project_root)
+                or re.fullmatch(r"[0-9a-f]{32}", candidate) is None
+            ):
+                return {"accepted": False, "reason": "active_conversation_changed"}
+            current_id = candidate
+
+        expected_id = prepared_id or loaded_id
+        if (prepared_id and current_id != prepared_id) or (
+            not prepared_id and current_id and current_id != expected_id
+        ):
             return {"accepted": False, "reason": "active_conversation_changed"}
         self._set_conversation_cache(history)
         return {

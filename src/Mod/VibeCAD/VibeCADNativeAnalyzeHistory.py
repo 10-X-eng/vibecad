@@ -141,22 +141,23 @@ def stage_operation_resource_reconciliation(
     owner: Any,
 ) -> tuple[Any, ...]:
     require_boundary(document, boundary)
-    if owner not in boundary.operations or _semantic_root(owner, document) is not owner:
+    root = _semantic_root(owner, document)
+    if owner not in boundary.operations or root not in boundary.operations:
         raise NativeAnalyzeError(
-            "The owner is not one exact root operation in current History."
+            "The owner does not resolve to one exact root operation in current History."
         )
     resources = tuple(
         candidate
         for candidate in boundary.operations
-        if candidate is not owner and _semantic_root(candidate, document) is owner
+        if candidate is not root and _semantic_root(candidate, document) is root
     )
     direct_roots = tuple(
         resource
         for resource in resources
-        if getattr(resource, "VibeCADTimelineOwner", None) is owner
+        if getattr(resource, "VibeCADTimelineOwner", None) is root
     )
     try:
-        document.stageTimelineOperationResourceReconciliation(owner, direct_roots)
+        document.stageTimelineOperationResourceReconciliation(root, direct_roots)
     except Exception as exc:
         raise NativeAnalyzeError(
             f"The operation resource graph could not be staged: {exc}",
@@ -174,16 +175,37 @@ def finalize_new_operation_resource(
 ) -> None:
     if not is_live(document, resource) or resource in old_resources or resource is owner:
         raise NativeAnalyzeError("The new material resource identity is invalid.")
+    root = _semantic_root(owner, document)
+    if root not in boundary.operations:
+        raise NativeAnalyzeError(
+            "The resource owner no longer resolves to its exact History root."
+        )
     try:
         from femcommands import manager
 
         manager._mark_timeline_resource(resource, owner)
-        final_resources = (*old_resources, resource)
+        insertion_index = (
+            old_resources.index(owner) if owner in old_resources else len(old_resources)
+        )
+        final_resources = (
+            *old_resources[:insertion_index],
+            resource,
+            *old_resources[insertion_index:],
+        )
+        source_indices = [
+            index if index < insertion_index else index - 1
+            for index in range(len(final_resources))
+        ]
+        source_indices[insertion_index] = -1
+        old_positions = [
+            index if index < insertion_index else index + 1
+            for index in range(len(old_resources))
+        ]
         document.finalizeProvisionalTimelineOperationResourceReconciliation(
-            owner,
+            root,
             final_resources,
-            [*range(len(old_resources)), -1],
-            list(range(len(old_resources))),
+            source_indices,
+            old_positions,
         )
     except Exception as exc:
         raise NativeAnalyzeError(
@@ -208,7 +230,12 @@ def verify_new_operation_resource(
 ) -> None:
     timeline = getattr(document, "VibeCADTimeline", None)
     operations = tuple(getattr(timeline, "Operations", ()) or ())
-    if timeline is not boundary.timeline or owner not in boundary.operations:
+    root = _semantic_root(owner, document)
+    if (
+        timeline is not boundary.timeline
+        or owner not in boundary.operations
+        or root not in boundary.operations
+    ):
         raise NativeAnalyzeError("The operation resource changed History identity.")
     owner_index = boundary.operations.index(owner)
     expected = (
@@ -220,11 +247,19 @@ def verify_new_operation_resource(
         raise NativeAnalyzeError(
             "The new material resource is not in its exact canonical History block."
         )
+    insertion_index = (
+        old_resources.index(owner) if owner in old_resources else len(old_resources)
+    )
+    expected_resources = (
+        *old_resources[:insertion_index],
+        resource,
+        *old_resources[insertion_index:],
+    )
     if tuple(
         candidate
         for candidate in operations
-        if candidate is not owner and _semantic_root(candidate, document) is owner
-    ) != (*old_resources, resource):
+        if candidate is not root and _semantic_root(candidate, document) is root
+    ) != expected_resources:
         raise NativeAnalyzeError("The operation resource graph changed unexpectedly.")
     if (
         str(getattr(resource, "VibeCADTimelineRole", "") or "") != "resource"

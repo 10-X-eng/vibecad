@@ -31,19 +31,10 @@ from VibeCADNativeSchemaRules import (
 from VibeCADRibbonSurface import RibbonSurface, SURFACE_IDS
 
 
-MAX_NATIVE_TOOLS_PER_SURFACE = 28
-MAX_NATIVE_TOOLS_BY_SURFACE = {
-    "analyze": 32,
-    "assemble": 38,
-    "drawing": 41,
-    "model": 32,
-    "sketch.edit": 39,
-}
 MAX_NATIVE_SCHEMAS_JSON_BYTES = 64 * 1024
-# Analyze owns more than one hundred semantically distinct human actions across
-# structural, thermal, fluid, electromagnetic, meshing, solver, and post domains.
-# Its exact schemas remain below the session's 128-KiB transport ceiling while
-# this tighter surface budget preserves measurable headroom against regression.
+# Analyze resolves its complete registry before exact study state projects the
+# much smaller turn surface. This ceiling protects registry completeness; the
+# scoped turn still obeys the session's 128-KiB transport limit.
 # Manufacture's CAM operations and dress-ups require exact, operation-specific
 # geometry, process, depth, entry, and toolpath contracts. Keeping those fields
 # strongly typed is more useful and safer than replacing them with one generic
@@ -56,7 +47,7 @@ MAX_NATIVE_SCHEMAS_JSON_BYTES = 64 * 1024
 # transport ceiling while retaining the focused tools requested during live
 # acceptance.
 MAX_NATIVE_SCHEMAS_JSON_BYTES_BY_SURFACE = {
-    "analyze": 120 * 1024,
+    "analyze": 160 * 1024,
     "manufacture": 120 * 1024,
     "drawing": 120 * 1024,
 }
@@ -863,6 +854,139 @@ class NativeProviderSurface:
         }
 
 
+def project_native_provider_surface(
+    surface: NativeProviderSurface,
+    tool_names: tuple[str, ...],
+) -> NativeProviderSurface:
+    """Select exact families from one already-validated complete surface."""
+
+    if not isinstance(surface, NativeProviderSurface):
+        raise TypeError("surface must be a NativeProviderSurface")
+    if not surface.available:
+        return surface
+    requested = tuple(str(name or "").strip() for name in tool_names)
+    if not requested or any(not name for name in requested):
+        raise NativeCapabilityRegistryError(
+            "A projected Native surface requires at least one exact tool name."
+        )
+    if len(requested) != len(set(requested)):
+        raise NativeCapabilityRegistryError(
+            "A projected Native surface cannot repeat tool names."
+        )
+    missing = sorted(set(requested) - set(surface.tool_names))
+    if missing:
+        raise NativeCapabilityRegistryError(
+            "Projected tools are outside the complete Native surface: "
+            + ", ".join(missing)
+            + "."
+        )
+    selected = set(requested)
+    names = tuple(name for name in surface.tool_names if name in selected)
+    schemas = tuple(
+        schema
+        for name, schema in zip(surface.tool_names, surface.schemas, strict=True)
+        if name in selected
+    )
+    return NativeProviderSurface(
+        snapshot=surface.snapshot,
+        available=True,
+        unavailable_reason="",
+        tool_names=names,
+        schemas=schemas,
+        human_only_action_ids=surface.human_only_action_ids,
+        missing_definition_names=(),
+        missing_implementation_names=(),
+        incomplete_definition_names=(),
+        missing_action_ids=(),
+    )
+
+
+def _provider_schema_operations(schema: Mapping[str, Any]) -> tuple[str, ...]:
+    parameters = schema.get("parameters")
+    if not isinstance(parameters, Mapping):
+        return ()
+    branches = parameters.get("oneOf")
+    candidates = branches if isinstance(branches, list) else [parameters]
+    result = []
+    for branch in candidates:
+        if not isinstance(branch, Mapping):
+            continue
+        properties = branch.get("properties")
+        operation = (
+            properties.get("operation")
+            if isinstance(properties, Mapping)
+            else None
+        )
+        if not isinstance(operation, Mapping):
+            continue
+        values = (
+            [operation.get("const")]
+            if "const" in operation
+            else list(operation.get("enum") or ())
+        )
+        for value in values:
+            clean = str(value or "").strip()
+            if clean and clean not in result:
+                result.append(clean)
+    return tuple(result)
+
+
+def project_native_provider_operations(
+    surface: NativeProviderSurface,
+    registry: NativeCapabilityRegistry,
+    operations_by_tool: Mapping[str, tuple[str, ...]],
+) -> NativeProviderSurface:
+    """Select exact operation variants from an already-authorized surface."""
+
+    if not isinstance(surface, NativeProviderSurface):
+        raise TypeError("surface must be a NativeProviderSurface")
+    if not isinstance(registry, NativeCapabilityRegistry):
+        raise TypeError("registry must be a NativeCapabilityRegistry")
+    if not isinstance(operations_by_tool, Mapping):
+        raise TypeError("operations_by_tool must be a mapping")
+    if not surface.available:
+        return surface
+    names = []
+    schemas = []
+    for name, schema in zip(surface.tool_names, surface.schemas, strict=True):
+        requested = operations_by_tool.get(name)
+        if requested is None:
+            names.append(name)
+            schemas.append(schema)
+            continue
+        operations = tuple(dict.fromkeys(str(value) for value in requested if value))
+        if not operations:
+            continue
+        allowed = set(_provider_schema_operations(schema))
+        if not set(operations) <= allowed:
+            raise NativeCapabilityRegistryError(
+                f"Projected operations for {name!r} exceed its authorized surface."
+            )
+        definition = registry.definition(name)
+        if definition is None:
+            raise NativeCapabilityRegistryError(
+                f"Projected Native capability {name!r} has no definition."
+            )
+        names.append(name)
+        schemas.append(definition.provider_schema(operations))
+    if not names:
+        raise NativeCapabilityRegistryError(
+            "A projected Native operation surface requires at least one tool."
+        )
+    return NativeProviderSurface(
+        snapshot=surface.snapshot,
+        available=True,
+        unavailable_reason="",
+        tool_names=tuple(names),
+        schemas=tuple(schemas),
+        human_only_action_ids=surface.human_only_action_ids,
+        missing_definition_names=(),
+        missing_implementation_names=(),
+        incomplete_definition_names=(),
+        missing_action_ids=(),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _RequiredAction:
     action_id: str
@@ -1000,16 +1124,6 @@ def resolve_native_provider_surface(
         *_required_actions(surface, action_inventory.plans),
     )
     families = tuple(dict.fromkeys(item.capability_family for item in requirements))
-    tool_limit = MAX_NATIVE_TOOLS_BY_SURFACE.get(
-        surface.surface_id,
-        MAX_NATIVE_TOOLS_PER_SURFACE,
-    )
-    if len(families) > tool_limit:
-        raise NativeCapabilityRegistryError(
-            f"Native surface {surface.surface_id!r} requires {len(families)} tools; "
-            f"limit is {tool_limit}."
-        )
-
     family_classes: dict[str, set[str]] = {}
     for requirement in requirements:
         family_classes.setdefault(requirement.capability_family, set()).add(

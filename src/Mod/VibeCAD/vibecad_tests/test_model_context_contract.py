@@ -558,6 +558,27 @@ def test_conversation_history_read_is_scoped_to_the_selected_thread(
         "turn_count": 1,
     }
 
+    uncached_service = object.__new__(VibeCADService)
+    uncached_service._conversation_cache = []
+    uncached_service._conversation_cache_key = None
+    uncached_service._conversation_cache_document_uid = None
+    uncached_service.project_scope_snapshot = lambda: {"root": str(tmp_path)}
+    uncached_service._active_document_uid = lambda: "document-uid"
+
+    uncached_read = uncached_service.prepare_conversation_history_read()
+    uncached_history = uncached_service.complete_conversation_history_read(
+        uncached_read
+    )
+    uncached_service._set_conversation_cache(uncached_history)
+
+    assert uncached_service.accept_conversation_history_read(
+        uncached_read, uncached_history
+    ) == {
+        "accepted": True,
+        "conversation_id": first_id,
+        "turn_count": 1,
+    }
+
     stale_read = service.prepare_conversation_history_read()
     service._set_conversation_cache(store.activate_conversation(second_id))
     stale_history = service.complete_conversation_history_read(stale_read)
@@ -650,7 +671,7 @@ def test_unsaved_run_prompt_reaches_provider_and_includes_active_thread_once(
     monkeypatch.setattr(
         session,
         "_build_context_for_provider",
-        lambda active_service, trigger, dispatch: dict(context),
+        lambda active_service, trigger, dispatch, **_kwargs: dict(context),
     )
     monkeypatch.setattr(
         session,

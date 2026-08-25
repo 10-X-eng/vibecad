@@ -197,6 +197,12 @@ class PreparedNativeMutation:
 
 
 @dataclass(slots=True)
+class _ScopedAuthority:
+    capability_prefix: str
+    closing: bool = False
+
+
+@dataclass(slots=True)
 class _DocumentRecord:
     revision: int = 0
     authority_baseline_revision: int | None = None
@@ -205,6 +211,9 @@ class _DocumentRecord:
     )
     verified_results: OrderedDict[str, str] = field(default_factory=OrderedDict)
     authorized_tokens: set[str] = field(default_factory=set)
+    scoped_authorities: dict[str, _ScopedAuthority] = field(default_factory=dict)
+    authorized_token_scopes: dict[str, str] = field(default_factory=dict)
+    receipt_scopes: dict[str, str] = field(default_factory=dict)
     mutation_observer_token: str | None = None
     mutation_observer_events: int = 0
 
@@ -282,7 +291,57 @@ class NativeDocumentStateStore:
                 record.receipts.clear()
                 record.verified_results.clear()
                 record.authorized_tokens.clear()
+                record.authorized_token_scopes.clear()
+                record.receipt_scopes.clear()
             return self._authority_summary(uid, record)
+
+    def begin_scoped_authority(
+        self,
+        document_uid: str,
+        capability_prefix: str,
+    ) -> str:
+        """Authorize one bounded Native capability namespace for one session."""
+
+        uid = _required_text(document_uid, "document UID")
+        prefix = _required_text(capability_prefix, "capability prefix")
+        token = secrets.token_hex(16)
+        with self._lock:
+            record = self._records.setdefault(uid, _DocumentRecord())
+            record.scoped_authorities[token] = _ScopedAuthority(prefix)
+        return token
+
+    @staticmethod
+    def _finish_closed_scope(record: _DocumentRecord, scope_token: str) -> None:
+        scope = record.scoped_authorities.get(scope_token)
+        if scope is None or not scope.closing:
+            return
+        if scope_token in record.authorized_token_scopes.values():
+            return
+        if scope_token in record.receipt_scopes.values():
+            return
+        record.scoped_authorities.pop(scope_token, None)
+
+    def end_scoped_authority(self, document_uid: str, scope_token: str) -> None:
+        """Close a session scope and discard only its transient call memory."""
+
+        uid = _required_text(document_uid, "document UID")
+        token = _required_text(scope_token, "scoped authority token")
+        with self._lock:
+            record = self._records.setdefault(uid, _DocumentRecord())
+            scope = record.scoped_authorities.get(token)
+            if scope is None:
+                return
+            scope.closing = True
+            completed = {
+                call_token
+                for call_token, owner in record.receipt_scopes.items()
+                if owner == token
+            }
+            for call_token in completed:
+                record.receipts.pop(call_token, None)
+                record.verified_results.pop(call_token, None)
+                record.receipt_scopes.pop(call_token, None)
+            self._finish_closed_scope(record, token)
 
     def require_vibescript_return_safe(self, document_uid: str) -> None:
         uid = _required_text(document_uid, "document UID")
@@ -303,6 +362,8 @@ class NativeDocumentStateStore:
             record.receipts.clear()
             record.verified_results.clear()
             record.authorized_tokens.clear()
+            record.authorized_token_scopes.clear()
+            record.receipt_scopes.clear()
             return self._authority_summary(uid, record)
 
     @staticmethod
@@ -364,11 +425,31 @@ class NativeDocumentStateStore:
                     record.revision,
                     json.loads(prior),
                 )
+            scope_token = None
             if record.authority_baseline_revision is None:
-                raise NativeStateError("Native mutation authority is not active.")
+                scope_token = next(
+                    (
+                        token
+                        for token, scope in reversed(
+                            tuple(record.scoped_authorities.items())
+                        )
+                        if not scope.closing
+                        and (
+                            ticket.capability_name == scope.capability_prefix
+                            or ticket.capability_name.startswith(
+                                f"{scope.capability_prefix}."
+                            )
+                        )
+                    ),
+                    None,
+                )
+                if scope_token is None:
+                    raise NativeStateError("Native mutation authority is not active.")
             if record.revision != ticket.expected_revision:
                 raise NativeRevisionConflict(ticket.expected_revision, record.revision)
             record.authorized_tokens.add(ticket.idempotency_token)
+            if scope_token is not None:
+                record.authorized_token_scopes[ticket.idempotency_token] = scope_token
             return NativeMutationAuthorization(ticket, record.revision, None)
 
     def begin_mutation_observation(self, ticket: NativeCallTicket) -> None:
@@ -409,6 +490,12 @@ class NativeDocumentStateStore:
                 record.mutation_observer_token = None
                 record.mutation_observer_events = 0
             record.authorized_tokens.discard(ticket.idempotency_token)
+            scope_token = record.authorized_token_scopes.pop(
+                ticket.idempotency_token,
+                None,
+            )
+            if scope_token is not None:
+                self._finish_closed_scope(record, scope_token)
 
     def prepare_mutation_completion(
         self,
@@ -509,9 +596,22 @@ class NativeDocumentStateStore:
                 prepared.verified_result_json
             )
             record.authorized_tokens.discard(ticket.idempotency_token)
+            scope_token = record.authorized_token_scopes.pop(
+                ticket.idempotency_token,
+                None,
+            )
+            if scope_token is not None:
+                record.receipt_scopes[ticket.idempotency_token] = scope_token
+                scope = record.scoped_authorities.get(scope_token)
+                if scope is not None and scope.closing:
+                    record.receipts.pop(ticket.idempotency_token, None)
+                    record.verified_results.pop(ticket.idempotency_token, None)
+                    record.receipt_scopes.pop(ticket.idempotency_token, None)
+                    self._finish_closed_scope(record, scope_token)
             while len(record.receipts) > self._receipt_limit:
                 oldest_token, _oldest = record.receipts.popitem(last=False)
                 record.verified_results.pop(oldest_token, None)
+                record.receipt_scopes.pop(oldest_token, None)
             return receipt
 
     def complete_mutation(
@@ -533,6 +633,28 @@ class NativeDocumentStateStore:
             replaced=replaced,
         )
         return self.complete_prepared_mutation(prepared)
+
+    def completed_mutation_receipt(
+        self,
+        ticket: NativeCallTicket,
+    ) -> NativeOperationReceipt | None:
+        """Return the durable receipt for one exact completed call ticket."""
+
+        if not isinstance(ticket, NativeCallTicket):
+            raise TypeError("ticket must be a NativeCallTicket")
+        with self._lock:
+            record = self._records.setdefault(ticket.document_uid, _DocumentRecord())
+            receipt = record.receipts.get(ticket.idempotency_token)
+            if receipt is None:
+                return None
+            if (
+                receipt.capability_name != ticket.capability_name
+                or receipt.revision_before != ticket.expected_revision
+            ):
+                raise NativeStateError(
+                    "A completed Native receipt does not match its call ticket."
+                )
+            return receipt
 
     def snapshot(self, document_uid: str) -> dict[str, Any]:
         uid = _required_text(document_uid, "document UID")

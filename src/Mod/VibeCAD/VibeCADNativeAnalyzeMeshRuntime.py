@@ -182,6 +182,10 @@ class NativeAnalyzeMeshRuntime:
                 verify=verifier,
             )
 
+        def cleanup(_prepared: Any) -> None:
+            discard(request)
+            context.state.cancel_mutation(ticket)
+
         try:
             snapshot = manager.submit(
                 document_uid=context.document_uid,
@@ -191,6 +195,8 @@ class NativeAnalyzeMeshRuntime:
                 commit=commit,
                 dispatch_to_document_thread=dispatcher,
                 finalize_message="Importing verified FEM mesh",
+                cleanup=cleanup,
+                changes_document=True,
             )
         except NativeBackgroundError as exc:
             discard(request)

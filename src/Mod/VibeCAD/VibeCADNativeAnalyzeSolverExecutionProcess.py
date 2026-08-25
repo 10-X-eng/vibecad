@@ -26,6 +26,19 @@ def _tail(path: Path) -> str:
         return ""
 
 
+def _failure_detail(path: Path, backend: str) -> str:
+    detail = _tail(path)
+    if str(backend).casefold() != "openfoam":
+        return detail
+    marker = "FOAM FATAL ERROR:"
+    if marker not in detail:
+        return detail
+    reason = detail.split(marker, 1)[1]
+    if "From function" in reason:
+        reason = reason.split("From function", 1)[0]
+    return reason.strip()
+
+
 def run_solver_processes(
     commands: tuple[tuple[str, tuple[str, ...]], ...],
     *,
@@ -84,7 +97,7 @@ def run_solver_processes(
                 error_code="NATIVE_ANALYZE_SOLVER_START_FAILED",
             ) from exc
         if exit_code != 0:
-            detail = _tail(log_path)
+            detail = _failure_detail(log_path, backend)
             suffix = f": {detail}" if detail else ""
             raise NativeAnalyzeError(
                 f"{backend} stage {index + 1} exited with code {exit_code}{suffix}",

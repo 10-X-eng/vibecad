@@ -180,14 +180,25 @@ def references_match(
     obj: Any,
     references: tuple[PreparedGeometryReference, ...],
 ) -> bool:
-    actual = tuple(getattr(obj, "References", ()) or ())
-    if len(actual) != len(references):
-        return False
-    for raw, expected in zip(actual, references):
+    actual = []
+    for raw in tuple(getattr(obj, "References", ()) or ()):
         if not isinstance(raw, tuple) or len(raw) != 2:
             return False
         names = (raw[1],) if isinstance(raw[1], str) else tuple(raw[1] or ())
-        if raw[0] is not expected.source or names != expected.subelements:
+        actual.extend((raw[0], name) for name in names)
+    expected = [
+        (reference.source, name)
+        for reference in references
+        for name in reference.subelements
+    ]
+    if len(actual) != len(expected):
+        return False
+    for (actual_source, actual_name), (expected_source, expected_name) in zip(
+        actual,
+        expected,
+        strict=True,
+    ):
+        if actual_source is not expected_source or actual_name != expected_name:
             return False
     return True
 

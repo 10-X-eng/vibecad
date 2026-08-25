@@ -22,7 +22,12 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
 
 
-_KINDS = ("initial_flow_velocity", "initial_pressure", "flow_velocity")
+_KINDS = (
+    "initial_flow_velocity",
+    "initial_pressure",
+    "flow_velocity",
+    "fluid_boundary",
+)
 _CREATE = {f"create_{kind}": kind for kind in _KINDS}
 _UPDATE = {f"update_{kind}": kind for kind in _KINDS}
 

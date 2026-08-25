@@ -7,6 +7,30 @@ from __future__ import annotations
 from VibeCADNativeAnalyzeInspectBindings import (
     register_analyze_inspect_capability_implementation,
 )
+from VibeCADNativeAnalyzeFaceBindings import (
+    register_analyze_face_capability_implementation,
+)
+from VibeCADNativeAnalyzeFaceSchema import (
+    register_analyze_face_capability_definition,
+)
+from VibeCADNativeAnalyzeFlowResultBindings import (
+    register_analyze_flow_result_capability_implementation,
+)
+from VibeCADNativeAnalyzeFlowResultSchema import (
+    register_analyze_flow_result_capability_definition,
+)
+from VibeCADNativeAnalyzeMechanicalResultBindings import (
+    register_analyze_mechanical_result_capability_implementations,
+)
+from VibeCADNativeAnalyzeMechanicalResultSchema import (
+    register_analyze_mechanical_result_capability_definitions,
+)
+from VibeCADNativeAnalyzeThermalResultBindings import (
+    register_analyze_thermal_result_capability_implementations,
+)
+from VibeCADNativeAnalyzeThermalResultSchema import (
+    register_analyze_thermal_result_capability_definitions,
+)
 from VibeCADNativeAnalyzeElectromagneticBindings import (
     register_analyze_electromagnetic_capability_implementation,
 )
@@ -19,6 +43,18 @@ from VibeCADNativeAnalyzeFluidBindings import (
 from VibeCADNativeAnalyzeFluidSchema import (
     register_analyze_fluid_capability_definition,
 )
+from VibeCADNativeAnalyzeFluidCreateBindings import (
+    register_analyze_fluid_create_capability_implementations,
+)
+from VibeCADNativeAnalyzeFluidCreateSchema import (
+    register_analyze_fluid_create_capability_definitions,
+)
+from VibeCADNativeAnalyzeCfdLifecycleBindings import (
+    register_analyze_cfd_lifecycle_capability_implementations,
+)
+from VibeCADNativeAnalyzeCfdLifecycleSchema import (
+    register_analyze_cfd_lifecycle_capability_definitions,
+)
 from VibeCADNativeAnalyzeGeometricalBindings import (
     register_analyze_geometrical_capability_implementation,
 )
@@ -30,6 +66,12 @@ from VibeCADNativeAnalyzeSupportBindings import (
 )
 from VibeCADNativeAnalyzeSupportSchema import (
     register_analyze_support_capability_definition,
+)
+from VibeCADNativeAnalyzeStructuralLifecycleBindings import (
+    register_analyze_structural_lifecycle_capability_implementations,
+)
+from VibeCADNativeAnalyzeStructuralLifecycleSchema import (
+    register_analyze_structural_lifecycle_capability_definitions,
 )
 from VibeCADNativeAnalyzeConnectionBindings import (
     register_analyze_connection_capability_implementation,
@@ -54,6 +96,18 @@ from VibeCADNativeAnalyzeMeshBindings import (
 )
 from VibeCADNativeAnalyzeMeshSchema import (
     register_analyze_mesh_capability_definition,
+)
+from VibeCADNativeAnalyzeMeshLifecycleBindings import (
+    register_analyze_mesh_lifecycle_capability_implementations,
+)
+from VibeCADNativeAnalyzeMeshLifecycleSchema import (
+    register_analyze_mesh_lifecycle_capability_definitions,
+)
+from VibeCADNativeAnalyzeLocalMeshBindings import (
+    register_analyze_local_mesh_capability_implementations,
+)
+from VibeCADNativeAnalyzeLocalMeshSchema import (
+    register_analyze_local_mesh_capability_definitions,
 )
 from VibeCADNativeAnalyzeMeshFieldBindings import (
     register_analyze_mesh_field_capability_implementation,
@@ -96,6 +150,12 @@ from VibeCADNativeAnalyzeSolverExecutionBindings import (
 )
 from VibeCADNativeAnalyzeSolverExecutionSchema import (
     register_analyze_solver_execution_capability_definition,
+)
+from VibeCADNativeAnalyzeRunBindings import (
+    register_analyze_run_solver_capability_implementation,
+)
+from VibeCADNativeAnalyzeRunSchema import (
+    register_analyze_run_solver_capability_definition,
 )
 from VibeCADNativeAnalyzeEquationBindings import (
     register_analyze_equation_capability_implementation,
@@ -142,11 +202,23 @@ from VibeCADNativeAnalyzeGeometrySchema import (
 from VibeCADNativeAnalyzeInspectSchema import (
     register_analyze_inspect_capability_definition,
 )
+from VibeCADNativeAnalyzeAssignmentViewBindings import (
+    register_analyze_assignment_view_capability_implementation,
+)
+from VibeCADNativeAnalyzeAssignmentViewSchema import (
+    register_analyze_assignment_view_capability_definition,
+)
 from VibeCADNativeAnalyzeModelBindings import (
     register_analyze_model_capability_implementation,
 )
 from VibeCADNativeAnalyzeModelSchema import (
     register_analyze_model_capability_definition,
+)
+from VibeCADNativeAnalyzeSolidDomainBindings import (
+    register_analyze_solid_domain_capability_implementation,
+)
+from VibeCADNativeAnalyzeSolidDomainSchema import (
+    register_analyze_solid_domain_capability_definition,
 )
 from VibeCADNativeAssemblyDiagnosisBindings import (
     register_assembly_diagnosis_capability_implementation,
@@ -680,18 +752,36 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     registry = NativeCapabilityRegistry()
     register_analyze_model_capability_definition(registry)
     register_analyze_model_capability_implementation(registry)
+    register_analyze_solid_domain_capability_definition(registry)
+    register_analyze_solid_domain_capability_implementation(registry)
     register_analyze_inspect_capability_definition(registry)
     register_analyze_inspect_capability_implementation(registry)
+    register_analyze_face_capability_definition(registry)
+    register_analyze_face_capability_implementation(registry)
+    register_analyze_flow_result_capability_definition(registry)
+    register_analyze_flow_result_capability_implementation(registry)
+    register_analyze_mechanical_result_capability_definitions(registry)
+    register_analyze_mechanical_result_capability_implementations(registry)
+    register_analyze_thermal_result_capability_definitions(registry)
+    register_analyze_thermal_result_capability_implementations(registry)
+    register_analyze_assignment_view_capability_definition(registry)
+    register_analyze_assignment_view_capability_implementation(registry)
     register_analyze_geometry_capability_definition(registry)
     register_analyze_geometry_capability_implementation(registry)
     register_analyze_electromagnetic_capability_definition(registry)
     register_analyze_electromagnetic_capability_implementation(registry)
     register_analyze_fluid_capability_definition(registry)
     register_analyze_fluid_capability_implementation(registry)
+    register_analyze_fluid_create_capability_definitions(registry)
+    register_analyze_fluid_create_capability_implementations(registry)
+    register_analyze_cfd_lifecycle_capability_definitions(registry)
+    register_analyze_cfd_lifecycle_capability_implementations(registry)
     register_analyze_geometrical_capability_definition(registry)
     register_analyze_geometrical_capability_implementation(registry)
     register_analyze_support_capability_definition(registry)
     register_analyze_support_capability_implementation(registry)
+    register_analyze_structural_lifecycle_capability_definitions(registry)
+    register_analyze_structural_lifecycle_capability_implementations(registry)
     register_analyze_connection_capability_definition(registry)
     register_analyze_connection_capability_implementation(registry)
     register_analyze_load_capability_definition(registry)
@@ -700,6 +790,10 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_analyze_thermal_capability_implementation(registry)
     register_analyze_mesh_capability_definition(registry)
     register_analyze_mesh_capability_implementation(registry)
+    register_analyze_mesh_lifecycle_capability_definitions(registry)
+    register_analyze_mesh_lifecycle_capability_implementations(registry)
+    register_analyze_local_mesh_capability_definitions(registry)
+    register_analyze_local_mesh_capability_implementations(registry)
     register_analyze_mesh_field_capability_definition(registry)
     register_analyze_mesh_field_capability_implementation(registry)
     register_analyze_mesh_output_capability_definition(registry)
@@ -714,6 +808,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_analyze_solver_control_capability_implementation(registry)
     register_analyze_solver_execution_capability_definition(registry)
     register_analyze_solver_execution_capability_implementation(registry)
+    register_analyze_run_solver_capability_definition(registry)
+    register_analyze_run_solver_capability_implementation(registry)
     register_analyze_equation_capability_definition(registry)
     register_analyze_equation_capability_implementation(registry)
     register_analyze_results_capability_definition(registry)

@@ -4,13 +4,18 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 
 
 TESTS = Path(__file__).resolve().parent
 MODULE = TESTS.parent
-REPO = MODULE.parents[2]
+REPO = next(
+    parent
+    for parent in MODULE.parents
+    if (parent / "src" / "Gui" / "Stylesheets" / "defaults.qss").is_file()
+)
 if str(MODULE) not in sys.path:
     sys.path.insert(0, str(MODULE))
 
@@ -20,13 +25,15 @@ import PrintPreferences  # noqa: E402
 import PrintSetupDialog  # noqa: E402
 
 
-def _interval(widget, dialog) -> tuple[int, int]:
-    top = widget.mapTo(dialog, QtCore.QPoint(0, 0)).y()
+def _interval(widget, dialog, core=QtCore) -> tuple[int, int]:
+    top = widget.mapTo(dialog, core.QPoint(0, 0)).y()
     return top, top + widget.height()
 
 
 def main() -> None:
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    widgets = QtWidgets
+    app = widgets.QApplication.instance() or widgets.QApplication([])
+    setup_module = PrintSetupDialog
     styles = REPO / "src" / "Gui" / "Stylesheets"
     app.setStyleSheet(
         (styles / "defaults.qss").read_text(encoding="utf-8")
@@ -36,22 +43,32 @@ def main() -> None:
 
     PrintPreferences.load_confirmed_setup = lambda **_kwargs: None
     PrintPreferences.executable_override = lambda **_kwargs: ""
-    real_single_shot = PrintSetupDialog.QtCore.QTimer.singleShot
-    PrintSetupDialog.QtCore.QTimer.singleShot = lambda *_args: None
+    real_single_shot = setup_module.QtCore.QTimer.singleShot
+    setup_module.QtCore.QTimer.singleShot = lambda *_args: None
 
-    dialog = PrintSetupDialog.PrintSetupDialog(
+    dialog = setup_module.PrintSetupDialog(
         parent=None,
         backend=object(),
         open_after_save=True,
     )
-    PrintSetupDialog.QtCore.QTimer.singleShot = real_single_shot
+    setup_module.QtCore.QTimer.singleShot = real_single_shot
     dialog.show()
     app.processEvents()
 
-    assert dialog.height() >= dialog.sizeHint().height(), (
-        f"Print Setup opened at {dialog.height()} px, below its styled "
-        f"{dialog.sizeHint().height()} px size hint"
-    )
+    screen = dialog.screen() or app.primaryScreen()
+    available = screen.availableGeometry()
+    assert dialog.width() >= 900
+    assert dialog.height() <= available.height() - 48
+    scroll = dialog.findChild(widgets.QScrollArea, "VibeCADPrintSetupScroll")
+    assert scroll is not None
+
+    executable = dialog.findChild(widgets.QGroupBox, "VibeCADPrintExecutableGroup")
+    profiles = dialog.findChild(widgets.QGroupBox, "VibeCADPrintProfilesGroup")
+    placement = dialog.findChild(widgets.QGroupBox, "VibeCADPrintPlacementGroup")
+    storage = dialog.findChild(widgets.QGroupBox, "VibeCADPrintStorageGroup")
+    assert all((executable, profiles, placement, storage))
+    assert _interval(executable, dialog)[0] == _interval(profiles, dialog)[0]
+    assert _interval(placement, dialog)[0] == _interval(storage, dialog)[0]
 
     rows = [dialog.printer_combo, dialog.bed_details, dialog.print_combo]
     for upper, lower in zip(rows, rows[1:]):
@@ -65,7 +82,11 @@ def main() -> None:
         "intentionally long enough to wrap onto multiple lines."
     )
     app.processEvents()
-    assert dialog.height() >= dialog.sizeHint().height()
+    assert dialog.height() <= available.height() - 48
+
+    screenshot = os.environ.get("VIBECAD_PRINT_SETUP_SCREENSHOT", "")
+    if screenshot:
+        assert dialog.grab().save(screenshot)
 
     dialog.close()
 

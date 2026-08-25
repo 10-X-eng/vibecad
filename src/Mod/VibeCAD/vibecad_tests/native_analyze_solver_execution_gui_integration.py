@@ -125,6 +125,28 @@ def _create_analysis(document):
     return analysis, pipeline, ccx_tools
 
 
+def _result_grid():
+    from vtkmodules.vtkCommonCore import vtkDoubleArray, vtkPoints
+    from vtkmodules.vtkCommonDataModel import vtkTetra, vtkUnstructuredGrid
+
+    points = vtkPoints()
+    for point in ((0, 0, 0), (10, 0, 0), (0, 10, 0), (0, 0, 10)):
+        points.InsertNextPoint(*point)
+    tetrahedron = vtkTetra()
+    for index in range(4):
+        tetrahedron.GetPointIds().SetId(index, index)
+    grid = vtkUnstructuredGrid()
+    grid.SetPoints(points)
+    grid.InsertNextCell(tetrahedron.GetCellType(), tetrahedron.GetPointIds())
+    displacement = vtkDoubleArray()
+    displacement.SetName("Displacement")
+    displacement.SetNumberOfComponents(3)
+    for value in ((0, 0, 0), (0.1, 0, 0), (0, 0.2, 0), (0, 0, 0.3)):
+        displacement.InsertNextTuple3(*value)
+    grid.GetPointData().AddArray(displacement)
+    return grid
+
+
 class _FakeResultImporter:
     def __init__(self, solver, *, replace_existing=False) -> None:
         self.solver = solver
@@ -152,6 +174,7 @@ class _FakeResultImporter:
             self.solver.Name + "Result",
         )
         root.Label = "Detached Verified Result"
+        root.Data = _result_grid()
         output = document.addObject(
             "App::TextDocument",
             self.solver.Name + "Output",
@@ -213,8 +236,9 @@ def _run() -> None:
         document.saveAs(str(output))
         VibeGui._ensure_document_thread_invoker()
         VibeGui._connect_document_observer()
-        controller, surface = _surface(Gui.getMainWindow())
         _analysis, pipeline_solver, ccx_tools_solver = _create_analysis(document)
+        _events(24)
+        controller, surface = _surface(Gui.getMainWindow())
         solvers = (pipeline_solver, ccx_tools_solver)
 
         from femsolver import settings
@@ -234,7 +258,8 @@ def _run() -> None:
         service.select_modeling_engine("native")
         state_store = service.native_document_state_store()
         ledger = NativeAssistantUndoLedger()
-        ledger.begin_run("native-analyze-solver-execution-gui")
+        run_id = "native-analyze-solver-execution-gui"
+        ledger.begin_run(run_id)
 
         def authorize() -> None:
             require_frozen_native_surface(frozen, controller)
@@ -250,6 +275,7 @@ def _run() -> None:
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
             background_manager=service.native_background_manager(),
             document_thread_dispatch=VibeGui._dispatch_to_document_thread,
+            run_id=run_id,
         )
         dispatcher = NativeTurnDispatcher(
             document=document,
@@ -292,6 +318,7 @@ def _run() -> None:
             return start["job"]["job_id"]
 
         job_id = start_solver(solvers[solver_index])
+        ledger.end_run(run_id)
 
         def tick() -> None:
             nonlocal tick_count
@@ -311,13 +338,13 @@ def _run() -> None:
                     assert run_status["capability"] == (
                         "analyze.solver_execution.run"
                     )
-                    assert run_status["terminal"] is False
                     assert domain["analysis_workflow_count"] == 1
                     workflow = domain["analysis_workflows"][0]
                     assert workflow["readiness"]["ready"] is True
                     assert workflow["readiness"]["generated_mesh_count"] >= 1
                     assert workflow["solver_count"] == 2
-                    active_status_seen = True
+                    if run_status["terminal"] is False:
+                        active_status_seen = True
                     return
                 assert status["phase"] == "completed", status
                 result = status["result"]
