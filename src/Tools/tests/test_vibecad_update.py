@@ -972,6 +972,8 @@ class UpdateServiceTests(unittest.TestCase):
         self.assertEqual(Path(command[7]).resolve(), (root / "pending-install.json").resolve())
 
     def test_macos_helper_stamps_started_before_waiting_for_the_app(self) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("Requires the macOS install-helper runtime")
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             helper = write_macos_install_helper(root / "install-macos-update.sh")
@@ -1023,11 +1025,21 @@ class UpdateServiceTests(unittest.TestCase):
             root = Path(temp_dir)
             marker = root / "alive"
             log = root / "helper.log"
+            helper_command = [
+                sys.executable,
+                "-c",
+                (
+                    "import time\n"
+                    "from pathlib import Path\n"
+                    "time.sleep(0.4)\n"
+                    f"Path({str(marker)!r}).write_text('ready', encoding='utf-8')\n"
+                ),
+            ]
             launcher = (
                 "from pathlib import Path\n"
                 "from VibeCADUpdate import spawn_detached_install_helper\n"
                 "spawn_detached_install_helper(\n"
-                f"    ['/bin/sh', '-c', 'sleep 0.4; printf ready > {marker}'],\n"
+                f"    {helper_command!r},\n"
                 f"    log_path=Path({str(log)!r}),\n"
                 ")\n"
             )
