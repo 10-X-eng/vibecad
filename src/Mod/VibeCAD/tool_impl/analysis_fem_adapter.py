@@ -214,21 +214,18 @@ def discard_solver_execution_request(
 
 
 def _uses_host_local_provider(request: _legacy.SolverExecutionRequest) -> bool:
-    """Migrate one FEM execution path at a time, beginning with CalculiX pipeline."""
+    """Both current CalculiX execution implementations now use the host provider."""
 
-    return (
-        str(request.target.kind) == "calculix"
-        and str(request.implementation) == "pipeline"
-    )
+    return str(request.target.kind) == "calculix"
 
 
-def _run_calculix_pipeline(
+def _run_calculix(
     request: _legacy.SolverExecutionRequest,
     *,
     cancelled: Any,
     progress: Any,
 ) -> _legacy.PreparedSolverExecution:
-    """Run primary CalculiX through the host provider with legacy-exact mapping."""
+    """Run CalculiX through the host provider with legacy-exact mapping."""
 
     commands = request.commands
     backend = request.target.kind.title()
@@ -309,7 +306,7 @@ def run_solver_execution(
     else:
         try:
             progress(7, "FEM solver input frozen")
-            prepared = _run_calculix_pipeline(
+            prepared = _run_calculix(
                 legacy_request,
                 cancelled=cancelled,
                 progress=progress,
