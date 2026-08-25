@@ -11,6 +11,7 @@ state until later migration stages move orchestration and publication ownership.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 from tool_impl.analysis_artifacts import AnalysisArtifactError, seal_directory
@@ -25,12 +26,17 @@ from tool_impl.analysis_contracts import (
     environment_sha256,
     json_sha256,
 )
+from tool_impl.analysis_local_provider import LocalProcessProvider
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeBackground import NativeBackgroundCancelled
+from VibeCADScriptedProcess import ExternalProcessCancelled, ExternalProcessError
 import VibeCADNativeAnalyzeSolverExecution as _legacy
 
 
 FEM_ANALYSIS_ADAPTER_ID = "vibecad.native.analyze.fem"
 FEM_ANALYSIS_ADAPTER_VERSION = "legacy-compat-v1"
+MAX_SOLVER_LOG_BYTES = 16 * 1024 * 1024
+_LOCAL_PROCESS_PROVIDER = LocalProcessProvider()
 
 
 def _history_identity(history_operations: tuple[Any, ...]) -> list[list[Any]]:
@@ -207,6 +213,84 @@ def discard_solver_execution_request(
     _legacy.discard_solver_execution_request(request.legacy_request)
 
 
+def _uses_host_local_provider(request: _legacy.SolverExecutionRequest) -> bool:
+    """Migrate one FEM execution path at a time, beginning with CalculiX pipeline."""
+
+    return (
+        str(request.target.kind) == "calculix"
+        and str(request.implementation) == "pipeline"
+    )
+
+
+def _run_calculix_pipeline(
+    request: _legacy.SolverExecutionRequest,
+    *,
+    cancelled: Any,
+    progress: Any,
+) -> _legacy.PreparedSolverExecution:
+    """Run primary CalculiX through the host provider with legacy-exact mapping."""
+
+    commands = request.commands
+    backend = request.target.kind.title()
+    if not commands:
+        raise NativeAnalyzeError("The detached FEM solver has no executable command.")
+    if not Path(request.working_directory).is_dir():
+        raise NativeAnalyzeError(
+            f"{backend} stage 1 could not be started.",
+            error_code="NATIVE_ANALYZE_SOLVER_START_FAILED",
+        )
+
+    def stage_started(stage: int, total: int) -> None:
+        base_progress = 12 + int(65 * (stage - 1) / total)
+        progress(base_progress, f"Running {backend} stage {stage}/{total}")
+
+    try:
+        stages = _LOCAL_PROCESS_PROVIDER.run_sequence(
+            commands,
+            working_directory=request.working_directory,
+            environment=request.environment,
+            timeout_seconds=request.timeout_seconds,
+            cancellation_check=cancelled,
+            log_name=lambda stage: f"solver-{stage}.log",
+            stage_started=stage_started,
+            maximum_log_bytes=MAX_SOLVER_LOG_BYTES,
+        )
+    except ExternalProcessCancelled as exc:
+        raise NativeBackgroundCancelled() from exc
+    except ExternalProcessError as exc:
+        if exc.reason == "timeout":
+            raise NativeAnalyzeError(
+                f"{backend} exceeded timeout_seconds before producing results.",
+                error_code="NATIVE_ANALYZE_SOLVER_TIMEOUT",
+            ) from exc
+        if exc.reason == "output_limit":
+            raise NativeAnalyzeError(
+                f"{backend} exceeded the 16 MiB diagnostic-output bound.",
+                error_code="NATIVE_ANALYZE_SOLVER_OUTPUT_LIMIT",
+            ) from exc
+        if exc.reason == "start_failed":
+            raise NativeAnalyzeError(
+                f"{backend} stage {exc.stage} could not be started.",
+                error_code="NATIVE_ANALYZE_SOLVER_START_FAILED",
+            ) from exc
+        suffix = f": {exc.detail}" if exc.detail else ""
+        raise NativeAnalyzeError(
+            f"{backend} stage {exc.stage} exited with code {exc.exit_code}{suffix}",
+            error_code="NATIVE_ANALYZE_SOLVER_BACKEND_FAILED",
+        ) from exc
+
+    progress(84, f"{backend} result artifacts ready")
+    summaries = tuple(
+        {
+            "stage": stage.stage,
+            "program": Path(stage.program).name,
+            "exit_code": stage.exit_code,
+        }
+        for stage in stages
+    )
+    return _legacy.PreparedSolverExecution(request, summaries)
+
+
 def run_solver_execution(
     request: PreparedFEMSolverExecution,
     *,
@@ -215,11 +299,24 @@ def run_solver_execution(
 ) -> CompletedFEMSolverExecution:
     if not isinstance(request, PreparedFEMSolverExecution):
         raise TypeError("request must be PreparedFEMSolverExecution")
-    prepared = _legacy.run_solver_execution(
-        request.legacy_request,
-        cancelled=cancelled,
-        progress=progress,
-    )
+    legacy_request = request.legacy_request
+    if not _uses_host_local_provider(legacy_request):
+        prepared = _legacy.run_solver_execution(
+            legacy_request,
+            cancelled=cancelled,
+            progress=progress,
+        )
+    else:
+        try:
+            progress(7, "FEM solver input frozen")
+            prepared = _run_calculix_pipeline(
+                legacy_request,
+                cancelled=cancelled,
+                progress=progress,
+            )
+        except Exception:
+            _legacy.discard_solver_execution_request(legacy_request)
+            raise
     return CompletedFEMSolverExecution(
         analysis=request.analysis,
         legacy_prepared=prepared,
