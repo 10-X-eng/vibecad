@@ -22,6 +22,7 @@ from VibeCADAnalysisContracts import (
 from VibeCADAnalysisProviders import AnalysisProvider, ProviderCapabilities
 import VibeCADNativeAnalyzeSolverExecution as legacy
 import VibeCADNativeAnalyzeSolverExecutionAdapter as adapter
+import tool_impl.analysis_fem_adapter as installed_adapter
 
 
 def test_contracts_are_immutable_serializable_and_domain_neutral() -> None:
@@ -164,7 +165,11 @@ def test_fem_adapter_preserves_preparation_identity_and_migrated_execution_contr
         kwargs["stage_started"](1, 1)
         return (SimpleNamespace(stage=1, program="/solver/ccx", exit_code=0),)
 
-    monkeypatch.setattr(adapter._LOCAL_PROCESS_PROVIDER, "run_sequence", run_sequence)
+    monkeypatch.setattr(
+        installed_adapter._LOCAL_PROCESS_PROVIDER,
+        "run_sequence",
+        run_sequence,
+    )
     monkeypatch.setattr(
         legacy,
         "run_solver_execution",
