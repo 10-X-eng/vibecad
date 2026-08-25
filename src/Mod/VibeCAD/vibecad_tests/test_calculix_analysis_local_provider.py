@@ -16,7 +16,12 @@ from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADScriptedProcess import ExternalProcessCancelled, ExternalProcessError
 
 
-def _request(tmp_path: Path, *, kind: str = "calculix") -> legacy.SolverExecutionRequest:
+def _request(
+    tmp_path: Path,
+    *,
+    kind: str = "calculix",
+    implementation: str = "pipeline",
+) -> legacy.SolverExecutionRequest:
     target = SimpleNamespace(
         kind=kind,
         expected_state_sha256="a" * 64,
@@ -24,7 +29,7 @@ def _request(tmp_path: Path, *, kind: str = "calculix") -> legacy.SolverExecutio
     )
     return legacy.SolverExecutionRequest(
         target=target,
-        implementation="pipeline",
+        implementation=implementation,
         history_operations=(target.solver,),
         working_directory=str(tmp_path),
         commands=(("/solver/ccx", ("-i", "case")),),
@@ -77,7 +82,7 @@ def test_local_process_provider_preserves_exact_process_contract(
     assert captured["maximum_log_bytes"] == 16 * 1024 * 1024
 
 
-def test_calculix_runs_through_host_local_provider_not_legacy_runner(
+def test_calculix_pipeline_runs_through_host_local_provider_not_legacy_runner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -95,7 +100,9 @@ def test_calculix_runs_through_host_local_provider_not_legacy_runner(
     monkeypatch.setattr(
         legacy,
         "run_solver_execution",
-        lambda *_args, **_kwargs: pytest.fail("CalculiX must not use legacy runner"),
+        lambda *_args, **_kwargs: pytest.fail(
+            "primary CalculiX pipeline must not use legacy runner"
+        ),
     )
 
     completed = adapter.run_solver_execution(
@@ -118,6 +125,38 @@ def test_calculix_runs_through_host_local_provider_not_legacy_runner(
     assert completed.legacy_prepared.stages == (
         {"stage": 1, "program": "ccx", "exit_code": 0},
     )
+
+
+def test_ccx_tools_alternate_calculix_remains_on_legacy_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path, implementation="ccx_tools")
+    prepared = adapter.PreparedFEMSolverExecution(object(), request)
+    sentinel = object()
+    called: list[object] = []
+
+    monkeypatch.setattr(
+        adapter._LOCAL_PROCESS_PROVIDER,
+        "run_sequence",
+        lambda *_args, **_kwargs: pytest.fail(
+            "ccx_tools is a later solver-path migration"
+        ),
+    )
+
+    def legacy_run(request_value, *, cancelled, progress):
+        called.append(request_value)
+        return sentinel
+
+    monkeypatch.setattr(legacy, "run_solver_execution", legacy_run)
+    completed = adapter.run_solver_execution(
+        prepared,
+        cancelled=lambda: False,
+        progress=lambda _percent, _message: None,
+    )
+
+    assert called == [request]
+    assert completed.legacy_prepared is sentinel
 
 
 def test_non_calculix_fem_remains_on_legacy_runner(
