@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from VibeCADAnalysisArtifacts import seal_directory
 from VibeCADAnalysisContracts import (
     AnalysisCommand,
     AnalysisContractError,
@@ -84,9 +86,10 @@ def test_provider_port_exposes_required_future_surface_without_implementation() 
     assert AnalysisProvider is not None
 
 
-def test_fem_adapter_preserves_legacy_preparation_and_execution_identity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _legacy_request(root: Path):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "case.inp").write_bytes(b"exact fem input\n")
+    sealed = seal_directory(root)
     target = SimpleNamespace(
         kind="calculix",
         expected_state_sha256="d" * 64,
@@ -96,19 +99,26 @@ def test_fem_adapter_preserves_legacy_preparation_and_execution_identity(
         SimpleNamespace(Name="Constraint", ID=2, TypeId="Fem::ConstraintForce"),
         target.solver,
     )
-    request = legacy.SolverExecutionRequest(
+    return legacy.SolverExecutionRequest(
         target=target,
         implementation="pipeline",
         history_operations=history,
-        working_directory="/tmp/fem-job",
+        working_directory=str(root),
         commands=(("/solver/ccx", ("-i", "case")),),
         environment={"OMP_NUM_THREADS": "4", "SAFE": "exact"},
         timeout_seconds=120,
-        input_sha256="e" * 64,
-        input_file_count=5,
+        input_sha256=sealed.sha256,
+        input_file_count=sealed.file_count,
         keep_results=False,
         importer_state={"input_deck": "case"},
     )
+
+
+def test_fem_adapter_preserves_legacy_preparation_and_execution_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _legacy_request(tmp_path / "fem-job")
     monkeypatch.setattr(
         legacy,
         "prepare_solver_execution_request",
@@ -139,6 +149,11 @@ def test_fem_adapter_preserves_legacy_preparation_and_execution_identity(
         prepared.analysis.dependency_snapshot.by_key("solver_state").canonical_digest
         == "d" * 64
     )
+    provenance = prepared.analysis.provenance.to_value()
+    assert provenance["input_digest_algorithm"] == (
+        "vibecad-fem-directory-sha256-v1"
+    )
+    assert provenance["input_total_bytes"] > 0
 
     called: dict[str, object] = {}
     legacy_completed = object()
@@ -183,3 +198,44 @@ def test_fem_adapter_preserves_legacy_preparation_and_execution_identity(
         "document": "doc",
         "draft": "draft",
     }
+
+
+def test_fem_adapter_refuses_host_legacy_input_identity_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _legacy_request(tmp_path / "mismatch-job")
+    request = legacy.SolverExecutionRequest(
+        target=request.target,
+        implementation=request.implementation,
+        history_operations=request.history_operations,
+        working_directory=request.working_directory,
+        commands=request.commands,
+        environment=request.environment,
+        timeout_seconds=request.timeout_seconds,
+        input_sha256="f" * 64,
+        input_file_count=request.input_file_count,
+        keep_results=request.keep_results,
+        importer_state=request.importer_state,
+    )
+    discarded: list[object] = []
+    monkeypatch.setattr(
+        legacy,
+        "prepare_solver_execution_request",
+        lambda *_args, **_kwargs: request,
+    )
+    monkeypatch.setattr(
+        legacy,
+        "discard_solver_execution_request",
+        discarded.append,
+    )
+
+    with pytest.raises(AnalysisContractError, match="does not match"):
+        adapter.prepare_solver_execution_request(
+            object(),
+            "doc-1",
+            target={"object_name": "Solver"},
+            timeout_seconds=120,
+        )
+
+    assert discarded == [request]
