@@ -19,7 +19,7 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete merged or main-identical slice branches
+      - name: Delete merged or no-unique-commit slice branches
         uses: actions/github-script@v7
         with:
           script: |
@@ -58,7 +58,30 @@ jobs:
                 continue;
               }
 
-              let deletable = branch.commit.sha === defaultSha;
+              let comparison = null;
+              try {
+                comparison = await github.rest.repos.compareCommits({
+                  owner,
+                  repo,
+                  base: defaultSha,
+                  head: branch.commit.sha,
+                });
+              } catch (error) {
+                if (error.status === 404 || error.status === 409 || error.status === 422) {
+                  core.info(`Keeping ${branch.name}: it cannot be compared safely with ${defaultBranch}.`);
+                  continue;
+                }
+                throw error;
+              }
+
+              let deletable = (
+                branch.commit.sha === defaultSha ||
+                (
+                  comparison.data.ahead_by === 0 &&
+                  ['behind', 'identical'].includes(comparison.data.status)
+                )
+              );
+
               if (!deletable) {
                 const closedPulls = await github.paginate(
                   github.rest.pulls.list,
