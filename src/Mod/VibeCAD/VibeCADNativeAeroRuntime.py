@@ -12,6 +12,13 @@ import tempfile
 from typing import Any, Mapping
 import zipfile
 
+from VibeCADAeroAnalysisRuntime import (
+    prepare_document_input,
+    publish_document_result,
+    run_detached,
+    validate_document_input,
+)
+from VibeCADNativeBackground import NativeBackgroundError
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeOutput import (
@@ -27,6 +34,7 @@ if _AERO_DIR.is_dir() and str(_AERO_DIR) not in sys.path:
     sys.path.insert(0, str(_AERO_DIR))
 
 _SOLVE_OPS = frozenset({"analyze", "section", "vlm", "report", "propose_repairs", "apply_repairs"})
+_BACKGROUND_SOLVE_OPS = frozenset({"analyze", "section", "vlm"})
 
 _TRANSACTION_NAMES = {
     "analyze": "Aero Analyze",
@@ -84,6 +92,8 @@ class NativeAeroRuntime:
         context = self._context
         context.guard()
         self._require_ticket_identity(ticket, "aero.solve")
+        if operation in _BACKGROUND_SOLVE_OPS:
+            return self._solve_background(operation, ticket)
         return run_immediate_mutation(
             context,
             ticket=ticket,
@@ -91,6 +101,79 @@ class NativeAeroRuntime:
             mutate=lambda document: _mutate_aero(document, operation),
             verify=_verify_aero_mutation,
         )
+
+    def _solve_background(
+        self,
+        operation: str,
+        ticket: NativeCallTicket,
+    ) -> dict[str, Any]:
+        context = self._context
+        manager = context.background_manager
+        dispatcher = context.document_thread_dispatch
+        if manager is None or dispatcher is None:
+            raise RuntimeError(
+                "Background Aero analysis is unavailable in this Native session."
+            )
+        prepared, expected_geometry_revision = prepare_document_input(
+            context.document,
+            operation,
+        )
+
+        def prepare(cancelled: Any, progress: Any) -> Any:
+            return run_detached(
+                prepared,
+                cancelled=cancelled,
+                progress=progress,
+            )
+
+        def validate_before_commit() -> None:
+            context.guard()
+            self._require_current_ticket(ticket, "aero.solve")
+            validate_document_input(
+                context.document,
+                expected_geometry_revision,
+            )
+
+        def commit(completed: Any) -> Mapping[str, Any]:
+            return run_immediate_mutation(
+                context,
+                ticket=ticket,
+                transaction_name=_TRANSACTION_NAMES[operation],
+                mutate=lambda document: _mutate_completed_aero(
+                    document,
+                    operation,
+                    completed,
+                ),
+                verify=_verify_aero_mutation,
+            )
+
+        try:
+            snapshot = manager.submit(
+                document_uid=context.document_uid,
+                capability_name="aero.solve",
+                prepare=prepare,
+                validate_before_commit=validate_before_commit,
+                commit=commit,
+                dispatch_to_document_thread=dispatcher,
+                finalize_message="Publishing verified Aero results",
+            )
+        except NativeBackgroundError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {
+            "job": {
+                "job_id": str(snapshot.job_id),
+                "capability": str(snapshot.capability_name),
+                "phase": str(snapshot.phase),
+                "progress_percent": int(snapshot.progress_percent),
+                "progress_message": str(snapshot.progress_message),
+                "terminal": bool(snapshot.terminal),
+            },
+            "next": {
+                "tool": "native.job",
+                "operation": "status",
+                "job_id": snapshot.job_id,
+            },
+        }
 
     def export(
         self,
@@ -206,9 +289,12 @@ def _invoke_aero(document: Any, operation: str) -> dict[str, Any]:
     raise ValueError(f"Unsupported Aero operation {operation!r}.")
 
 
-def _mutate_aero(document: Any, operation: str) -> NativeMutationDraft:
-    before = _named_objects(document)
-    result = _invoke_aero(document, operation)
+def _mutation_draft_from_result(
+    document: Any,
+    operation: str,
+    before: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> NativeMutationDraft:
     names = list(_BASE_MUTATION_OBJECTS[operation])
     if operation == "apply_repairs":
         names.extend(
@@ -233,11 +319,27 @@ def _mutate_aero(document: Any, operation: str) -> NativeMutationDraft:
         elif before[name] is obj:
             changed.append(identity)
     return NativeMutationDraft(
-        value={"operation": operation, "result": result},
+        value={"operation": operation, "result": dict(result)},
         recompute_targets=tuple(recompute),
         created=tuple(created),
         changed=tuple(changed),
     )
+
+
+def _mutate_aero(document: Any, operation: str) -> NativeMutationDraft:
+    before = _named_objects(document)
+    result = _invoke_aero(document, operation)
+    return _mutation_draft_from_result(document, operation, before, result)
+
+
+def _mutate_completed_aero(
+    document: Any,
+    operation: str,
+    completed: Any,
+) -> NativeMutationDraft:
+    before = _named_objects(document)
+    result = native_payload(publish_document_result(document, completed))
+    return _mutation_draft_from_result(document, operation, before, result)
 
 
 def _verify_aero_mutation(
