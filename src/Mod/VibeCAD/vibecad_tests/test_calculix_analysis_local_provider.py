@@ -147,7 +147,7 @@ def test_unmigrated_fem_remains_on_legacy_runner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request = _request(tmp_path, kind="z88")
+    request = _request(tmp_path, kind="mystran")
     prepared = adapter.PreparedFEMSolverExecution(object(), request)
     sentinel = object()
     called: list[object] = []
@@ -155,7 +155,7 @@ def test_unmigrated_fem_remains_on_legacy_runner(
     monkeypatch.setattr(
         adapter._LOCAL_PROCESS_PROVIDER,
         "run_sequence",
-        lambda *_args, **_kwargs: pytest.fail("Z88 is not migrated in this PR"),
+        lambda *_args, **_kwargs: pytest.fail("Mystran is not migrated in this PR"),
     )
 
     def legacy_run(request_value, *, cancelled, progress):
