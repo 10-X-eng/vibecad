@@ -214,18 +214,18 @@ def discard_solver_execution_request(
 
 
 def _uses_host_local_provider(request: _legacy.SolverExecutionRequest) -> bool:
-    """Both current CalculiX execution implementations now use the host provider."""
+    """Migrated CalculiX and Elmer execution use the host local provider."""
 
-    return str(request.target.kind) == "calculix"
+    return str(request.target.kind) in {"calculix", "elmer"}
 
 
-def _run_calculix(
+def _run_local_solver(
     request: _legacy.SolverExecutionRequest,
     *,
     cancelled: Any,
     progress: Any,
 ) -> _legacy.PreparedSolverExecution:
-    """Run CalculiX through the host provider with legacy-exact mapping."""
+    """Run a migrated FEM solver through the host provider with legacy-exact mapping."""
 
     commands = request.commands
     backend = request.target.kind.title()
@@ -306,7 +306,7 @@ def run_solver_execution(
     else:
         try:
             progress(7, "FEM solver input frozen")
-            prepared = _run_calculix(
+            prepared = _run_local_solver(
                 legacy_request,
                 cancelled=cancelled,
                 progress=progress,
