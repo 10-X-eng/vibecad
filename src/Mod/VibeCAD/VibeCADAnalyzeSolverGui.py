@@ -13,17 +13,23 @@ from PySide import QtCore, QtWidgets
 from VibeCADCore import get_service
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeSolverExecution import (
+    capture_solver_execution_request,
     commit_solver_execution,
-    discard_solver_execution_request,
-    prepare_solver_execution_request,
-    run_solver_execution,
+    validate_captured_solver_execution,
     verify_solver_execution,
+)
+from VibeCADNativeAnalyzeSolverExecutionInput import (
+    create_solver_execution_workspace,
+    freeze_solver_execution_snapshot,
+    materialize_solver_execution_snapshot,
+)
+from VibeCADNativeAnalyzeSolverExecutionWorker import (
+    execute_frozen_solver_execution,
 )
 from VibeCADNativeAnalyzeSolverState import solver_state
 from VibeCADNativeBackground import NativeBackgroundError
 from VibeCADNativeMutation import NativeMutationDraft
 import VibeCADGui
-
 
 _ACTIVE_RUNS: dict[str, "_SolverRunUi"] = {}
 _BACKEND_LABELS = {
@@ -72,11 +78,18 @@ def _commit_human_result(document: Any, prepared: Any) -> Mapping[str, Any]:
 
 
 class _SolverRunUi:
-    def __init__(self, document: Any, request: Any, manager: Any) -> None:
+    def __init__(
+        self,
+        document: Any,
+        captured: Any,
+        workspace: Any,
+        manager: Any,
+    ) -> None:
         self.document = document
-        self.request = request
+        self.captured = captured
+        self.workspace = workspace
         self.manager = manager
-        self.backend = _BACKEND_LABELS[request.target.kind]
+        self.backend = _BACKEND_LABELS[captured.target.kind]
         self.job_id = ""
         self.dialog = QtWidgets.QProgressDialog(
             f"Preparing {self.backend} case",
@@ -98,10 +111,25 @@ class _SolverRunUi:
 
     def start(self) -> str:
         document = self.document
-        request = self.request
+        captured = self.captured
+        workspace = self.workspace
 
         def prepare(cancelled: Any, progress: Any) -> Any:
-            return run_solver_execution(request, cancelled=cancelled, progress=progress)
+            progress(3, "Capturing exact FEM document")
+            materialized = VibeCADGui._dispatch_to_document_thread(
+                lambda: materialize_solver_execution_snapshot(
+                    document,
+                    captured,
+                    workspace,
+                )
+            )
+            progress(5, "Authenticating exact FEM document snapshot")
+            frozen = freeze_solver_execution_snapshot(materialized)
+            return execute_frozen_solver_execution(
+                frozen,
+                cancelled=cancelled,
+                progress=progress,
+            )
 
         def validate() -> None:
             if not _document_is_live(document):
@@ -109,6 +137,7 @@ class _SolverRunUi:
                     "The FEM document closed while the solver was running.",
                     error_code="NATIVE_ANALYZE_DOCUMENT_UNAVAILABLE",
                 )
+            validate_captured_solver_execution(document, captured)
 
         snapshot = self.manager.submit(
             document_uid=str(document.Uid),
@@ -118,7 +147,7 @@ class _SolverRunUi:
             commit=lambda prepared: _commit_human_result(document, prepared),
             dispatch_to_document_thread=VibeCADGui._dispatch_to_document_thread,
             finalize_message=f"Importing verified {self.backend} results",
-            cleanup=lambda _prepared: discard_solver_execution_request(request),
+            cleanup=lambda _prepared: workspace.cleanup(),
         )
         self.job_id = str(snapshot.job_id)
         _ACTIVE_RUNS[self.job_id] = self
@@ -140,6 +169,9 @@ class _SolverRunUi:
             return
         self.dialog.setValue(int(snapshot.progress_percent))
         self.dialog.setLabelText(str(snapshot.progress_message))
+        Gui.getMainWindow().statusBar().showMessage(
+            f"{self.backend}: {snapshot.progress_message}"
+        )
         if not snapshot.terminal:
             return
         error = dict(snapshot.error or {})
@@ -169,8 +201,16 @@ class _SolverRunUi:
                 Gui.Selection.clearSelection()
                 Gui.Selection.addSelection(result_object)
             App.Console.PrintMessage(f"{self.backend} analysis completed.\n")
+            Gui.getMainWindow().statusBar().showMessage(
+                f"{self.backend} analysis completed",
+                10000,
+            )
         elif phase == "cancelled":
             App.Console.PrintMessage(f"{self.backend} analysis cancelled.\n")
+            Gui.getMainWindow().statusBar().showMessage(
+                f"{self.backend} analysis cancelled",
+                10000,
+            )
         else:
             clean = str(message or f"{self.backend} analysis failed.")
             App.Console.PrintError(clean + "\n")
@@ -178,6 +218,10 @@ class _SolverRunUi:
                 Gui.getMainWindow(),
                 f"{self.backend} failed",
                 clean,
+            )
+            Gui.getMainWindow().statusBar().showMessage(
+                f"{self.backend} analysis failed",
+                10000,
             )
         self.dialog.deleteLater()
 
@@ -190,7 +234,7 @@ def run_solver_detached(solver: Any) -> str:
         raise TypeError("run_solver_detached requires a supported FEM solver")
     document = solver.Document
     VibeCADGui._ensure_document_thread_invoker()
-    request = prepare_solver_execution_request(
+    captured = capture_solver_execution_request(
         document,
         str(document.Uid),
         target={
@@ -199,18 +243,20 @@ def run_solver_detached(solver: Any) -> str:
         },
         timeout_seconds=86400,
     )
+    workspace = create_solver_execution_workspace()
     runner = _SolverRunUi(
         document,
-        request,
+        captured,
+        workspace,
         get_service().native_background_manager(),
     )
     try:
         return runner.start()
     except NativeBackgroundError:
-        discard_solver_execution_request(request)
+        workspace.cleanup()
         raise
     except Exception:
-        discard_solver_execution_request(request)
+        workspace.cleanup()
         raise
 
 

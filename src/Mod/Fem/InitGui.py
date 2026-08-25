@@ -74,8 +74,6 @@ class FemWorkbench(Workbench):
         import femcommands.commands
         import fempreferencepages
 
-        FreeCADGui.addPreferencePage(fempreferencepages.DlgSettingsNetgen, "FEM")
-
         # dummy usage to get flake8 and lgtm quiet
         False if Fem.__name__ else True
         False if FemGui.__name__ else True
@@ -93,3 +91,12 @@ class FemWorkbench(Workbench):
 
 
 FreeCADGui.addWorkbench(FemWorkbench())
+
+# Analyze preferences are application settings, so expose them at GUI startup
+# rather than waiting for the user to activate the workbench for the first time.
+# Importing FemGui registers its native preference pages; Netgen is Python-based
+# and therefore registered explicitly here.
+import FemGui
+import fempreferencepages
+
+FreeCADGui.addPreferencePage(fempreferencepages.DlgSettingsNetgen, "Analyze")

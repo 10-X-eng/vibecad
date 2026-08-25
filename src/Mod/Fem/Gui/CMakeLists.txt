@@ -54,6 +54,7 @@ set(FemGui_UIC_SRCS
     DlgSettingsFemGmsh.ui
     DlgSettingsFemInOutVtk.ui
     DlgSettingsFemMystran.ui
+    DlgSettingsFemOpenFOAM.ui
     DlgSettingsFemZ88.ui
     TaskCreateElementSet.ui
     TaskCreateNodeSet.ui
@@ -122,6 +123,9 @@ SET(FemGui_DLG_SRCS
     DlgSettingsFemMystran.ui
     DlgSettingsFemMystranImp.cpp
     DlgSettingsFemMystranImp.h
+    DlgSettingsFemOpenFOAM.ui
+    DlgSettingsFemOpenFOAMImp.cpp
+    DlgSettingsFemOpenFOAMImp.h
     DlgSettingsFemZ88.ui
     DlgSettingsFemZ88Imp.cpp
     DlgSettingsFemZ88Imp.h
