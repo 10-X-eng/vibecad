@@ -256,9 +256,7 @@ class NativeBackgroundManager:
                 if job.cancellation.is_set():
                     raise NativeBackgroundCancelled()
                 validate_before_commit()
-                if job.cancellation.is_set():
-                    raise NativeBackgroundCancelled()
-                self._set_progress(
+                self._enter_commit_gate(
                     job,
                     "finalizing" if finalize_message else "committing",
                     95,
@@ -305,6 +303,31 @@ class NativeBackgroundManager:
                 self._active_documents.pop(job.document_uid, None)
                 job.completed.set()
                 self._trim_jobs_locked()
+
+    def _enter_commit_gate(
+        self,
+        job: _Job,
+        phase: str,
+        percent: int,
+        message: str,
+    ) -> None:
+        """Atomically order accepted cancellation against document mutation.
+
+        The lifecycle lock is shared with ``cancel()``. Therefore exactly one
+        side wins: cancellation is accepted before this gate and commit is
+        refused, or this gate transitions the job to a non-cancellable commit
+        phase before document mutation begins.
+        """
+
+        clean_message = str(message or "").strip()
+        if len(clean_message) > MAX_PROGRESS_MESSAGE_CHARS:
+            clean_message = clean_message[:MAX_PROGRESS_MESSAGE_CHARS]
+        with self._lock:
+            if job.phase in _TERMINAL_PHASES or job.cancellation.is_set():
+                raise NativeBackgroundCancelled()
+            job.phase = phase
+            job.progress_percent = int(percent)
+            job.progress_message = clean_message
 
     def _set_progress(
         self,
