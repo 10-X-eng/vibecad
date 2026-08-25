@@ -214,9 +214,9 @@ def discard_solver_execution_request(
 
 
 def _uses_host_local_provider(request: _legacy.SolverExecutionRequest) -> bool:
-    """Migrated CalculiX and Elmer execution use the host local provider."""
+    """Migrated CalculiX, Elmer, and Z88 execution use the host local provider."""
 
-    return str(request.target.kind) in {"calculix", "elmer"}
+    return str(request.target.kind) in {"calculix", "elmer", "z88"}
 
 
 def _run_local_solver(
