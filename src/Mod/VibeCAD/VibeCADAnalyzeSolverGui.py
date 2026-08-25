@@ -32,6 +32,7 @@ from VibeCADNativeMutation import NativeMutationDraft
 import VibeCADGui
 
 _ACTIVE_RUNS: dict[str, "_SolverRunUi"] = {}
+_STATUS_RUNS: dict[str, "_SolverJobStatusUi"] = {}
 _BACKEND_LABELS = {
     "calculix": "CalculiX",
     "elmer": "Elmer",
@@ -224,6 +225,55 @@ class _SolverRunUi:
                 10000,
             )
         self.dialog.deleteLater()
+
+
+class _SolverJobStatusUi:
+    """Mirror provider-started solver progress into VibeCAD's status bar."""
+
+    def __init__(self, manager: Any, job_id: str, solver_kind: str) -> None:
+        self.manager = manager
+        self.job_id = str(job_id)
+        self.backend = _BACKEND_LABELS.get(str(solver_kind), str(solver_kind).title())
+        self.timer = QtCore.QTimer(Gui.getMainWindow())
+        self.timer.setInterval(500)
+        self.timer.timeout.connect(self.poll)
+
+    def start(self) -> None:
+        _STATUS_RUNS[self.job_id] = self
+        self.poll()
+        if self.job_id in _STATUS_RUNS:
+            self.timer.start()
+
+    def poll(self) -> None:
+        try:
+            snapshot = self.manager.snapshot(self.job_id)
+        except Exception:
+            self._finish("failed")
+            return
+        Gui.getMainWindow().statusBar().showMessage(
+            f"{self.backend}: {snapshot.progress_message}"
+        )
+        if snapshot.terminal:
+            self._finish(str(snapshot.phase))
+
+    def _finish(self, phase: str) -> None:
+        self.timer.stop()
+        _STATUS_RUNS.pop(self.job_id, None)
+        message = {
+            "completed": f"{self.backend} analysis completed",
+            "cancelled": f"{self.backend} analysis cancelled",
+        }.get(phase, f"{self.backend} analysis failed")
+        Gui.getMainWindow().statusBar().showMessage(message, 10000)
+        self.timer.deleteLater()
+
+
+def watch_solver_job(manager: Any, job_id: str, solver_kind: str) -> None:
+    """Start one non-modal status watcher for an AI-started solver job."""
+
+    clean = str(job_id or "")
+    if not clean or clean in _STATUS_RUNS:
+        return
+    _SolverJobStatusUi(manager, clean, solver_kind).start()
 
 
 def run_solver_detached(solver: Any) -> str:

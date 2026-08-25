@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import json
 import secrets
 import threading
+import time
 from typing import Any, Callable, Mapping
 
 
@@ -39,6 +40,9 @@ class NativeBackgroundSnapshot:
     error: dict[str, Any] | None
     cancel_requested: bool
     changes_document: bool = False
+    elapsed_seconds: int = 0
+    seconds_since_progress: int = 0
+    worker_active: bool = False
 
     @property
     def terminal(self) -> bool:
@@ -62,6 +66,8 @@ class _Job:
     changes_document: bool = False
     cancellation: threading.Event = field(default_factory=threading.Event)
     completed: threading.Event = field(default_factory=threading.Event)
+    submitted_at: float = field(default_factory=time.monotonic)
+    progress_at: float = field(default_factory=time.monotonic)
 
 
 ProgressReporter = Callable[[int, str], None]
@@ -345,6 +351,7 @@ class NativeBackgroundManager:
             job.phase = phase
             job.progress_percent = int(percent)
             job.progress_message = clean_message
+            job.progress_at = time.monotonic()
 
     def cancel(self, job_id: str) -> bool:
         with self._lock:
@@ -394,6 +401,7 @@ class NativeBackgroundManager:
 
     @staticmethod
     def _snapshot_locked(job: _Job) -> NativeBackgroundSnapshot:
+        now = time.monotonic()
         result = json.loads(job.result_json) if job.result_json is not None else None
         return NativeBackgroundSnapshot(
             job_id=job.job_id,
@@ -406,6 +414,9 @@ class NativeBackgroundManager:
             error=dict(job.error) if job.error is not None else None,
             cancel_requested=job.cancellation.is_set(),
             changes_document=job.changes_document,
+            elapsed_seconds=max(0, int(now - job.submitted_at)),
+            seconds_since_progress=max(0, int(now - job.progress_at)),
+            worker_active=not job.completed.is_set(),
         )
 
     def wait(self, job_id: str, timeout: float | None = None) -> NativeBackgroundSnapshot:

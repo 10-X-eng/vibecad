@@ -40,6 +40,7 @@ def _read_member(
 
 
 def study_inventory(analysis: Any) -> dict[str, Any]:
+    from VibeCADNativeAnalyzeAssignments import validate_assignments
     from VibeCADNativeAnalyzeConnectionState import connection_state
     from VibeCADNativeAnalyzeConstraintState import electromagnetic_constraint_state
     from VibeCADNativeAnalyzeElementState import element_definition_state
@@ -129,6 +130,8 @@ def study_inventory(analysis: Any) -> dict[str, Any]:
     configuration_blockers = solver_configuration_blockers(
         study_intent_state(analysis), active_solver_states
     )
+    assignment_validation = validate_assignments(analysis)
+    mesh_coverage = assignment_validation.get("mesh_coverage")
     return {
         "geometry_source_count": len(geometry_sources),
         "geometry_sources": sorted(geometry_sources),
@@ -160,6 +163,14 @@ def study_inventory(analysis: Any) -> dict[str, Any]:
         "solver_count": len(states["solver"]),
         "solver_kinds": [str(state["solver_kind"]) for state in active_solver_states],
         "solver_configuration_blockers": configuration_blockers,
+        "assignment_validation_issue_count": int(
+            assignment_validation.get("issue_count", 0) or 0
+        ),
+        "mesh_coverage_issue_count": int(
+            mesh_coverage.get("issue_count", 0) or 0
+        )
+        if isinstance(mesh_coverage, dict)
+        else 0,
         "result_count": sum(
             int(state.get("result_count", 0) or 0) for state in states["solver"]
         ),

@@ -213,6 +213,93 @@ def assignment_records(analysis: Any) -> tuple[dict[str, Any], ...]:
     return tuple(records)
 
 
+def _mesh_validation_record(obj: Any) -> dict[str, Any] | None:
+    """Read only mesh facts needed for validation, without serializing FemMesh."""
+
+    from VibeCADNativeAnalyzeMeshState import fem_mesher_kind
+
+    try:
+        kind = fem_mesher_kind(obj)
+    except NativeAnalyzeError as exc:
+        if exc.error_code == _TARGET_INVALID:
+            return None
+        return _invalid_record(obj, "mesh", exc)
+    try:
+        source = obj.Shape
+        source_name = str(source.Name)
+        fem_mesh = obj.FemMesh
+        topology = {
+            "nodes": int(fem_mesh.NodeCount),
+            "edges": int(fem_mesh.EdgeCount),
+            "faces": int(fem_mesh.FaceCount),
+            "volumes": int(fem_mesh.VolumeCount),
+        }
+        if not source_name:
+            raise NativeAnalyzeError("The FEM mesh definition has no geometry source.")
+        return {
+            "object_name": str(obj.Name),
+            "label": str(obj.Label),
+            "type_id": str(obj.TypeId),
+            "category": "mesh",
+            "kind": "netgen" if kind == "netgen_legacy" else kind,
+            "references": [{"object_name": source_name, "subelements": []}],
+            "definition": {
+                "generated": topology["nodes"] > 0,
+                "topology": topology,
+            },
+        }
+    except Exception as exc:
+        return _invalid_record(obj, "mesh", exc)
+
+
+def assignment_validation_records(analysis: Any) -> tuple[dict[str, Any], ...]:
+    """Return assignment facts needed for validation without hashing mesh payloads."""
+
+    from VibeCADNativeAnalyzeMeshRefinementState import mesh_refinement_state
+
+    records: list[dict[str, Any]] = []
+    mesh_objects = []
+    seen: set[tuple[str, int]] = set()
+    for member in tuple(getattr(analysis, "Group", ()) or ()):
+        identity = (
+            str(getattr(member, "Name", "") or ""),
+            int(getattr(member, "ID", -1)),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        mesh_record = _mesh_validation_record(member)
+        if mesh_record is not None:
+            records.append(mesh_record)
+            if mesh_record.get("valid") is not False:
+                mesh_objects.append(member)
+            continue
+        record, invalid = _read_assignment(member)
+        if record is not None:
+            records.append(record)
+        elif invalid is not None:
+            records.append(invalid)
+    for mesh in mesh_objects:
+        resources = (
+            *tuple(getattr(mesh, "MeshRefinementList", ()) or ()),
+            *tuple(getattr(mesh, "MeshGroupList", ()) or ()),
+        )
+        for resource in resources:
+            identity = (
+                str(getattr(resource, "Name", "") or ""),
+                int(getattr(resource, "ID", -1)),
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            try:
+                state = mesh_refinement_state(resource)
+                records.append(compact_assignment_state("mesh_refinement", state))
+            except NativeAnalyzeError as exc:
+                records.append(_invalid_record(resource, "mesh_refinement", exc))
+    return tuple(records)
+
+
 def page_assignment_records(
     records: Iterable[Mapping[str, Any]],
     *,
@@ -279,9 +366,161 @@ def _reference_issue(
     return None
 
 
+def validate_assignment_coverage(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    mesh_domains: Mapping[str, set[str]],
+    solid_units: Mapping[str, set[tuple[str, str]]],
+    solid_reference_units: (
+        Mapping[tuple[str, str], set[tuple[str, str]]] | None
+    ) = None,
+) -> dict[str, Any]:
+    """Validate assignment and material coverage for generated mesh domains.
+
+    ``mesh_domains`` expands each mesh source into every original geometry object
+    represented by that source. ``solid_units`` records the exact solid units that
+    require material within the same generated source. The optional alias map lets
+    derived multipart domains translate their ``SolidN`` names back to source
+    solids without weakening direct-object validation.
+    """
+
+    values = tuple(dict(record) for record in records)
+    generated_sources: list[str] = []
+    for record in values:
+        if record.get("category") != "mesh":
+            continue
+        definition = record.get("definition")
+        if not isinstance(definition, Mapping) or definition.get("generated") is not True:
+            continue
+        for reference in tuple(record.get("references") or ()):
+            if not isinstance(reference, Mapping):
+                continue
+            name = str(reference.get("object_name") or "")
+            if name and name not in generated_sources:
+                generated_sources.append(name)
+    if not generated_sources:
+        return {"valid": True, "issue_count": 0, "issues": []}
+
+    covered_objects = set()
+    required_solids: set[tuple[str, str]] = set()
+    for source_name in generated_sources:
+        covered_objects.update(mesh_domains.get(source_name, {source_name}))
+        required_solids.update(solid_units.get(source_name, set()))
+
+    issues: list[dict[str, str]] = []
+    for record in values:
+        if record.get("category") in {"mesh", "mesh_refinement"}:
+            continue
+        assignment = str(record.get("object_name") or "<unnamed>")
+        for reference in tuple(record.get("references") or ()):
+            if not isinstance(reference, Mapping):
+                continue
+            object_name = str(reference.get("object_name") or "")
+            if object_name and object_name not in covered_objects:
+                issues.append(
+                    {
+                        "object_name": assignment,
+                        "message": (
+                            f"{assignment} references {object_name}, which is outside "
+                            "every generated mesh domain in this analysis."
+                        ),
+                    }
+                )
+
+    if required_solids:
+        material_records = tuple(
+            record
+            for record in values
+            if record.get("category") == "material"
+            and record.get("kind") in {"solid", "reinforced"}
+        )
+        covered_solids: set[tuple[str, str]] = set()
+        aliases = solid_reference_units or {}
+        for material in material_records:
+            references = tuple(material.get("references") or ())
+            if not references:
+                covered_solids.update(required_solids)
+                continue
+            for reference in references:
+                if not isinstance(reference, Mapping):
+                    continue
+                object_name = str(reference.get("object_name") or "")
+                subelements = tuple(reference.get("subelements") or ())
+                if not subelements:
+                    covered_solids.update(
+                        unit for unit in required_solids if unit[0] == object_name
+                    )
+                    continue
+                for raw in subelements:
+                    subelement = str(raw)
+                    if "." in subelement:
+                        prefix, subelement = subelement.split(".", 1)
+                        if prefix != object_name:
+                            continue
+                    if not subelement.startswith("Solid"):
+                        continue
+                    token = (object_name, subelement)
+                    covered_solids.update(aliases.get(token, {token}))
+        for object_name, subelement in sorted(required_solids - covered_solids):
+            identity = f"{object_name}.{subelement}"
+            issues.append(
+                {
+                    "object_name": identity,
+                    "message": f"{identity} has no solid material in its generated mesh domain.",
+                }
+            )
+
+    return {
+        "valid": not issues,
+        "issue_count": len(issues),
+        "issues": issues[:64],
+    }
+
+
+def _mesh_domain_coverage(
+    source: Any,
+) -> tuple[set[str], set[tuple[str, str]], dict[tuple[str, str], set[tuple[str, str]]]]:
+    source_name = str(getattr(source, "Name", "") or "")
+    covered = {source_name}
+    units: set[tuple[str, str]] = set()
+    aliases: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    is_domain = bool(getattr(source, "VibeCADAnalysisDomain", False))
+    members = tuple(getattr(source, "AnalysisSources", ()) or ()) if is_domain else ()
+    mode = str(getattr(source, "AnalysisInterfaceMode", "") or "")
+    if not members:
+        solid_count = len(tuple(getattr(getattr(source, "Shape", None), "Solids", ()) or ()))
+        for index in range(1, solid_count + 1):
+            token = (source_name, f"Solid{index}")
+            units.add(token)
+            aliases[token] = {token}
+        return covered, units, aliases
+
+    covered.update(str(getattr(member, "Name", "") or "") for member in members)
+    if mode == "separate":
+        domain_index = 1
+        for member in members:
+            member_name = str(getattr(member, "Name", "") or "")
+            solid_count = len(
+                tuple(getattr(getattr(member, "Shape", None), "Solids", ()) or ())
+            )
+            for member_index in range(1, solid_count + 1):
+                token = (member_name, f"Solid{member_index}")
+                units.add(token)
+                aliases[token] = {token}
+                aliases[(source_name, f"Solid{domain_index}")] = {token}
+                domain_index += 1
+    else:
+        solid_count = len(tuple(getattr(getattr(source, "Shape", None), "Solids", ()) or ()))
+        for index in range(1, solid_count + 1):
+            token = (source_name, f"Solid{index}")
+            units.add(token)
+            aliases[token] = {token}
+    return covered, units, aliases
+
+
 def validate_assignments(analysis: Any) -> dict[str, Any]:
     document = analysis.Document
-    records = assignment_records(analysis)
+    records = assignment_validation_records(analysis)
     issues = []
     for record in records:
         name = str(record.get("object_name") or "<unnamed>")
@@ -296,13 +535,39 @@ def validate_assignments(analysis: Any) -> dict[str, Any]:
             issue = _reference_issue(document, name, reference)
             if issue:
                 issues.append({"object_name": name, "message": issue})
+    mesh_domains: dict[str, set[str]] = {}
+    solid_units: dict[str, set[tuple[str, str]]] = {}
+    solid_aliases: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for record in records:
+        if record.get("category") != "mesh":
+            continue
+        references = tuple(record.get("references") or ())
+        if len(references) != 1 or not isinstance(references[0], Mapping):
+            continue
+        source_name = str(references[0].get("object_name") or "")
+        source = document.getObject(source_name) if source_name else None
+        if source is None:
+            continue
+        covered, units, aliases = _mesh_domain_coverage(source)
+        mesh_domains[source_name] = covered
+        solid_units[source_name] = units
+        solid_aliases.update(aliases)
+    coverage = validate_assignment_coverage(
+        records,
+        mesh_domains=mesh_domains,
+        solid_units=solid_units,
+        solid_reference_units=solid_aliases,
+    )
+    total_issue_count = len(issues) + int(coverage.get("issue_count", 0) or 0)
+    issues.extend(coverage["issues"])
     visible = issues[:64]
     return {
-        "valid": not issues,
+        "valid": total_issue_count == 0,
         "assignment_count": len(records),
-        "issue_count": len(issues),
+        "issue_count": total_issue_count,
         "issues": visible,
-        "issues_truncated": len(issues) > len(visible),
+        "issues_truncated": total_issue_count > len(visible),
+        "mesh_coverage": coverage,
     }
 
 

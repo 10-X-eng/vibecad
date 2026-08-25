@@ -747,7 +747,7 @@ def _run() -> None:
             schema["name"] for schema in generated_context["provider_tool_schemas"]
         }
         assert generated_domain["provider_scope"]["generated_mesh_count"] == 1
-        assert "analyze.generate_gmsh" not in generated_names
+        assert "analyze.generate_gmsh" in generated_names
         assert "analyze.mesh_output" in generated_names
 
         completed_after_capture = create_native_session_execution(

@@ -10,8 +10,11 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Mapping
+import threading
+import time
+from typing import Any, Callable, Mapping, TypeVar
 
+from VibeCADNativeAnalyzeAssignments import validate_assignments
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeSolverExecutionProcess import run_solver_processes
 from VibeCADNativeAnalyzeSolverState import (
@@ -26,6 +29,7 @@ from VibeCADNativeTargets import object_identity
 
 MAX_INPUT_FILES = 4096
 MAX_INPUT_BYTES = 4 * 1024 * 1024 * 1024
+_T = TypeVar("_T")
 _FEM_PREFERENCES = "User parameter:BaseApp/Preferences/Mod/Fem"
 _SOLVER_RUNTIME_PREFERENCE_SPECS = (
     (_FEM_PREFERENCES + "/General", "KeepResultsOnReRun", "bool", False, None),
@@ -161,12 +165,58 @@ def _prepare_calculix(tool: Any) -> None:
         ) from exc
 
 
-def _calculix_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
+def _run_with_progress_heartbeat(
+    work: Callable[[], _T],
+    *,
+    progress: Callable[[int, str], None] | None,
+    percent: int,
+    message: str,
+    interval_seconds: float = 5.0,
+) -> _T:
+    """Run one opaque library call while publishing honest elapsed-time liveness."""
+
+    if progress is None:
+        return work()
+    progress(percent, message)
+    stopped = threading.Event()
+    started = time.monotonic()
+
+    def heartbeat() -> None:
+        while not stopped.wait(interval_seconds):
+            elapsed = max(1, int(time.monotonic() - started))
+            progress(percent, f"{message} ({elapsed}s elapsed)")
+
+    thread = threading.Thread(
+        target=heartbeat,
+        name="VibeCAD-CalculiX-input-progress",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        return work()
+    finally:
+        stopped.set()
+        thread.join(timeout=max(0.1, min(interval_seconds, 1.0)))
+
+
+def _calculix_request(
+    solver: Any,
+    root: Path,
+    *,
+    progress: Callable[[int, str], None] | None = None,
+) -> tuple[Any, tuple, dict, dict]:
     from femsolver import settings
     from femsolver.calculix.calculixtools import CalculiXTools
 
     tool = CalculiXTools(solver, detached=True, working_directory=str(root))
-    _prepare_calculix(tool)
+    _run_with_progress_heartbeat(
+        lambda: _prepare_calculix(tool),
+        progress=progress,
+        percent=4,
+        message="Generating CalculiX input deck",
+    )
+    if progress is not None:
+        progress(6, "CalculiX input deck generated")
     program = _executable(settings.require_binary("Calculix"), "CalculiX")
     arguments = ("-i", str(root / tool.input_deck))
     environment = dict(os.environ)
@@ -176,7 +226,12 @@ def _calculix_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
     return tool, ((program, arguments),), environment, {"input_deck": tool.input_deck}
 
 
-def _ccx_tools_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
+def _ccx_tools_request(
+    solver: Any,
+    root: Path,
+    *,
+    progress: Callable[[int, str], None] | None = None,
+) -> tuple[Any, tuple, dict, dict]:
     import FreeCAD
 
     from femsolver import settings
@@ -191,7 +246,14 @@ def _ccx_tools_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]
             "CalculiX input prerequisites are incomplete: " + readiness,
             error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
         )
-    tool.write_inp_file()
+    _run_with_progress_heartbeat(
+        tool.write_inp_file,
+        progress=progress,
+        percent=4,
+        message="Generating CalculiX input deck",
+    )
+    if progress is not None:
+        progress(6, "CalculiX input deck generated")
     input_path = Path(str(tool.inp_file_name)).resolve()
     if input_path.parent != root.resolve() or not input_path.is_file():
         raise NativeAnalyzeError(
@@ -321,6 +383,25 @@ def capture_solver_execution_request(
     state = solver_state(prepared.solver)
     if state["suppressed"]:
         raise NativeAnalyzeError("A suppressed FEM solver cannot be run.")
+    analysis_name = str(state.get("analysis") or "")
+    analysis = document.getObject(analysis_name) if analysis_name else None
+    validation = validate_assignments(analysis) if analysis is not None else None
+    if analysis_name and (
+        not isinstance(validation, Mapping) or validation.get("valid") is not True
+    ):
+        issues = list(validation.get("issues") or ()) if isinstance(validation, Mapping) else []
+        first = str(issues[0].get("message") or "") if issues else ""
+        raise NativeAnalyzeError(
+            "The FEM study has invalid assignment or mesh coverage"
+            + (": " + first if first else "."),
+            error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
+            repair={
+                "analysis": analysis_name,
+                "issue_count": int(validation.get("issue_count", 0) or 0)
+                if isinstance(validation, Mapping)
+                else 0,
+            },
+        )
     history = _require_history_root(document, prepared.solver)
     runtime_preferences = _current_solver_runtime_preferences(prepared.kind)
     return CapturedSolverExecutionRequest(
@@ -377,6 +458,7 @@ def prepare_solver_execution_request(
     target: Any,
     timeout_seconds: Any,
     working_directory: str | Path | None = None,
+    progress: Callable[[int, str], None] | None = None,
 ) -> SolverExecutionRequest:
     """Generate one solver case synchronously for compatibility callers.
 
@@ -417,7 +499,14 @@ def prepare_solver_execution_request(
             "openfoam": _openfoam_request,
             "z88": _z88_request,
         }[prepared.kind]
-        _tool, commands, environment, importer_state = maker(prepared.solver, root)
+        if prepared.kind == "calculix":
+            _tool, commands, environment, importer_state = maker(
+                prepared.solver,
+                root,
+                progress=progress,
+            )
+        else:
+            _tool, commands, environment, importer_state = maker(prepared.solver, root)
         digest, count = _input_digest(root)
         return SolverExecutionRequest(
             prepared,

@@ -115,6 +115,24 @@ class NativeAnalyzeSolverExecutionRuntime:
         except Exception:
             workspace.cleanup()
             raise
+        try:
+            def watch_status() -> None:
+                import FreeCAD as App
+
+                if not bool(getattr(App, "GuiUp", False)):
+                    return
+                from VibeCADAnalyzeSolverGui import watch_solver_job
+
+                watch_solver_job(
+                    manager,
+                    str(snapshot.job_id),
+                    str(captured.target.kind),
+                )
+
+            dispatcher(watch_status)
+        except Exception:
+            # Status presentation must never invalidate an already accepted job.
+            pass
         return {
             "job": {
                 "job_id": str(snapshot.job_id),
@@ -128,5 +146,10 @@ class NativeAnalyzeSolverExecutionRuntime:
                 "tool": "native.job",
                 "operation": "status",
                 "job_id": snapshot.job_id,
+                "poll_after_seconds": 30,
+                "guidance": (
+                    "Continue polling until terminal. Do not cancel solely because "
+                    "progress is slow or unchanged."
+                ),
             },
         }

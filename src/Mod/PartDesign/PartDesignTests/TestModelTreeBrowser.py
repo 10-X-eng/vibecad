@@ -16,6 +16,11 @@ import Sketcher  # noqa: F401 - registers Sketcher document types
 from PySide import QtCore, QtGui
 from pivy import coin
 
+try:
+    import Fem  # noqa: F401 - registers optional FEM document types
+except ImportError:
+    Fem = None
+
 
 BROWSER_FOLDER_TYPE = 1002
 BROWSER_DETAIL_TYPE = 1003
@@ -697,6 +702,74 @@ class TestModelTreeBrowser(unittest.TestCase):
         for item in _visible_walk(document_item):
             if item.type() == BROWSER_FOLDER_TYPE:
                 self.assertFalse(item.icon(0).isNull(), item.text(0))
+
+    @unittest.skipIf(Fem is None, "Requires FEM")
+    def test_analyze_folder_preserves_study_membership_without_duplicates(self):
+        analysis = self.document.addObject(
+            "Fem::FemAnalysis",
+            "StructuralAnalysis",
+        )
+        analysis.Label = "Structural Analysis"
+        _tag_timeline_role(analysis, "operation")
+
+        material = self.document.addObject(
+            "App::MaterialObjectPython",
+            "StructuralMaterial",
+        )
+        material.Label = "PETG Material"
+        _tag_timeline_role(material, "resource")
+        analysis.addObject(material)
+
+        constraint = self.document.addObject(
+            "Fem::ConstraintFixed",
+            "FixedSupport",
+        )
+        constraint.Label = "Fixed Support"
+        _tag_timeline_role(constraint, "resource")
+        analysis.addObject(constraint)
+
+        solver = self.document.addObject(
+            "Fem::FemSolverObjectPython",
+            "CalculiXSolver",
+        )
+        solver.Label = "CalculiX Solver"
+        _tag_timeline_role(solver, "resource")
+        analysis.addObject(solver)
+
+        loose_solver = self.document.addObject(
+            "Fem::FemSolverObjectPython",
+            "UnassignedSolver",
+        )
+        loose_solver.Label = "Unassigned Solver"
+        self.document.recompute()
+
+        def analyze_items():
+            _tree, document_item = self._tree_and_document_item()
+            analyze = _child(document_item, "Analyze", BROWSER_FOLDER_TYPE)
+            study = _child(analyze, analysis.Label)
+            values = (document_item, analyze, study)
+            return values if all(value is not None for value in values) else None
+
+        observed = _wait_until(analyze_items)
+        self.assertIsNotNone(observed, self._snapshot())
+        document_item, analyze, study = observed
+        self.assertEqual(
+            [item.text(0) for item in _visible_children(study)],
+            [material.Label, constraint.Label, solver.Label],
+        )
+        self.assertIsNotNone(_child(analyze, loose_solver.Label))
+
+        operations = _child(document_item, "Operations", BROWSER_FOLDER_TYPE)
+        other = _child(document_item, "Other", BROWSER_FOLDER_TYPE)
+        for label in (
+            analysis.Label,
+            material.Label,
+            constraint.Label,
+            solver.Label,
+            loose_solver.Label,
+        ):
+            self.assertFalse(_snapshot_has_label(_snapshot(operations), label))
+            self.assertFalse(_snapshot_has_label(_snapshot(other), label))
 
     def test_vibecad_outputs_are_badged_and_not_classified_as_references(self):
         model_id = "browser-target-backed-publication"

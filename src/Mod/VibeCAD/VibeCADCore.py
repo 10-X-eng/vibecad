@@ -821,7 +821,7 @@ class VibeCADService:
         details = begin_analyze_snapshot_capture(
             document,
             background_job=background_job,
-            defer_brep_validation=True,
+            validate_brep=False,
         )
         return {
             **details,

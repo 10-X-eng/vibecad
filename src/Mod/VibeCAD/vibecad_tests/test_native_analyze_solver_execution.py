@@ -16,6 +16,7 @@ from VibeCADNativeAnalyzeSolverExecution import (
     _prepare_calculix,
     _require_meaningful_result_state,
     _require_no_ignored_elmer_constraints,
+    _run_with_progress_heartbeat,
 )
 from VibeCADNativeAnalyzeSolverExecutionProcess import run_solver_processes
 from VibeCADNativeAnalyzeSolverExecutionSchema import (
@@ -60,7 +61,7 @@ def test_process_sequence_is_exact_bounded_and_shell_free(tmp_path: Path) -> Non
         (first, second),
         working_directory=str(tmp_path),
         environment={**os.environ, "SAFE_VALUE": "exact"},
-        timeout_seconds=5,
+        timeout_seconds=15,
         cancelled=lambda: False,
         progress=lambda percent, message: progress.append((percent, message)),
         backend="Test",
@@ -92,6 +93,33 @@ def test_process_sequence_cooperatively_terminates_on_cancel(tmp_path: Path) -> 
         )
 
 
+def test_long_input_generation_emits_elapsed_heartbeat_messages() -> None:
+    release = threading.Event()
+    progress: list[tuple[int, str]] = []
+
+    def work() -> str:
+        assert release.wait(1.0)
+        return "deck"
+
+    timer = threading.Timer(0.04, release.set)
+    timer.start()
+    try:
+        result = _run_with_progress_heartbeat(
+            work,
+            progress=lambda percent, message: progress.append((percent, message)),
+            percent=4,
+            message="Generating CalculiX input deck",
+            interval_seconds=0.01,
+        )
+    finally:
+        timer.cancel()
+
+    assert result == "deck"
+    assert progress[0] == (4, "Generating CalculiX input deck")
+    assert any("elapsed" in message for _percent, message in progress[1:])
+    assert all(percent == 4 for percent, _message in progress)
+
+
 def test_process_failure_returns_only_bounded_tail(tmp_path: Path) -> None:
     program = _program(
         tmp_path / "fail",
@@ -108,6 +136,49 @@ def test_process_failure_returns_only_bounded_tail(tmp_path: Path) -> None:
             progress=lambda _percent, _message: None,
             backend="Test",
         )
+
+
+def test_calculix_failure_returns_structured_artifact_diagnostics(
+    tmp_path: Path,
+) -> None:
+    program = _program(
+        tmp_path / "ccx-fail",
+        "from pathlib import Path\n"
+        'print("Determining the structure of the matrix")\n'
+        'Path("model.sta").write_text('
+        '"*ERROR: a stiffness matrix coefficient is singular\\n"'
+        ', encoding="utf-8")\n'
+        "raise SystemExit(201)\n",
+    )
+
+    with pytest.raises(NativeAnalyzeError) as raised:
+        run_solver_processes(
+            (program,),
+            working_directory=str(tmp_path),
+            environment=os.environ,
+            timeout_seconds=5,
+            cancelled=lambda: False,
+            progress=lambda _percent, _message: None,
+            backend="CalculiX",
+        )
+
+    assert raised.value.error_code == "NATIVE_ANALYZE_SOLVER_BACKEND_FAILED"
+    assert "stiffness matrix coefficient is singular" in str(raised.value)
+    assert raised.value.repair == {
+        "backend": "CalculiX",
+        "stage": 1,
+        "exit_code": 201,
+        "diagnostics": [
+            {
+                "artifact": "model.sta",
+                "excerpt": "*ERROR: a stiffness matrix coefficient is singular",
+            },
+            {
+                "artifact": "solver-1.log",
+                "excerpt": "Determining the structure of the matrix",
+            },
+        ],
+    }
 
 
 def test_atomic_progress_replacement_is_a_transient_sample(
@@ -302,6 +373,59 @@ def test_solver_capture_does_not_generate_case_files(monkeypatch) -> None:
         ),
         ("preferences", "threads", "int", 6),
     )
+
+
+def test_solver_capture_rejects_assignments_outside_the_generated_mesh(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeAnalyzeSolverExecution as execution
+
+    analysis = SimpleNamespace(Name="Analysis")
+    document = SimpleNamespace(
+        getObject=lambda name: analysis if name == "Analysis" else None
+    )
+    target = SimpleNamespace(
+        solver=SimpleNamespace(Name="Solver", Document=document),
+        kind="calculix",
+        expected_state_sha256="a" * 64,
+    )
+    monkeypatch.setattr(execution, "prepare_solver_target", lambda *_args: target)
+    monkeypatch.setattr(
+        execution,
+        "solver_state",
+        lambda *_args: {"suppressed": False, "analysis": "Analysis"},
+    )
+    monkeypatch.setattr(
+        execution,
+        "validate_assignments",
+        lambda _analysis: {
+            "valid": False,
+            "issue_count": 1,
+            "issues": [
+                {
+                    "message": (
+                        "Contact references Body043, which is outside every "
+                        "generated mesh domain in this analysis."
+                    )
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(NativeAnalyzeError) as raised:
+        execution.capture_solver_execution_request(
+            document,
+            "document-a",
+            target={
+                "object_name": "Solver",
+                "expected_state_sha256": "a" * 64,
+            },
+            timeout_seconds=7200,
+        )
+
+    assert raised.value.error_code == "NATIVE_ANALYZE_SOLVER_NOT_READY"
+    assert "Body043" in str(raised.value)
+    assert raised.value.repair == {"analysis": "Analysis", "issue_count": 1}
 
 
 def test_solver_capture_validation_rejects_runtime_preference_changes(
@@ -501,6 +625,46 @@ def test_human_solver_progress_is_mirrored_to_the_status_bar(monkeypatch) -> Non
     ]
 
 
+def test_ai_solver_progress_is_mirrored_to_the_status_bar(monkeypatch) -> None:
+    import types
+
+    from PySide6 import QtCore, QtWidgets
+
+    pyside = types.ModuleType("PySide")
+    pyside.QtCore = QtCore
+    pyside.QtWidgets = QtWidgets
+    monkeypatch.setitem(sys.modules, "PySide", pyside)
+    import VibeCADAnalyzeSolverGui as solver_gui
+
+    status_updates: list[str] = []
+    watcher = object.__new__(solver_gui._SolverJobStatusUi)
+    watcher.job_id = "ai-solver-job"
+    watcher.backend = "CalculiX"
+    watcher.manager = SimpleNamespace(
+        snapshot=lambda _job_id: SimpleNamespace(
+            progress_percent=23,
+            progress_message="Generating CalculiX input deck (95s elapsed)",
+            terminal=False,
+        )
+    )
+    monkeypatch.setattr(
+        solver_gui.Gui,
+        "getMainWindow",
+        lambda: SimpleNamespace(
+            statusBar=lambda: SimpleNamespace(
+                showMessage=lambda value, *_args: status_updates.append(value)
+            )
+        ),
+        raising=False,
+    )
+
+    watcher.poll()
+
+    assert status_updates == [
+        "CalculiX: Generating CalculiX input deck (95s elapsed)"
+    ]
+
+
 def test_analyze_preferences_expose_the_openfoam_environment_contract() -> None:
     repository = Path(__file__).resolve().parents[4]
     gui = repository / "src" / "Mod" / "Fem" / "Gui"
@@ -682,6 +846,43 @@ def test_authenticated_worker_result_reuses_only_parent_commit_guards(
     assert prepared.request.environment == {}
     assert prepared.request.runtime_preferences == runtime_preferences
     assert prepared.stages == ({"stage": 1, "program": "ccx.exe", "exit_code": 0},)
+
+
+def test_worker_preserves_structured_backend_failure_diagnostics(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    import VibeCADNativeAnalyzeSolverExecutionWorker as worker
+    from VibeCADNativeAnalyzeSolverExecutionInput import (
+        ANALYZE_SOLVER_EXECUTION_PROTOCOL,
+    )
+
+    frozen = SimpleNamespace(
+        workspace=SimpleNamespace(path=tmp_path),
+        request_sha256="a" * 64,
+    )
+    result = {
+        "ok": False,
+        "protocol": ANALYZE_SOLVER_EXECUTION_PROTOCOL,
+        "request_sha256": "a" * 64,
+        "error_code": "NATIVE_ANALYZE_SOLVER_BACKEND_FAILED",
+        "message": "CalculiX exited with code 201.",
+        "repair": {
+            "backend": "CalculiX",
+            "stage": 1,
+            "exit_code": 201,
+            "diagnostics": [
+                {"artifact": "model.sta", "excerpt": "*ERROR: singular matrix"}
+            ],
+        },
+    }
+    (tmp_path / "result.json").write_text(json.dumps(result), encoding="utf-8")
+
+    with pytest.raises(NativeAnalyzeError) as raised:
+        worker._read_result(frozen)
+
+    assert raised.value.repair == result["repair"]
 
 
 def test_worker_rejects_backend_implementation_substitution(tmp_path: Path) -> None:

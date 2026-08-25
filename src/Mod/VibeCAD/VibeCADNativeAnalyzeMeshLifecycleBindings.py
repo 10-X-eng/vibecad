@@ -46,6 +46,12 @@ def _edit_values(
         "expected_state_sha256": state["state_sha256"],
     }
     request = {"operation": "update_gmsh", "target": target}
+    if "source_name" in values:
+        request["source"] = current_target(
+            runtime,
+            values.pop("source_name"),
+            mesh_object_state,
+        )
     setting_names = ("maximum_size_mm", "minimum_size_mm", "element_order")
     if any(name in values for name in setting_names):
         settings = dict(state["settings"])
@@ -56,6 +62,8 @@ def _edit_values(
         request["settings"] = settings
     if "label" in values:
         request["label"] = values.pop("label")
+    if values:
+        raise NativeAnalyzeError("The Gmsh mesh edit contains unsupported values.")
     if len(request) == 2:
         raise NativeAnalyzeError("Edit the mesh size or label.")
     result = dict(runtime.execute(request, ticket=ticket))

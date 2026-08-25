@@ -1227,7 +1227,19 @@ def _capture_context_for_provider(
         from VibeCADNativeProviderContext import (
             schemas_for_native_provider_surface,
         )
+        from VibeCADNativeCapabilityRegistry import _provider_schema_operations
 
+        exact_native_schemas = [
+            dict(schema) for schema in native_provider_surface.schemas
+        ]
+        native_turn_authorization = {
+            "schema_sha256": provider_tool_schema_digest(exact_native_schemas),
+            "operations_by_tool": {
+                str(schema.get("name") or ""): list(operations)
+                for schema in exact_native_schemas
+                if (operations := _provider_schema_operations(schema))
+            },
+        }
         schemas = schemas_for_native_provider_surface(native_provider_surface)
     elif not native_engine:
         schemas = provider_tool_schemas(
@@ -1243,6 +1255,8 @@ def _capture_context_for_provider(
         schemas,
         resolution=resolution,
     )
+    if native_provider_surface is not None:
+        context["_native_turn_authorization"] = native_turn_authorization
     if session_trigger:
         context["session_trigger"] = dict(session_trigger)
     return context
@@ -4615,6 +4629,7 @@ def make_provider_tool_runner(
     document_thread_dispatch: DocumentThreadDispatch | None = None,
     turn_surface: dict[str, Any] | None = None,
     turn_schemas: list[dict[str, Any]] | None = None,
+    turn_authorization: Mapping[str, Any] | None = None,
     turn_modeling_surface: dict[str, Any] | None = None,
     turn_component_catalog: Mapping[str, Any] | None = None,
     turn_editable_sources: Mapping[str, Any] | None = None,
@@ -4637,6 +4652,11 @@ def make_provider_tool_runner(
                 service=service,
                 expected_surface=dict(turn_surface),
                 expected_schemas=[dict(value) for value in (turn_schemas or [])],
+                expected_authorization=(
+                    dict(turn_authorization)
+                    if isinstance(turn_authorization, Mapping)
+                    else None
+                ),
                 output_authorizer=output_authorization_callback,
                 input_authorizer=input_authorization_callback,
                 document_thread_dispatch=document_thread_dispatch,
@@ -5516,6 +5536,10 @@ def make_provider_tool_runner(
         )
         completed["provider_tool_surface"] = dict(turn_surface)
         completed["provider_tool_schemas"] = json.loads(json.dumps(frozen_schemas))
+        if isinstance(turn_authorization, Mapping):
+            completed["_native_turn_authorization"] = json.loads(
+                json.dumps(dict(turn_authorization))
+            )
         completed["workbench"] = str(turn_surface.get("workbench") or "") or None
         if frozen_modeling_surface:
             completed["modeling_surface"] = json.loads(
@@ -5700,6 +5724,11 @@ def _run_session_turn(
             for schema in list(context.get("provider_tool_schemas") or [])
             if isinstance(schema, dict)
         ],
+        turn_authorization=(
+            dict(context["_native_turn_authorization"])
+            if isinstance(context.get("_native_turn_authorization"), Mapping)
+            else None
+        ),
         turn_modeling_surface=(
             dict(context["modeling_surface"])
             if isinstance(context.get("modeling_surface"), dict)

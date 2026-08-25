@@ -12,6 +12,7 @@ from VibeCADNativeBackground import (
     NativeBackgroundError,
     NativeBackgroundManager,
 )
+from VibeCADNativeBackgroundRuntime import _summary
 
 
 def _callbacks(*, prepare, validate=lambda: None, commit=lambda value: value):
@@ -56,6 +57,33 @@ def test_submit_returns_while_detached_preparation_is_running() -> None:
     completed = manager.wait(submitted.job_id, 2.0)
     assert completed.phase == "completed"
     assert completed.result == {"mesh": "ready"}
+
+
+def test_running_job_summary_tells_provider_to_wait_without_inferring_a_hang() -> None:
+    manager = NativeBackgroundManager()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def prepare(_cancelled, progress):
+        progress(20, "Generating CalculiX input deck")
+        entered.set()
+        release.wait(1.0)
+        return {"deck": "ready"}
+
+    submitted = manager.submit(**_callbacks(prepare=prepare))
+    assert entered.wait(1.0)
+    summary = _summary(manager.snapshot(submitted.job_id))
+    release.set()
+    manager.wait(submitted.job_id, 2.0)
+
+    assert summary["worker_state"] == "active"
+    assert summary["recommended_poll_seconds"] >= 10
+    assert summary["elapsed_seconds"] >= 0
+    assert summary["seconds_since_progress"] >= 0
+    assert summary["guidance"] == (
+        "Continue waiting. Do not cancel an active job solely because its percent "
+        "is unchanged."
+    )
 
 
 def test_completed_mutating_job_reports_its_document_change() -> None:

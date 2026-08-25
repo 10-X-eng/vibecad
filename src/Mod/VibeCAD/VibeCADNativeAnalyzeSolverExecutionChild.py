@@ -473,6 +473,7 @@ def _execute(
             },
             timeout_seconds=timeout,
             working_directory=root / "case",
+            progress=report,
         )
         if execution_request.runtime_preferences != preferences:
             _fail(
@@ -544,6 +545,7 @@ def _main() -> int:
     except Exception as exc:
         code = str(getattr(exc, "error_code", "") or "")
         message = str(exc).strip()
+        repair = getattr(exc, "repair", None)
         failure = {
             "ok": False,
             "protocol": _PROTOCOL,
@@ -559,6 +561,18 @@ def _main() -> int:
                 else "The isolated FEM solver process failed."
             ),
         }
+        if isinstance(repair, Mapping):
+            try:
+                encoded_repair = json.dumps(
+                    dict(repair),
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            except (TypeError, ValueError):
+                encoded_repair = ""
+            if encoded_repair and len(encoded_repair.encode("utf-8")) <= 2048:
+                failure["repair"] = json.loads(encoded_repair)
     if result_path is not None and not result_path.exists():
         try:
             _write_private(

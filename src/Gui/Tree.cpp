@@ -47,6 +47,7 @@
 #include <Base/Reader.h>
 #include <Base/Sequencer.h>
 #include <Base/Tools.h>
+#include <Base/Type.h>
 #include <Base/Writer.h>
 
 #include <Base/Color.h>
@@ -5859,6 +5860,10 @@ void DocumentItem::rebuildModelBrowser()
     std::unordered_map<RoleContextKey, EntryBucket, RoleContextKeyHash> entriesByComponentRole;
     // All Component entries, for root placement of unowned components.
     EntryBucket componentEntries;
+    // Analysis containers and loose FEM objects keyed by their owning
+    // component. Members of an analysis are rendered from native Group
+    // membership instead of being flattened into type categories.
+    std::unordered_map<const App::DocumentObject*, EntryBucket> analyzeEntriesByComponent;
 
     for (const auto& entry : entries) {
         if (entry.role == Role::Origin || entry.role == Role::OriginFeature) {
@@ -5873,6 +5878,38 @@ void DocumentItem::rebuildModelBrowser()
         entriesByComponentRole[{entry.component, entry.role}].push_back(&entry);
         if (entry.role == Role::Component) {
             componentEntries.push_back(&entry);
+        }
+    }
+
+    const Base::Type analysisType = Base::Type::fromName("Fem::FemAnalysis");
+    auto isAnalysis = [analysisType](const App::DocumentObject* object) {
+        if (!object) {
+            return false;
+        }
+        return !analysisType.isBad() && object->getTypeId().isDerivedFrom(analysisType);
+    };
+    auto isFemObject = [](const App::DocumentObject* object) {
+        return object
+            && std::string_view(object->getTypeId().getName()).starts_with("Fem::");
+    };
+    auto analysisOwner = [&](const Entry& entry) {
+        App::DocumentObject* group = entry.group;
+        // Native document groups reject containment cycles. Keep an explicit
+        // bound as damage protection without allocating a visited set for
+        // every FEM entry during each browser rebuild.
+        for (std::size_t depth = 0; group && depth <= entries.size(); ++depth) {
+            if (isAnalysis(group)) {
+                return group;
+            }
+            const Entry* groupEntry = projection.find(group);
+            group = groupEntry ? groupEntry->group : nullptr;
+        }
+        return static_cast<App::DocumentObject*>(nullptr);
+    };
+    for (const auto& entry : entries) {
+        if (isAnalysis(entry.object)
+            || (isFemObject(entry.object) && !analysisOwner(entry))) {
+            analyzeEntriesByComponent[entry.component].push_back(&entry);
         }
     }
 
@@ -5914,6 +5951,7 @@ void DocumentItem::rebuildModelBrowser()
     std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderBody;
     std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderComponent;
     std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderGroup;
+    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderAnalyzeObject;
 
     // FreeCAD resolves duplicate default labels by appending a zero-padded
     // numeric suffix of at least three digits ("Origin001", "X-axis002"; see
@@ -6107,6 +6145,59 @@ void DocumentItem::rebuildModelBrowser()
         );
     };
 
+    renderAnalyzeObject = [&](const Entry& entry,
+                              QTreeWidgetItem* parent,
+                              DocumentObjectItem* logicalParent) {
+        if (entry.publishedImplementation || entry.bodyRepresentation) {
+            return;
+        }
+        auto* item = renderObject(entry, parent, logicalParent);
+        if (!item) {
+            return;
+        }
+
+        // FemAnalysis is the document's authoritative study container. Show
+        // every native member below it, including timeline resources such as
+        // materials, meshes, constraints, and solvers that are deliberately
+        // hidden from the generic model categories. Recurse through any plain
+        // organizational groups nested inside a study as well.
+        const auto members = takeBucket(findBucket(entriesByGroup, entry.object));
+        for (const auto* member : members) {
+            renderAnalyzeObject(*member, item, item);
+        }
+        item->setChildIndicatorPolicy(
+            item->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
+                                   : QTreeWidgetItem::DontShowIndicator
+        );
+    };
+
+    auto renderAnalyze = [&](QTreeWidgetItem* parent,
+                             DocumentObjectItem* contextItem,
+                             App::DocumentObject* contextObject) {
+        const auto entries = takeBucket(findBucket(
+            analyzeEntriesByComponent,
+            static_cast<const App::DocumentObject*>(contextObject)
+        ));
+        if (entries.empty()) {
+            return;
+        }
+        auto* folder = makeFolder(
+            parent,
+            contextItem,
+            contextKey(contextObject),
+            "analyze",
+            TreeWidget::tr("Analyze"),
+            "FemWorkbench"
+        );
+        for (const auto* entry : entries) {
+            renderAnalyzeObject(
+                *entry,
+                folder,
+                logicalItem(entry->logicalParent, contextItem)
+            );
+        }
+    };
+
     auto renderReferences = [&](
                                 QTreeWidgetItem* parent,
                                 DocumentObjectItem* contextItem,
@@ -6253,6 +6344,8 @@ void DocumentItem::rebuildModelBrowser()
             "Sketcher_NewSketch",
             sketches
         );
+
+        renderAnalyze(componentItem, componentItem, componentEntry.object);
 
         const auto operations = filterBucket(
             findBucket(
@@ -6428,6 +6521,8 @@ void DocumentItem::rebuildModelBrowser()
         "Sketcher_NewSketch",
         rootSketches
     );
+
+    renderAnalyze(this, nullptr, nullptr);
 
     const auto rootOperations = filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::History}),

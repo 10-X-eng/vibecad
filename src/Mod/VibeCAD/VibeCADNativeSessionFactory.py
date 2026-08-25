@@ -11,7 +11,10 @@ import secrets
 from typing import Any, Callable, Mapping
 
 from VibeCADNativeDispatch import NativeDispatchError, NativeTurnDispatcher
-from VibeCADNativeCapabilityRegistry import provider_visible_native_schema
+from VibeCADNativeCapabilityRegistry import (
+    _provider_schema_operations,
+    provider_visible_native_schema,
+)
 from VibeCADNativeInput import NativeInputAuthorizer
 from VibeCADNativeOutput import NativeOutputAuthorizer
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -68,6 +71,7 @@ def _validate_expected_turn(
     expected_surface: Mapping[str, Any],
     expected_schemas: list[dict[str, Any]],
     turn: NativeTurnSnapshot,
+    expected_authorization: Mapping[str, Any] | None = None,
 ) -> None:
     if (
         expected_surface.get("kind") != "turn_start_snapshot"
@@ -127,6 +131,27 @@ def _validate_expected_turn(
             "registry schema digest"
             + (f" ({', '.join(mismatched)})" if mismatched else "")
         )
+    if expected_authorization is not None:
+        if (
+            str(expected_authorization.get("schema_sha256") or "")
+            != turn.schema_sha256
+        ):
+            changed.append("operation authorization digest")
+        expected_operations = expected_authorization.get("operations_by_tool")
+        if not isinstance(expected_operations, Mapping):
+            changed.append("operation authorization map")
+        else:
+            frozen_operations = {
+                str(schema.get("name") or ""): list(operations)
+                for schema in turn.provider_schemas
+                if (operations := _provider_schema_operations(schema))
+            }
+            if {
+                str(name): [str(operation) for operation in operations]
+                for name, operations in expected_operations.items()
+                if isinstance(operations, (list, tuple))
+            } != frozen_operations:
+                changed.append("operation authorization scope")
     if str(expected_surface.get("domain") or "") != turn.surface.surface_id:
         changed.append("ribbon domain")
     if (
@@ -148,6 +173,7 @@ def create_native_session_execution(
     service: Any,
     expected_surface: Mapping[str, Any],
     expected_schemas: list[dict[str, Any]],
+    expected_authorization: Mapping[str, Any] | None = None,
     debug_sink: Callable[[Mapping[str, Any]], None] | None = None,
     registry: Any | None = None,
     controller: Any | None = None,
@@ -175,13 +201,29 @@ def create_native_session_execution(
     expected_names = tuple(
         str(value) for value in expected_surface.get("tool_names") or ()
     )
+    authorized_operations = None
+    if expected_authorization is not None:
+        if not isinstance(expected_authorization, Mapping) or not isinstance(
+            expected_authorization.get("operations_by_tool"), Mapping
+        ):
+            raise NativeDispatchError(
+                "NATIVE_TURN_INVALID",
+                "The captured turn has invalid Native operation authorization.",
+            )
+        authorized_operations = expected_authorization["operations_by_tool"]
     turn = freeze_native_turn(
         controller=controller,
         registry=selected_registry,
         tool_names=expected_names,
         provider_schemas=tuple(expected_schemas),
+        authorized_operations=authorized_operations,
     )
-    _validate_expected_turn(expected_surface, expected_schemas, turn)
+    _validate_expected_turn(
+        expected_surface,
+        expected_schemas,
+        turn,
+        expected_authorization,
+    )
     state = service.native_document_state_store()
     uid = document_uid(document)
     state.ensure_document(uid)
