@@ -140,7 +140,10 @@ def test_windows_discovery_uses_file_version_when_gui_help_is_silent(
     profiles.mkdir(parents=True)
     appdata = tmp_path / "Donn\u00fd User" / "AppData" / "Roaming"
 
-    def runner(command, **_kwargs):
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(kwargs)
         return subprocess.CompletedProcess(command, 0, "", "")
 
     installations = BambuStudio.discover_bambu_installations(
@@ -156,9 +159,12 @@ def test_windows_discovery_uses_file_version_when_gui_help_is_silent(
     assert installations[0].gui_command == (str(executable),)
     assert installations[0].resource_dir == str(profiles)
     assert installations[0].config_dir == str(appdata / "BambuStudio")
+    assert calls
+    no_window = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    assert all(call["creationflags"] & no_window for call in calls)
 
 
-def test_windows_launch_is_detached_and_preserves_unicode_path(tmp_path: Path) -> None:
+def test_windows_launch_has_no_console_and_preserves_unicode_path(tmp_path: Path) -> None:
     handoff = tmp_path / "M\u00f8del With Spaces.3mf"
     calls = []
 
@@ -179,7 +185,11 @@ def test_windows_launch_is_detached_and_preserves_unicode_path(tmp_path: Path) -
     assert result.command[-1] == str(handoff)
     assert result.process_id == 42
     assert calls[0][0][-1] == str(handoff)
-    assert calls[0][1]["creationflags"]
+    creationflags = calls[0][1]["creationflags"]
+    no_window = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    detached = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
+    assert creationflags & no_window
+    assert not creationflags & detached
     assert calls[0][1]["close_fds"] is True
     assert calls[0][1]["start_new_session"] is False
 

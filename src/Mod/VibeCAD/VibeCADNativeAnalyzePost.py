@@ -31,6 +31,9 @@ from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity
 
 
+_DATA_UNITS_PER_MM = {"mm": 1.0, "m": 0.001}
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedPostPipeline:
     boundary: AnalyzeCreationBoundary
@@ -69,6 +72,33 @@ def _label(value: Any) -> str:
     if not result or len(result) > 160:
         raise NativeAnalyzeError("label must contain 1 to 160 visible characters.")
     return result
+
+
+def _post_data_length_unit(pipeline: Any) -> str:
+    """Return the explicit coordinate unit of one post-processing dataset."""
+
+    properties = tuple(getattr(pipeline, "PropertiesList", ()) or ())
+    if "VibeCADDataLengthUnit" not in properties:
+        return "mm"
+    unit = str(getattr(pipeline, "VibeCADDataLengthUnit", "") or "")
+    if unit not in _DATA_UNITS_PER_MM:
+        raise NativeAnalyzeError(
+            "The post-processing result has an unsupported coordinate length unit.",
+            error_code="NATIVE_ANALYZE_RESULT_UNIT_INVALID",
+            repair={"supported_length_units": list(_DATA_UNITS_PER_MM)},
+        )
+    return unit
+
+
+def _mm_to_post_data_length(pipeline: Any, value: float) -> float:
+    return float(value) * _DATA_UNITS_PER_MM[_post_data_length_unit(pipeline)]
+
+
+def _mm_to_post_data_vector(
+    pipeline: Any, value: tuple[float, float, float]
+) -> tuple[float, float, float]:
+    factor = _DATA_UNITS_PER_MM[_post_data_length_unit(pipeline)]
+    return tuple(float(coordinate) * factor for coordinate in value)
 
 
 def _view_visibility(document):

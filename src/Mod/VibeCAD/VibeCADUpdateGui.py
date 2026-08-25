@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import threading
 from pathlib import Path
 from typing import Any
@@ -26,7 +25,10 @@ from VibeCADUpdate import (
     default_update_directory,
     load_update_policy,
     macos_install_helper_command,
+    macos_install_helper_started_path,
     record_pending_install,
+    spawn_detached_install_helper,
+    wait_for_install_helper_start,
     write_macos_install_helper,
 )
 
@@ -296,7 +298,7 @@ Start-Process -FilePath $Installer
         encoding="utf-8",
         newline="\n",
     )
-    subprocess.Popen(
+    spawn_detached_install_helper(
         [
             "powershell.exe",
             "-NoLogo",
@@ -309,11 +311,7 @@ Start-Process -FilePath $Installer
             str(plan.package),
             str(os.getpid()),
         ],
-        close_fds=True,
-        creationflags=(
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        ),
+        log_path=helper_dir / "install-helper.log",
     )
 
 
@@ -387,7 +385,7 @@ printf '{"status":"rolled-back","platform":"appimage"}\n' > "$receipt"
         newline="\n",
     )
     helper.chmod(0o700)
-    subprocess.Popen(
+    spawn_detached_install_helper(
         [
             "/bin/sh",
             str(helper),
@@ -398,8 +396,7 @@ printf '{"status":"rolled-back","platform":"appimage"}\n' > "$receipt"
             str(receipt),
             str(update_dir / "pending-install.json"),
         ],
-        close_fds=True,
-        start_new_session=True,
+        log_path=update_dir / "install-helper.log",
     )
 
 
@@ -410,16 +407,19 @@ def _launch_macos_install_helper(plan: InstallPlan) -> None:
     update_dir = default_update_directory()
     helper_dir = update_dir / "install-helper"
     helper = write_macos_install_helper(helper_dir / "install-macos-update.sh")
-    subprocess.Popen(
+    started = macos_install_helper_started_path(update_dir)
+    started.unlink(missing_ok=True)
+    spawn_detached_install_helper(
         macos_install_helper_command(
             helper,
             plan,
             process_id=os.getpid(),
             update_directory=update_dir,
         ),
-        close_fds=True,
-        start_new_session=True,
+        log_path=update_dir / "install-helper.log",
     )
+    if not wait_for_install_helper_start(started):
+        raise RuntimeError("The macOS install helper did not start.")
 
 
 class CheckForUpdatesCommand:
@@ -630,9 +630,24 @@ class UpdateCenterDialog(QtWidgets.QDialog):
     def _install_and_restart(self) -> None:
         self.controller.stage_install()
         if self.controller.pending_plan is None:
+            _warn_install_failure(self, self.status.text())
+            return
+        try:
+            self.hide()
+            _prepare_to_quit_for_update()
+        except Exception as exc:
+            self.show()
+            self.status.setText(str(exc))
+            _warn_install_failure(self, str(exc))
             return
         self.controller.launch_pending_install_now()
-        _quit_application_for_update()
+        if not self.controller._helper_launched:
+            self.show()
+            message = "VibeCAD could not start the install helper. See the Report view."
+            self.status.setText(message)
+            _warn_install_failure(self, message)
+            return
+        _exit_process_for_update()
 
 
 def _show_update_notification(result: UpdateCheckResult) -> None:
@@ -700,15 +715,35 @@ def _clear_update_center(*_args: Any) -> None:
     _update_center = None
 
 
-def _quit_application_for_update() -> None:
-    """Leave through FreeCAD's main-window close path, then stop Qt."""
+def _warn_install_failure(parent: Any, message: str) -> None:
+    text = (message or "").strip() or "The update could not be installed."
+    QtWidgets.QMessageBox.warning(parent, "Install update", text)
+
+
+def _prepare_to_quit_for_update() -> None:
+    """Save or discard open documents before the process is replaced."""
 
     main_window = Gui.getMainWindow()
-    if main_window is not None:
-        main_window.close()
-    application = QtWidgets.QApplication.instance()
-    if application is not None:
-        application.quit()
+    if main_window is None:
+        return
+    closer = getattr(main_window, "closeAllDocuments", None)
+    if callable(closer) and not closer(False):
+        raise RuntimeError(
+            "Save or discard open documents, then choose Install and restart."
+        )
+
+
+def _exit_process_for_update() -> None:
+    """Hard-exit so the detached helper can replace this application bundle."""
+
+    os._exit(0)
+
+
+def _quit_application_for_update() -> None:
+    """Compatibility wrapper used by tests and older callers."""
+
+    _prepare_to_quit_for_update()
+    _exit_process_for_update()
 
 
 def get_update_controller() -> UpdateController:

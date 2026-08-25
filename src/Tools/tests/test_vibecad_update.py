@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,6 +40,7 @@ from VibeCADUpdate import (  # noqa: E402
     normalize_architecture,
     parse_update_manifest,
     record_pending_install,
+    spawn_detached_install_helper,
     update_policy_from_mapping,
     write_macos_install_helper,
 )
@@ -899,9 +901,27 @@ class UpdateServiceTests(unittest.TestCase):
         self.assertIn("write_macos_install_helper", launch)
         self.assertIn("macos_install_helper_command", launch)
         self.assertIn("launch_pending_install_now()", restart)
-        self.assertIn("_quit_application_for_update()", restart)
-        self.assertIn("main_window.close()", gui)
+        self.assertIn("_prepare_to_quit_for_update()", restart)
+        self.assertIn("_exit_process_for_update()", restart)
+        self.assertLess(
+            restart.index("_prepare_to_quit_for_update()"),
+            restart.index("launch_pending_install_now()"),
+        )
+        self.assertLess(
+            restart.index("launch_pending_install_now()"),
+            restart.index("_exit_process_for_update()"),
+        )
+        self.assertIn("closeAllDocuments", gui)
+        self.assertIn("os._exit(0)", gui)
+        self.assertIn("spawn_detached_install_helper", gui)
+        self.assertIn("macos_install_helper_started_path", launch)
+        self.assertIn("wait_for_install_helper_start", launch)
         self.assertIn("hdiutil attach", helper)
+        self.assertIn("install-helper.started", helper)
+        self.assertLess(
+            helper.index('printf \'%s\\n\' "$$" > "$started"'),
+            helper.index('while kill -0 "$pid"'),
+        )
         self.assertIn("ditto", helper)
         self.assertIn('new_app="$mount/VibeCAD.app"', helper)
         self.assertIn("bundle_executable", helper)
@@ -950,6 +970,99 @@ class UpdateServiceTests(unittest.TestCase):
         self.assertEqual(command[5], f"{app}.vibecad-rollback")
         self.assertEqual(Path(command[6]).resolve(), (root / "install-receipt.json").resolve())
         self.assertEqual(Path(command[7]).resolve(), (root / "pending-install.json").resolve())
+
+    def test_macos_helper_stamps_started_before_waiting_for_the_app(self) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("Requires the macOS install-helper runtime")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            helper = write_macos_install_helper(root / "install-macos-update.sh")
+            receipt = root / "install-receipt.json"
+            pending = root / "pending-install.json"
+            pending.write_text('{"schema":1,"status":"pending"}\n', encoding="utf-8")
+            waiter = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+            )
+            helper_proc = subprocess.Popen(
+                [
+                    "/bin/sh",
+                    str(helper),
+                    str(waiter.pid),
+                    str(root / "missing.dmg"),
+                    str(root / "VibeCAD.app"),
+                    str(root / "VibeCAD.app.vibecad-rollback"),
+                    str(receipt),
+                    str(pending),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            stamp = root / "install-helper.started"
+            log_path = root / "install-helper.log"
+            waiter_pid = waiter.pid
+            try:
+                deadline = time.time() + 5
+                log = ""
+                while time.time() < deadline:
+                    if stamp.is_file() and log_path.is_file():
+                        log = log_path.read_text(encoding="utf-8")
+                        if "helper started" in log:
+                            break
+                    time.sleep(0.05)
+                started = stamp.is_file()
+                log = log_path.read_text(encoding="utf-8") if log_path.is_file() else ""
+            finally:
+                helper_proc.kill()
+                waiter.kill()
+                helper_proc.wait(timeout=5)
+                waiter.wait(timeout=5)
+        self.assertTrue(started, f"log={log}")
+        self.assertIn("helper started", log)
+        self.assertIn(f"waiting for {waiter_pid}", log)
+
+    def test_spawn_detached_helper_outlives_the_parent_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            marker = root / "alive"
+            log = root / "helper.log"
+            helper_command = [
+                sys.executable,
+                "-c",
+                (
+                    "import time\n"
+                    "from pathlib import Path\n"
+                    "time.sleep(0.4)\n"
+                    f"Path({str(marker)!r}).write_text('ready', encoding='utf-8')\n"
+                ),
+            ]
+            launcher = (
+                "from pathlib import Path\n"
+                "from VibeCADUpdate import spawn_detached_install_helper\n"
+                "spawn_detached_install_helper(\n"
+                f"    {helper_command!r},\n"
+                f"    log_path=Path({str(log)!r}),\n"
+                ")\n"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", launcher],
+                check=False,
+                cwd=str(VIBECAD_MODULE_DIR),
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PYTHONPATH": str(VIBECAD_MODULE_DIR)},
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                f"stdout={completed.stdout}\nstderr={completed.stderr}",
+            )
+            deadline = time.time() + 5
+            while time.time() < deadline and not marker.is_file():
+                time.sleep(0.05)
+            self.assertTrue(
+                marker.is_file(),
+                f"stderr={completed.stderr}\nlog={log.read_text(encoding='utf-8') if log.is_file() else ''}",
+            )
 
     def test_macos_helper_replaces_the_app_and_keeps_a_live_update(self) -> None:
         if sys.platform != "darwin" or shutil.which("hdiutil") is None:

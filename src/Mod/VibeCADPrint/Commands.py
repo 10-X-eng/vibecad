@@ -453,7 +453,14 @@ class _Save3MFCommand:
         return _selection_available()
 
     def Activated(self) -> None:
-        _save_selected_3mf()
+        import PrintPanel
+
+        try:
+            selection = PrintPanel.checked_panel_selection()
+        except VibeCADPrint.PrintSelectionError as exc:
+            _warning("Save 3MF", str(exc))
+            return
+        _save_selected_3mf(selection=selection)
 
 
 class _PrintSetupCommand:
@@ -462,8 +469,8 @@ class _PrintSetupCommand:
             "Pixmap": PrintIcons.icon_path("setup"),
             "MenuText": "Print Setup",
             "ToolTip": (
-                "Locate PrusaSlicer and explicitly confirm printer, print, material, "
-                "auto-arrange, and ensure-on-bed choices"
+                "Locate the selected slicer and explicitly confirm printer, print, "
+                "material, auto-arrange, and ensure-on-bed choices"
             ),
         }
 

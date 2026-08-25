@@ -6,13 +6,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
 import time
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
-from VibeCADNativeAnalyzeMeshGenerationProcess import stop_process
 from VibeCADNativeBackground import NativeBackgroundCancelled
-
+from VibeCADScriptedProcess import terminate_process_tree
 
 MAX_SOLVER_LOG_BYTES = 16 * 1024 * 1024
 
@@ -24,6 +24,19 @@ def _tail(path: Path) -> str:
             return stream.read(2400).decode("utf-8", errors="replace").strip()
     except Exception:
         return ""
+
+
+def _failure_detail(path: Path, backend: str) -> str:
+    detail = _tail(path)
+    if str(backend).casefold() != "openfoam":
+        return detail
+    marker = "FOAM FATAL ERROR:"
+    if marker not in detail:
+        return detail
+    reason = detail.split(marker, 1)[1]
+    if "From function" in reason:
+        reason = reason.split("From function", 1)[0]
+    return reason.strip()
 
 
 def run_solver_processes(
@@ -47,6 +60,8 @@ def run_solver_processes(
         log_path = root / f"solver-{index + 1}.log"
         base_progress = 12 + int(65 * index / len(commands))
         progress(base_progress, f"Running {backend} stage {index + 1}/{len(commands)}")
+        stage_started = time.monotonic()
+        next_status = stage_started + 5.0
         try:
             with log_path.open("wb") as log:
                 process = subprocess.Popen(
@@ -57,23 +72,40 @@ def run_solver_processes(
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     shell=False,
+                    start_new_session=sys.platform != "win32",
+                    creationflags=(
+                        int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        if sys.platform == "win32"
+                        else 0
+                    ),
                 )
                 while process.poll() is None:
                     if cancelled():
-                        stop_process(process)
+                        terminate_process_tree(process)
                         raise NativeBackgroundCancelled()
                     if time.monotonic() - started > timeout_seconds:
-                        stop_process(process)
+                        terminate_process_tree(process)
                         raise NativeAnalyzeError(
                             f"{backend} exceeded timeout_seconds before producing results.",
                             error_code="NATIVE_ANALYZE_SOLVER_TIMEOUT",
                         )
                     if log_path.stat().st_size > MAX_SOLVER_LOG_BYTES:
-                        stop_process(process)
+                        terminate_process_tree(process)
                         raise NativeAnalyzeError(
                             f"{backend} exceeded the 16 MiB diagnostic-output bound.",
                             error_code="NATIVE_ANALYZE_SOLVER_OUTPUT_LIMIT",
                         )
+                    now = time.monotonic()
+                    if now >= next_status:
+                        elapsed = int(now - stage_started)
+                        progress(
+                            base_progress,
+                            (
+                                f"Running {backend} stage {index + 1}/{len(commands)} "
+                                f"({elapsed}s elapsed)"
+                            ),
+                        )
+                        next_status = now + 5.0
                     time.sleep(0.1)
                 exit_code = int(process.returncode or 0)
         except (NativeBackgroundCancelled, NativeAnalyzeError):
@@ -84,7 +116,7 @@ def run_solver_processes(
                 error_code="NATIVE_ANALYZE_SOLVER_START_FAILED",
             ) from exc
         if exit_code != 0:
-            detail = _tail(log_path)
+            detail = _failure_detail(log_path, backend)
             suffix = f": {detail}" if detail else ""
             raise NativeAnalyzeError(
                 f"{backend} stage {index + 1} exited with code {exit_code}{suffix}",

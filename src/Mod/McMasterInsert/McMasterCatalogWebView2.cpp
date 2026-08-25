@@ -60,9 +60,15 @@ void showWebViewError(const std::wstring& message)
 
 std::wstring argumentValue(const std::vector<std::wstring>& arguments, const wchar_t* name)
 {
-    for (std::size_t index = 0; index + 1 < arguments.size(); ++index) {
-        if (arguments[index] == name) {
+    const std::wstring option(name);
+    const std::wstring prefix = option + L"=";
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        const auto& argument = arguments[index];
+        if (argument == option && index + 1 < arguments.size()) {
             return arguments[index + 1];
+        }
+        if (argument.compare(0, prefix.size(), prefix) == 0) {
+            return argument.substr(prefix.size());
         }
     }
     return {};
@@ -510,6 +516,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int commandShow)
 
     inboxPath = argumentValue(arguments, L"--inbox");
     profilePath = argumentValue(arguments, L"--profile");
+    if (hasArgument(arguments, L"--argument-parser-smoke-test")) {
+        const bool parsedRequiredPaths = !inboxPath.empty() && !profilePath.empty();
+        CoUninitialize();
+        return parsedRequiredPaths ? 0 : 4;
+    }
     const auto requestedUrl = argumentValue(arguments, L"--url");
     if (!requestedUrl.empty()) {
         initialUrl = requestedUrl;

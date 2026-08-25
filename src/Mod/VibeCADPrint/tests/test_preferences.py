@@ -37,6 +37,7 @@ def _setup() -> VibeCADPrint.PrintSetup:
         material_profiles=("Generic PLA @XL", "Generic PETG @XL"),
         auto_arrange=False,
         ensure_on_bed=True,
+        object_filament_ids=(2, 1),
     )
 
 
@@ -49,6 +50,7 @@ def test_confirmed_setup_round_trips_exact_names_and_placement() -> None:
     assert params.values["MaterialProfilesJson"] == (
         '["Generic PLA @XL", "Generic PETG @XL"]'
     )
+    assert params.values["ObjectFilamentIdsJson"] == "[2, 1]"
 
 
 def test_incomplete_or_invalid_persisted_setup_is_not_guessed() -> None:

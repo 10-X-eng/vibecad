@@ -4948,6 +4948,15 @@ void DesignBodyState::setupObject()
     bindDesignIdentity(*this, DesignId);
 }
 
+void DesignBodyState::onDocumentRestored()
+{
+    Part::Feature::onDocumentRestored();
+    restoredOperation = Operation.getValue();
+    restoredOutputIndex = OutputIndex.getValue();
+    restoredPresent = Present.getValue();
+    preserveRestoredShape = !Shape.getShape().isNull();
+}
+
 short DesignBodyState::mustExecute() const
 {
     if (Operation.isTouched() || OutputIndex.isTouched() || PreviousState.isTouched()) {
@@ -5073,8 +5082,23 @@ App::DocumentObjectExecReturn* DesignBodyState::execute()
         return outputError("An absent Body state cannot contain rendered geometry");
     }
 
+    const bool unchangedRestoredSource =
+        preserveRestoredShape && restoredOperation == operationObject
+        && restoredOutputIndex == index && restoredPresent == present
+        && !operation->designOutputShapes().isTouched()
+        && !operation->designOutputPresence().isTouched();
     Present.setValue(present);
-    Shape.setValue(output);
+    const Part::TopoShape& current = Shape.getShape();
+    if (!unchangedRestoredSource
+        && (current.isNull() != output.isNull()
+            || (!output.isNull()
+                && !current.getShape().IsPartner(output.getShape())))) {
+        Shape.setValue(output);
+    }
+    preserveRestoredShape = false;
+    restoredOperation = operationObject;
+    restoredOutputIndex = index;
+    restoredPresent = present;
     return App::DocumentObject::StdReturn;
 }
 
@@ -5120,6 +5144,15 @@ void DesignBodyPublication::setupObject()
 {
     Feature::setupObject();
     bindDesignIdentity(*this, DesignId);
+}
+
+void DesignBodyPublication::onDocumentRestored()
+{
+    Feature::onDocumentRestored();
+    preserveRestoredShape = !Shape.getShape().isNull();
+    auto* document = getDocument();
+    auto* body = document ? bodyWithIdentity(*document, BodyId.getValueStr()) : nullptr;
+    restoredPublishedFeature = designBodyStateBefore(body, nullptr);
 }
 
 short DesignBodyPublication::mustExecute() const
@@ -5192,7 +5225,19 @@ App::DocumentObjectExecReturn* DesignBodyPublication::execute()
         return outputError("This Body publication's active state has no valid shape");
     }
 
-    Shape.setValue(shapeInBodyStateCoordinates(*currentFeature));
+    const Part::TopoShape output = shapeInBodyStateCoordinates(*currentFeature);
+    const bool unchangedRestoredSource =
+        preserveRestoredShape && restoredPublishedFeature == currentFeature
+        && !currentFeature->Shape.isTouched();
+    const Part::TopoShape& current = Shape.getShape();
+    if (!unchangedRestoredSource
+        && (current.isNull() != output.isNull()
+            || (!output.isNull()
+                && !current.getShape().IsPartner(output.getShape())))) {
+        Shape.setValue(output);
+    }
+    preserveRestoredShape = false;
+    restoredPublishedFeature = currentFeature;
     return App::DocumentObject::StdReturn;
 }
 

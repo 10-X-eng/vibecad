@@ -271,20 +271,12 @@ class _SolverDlg:
 
     def get_binary(self, silent=False):
 
-        # set the binary path to the FreeCAD defaults
-        # ATM pure unix shell commands without path names are used as standard
-        # TODO the binaries provided with the FreeCAD distribution should be found
-        # without any additional user input
-        # see ccxttols, it works for Windows and Linux there
         binary = self.get_configured_binary()
         FreeCAD.Console.PrintLog(f"Solver binary path default: {binary} \n")
 
-        # get the whole binary path name for the given command or binary path and return it
-        # None is returned if the binary has not been found
-        # The user does not know what exactly has going wrong.
-        from shutil import which as find_bin
+        from femsolver.runtime import resolve_executable
 
-        the_found_binary = find_bin(binary)
+        the_found_binary = resolve_executable(binary)
         if the_found_binary is None:
             if not silent:
                 FreeCAD.Console.PrintError(

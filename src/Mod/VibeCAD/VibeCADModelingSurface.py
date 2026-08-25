@@ -20,6 +20,7 @@ from VibeCADVibeScriptDomains import (
 )
 
 MODELING_ENGINES = frozenset({"native", "vibescript"})
+NATIVE_ANALYSIS_SURFACES = frozenset({"analyze"})
 UNSUPPORTED_WORKBENCHES = frozenset({"NoneWorkbench", "TestWorkbench"})
 
 CORE_CONVERSATION_VIEW_TOOLS = frozenset(
@@ -59,6 +60,20 @@ def is_model_assembly_workbench(workbench: str | None) -> bool:
     """Return whether the ribbon belongs to the unified authoring surface."""
 
     return str(workbench or "") in MODEL_ASSEMBLY_WORKBENCHES
+
+
+def provider_engine_for_ribbon(authoring_engine: str, surface_id: str) -> str:
+    """Return the provider engine selected by document authority and ribbon.
+
+    Analyze owns derived study artifacts, not source design geometry.  It uses
+    the Native Analyze contract while preserving the document's VibeScript or
+    Native geometry-authoring authority.
+    """
+
+    engine = str(authoring_engine or "").strip().lower()
+    if engine not in MODELING_ENGINES:
+        raise ValueError(f"Unknown modeling engine: {engine or '<missing>'}.")
+    return "native" if str(surface_id or "") in NATIVE_ANALYSIS_SURFACES else engine
 
 
 def share_authoring_surface(
@@ -350,6 +365,20 @@ def engine_from_service(service: Any) -> str:
             f"VibeCAD service returned invalid modeling engine {engine!r}."
         )
     return engine
+
+
+def provider_engine_from_service(service: Any) -> str:
+    """Resolve the next-turn engine without changing document authority."""
+
+    authoring_engine = engine_from_service(service)
+    if authoring_engine == "native":
+        return "native"
+    from VibeCADRibbonSurface import read_active_ribbon_surface
+
+    return provider_engine_for_ribbon(
+        authoring_engine,
+        read_active_ribbon_surface().surface_id,
+    )
 
 
 def resolve_service_surface(service: Any, workbench: str | None) -> ModelingSurface:

@@ -60,6 +60,33 @@ class PrintExportError(SlicerError):
     """The selected geometry could not be exported as a complete 3MF."""
 
 
+def background_subprocess_kwargs(*, platform: str | None = None) -> dict[str, int]:
+    """Return platform-safe options for an invisible, waitable CLI child."""
+
+    current_platform = platform or sys.platform
+    if current_platform != "win32":
+        return {}
+    return {
+        "creationflags": int(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        )
+    }
+
+
+def gui_subprocess_kwargs(*, platform: str | None = None) -> dict[str, int]:
+    """Return platform-safe options for a detached GUI child without a console."""
+
+    current_platform = platform or sys.platform
+    if current_platform != "win32":
+        return {}
+    return {
+        "creationflags": int(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        )
+        | int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    }
+
+
 @dataclass(frozen=True)
 class BedInfo:
     """Build-volume summary returned by PrusaSlicer's profile query."""
@@ -537,6 +564,7 @@ def probe_candidate(
             text=True,
             timeout=timeout,
             check=False,
+            **background_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -661,6 +689,7 @@ def run_json_query(
             text=True,
             timeout=timeout,
             check=False,
+            **background_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise SlicerQueryError(
@@ -728,6 +757,8 @@ def validate_setup(
     setup: PrintSetup,
     printer: PrinterProfile,
     catalog: ProfileCatalog,
+    *,
+    allow_additional_materials: bool = False,
 ) -> tuple[str, ...]:
     """Validate exact names without substituting a compatible-looking preset."""
 
@@ -744,9 +775,18 @@ def validate_setup(
         )
         return tuple(errors)
     required = max(0, printer.extruders)
-    if len(setup.material_profiles) != required:
+    material_count_valid = (
+        len(setup.material_profiles) >= required
+        if allow_additional_materials
+        else len(setup.material_profiles) == required
+    )
+    if not material_count_valid:
         errors.append(
-            f"Select one material profile for each of the printer's {required} extruders."
+            f"Select at least one material profile for each of the printer's "
+            f"{required} extruders."
+            if allow_additional_materials
+            else f"Select one material profile for each of the printer's {required} "
+            "extruders."
         )
         return tuple(errors)
     compatible = {material.name for material in print_profile.materials}
@@ -849,6 +889,7 @@ def prepare_prusaslicer_project(
             text=True,
             timeout=timeout,
             check=False,
+            **background_subprocess_kwargs(),
         )
         if completed.returncode != 0 or not partial.is_file():
             details = " ".join(
@@ -904,11 +945,6 @@ def launch_prusaslicer(
     """Launch PrusaSlicer detached from VibeCAD without invoking a shell."""
 
     command = build_launch_command(installation, handoff_file, setup)
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        )
     try:
         process = popen(
             list(command),
@@ -916,7 +952,7 @@ def launch_prusaslicer(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=(sys.platform != "win32"),
-            creationflags=creationflags,
+            **gui_subprocess_kwargs(),
         )
     except OSError as exc:
         raise SlicerError(f"Could not launch PrusaSlicer: {exc}") from exc
@@ -935,11 +971,6 @@ def launch_slicer_gui(
 
     command = (*installation.gui_command, str(Path(handoff_file)))
     current_platform = platform or sys.platform
-    creationflags = 0
-    if current_platform == "win32":
-        creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008)) | int(
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-        )
     try:
         process = popen(
             list(command),
@@ -948,7 +979,7 @@ def launch_slicer_gui(
             stderr=subprocess.DEVNULL,
             close_fds=True,
             start_new_session=(current_platform != "win32"),
-            creationflags=creationflags,
+            **gui_subprocess_kwargs(platform=current_platform),
         )
     except OSError as exc:
         raise SlicerError(f"Could not start {slicer_name}: {exc}") from exc

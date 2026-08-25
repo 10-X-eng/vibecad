@@ -22,10 +22,12 @@ from VibeCADNativeAnalyzeSolverState import prepare_solver_target, solver_state
 from VibeCADNativeAnalyzeEquationState import prepare_equation_target, equation_state
 from VibeCADNativeAnalyzeResultState import prepare_result_target, result_state
 from VibeCADNativeAnalyzeResults import result_purge_state
+from VibeCADNativeAnalyzeStudyState import study_state
 from VibeCADNativeAnalyzeMeshOutputState import (
     inspect_fem_mesh_elements as _inspect_fem_mesh_elements,
 )
 from VibeCADNativeAnalyzeState import analysis_state, material_state
+from VibeCADNativeAnalyzeAssignments import list_assignments, validate_assignments
 from VibeCADNativeAnalyzeTargets import (
     prepare_analysis_target,
     prepare_electromagnetic_constraint_target,
@@ -53,6 +55,44 @@ def inspect_analysis(
     }
 
 
+def inspect_study(
+    document: Any,
+    document_uid: str,
+    target: Any,
+) -> dict[str, Any]:
+    prepared = prepare_analysis_target(document, document_uid, target)
+    return {"study": study_state(prepared.analysis)}
+
+
+def inspect_assignments(
+    document: Any,
+    document_uid: str,
+    target: Any,
+    *,
+    category: Any,
+    offset: Any,
+    page_size: Any,
+) -> dict[str, Any]:
+    prepared = prepare_analysis_target(document, document_uid, target)
+    return {
+        "assignment_page": list_assignments(
+            prepared.analysis,
+            category=category,
+            offset=offset,
+            page_size=page_size,
+        )
+    }
+
+
+def inspect_assignment_validation(
+    document: Any,
+    document_uid: str,
+    target: Any,
+) -> dict[str, Any]:
+    prepared = prepare_analysis_target(document, document_uid, target)
+    return {"assignment_validation": validate_assignments(prepared.analysis)}
+
+
 def inspect_material(
     document: Any,
     document_uid: str,
@@ -66,7 +106,7 @@ def inspect_material_catalog(
     *,
     query: Any,
     category: Any,
-    limit: Any,
+    limit: Any = 25,
 ) -> dict[str, Any]:
     return search_material_catalog(query, category, limit)
 

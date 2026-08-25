@@ -250,6 +250,8 @@ def createDefaultSolverFeature(document, solver_name):
             "SaveGeometryIndex",
             False,
         )
+    elif solver_name == "OpenFOAM":
+        solver = ObjectsFem.makeSolverOpenFOAM(document)
     elif solver_name == "Mystran":
         solver = ObjectsFem.makeSolverMystran(document)
     elif solver_name == "Z88":
@@ -2004,6 +2006,56 @@ class _SolverElmer(CommandManager):
             raise
 
 
+class _SolverOpenFOAM(CommandManager):
+    "The FEM_SolverOpenFOAM command definition"
+
+    def __init__(self):
+        super().__init__()
+        self.pixmap = "FEM_SolverStandard"
+        self.menutext = Qt.QT_TRANSLATE_NOOP(
+            "FEM_SolverOpenFOAM", "Solver OpenFOAM"
+        )
+        self.tooltip = Qt.QT_TRANSLATE_NOOP(
+            "FEM_SolverOpenFOAM", "Creates an OpenFOAM CFD solver"
+        )
+        self.is_active = "with_analysis"
+
+    def Activated(self):
+        if not self.IsActive():
+            return
+
+        document = _active_document()
+        analysis = self.active_analysis
+        transaction_id = _open_exact_transaction(
+            document,
+            "Create Fem SolverOpenFOAM",
+        )
+        try:
+            FreeCADGui.addModule("ObjectsFem")
+            solver = FreeCADGui.runDocumentObjectCommand(
+                document,
+                "ObjectsFem.makeSolverOpenFOAM("
+                f"{_document_expression(document)})",
+                "Fem::FemSolverObjectPython",
+            )
+            _require_provisional_timeline_identity(
+                solver,
+                document,
+                "The OpenFOAM solver factory",
+            )
+            analysis.addObject(solver)
+            if solver not in analysis.Group:
+                raise RuntimeError("OpenFOAM was not added to its analysis")
+            document.recompute()
+            _close_exact_transaction(document, transaction_id, False)
+            expandParentObject()
+            FreeCADGui.Selection.clearSelection()
+            FreeCADGui.Selection.addSelection(solver)
+        except Exception:
+            _close_exact_transaction(document, transaction_id, True)
+            raise
+
+
 class _SolverMystran(CommandManager):
     "The FEM_SolverMystran command definition"
 
@@ -2133,6 +2185,7 @@ class _CompSolvers(CommandManager):
             "FEM_SolverElmer",
             "FEM_SolverMystran",
             "FEM_SolverZ88",
+            "FEM_SolverOpenFOAM",
         ]
 
     def Activated(self, i):
@@ -2214,6 +2267,7 @@ FreeCADGui.addCommand("FEM_SolverCalculiXCcxTools", _SolverCcxTools())
 FreeCADGui.addCommand("FEM_SolverCalculiX", _SolverCalculiX())
 FreeCADGui.addCommand("FEM_SolverControl", _SolverControl())
 FreeCADGui.addCommand("FEM_SolverElmer", _SolverElmer())
+FreeCADGui.addCommand("FEM_SolverOpenFOAM", _SolverOpenFOAM())
 FreeCADGui.addCommand("FEM_SolverMystran", _SolverMystran())
 FreeCADGui.addCommand("FEM_SolverRun", _SolverRun())
 FreeCADGui.addCommand("FEM_SolverZ88", _SolverZ88())

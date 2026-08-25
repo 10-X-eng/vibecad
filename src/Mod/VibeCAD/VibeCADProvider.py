@@ -565,14 +565,14 @@ def _codex_local_reference_image_input(
 
 
 def _codex_prompt_without_replayed_conversation(prompt: str) -> str:
-    """Remove text-history replay once the Codex thread already owns it."""
+    """Remove owned history while retaining the active user obligation."""
 
     start = "RECENT_CONVERSATION_JSON\n"
     end = "\nEND_RECENT_CONVERSATION_JSON"
     if start not in prompt or end not in prompt:
         return prompt
     prefix, remainder = prompt.split(start, 1)
-    _prior, suffix = remainder.split(end, 1)
+    prior, suffix = remainder.split(end, 1)
     empty = json.dumps(
         {
             "turns": [],
@@ -582,7 +582,25 @@ def _codex_prompt_without_replayed_conversation(prompt: str) -> str:
         ensure_ascii=True,
         separators=(",", ":"),
     )
-    return prefix + start + empty + end + suffix
+    active_request = ""
+    if suffix.lstrip().startswith("CURRENT_SESSION_EVENT\n"):
+        try:
+            turns = list(json.loads(prior).get("turns") or ())
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            turns = []
+        latest_user = next(
+            (
+                str(item.get("content") or "").strip()
+                for item in reversed(turns)
+                if isinstance(item, dict)
+                and str(item.get("role") or "").strip().lower() == "user"
+                and str(item.get("content") or "").strip()
+            ),
+            "",
+        )
+        if latest_user:
+            active_request = "\n\nACTIVE_USER_REQUEST\n" + latest_user
+    return prefix + start + empty + end + active_request + suffix
 
 
 def _codex_tool_image_content_items(
@@ -846,6 +864,7 @@ class CodexProvider(BaseProvider):
         )
 
         state_lock = threading.RLock()
+        tool_call_lock = threading.Lock()
         turn_completed = threading.Event()
         transition_requested = threading.Event()
         transition_response_sent = threading.Event()
@@ -957,12 +976,34 @@ class CodexProvider(BaseProvider):
                             turn_error = str(error)
                 turn_completed.set()
 
-        def server_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        def _server_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
             nonlocal live_context
             if method != "item/tool/call":
                 raise CodexAppServerError(
                     f"VibeCAD does not permit Codex server request {method}."
                 )
+            if transition_requested.is_set():
+                return {
+                    "contentItems": [
+                        {
+                            "type": "inputText",
+                            "text": json.dumps(
+                                {
+                                    "ok": False,
+                                    "error_code": "NATIVE_TURN_TRANSITION_PENDING",
+                                    "error": (
+                                        "The frozen Native turn ended before this "
+                                        "queued call; it was not executed."
+                                    ),
+                                    "next_turn_required": True,
+                                },
+                                ensure_ascii=True,
+                                separators=(",", ":"),
+                            ),
+                        }
+                    ],
+                    "success": True,
+                }
             namespace = str(params.get("namespace") or "")
             function_name = str(params.get("tool") or "")
             arguments = params.get("arguments")
@@ -1126,6 +1167,10 @@ class CodexProvider(BaseProvider):
             # operation. Domain failures stay structured in the tool result so
             # the model can diagnose and repair them in the same turn.
             return {"contentItems": content_items, "success": True}
+
+        def server_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            with tool_call_lock:
+                return _server_request(method, params)
 
         def server_response_sent(method: str) -> None:
             if method == "item/tool/call" and transition_requested.is_set():
@@ -2555,7 +2600,10 @@ def _provider_compact_native_mutation_value(value: Any) -> Any:
             for key, item in value.items()
             if key not in {"document_uid", "object_id", "receipt"}
             and key != "state_sha256"
-            and not str(key).endswith("_state_sha256")
+            and (
+                key == "expected_state_sha256"
+                or not str(key).endswith("_state_sha256")
+            )
         }
     if isinstance(value, (list, tuple)):
         return [_provider_compact_native_mutation_value(item) for item in value]

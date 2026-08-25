@@ -217,6 +217,19 @@ def test_new_run_preserves_safe_document_undo_ownership_across_turns() -> None:
         ledger.checkpoint(document)
 
 
+def test_background_commit_can_reenter_its_closed_transport_run() -> None:
+    state, document, ledger = _host()
+    ledger.end_run("run-a")
+
+    with ledger.run_scope("run-a"):
+        _record_create(state, document, ledger, "SolverResult")
+
+    with pytest.raises(NativeUndoError, match="No assistant run"):
+        ledger.checkpoint(document)
+    ledger.begin_run("next-turn")
+    assert ledger.available(document, state)["available"] is True
+
+
 def test_closing_document_discards_undo_ownership() -> None:
     state, document, ledger = _host()
     _record_create(state, document, ledger, "NativeBox")

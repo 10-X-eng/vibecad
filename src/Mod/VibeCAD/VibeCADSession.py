@@ -36,6 +36,7 @@ from VibeCADModelingSurface import (
     infer_engine_from_names,
     is_model_assembly_workbench,
     modeling_surface_from_native_provider,
+    provider_engine_from_service,
     resolve_service_surface,
     share_authoring_surface,
     validate_surface_names,
@@ -714,17 +715,27 @@ def is_provider_safe_tool(
     tool_name: str,
     workbench: str | None = None,
 ) -> bool:
-    modeling_engine = getattr(service, "modeling_engine", None)
-    if (
-        callable(modeling_engine)
-        and str(modeling_engine() or "").strip().lower() == "native"
-    ):
-        from VibeCADNativeProviderContext import resolve_production_native_surface
+    try:
+        provider_engine = provider_engine_from_service(service)
+    except Exception:
+        return False
+    if provider_engine == "native":
+        from VibeCADNativeProviderContext import (
+            provider_authorized_native_surface,
+            resolve_production_native_surface,
+        )
 
         try:
-            _registry, surface = resolve_production_native_surface()
+            registry, surface = resolve_production_native_surface()
         except Exception:
             return False
+        state_reader = getattr(service, "native_active_snapshot", None)
+        if getattr(surface, "snapshot", None) is not None:
+            surface = provider_authorized_native_surface(
+                surface,
+                state_reader() if callable(state_reader) else None,
+                registry=registry,
+            )
         clean_name = str(tool_name)
         if not surface.available or clean_name not in surface.tool_names:
             return False
@@ -749,14 +760,15 @@ def provider_tool_schemas(
     *,
     runtime_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    modeling_engine = getattr(service, "modeling_engine", None)
-    if (
-        callable(modeling_engine)
-        and str(modeling_engine() or "").strip().lower() == "native"
-    ):
+    if provider_engine_from_service(service) == "native":
         from VibeCADNativeProviderContext import native_provider_tool_schemas
 
-        return native_provider_tool_schemas()
+        state_reader = getattr(service, "native_active_snapshot", None)
+        return (
+            native_provider_tool_schemas(state_reader())
+            if callable(state_reader)
+            else native_provider_tool_schemas()
+        )
     state = (
         runtime_state if runtime_state is not None else _minimal_runtime_state(service)
     )
@@ -779,7 +791,26 @@ def _live_provider_surface_state(
     """Capture one coherent authorization snapshot on the document thread."""
 
     workbench = service.active_workbench_name()
-    resolution = resolve_service_surface(service, workbench)
+    provider_engine = provider_engine_from_service(service)
+    if provider_engine == "native":
+        from VibeCADNativeProviderContext import (
+            native_active_state,
+            provider_authorized_native_surface,
+            resolve_production_native_surface,
+        )
+
+        registry, provider_surface = resolve_production_native_surface()
+        provider_surface = provider_authorized_native_surface(
+            provider_surface,
+            native_active_state(service) if provider_surface.available else None,
+            registry=registry,
+        )
+        resolution = modeling_surface_from_native_provider(
+            workbench,
+            provider_surface,
+        )
+    else:
+        resolution = resolve_service_surface(service, workbench)
     runtime_state = _minimal_runtime_state(service)
     return {
         "workbench": workbench,
@@ -789,10 +820,14 @@ def _live_provider_surface_state(
         "available": resolution.available,
         "unavailable_reason": resolution.unavailable_reason,
         "runtime_state": runtime_state,
-        "tool_names": _provider_safe_tool_names(
-            service,
-            workbench,
-            _edit_mode_from_runtime_state(runtime_state),
+        "tool_names": (
+            list(provider_surface.tool_names)
+            if provider_engine == "native" and provider_surface.available
+            else _provider_safe_tool_names(
+                service,
+                workbench,
+                _edit_mode_from_runtime_state(runtime_state),
+            )
         ),
     }
 
@@ -1089,6 +1124,7 @@ def _capture_context_for_provider(
     service: VibeCADService,
     session_trigger: dict[str, Any] | None = None,
     prepared_component_catalog: Mapping[str, Any] | None = None,
+    prepared_native_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw_context = service.provider_context_summary()
     allowed_turn_facts = (
@@ -1103,15 +1139,36 @@ def _capture_context_for_provider(
     }
     workbench = service.active_workbench_name()
     native_provider_surface = None
-    native_engine = str(service.modeling_engine() or "").strip().lower() == "native"
+    captured_native_state = None
+    native_engine = provider_engine_from_service(service) == "native"
     if native_engine:
-        from VibeCADNativeProviderContext import resolve_production_native_surface
+        from VibeCADNativeProviderContext import (
+            native_active_state,
+            provider_authorized_native_surface,
+            provider_visible_native_state,
+            resolve_production_native_surface,
+        )
 
-        _, native_provider_surface = resolve_production_native_surface()
+        native_registry, native_provider_surface = resolve_production_native_surface()
         resolution = modeling_surface_from_native_provider(
             workbench,
             native_provider_surface,
         )
+        if resolution.available:
+            captured_native_state = (
+                dict(prepared_native_state)
+                if prepared_native_state is not None
+                else native_active_state(service)
+            )
+            native_provider_surface = provider_authorized_native_surface(
+                native_provider_surface,
+                captured_native_state,
+                registry=native_registry,
+            )
+            resolution = modeling_surface_from_native_provider(
+                workbench,
+                native_provider_surface,
+            )
     else:
         resolution = resolve_service_surface(service, workbench)
     context["workbench"] = workbench
@@ -1137,12 +1194,12 @@ def _capture_context_for_provider(
         ),
     }
     if resolution.engine == "native":
-        from VibeCADNativeProviderContext import native_active_state
-
         context.pop("document", None)
         context.pop("selection", None)
         if resolution.available:
-            context["native_state"] = native_active_state(service)
+            context["native_state"] = provider_visible_native_state(
+                captured_native_state
+            )
     if resolution.engine == "vibescript" and resolution.available and resolution.domain:
         context["editable_sources"] = _capture_editable_sources_for_workbench(
             service,
@@ -1294,16 +1351,174 @@ def _build_context_for_provider(
     session_trigger: dict[str, Any] | None,
     document_thread_dispatch: DocumentThreadDispatch | None,
     prepared_component_catalog: Mapping[str, Any] | None = None,
+    cancellation_check: CancellationCheck | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    prepared_native_state = _build_responsive_analyze_native_state(
+        service,
+        document_thread_dispatch,
+        cancellation_check=cancellation_check,
+        progress_callback=progress_callback,
+    )
     captured = _on_document_thread(
         document_thread_dispatch,
         lambda: _capture_context_for_provider(
             service,
             session_trigger,
             prepared_component_catalog,
+            prepared_native_state,
         ),
     )
     return _complete_context_for_provider(captured)
+
+
+def _build_responsive_analyze_native_state(
+    service: VibeCADService,
+    document_thread_dispatch: DocumentThreadDispatch | None,
+    *,
+    cancellation_check: CancellationCheck | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any] | None:
+    """Build Analyze state in bounded UI dispatches from a provider worker."""
+
+    from VibeCADNativeAnalyzeContext import (
+        AnalyzeContextStale,
+        capture_responsive_analyze_snapshot,
+    )
+    from VibeCADNativeAnalyzeSnapshot import (
+        discard_analyze_snapshot_capture,
+        finish_analyze_snapshot_capture,
+        validate_analyze_snapshot_geometry,
+    )
+    from VibeCADNativeSnapshot import complete_active_snapshot
+
+    begin = getattr(service, "begin_native_analyze_context_request", None)
+    coordinator_reader = getattr(service, "native_analyze_context_coordinator", None)
+    capture_batch = getattr(service, "capture_native_analyze_context_batch", None)
+    capture_clipping = getattr(
+        service,
+        "capture_native_analyze_context_clipping",
+        None,
+    )
+    if not all(
+        callable(callback)
+        for callback in (begin, coordinator_reader, capture_batch, capture_clipping)
+    ):
+        return None
+
+    def emit_progress(percent: int, message: str) -> None:
+        _emit(
+            progress_callback,
+            {
+                "event": "analyze_context_progress",
+                "percent": int(percent),
+                "message": str(message or ""),
+            },
+        )
+
+    for attempt in range(2):
+        request = _on_document_thread(document_thread_dispatch, begin)
+        if request is None:
+            return None
+        if not isinstance(request, Mapping):
+            raise RuntimeError("Analyze context request returned no object.")
+        uid = str(request.get("document_uid") or "")
+        revision = int(request.get("structural_revision", 0) or 0)
+        cache_variant = str(request.get("active_analysis_name") or "")
+        coordinator = coordinator_reader()
+
+        def build(cancelled, report):
+            try:
+                return capture_responsive_analyze_snapshot(
+                    request,
+                    dispatch_to_document_thread=lambda operation: _on_document_thread(
+                        document_thread_dispatch,
+                        operation,
+                    ),
+                    capture_batch=capture_batch,
+                    capture_clipping=capture_clipping,
+                    finalize=finish_analyze_snapshot_capture,
+                    cancellation_check=cancelled,
+                    progress_callback=report,
+                    postprocess_parts=validate_analyze_snapshot_geometry,
+                )
+            finally:
+                discard_analyze_snapshot_capture(request)
+
+        try:
+            if request.get("cacheable") is False:
+                domain = build(
+                    lambda: bool(
+                        cancellation_check is not None and cancellation_check()
+                    ),
+                    emit_progress,
+                )
+                _emit(
+                    progress_callback,
+                    {
+                        "event": "analyze_context_ready",
+                        "structural_revision": revision,
+                    },
+                )
+                return complete_active_snapshot(request["base_snapshot"], domain)
+            cache_hit = coordinator.has_cached(
+                uid,
+                revision,
+                variant=cache_variant,
+            )
+            domain = coordinator.get_or_build(
+                uid,
+                revision,
+                build,
+                variant=cache_variant,
+                cancellation_check=cancellation_check,
+                progress_callback=emit_progress,
+            )
+            if cache_hit:
+                current_clipping = _on_document_thread(
+                    document_thread_dispatch,
+                    lambda: capture_clipping(request),
+                )
+                domain = dict(domain)
+                domain["clipping"] = dict(current_clipping)
+                _emit(
+                    progress_callback,
+                    {
+                        "event": "analyze_context_cache_hit",
+                        "structural_revision": revision,
+                    },
+                )
+            else:
+                _emit(
+                    progress_callback,
+                    {
+                        "event": "analyze_context_ready",
+                        "structural_revision": revision,
+                    },
+                )
+            return complete_active_snapshot(request["base_snapshot"], domain)
+        except AnalyzeContextStale:
+            if attempt == 0 and not (
+                cancellation_check is not None and cancellation_check()
+            ):
+                continue
+            raise
+    raise RuntimeError("Analyze context changed repeatedly during capture.")
+
+
+def prewarm_analyze_context(
+    service: VibeCADService,
+    document_thread_dispatch: DocumentThreadDispatch | None,
+    *,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any] | None:
+    """Populate the read-only Analyze cache before the human presses Send."""
+
+    return _build_responsive_analyze_native_state(
+        service,
+        document_thread_dispatch,
+        progress_callback=progress_callback,
+    )
 
 
 def _consume_context_view_attachment(
@@ -5436,6 +5651,8 @@ def _run_session_turn(
         active_service,
         session_trigger,
         document_thread_dispatch,
+        cancellation_check=cancellation_check,
+        progress_callback=progress_callback,
     )
     if turn_conversation_id:
         context["_vibecad_codex_session"] = {
@@ -5824,10 +6041,14 @@ def run_native_surface_continuation(
             + ", ".join(sorted(expected_fields))
             + "."
         )
-    if event_type not in {"cad_workspace_changed", "cad_edit_started"}:
+    if event_type not in {
+        "cad_workspace_changed",
+        "cad_edit_started",
+        "cad_provider_surface_changed",
+    }:
         raise ValueError(
-            "CAD continuation event type must be cad_workspace_changed or "
-            "cad_edit_started."
+            "CAD continuation event type must be cad_workspace_changed, "
+            "cad_edit_started, or cad_provider_surface_changed."
         )
     clean_event = {
         "type": event_type,
@@ -5851,7 +6072,10 @@ def run_native_surface_continuation(
         raise ValueError("A CAD edit-start continuation requires sketch.edit.")
     workspace = clean_event["workspace"].replace("_", " ").capitalize()
     prompt = (
-        f"{workspace} work is now available. Continue the current design from its "
+        f"{workspace} tools now match the current study state. Continue the existing "
+        "engineering task without repeating completed work."
+        if event_type == "cad_provider_surface_changed"
+        else f"{workspace} work is now available. Continue the current design from its "
         "existing document state. Do not repeat completed operations."
     )
     return _run_session_turn(

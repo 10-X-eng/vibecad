@@ -18,9 +18,11 @@ from VibeCADNativeTargets import NativeObjectRef, resolve_object
 
 MAX_RESULT_FIELDS = 64
 MAX_CONTEXT_FIELD_NAMES = 16
+MAX_CONTEXT_FLOW_BOUNDARIES = 64
 MAX_POST_CHILDREN = 32
 MAX_POST_GRAPH_OBJECTS = 4096
 MAX_FRAME_VALUES = 64
+MAX_FLOW_BOUNDARIES = 4096
 
 RESULT_TARGET = {
     "type": "object",
@@ -214,7 +216,24 @@ def _legacy_fields(obj: Any, *, include_ranges: bool) -> list[dict[str, Any]]:
     return fields
 
 
-def _vtk_field_unit(name: str) -> str | None:
+def _vtk_unit_system(obj: Any) -> str:
+    current = obj
+    visited: set[int] = set()
+    while current is not None:
+        identity = id(current)
+        if identity in visited:
+            break
+        visited.add(identity)
+        proxy_type = str(getattr(getattr(current, "Proxy", None), "Type", "") or "")
+        if proxy_type == "Fem::SolverCalculiX":
+            return "freecad_engineering"
+        if proxy_type == "Fem::SolverCcxTools":
+            return "si"
+        current = getattr(current, "VibeCADTimelineOwner", None)
+    return "si"
+
+
+def _vtk_field_unit(name: str, *, unit_system: str = "si") -> str | None:
     normalized = name.strip().lower()
     if normalized == "arc_length":
         return "mm"
@@ -223,9 +242,19 @@ def _vtk_field_unit(name: str) -> str | None:
         or normalized.startswith("vonmises")
         or normalized.startswith("tresca")
     ):
-        return "Pa"
+        return "MPa" if unit_system == "freecad_engineering" else "Pa"
     if normalized.startswith("displacement"):
-        return "m"
+        return "mm" if unit_system == "freecad_engineering" else "m"
+    if normalized == "pressure":
+        return "Pa"
+    if normalized == "velocity":
+        return "m/s"
+    if normalized == "turbulent kinetic energy":
+        return "m^2/s^2"
+    if normalized == "specific dissipation rate":
+        return "1/s"
+    if normalized == "turbulent kinematic viscosity":
+        return "m^2/s"
     if normalized.startswith("temperature") and "flux" not in normalized:
         return "K"
     if normalized == "temperature flux":
@@ -250,6 +279,7 @@ def _vtk_fields(
     *,
     include_ranges: bool,
     unit_overrides: Mapping[str, str] | None = None,
+    unit_system: str = "si",
 ) -> list[dict[str, Any]]:
     overrides = dict(unit_overrides or {})
     fields = []
@@ -278,7 +308,10 @@ def _vtk_fields(
                 "components": components,
                 "value_count": tuples,
             }
-            unit = overrides.get(name) or _vtk_field_unit(name)
+            unit = overrides.get(name) or _vtk_field_unit(
+                name,
+                unit_system=unit_system,
+            )
             if unit is not None:
                 item["unit"] = unit
             if include_ranges and tuples > 0 and components > 0:
@@ -350,6 +383,7 @@ def _dataset_state(obj: Any, *, include_ranges: bool) -> dict[str, Any]:
         dataset,
         include_ranges=include_ranges,
         unit_overrides=unit_overrides,
+        unit_system=_vtk_unit_system(obj),
     )
     try:
         total_fields = int(dataset.GetPointData().GetNumberOfArrays()) + int(
@@ -396,6 +430,7 @@ def _post_settings(obj: Any) -> dict[str, Any]:
             "VibeCADTimelineOwner",
             "VibeCADTimelineReplacedInputs",
             "VibeCADTimelineRole",
+            "VibeCADOpenFOAMSummary",
         }
     )
     settings = {}
@@ -413,6 +448,182 @@ def _post_settings(obj: Any) -> dict[str, Any]:
         if value is not None:
             settings[name] = value
     return settings
+
+
+def _required_finite(value: Any, name: str) -> float:
+    result = _finite(value)
+    if result is None:
+        raise NativeAnalyzeError(f"OpenFOAM result {name} is not finite.")
+    return result
+
+
+def _number_list(value: Any, count: int, name: str) -> list[float]:
+    if not isinstance(value, list) or len(value) != count:
+        raise NativeAnalyzeError(
+            f"OpenFOAM result {name} must contain {count} numbers."
+        )
+    return [
+        _required_finite(item, f"{name}[{index}]")
+        for index, item in enumerate(value)
+    ]
+
+
+def openfoam_flow_summary_state(obj: Any) -> dict[str, Any] | None:
+    """Read one bounded, versioned flow summary stored by the solver importer."""
+
+    property_name = "VibeCADOpenFOAMSummary"
+    if property_name not in tuple(getattr(obj, "PropertiesList", ()) or ()):
+        return None
+    try:
+        raw = str(getattr(obj, property_name) or "")
+        if len(raw.encode("utf-8")) > 2 * 1024 * 1024:
+            raise NativeAnalyzeError("The OpenFOAM result summary exceeds 2 MiB.")
+        value = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise NativeAnalyzeError("The OpenFOAM result summary is invalid.") from exc
+    if not isinstance(value, Mapping) or value.get("format_version") != 1:
+        raise NativeAnalyzeError("The OpenFOAM result summary version is unsupported.")
+    if value.get("pressure_unit") != "Pa" or value.get("velocity_unit") != "m/s":
+        raise NativeAnalyzeError("The OpenFOAM result summary has invalid units.")
+    boundaries = value.get("boundaries")
+    if not isinstance(boundaries, list) or len(boundaries) > MAX_FLOW_BOUNDARIES:
+        raise NativeAnalyzeError("The OpenFOAM result boundary summary is invalid.")
+    normalized_boundaries = []
+    for index, boundary in enumerate(boundaries):
+        if not isinstance(boundary, Mapping):
+            raise NativeAnalyzeError(
+                f"OpenFOAM boundary result {index} is invalid."
+            )
+        name = str(boundary.get("name") or "")
+        kind = str(boundary.get("kind") or "")
+        if not name or not kind:
+            raise NativeAnalyzeError(
+                f"OpenFOAM boundary result {index} is unnamed."
+            )
+        boundary_state = {
+            "name": name,
+            "kind": kind,
+            "area_m2": _required_finite(
+                boundary.get("area_m2"), f"boundary {name} area"
+            ),
+            "pressure_area_average_pa": _required_finite(
+                boundary.get("pressure_area_average_pa"),
+                f"boundary {name} pressure",
+            ),
+            "velocity_area_average_m_s": _number_list(
+                boundary.get("velocity_area_average_m_s"),
+                3,
+                f"boundary {name} velocity",
+            ),
+        }
+        normalized_boundaries.append(boundary_state)
+        flow_fields = (
+            "outward_volumetric_flow_rate_m3_s",
+            "outward_mass_flow_rate_kg_s",
+        )
+        if "geometric_area_m2" in boundary:
+            geometric_area = _required_finite(
+                boundary["geometric_area_m2"],
+                f"boundary {name} geometric area",
+            )
+            if geometric_area <= 0.0:
+                raise NativeAnalyzeError(
+                    f"OpenFOAM boundary result {name} has invalid geometric area."
+                )
+            boundary_state["geometric_area_m2"] = geometric_area
+        if any(field in boundary for field in flow_fields):
+            if not all(field in boundary for field in flow_fields):
+                raise NativeAnalyzeError(
+                    f"OpenFOAM boundary result {name} has incomplete flow rates."
+                )
+            for field in flow_fields:
+                boundary_state[field] = _required_finite(
+                    boundary[field], f"boundary {name} {field}"
+                )
+        if "condition" in boundary:
+            condition = boundary["condition"]
+            if not isinstance(condition, Mapping) or not str(
+                condition.get("kind") or ""
+            ):
+                raise NativeAnalyzeError(
+                    f"OpenFOAM boundary result {name} has an invalid condition."
+                )
+            try:
+                encoded_condition = json.dumps(
+                    dict(condition),
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise NativeAnalyzeError(
+                    f"OpenFOAM boundary result {name} has an invalid condition."
+                ) from exc
+            if len(encoded_condition.encode("utf-8")) > 16 * 1024:
+                raise NativeAnalyzeError(
+                    f"OpenFOAM boundary result {name} condition is too large."
+                )
+            boundary_state["condition"] = json.loads(encoded_condition)
+    result = {
+        "pressure_unit": "Pa",
+        "velocity_unit": "m/s",
+        "pressure_range_pa": _number_list(
+            value.get("pressure_range_pa"), 2, "pressure range"
+        ),
+        "velocity_magnitude_range_m_s": _number_list(
+            value.get("velocity_magnitude_range_m_s"),
+            2,
+            "velocity magnitude range",
+        ),
+        "maximum_velocity_m_s": _required_finite(
+            value.get("maximum_velocity_m_s"), "maximum velocity"
+        ),
+        "boundaries": normalized_boundaries,
+    }
+    if "converged" in value:
+        if type(value["converged"]) is not bool:
+            raise NativeAnalyzeError("OpenFOAM convergence state is invalid.")
+        result["converged"] = value["converged"]
+    if "turbulence_model" in value:
+        turbulence_model = str(value["turbulence_model"])
+        if turbulence_model not in {"laminar", "kOmegaSST"}:
+            raise NativeAnalyzeError("OpenFOAM turbulence model is invalid.")
+        result["turbulence_model"] = turbulence_model
+    if "density_kg_m3" in value:
+        density = _required_finite(value["density_kg_m3"], "density")
+        if density <= 0.0:
+            raise NativeAnalyzeError("OpenFOAM result density must be positive.")
+        result["density_kg_m3"] = density
+    if "kinematic_viscosity_m2_s" in value:
+        viscosity = _required_finite(
+            value["kinematic_viscosity_m2_s"], "kinematic viscosity"
+        )
+        if viscosity <= 0.0:
+            raise NativeAnalyzeError(
+                "OpenFOAM result kinematic viscosity must be positive."
+            )
+        result["kinematic_viscosity_m2_s"] = viscosity
+    drop_fields = (
+        "static_pressure_drop_pa",
+        "pressure_drop_from",
+        "pressure_drop_to",
+    )
+    if any(name in value for name in drop_fields):
+        if not all(name in value for name in drop_fields):
+            raise NativeAnalyzeError(
+                "The OpenFOAM pressure-drop summary is incomplete."
+            )
+        result.update(
+            {
+                "static_pressure_drop_pa": _required_finite(
+                    value["static_pressure_drop_pa"], "static pressure drop"
+                ),
+                "pressure_drop_from": str(value["pressure_drop_from"]),
+                "pressure_drop_to": str(value["pressure_drop_to"]),
+            }
+        )
+    return result
 
 
 def _linked_functions(obj: Any) -> list[dict[str, Any]]:
@@ -535,6 +746,9 @@ def _post_state(obj: Any, *, include_ranges: bool) -> dict[str, Any]:
         "descendant_count": len(_post_descendants(obj)),
     }
     if kind == "pipeline":
+        flow_summary = openfoam_flow_summary_state(obj)
+        if flow_summary is not None:
+            state["flow"] = flow_summary
         frames = []
         try:
             frames = [
@@ -633,6 +847,20 @@ def result_reference_state(obj: Any) -> dict[str, Any]:
     result["field_count"] = field_count
     result["field_names"] = names[:MAX_CONTEXT_FIELD_NAMES]
     result["field_names_truncated"] = field_count > len(result["field_names"])
+    flow = state.get("flow")
+    result["flow_results"] = isinstance(flow, Mapping)
+    if isinstance(flow, Mapping):
+        boundaries = list(flow.get("boundaries") or ())
+        result["flow_boundaries"] = [
+            {
+                "name": str(boundary["name"]),
+                "kind": str(boundary["kind"]),
+            }
+            for boundary in boundaries[:MAX_CONTEXT_FLOW_BOUNDARIES]
+        ]
+        result["flow_boundaries_truncated"] = (
+            len(boundaries) > MAX_CONTEXT_FLOW_BOUNDARIES
+        )
     return result
 
 

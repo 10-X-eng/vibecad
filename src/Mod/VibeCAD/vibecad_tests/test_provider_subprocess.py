@@ -791,6 +791,34 @@ def test_native_mutation_result_keeps_cad_facts_and_hides_host_bookkeeping() -> 
     }
 
 
+def test_native_mutation_result_keeps_exact_follow_up_target() -> None:
+    digest = "d" * 64
+
+    visible = provider._provider_visible_tool_result(
+        {
+            "_vibecad_native_result": True,
+            "ok": True,
+            "changed": True,
+            "analysis_target": {
+                "object_name": "Analysis",
+                "expected_state_sha256": digest,
+                "expected_member_count": 3,
+            },
+            "analysis_state_sha256": "e" * 64,
+        }
+    )
+
+    assert visible == {
+        "ok": True,
+        "changed": True,
+        "analysis_target": {
+            "object_name": "Analysis",
+            "expected_state_sha256": digest,
+            "expected_member_count": 3,
+        },
+    }
+
+
 def test_native_noop_result_hides_host_bookkeeping_without_a_receipt() -> None:
     visible = provider._provider_visible_tool_result(
         {

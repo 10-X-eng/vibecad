@@ -33,6 +33,7 @@ from VibeCADNativeAnalyzeTargets import (
     reference_value,
 )
 from VibeCADNativeMutation import NativeMutationDraft
+from VibeCADNativeLabel import matches_preferred_document_label
 from VibeCADNativeTargets import object_identity
 
 
@@ -90,6 +91,32 @@ def require_unambiguous_initial_assignment(
         )
 
 
+def require_unassigned_boundary_faces(
+    analysis: Any,
+    references: tuple[PreparedGeometryReference, ...],
+    *,
+    ignore: Any = None,
+) -> None:
+    requested: dict[Any, set[str]] = {}
+    for reference in references:
+        requested.setdefault(reference.source, set()).update(reference.subelements)
+    for peer in _same_kind_members(analysis, "fluid_boundary", ignore=ignore):
+        for raw in tuple(getattr(peer, "References", ()) or ()):
+            if not isinstance(raw, tuple) or len(raw) != 2:
+                continue
+            source, names = raw
+            selected = requested.get(source)
+            if not selected:
+                continue
+            values = (names,) if isinstance(names, str) else tuple(names or ())
+            overlap = next((str(name) for name in values if str(name) in selected), "")
+            if overlap:
+                raise NativeAnalyzeError(
+                    f"{source.Name}.{overlap} already belongs to fluid boundary "
+                    f"{peer.Label}; use an unassigned face or edit that boundary."
+                )
+
+
 def prepare_fluid_create(
     document: Any,
     document_uid: str,
@@ -115,6 +142,8 @@ def prepare_fluid_create(
             f"This {kind.replace('_', ' ')} requires at least one exact {expected} reference."
         )
     require_unambiguous_initial_assignment(target.analysis, kind, prepared_references)
+    if kind == "fluid_boundary":
+        require_unassigned_boundary_faces(target.analysis, prepared_references)
     return PreparedFluidCreate(
         creation_boundary(document),
         target,
@@ -139,6 +168,10 @@ def _factory(document: Any, kind: str) -> Any:
             ObjectsFem.makeConstraintInitialPressure,
         ),
         "flow_velocity": ("FlowVelocity", ObjectsFem.makeConstraintFlowVelocity),
+        "fluid_boundary": (
+            "FluidBoundary",
+            ObjectsFem.makeConstraintFluidBoundary,
+        ),
     }
     try:
         stem, factory = factories[kind]
@@ -169,6 +202,11 @@ def create_fluid_constraint(
     require_unambiguous_initial_assignment(
         prepared.analysis.analysis, prepared.kind, prepared.references
     )
+    if prepared.kind == "fluid_boundary":
+        require_unassigned_boundary_faces(
+            prepared.analysis.analysis,
+            prepared.references,
+        )
     constraint = _factory(document, prepared.kind)
     if constraint is None or fluid_constraint_kind(constraint) != prepared.kind:
         raise NativeAnalyzeError(
@@ -200,18 +238,23 @@ def verify_fluid_create(
     analysis = prepared.analysis.analysis
     verify_operation_block(document, prepared.boundary, constraint)
     state = fluid_constraint_state(constraint)
-    if (
-        not is_live(document, constraint)
-        or fluid_constraint_kind(constraint) != prepared.kind
-        or str(constraint.Label) != prepared.label
-        or state["definition"] != prepared.values.normalized()
-        or not references_match(constraint, prepared.references)
-        or tuple(analysis.Group or ()) != (*prepared.members_before, constraint)
-        or not geometry_references_still_exact(prepared.references)
-        or not bool(constraint.isValid())
-    ):
+    checks = {
+        "object is live": is_live(document, constraint),
+        "constraint kind": fluid_constraint_kind(constraint) == prepared.kind,
+        "label": matches_preferred_document_label(
+            str(constraint.Label), prepared.label
+        ),
+        "definition": state["definition"] == prepared.values.normalized(),
+        "references": references_match(constraint, prepared.references),
+        "analysis membership": tuple(analysis.Group or ())
+        == (*prepared.members_before, constraint),
+        "reference geometry": geometry_references_still_exact(prepared.references),
+        "object validity": bool(constraint.isValid()),
+    }
+    failed = [name for name, passed in checks.items() if not passed]
+    if failed:
         raise NativeAnalyzeError(
-            "The new FEM fluid constraint failed its exact postcondition."
+            "The new FEM fluid constraint failed: " + ", ".join(failed) + "."
         )
     owner_state = analysis_state(analysis)
     if owner_state["state_sha256"] == prepared.analysis.expected_state_sha256:

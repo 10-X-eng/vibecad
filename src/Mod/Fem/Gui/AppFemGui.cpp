@@ -25,6 +25,7 @@
 #include <Base/Console.h>
 #include <Base/PyObjectBase.h>
 #include <Gui/Application.h>
+#include <Gui/Dialogs/DlgPreferencesImp.h>
 #include <Gui/WidgetFactory.h>
 #include <Gui/Language/Translator.h>
 
@@ -35,6 +36,7 @@
 #include "DlgSettingsFemGmshImp.h"
 #include "DlgSettingsFemInOutVtkImp.h"
 #include "DlgSettingsFemMystranImp.h"
+#include "DlgSettingsFemOpenFOAMImp.h"
 #include "DlgSettingsFemZ88Imp.h"
 #include "PropertyFemMeshItem.h"
 #include "ViewProviderAnalysis.h"
@@ -191,13 +193,16 @@ PyMOD_INIT_FUNC(FemGui)
 #endif
 
 
-    // register preferences pages on FEM, the order here will be the order of the tabs in pref widget
-    new Gui::PrefPageProducer<FemGui::DlgSettingsFemGeneralImp>(QT_TRANSLATE_NOOP("QObject", "FEM"));
-    new Gui::PrefPageProducer<FemGui::DlgSettingsFemGmshImp>(QT_TRANSLATE_NOOP("QObject", "FEM"));
-    new Gui::PrefPageProducer<FemGui::DlgSettingsFemCcxImp>(QT_TRANSLATE_NOOP("QObject", "FEM"));
-    new Gui::PrefPageProducer<FemGui::DlgSettingsFemElmerImp>(QT_TRANSLATE_NOOP("QObject", "FEM"));
-    new Gui::PrefPageProducer<FemGui::DlgSettingsFemMystranImp>(QT_TRANSLATE_NOOP("QObject", "FEM"));
-    new Gui::PrefPageProducer<FemGui::DlgSettingsFemZ88Imp>(QT_TRANSLATE_NOOP("QObject", "FEM"));
+    // register preferences pages on Analyze, the order here will be the order of the tabs in pref widget
+    Gui::Dialog::DlgPreferencesImp::setGroupData(
+        "Analyze", "fem", QObject::tr("Analyze workbench"));
+    new Gui::PrefPageProducer<FemGui::DlgSettingsFemGeneralImp>(QT_TRANSLATE_NOOP("QObject", "Analyze"));
+    new Gui::PrefPageProducer<FemGui::DlgSettingsFemGmshImp>(QT_TRANSLATE_NOOP("QObject", "Analyze"));
+    new Gui::PrefPageProducer<FemGui::DlgSettingsFemCcxImp>(QT_TRANSLATE_NOOP("QObject", "Analyze"));
+    new Gui::PrefPageProducer<FemGui::DlgSettingsFemElmerImp>(QT_TRANSLATE_NOOP("QObject", "Analyze"));
+    new Gui::PrefPageProducer<FemGui::DlgSettingsFemMystranImp>(QT_TRANSLATE_NOOP("QObject", "Analyze"));
+    new Gui::PrefPageProducer<FemGui::DlgSettingsFemZ88Imp>(QT_TRANSLATE_NOOP("QObject", "Analyze"));
+    new Gui::PrefPageProducer<FemGui::DlgSettingsFemOpenFOAMImp>(QT_TRANSLATE_NOOP("QObject", "Analyze"));
 
     // register preferences pages on Import-Export
     new Gui::PrefPageProducer<FemGui::DlgSettingsFemExportAbaqusImp>(QT_TRANSLATE_NOOP("QObject", "Import-Export"));

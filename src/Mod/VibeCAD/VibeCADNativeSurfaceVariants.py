@@ -44,16 +44,16 @@ class NativeSurfaceVariant:
 
 _ANALYZE_GROUP_ANCHORS = (
     ("View", "Std_ViewFitAll"),
-    ("Model", "FEM_Analysis"),
+    ("Model", "VibeCAD_AnalyzeStudySetup"),
     ("Electromagnetics", "FEM_CompEmConstraints"),
-    ("Fluids", "FEM_ConstraintInitialFlowVelocity"),
-    ("Geometry", "FEM_ConstraintPlaneRotation"),
+    ("Fluids", "FEM_ConstraintFluidBoundary"),
+    ("Geometry", "FEM_ConstraintTransform"),
     ("Mechanics", "FEM_ConstraintFixed"),
-    ("Thermal", "FEM_ConstraintInitialTemperature"),
-    ("Mesh", "FEM_MeshNetgenFromShape"),
+    ("Thermal", "FEM_ConstraintTemperature"),
+    ("Mesh", "FEM_MeshGmshFromShape"),
     ("Solve", "FEM_CompSolvers"),
-    ("Results", "FEM_ResultsPurge"),
-    ("Utilities", "FEM_ClippingPlaneAdd"),
+    ("Results", "FEM_ResultShow"),
+    ("Utilities", "FEM_Examples"),
     ("Inspect", "Std_Measure"),
 )
 
@@ -111,6 +111,7 @@ _ANALYZE_BASE_COMPOSITES = {
         "FEM_SolverElmer",
         "FEM_SolverMystran",
         "FEM_SolverZ88",
+        "FEM_SolverOpenFOAM",
     ),
     "FEM_CompMechEquations": (
         "FEM_EquationElasticity",

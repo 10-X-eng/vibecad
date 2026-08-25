@@ -249,17 +249,12 @@ _GLYPH_SAMPLING = {
 def analyze_post_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ANALYZE_POST_CAPABILITY_NAME,
-        description=(
-            "Build exact FEM post-processing graphs through concise typed operations."
-        ),
+        description="Build FEM post-processing graphs.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="create_pipeline",
-                description=(
-                    "Create one post-processing pipeline from an exact legacy mechanical "
-                    "result in one exact analysis."
-                ),
+                description="Create a post pipeline from a mechanical result.",
                 action_ids=frozenset({"FEM_PostPipelineFromResult"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactAnalysisLegacyResultAndHistory",
@@ -282,12 +277,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="create_branch",
-                description=(
-                    "Create and configure one branch under an exact post-processing "
-                    "source. Serial chains child filters; parallel gives each child "
-                    "the branch input. Passthrough exposes the input until an appended "
-                    "child output is wanted."
-                ),
+                description="Create a serial or parallel post branch.",
                 action_ids=frozenset({"FEM_PostBranchFilter"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactPostSourceAndHistory",
@@ -317,10 +307,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="create_warp",
-                description=(
-                    "Create one warp filter from an exact post source, an available "
-                    "three-component point field, and a finite deformation factor."
-                ),
+                description="Warp a post source by a vector field.",
                 action_ids=frozenset({"FEM_PostFilterWarp"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactPostSourceFieldAndHistory",
@@ -352,10 +339,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="create_scalar_clip",
-                description=(
-                    "Create one scalar clip from an exact post source, an available "
-                    "scalar point field, an in-range threshold, and an explicit side."
-                ),
+                description="Clip a post source by a scalar field.",
                 action_ids=frozenset({"FEM_PostFilterClipScalar"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactPostSourceScalarFieldAndHistory",
@@ -390,10 +374,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="create_cut",
-                description=(
-                    "Cut an exact post source with an exact plane, sphere, cylinder, "
-                    "or box function owned by the same pipeline."
-                ),
+                description="Cut a post source with an implicit function.",
                 action_ids=frozenset({"FEM_PostFilterCutFunction"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactPostSourceFunctionAndHistory",
@@ -416,10 +397,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="create_region_clip",
-                description=(
-                    "Clip an exact post source by an exact same-pipeline implicit "
-                    "function, with explicit side and whole-cell/interpolated behavior."
-                ),
+                description="Clip a post source by an implicit region.",
                 action_ids=frozenset({"FEM_PostFilterClipRegion"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactPostSourceFunctionAndHistory",
@@ -450,10 +428,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="create_contours",
-                description=(
-                    "Create iso-contours from an exact source field/component with "
-                    "explicit count, coloring, smoothing, and relaxation."
-                ),
+                description="Create field iso-contours.",
                 action_ids=frozenset({"FEM_PostFilterContours"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactPostSourceFieldAndHistory",
@@ -501,10 +476,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="create_line_sample",
-                description=(
-                    "Sample one point field along an exact nonzero line. The result "
-                    "retains its source and returns compact statistics, not arrays."
-                ),
+                description="Sample a point field along a line.",
                 action_ids=frozenset({"FEM_PostFilterDataAlongLine"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactPostSourceFieldLineAndHistory",
@@ -562,10 +534,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="create_point_sample",
-                description=(
-                    "Probe one point field at an exact point. Scalar fields return the "
-                    "scalar; multicomponent fields return their magnitude."
-                ),
+                description="Sample a point field at one point.",
                 action_ids=frozenset({"FEM_PostFilterDataAtPoint"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactPostSourceFieldPointAndHistory",
@@ -593,10 +562,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="create_calculated_field",
-                description=(
-                    "Create one validated scalar or vector point field from typed "
-                    "reverse-Polish tokens; arbitrary native expressions are not accepted."
-                ),
+                description="Create a calculated point field from typed RPN tokens.",
                 action_ids=frozenset({"FEM_PostFilterCalculator"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactPostSourceTypedExpressionAndHistory",
@@ -624,10 +590,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
                         },
                         "expression": {
                             "type": "array",
-                            "description": (
-                                "Postfix tokens: emit operands first, then the operator "
-                                "that consumes them."
-                            ),
+                            "description": "Postfix operands then operator.",
                             "minItems": 1,
                             "maxItems": 64,
                             "items": _CALCULATOR_TOKEN,
@@ -647,10 +610,7 @@ def analyze_post_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="create_glyphs",
-                description=(
-                    "Visualize exact point data with bounded native glyphs, explicit "
-                    "orientation/scaling fields, and deterministic sampling limits."
-                ),
+                description="Visualize point data with glyphs.",
                 action_ids=frozenset({"FEM_PostFilterGlyph"}),
                 surface_ids=frozenset({"analyze"}),
                 exact_target_type="ExactPostSourceGlyphFieldsSamplingAndHistory",

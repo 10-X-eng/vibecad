@@ -19,9 +19,9 @@ from VibeCADNativeTurn import (
 )
 
 from vibecad_tests.test_native_capability_registry import (
-    _feature_definition,
     _focused_inventory_by_surface,
     _inspection_definition,
+    _primitive_definition,
     _register_complete,
 )
 from vibecad_tests.test_ribbon_surface import _Controller, _manifest
@@ -58,10 +58,10 @@ def test_complete_surface_freezes_exact_ribbon_and_schema_identity(
 
     assert snapshot.surface.surface_id == "model"
     assert snapshot.surface.revision == 6
-    assert snapshot.tool_names == ("model.feature", "inspect.query")
+    assert snapshot.tool_names == ("model.primitive", "inspect.query")
     assert len(snapshot.schema_sha256) == 64
     assert tuple(schema["name"] for schema in snapshot.provider_schemas) == (
-        "model.feature",
+        "model.primitive",
         "inspect.query",
     )
     assert snapshot.summary() == {
@@ -79,6 +79,38 @@ def test_unchanged_turn_reauthorizes_exactly(focused_inventory) -> None:
     expected = freeze_native_turn(controller, registry)
 
     assert require_frozen_native_turn(expected, controller, registry) == expected
+
+
+def test_provider_turn_can_freeze_an_exact_subset_of_a_complete_surface(
+    focused_inventory,
+) -> None:
+    controller = _Controller(_manifest(), revision=6)
+    registry = _register_complete()
+
+    expected = freeze_native_turn(
+        controller,
+        registry,
+        tool_names=("inspect.query",),
+    )
+
+    assert expected.tool_names == ("inspect.query",)
+    assert tuple(schema["name"] for schema in expected.provider_schemas) == (
+        "inspect.query",
+    )
+    assert require_frozen_native_turn(expected, controller, registry) == expected
+
+
+def test_provider_turn_rejects_a_subset_outside_the_complete_surface(
+    focused_inventory,
+) -> None:
+    with pytest.raises(NativeTurnUnavailable) as caught:
+        freeze_native_turn(
+            _Controller(_manifest(), revision=6),
+            _register_complete(),
+            tool_names=("analyze.missing",),
+        )
+
+    assert "outside the complete Native surface" in str(caught.value)
 
 
 def test_ribbon_identity_change_rejects_before_tool_authority(
@@ -115,8 +147,8 @@ def test_schema_change_rejects_the_existing_turn(focused_inventory) -> None:
     controller = _Controller(_manifest(), revision=6)
     expected = freeze_native_turn(controller, _register_complete())
     registry = NativeCapabilityRegistry()
-    for definition in (_feature_definition(), _inspection_definition()):
-        if definition.name == "model.feature":
+    for definition in (_primitive_definition(), _inspection_definition()):
+        if definition.name == "model.primitive":
             definition = NativeCapabilityDefinition(
                 name=definition.name,
                 description="Create one exact solid feature.",

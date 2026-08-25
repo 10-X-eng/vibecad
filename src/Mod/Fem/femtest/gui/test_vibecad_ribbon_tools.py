@@ -55,6 +55,7 @@ BASE_SHIPPED_COMMANDS = {
         "FEM_ConstraintInitialFlowVelocity",
         "FEM_ConstraintInitialPressure",
         "FEM_ConstraintFlowVelocity",
+        "FEM_ConstraintFluidBoundary",
     ),
     "Geometry": (
         "FEM_ConstraintPlaneRotation",
@@ -274,6 +275,7 @@ ANALYZE_COMMAND_TIMELINE_BEHAVIOR = {
     "FEM_ConstraintInitialFlowVelocity": frozenset({"operation", "source-preserving"}),
     "FEM_ConstraintInitialPressure": frozenset({"operation", "source-preserving"}),
     "FEM_ConstraintFlowVelocity": frozenset({"operation", "source-preserving"}),
+    "FEM_ConstraintFluidBoundary": frozenset({"operation", "source-preserving"}),
     "FEM_ConstraintPlaneRotation": frozenset({"operation", "source-preserving"}),
     "FEM_ConstraintSectionPrint": frozenset({"operation", "source-preserving"}),
     "FEM_ConstraintTransform": frozenset({"operation", "source-preserving"}),
@@ -446,6 +448,7 @@ PYTHON_ANALYSIS_TASK_COMMANDS = (
 )
 
 CPP_ANALYSIS_TASK_COMMANDS = (
+    "FEM_ConstraintFluidBoundary",
     "FEM_ConstraintPlaneRotation",
     "FEM_ConstraintTransform",
     "FEM_ConstraintFixed",
@@ -1090,7 +1093,7 @@ class TestVibeCADFEMRibbonTools(unittest.TestCase):
         if "BUILD_FEM_VTK_PYTHON" not in App.__cmake__:
             self.assertTrue(set(VTK_PYTHON_COMMANDS).isdisjoint(compiled_actions))
         if "BUILD_FEM_VTK" in App.__cmake__ and "BUILD_FEM_VTK_PYTHON" in App.__cmake__:
-            self.assertEqual(len(compiled_actions), 97)
+            self.assertEqual(len(compiled_actions), 98)
             self.assertEqual(
                 set(ANALYZE_COMMAND_TIMELINE_BEHAVIOR),
                 compiled_actions,

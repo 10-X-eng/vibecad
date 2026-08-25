@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +14,128 @@ from VibeCADGeometryInspection import complete_geometry_read
 
 
 REPO = Path(__file__).resolve().parents[4]
+
+
+def test_parallel_geometry_worker_count_tracks_available_cpus(monkeypatch) -> None:
+    import VibeCADGeometry as geometry
+
+    monkeypatch.setattr(geometry.os, "cpu_count", lambda: 12)
+
+    assert geometry.parallel_geometry_worker_count(100) == 9
+    assert geometry.parallel_geometry_worker_count(5) == 5
+    assert geometry.parallel_geometry_worker_count(0) == 0
+
+    monkeypatch.setattr(geometry.os, "cpu_count", lambda: 56)
+
+    assert geometry.parallel_geometry_worker_count(100) == 42
+
+    monkeypatch.setattr(geometry.os, "cpu_count", lambda: 1)
+
+    assert geometry.parallel_geometry_worker_count(100) == 1
+
+
+def test_brep_artifact_validation_fans_out_and_preserves_input_order(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import VibeCADGeometry as geometry
+
+    monkeypatch.setattr(geometry.os, "cpu_count", lambda: 4)
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def validate(artifact, **_kwargs):
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        time.sleep(0.04)
+        with lock:
+            active -= 1
+        return {
+            "ok": True,
+            "valid": True,
+            "identity": artifact["identity"],
+        }
+
+    monkeypatch.setattr(geometry, "_validate_brep_artifact", validate)
+    artifacts = []
+    for index in range(8):
+        path = tmp_path / f"shape-{index}.brep"
+        path.write_bytes(f"BREP-{index}".encode("ascii"))
+        artifacts.append({"shape_path": str(path), "identity": index})
+
+    results = geometry.validate_brep_artifacts_parallel(
+        artifacts,
+        cache_root=tmp_path / "cache",
+    )
+
+    assert maximum_active == 3
+    assert [result["identity"] for result in results] == list(range(8))
+
+
+def test_parallel_brep_validation_deduplicates_and_persists_content_results(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import VibeCADGeometry as geometry
+
+    first = tmp_path / "first.brep"
+    duplicate = tmp_path / "duplicate.brep"
+    first.write_bytes(b"SAME-EXACT-BREP")
+    duplicate.write_bytes(b"SAME-EXACT-BREP")
+    calls = []
+
+    def validate(artifact, **_kwargs):
+        calls.append(str(artifact["shape_path"]))
+        return {"ok": True, "valid": True, "validation_status": "valid"}
+
+    monkeypatch.setattr(geometry, "_validate_brep_artifact", validate)
+    cache_root = tmp_path / "cache"
+
+    initial = geometry.validate_brep_artifacts_parallel(
+        [
+            {"shape_path": str(first), "identity": "first"},
+            {"shape_path": str(duplicate), "identity": "duplicate"},
+        ],
+        cache_root=cache_root,
+    )
+    repeated = geometry.validate_brep_artifacts_parallel(
+        [{"shape_path": str(duplicate), "identity": "repeated"}],
+        cache_root=cache_root,
+    )
+
+    assert len(calls) == 1
+    assert [value["identity"] for value in initial] == ["first", "duplicate"]
+    assert initial[0]["cache_hit"] is False
+    assert initial[1]["coalesced"] is True
+    assert repeated[0]["cache_hit"] is True
+    assert list(cache_root.rglob("*.json"))
+
+
+def test_context_validation_requests_brep_check_without_extra_bop_analysis(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import VibeCADGeometry as geometry
+
+    shape_path = tmp_path / "shape.brep"
+    shape_path.write_bytes(b"EXACT-BREP")
+    captured = []
+
+    def execute(request_path, _result_path, **_kwargs):
+        captured.append(json.loads(Path(request_path).read_text(encoding="utf-8")))
+        return {"ok": True, "valid": True}
+
+    monkeypatch.setattr(geometry, "execute_job", execute)
+
+    result = geometry._validate_brep_artifact(
+        {"shape_path": str(shape_path), "identity": "shape"}
+    )
+
+    assert result["valid"] is True
+    assert captured[0]["include_bop"] is False
 
 
 class _Vector:

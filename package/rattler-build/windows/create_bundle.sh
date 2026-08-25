@@ -236,6 +236,10 @@ if ! "$SIGN_DIR/Mod/McMasterInsert/McMasterCatalogWebView2.exe" --smoke-test; th
   echo "VibeCAD McMaster WebView2 helper could not find the Edge WebView2 Runtime."
   exit 1
 fi
+if ! "$SIGN_DIR/Mod/McMasterInsert/McMasterCatalogWebView2.exe" --argument-parser-smoke-test --inbox=parser-smoke-inbox --profile parser-smoke-profile; then
+  echo "VibeCAD McMaster WebView2 helper could not parse its launch paths."
+  exit 1
+fi
 if ! "$SIGN_DIR/bin/freecadcmd.exe" --safe-mode -c "import importlib.util, anthropic, keyring, jsonschema, mcp, mcp_types, tuf; import keyring.backends.Windows; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('VibeCAD Python dependencies and OS keyring backend import ok')"; then
   echo "VibeCAD Python dependency/keyring smoke test failed; the Windows bundle is incomplete."
   exit 1

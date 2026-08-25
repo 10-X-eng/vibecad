@@ -25,6 +25,16 @@ from VibeCADNativeAnalyzeMaterialEdit import (
     update_material,
     verify_material_update,
 )
+from VibeCADNativeAnalyzeStudyEdit import (
+    prepare_study_update,
+    update_study_intent,
+    verify_study_update,
+)
+from VibeCADNativeAnalyzeSolidDomain import (
+    create_solid_domain,
+    prepare_solid_domain,
+    verify_solid_domain,
+)
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
@@ -48,9 +58,17 @@ _MATERIAL_UPDATE_FIELDS = frozenset(
 )
 
 _FIELDS = {
+    "create_solid_domain": (
+        frozenset({"sources", "interface_mode", "label"}),
+        frozenset({"sources", "interface_mode", "label"}),
+    ),
     "create_analysis": (
         frozenset({"label", "default_solver_policy"}),
-        frozenset({"label", "default_solver_policy"}),
+        frozenset({"label", "default_solver_policy", "study"}),
+    ),
+    "update_study": (
+        frozenset({"target", "study"}),
+        frozenset({"target", "study"}),
     ),
     "create_solid_material": (
         frozenset({"analysis", "label", "references"}),
@@ -134,6 +152,19 @@ class NativeAnalyzeModelRuntime:
         operation, values = _arguments(arguments)
         context = self._context
         context.guard()
+        if operation == "create_solid_domain":
+            prepared = prepare_solid_domain(
+                context.document,
+                context.document_uid,
+                **values,
+            )
+            return run_immediate_mutation(
+                context,
+                ticket=ticket,
+                transaction_name="Create Solid Analysis Domain",
+                mutate=lambda document: create_solid_domain(document, prepared),
+                verify=verify_solid_domain,
+            )
         if operation == "create_analysis":
             prepared = prepare_analysis_create(context.document, **values)
             return run_immediate_mutation(
@@ -142,6 +173,19 @@ class NativeAnalyzeModelRuntime:
                 transaction_name="Create FEM Analysis",
                 mutate=lambda document: create_analysis(document, prepared),
                 verify=verify_analysis_create,
+            )
+        if operation == "update_study":
+            prepared = prepare_study_update(
+                context.document,
+                context.document_uid,
+                **values,
+            )
+            return run_immediate_mutation(
+                context,
+                ticket=ticket,
+                transaction_name="Edit FEM Study",
+                mutate=lambda document: update_study_intent(document, prepared),
+                verify=verify_study_update,
             )
         if operation in _KINDS:
             prepared = prepare_material_create(

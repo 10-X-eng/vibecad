@@ -33,6 +33,8 @@ def _summary(snapshot: NativeBackgroundSnapshot) -> dict[str, Any]:
         result["result"] = dict(snapshot.result)
     if snapshot.error is not None:
         result["failure"] = dict(snapshot.error)
+    if snapshot.document_changed:
+        result["document_changed"] = True
     return result
 
 

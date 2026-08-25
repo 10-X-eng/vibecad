@@ -24,9 +24,31 @@ from VibeCADNativeAnalyzeState import is_live
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity
 
-
 MAX_INPUT_FILES = 4096
 MAX_INPUT_BYTES = 4 * 1024 * 1024 * 1024
+_FEM_PREFERENCES = "User parameter:BaseApp/Preferences/Mod/Fem"
+_SOLVER_RUNTIME_PREFERENCE_SPECS = (
+    (_FEM_PREFERENCES + "/General", "KeepResultsOnReRun", "bool", False, None),
+    (_FEM_PREFERENCES + "/Ccx", "ccxBinaryPath", "string", "", "calculix"),
+    (_FEM_PREFERENCES + "/Ccx", "AnalysisNumCPUs", "int", 1, "calculix"),
+    (_FEM_PREFERENCES + "/Ccx", "BinaryOutput", "bool", False, "calculix"),
+    (_FEM_PREFERENCES + "/Elmer", "gridBinaryPath", "string", "", "elmer"),
+    (_FEM_PREFERENCES + "/Elmer", "elmerBinaryPath", "string", "", "elmer"),
+    (_FEM_PREFERENCES + "/Elmer", "mpiBinaryPath", "string", "", "elmer"),
+    (_FEM_PREFERENCES + "/Elmer", "NumberOfTasks", "int", 1, "elmer"),
+    (_FEM_PREFERENCES + "/Elmer", "ThreadsPerTask", "int", 1, "elmer"),
+    (_FEM_PREFERENCES + "/Elmer", "MaxOutputLevel", "int", 10, "elmer"),
+    (_FEM_PREFERENCES + "/Mystran", "mystranBinaryPath", "string", "", "mystran"),
+    (_FEM_PREFERENCES + "/Z88", "z88BinaryPath", "string", "", "z88"),
+    (
+        _FEM_PREFERENCES + "/OpenFOAM",
+        "EnvironmentFile",
+        "string",
+        "",
+        "openfoam",
+    ),
+    ("User parameter:BaseApp/Preferences/Units", "UserSchema", "int", None, None),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +64,18 @@ class SolverExecutionRequest:
     input_file_count: int
     keep_results: bool
     importer_state: Mapping[str, Any]
+    runtime_preferences: tuple[tuple[str, str, str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedSolverExecutionRequest:
+    """Exact live-document guards captured before detached case generation."""
+
+    target: PreparedSolverTarget
+    history_operations: tuple[Any, ...]
+    timeout_seconds: int
+    keep_results: bool
+    runtime_preferences: tuple[tuple[str, str, str, Any], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +111,9 @@ def _input_digest(root: Path) -> tuple[str, int]:
     size = 0
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
-            raise NativeAnalyzeError("A detached FEM input contains an unsafe symbolic link.")
+            raise NativeAnalyzeError(
+                "A detached FEM input contains an unsafe symbolic link."
+            )
         if not path.is_file():
             continue
         count += 1
@@ -108,12 +144,29 @@ def _executable(program: str, label: str) -> str:
     return str(resolved)
 
 
+def _prepare_calculix(tool: Any) -> None:
+    try:
+        tool.prepare()
+    except RuntimeError as exc:
+        detail = " ".join(str(exc).split())
+        prefix = "CalculiX prerequisites failed:"
+        if detail.startswith(prefix):
+            detail = detail.removeprefix(prefix).strip()
+        message = "CalculiX prerequisites are incomplete"
+        if detail:
+            message += ": " + detail
+        raise NativeAnalyzeError(
+            message + "." if not message.endswith(".") else message,
+            error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
+        ) from exc
+
+
 def _calculix_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
     from femsolver import settings
     from femsolver.calculix.calculixtools import CalculiXTools
 
     tool = CalculiXTools(solver, detached=True, working_directory=str(root))
-    tool.prepare()
+    _prepare_calculix(tool)
     program = _executable(settings.require_binary("Calculix"), "CalculiX")
     arguments = ("-i", str(root / tool.input_deck))
     environment = dict(os.environ)
@@ -146,9 +199,9 @@ def _ccx_tools_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]
         )
     program = _executable(settings.require_binary("Calculix"), "CalculiX")
     environment = dict(os.environ)
-    threads = FreeCAD.ParamGet(
-        "User parameter:BaseApp/Preferences/Mod/Fem/Ccx"
-    ).GetInt("AnalysisNumCPUs", 1)
+    threads = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/Ccx").GetInt(
+        "AnalysisNumCPUs", 1
+    )
     environment["OMP_NUM_THREADS"] = str(max(1, threads))
     environment["PASTIX_MIXED_PRECISION"] = (
         "1" if bool(getattr(solver, "PastixMixedPrecision", False)) else "0"
@@ -167,6 +220,7 @@ def _elmer_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
 
     tool = ElmerTools(solver, detached=True, working_directory=str(root))
     tool.prepare(run_grid=False)
+    _require_no_ignored_elmer_constraints(tool)
     commands = [
         (_executable(program, "ElmerGrid"), tuple(arguments))
         for program, arguments in tool.grid_commands
@@ -188,6 +242,19 @@ def _elmer_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
     return tool, tuple(commands), environment, {"result_format": result_format}
 
 
+def _require_no_ignored_elmer_constraints(tool: Any) -> None:
+    ignored = tuple(getattr(tool, "ignored_constraints", ()) or ())
+    if not ignored:
+        return
+    labels = ", ".join(
+        str(getattr(value, "Label", "") or value.Name) for value in ignored
+    )
+    raise NativeAnalyzeError(
+        "Elmer has no active equation for these study conditions: " + labels + ".",
+        error_code="NATIVE_ANALYZE_SOLVER_NOT_READY",
+    )
+
+
 def _z88_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
     from femsolver import settings
     from femsolver.z88.z88tools import Z88Tools
@@ -196,9 +263,13 @@ def _z88_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
     tool.prepare()
     program = _executable(settings.require_binary("Z88"), "Z88")
     test = (program, ("-t", "-" + str(solver.SolverType)))
-    commands = (test,) if str(solver.AnalysisType) == "test" else (
-        test,
-        (program, ("-c", "-" + str(solver.SolverType))),
+    commands = (
+        (test,)
+        if str(solver.AnalysisType) == "test"
+        else (
+            test,
+            (program, ("-c", "-" + str(solver.SolverType))),
+        )
     )
     return tool, commands, dict(os.environ), {}
 
@@ -231,20 +302,109 @@ def _mystran_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
     )
 
 
+def _openfoam_request(solver: Any, root: Path) -> tuple[Any, tuple, dict, dict]:
+    from VibeCADNativeAnalyzeOpenFOAMExecution import prepare_openfoam_request
+
+    return prepare_openfoam_request(solver, root)
+
+
+def capture_solver_execution_request(
+    document: Any,
+    document_uid: str,
+    *,
+    target: Any,
+    timeout_seconds: Any,
+) -> CapturedSolverExecutionRequest:
+    """Capture exact solver guards without generating files or running tools."""
+
+    prepared = prepare_solver_target(document, document_uid, target)
+    state = solver_state(prepared.solver)
+    if state["suppressed"]:
+        raise NativeAnalyzeError("A suppressed FEM solver cannot be run.")
+    history = _require_history_root(document, prepared.solver)
+    runtime_preferences = _current_solver_runtime_preferences(prepared.kind)
+    return CapturedSolverExecutionRequest(
+        prepared,
+        history,
+        _timeout(timeout_seconds),
+        _keep_results_from_runtime_preferences(runtime_preferences),
+        runtime_preferences,
+    )
+
+
+def validate_captured_solver_execution(
+    document: Any,
+    captured: CapturedSolverExecutionRequest,
+) -> None:
+    """Reject a captured request when its exact live commit guards changed."""
+
+    if not isinstance(captured, CapturedSolverExecutionRequest):
+        raise TypeError("captured must be CapturedSolverExecutionRequest")
+    solver = captured.target.solver
+    if getattr(solver, "Document", None) is not document or not solver_still_exact(
+        solver,
+        captured.target.expected_state_sha256,
+    ):
+        raise NativeAnalyzeError(
+            "The exact FEM solver changed while execution was being prepared.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        )
+    if _require_history_root(document, solver) != captured.history_operations:
+        raise NativeAnalyzeError(
+            "Document History changed while FEM execution was being prepared.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        )
+    current_preferences = _current_solver_runtime_preferences(captured.target.kind)
+    if (
+        _keep_results_from_runtime_preferences(current_preferences)
+        is not captured.keep_results
+    ):
+        raise NativeAnalyzeError(
+            "The FEM result-retention preference changed while execution was being prepared.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        )
+    if current_preferences != captured.runtime_preferences:
+        raise NativeAnalyzeError(
+            "The FEM solver runtime preferences changed while execution was being prepared.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        )
+
+
 def prepare_solver_execution_request(
     document: Any,
     document_uid: str,
     *,
     target: Any,
     timeout_seconds: Any,
+    working_directory: str | Path | None = None,
 ) -> SolverExecutionRequest:
-    prepared = prepare_solver_target(document, document_uid, target)
+    """Generate one solver case synchronously for compatibility callers.
+
+    GUI and provider entry points capture exact guards first and generate this
+    case in an isolated child process. The optional working directory lets that
+    child keep every artifact inside its parent-owned private workspace.
+    """
+
+    captured = capture_solver_execution_request(
+        document,
+        document_uid,
+        target=target,
+        timeout_seconds=timeout_seconds,
+    )
+    prepared = captured.target
     state = solver_state(prepared.solver)
-    if state["suppressed"]:
-        raise NativeAnalyzeError("A suppressed FEM solver cannot be run.")
     implementation = str(state["implementation"])
-    history = _require_history_root(document, prepared.solver)
-    root = Path(tempfile.mkdtemp(prefix=f"vibecad-native-fem-{prepared.kind}-"))
+    if working_directory is None:
+        root = Path(tempfile.mkdtemp(prefix=f"vibecad-native-fem-{prepared.kind}-"))
+    else:
+        root = Path(working_directory).resolve()
+        try:
+            root.mkdir(mode=0o700, parents=False, exist_ok=False)
+        except OSError as exc:
+            raise NativeAnalyzeError(
+                "The private FEM case directory could not be created.",
+                error_code="NATIVE_ANALYZE_SOLVER_INPUT_INVALID",
+            ) from exc
     try:
         maker = {
             "calculix": (
@@ -254,27 +414,24 @@ def prepare_solver_execution_request(
             ),
             "elmer": _elmer_request,
             "mystran": _mystran_request,
+            "openfoam": _openfoam_request,
             "z88": _z88_request,
         }[prepared.kind]
         _tool, commands, environment, importer_state = maker(prepared.solver, root)
         digest, count = _input_digest(root)
-        keep_results = bool(
-            __import__("FreeCAD")
-            .ParamGet("User parameter:BaseApp/Preferences/Mod/Fem/General")
-            .GetBool("KeepResultsOnReRun", False)
-        )
         return SolverExecutionRequest(
             prepared,
             implementation,
-            history,
+            captured.history_operations,
             str(root),
             tuple(commands),
             environment,
-            _timeout(timeout_seconds),
+            captured.timeout_seconds,
             digest,
             count,
-            keep_results,
+            captured.keep_results,
             importer_state,
+            captured.runtime_preferences,
         )
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
@@ -318,6 +475,51 @@ def _current_keep_results() -> bool:
     )
 
 
+def _current_solver_runtime_preferences(
+    solver_kind: str,
+) -> tuple[tuple[str, str, str, Any], ...]:
+    """Capture only preferences that affect detached input, execution, or import."""
+
+    import FreeCAD as App
+
+    kind = str(solver_kind)
+    if kind not in {"calculix", "elmer", "mystran", "openfoam", "z88"}:
+        raise ValueError(f"Unsupported FEM solver kind: {kind!r}")
+    values = []
+    for path, name, value_kind, default, backend in _SOLVER_RUNTIME_PREFERENCE_SPECS:
+        if backend is not None and backend != kind:
+            continue
+        if default is None:
+            default = int(App.Units.Scheme.Internal)
+        group = App.ParamGet(path)
+        if value_kind == "bool":
+            value = bool(group.GetBool(name, default))
+        elif value_kind == "int":
+            value = int(group.GetInt(name, default))
+        else:
+            value = str(group.GetString(name, default))
+        values.append((path, name, value_kind, value))
+    return tuple(values)
+
+
+def _keep_results_from_runtime_preferences(
+    preferences: tuple[tuple[str, str, str, Any], ...],
+) -> bool:
+    matches = [
+        value
+        for path, name, value_kind, value in preferences
+        if path == _FEM_PREFERENCES + "/General"
+        and name == "KeepResultsOnReRun"
+        and value_kind == "bool"
+    ]
+    if len(matches) != 1 or type(matches[0]) is not bool:
+        raise NativeAnalyzeError(
+            "The FEM result-retention preference could not be captured exactly.",
+            error_code="NATIVE_ANALYZE_SOLVER_INPUT_INVALID",
+        )
+    return matches[0]
+
+
 def _import_tool(request: SolverExecutionRequest) -> Any:
     solver = request.target.solver
     root = request.working_directory
@@ -346,6 +548,16 @@ def _import_tool(request: SolverExecutionRequest) -> Any:
         tool = MystranTools(solver, working_directory=root)
         tool.input_deck = str(request.importer_state["input_deck"])
         return tool
+    if request.target.kind == "openfoam":
+        from femsolver.openfoam.openfoamtools import OpenFOAMTools
+
+        return OpenFOAMTools(
+            solver,
+            root,
+            result_glob=str(request.importer_state["result_glob"]),
+            solver_log=str(request.importer_state["solver_log"]),
+            summary_context=request.importer_state.get("summary_context"),
+        )
     from femsolver.z88.z88tools import Z88Tools
 
     return Z88Tools(solver, detached=True, working_directory=root)
@@ -353,12 +565,23 @@ def _import_tool(request: SolverExecutionRequest) -> Any:
 
 def _unpack_result_graph(value: Any) -> tuple[Any, tuple[Any, ...], bool, Any]:
     if not isinstance(value, tuple) or len(value) not in {2, 3, 4}:
-        raise NativeAnalyzeError("The FEM result importer returned no exact result graph.")
+        raise NativeAnalyzeError(
+            "The FEM result importer returned no exact result graph."
+        )
     root = value[0]
     resources = tuple(value[1])
     root_is_new = bool(value[2]) if len(value) >= 3 else True
     reconciliation = value[3] if len(value) == 4 else None
     return root, resources, root_is_new, reconciliation
+
+
+def _select_final_result_frame(root: Any) -> None:
+    try:
+        frames = tuple(root.getFrameValues())
+    except (AttributeError, RuntimeError, TypeError):
+        return
+    if frames:
+        root.Frame = len(frames) - 1
 
 
 def commit_solver_execution(
@@ -398,6 +621,7 @@ def commit_solver_execution(
         root_is_new=root_is_new,
         reconciliation=reconciliation,
     )
+    _select_final_result_frame(root)
     return NativeMutationDraft(
         value={"prepared": prepared, "root": root, "resources": resources},
         recompute_targets=(root, solver),
@@ -409,7 +633,9 @@ def commit_solver_execution(
     )
 
 
-def _result_summary(root: Any, resources: tuple[Any, ...], solver: Any) -> dict[str, Any]:
+def _result_summary(
+    root: Any, resources: tuple[Any, ...], solver: Any
+) -> dict[str, Any]:
     return {
         "object_name": str(root.Name),
         "object_id": int(root.ID),
@@ -418,13 +644,28 @@ def _result_summary(root: Any, resources: tuple[Any, ...], solver: Any) -> dict[
         "solver": str(solver.Name),
         "resource_count": len(resources),
         "resources": [
-            {"object_name": str(value.Name), "object_id": int(value.ID), "type_id": str(value.TypeId)}
+            {
+                "object_name": str(value.Name),
+                "object_id": int(value.ID),
+                "type_id": str(value.TypeId),
+            }
             for value in resources
         ],
     }
 
 
-def verify_solver_execution(document: Any, draft: NativeMutationDraft) -> dict[str, Any]:
+def _require_meaningful_result_state(state: Mapping[str, Any]) -> None:
+    if int(state.get("field_count", 0) or 0) > 0:
+        return
+    raise NativeAnalyzeError(
+        "The FEM solver produced no result fields.",
+        error_code="NATIVE_ANALYZE_RESULT_DATA_MISSING",
+    )
+
+
+def verify_solver_execution(
+    document: Any, draft: NativeMutationDraft
+) -> dict[str, Any]:
     from femcommands.manager import (
         _canonical_timeline_resource_order,
         _result_solver_matches,
@@ -436,13 +677,15 @@ def verify_solver_execution(document: Any, draft: NativeMutationDraft) -> dict[s
     solver = request.target.solver
     root = draft.value["root"]
     resources = draft.value["resources"]
+    from VibeCADNativeAnalyzeResultState import result_state
+
+    _require_meaningful_result_state(result_state(root))
     timeline = tuple(getattr(document.VibeCADTimeline, "Operations", ()) or ())
     result_list = tuple(getattr(solver, "Results", ()) or ())
     solver_resources = tuple(
         candidate
         for candidate in timeline
-        if candidate is not solver
-        and _timeline_root(candidate, document) is solver
+        if candidate is not solver and _timeline_root(candidate, document) is solver
     )
     solver_index = timeline.index(solver) if solver in timeline else -1
     checks = {
@@ -457,9 +700,7 @@ def verify_solver_execution(document: Any, draft: NativeMutationDraft) -> dict[s
             for value in resources
         ),
         "canonical History block": solver_index >= len(solver_resources)
-        and tuple(
-            timeline[solver_index - len(solver_resources) : solver_index]
-        )
+        and tuple(timeline[solver_index - len(solver_resources) : solver_index])
         == solver_resources
         and tuple(
             _canonical_timeline_resource_order(

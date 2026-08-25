@@ -44,6 +44,19 @@ The leading `./` is required when installing a local package with `apt`.
 
 Download the Windows installer, run it, and launch VibeCAD from the Start menu.
 
+### macOS
+
+Download the Apple Silicon (`arm64`) or Intel (`x86_64`) DMG from [VibeCAD Releases](https://github.com/10-X-eng/vibecad/releases/latest). Open the DMG and drag `VibeCAD.app` to Applications.
+
+Current release DMGs are not Apple-notarized, so the first launch may show **“VibeCAD.app” Not Opened**. Use one of these paths, then open VibeCAD from Applications as usual:
+
+- **Without Terminal:** Apple menu → **System Settings** → **Privacy & Security** → scroll to the VibeCAD message → **Open Anyway**, then confirm.
+- **With Terminal** (after the app is in Applications):
+
+```bash
+xattr -dr com.apple.quarantine /Applications/VibeCAD.app
+```
+
 SHA256 files are published beside release artifacts so downloads can be verified before installation.
 
 ## Configure an AI Provider
