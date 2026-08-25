@@ -305,6 +305,18 @@ def is_section_view_active(view: Any | None = None) -> bool:
         return False
 
 
+def _coin_vec3(coin: Any, xyz: tuple[float, float, float]) -> Any:
+    """SbVec3f from three floats. Star-unpacking hits a Pivy SWIG mismatch."""
+
+    x, y, z = float(xyz[0]), float(xyz[1]), float(xyz[2])
+    try:
+        return coin.SbVec3f(x, y, z)
+    except Exception:
+        vec = coin.SbVec3f()
+        vec.setValue(x, y, z)
+        return vec
+
+
 def _top_level_nodes(scene: Any) -> tuple[Any, ...]:
     children = getattr(scene, "getChildren", None)
     if not callable(children):
@@ -342,7 +354,7 @@ def _update_clip_plane(view: Any, placement: Any) -> bool:
     for node in _top_level_nodes(scene):
         if type(node).__name__ == "SoClipPlane":
             node.plane.setValue(
-                coin.SbPlane(coin.SbVec3f(*normal), coin.SbVec3f(*origin))
+                coin.SbPlane(_coin_vec3(coin, normal), _coin_vec3(coin, origin))
             )
             return True
     return False
@@ -422,6 +434,14 @@ def _sync_overlay(
     origin, normal = clip_plane_from_settings(settings, center)
     half_width, half_height = _overlay_size(bounds, normal)
     corners = section_plane_corners(origin, normal, half_width, half_height)
+    try:
+        _install_overlay_node(coin, scene, corners)
+    except Exception:
+        return
+
+
+def _install_overlay_node(coin: Any, scene: Any, corners: Any) -> None:
+    global _overlay_node
     separator = coin.SoSeparator()
     separator.setName(_OVERLAY_NAME)
     light = coin.SoLightModel()
@@ -432,7 +452,9 @@ def _sync_overlay(
     material.emissiveColor.setValue(0.08, 0.35, 0.45)
     coords = coin.SoCoordinate3()
     for index, corner in enumerate(corners):
-        coords.point.set1Value(index, coin.SbVec3f(*corner))
+        coords.point.set1Value(
+            index, float(corner[0]), float(corner[1]), float(corner[2])
+        )
     faces = coin.SoIndexedFaceSet()
     for index, value in enumerate((0, 1, 2, 3, -1)):
         faces.coordIndex.set1Value(index, value)
