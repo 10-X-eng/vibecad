@@ -22,6 +22,7 @@ jobs:
     env:
       CC: /usr/bin/gcc
       CXX: /usr/bin/g++
+      PYTHONPATH: ${{ github.workspace }}/src/Mod/VibeCAD
 
     steps:
       - name: Check out source
