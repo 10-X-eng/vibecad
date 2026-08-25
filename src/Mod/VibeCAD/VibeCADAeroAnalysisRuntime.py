@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Host Analysis Runtime adapter for detached VibeCAD Aero solves."""
+"""Host Analysis Runtime lifecycle helpers for detached VibeCAD Aero solves."""
 
 from __future__ import annotations
 
@@ -22,9 +22,6 @@ import AeroRepair
 import AeroResults
 import AeroStamp
 import VibeCADAero
-
-from VibeCADNativeBackground import NativeBackgroundError
-from VibeCADNativeTargets import document_uid
 
 
 _SUPPORTED_OPERATIONS = frozenset({"analyze", "section", "vlm"})
@@ -152,75 +149,10 @@ def publish_document_result(
     }
 
 
-def submit_aero_analysis(
-    document: Any,
-    operation: str,
-    *,
-    background_manager: Any,
-    document_thread_dispatch: Callable[[Callable[[], Any]], Any],
-    active_document: Callable[[], Any] | None = None,
-) -> dict[str, Any]:
-    """Schedule one detached Aero solve and return the standard ``native.job`` envelope."""
-
-    if background_manager is None:
-        raise AeroAnalysisRuntimeError(
-            "Background Aero analysis is unavailable in this session.",
-            error_code="AERO_BACKGROUND_UNAVAILABLE",
-        )
-    if not callable(document_thread_dispatch):
-        raise TypeError("document_thread_dispatch must be callable")
-
-    uid = document_uid(document)
-    prepared, expected_revision = prepare_document_input(document, operation)
-
-    def prepare(cancelled: Any, progress: Any) -> Any:
-        return run_detached(prepared, cancelled=cancelled, progress=progress)
-
-    def validate_before_commit() -> None:
-        validate_document_input(
-            document,
-            expected_revision,
-            active_document=active_document,
-        )
-
-    try:
-        snapshot = background_manager.submit(
-            document_uid=uid,
-            capability_name=f"aero.{prepared.operation}",
-            prepare=prepare,
-            validate_before_commit=validate_before_commit,
-            commit=lambda completed: publish_document_result(document, completed),
-            dispatch_to_document_thread=document_thread_dispatch,
-            finalize_message="Publishing verified Aero results",
-        )
-    except NativeBackgroundError as exc:
-        raise AeroAnalysisRuntimeError(
-            str(exc),
-            error_code="AERO_ANALYSIS_QUEUE_FAILED",
-        ) from exc
-
-    return {
-        "job": {
-            "job_id": str(snapshot.job_id),
-            "capability": str(snapshot.capability_name),
-            "phase": str(snapshot.phase),
-            "progress_percent": int(snapshot.progress_percent),
-            "progress_message": str(snapshot.progress_message),
-            "terminal": bool(snapshot.terminal),
-        },
-        "next": {
-            "tool": "native.job",
-            "operation": "status",
-            "job_id": snapshot.job_id,
-        },
-    }
-
-
 __all__ = (
     "AeroAnalysisRuntimeError",
     "prepare_document_input",
     "publish_document_result",
     "run_detached",
-    "submit_aero_analysis",
     "validate_document_input",
 )
