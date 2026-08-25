@@ -22,6 +22,7 @@ from VibeCADAnalysisContracts import (
 from VibeCADAnalysisProviders import AnalysisProvider, ProviderCapabilities
 import VibeCADNativeAnalyzeSolverExecution as legacy
 import VibeCADNativeAnalyzeSolverExecutionAdapter as adapter
+import tool_impl.analysis_fem_adapter as installed_adapter
 
 
 def test_contracts_are_immutable_serializable_and_domain_neutral() -> None:
@@ -114,7 +115,7 @@ def _legacy_request(root: Path):
     )
 
 
-def test_fem_adapter_preserves_legacy_preparation_and_execution_identity(
+def test_fem_adapter_preserves_preparation_identity_and_migrated_execution_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -156,20 +157,47 @@ def test_fem_adapter_preserves_legacy_preparation_and_execution_identity(
     assert provenance["input_total_bytes"] > 0
 
     called: dict[str, object] = {}
-    legacy_completed = object()
+    progress: list[tuple[int, str]] = []
 
-    def run(request_value, *, cancelled, progress):
-        called["run_request"] = request_value
-        return legacy_completed
+    def run_sequence(commands, **kwargs):
+        called["commands"] = commands
+        called["provider_kwargs"] = kwargs
+        kwargs["stage_started"](1, 1)
+        return (SimpleNamespace(stage=1, program="/solver/ccx", exit_code=0),)
 
-    monkeypatch.setattr(legacy, "run_solver_execution", run)
+    monkeypatch.setattr(
+        installed_adapter._LOCAL_PROCESS_PROVIDER,
+        "run_sequence",
+        run_sequence,
+    )
+    monkeypatch.setattr(
+        legacy,
+        "run_solver_execution",
+        lambda *_args, **_kwargs: pytest.fail(
+            "migrated CalculiX execution must use the host local provider"
+        ),
+    )
     completed = adapter.run_solver_execution(
         prepared,
         cancelled=lambda: False,
-        progress=lambda _percent, _message: None,
+        progress=lambda percent, message: progress.append((percent, message)),
     )
-    assert called["run_request"] is request
-    assert completed.legacy_prepared is legacy_completed
+    assert called["commands"] == request.commands
+    provider_kwargs = called["provider_kwargs"]
+    assert provider_kwargs["working_directory"] == request.working_directory
+    assert provider_kwargs["environment"] is request.environment
+    assert provider_kwargs["timeout_seconds"] == request.timeout_seconds
+    assert provider_kwargs["maximum_log_bytes"] == 16 * 1024 * 1024
+    assert provider_kwargs["log_name"](1) == "solver-1.log"
+    assert progress == [
+        (7, "FEM solver input frozen"),
+        (12, "Running Calculix stage 1/1"),
+        (84, "Calculix result artifacts ready"),
+    ]
+    assert completed.legacy_prepared.request is request
+    assert completed.legacy_prepared.stages == (
+        {"stage": 1, "program": "ccx", "exit_code": 0},
+    )
     assert completed.analysis is prepared.analysis
 
     monkeypatch.setattr(
@@ -179,7 +207,7 @@ def test_fem_adapter_preserves_legacy_preparation_and_execution_identity(
     )
     document = object()
     assert adapter.commit_solver_execution(document, completed) == "draft"
-    assert called["commit"] == (document, legacy_completed)
+    assert called["commit"] == (document, completed.legacy_prepared)
 
     monkeypatch.setattr(
         legacy,

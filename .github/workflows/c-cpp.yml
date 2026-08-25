@@ -22,6 +22,7 @@ jobs:
     env:
       CC: /usr/bin/gcc
       CXX: /usr/bin/g++
+      PYTHONPATH: ${{ github.workspace }}/src/Mod/VibeCAD
 
     steps:
       - name: Check out source
@@ -31,6 +32,9 @@ jobs:
 
       - name: Install FreeCAD build dependencies
         run: ./package/ubuntu/install-apt-packages.sh
+
+      - name: Install Python test runner
+        run: sudo apt-get install -y python3-pytest
 
       - name: Configure with CMake
         run: |
@@ -52,3 +56,48 @@ jobs:
 
       - name: Compile-check VibeCAD Python sources
         run: python3 -m compileall -q src/Mod/VibeCAD
+
+      - name: Run Host Analysis FEM stabilization tests
+        id: host-analysis-fem-tests
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build/test-results
+          set +e
+          python3 -m pytest -q \
+            --junitxml=build/test-results/host-analysis-fem-pytest.xml \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_contracts.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_artifacts.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_runtime.py \
+            src/Mod/VibeCAD/vibecad_tests/test_native_background_commit_gate.py \
+            src/Mod/VibeCAD/vibecad_tests/test_fem_analysis_install_activation.py \
+            src/Mod/VibeCAD/vibecad_tests/test_calculix_analysis_local_provider.py \
+            src/Mod/VibeCAD/vibecad_tests/test_elmer_analysis_local_provider.py \
+            src/Mod/VibeCAD/vibecad_tests/test_z88_analysis_local_provider.py \
+            src/Mod/VibeCAD/vibecad_tests/test_mystran_analysis_local_provider.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_architecture_boundaries.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_error_mapping.py \
+            2>&1 | tee build/test-results/host-analysis-fem-pytest.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "### Host Analysis FEM stabilization failure"
+              echo
+              echo '```text'
+              tail -n 120 build/test-results/host-analysis-fem-pytest.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      - name: Preserve Host Analysis FEM failure diagnostics
+        if: failure() && steps.host-analysis-fem-tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-analysis-fem-pytest-failure
+          path: |
+            build/test-results/host-analysis-fem-pytest.log
+            build/test-results/host-analysis-fem-pytest.xml
+          if-no-files-found: error
+          retention-days: 7
