@@ -18,8 +18,10 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "FreeCAD",
     "FreeCADGui",
     "Fem",
+    "fem",
     "VibeCADAero",
-    "VibeCADNativeAnalyzeSolverExecution",
+    "VibeCADNativeAnalyze",
+    "tool_impl.analysis_fem_adapter",
 )
 
 
