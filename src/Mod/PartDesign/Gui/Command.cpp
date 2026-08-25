@@ -31,6 +31,7 @@
 #include <list>
 #include <QByteArray>
 #include <QMessageBox>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <TopExp_Explorer.hxx>
@@ -3129,13 +3130,27 @@ enum class DesignDressupSelectionKind
     DraftFaces,
 };
 
+bool isDressupSubelementName(const std::string& subName)
+{
+    return subName.starts_with("Edge") || subName.starts_with("Face");
+}
+
 DesignDressupSelection selectedDesignDressup(DesignDressupSelectionKind selectionKind)
 {
     DesignDressupSelection result;
     for (auto& selected : Gui::Selection().getSelectionEx()) {
         auto* object = selected.getObject();
-        if (!object || !PartGui::isModelingObjectActive(object) || selected.getSubNames().empty()) {
+        if (!object || !PartGui::isModelingObjectActive(object)) {
             result.valid = false;
+            continue;
+        }
+        std::vector<std::string> subNames;
+        for (const auto& subElement : selected.getSubNames()) {
+            if (isDressupSubelementName(subElement)) {
+                subNames.push_back(subElement);
+            }
+        }
+        if (subNames.empty()) {
             continue;
         }
         if (!result.document) {
@@ -3167,7 +3182,7 @@ DesignDressupSelection selectedDesignDressup(DesignDressupSelectionKind selectio
             index = static_cast<std::size_t>(std::distance(result.bodies.begin(), found));
         }
         auto& group = result.elementGroups[index];
-        for (const auto& subElement : selected.getSubNames()) {
+        for (const auto& subElement : subNames) {
             try {
                 const bool facesOnly = selectionKind != DesignDressupSelectionKind::EdgesOrFaces;
                 const auto resolved = facesOnly
@@ -3204,16 +3219,43 @@ DesignDressupSelection selectedDesignDressup(DesignDressupSelectionKind selectio
 bool selectionHasDressupSubelements()
 {
     for (auto& selected : Gui::Selection().getSelectionEx()) {
-        if (!selected.getSubNames().empty()) {
-            return true;
+        for (const auto& subName : selected.getSubNames()) {
+            if (isDressupSubelementName(subName)) {
+                return true;
+            }
         }
     }
     return false;
 }
 
+PartDesign::Body* uniqueSolidBodyInDocument(App::Document* document)
+{
+    if (!document) {
+        return nullptr;
+    }
+    PartDesign::Body* found = nullptr;
+    for (auto* body : document->getObjectsOfType<PartDesign::Body>()) {
+        if (!usableSolidTip(body) || !PartDesign::designBodyStateBefore(body, nullptr)) {
+            continue;
+        }
+        if (found) {
+            return nullptr;
+        }
+        found = body;
+    }
+    return found;
+}
+
 PartDesign::Body* pendingDressupBody()
 {
     auto* body = PartDesignGui::getBodyForCommandState();
+    if (!body) {
+        auto* view = Gui::Application::Instance
+            ? Gui::Application::Instance->activeView()
+            : nullptr;
+        auto* document = view ? view->getAppDocument() : App::GetApplication().getActiveDocument();
+        body = uniqueSolidBodyInDocument(document);
+    }
     if (!body || !usableSolidTip(body)
         || !PartDesign::designBodyStateBefore(body, nullptr)) {
         return nullptr;
@@ -3221,7 +3263,7 @@ PartDesign::Body* pendingDressupBody()
     return body;
 }
 
-DesignDressupSelection pendingFilletOrChamferSelection()
+DesignDressupSelection pendingDressupSelection()
 {
     DesignDressupSelection result;
     auto* body = pendingDressupBody();
@@ -3245,9 +3287,8 @@ void startDesignDressupOperation(
 )
 {
     auto selected = selectedDesignDressup(selectionKind);
-    if (!selected.valid && selectionKind == DesignDressupSelectionKind::EdgesOrFaces
-        && !selectionHasDressupSubelements()) {
-        selected = pendingFilletOrChamferSelection();
+    if (!selected.valid && !selectionHasDressupSubelements()) {
+        selected = pendingDressupSelection();
     }
     if (!selected.valid) {
         QMessageBox::warning(
@@ -3256,8 +3297,9 @@ void startDesignDressupOperation(
                 ? QObject::tr("Faces required")
                 : QObject::tr("Edges or faces required"),
             selectionKind != DesignDressupSelectionKind::EdgesOrFaces
-                ? QObject::tr("Select one or more supported faces. Selections may "
-                              "belong to multiple Bodies in this Design.")
+                ? QObject::tr("Select one or more supported faces, or start the tool "
+                              "and pick them on a solid Body. Selections may belong "
+                              "to multiple Bodies in this Design.")
                 : QObject::tr("Select one or more dressable edges or faces, or start "
                               "the tool and pick them on a solid Body.")
         );
@@ -3314,8 +3356,7 @@ bool designDressupOperationActive(DesignDressupSelectionKind selectionKind)
     if (selectedDesignDressup(selectionKind).valid) {
         return true;
     }
-    if (selectionKind != DesignDressupSelectionKind::EdgesOrFaces
-        || selectionHasDressupSubelements()) {
+    if (selectionHasDressupSubelements()) {
         return false;
     }
     return pendingDressupBody() != nullptr;
@@ -3585,7 +3626,9 @@ CmdPartDesignDraft::CmdPartDesignDraft()
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
     sMenuText = QT_TR_NOOP("Draft");
-    sToolTipText = QT_TR_NOOP("Applies a draft to the selected faces");
+    sToolTipText = QT_TR_NOOP(
+        "Applies a draft to selected faces, or starts picking them on a solid Body"
+    );
     sWhatsThis = "PartDesign_Draft";
     sStatusTip = sToolTipText;
     sPixmap = "PartDesign_Draft";
@@ -3620,7 +3663,9 @@ CmdPartDesignThickness::CmdPartDesignThickness()
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
     sMenuText = QT_TR_NOOP("Thickness");
-    sToolTipText = QT_TR_NOOP("Applies thickness and removes the selected faces");
+    sToolTipText = QT_TR_NOOP(
+        "Applies thickness and removes selected faces, or starts picking them on a solid Body"
+    );
     sWhatsThis = "PartDesign_Thickness";
     sStatusTip = sToolTipText;
     sPixmap = "PartDesign_Thickness";

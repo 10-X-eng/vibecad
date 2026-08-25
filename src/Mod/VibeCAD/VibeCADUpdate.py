@@ -16,7 +16,9 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -232,11 +234,14 @@ receipt="$5"
 pending="$6"
 
 log="$(dirname "$receipt")/install-helper.log"
+started="$(dirname "$receipt")/install-helper.started"
 health_wait="${VIBECAD_UPDATE_HEALTH_WAIT:-120}"
 open_bin="${VIBECAD_UPDATE_OPEN:-open}"
 log_msg() {
     printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >> "$log"
 }
+printf '%s\n' "$$" > "$started"
+log_msg "helper started pid=$$ waiting for $pid package=$package app=$app"
 
 bundle_executable() {
     candidate="$1/Contents/MacOS/FreeCAD"
@@ -429,6 +434,90 @@ def macos_install_helper_command(
         str(root / "install-receipt.json"),
         str(root / "pending-install.json"),
     ]
+
+
+def macos_install_helper_started_path(update_directory: Path | None = None) -> Path:
+    """Return the handshake file written as soon as the macOS helper is alive."""
+
+    root = (update_directory or default_update_directory()).resolve()
+    return root / "install-helper.started"
+
+
+def spawn_detached_install_helper(
+    command: Sequence[str],
+    *,
+    log_path: Path,
+) -> None:
+    """Start an install helper that outlives this GUI process.
+
+    Stdio is redirected so Qt teardown cannot block on inherited pipes.  On
+    macOS the helper is backgrounded with ``nohup`` in a new session so
+    RunningBoard does not treat it as part of VibeCAD.app and kill it when
+    the application exits.
+    """
+
+    argv = [str(part) for part in command]
+    if not argv:
+        raise UpdateError("The install helper command is empty.")
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "darwin":
+        inner = " ".join(shlex.quote(part) for part in argv)
+        log = shlex.quote(str(log_path))
+        shell = (
+            "trap '' HUP INT TERM\n"
+            f"/usr/bin/nohup {inner} </dev/null >>{log} 2>&1 &\n"
+            "exit 0\n"
+        )
+        process = subprocess.Popen(
+            ["/bin/sh", "-c", shell],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
+        process.wait(timeout=5)
+        if process.returncode not in (0, None):
+            raise UpdateError(
+                f"The install helper launcher exited with status {process.returncode}."
+            )
+        return
+
+    log_handle = open(log_path, "ab")
+    try:
+        kwargs: dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": log_handle,
+            "stderr": subprocess.STDOUT,
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+            )
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen(argv, **kwargs)
+    finally:
+        log_handle.close()
+
+
+def wait_for_install_helper_start(
+    started_path: Path,
+    *,
+    timeout: float = 5.0,
+) -> bool:
+    """Return True once the helper has written its startup handshake file."""
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if started_path.is_file():
+            return True
+        time.sleep(0.05)
+    return started_path.is_file()
 
 
 def normalize_architecture(value: str) -> str:
