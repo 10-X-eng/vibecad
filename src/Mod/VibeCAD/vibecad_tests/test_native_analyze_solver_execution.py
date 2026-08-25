@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+import VibeCADScriptedProcess as scripted_process
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeSolverExecutionProcess import run_solver_processes
 from VibeCADNativeAnalyzeSolverExecutionSchema import (
@@ -86,6 +87,43 @@ def test_shared_process_sequence_reports_domain_neutral_timeout(tmp_path: Path) 
         )
 
     assert caught.value.reason == "timeout"
+    assert caught.value.stage == 1
+    assert caught.value.exit_code is None
+
+
+def test_shared_process_sequence_checks_output_bound_after_fast_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FastExitProcess:
+        def __init__(self, *_args, stdout, **_kwargs) -> None:
+            self._stdout = stdout
+            self._polls = 0
+            self.returncode = None
+
+        def poll(self) -> int | None:
+            self._polls += 1
+            if self._polls == 1:
+                return None
+            self._stdout.write(b"x" * 2048)
+            self._stdout.flush()
+            self.returncode = 0
+            return 0
+
+    monkeypatch.setattr(scripted_process.subprocess, "Popen", FastExitProcess)
+
+    with pytest.raises(ExternalProcessError) as caught:
+        scripted_process.run_process_sequence(
+            (("fast-exit", ()),),
+            working_directory=tmp_path,
+            environment=os.environ,
+            timeout_seconds=5,
+            cancellation_check=lambda: False,
+            maximum_log_bytes=1024,
+            poll_seconds=0.001,
+        )
+
+    assert caught.value.reason == "output_limit"
     assert caught.value.stage == 1
     assert caught.value.exit_code is None
 
