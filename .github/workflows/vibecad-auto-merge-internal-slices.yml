@@ -1,0 +1,146 @@
+name: Auto-merge VibeCAD internal slices
+
+on:
+  workflow_run:
+    workflows:
+      - VibeCAD CMake C++ CI
+      - Validate VibeCAD Release and Updates
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: vibecad-auto-merge-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  merge-internal-slice:
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge green internal slice
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const run = context.payload.workflow_run;
+            const requiredWorkflows = [
+              "VibeCAD CMake C++ CI",
+              "Validate VibeCAD Release and Updates",
+            ];
+
+            let pullRequests = Array.isArray(run.pull_requests)
+              ? run.pull_requests
+              : [];
+            if (pullRequests.length === 0) {
+              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner,
+                repo,
+                commit_sha: run.head_sha,
+                per_page: 100,
+              });
+              pullRequests = associated.data;
+            }
+
+            for (const summary of pullRequests) {
+              const number = Number(summary.number);
+              if (!number) {
+                continue;
+              }
+
+              const response = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: number,
+              });
+              const pr = response.data;
+              if (pr.state !== "open" || pr.draft) {
+                continue;
+              }
+              if (!pr.head.repo || pr.head.repo.full_name !== `${owner}/${repo}`) {
+                core.info(`PR #${number}: external head repository; leaving for human review.`);
+                continue;
+              }
+              if (!pr.user || pr.user.login !== owner) {
+                core.info(`PR #${number}: not authored by repository owner; leaving for human review.`);
+                continue;
+              }
+
+              const comparison = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: pr.base.sha,
+                head: pr.head.sha,
+              });
+              if (!['ahead', 'identical'].includes(comparison.data.status)) {
+                try {
+                  await github.rest.pulls.updateBranch({
+                    owner,
+                    repo,
+                    pull_number: number,
+                    expected_head_sha: pr.head.sha,
+                  });
+                  core.info(`PR #${number}: base advanced; updated the branch and waiting for fresh CI.`);
+                } catch (error) {
+                  core.warning(`PR #${number}: could not update the branch automatically: ${error.message}`);
+                }
+                continue;
+              }
+
+              const workflowResponse = await github.rest.actions.listWorkflowRunsForRepo({
+                owner,
+                repo,
+                event: "pull_request",
+                head_sha: pr.head.sha,
+                per_page: 100,
+              });
+              const runs = workflowResponse.data.workflow_runs || [];
+              let ready = true;
+              for (const name of requiredWorkflows) {
+                const candidates = runs
+                  .filter(candidate => candidate.name === name && candidate.head_sha === pr.head.sha)
+                  .sort((left, right) => Number(right.id) - Number(left.id));
+                const latest = candidates[0];
+                if (!latest || latest.status !== "completed" || latest.conclusion !== "success") {
+                  ready = false;
+                  core.info(
+                    `PR #${number}: ${name} is not green on ${pr.head.sha}; not merging yet.`
+                  );
+                }
+              }
+              if (!ready) {
+                continue;
+              }
+
+              const merge = await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: number,
+                sha: pr.head.sha,
+                merge_method: "merge",
+              });
+              if (!merge.data.merged) {
+                core.setFailed(`PR #${number} was green but GitHub refused the merge: ${merge.data.message}`);
+                continue;
+              }
+              core.info(`Merged internal VibeCAD slice PR #${number} at ${merge.data.sha}.`);
+
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `heads/${pr.head.ref}`,
+                });
+                core.info(`Deleted merged slice branch ${pr.head.ref}.`);
+              } catch (error) {
+                if (error.status === 404 || error.status === 422) {
+                  core.info(`Merged slice branch ${pr.head.ref} was already removed.`);
+                } else {
+                  throw error;
+                }
+              }
+            }

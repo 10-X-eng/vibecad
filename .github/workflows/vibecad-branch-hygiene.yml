@@ -1,0 +1,108 @@
+name: VibeCAD branch hygiene
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: vibecad-branch-hygiene
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete merged or main-identical slice branches
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const repository = (await github.rest.repos.get({ owner, repo })).data;
+            const defaultBranch = repository.default_branch;
+            const defaultRef = await github.rest.git.getRef({
+              owner,
+              repo,
+              ref: `heads/${defaultBranch}`,
+            });
+            const defaultSha = defaultRef.data.object.sha;
+            const branches = await github.paginate(
+              github.rest.repos.listBranches,
+              { owner, repo, per_page: 100 },
+            );
+
+            for (const branch of branches) {
+              if (branch.name === defaultBranch || branch.protected) {
+                continue;
+              }
+
+              const openPulls = await github.paginate(
+                github.rest.pulls.list,
+                {
+                  owner,
+                  repo,
+                  state: "open",
+                  head: `${owner}:${branch.name}`,
+                  per_page: 100,
+                },
+              );
+              if (openPulls.length > 0) {
+                core.info(`Keeping ${branch.name}: it still has an open PR.`);
+                continue;
+              }
+
+              let deletable = branch.commit.sha === defaultSha;
+              if (!deletable) {
+                const closedPulls = await github.paginate(
+                  github.rest.pulls.list,
+                  {
+                    owner,
+                    repo,
+                    state: "closed",
+                    head: `${owner}:${branch.name}`,
+                    per_page: 100,
+                  },
+                );
+                for (const summary of closedPulls) {
+                  if (!summary.head || summary.head.sha !== branch.commit.sha) {
+                    continue;
+                  }
+                  const full = await github.rest.pulls.get({
+                    owner,
+                    repo,
+                    pull_number: summary.number,
+                  });
+                  if (full.data.merged_at) {
+                    deletable = true;
+                    break;
+                  }
+                }
+              }
+
+              if (!deletable) {
+                core.info(`Keeping ${branch.name}: unique unmerged commits remain.`);
+                continue;
+              }
+
+              try {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `heads/${branch.name}`,
+                });
+                core.info(`Deleted stale branch ${branch.name}.`);
+              } catch (error) {
+                if (error.status === 404 || error.status === 422) {
+                  core.info(`Branch ${branch.name} was already removed.`);
+                  continue;
+                }
+                throw error;
+              }
+            }
