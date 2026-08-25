@@ -2280,6 +2280,49 @@ class TestNativeRibbonTools(unittest.TestCase):
                 self.assertGreater(committed.OutputShapes[0].Volume, 0.0, command_name)
                 self.assertGreater(body.Shape.Volume, 0.0, command_name)
 
+    def test_fillet_starts_from_a_selected_body_without_subelements(self):
+        body, source = self._new_body("BodyOnlyFilletBody", solid=True)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(body)
+        self._process_events()
+        self.assertTrue(Gui.isCommandActive("PartDesign_Fillet"))
+        self.assertTrue(Gui.isCommandActive("PartDesign_Chamfer"))
+
+        Gui.runCommand("PartDesign_Fillet", 0)
+        self._process_events(80)
+        self.assertTrue(Gui.Control.activeDialog())
+        operation = Gui.activeDocument().getInEdit().Object
+        self.assertEqual(operation.TypeId, "PartDesign::DesignFillet")
+        self.assertEqual(list(operation.TargetElements), [])
+
+        Gui.Selection.addSelection(body, "Edge1")
+        self._process_events(200)
+        self.assertEqual(list(operation.TargetElements), ["Edge1"])
+        self._accept_task("PartDesign_Fillet from body")
+        committed = self.document.getObject(operation.Name)
+        self.assertIsNotNone(committed)
+        self.assertEqual(list(committed.TargetElements), ["Edge1"])
+        self.assertTrue(committed.isValid(), committed.getStatusString())
+        self.assertGreater(committed.OutputShapes[0].Volume, 0.0)
+        self.assertGreater(body.Shape.Volume, 0.0)
+        self.assertAlmostEqual(source.Shape.Volume, 1000.0)
+
+    def test_fillet_starts_when_the_document_has_one_solid_body(self):
+        body, _source = self._new_body("LoneSolidFilletBody", solid=True)
+        Gui.activeView().setActiveObject("pdbody", None)
+        Gui.Selection.clearSelection()
+        self._process_events()
+        self.assertTrue(Gui.isCommandActive("PartDesign_Fillet"))
+        Gui.runCommand("PartDesign_Fillet", 0)
+        self._process_events(80)
+        self.assertTrue(Gui.Control.activeDialog())
+        operation = Gui.activeDocument().getInEdit().Object
+        self.assertEqual(operation.TypeId, "PartDesign::DesignFillet")
+        self.assertEqual(list(operation.TargetElements), [])
+        self._cancel_task("PartDesign_Fillet lone solid")
+        self.assertIsNone(self.document.getObject(operation.Name))
+        self.assertGreater(body.Shape.Volume, 0.0)
+
     def test_fillet_stays_off_without_a_solid_body(self):
         empty_body, _feature = self._new_body("EmptyFilletBody", solid=False)
         Gui.activeView().setActiveObject("pdbody", empty_body)

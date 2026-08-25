@@ -31,6 +31,7 @@
 #include <list>
 #include <QByteArray>
 #include <QMessageBox>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <TopExp_Explorer.hxx>
@@ -3129,13 +3130,27 @@ enum class DesignDressupSelectionKind
     DraftFaces,
 };
 
+bool isDressupSubelementName(const std::string& subName)
+{
+    return subName.starts_with("Edge") || subName.starts_with("Face");
+}
+
 DesignDressupSelection selectedDesignDressup(DesignDressupSelectionKind selectionKind)
 {
     DesignDressupSelection result;
     for (auto& selected : Gui::Selection().getSelectionEx()) {
         auto* object = selected.getObject();
-        if (!object || !PartGui::isModelingObjectActive(object) || selected.getSubNames().empty()) {
+        if (!object || !PartGui::isModelingObjectActive(object)) {
             result.valid = false;
+            continue;
+        }
+        std::vector<std::string> subNames;
+        for (const auto& subElement : selected.getSubNames()) {
+            if (isDressupSubelementName(subElement)) {
+                subNames.push_back(subElement);
+            }
+        }
+        if (subNames.empty()) {
             continue;
         }
         if (!result.document) {
@@ -3167,7 +3182,7 @@ DesignDressupSelection selectedDesignDressup(DesignDressupSelectionKind selectio
             index = static_cast<std::size_t>(std::distance(result.bodies.begin(), found));
         }
         auto& group = result.elementGroups[index];
-        for (const auto& subElement : selected.getSubNames()) {
+        for (const auto& subElement : subNames) {
             try {
                 const bool facesOnly = selectionKind != DesignDressupSelectionKind::EdgesOrFaces;
                 const auto resolved = facesOnly
@@ -3204,16 +3219,43 @@ DesignDressupSelection selectedDesignDressup(DesignDressupSelectionKind selectio
 bool selectionHasDressupSubelements()
 {
     for (auto& selected : Gui::Selection().getSelectionEx()) {
-        if (!selected.getSubNames().empty()) {
-            return true;
+        for (const auto& subName : selected.getSubNames()) {
+            if (isDressupSubelementName(subName)) {
+                return true;
+            }
         }
     }
     return false;
 }
 
+PartDesign::Body* uniqueSolidBodyInDocument(App::Document* document)
+{
+    if (!document) {
+        return nullptr;
+    }
+    PartDesign::Body* found = nullptr;
+    for (auto* body : document->getObjectsOfType<PartDesign::Body>()) {
+        if (!usableSolidTip(body) || !PartDesign::designBodyStateBefore(body, nullptr)) {
+            continue;
+        }
+        if (found) {
+            return nullptr;
+        }
+        found = body;
+    }
+    return found;
+}
+
 PartDesign::Body* pendingDressupBody()
 {
     auto* body = PartDesignGui::getBodyForCommandState();
+    if (!body) {
+        auto* view = Gui::Application::Instance
+            ? Gui::Application::Instance->activeView()
+            : nullptr;
+        auto* document = view ? view->getAppDocument() : App::GetApplication().getActiveDocument();
+        body = uniqueSolidBodyInDocument(document);
+    }
     if (!body || !usableSolidTip(body)
         || !PartDesign::designBodyStateBefore(body, nullptr)) {
         return nullptr;

@@ -357,6 +357,23 @@ def test_fillet_and_chamfer_can_start_from_an_active_solid_body() -> None:
     assert "the tool and pick them on a solid Body" in start
 
 
+def test_fillet_and_chamfer_ignore_body_picks_without_edges_or_faces() -> None:
+    source = (_REPOSITORY / _PARTDESIGN_COMMAND).read_text(encoding="utf-8")
+    has_sub = _function_section(source, "bool selectionHasDressupSubelements()")
+    is_name = _function_section(source, "bool isDressupSubelementName(")
+    pending = _function_section(source, "PartDesign::Body* pendingDressupBody()")
+    selected = _function_section(
+        source, "DesignDressupSelection selectedDesignDressup(DesignDressupSelectionKind selectionKind)"
+    )
+
+    assert 'starts_with("Edge")' in is_name
+    assert 'starts_with("Face")' in is_name
+    assert "isDressupSubelementName" in has_sub
+    assert "uniqueSolidBodyInDocument" in pending
+    assert "isDressupSubelementName" in selected
+    assert "getSubNames().empty()" not in has_sub
+
+
 def test_inspection_tasks_close_only_their_exact_locked_transactions() -> None:
     measure = (_REPOSITORY / "src/Mod/Measure/Gui/TaskMeasure.cpp").read_text(
         encoding="utf-8"
