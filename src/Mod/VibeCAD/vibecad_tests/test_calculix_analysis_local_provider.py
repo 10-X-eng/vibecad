@@ -82,11 +82,10 @@ def test_local_process_provider_preserves_exact_process_contract(
     assert captured["maximum_log_bytes"] == 16 * 1024 * 1024
 
 
-def test_calculix_pipeline_runs_through_host_local_provider_not_legacy_runner(
-    tmp_path: Path,
+def _assert_calculix_provider_execution(
+    request: legacy.SolverExecutionRequest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request = _request(tmp_path)
     prepared = adapter.PreparedFEMSolverExecution(object(), request)
     progress: list[tuple[int, str]] = []
     provider_calls: list[object] = []
@@ -101,7 +100,7 @@ def test_calculix_pipeline_runs_through_host_local_provider_not_legacy_runner(
         legacy,
         "run_solver_execution",
         lambda *_args, **_kwargs: pytest.fail(
-            "primary CalculiX pipeline must not use legacy runner"
+            "migrated CalculiX path must not use legacy runner"
         ),
     )
 
@@ -127,36 +126,21 @@ def test_calculix_pipeline_runs_through_host_local_provider_not_legacy_runner(
     )
 
 
-def test_ccx_tools_alternate_calculix_remains_on_legacy_runner(
+def test_calculix_pipeline_runs_through_host_local_provider_not_legacy_runner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request = _request(tmp_path, implementation="ccx_tools")
-    prepared = adapter.PreparedFEMSolverExecution(object(), request)
-    sentinel = object()
-    called: list[object] = []
+    _assert_calculix_provider_execution(_request(tmp_path), monkeypatch)
 
-    monkeypatch.setattr(
-        adapter._LOCAL_PROCESS_PROVIDER,
-        "run_sequence",
-        lambda *_args, **_kwargs: pytest.fail(
-            "ccx_tools is a later solver-path migration"
-        ),
+
+def test_ccx_tools_alternate_calculix_runs_through_host_local_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_calculix_provider_execution(
+        _request(tmp_path, implementation="ccx_tools"),
+        monkeypatch,
     )
-
-    def legacy_run(request_value, *, cancelled, progress):
-        called.append(request_value)
-        return sentinel
-
-    monkeypatch.setattr(legacy, "run_solver_execution", legacy_run)
-    completed = adapter.run_solver_execution(
-        prepared,
-        cancelled=lambda: False,
-        progress=lambda _percent, _message: None,
-    )
-
-    assert called == [request]
-    assert completed.legacy_prepared is sentinel
 
 
 def test_non_calculix_fem_remains_on_legacy_runner(
