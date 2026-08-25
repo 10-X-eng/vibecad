@@ -58,12 +58,22 @@ jobs:
                 continue;
               }
 
-              const comparison = await github.rest.repos.compareCommits({
-                owner,
-                repo,
-                base: defaultSha,
-                head: branch.commit.sha,
-              });
+              let comparison = null;
+              try {
+                comparison = await github.rest.repos.compareCommits({
+                  owner,
+                  repo,
+                  base: defaultSha,
+                  head: branch.commit.sha,
+                });
+              } catch (error) {
+                if (error.status === 404 || error.status === 409 || error.status === 422) {
+                  core.info(`Keeping ${branch.name}: it cannot be compared safely with ${defaultBranch}.`);
+                  continue;
+                }
+                throw error;
+              }
+
               let deletable = (
                 branch.commit.sha === defaultSha ||
                 (
