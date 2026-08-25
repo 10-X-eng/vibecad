@@ -6,27 +6,14 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from tool_impl.analysis_fem_adapter import (
+    commit_solver_execution,
+    discard_solver_execution_request,
+    prepare_solver_execution_request,
+    run_solver_execution,
+    verify_solver_execution,
+)
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
-try:
-    from VibeCADNativeAnalyzeSolverExecutionAdapter import (
-        commit_solver_execution,
-        discard_solver_execution_request,
-        prepare_solver_execution_request,
-        run_solver_execution,
-        verify_solver_execution,
-    )
-except ModuleNotFoundError as exc:
-    if exc.name != "VibeCADNativeAnalyzeSolverExecutionAdapter":
-        raise
-    # Compatibility for staged/install trees until the additive Analysis modules
-    # are registered by the host packaging layer. The public FEM path stays live.
-    from VibeCADNativeAnalyzeSolverExecution import (
-        commit_solver_execution,
-        discard_solver_execution_request,
-        prepare_solver_execution_request,
-        run_solver_execution,
-        verify_solver_execution,
-    )
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeBackground import NativeBackgroundError
 from VibeCADNativeImmediate import run_immediate_mutation
