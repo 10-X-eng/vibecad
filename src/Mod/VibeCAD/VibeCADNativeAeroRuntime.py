@@ -93,6 +93,7 @@ class NativeAeroRuntime:
         context.guard()
         self._require_ticket_identity(ticket, "aero.solve")
         if operation in _BACKGROUND_SOLVE_OPS:
+            self._require_current_ticket(ticket, "aero.solve")
             return self._solve_background(operation, ticket)
         return run_immediate_mutation(
             context,
