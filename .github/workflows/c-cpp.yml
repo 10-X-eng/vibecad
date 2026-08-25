@@ -32,6 +32,9 @@ jobs:
       - name: Install FreeCAD build dependencies
         run: ./package/ubuntu/install-apt-packages.sh
 
+      - name: Install Python test runner
+        run: sudo apt-get install -y python3-pytest
+
       - name: Configure with CMake
         run: |
           cmake \
@@ -52,3 +55,18 @@ jobs:
 
       - name: Compile-check VibeCAD Python sources
         run: python3 -m compileall -q src/Mod/VibeCAD
+
+      - name: Run Host Analysis FEM stabilization tests
+        run: |
+          python3 -m pytest -q \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_contracts.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_artifacts.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_runtime.py \
+            src/Mod/VibeCAD/vibecad_tests/test_native_background_commit_gate.py \
+            src/Mod/VibeCAD/vibecad_tests/test_fem_analysis_install_activation.py \
+            src/Mod/VibeCAD/vibecad_tests/test_calculix_analysis_local_provider.py \
+            src/Mod/VibeCAD/vibecad_tests/test_elmer_analysis_local_provider.py \
+            src/Mod/VibeCAD/vibecad_tests/test_z88_analysis_local_provider.py \
+            src/Mod/VibeCAD/vibecad_tests/test_mystran_analysis_local_provider.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_architecture_boundaries.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_error_mapping.py
