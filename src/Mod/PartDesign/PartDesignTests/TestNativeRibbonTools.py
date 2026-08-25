@@ -46,6 +46,7 @@ DESIGN_PATTERN_COMMANDS = (
 FINISH_COMMANDS = (
     ("PartDesign_Fillet", "PartDesign::DesignFillet", "Edge1"),
     ("PartDesign_Chamfer", "PartDesign::DesignChamfer", "Edge1"),
+    ("PartDesign_Draft", "PartDesign::DesignDraft", "Face1"),
     ("PartDesign_Thickness", "PartDesign::DesignThickness", "Face1"),
 )
 
@@ -2161,8 +2162,8 @@ class TestNativeRibbonTools(unittest.TestCase):
 
     def test_finish_tools_require_real_subelements_and_lock_during_tasks(self):
         body, _base = self._new_body("FinishStateBody", solid=True)
-        pending_commands = ("PartDesign_Fillet", "PartDesign_Chamfer")
-        finish_commands = tuple(case[0] for case in FINISH_COMMANDS)
+        pending_commands = tuple(case[0] for case in FINISH_COMMANDS)
+        finish_commands = pending_commands
 
         Gui.Selection.clearSelection()
         self._process_events()
@@ -2171,22 +2172,22 @@ class TestNativeRibbonTools(unittest.TestCase):
                 Gui.isCommandActive(command_name),
                 f"{command_name} must start from an active solid Body",
             )
-        self.assertFalse(Gui.isCommandActive("PartDesign_Thickness"))
-        self.assertFalse(Gui.isCommandActive("PartDesign_Draft"))
 
         self._activate_body(body)
         for command_name in pending_commands:
             self.assertTrue(Gui.isCommandActive(command_name), command_name)
-        self.assertFalse(Gui.isCommandActive("PartDesign_Thickness"))
-        self.assertFalse(Gui.isCommandActive("PartDesign_Draft"))
 
         self._activate_body(body, "Vertex1")
-        for command_name in finish_commands:
-            self.assertFalse(Gui.isCommandActive(command_name), command_name)
+        for command_name in pending_commands:
+            self.assertTrue(
+                Gui.isCommandActive(command_name),
+                f"{command_name} ignores a vertex and starts from the solid Body",
+            )
 
         self._activate_body(body, "Edge1")
         self.assertTrue(Gui.isCommandActive("PartDesign_Fillet"))
         self.assertTrue(Gui.isCommandActive("PartDesign_Chamfer"))
+        self.assertFalse(Gui.isCommandActive("PartDesign_Draft"))
         self.assertFalse(Gui.isCommandActive("PartDesign_Thickness"))
 
         self._activate_body(body, "Face1")
@@ -2204,31 +2205,35 @@ class TestNativeRibbonTools(unittest.TestCase):
         self._assert_snapshot(body, expected, "unrelated additive primitive")
 
     def test_chamfer_without_an_edge_opens_pending_selection_and_cancel_is_exact(self):
-        body, _base = self._new_body("ChamferNoEdgeBody", solid=True)
-        self._activate_body(body)
-        expected = self._snapshot(body)
+        for command_name, feature_type, _subelement in FINISH_COMMANDS:
+            with self.subTest(command=command_name):
+                body, _base = self._new_body(
+                    f"{feature_type.rsplit('::', 1)[-1]}NoGeometryBody",
+                    solid=True,
+                )
+                self._activate_body(body)
+                expected = self._snapshot(body)
 
-        self.assertTrue(Gui.isCommandActive("PartDesign_Chamfer"))
-        actions = Gui.Command.get("PartDesign_Chamfer").getAction()
-        self.assertTrue(actions)
-        self.assertTrue(actions[0].isEnabled())
-        Gui.runCommand("PartDesign_Chamfer", 0)
-        self._process_events(50)
+                self.assertTrue(Gui.isCommandActive(command_name), command_name)
+                actions = Gui.Command.get(command_name).getAction()
+                self.assertTrue(actions, command_name)
+                self.assertTrue(actions[0].isEnabled(), command_name)
+                Gui.runCommand(command_name, 0)
+                self._process_events(50)
 
-        self.assertTrue(Gui.Control.activeDialog())
-        editing = Gui.activeDocument().getInEdit()
-        self.assertIsNotNone(editing)
-        operation = editing.Object
-        self.assertEqual(operation.TypeId, "PartDesign::DesignChamfer")
-        self.assertEqual(list(operation.TargetElements), [])
-        self._cancel_task("PartDesign_Chamfer without an edge")
-        self._assert_snapshot(body, expected, "PartDesign_Chamfer without an edge")
+                self.assertTrue(Gui.Control.activeDialog(), command_name)
+                editing = Gui.activeDocument().getInEdit()
+                self.assertIsNotNone(editing, command_name)
+                operation = editing.Object
+                self.assertEqual(operation.TypeId, feature_type, command_name)
+                self.assertEqual(list(operation.TargetElements), [], command_name)
+                self._cancel_task(f"{command_name} without geometry")
+                self._assert_snapshot(
+                    body, expected, f"{command_name} without geometry"
+                )
 
     def test_fillet_and_chamfer_accept_picks_after_starting_empty(self):
-        for command_name, feature_type, subelement in (
-            ("PartDesign_Fillet", "PartDesign::DesignFillet", "Edge1"),
-            ("PartDesign_Chamfer", "PartDesign::DesignChamfer", "Edge1"),
-        ):
+        for command_name, feature_type, subelement in FINISH_COMMANDS:
             with self.subTest(command=command_name):
                 body, source = self._new_body(
                     f"Pending{feature_type.rsplit('::', 1)[-1]}Body",
@@ -2287,6 +2292,8 @@ class TestNativeRibbonTools(unittest.TestCase):
         self._process_events()
         self.assertTrue(Gui.isCommandActive("PartDesign_Fillet"))
         self.assertTrue(Gui.isCommandActive("PartDesign_Chamfer"))
+        self.assertTrue(Gui.isCommandActive("PartDesign_Draft"))
+        self.assertTrue(Gui.isCommandActive("PartDesign_Thickness"))
 
         Gui.runCommand("PartDesign_Fillet", 0)
         self._process_events(80)
@@ -2313,6 +2320,8 @@ class TestNativeRibbonTools(unittest.TestCase):
         Gui.Selection.clearSelection()
         self._process_events()
         self.assertTrue(Gui.isCommandActive("PartDesign_Fillet"))
+        self.assertTrue(Gui.isCommandActive("PartDesign_Draft"))
+        self.assertTrue(Gui.isCommandActive("PartDesign_Thickness"))
         Gui.runCommand("PartDesign_Fillet", 0)
         self._process_events(80)
         self.assertTrue(Gui.Control.activeDialog())
@@ -2330,6 +2339,8 @@ class TestNativeRibbonTools(unittest.TestCase):
         self._process_events()
         self.assertFalse(Gui.isCommandActive("PartDesign_Fillet"))
         self.assertFalse(Gui.isCommandActive("PartDesign_Chamfer"))
+        self.assertFalse(Gui.isCommandActive("PartDesign_Draft"))
+        self.assertFalse(Gui.isCommandActive("PartDesign_Thickness"))
 
         wire_body, _wire = self._wire_body("WireFilletBody")
         Gui.activeView().setActiveObject("pdbody", wire_body)
@@ -2337,6 +2348,8 @@ class TestNativeRibbonTools(unittest.TestCase):
         self._process_events()
         self.assertFalse(Gui.isCommandActive("PartDesign_Fillet"))
         self.assertFalse(Gui.isCommandActive("PartDesign_Chamfer"))
+        self.assertFalse(Gui.isCommandActive("PartDesign_Draft"))
+        self.assertFalse(Gui.isCommandActive("PartDesign_Thickness"))
 
     def test_new_sketch_on_body_face_uses_tip_and_cancel_is_exact(self):
         preferences = App.ParamGet(
@@ -2915,26 +2928,6 @@ class TestNativeRibbonTools(unittest.TestCase):
             self.assertEqual(self.document.ActiveObject.TypeId, feature_type, command_name)
             self._cancel_task(command_name)
             self._assert_snapshot(body, expected, command_name)
-
-        draft_body, _draft_base = self._new_body(
-            "CancelDraftBody",
-            solid=True,
-        )
-        self._activate_body(draft_body, "Face1")
-        draft_expected = self._snapshot(draft_body)
-        self.assertTrue(Gui.isCommandActive("PartDesign_Draft"))
-        Gui.runCommand("PartDesign_Draft", 0)
-        self.assertTrue(Gui.Control.activeDialog(), "PartDesign_Draft")
-        self.assertEqual(
-            self.document.ActiveObject.TypeId,
-            "PartDesign::DesignDraft",
-        )
-        self._cancel_task("PartDesign_Draft")
-        self._assert_snapshot(
-            draft_body,
-            draft_expected,
-            "PartDesign_Draft",
-        )
 
         for command_name, feature_type in TRANSFORM_COMMANDS:
             body, _base = self._new_body(

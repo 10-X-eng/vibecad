@@ -330,7 +330,7 @@ def test_every_transaction_owning_implementation_calls_its_boundary_guard() -> N
         ), command
 
 
-def test_fillet_and_chamfer_can_start_from_an_active_solid_body() -> None:
+def test_design_dressups_can_start_from_an_active_solid_body() -> None:
     source = (_REPOSITORY / _PARTDESIGN_COMMAND).read_text(encoding="utf-8")
     fillet = _cpp_command_section(source, "PartDesign_Fillet")
     chamfer = _cpp_command_section(source, "PartDesign_Chamfer")
@@ -343,18 +343,19 @@ def test_fillet_and_chamfer_can_start_from_an_active_solid_body() -> None:
         source, "void startDesignDressupOperation("
     )
 
-    assert "designDressupOperationActive" in fillet
-    assert "designDressupOperationActive" in chamfer
+    for section in (fillet, chamfer, draft, thickness):
+        assert "designDressupOperationActive" in section
     assert "pendingDressupBody" in active
-    assert "pendingFilletOrChamferSelection" in start
+    assert "pendingDressupSelection" in start
+    assert "pendingFilletOrChamferSelection" not in start
     assert "selectionHasDressupSubelements" in active
-    assert "DesignDressupSelectionKind::EdgesOrFaces" in active
-    assert "pendingFilletOrChamferSelection" in start
-    assert "DesignDressupSelectionKind::EdgesOrFaces" in start
-    assert "pendingDressupBody" not in draft
-    assert "pendingDressupBody" not in thickness
+    assert "selectionHasDressupSubelements" in start
+    assert "DesignDressupSelectionKind::EdgesOrFaces" not in active
     assert "or start " in start
     assert "the tool and pick them on a solid Body" in start
+    assert "supported faces, or start the tool" in start
+    assert "starts picking them on a solid Body" in draft
+    assert "starts picking them on a solid Body" in thickness
 
 
 def test_fillet_and_chamfer_ignore_body_picks_without_edges_or_faces() -> None:

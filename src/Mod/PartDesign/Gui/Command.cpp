@@ -3263,7 +3263,7 @@ PartDesign::Body* pendingDressupBody()
     return body;
 }
 
-DesignDressupSelection pendingFilletOrChamferSelection()
+DesignDressupSelection pendingDressupSelection()
 {
     DesignDressupSelection result;
     auto* body = pendingDressupBody();
@@ -3287,9 +3287,8 @@ void startDesignDressupOperation(
 )
 {
     auto selected = selectedDesignDressup(selectionKind);
-    if (!selected.valid && selectionKind == DesignDressupSelectionKind::EdgesOrFaces
-        && !selectionHasDressupSubelements()) {
-        selected = pendingFilletOrChamferSelection();
+    if (!selected.valid && !selectionHasDressupSubelements()) {
+        selected = pendingDressupSelection();
     }
     if (!selected.valid) {
         QMessageBox::warning(
@@ -3298,8 +3297,9 @@ void startDesignDressupOperation(
                 ? QObject::tr("Faces required")
                 : QObject::tr("Edges or faces required"),
             selectionKind != DesignDressupSelectionKind::EdgesOrFaces
-                ? QObject::tr("Select one or more supported faces. Selections may "
-                              "belong to multiple Bodies in this Design.")
+                ? QObject::tr("Select one or more supported faces, or start the tool "
+                              "and pick them on a solid Body. Selections may belong "
+                              "to multiple Bodies in this Design.")
                 : QObject::tr("Select one or more dressable edges or faces, or start "
                               "the tool and pick them on a solid Body.")
         );
@@ -3356,8 +3356,7 @@ bool designDressupOperationActive(DesignDressupSelectionKind selectionKind)
     if (selectedDesignDressup(selectionKind).valid) {
         return true;
     }
-    if (selectionKind != DesignDressupSelectionKind::EdgesOrFaces
-        || selectionHasDressupSubelements()) {
+    if (selectionHasDressupSubelements()) {
         return false;
     }
     return pendingDressupBody() != nullptr;
@@ -3627,7 +3626,9 @@ CmdPartDesignDraft::CmdPartDesignDraft()
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
     sMenuText = QT_TR_NOOP("Draft");
-    sToolTipText = QT_TR_NOOP("Applies a draft to the selected faces");
+    sToolTipText = QT_TR_NOOP(
+        "Applies a draft to selected faces, or starts picking them on a solid Body"
+    );
     sWhatsThis = "PartDesign_Draft";
     sStatusTip = sToolTipText;
     sPixmap = "PartDesign_Draft";
@@ -3662,7 +3663,9 @@ CmdPartDesignThickness::CmdPartDesignThickness()
     sAppModule = "PartDesign";
     sGroup = QT_TR_NOOP("PartDesign");
     sMenuText = QT_TR_NOOP("Thickness");
-    sToolTipText = QT_TR_NOOP("Applies thickness and removes the selected faces");
+    sToolTipText = QT_TR_NOOP(
+        "Applies thickness and removes selected faces, or starts picking them on a solid Body"
+    );
     sWhatsThis = "PartDesign_Thickness";
     sStatusTip = sToolTipText;
     sPixmap = "PartDesign_Thickness";
