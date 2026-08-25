@@ -9,7 +9,10 @@ from types import SimpleNamespace
 import pytest
 
 import VibeCADNativeSessionFactory as factory_module
-from VibeCADNativeCapabilityRegistry import NativeProviderSurface
+from VibeCADNativeCapabilityRegistry import (
+    NativeProviderSurface,
+    _provider_schema_operations,
+)
 from VibeCADNativeCommonSchema import common_capability_definitions
 from VibeCADNativeProviderRunner import NativeProviderToolRunner
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -172,6 +175,42 @@ def test_session_factory_uses_captured_analyze_schema_without_rereading_lifecycl
         expected_schemas=schemas,
         registry=build_native_capability_registry(),
     )
+    execution.close()
+
+
+def test_session_factory_passes_internal_operation_authorization_to_turn_freeze(
+    monkeypatch,
+) -> None:
+    turn, schemas, frozen = _common_turn("analyze")
+    captured = {}
+
+    def freeze(*_args, **kwargs):
+        captured.update(kwargs)
+        return turn
+
+    monkeypatch.setattr(factory_module, "freeze_native_turn", freeze)
+    monkeypatch.setattr(
+        factory_module,
+        "require_frozen_native_turn",
+        lambda expected, *_args: expected,
+    )
+    authorization = {
+        "schema_sha256": turn.schema_sha256,
+        "operations_by_tool": {
+            schema["name"]: list(_provider_schema_operations(schema))
+            for schema in turn.provider_schemas
+        },
+    }
+
+    execution = create_native_session_execution(
+        service=_Service(),
+        expected_surface=frozen,
+        expected_schemas=schemas,
+        expected_authorization=authorization,
+        registry=build_native_capability_registry(),
+    )
+
+    assert captured["authorized_operations"] == authorization["operations_by_tool"]
     execution.close()
 
 

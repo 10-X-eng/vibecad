@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -15,6 +16,14 @@ from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADScriptedProcess import terminate_process_tree
 
 MAX_SOLVER_LOG_BYTES = 16 * 1024 * 1024
+MAX_DIAGNOSTIC_ARTIFACT_BYTES = 128 * 1024
+MAX_DIAGNOSTIC_EXCERPT_CHARS = 480
+MAX_DIAGNOSTIC_ARTIFACTS = 3
+_DIAGNOSTIC_SUFFIXES = (".sta", ".cvg", ".dat")
+_DIAGNOSTIC_MARKER = re.compile(
+    r"(?:\*+\s*error|fatal|singular|zero pivot|not connected|failed)",
+    re.IGNORECASE,
+)
 
 
 def _tail(path: Path) -> str:
@@ -37,6 +46,56 @@ def _failure_detail(path: Path, backend: str) -> str:
     if "From function" in reason:
         reason = reason.split("From function", 1)[0]
     return reason.strip()
+
+
+def _bounded_artifact_text(path: Path) -> str:
+    """Read bounded head/tail text without retaining a failed private workspace."""
+
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as stream:
+            if size <= MAX_DIAGNOSTIC_ARTIFACT_BYTES:
+                data = stream.read(MAX_DIAGNOSTIC_ARTIFACT_BYTES)
+            else:
+                half = MAX_DIAGNOSTIC_ARTIFACT_BYTES // 2
+                head = stream.read(half)
+                stream.seek(max(0, size - half))
+                data = head + b"\n...\n" + stream.read(half)
+    except Exception:
+        return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def _diagnostic_excerpt(path: Path) -> str:
+    lines = [" ".join(line.split()) for line in _bounded_artifact_text(path).splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+    marked = [line for line in lines if _DIAGNOSTIC_MARKER.search(line)]
+    selected = marked[-4:] if marked else lines[-6:]
+    return " | ".join(selected)[-MAX_DIAGNOSTIC_EXCERPT_CHARS:]
+
+
+def _failure_diagnostics(root: Path, log_path: Path, backend: str) -> list[dict[str, str]]:
+    candidates: list[Path] = []
+    if str(backend).casefold() == "calculix":
+        for suffix in _DIAGNOSTIC_SUFFIXES:
+            candidates.extend(sorted(root.glob(f"*{suffix}"), key=lambda path: path.name))
+    candidates.append(log_path)
+    diagnostics = []
+    seen = set()
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen or not path.is_file():
+            continue
+        seen.add(resolved)
+        excerpt = _diagnostic_excerpt(path)
+        if not excerpt:
+            continue
+        diagnostics.append({"artifact": path.name, "excerpt": excerpt})
+        if len(diagnostics) >= MAX_DIAGNOSTIC_ARTIFACTS:
+            break
+    return diagnostics
 
 
 def run_solver_processes(
@@ -116,11 +175,24 @@ def run_solver_processes(
                 error_code="NATIVE_ANALYZE_SOLVER_START_FAILED",
             ) from exc
         if exit_code != 0:
-            detail = _failure_detail(log_path, backend)
+            diagnostics = _failure_diagnostics(root, log_path, backend)
+            detail = (
+                diagnostics[0]["excerpt"]
+                if diagnostics
+                else _failure_detail(log_path, backend)
+            )
+            if str(backend).casefold() == "openfoam":
+                detail = _failure_detail(log_path, backend) or detail
             suffix = f": {detail}" if detail else ""
             raise NativeAnalyzeError(
                 f"{backend} stage {index + 1} exited with code {exit_code}{suffix}",
                 error_code="NATIVE_ANALYZE_SOLVER_BACKEND_FAILED",
+                repair={
+                    "backend": str(backend),
+                    "stage": index + 1,
+                    "exit_code": exit_code,
+                    "diagnostics": diagnostics,
+                },
             )
         summaries.append(
             {

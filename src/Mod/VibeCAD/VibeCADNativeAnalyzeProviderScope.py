@@ -659,8 +659,6 @@ def analyze_provider_tool_names(
         )
         if "gmsh" not in mesh_kinds and not mesh_kinds_truncated:
             allowed.discard(ANALYZE_EDIT_GMSH_MESH)
-        if generated_mesh_count >= mesh_count:
-            allowed.discard(ANALYZE_GENERATE_GMSH)
     if generated_mesh_count:
         allowed.add("analyze.mesh_output")
     if solver_count:
@@ -798,9 +796,7 @@ def _model_operations(
     available: Sequence[str],
 ) -> tuple[str, ...]:
     state = _physics_state(domain)
-    wanted = set()
-    if state is None or state[1] == 0:
-        wanted.add("create_analysis")
+    wanted = {"create_analysis"}
     if state is not None and state[1] > 0:
         physics = state[0]
         wanted.add("update_study")

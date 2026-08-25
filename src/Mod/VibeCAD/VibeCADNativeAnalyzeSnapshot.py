@@ -350,6 +350,12 @@ def _geometry_sources(
     ):
         try:
             state = mesh_object_state(obj)
+            topology = state.get("topology")
+            if not isinstance(topology, Mapping) or not any(
+                isinstance(value, int) and value > 0
+                for value in topology.values()
+            ):
+                continue
             if include_clipping_face_targets:
                 state["clipping_face_target"] = clipping_face_source_state(
                     obj,
@@ -696,11 +702,18 @@ def begin_analyze_snapshot_capture(
     *,
     background_job: Any | None = None,
     defer_brep_validation: bool = False,
+    validate_brep: bool = True,
 ) -> dict[str, Any]:
     """Capture only detached identity needed to schedule bounded reads."""
 
     if type(defer_brep_validation) is not bool:
         raise TypeError("defer_brep_validation must be a boolean")
+    if type(validate_brep) is not bool:
+        raise TypeError("validate_brep must be a boolean")
+    if defer_brep_validation and not validate_brep:
+        raise ValueError(
+            "defer_brep_validation cannot be enabled when validate_brep is false"
+        )
     document_uid = str(getattr(document, "Uid", "") or "").strip()
     if not document_uid:
         raise RuntimeError("Analyze context requires an exact document UID.")
@@ -720,7 +733,7 @@ def begin_analyze_snapshot_capture(
             Path(tempfile.gettempdir())
             / f"vibecad-analyze-validation-{uuid.uuid4().hex}"
         )
-        if defer_brep_validation
+        if validate_brep and defer_brep_validation
         else ""
     )
     return {
@@ -731,6 +744,7 @@ def begin_analyze_snapshot_capture(
             str(getattr(active, "Name", "") or "") if active is not None else ""
         ),
         "background_job": _background_job_payload(document_uid, background_job),
+        "validate_brep": validate_brep,
         "defer_brep_validation": defer_brep_validation,
         "geometry_validation_artifact_root": validation_root,
     }
@@ -817,12 +831,15 @@ def capture_analyze_snapshot_batch(
         )
 
     material_count, materials = _materials(batch)
-    defer_brep_validation = bool(request.get("defer_brep_validation", False))
+    validate_brep = bool(request.get("validate_brep", True))
+    defer_brep_validation = validate_brep and bool(
+        request.get("defer_brep_validation", False)
+    )
     geometry_count, geometry, geometry_validation_artifacts = _geometry_sources(
         batch,
         filter_analysis_sources=False,
-        validate_brep=not defer_brep_validation,
-        include_clipping_face_targets=not defer_brep_validation,
+        validate_brep=validate_brep and not defer_brep_validation,
+        include_clipping_face_targets=validate_brep and not defer_brep_validation,
         validation_artifact_root=(
             str(request.get("geometry_validation_artifact_root") or "")
             if defer_brep_validation

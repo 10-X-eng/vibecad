@@ -246,6 +246,11 @@ def evaluate_study_readiness(
         if int(inventory.get("electromagnetic_constraint_count", 0) or 0) < 1:
             blockers.append("missing_electromagnetic_constraint")
 
+    if int(inventory.get("assignment_validation_issue_count", 0) or 0) > 0:
+        blockers.append("invalid_assignments")
+    if int(inventory.get("mesh_coverage_issue_count", 0) or 0) > 0:
+        blockers.append("invalid_mesh_coverage")
+
     mesh_blockers = []
     if int(inventory.get("mesh_definition_count", 0) or 0) < 1:
         mesh_blockers.append("missing_mesh_definition")

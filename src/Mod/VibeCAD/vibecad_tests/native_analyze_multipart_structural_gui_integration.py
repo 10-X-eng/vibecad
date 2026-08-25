@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import time
@@ -58,8 +59,12 @@ def _run() -> None:
     old_gmsh = gmsh_preferences.GetString("gmshBinaryPath", "")
     old_ccx = ccx_preferences.GetString("ccxBinaryPath", "")
     try:
-        gmsh_preferences.SetString("gmshBinaryPath", "/usr/bin/gmsh")
-        ccx_preferences.SetString("ccxBinaryPath", "/usr/bin/ccx")
+        gmsh_binary = shutil.which("gmsh")
+        ccx_binary = shutil.which("ccx")
+        assert gmsh_binary is not None, "Gmsh executable is unavailable"
+        assert ccx_binary is not None, "CalculiX executable is unavailable"
+        gmsh_preferences.SetString("gmshBinaryPath", gmsh_binary)
+        ccx_preferences.SetString("ccxBinaryPath", ccx_binary)
         Gui.activateWorkbench("FemWorkbench")
         temporary = tempfile.TemporaryDirectory(
             prefix="vibecad-native-multipart-structural-"

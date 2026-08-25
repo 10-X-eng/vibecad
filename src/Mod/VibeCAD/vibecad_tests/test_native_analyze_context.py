@@ -345,6 +345,7 @@ def test_session_capture_uses_document_dispatches_then_reuses_cache(
 class _Shape:
     def __init__(self) -> None:
         self.validity_checks = 0
+        self.export_calls = 0
         self.Solids = [object()]
         self.Faces = []
         self.Edges = []
@@ -355,6 +356,10 @@ class _Shape:
     def isValid(self) -> bool:
         self.validity_checks += 1
         return True
+
+    def exportBrep(self, _path: str) -> None:
+        self.export_calls += 1
+        raise AssertionError("turn-start Analyze context must not export BREP")
 
 
 class _GeometryObject:
@@ -430,6 +435,59 @@ def test_responsive_context_request_marks_geometry_validation_as_deferred() -> N
 
     assert request["defer_brep_validation"] is True
     assert request["geometry_validation_artifact_root"]
+
+
+def test_turn_start_context_captures_geometry_without_brep_validation(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeAnalyzeSnapshot as analyze_snapshot_module
+
+    document = SimpleNamespace(Uid="document-a", Objects=[])
+    obj = _GeometryObject(document)
+    document.Objects = [obj]
+    document.getObject = lambda name: obj if name == obj.Name else None
+    monkeypatch.setitem(
+        sys.modules,
+        "PartGui",
+        SimpleNamespace(isModelingObjectActive=lambda _obj: True),
+    )
+    monkeypatch.setattr(
+        analyze_snapshot_module,
+        "mesh_object_state",
+        lambda current: {
+            "object_name": current.Name,
+            "topology": {"solids": 1, "faces": 0, "edges": 0},
+            "state_sha256": "a" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        analyze_snapshot_module,
+        "clipping_face_source_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "turn-start Analyze context must not validate clipping faces"
+            )
+        ),
+    )
+
+    request = analyze_snapshot_module.begin_analyze_snapshot_capture(
+        document,
+        validate_brep=False,
+    )
+    part = analyze_snapshot_module.capture_analyze_snapshot_batch(
+        document,
+        request,
+        [obj.Name],
+    )
+
+    assert request["validate_brep"] is False
+    assert request["defer_brep_validation"] is False
+    assert request["geometry_validation_artifact_root"] == ""
+    assert part["geometry_source_count"] == 1
+    assert part["geometry_sources"][0]["object_name"] == obj.Name
+    assert part["geometry_validation_artifacts"] == []
+    assert obj.Shape.validity_checks == 0
+    assert obj.Shape.export_calls == 0
 
 
 def test_analyze_geometry_postprocess_keeps_only_isolated_valid_results(

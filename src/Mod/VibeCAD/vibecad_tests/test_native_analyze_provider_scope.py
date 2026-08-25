@@ -991,6 +991,9 @@ def test_focused_cfd_mesh_uses_the_supported_first_order_elements() -> None:
         "second",
         "first",
     ]
+    assert editable.parameters["properties"]["source_name"]["description"] == (
+        "Replacement geometry object name; changing it invalidates the generated mesh."
+    )
     assert editable.operation == "edit"
     assert editable.parameters["minProperties"] == 2
 
@@ -1136,7 +1139,7 @@ def test_fluid_singleton_creation_tools_disappear_after_creation() -> None:
     assert "analyze.gmsh_mesh" not in meshed
     assert "analyze.edit_gmsh_mesh" in meshed
     assert "analyze.generate_gmsh" in meshed
-    assert "analyze.generate_gmsh" not in generated
+    assert "analyze.generate_gmsh" in generated
     assert "analyze.mesh" not in meshed
     assert "analyze.openfoam_solver" not in solved
 
@@ -1480,6 +1483,7 @@ def test_operation_scope_publishes_only_calls_that_match_current_study_state() -
         ANALYZE_MATERIAL_CATALOG: {"search"},
     }
     assert fluid_operations["analyze.model"] == {
+        "create_analysis",
         "update_study",
     }
     assert fluid_operations[ANALYZE_MATERIAL_CATALOG] == {"search"}

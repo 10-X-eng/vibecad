@@ -181,12 +181,19 @@ def analyze_mesh_lifecycle_capability_definitions() -> tuple[NativeCapabilityDef
                         "type": "object",
                         "properties": {
                             "mesh_name": _OBJECT_NAME,
+                            "source_name": {
+                                **_SOURCE_NAME,
+                                "description": (
+                                    "Replacement geometry object name; changing it "
+                                    "invalidates the generated mesh."
+                                ),
+                            },
                             "maximum_size_mm": _CFD_MAXIMUM_SIZE,
                             "minimum_size_mm": _SIZE,
                             "label": _LABEL,
                         },
                         "required": ["mesh_name"],
-                        "minProperties": 3,
+                        "minProperties": 2,
                         "additionalProperties": False,
                     },
                     provider_supplemental=True,
@@ -208,6 +215,13 @@ def analyze_mesh_lifecycle_capability_definitions() -> tuple[NativeCapabilityDef
                     "maximum_size_mm": _CFD_MAXIMUM_SIZE,
                     "minimum_size_mm": _SIZE,
                     "element_order": _ELEMENT_ORDER,
+                    "source_name": {
+                        **_SOURCE_NAME,
+                        "description": (
+                            "Replacement geometry object name; changing it invalidates "
+                            "the generated mesh."
+                        ),
+                    },
                 },
                 "required": ["mesh_name"],
                 "minProperties": 2,

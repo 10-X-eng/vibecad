@@ -172,6 +172,40 @@ def test_study_readiness_uses_declared_physics_and_exact_solver_status() -> None
     assert readiness["blockers"] == ["missing_fluid_boundary"]
 
 
+def test_study_readiness_rejects_invalid_assignment_and_mesh_coverage() -> None:
+    inventory = {
+        "geometry_source_count": 1,
+        "mechanical_material_count": 1,
+        "thermal_material_count": 0,
+        "transient_thermal_material_count": 0,
+        "fluid_material_count": 0,
+        "equation_kinds": [],
+        "support_count": 1,
+        "load_count": 1,
+        "thermal_condition_count": 0,
+        "thermal_condition_families": [],
+        "fluid_constraint_count": 0,
+        "fluid_constraint_kinds": [],
+        "electromagnetic_constraint_count": 0,
+        "mesh_definition_count": 1,
+        "generated_mesh_count": 1,
+        "solver_kinds": ["calculix"],
+        "result_count": 0,
+        "assignment_validation_issue_count": 2,
+        "mesh_coverage_issue_count": 1,
+    }
+
+    readiness = evaluate_study_readiness(
+        {"declared": True, "physics": ["mechanical"], "regime": "steady"},
+        inventory,
+        {"calculix": {"solver": "calculix", "engine_ready": True, "missing": []}},
+    )
+
+    assert readiness["ready_to_solve"] is False
+    assert "invalid_assignments" in readiness["blockers"]
+    assert "invalid_mesh_coverage" in readiness["blockers"]
+
+
 def test_study_readiness_does_not_claim_solver_availability() -> None:
     readiness = evaluate_study_readiness(
         {"declared": True, "physics": ["mechanical"], "regime": "steady"},

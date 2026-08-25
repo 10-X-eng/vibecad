@@ -354,17 +354,37 @@ def _read_result(frozen: FrozenSolverExecution) -> PreparedSolverExecution:
     if value.get("ok") is False:
         code = str(value.get("error_code") or "")
         message = str(value.get("message") or "")[:320]
+        repair = value.get("repair")
+        try:
+            encoded_repair = (
+                json.dumps(
+                    dict(repair),
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if isinstance(repair, Mapping)
+                else ""
+            )
+        except (TypeError, ValueError):
+            encoded_repair = ""
         if (
             value.get("protocol") != ANALYZE_SOLVER_EXECUTION_PROTOCOL
             or value.get("request_sha256") != frozen.request_sha256
             or not code.startswith("NATIVE_ANALYZE_")
             or not message
+            or (repair is not None and not encoded_repair)
+            or len(encoded_repair.encode("utf-8")) > 2048
         ):
             _error(
                 "The detached FEM solver process failed.",
                 "NATIVE_ANALYZE_SOLVER_EXECUTION_FAILED",
             )
-        raise NativeAnalyzeError(message, error_code=code)
+        raise NativeAnalyzeError(
+            message,
+            error_code=code,
+            repair=(json.loads(encoded_repair) if encoded_repair else None),
+        )
     required = {
         "ok",
         "protocol",
@@ -481,7 +501,7 @@ def execute_frozen_solver_execution(
         )
     if cancelled():
         raise NativeBackgroundCancelled()
-    progress(max(84, state["percent"]), "Authenticating FEM solver results")
+    progress(max(84, state["percent"]), "Reading isolated FEM solver outcome")
     prepared = _read_result(frozen)
     if int(process.get("returncode", 1)) != 0:
         _error(

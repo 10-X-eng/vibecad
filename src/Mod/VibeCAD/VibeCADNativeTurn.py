@@ -8,6 +8,7 @@ tool execution, workbench activation, ribbon switching, or domain behavior.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -162,6 +163,7 @@ def freeze_native_turn(
     tool_names: tuple[str, ...] | None = None,
     active_state: dict[str, Any] | None = None,
     provider_schemas: tuple[dict[str, Any], ...] | None = None,
+    authorized_operations: Mapping[str, Sequence[str]] | None = None,
 ) -> NativeTurnSnapshot:
     """Freeze an exact validated Native surface without changing UI state."""
 
@@ -183,7 +185,48 @@ def freeze_native_turn(
             )
         except NativeCapabilityRegistryError as exc:
             raise NativeTurnUnavailable(str(exc)) from exc
-    if provider_schemas is not None:
+    if authorized_operations is not None:
+        if registry is None:
+            raise NativeTurnUnavailable(
+                "Freezing exact Native operations requires a capability registry."
+            )
+        if not isinstance(authorized_operations, Mapping):
+            raise NativeTurnUnavailable(
+                "Captured Native operation authorization must be a mapping."
+            )
+        operations_by_tool = {
+            str(name or "").strip(): tuple(
+                dict.fromkeys(
+                    str(operation or "").strip() for operation in operations
+                )
+            )
+            for name, operations in authorized_operations.items()
+            if str(name or "").strip()
+            and isinstance(operations, Sequence)
+            and not isinstance(operations, (str, bytes))
+        }
+        if len(operations_by_tool) != len(authorized_operations) or any(
+            not operations or any(not operation for operation in operations)
+            for operations in operations_by_tool.values()
+        ):
+            raise NativeTurnUnavailable(
+                "Captured Native operation authorization is malformed."
+            )
+        unknown = set(operations_by_tool) - set(provider_surface.tool_names)
+        if unknown:
+            raise NativeTurnUnavailable(
+                "Captured Native operation authorization contains tools outside "
+                "the complete Native surface."
+            )
+        try:
+            provider_surface = project_native_provider_operations(
+                provider_surface,
+                registry,
+                operations_by_tool,
+            )
+        except NativeCapabilityRegistryError as exc:
+            raise NativeTurnUnavailable(str(exc)) from exc
+    elif provider_schemas is not None:
         if registry is None:
             raise NativeTurnUnavailable(
                 "Freezing exact Native operations requires a capability registry."
