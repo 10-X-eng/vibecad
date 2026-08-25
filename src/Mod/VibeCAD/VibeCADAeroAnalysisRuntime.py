@@ -4,17 +4,17 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
 import AeroAirfoil
 import AeroConfig
+import AeroDetachedAnalysis
 import AeroFlightCard
 import AeroMass
 import AeroPreview
 import AeroRepair
 import AeroResults
 import AeroStamp
-import AeroDetachedAnalysis
 import VibeCADAero
 
 from VibeCADNativeBackground import NativeBackgroundError
@@ -48,10 +48,12 @@ class AeroAnalysisRuntimeError(RuntimeError):
         return result
 
 
-def _prepare_document_input(
+def prepare_document_input(
     document: Any,
     operation: str,
 ) -> tuple[AeroDetachedAnalysis.PreparedAeroAnalysis, str]:
+    """Freeze document-bound Aero inputs before detached execution starts."""
+
     clean_operation = str(operation or "").strip().lower()
     if clean_operation not in _SUPPORTED_OPERATIONS:
         raise AeroAnalysisRuntimeError(
@@ -70,10 +72,53 @@ def _prepare_document_input(
     return prepared, revision
 
 
-def _publish_document_result(
+def run_detached(
+    prepared: AeroDetachedAnalysis.PreparedAeroAnalysis,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[int, str], None] | None = None,
+) -> AeroDetachedAnalysis.CompletedAeroAnalysis:
+    """Run only the document-free Aero computation."""
+
+    return AeroDetachedAnalysis.execute(
+        prepared,
+        cancelled=cancelled,
+        progress=progress,
+    )
+
+
+def validate_document_input(
+    document: Any,
+    expected_revision: str,
+    *,
+    active_document: Callable[[], Any] | None = None,
+) -> None:
+    """Reject publication when the exact document or Aero geometry changed."""
+
+    if active_document is not None:
+        if not callable(active_document):
+            raise TypeError("active_document must be callable")
+        if active_document() is not document:
+            raise AeroAnalysisRuntimeError(
+                "The exact Aero document is no longer active.",
+                error_code="AERO_DOCUMENT_CHANGED",
+            )
+    current_cfg = AeroConfig.resolve_geometry(document)
+    current_revision = AeroPreview.geometry_revision(document, current_cfg)
+    if current_revision != str(expected_revision or ""):
+        raise AeroAnalysisRuntimeError(
+            "The Aero geometry changed while analysis was running; stale results were not published.",
+            error_code="AERO_ANALYSIS_STALE",
+            current_revision=current_revision,
+        )
+
+
+def publish_document_result(
     document: Any,
     completed: AeroDetachedAnalysis.CompletedAeroAnalysis,
 ) -> dict[str, Any]:
+    """Publish a completed detached solve using the synchronous Aero result contract."""
+
     if not isinstance(completed, AeroDetachedAnalysis.CompletedAeroAnalysis):
         raise TypeError("completed must be CompletedAeroAnalysis")
     cfg = completed.prepared.config()
@@ -118,41 +163,27 @@ def submit_aero_analysis(
         )
     if not callable(document_thread_dispatch):
         raise TypeError("document_thread_dispatch must be callable")
-    if active_document is not None and not callable(active_document):
-        raise TypeError("active_document must be callable")
 
     uid = document_uid(document)
-    prepared, expected_revision = _prepare_document_input(document, operation)
+    prepared, expected_revision = prepare_document_input(document, operation)
 
-    def run_detached(cancelled: Any, progress: Any) -> Any:
-        return AeroDetachedAnalysis.execute(
-            prepared,
-            cancelled=cancelled,
-            progress=progress,
-        )
+    def prepare(cancelled: Any, progress: Any) -> Any:
+        return run_detached(prepared, cancelled=cancelled, progress=progress)
 
     def validate_before_commit() -> None:
-        if active_document is not None and active_document() is not document:
-            raise AeroAnalysisRuntimeError(
-                "The exact Aero document is no longer active.",
-                error_code="AERO_DOCUMENT_CHANGED",
-            )
-        current_cfg = AeroConfig.resolve_geometry(document)
-        current_revision = AeroPreview.geometry_revision(document, current_cfg)
-        if current_revision != expected_revision:
-            raise AeroAnalysisRuntimeError(
-                "The Aero geometry changed while analysis was running; stale results were not published.",
-                error_code="AERO_ANALYSIS_STALE",
-                current_revision=current_revision,
-            )
+        validate_document_input(
+            document,
+            expected_revision,
+            active_document=active_document,
+        )
 
     try:
         snapshot = background_manager.submit(
             document_uid=uid,
             capability_name=f"aero.{prepared.operation}",
-            prepare=run_detached,
+            prepare=prepare,
             validate_before_commit=validate_before_commit,
-            commit=lambda completed: _publish_document_result(document, completed),
+            commit=lambda completed: publish_document_result(document, completed),
             dispatch_to_document_thread=document_thread_dispatch,
             finalize_message="Publishing verified Aero results",
         )
@@ -181,5 +212,9 @@ def submit_aero_analysis(
 
 __all__ = (
     "AeroAnalysisRuntimeError",
+    "prepare_document_input",
+    "publish_document_result",
+    "run_detached",
     "submit_aero_analysis",
+    "validate_document_input",
 )
