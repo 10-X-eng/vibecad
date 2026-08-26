@@ -247,6 +247,7 @@ def test_schema_maps_only_the_live_conflict_action_to_an_exact_read() -> None:
         "select_redundant_constraints",
         "select_partially_redundant_constraints",
         "select_malformed_constraints",
+        "select_joints_of_component",
         "read",
     )
     assert definition.primary_classification == "read"
@@ -256,11 +257,55 @@ def test_schema_maps_only_the_live_conflict_action_to_an_exact_read() -> None:
     assert variant.transaction_behavior == "none"
     assert schema["additionalProperties"] is False
     assert schema["required"] == []
-    assert set(schema["properties"]) == {"operation", "offset", "limit"}
+    assert set(schema["properties"]) == {
+        "operation",
+        "assembly",
+        "expected_diagnosis_state_sha256",
+        "expected_component_count",
+        "expected_grounded_count",
+        "expected_joint_count",
+        "expected_conflicting_count",
+        "offset",
+        "limit",
+    }
     assert schema["properties"]["limit"]["maximum"] == 100
     registry = build_native_capability_registry()
     assert registry.definition("assembly.diagnose") is not None
     assert registry.implementation("assembly.diagnose") is not None
+
+
+def test_runtime_accepts_the_legacy_frozen_conflict_request(monkeypatch) -> None:
+    document, assembly, _group, _ground, _components, _joints = _fixture()
+    context = _context(document)
+    state = capture_assembly_diagnosis_state(assembly)
+    runtime = NativeAssemblyDiagnosisRuntime(context)
+    captured = []
+    monkeypatch.setattr(
+        runtime_module,
+        "read_conflicting_constraints",
+        lambda exact_context, spec: (
+            captured.append((exact_context, spec)) or {"ok": True}
+        ),
+    )
+    arguments = {
+        "operation": "select_conflicting_constraints",
+        "assembly": {"object_name": assembly.Name},
+        "expected_diagnosis_state_sha256": state.state_sha256,
+        "expected_component_count": len(state.components),
+        "expected_grounded_count": len(state.grounded_joints),
+        "expected_joint_count": len(state.regular_joints),
+        "expected_conflicting_count": len(state.conflicting_names),
+        "offset": 0,
+        "limit": 32,
+    }
+
+    assert runtime.diagnose(arguments) == {"ok": True}
+    assert captured == [(context, _spec(document, assembly, state))]
+
+    partial = dict(arguments)
+    partial.pop("expected_joint_count")
+    with pytest.raises(RuntimeError, match="complete frozen-state contract"):
+        runtime.diagnose(partial)
 
 
 def test_runtime_reads_the_active_assembly_summary_without_a_component(

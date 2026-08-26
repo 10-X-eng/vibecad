@@ -48,6 +48,25 @@ _CATEGORY_OPERATIONS = frozenset(
         "select_malformed_constraints",
     }
 )
+_CATEGORY_COUNT_FIELDS = {
+    "select_conflicting_constraints": "expected_conflicting_count",
+    "select_redundant_constraints": "expected_redundant_count",
+    "select_partially_redundant_constraints": "expected_partially_redundant_count",
+    "select_malformed_constraints": "expected_malformed_count",
+}
+_LEGACY_CATEGORY_COMMON = {
+    "assembly",
+    "expected_diagnosis_state_sha256",
+    "expected_component_count",
+    "expected_grounded_count",
+    "expected_joint_count",
+}
+_LEGACY_COMPONENT_FIELDS = {
+    "assembly",
+    "expected_joint_graph_state_sha256",
+    "expected_component_count",
+    "expected_joint_count",
+}
 
 
 def _arguments(arguments: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -59,7 +78,25 @@ def _arguments(arguments: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     allowed = {"offset", "limit"}
     if operation == "select_joints_of_component":
         required.add("component")
-        allowed.add("component")
+        allowed.update({"component", *_LEGACY_COMPONENT_FIELDS})
+        supplied_legacy = set(values) & _LEGACY_COMPONENT_FIELDS
+        if supplied_legacy and supplied_legacy != _LEGACY_COMPONENT_FIELDS:
+            raise NativeArgumentError(
+                "Legacy component diagnosis arguments must include the complete "
+                "frozen-state contract."
+            )
+    elif operation in _CATEGORY_OPERATIONS:
+        legacy_fields = {
+            *_LEGACY_CATEGORY_COMMON,
+            _CATEGORY_COUNT_FIELDS[operation],
+        }
+        allowed.update(legacy_fields)
+        supplied_legacy = set(values) & legacy_fields
+        if supplied_legacy and supplied_legacy != legacy_fields:
+            raise NativeArgumentError(
+                "Legacy Assembly diagnosis arguments must include the complete "
+                "frozen-state contract."
+            )
     elif operation not in _CATEGORY_OPERATIONS and operation != "read":
         raise NativeArgumentError("Native capability operation is unavailable.")
     if not required <= set(values) or not set(values) <= allowed:
@@ -85,6 +122,17 @@ def _positive_count(value: Any, field: str, maximum: int) -> int:
     return value
 
 
+def _digest(value: Any, field: str) -> str:
+    digest = str(value or "").strip().lower()
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise NativeAssemblyDiagnosisError(
+            f"{field} must be a lowercase SHA-256 digest."
+        )
+    return digest
+
+
 def _object_ref(document_uid: str, value: Any, field: str) -> NativeObjectRef:
     if not isinstance(value, Mapping) or set(value) != {"object_name"}:
         raise NativeAssemblyDiagnosisError(
@@ -107,6 +155,106 @@ class NativeAssemblyDiagnosisRuntime:
     def diagnose(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         operation, values = _arguments(arguments)
         self._context.guard()
+        offset = _count(values.get("offset", 0), "offset", 255)
+
+        if operation == "select_joints_of_component" and "assembly" in values:
+            spec = ComponentJointsSpec(
+                assembly_ref=_object_ref(
+                    self._context.document_uid, values["assembly"], "assembly"
+                ),
+                component_ref=_object_ref(
+                    self._context.document_uid, values["component"], "component"
+                ),
+                expected_joint_graph_state_sha256=_digest(
+                    values["expected_joint_graph_state_sha256"],
+                    "expected_joint_graph_state_sha256",
+                ),
+                expected_component_count=_count(
+                    values["expected_component_count"],
+                    "expected_component_count",
+                    100_000,
+                ),
+                expected_joint_count=_count(
+                    values["expected_joint_count"], "expected_joint_count", 256
+                ),
+                offset=offset,
+                limit=_positive_count(values.get("limit", 16), "limit", 16),
+            )
+            return read_component_joints(self._context, spec)
+
+        if operation in _CATEGORY_OPERATIONS and "assembly" in values:
+            common = {
+                "assembly_ref": _object_ref(
+                    self._context.document_uid, values["assembly"], "assembly"
+                ),
+                "expected_diagnosis_state_sha256": _digest(
+                    values["expected_diagnosis_state_sha256"],
+                    "expected_diagnosis_state_sha256",
+                ),
+                "expected_component_count": _count(
+                    values["expected_component_count"],
+                    "expected_component_count",
+                    100_000,
+                ),
+                "expected_grounded_count": _count(
+                    values["expected_grounded_count"],
+                    "expected_grounded_count",
+                    256,
+                ),
+                "expected_joint_count": _count(
+                    values["expected_joint_count"], "expected_joint_count", 256
+                ),
+                "offset": offset,
+                "limit": _positive_count(values.get("limit", 32), "limit", 32),
+            }
+            if operation == "select_conflicting_constraints":
+                return read_conflicting_constraints(
+                    self._context,
+                    ConflictingConstraintsSpec(
+                        **common,
+                        expected_conflicting_count=_count(
+                            values["expected_conflicting_count"],
+                            "expected_conflicting_count",
+                            256,
+                        ),
+                    ),
+                )
+            if operation == "select_redundant_constraints":
+                return read_redundant_constraints(
+                    self._context,
+                    RedundantConstraintsSpec(
+                        **common,
+                        expected_redundant_count=_count(
+                            values["expected_redundant_count"],
+                            "expected_redundant_count",
+                            256,
+                        ),
+                    ),
+                )
+            if operation == "select_partially_redundant_constraints":
+                return read_partially_redundant_constraints(
+                    self._context,
+                    PartiallyRedundantConstraintsSpec(
+                        **common,
+                        expected_partially_redundant_count=_count(
+                            values["expected_partially_redundant_count"],
+                            "expected_partially_redundant_count",
+                            256,
+                        ),
+                    ),
+                )
+            return read_malformed_constraints(
+                self._context,
+                MalformedConstraintsSpec(
+                    **common,
+                    expected_malformed_count=_count(
+                        values["expected_malformed_count"],
+                        "expected_malformed_count",
+                        256,
+                    ),
+                ),
+            )
+
         assembly = read_active_assembly(self._context.document)
         if assembly is None:
             raise NativeAssemblyDiagnosisError("No Assembly is active.")
@@ -114,8 +262,6 @@ class NativeAssemblyDiagnosisRuntime:
             self._context.document_uid,
             str(assembly.Name),
         )
-        offset = _count(values.get("offset", 0), "offset", 255)
-
         if operation == "select_joints_of_component":
             state = capture_component_joint_state(assembly)
             spec = ComponentJointsSpec(

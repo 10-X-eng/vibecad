@@ -27,9 +27,21 @@ _OBJECT_REF = {
     "required": ["object_name"],
     "additionalProperties": False,
 }
+_COUNT = {"type": "integer", "minimum": 0, "maximum": 256}
+_STATE_DIGEST = {
+    "type": "string",
+    "minLength": 64,
+    "maxLength": 64,
+    "pattern": r"^[0-9a-f]{64}$",
+}
 
 
-def _parameters(*, component: bool = False) -> dict:
+def _parameters(
+    *,
+    component: bool = False,
+    legacy_component: bool = False,
+    category_count_field: str | None = None,
+) -> dict:
     properties = {
         "offset": {"type": "integer", "minimum": 0, "maximum": 255, "default": 0},
         "limit": {
@@ -40,9 +52,42 @@ def _parameters(*, component: bool = False) -> dict:
         },
     }
     required = []
-    if component:
+    if component or legacy_component:
         properties["component"] = _OBJECT_REF
         required.append("component")
+    if legacy_component:
+        properties.update(
+            {
+                "assembly": _OBJECT_REF,
+                "expected_joint_graph_state_sha256": _STATE_DIGEST,
+                "expected_component_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100_000,
+                },
+                "expected_joint_count": _COUNT,
+            }
+        )
+        required = list(properties)
+    elif category_count_field:
+        properties.update(
+            {
+                "assembly": _OBJECT_REF,
+                "expected_diagnosis_state_sha256": _STATE_DIGEST,
+                "expected_component_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100_000,
+                },
+                "expected_grounded_count": _COUNT,
+                "expected_joint_count": _COUNT,
+                category_count_field: _COUNT,
+            }
+        )
+        # The frozen-state fields form the deprecated compatibility shape. The
+        # current shape omits all of them and captures the active state itself;
+        # runtime validation below enforces that callers cannot send a partial
+        # legacy shape.
     return {
         "type": "object",
         "properties": properties,
@@ -58,6 +103,8 @@ def _variant(
     *,
     component: bool = False,
     provider_supplemental: bool = False,
+    category_count_field: str | None = None,
+    legacy_component: bool = False,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
@@ -71,7 +118,11 @@ def _variant(
         ),
         transaction_behavior="none",
         background_required=False,
-        parameters=_parameters(component=component),
+        parameters=_parameters(
+            component=component,
+            legacy_component=legacy_component,
+            category_count_field=category_count_field,
+        ),
         provider_supplemental=provider_supplemental,
     )
 
@@ -86,21 +137,31 @@ def assembly_diagnosis_capability_definition() -> NativeCapabilityDefinition:
                 "select_conflicting_constraints",
                 "Read joints with unsatisfied constraints.",
                 "Assembly_SelectConflictingConstraints",
+                category_count_field="expected_conflicting_count",
             ),
             _variant(
                 "select_redundant_constraints",
                 "Read fully redundant joints.",
                 "Assembly_SelectRedundantConstraints",
+                category_count_field="expected_redundant_count",
             ),
             _variant(
                 "select_partially_redundant_constraints",
                 "Read partially redundant joints.",
                 "Assembly_SelectPartiallyRedundantConstraints",
+                category_count_field="expected_partially_redundant_count",
             ),
             _variant(
                 "select_malformed_constraints",
                 "Read malformed joints.",
                 "Assembly_SelectMalformedConstraints",
+                category_count_field="expected_malformed_count",
+            ),
+            _variant(
+                "select_joints_of_component",
+                "Read joints attached to one component using the legacy frozen-state contract.",
+                "Assembly_SelectJointsOfComponent",
+                legacy_component=True,
             ),
             _variant(
                 "read",

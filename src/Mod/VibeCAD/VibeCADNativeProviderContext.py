@@ -51,6 +51,7 @@ def provider_authorized_native_surface(
     active_state: dict[str, Any] | None = None,
     *,
     registry: NativeCapabilityRegistry | None = None,
+    interaction_mode: str = "build",
 ) -> NativeProviderSurface:
     """Keep ribbon choice human-owned, then apply exact document scope."""
 
@@ -70,17 +71,40 @@ def provider_authorized_native_surface(
             active_state,
             registry=registry,
         )
+    mode = str(interaction_mode or "build").strip().lower()
+    if mode not in {"build", "plan"}:
+        raise ValueError(f"Unknown Native interaction mode {mode!r}.")
+    if mode == "plan":
+        selected_registry = registry
+        if selected_registry is None:
+            from VibeCADNativeRegistry import build_native_capability_registry
+
+            selected_registry = build_native_capability_registry()
+        surface = project_native_provider_surface(
+            surface,
+            tuple(
+                name
+                for name in surface.tool_names
+                if (
+                    (definition := selected_registry.definition(name)) is not None
+                    and definition.primary_classification in {"read", "view"}
+                )
+            ),
+        )
     return surface
 
 
 def native_provider_tool_schemas(
     active_state: dict[str, Any] | None = None,
+    *,
+    interaction_mode: str = "build",
 ) -> list[dict[str, Any]]:
     registry, surface = resolve_production_native_surface()
     surface = provider_authorized_native_surface(
         surface,
         active_state,
         registry=registry,
+        interaction_mode=interaction_mode,
     )
     return schemas_for_native_provider_surface(surface)
 

@@ -793,6 +793,16 @@ class CodexProvider(BaseProvider):
         from VibeCADOllama import codex_context_limits, inspect_model
 
         live_context = dict(context)
+        interaction_mode = (
+            str(live_context.get("_vibecad_interaction_mode") or "build")
+            .strip()
+            .lower()
+        )
+        if interaction_mode not in {"build", "plan"}:
+            raise ProviderUnavailable(
+                f"Unknown VibeCAD interaction mode {interaction_mode!r}."
+            )
+        plan_mode = interaction_mode == "plan"
         ollama_model: dict[str, Any] = {}
         model_context_window: int | None = None
         model_auto_compact_token_limit: int | None = None
@@ -1333,6 +1343,7 @@ class CodexProvider(BaseProvider):
                 "config": vibecad_thread_config(
                     web_search_enabled=self.web_search_enabled,
                     skills_enabled=self.skills_enabled,
+                    collaboration_mode_enabled=plan_mode,
                     openai_base_url=(
                         (codex_base_url or "")
                         if self.auth_mode == "api_key"
@@ -1405,7 +1416,28 @@ class CodexProvider(BaseProvider):
                 "environments": [],
             }
             effort = _provider_reasoning_effort(self.reasoning_effort)
-            if effort:
+            if plan_mode:
+                effective_model = str(
+                    thread_result.get("model")
+                    if isinstance(thread_result, dict)
+                    else ""
+                ).strip()
+                if not effective_model:
+                    effective_model = self.model
+                if not effective_model:
+                    raise ProviderUnavailable(
+                        "Codex did not report the model required for Plan mode."
+                    )
+                turn_request["collaborationMode"] = {
+                    "mode": "plan",
+                    "settings": {
+                        "model": effective_model,
+                        "reasoning_effort": effort or "medium",
+                        "developer_instructions": None,
+                    },
+                }
+                turn_request["summary"] = "auto"
+            elif effort:
                 turn_request["effort"] = effort
                 turn_request["summary"] = "auto"
             else:
@@ -1474,6 +1506,11 @@ class CodexProvider(BaseProvider):
                     final_output="",
                     raw={
                         "thread_id": thread_id,
+                        **(
+                            {"interaction_mode": interaction_mode}
+                            if plan_mode
+                            else {}
+                        ),
                         "auth_mode": self.auth_mode,
                         "cad_transition": True,
                     },
@@ -1490,6 +1527,11 @@ class CodexProvider(BaseProvider):
                     final_output="",
                     raw={
                         "thread_id": thread_id,
+                        **(
+                            {"interaction_mode": interaction_mode}
+                            if plan_mode
+                            else {}
+                        ),
                         "auth_mode": self.auth_mode,
                         "cad_transition": True,
                     },
@@ -1509,6 +1551,11 @@ class CodexProvider(BaseProvider):
                 final_output=final_output,
                 raw={
                     "thread_id": thread_id,
+                    **(
+                        {"interaction_mode": interaction_mode}
+                        if plan_mode
+                        else {}
+                    ),
                     "auth_mode": self.auth_mode,
                     **(
                         {

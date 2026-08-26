@@ -98,6 +98,7 @@ ASSISTANT_CHROME_IDS = frozenset(
         "VibeConversationPanel",
         "VibeConversationHeader",
         "VibeConversationSelector",
+        "VibeInteractionMode",
         "VibeAuthoringMode",
         "VibeNewConversation",
         "VibeConversation",
