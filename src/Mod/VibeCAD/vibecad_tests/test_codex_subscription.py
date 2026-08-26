@@ -555,12 +555,14 @@ def test_codex_ends_a_frozen_turn_after_an_exact_cad_transition(
     assert result.raw["cad_transition"] is True
 
 
-def test_codex_steers_tool_images_outside_replayed_tool_output(
+def test_codex_steers_multiple_tool_images_outside_replayed_tool_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    screenshot = tmp_path / "viewport.png"
-    screenshot.write_bytes(b"valid-local-image")
+    viewport = tmp_path / "viewport.png"
+    drawing_page = tmp_path / "drawing-page.png"
+    viewport.write_bytes(b"valid-local-image")
+    drawing_page.write_bytes(b"second-valid-local-image")
     clients = []
 
     class _Client:
@@ -616,10 +618,12 @@ def test_codex_steers_tool_images_outside_replayed_tool_output(
                 self.server_request_handler(
                     "item/tool/call",
                     {
-                        "callId": "view-call",
+                        "callId": "drawing-page-call",
                         "namespace": "core",
-                        "tool": "set_view",
-                        "arguments": {"model_id": "exact-model"},
+                        "tool": "capture_view_screenshot",
+                        "arguments": {
+                            "page_name": "Page002",
+                        },
                     },
                 )
             )
@@ -644,25 +648,33 @@ def test_codex_steers_tool_images_outside_replayed_tool_output(
             self.alive = False
 
     monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
-    context = _surface_context(
-        "core.capture_view_screenshot",
-        "core.set_view",
-    )
+    context = _surface_context("core.capture_view_screenshot")
     calls = []
 
     def runner(tool_name, arguments_json, provider_call_id):
         calls.append((tool_name, provider_call_id))
-        if tool_name == "core.capture_view_screenshot":
+        arguments = json.loads(arguments_json)
+        if "page_name" not in arguments:
             return {
                 "ok": True,
                 "captured": True,
                 "new_observation": True,
                 "_vibecad_image_attachment": {
-                    "path": str(screenshot),
+                    "path": str(viewport),
                     "name": "current viewport",
                 },
             }
-        return {"ok": True}
+        assert tool_name == "core.capture_view_screenshot"
+        assert arguments["page_name"] == "Page002"
+        return {
+            "ok": True,
+            "captured": True,
+            "new_observation": True,
+            "_vibecad_image_attachment": {
+                "path": str(drawing_page),
+                "name": "Inspection Drawing page",
+            },
+        }
 
     runner.provider_update = lambda: context
     active_provider = provider.CodexProvider(
@@ -677,7 +689,7 @@ def test_codex_steers_tool_images_outside_replayed_tool_output(
     assert result.final_output == "Done."
     assert calls == [
         ("core.capture_view_screenshot", "capture-call"),
-        ("core.set_view", "view-call"),
+        ("core.capture_view_screenshot", "drawing-page-call"),
     ]
     assert clients[0].steer_requests == [
         {
@@ -687,15 +699,31 @@ def test_codex_steers_tool_images_outside_replayed_tool_output(
                 {"type": "text", "text": "V:current|current viewport"},
                 {
                     "type": "localImage",
-                    "path": str(screenshot.resolve()),
+                    "path": str(viewport.resolve()),
                     "detail": "original",
                 },
             ],
-        }
+        },
+        {
+            "threadId": "thread-visual",
+            "expectedTurnId": "turn-visual",
+            "input": [
+                {
+                    "type": "text",
+                    "text": "V:current|Inspection Drawing page",
+                },
+                {
+                    "type": "localImage",
+                    "path": str(drawing_page.resolve()),
+                    "detail": "original",
+                },
+            ],
+        },
     ]
-    capture_output = clients[0].tool_responses[0]["contentItems"]
-    assert [item["type"] for item in capture_output] == ["inputText"]
-    assert "imageUrl" not in str(capture_output)
+    for tool_response in clients[0].tool_responses:
+        content_items = tool_response["contentItems"]
+        assert [item["type"] for item in content_items] == ["inputText"]
+        assert "imageUrl" not in str(content_items)
 
 
 def test_turn_start_surface_rejects_human_mutation_commands() -> None:
