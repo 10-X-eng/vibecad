@@ -8,6 +8,15 @@ mechanism evaluation, and Part Design verification
 Related specification:
 [Bundled Standard Fasteners](standard-fasteners-integration-spec.md)
 
+Cross-domain roadmap:
+[VibeCAD governed engineering roadmap](vibecad-governed-engineering-roadmap.md)
+
+The governed engineering roadmap extends this existing Assembly owner; it does
+not replace it. Its graph, interface, validation, inference, sequencing,
+service, and Robot-projection milestones must preserve the ownership and
+evidence boundaries defined here, and this specification remains authoritative
+for detailed Assembly semantics.
+
 ## 1. Purpose
 
 VibeCAD must let an AI author a part and determine, with precisely stated
