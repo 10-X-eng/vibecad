@@ -253,34 +253,54 @@ def capture_responsive_drawing_source_catalog(
                 "Drawing source preparation was cancelled."
             )
 
-    sources: list[dict[str, Any]] = []
-    batch_count = max(1, (len(object_names) + batch_size - 1) // batch_size)
-    for index, offset in enumerate(range(0, len(object_names), batch_size)):
-        check_cancelled()
-        names = object_names[offset : offset + batch_size]
-        part = dispatch_to_document_thread(
-            lambda names=names: capture_batch(request, names)
-        )
-        if not isinstance(part, Mapping):
-            raise DrawingContextError(
-                "Drawing context batch capture returned no object."
-            )
-        batch_sources = part.get("sources")
-        if not isinstance(batch_sources, list) or any(
-            not isinstance(source, Mapping) for source in batch_sources
+    detached_sources = request.get("detached_sources")
+    if detached_sources is not None:
+        if not isinstance(detached_sources, list) or any(
+            not isinstance(source, Mapping) for source in detached_sources
         ):
             raise DrawingContextError(
-                "Drawing context batch returned invalid source data."
+                "Drawing context detached sources are malformed."
             )
-        sources.extend(dict(source) for source in batch_sources)
+        check_cancelled()
+        sources = [deepcopy(dict(source)) for source in detached_sources]
         if progress_callback is not None:
             progress_callback(
-                5 + int(80 * (index + 1) / batch_count),
-                f"Reading Drawing sources "
-                f"{min(offset + len(names), len(object_names))}"
-                f" of {len(object_names)}",
+                85,
+                f"Reading Drawing sources {len(sources)} of {len(sources)}",
             )
-    if not object_names and progress_callback is not None:
+    else:
+        sources = []
+        batch_count = max(1, (len(object_names) + batch_size - 1) // batch_size)
+        for index, offset in enumerate(range(0, len(object_names), batch_size)):
+            check_cancelled()
+            names = object_names[offset : offset + batch_size]
+            part = dispatch_to_document_thread(
+                lambda names=names: capture_batch(request, names)
+            )
+            if not isinstance(part, Mapping):
+                raise DrawingContextError(
+                    "Drawing context batch capture returned no object."
+                )
+            batch_sources = part.get("sources")
+            if not isinstance(batch_sources, list) or any(
+                not isinstance(source, Mapping) for source in batch_sources
+            ):
+                raise DrawingContextError(
+                    "Drawing context batch returned invalid source data."
+                )
+            sources.extend(dict(source) for source in batch_sources)
+            if progress_callback is not None:
+                progress_callback(
+                    5 + int(80 * (index + 1) / batch_count),
+                    f"Reading Drawing sources "
+                    f"{min(offset + len(names), len(object_names))}"
+                    f" of {len(object_names)}",
+                )
+    if (
+        detached_sources is None
+        and not object_names
+        and progress_callback is not None
+    ):
         progress_callback(85, "Reading Drawing sources 0 of 0")
 
     check_cancelled()

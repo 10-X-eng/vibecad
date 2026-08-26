@@ -270,7 +270,11 @@ def _topology(fem_mesh: Any) -> dict[str, int]:
     }
 
 
-def fem_mesh_definition_state(obj: Any) -> dict[str, Any]:
+def _fem_mesh_definition_state(
+    obj: Any,
+    *,
+    include_content_hash: bool,
+) -> dict[str, Any]:
     document = getattr(obj, "Document", None)
     if not is_live(document, obj):
         raise NativeAnalyzeError("The FEM mesh definition is no longer live.")
@@ -278,7 +282,7 @@ def fem_mesh_definition_state(obj: Any) -> dict[str, Any]:
     source, exact_source = _source(obj)
     fem_mesh = obj.FemMesh
     topology = _topology(fem_mesh)
-    content_sha = _mesh_content_sha256(fem_mesh)
+    content_sha = _mesh_content_sha256(fem_mesh) if include_content_hash else None
     settings = _settings(obj, kind)
     result = {
         **concise_object(obj),
@@ -306,15 +310,52 @@ def fem_mesh_definition_state(obj: Any) -> dict[str, Any]:
     return result
 
 
-def fem_mesh_definition_still_exact(obj: Any, expected_sha256: str) -> bool:
+def fem_mesh_definition_state(obj: Any) -> dict[str, Any]:
+    """Return the legacy exact FEM mesh-definition state.
+
+    This deliberately retains full serialized mesh hashing for callers that
+    explicitly require byte-exact generated mesh identity.
+    """
+
+    return _fem_mesh_definition_state(obj, include_content_hash=True)
+
+
+def fem_mesh_definition_context_state(obj: Any) -> dict[str, Any]:
+    """Return bounded provider context without serializing generated mesh data."""
+
+    return _fem_mesh_definition_state(obj, include_content_hash=False)
+
+
+def is_fem_mesh_definition(obj: Any) -> bool:
+    """Return whether *obj* is a supported FEM mesher definition."""
+
     try:
+        fem_mesher_kind(obj)
+        return True
+    except NativeAnalyzeError:
+        return False
+
+
+def fem_mesh_definition_still_exact(obj: Any, expected_sha256: str) -> bool:
+    """Accept current context fingerprints and legacy exact fingerprints."""
+
+    try:
+        if (
+            fem_mesh_definition_context_state(obj)["state_sha256"]
+            == expected_sha256
+        ):
+            return True
         return fem_mesh_definition_state(obj)["state_sha256"] == expected_sha256
     except NativeAnalyzeError:
         return False
 
 
-def fem_mesh_object_state(obj: Any) -> dict[str, Any]:
-    """Return exact state for any FEM mesh object accepted by the ribbon.
+def _fem_mesh_object_state(
+    obj: Any,
+    *,
+    include_content_hash: bool,
+) -> dict[str, Any]:
+    """Return bounded or exact state for any supported FEM mesh object.
 
     Mesher definitions retain their richer existing state shape.  Baked and
     filtered ``Fem::FemMeshObject`` instances use a compact mesh-only shape so
@@ -336,16 +377,22 @@ def fem_mesh_object_state(obj: Any) -> dict[str, Any]:
 
     proxy_type = str(getattr(getattr(obj, "Proxy", None), "Type", "") or "")
     if proxy_type in {"Fem::FemMeshGmsh", "Fem::FemMeshNetgen"}:
-        return fem_mesh_definition_state(obj)
+        return _fem_mesh_definition_state(
+            obj,
+            include_content_hash=include_content_hash,
+        )
     try:
         if obj.isDerivedFrom("Fem::FemMeshShapeNetgenObject"):
-            return fem_mesh_definition_state(obj)
+            return _fem_mesh_definition_state(
+                obj,
+                include_content_hash=include_content_hash,
+            )
     except Exception:
         pass
 
     fem_mesh = obj.FemMesh
     topology = _topology(fem_mesh)
-    content_sha = _mesh_content_sha256(fem_mesh)
+    content_sha = _mesh_content_sha256(fem_mesh) if include_content_hash else None
     role = str(getattr(obj, "VibeCADTimelineRole", "") or "")
     owner = getattr(obj, "VibeCADTimelineOwner", None)
     replaced = tuple(getattr(obj, "VibeCADTimelineReplacedInputs", ()) or ())
@@ -391,8 +438,22 @@ def fem_mesh_object_state(obj: Any) -> dict[str, Any]:
     return result
 
 
+def fem_mesh_object_state(obj: Any) -> dict[str, Any]:
+    """Return legacy exact state for any FEM mesh object accepted by the ribbon."""
+
+    return _fem_mesh_object_state(obj, include_content_hash=True)
+
+
+def fem_mesh_object_context_state(obj: Any) -> dict[str, Any]:
+    """Return bounded provider context without serializing FEM mesh content."""
+
+    return _fem_mesh_object_state(obj, include_content_hash=False)
+
+
 def fem_mesh_object_still_exact(obj: Any, expected_sha256: str) -> bool:
     try:
+        if fem_mesh_object_context_state(obj)["state_sha256"] == expected_sha256:
+            return True
         return fem_mesh_object_state(obj)["state_sha256"] == expected_sha256
     except NativeAnalyzeError:
         return False

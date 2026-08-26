@@ -98,6 +98,33 @@ def test_responsive_drawing_catalog_checks_cancellation_between_batches() -> Non
     assert completed_batches == 1
 
 
+def test_detached_drawing_catalog_never_dispatches_to_the_document_thread() -> None:
+    request = _request(count=1)
+    request["detached_sources"] = [
+        {"object_name": "VisibleBody", "type_id": "PartDesign::Body"}
+    ]
+    progress = []
+
+    result = capture_responsive_drawing_source_catalog(
+        request,
+        dispatch_to_document_thread=lambda _operation: pytest.fail(
+            "detached Drawing preparation must not return to the document thread"
+        ),
+        capture_batch=lambda _request, _names: pytest.fail(
+            "detached Drawing preparation must not recapture live objects"
+        ),
+        finalize=lambda _request, sources: {
+            "source_names": [source["object_name"] for source in sources]
+        },
+        progress_callback=lambda percent, message: progress.append(
+            (percent, message)
+        ),
+    )
+
+    assert result == {"source_names": ["VisibleBody"]}
+    assert progress == [(85, "Reading Drawing sources 1 of 1")]
+
+
 def test_visibility_change_invalidates_drawing_cache_without_structural_revision() -> None:
     from VibeCADCore import VibeCADService
 
@@ -216,3 +243,61 @@ def test_session_build_batches_once_then_reuses_the_revision_cache() -> None:
     assert any(event["event"] == "drawing_context_progress" for event in events)
     assert any(event["event"] == "drawing_context_ready" for event in events)
     assert any(event["event"] == "drawing_context_cache_hit" for event in events)
+
+
+def test_detached_session_build_uses_exactly_one_document_thread_dispatch() -> None:
+    import VibeCADSession as session_module
+    from VibeCADNativeDrawingSourceCatalog import (
+        invalidate_drawing_source_catalog_cache,
+    )
+
+    invalidate_drawing_source_catalog_cache()
+    coordinator = DrawingSourceCatalogCoordinator()
+    expected = {
+        "surface_id": "drawing",
+        "structural_revision": 7,
+        "domain": {"kind": "drawing"},
+    }
+    request = _request(count=1)
+    request["detached_sources"] = [
+        {"object_name": "VisibleBody", "type_id": "PartDesign::Body"}
+    ]
+    request["completed_snapshot"] = expected
+    in_dispatch = False
+    dispatch_count = 0
+
+    class _Service:
+        @staticmethod
+        def begin_native_drawing_context_request():
+            assert in_dispatch is True
+            return dict(request)
+
+        @staticmethod
+        def native_drawing_context_coordinator():
+            return coordinator
+
+        @staticmethod
+        def capture_native_drawing_context_batch(_request, _names):
+            pytest.fail("detached Drawing context must not recapture live objects")
+
+        @staticmethod
+        def finish_native_drawing_context_request(_request):
+            pytest.fail("completed Drawing context must not return to the UI thread")
+
+    def dispatch(operation):
+        nonlocal in_dispatch, dispatch_count
+        assert in_dispatch is False
+        dispatch_count += 1
+        in_dispatch = True
+        try:
+            return operation()
+        finally:
+            in_dispatch = False
+
+    result = session_module._build_responsive_drawing_native_state(
+        _Service(),
+        dispatch,
+    )
+
+    assert result == expected
+    assert dispatch_count == 1

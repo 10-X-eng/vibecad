@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Mapping
 
 
@@ -63,12 +64,41 @@ def is_drawing_object_effectively_visible(obj: Any) -> bool:
         visited.add(identity)
         view = getattr(current, "ViewObject", None)
         try:
-            if view is None or not bool(view.Visibility):
+            if (
+                view is None
+                or not bool(view.Visibility)
+                or bool(getattr(current, "Suppressed", False))
+            ):
                 return False
         except (AttributeError, ReferenceError, RuntimeError):
             return False
         current = _visibility_parent(current)
     return True
+
+
+def is_provider_object_effectively_available(document: Any, obj: Any) -> bool:
+    """Return whether a live object is visible, unsuppressed, and History-usable."""
+
+    if obj is None or not is_drawing_object_effectively_visible(obj):
+        return False
+    checker = getattr(document, "isObjectUsableAtCurrentTimelinePosition", None)
+    if not callable(checker):
+        return True
+    try:
+        if bool(checker(obj)):
+            return True
+    except (AttributeError, ReferenceError, RuntimeError):
+        return False
+    if not _is_body(obj):
+        return False
+    try:
+        import PartGui
+
+        resolver = getattr(PartGui, "resolveModelingObject", None)
+        history_target = resolver(obj) if callable(resolver) else None
+        return history_target is not None and bool(checker(history_target))
+    except (AttributeError, ImportError, ReferenceError, RuntimeError):
+        return False
 
 
 def _direct_analysis_artifact(obj: Any) -> bool:
@@ -132,24 +162,16 @@ def drawing_source_exclusion_reason(
     name = str(getattr(obj, "Name", "") or "")
     if _direct_analysis_artifact(obj) or (name and name in artifact_names):
         return "analysis_artifact"
-    if not is_drawing_object_effectively_visible(obj):
+    if not is_provider_object_effectively_available(document, obj):
         return "hidden"
     return None
 
 
-def filter_drawing_selection(
+def _filter_selection(
     document: Any,
     selection: Mapping[str, Any],
-    *,
-    analysis_artifact_names: frozenset[str] | None = None,
+    include_object: Callable[[Any], bool],
 ) -> dict[str, Any]:
-    """Remove hidden and Analyze/FEM objects from one Drawing selection."""
-
-    artifact_names = (
-        drawing_analysis_artifact_names(document)
-        if analysis_artifact_names is None
-        else analysis_artifact_names
-    )
     filtered = dict(selection)
     items = []
     get_object = getattr(document, "getObject", None)
@@ -171,18 +193,61 @@ def filter_drawing_selection(
         )
         if obj is None:
             continue
-        if (
-            drawing_source_exclusion_reason(
-                document,
-                obj,
-                analysis_artifact_names=artifact_names,
-            )
-            is None
-        ):
+        if include_object(obj):
             items.append(item)
     filtered["items"] = items
     filtered["selected_count"] = len(items)
     return filtered
+
+
+def filter_analyze_selection(
+    document: Any,
+    selection: Mapping[str, Any],
+    *,
+    analysis_artifact_names: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Keep the FEM study graph plus effectively available model selections."""
+
+    artifact_names = (
+        drawing_analysis_artifact_names(document)
+        if analysis_artifact_names is None
+        else analysis_artifact_names
+    )
+
+    return _filter_selection(
+        document,
+        selection,
+        lambda obj: is_analyze_context_reference(
+            document,
+            obj,
+            analysis_artifact_names=artifact_names,
+        ),
+    )
+
+
+def filter_drawing_selection(
+    document: Any,
+    selection: Mapping[str, Any],
+    *,
+    analysis_artifact_names: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Remove unavailable and Analyze/FEM objects from one Drawing selection."""
+
+    artifact_names = (
+        drawing_analysis_artifact_names(document)
+        if analysis_artifact_names is None
+        else analysis_artifact_names
+    )
+    return _filter_selection(
+        document,
+        selection,
+        lambda obj: drawing_source_exclusion_reason(
+            document,
+            obj,
+            analysis_artifact_names=artifact_names,
+        )
+        is None,
+    )
 
 
 def _is_active_public_geometry_source(
@@ -250,14 +315,24 @@ def is_active_design_geometry_source(
     )
 
 
-def is_potential_design_geometry_source(document: Any, obj: Any) -> bool:
+def is_potential_design_geometry_source(
+    document: Any,
+    obj: Any,
+    *,
+    analysis_artifact_names: frozenset[str] | None = None,
+) -> bool:
     """Identify a Drawing candidate without reading its potentially huge Shape."""
 
     if (
         obj is None
         or _is_body_member(obj)
         or _is_internal_resource(obj)
-        or drawing_source_exclusion_reason(document, obj) is not None
+        or drawing_source_exclusion_reason(
+            document,
+            obj,
+            analysis_artifact_names=analysis_artifact_names,
+        )
+        is not None
     ):
         return False
     try:
@@ -276,6 +351,50 @@ def is_potential_design_geometry_source(document: Any, obj: Any) -> bool:
         )
     except Exception:
         return False
+
+
+def is_analyze_context_object(
+    document: Any,
+    obj: Any,
+    *,
+    analysis_artifact_names: frozenset[str] | None = None,
+) -> bool:
+    """Keep the non-rendering FEM graph plus visible public model geometry."""
+
+    artifact_names = (
+        drawing_analysis_artifact_names(document)
+        if analysis_artifact_names is None
+        else analysis_artifact_names
+    )
+    name = str(getattr(obj, "Name", "") or "")
+    if _direct_analysis_artifact(obj) or (name and name in artifact_names):
+        return True
+    return is_potential_design_geometry_source(
+        document,
+        obj,
+        analysis_artifact_names=artifact_names,
+    )
+
+
+def is_analyze_context_reference(
+    document: Any,
+    obj: Any,
+    *,
+    analysis_artifact_names: frozenset[str] | None = None,
+) -> bool:
+    """Keep required FEM definitions or one ordinarily available reference."""
+
+    artifact_names = (
+        drawing_analysis_artifact_names(document)
+        if analysis_artifact_names is None
+        else analysis_artifact_names
+    )
+    name = str(getattr(obj, "Name", "") or "")
+    return bool(
+        _direct_analysis_artifact(obj)
+        or (name and name in artifact_names)
+        or is_provider_object_effectively_available(document, obj)
+    )
 
 
 def active_public_geometry_sources(
@@ -363,9 +482,13 @@ __all__ = [
     "active_public_geometry_sources",
     "drawing_analysis_artifact_names",
     "drawing_source_exclusion_reason",
+    "filter_analyze_selection",
     "filter_drawing_selection",
     "is_active_design_geometry_source",
     "is_active_public_geometry_source",
+    "is_analyze_context_object",
+    "is_analyze_context_reference",
     "is_drawing_object_effectively_visible",
+    "is_provider_object_effectively_available",
     "is_potential_design_geometry_source",
 ]

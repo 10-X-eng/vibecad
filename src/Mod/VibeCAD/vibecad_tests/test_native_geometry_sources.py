@@ -250,6 +250,10 @@ def test_drawing_sources_respect_effective_visibility_and_exclude_fem(
 
     analysis_domain = _Source(5, analysis_domain=True)
     analysis_member = _Source(6)
+    suppressed = _Source(7)
+    suppressed.Suppressed = True
+    history_inactive = _Source(8)
+    modeling_inactive = _Source(9)
     analysis = SimpleNamespace(
         Name="Analysis",
         TypeId="Fem::FemAnalysis",
@@ -267,12 +271,20 @@ def test_drawing_sources_respect_effective_visibility_and_exclude_fem(
             analysis_domain,
             analysis_member,
             analysis,
+            suppressed,
+            history_inactive,
+            modeling_inactive,
+        ),
+        isObjectUsableAtCurrentTimelinePosition=(
+            lambda obj: obj is not history_inactive
         ),
     )
     monkeypatch.setitem(
         sys.modules,
         "PartGui",
-        SimpleNamespace(isModelingObjectActive=lambda _obj: True),
+        SimpleNamespace(
+            isModelingObjectActive=lambda obj: obj is not modeling_inactive
+        ),
     )
 
     assert active_design_geometry_sources(document) == (visible,)
@@ -288,6 +300,9 @@ def test_drawing_sources_respect_effective_visibility_and_exclude_fem(
         drawing_source_exclusion_reason(document, analysis_member)
         == "analysis_artifact"
     )
+    assert drawing_source_exclusion_reason(document, suppressed) == "hidden"
+    assert drawing_source_exclusion_reason(document, history_inactive) == "hidden"
+    assert is_potential_design_geometry_source(document, modeling_inactive) is False
 
 
 def test_hidden_responsive_source_is_rejected_before_shape_access(monkeypatch) -> None:
@@ -320,6 +335,51 @@ def test_hidden_responsive_source_is_rejected_before_shape_access(monkeypatch) -
     )
 
     assert is_potential_design_geometry_source(document, source) is False
+
+
+def test_drawing_inventory_detaches_only_effectively_available_sources(
+    monkeypatch,
+) -> None:
+    visible = _CatalogSource(1)
+    hidden = _CatalogSource(2)
+    hidden.Name = "HiddenBody"
+    hidden.ViewObject.Visibility = False
+    document = SimpleNamespace(
+        Uid="document-a",
+        Objects=(visible, hidden),
+        isObjectUsableAtCurrentTimelinePosition=lambda _obj: True,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "PartGui",
+        SimpleNamespace(isModelingObjectActive=lambda _obj: True),
+    )
+
+    inventory = drawing_catalog.capture_drawing_source_catalog_inventory(document)
+
+    assert inventory["object_names"] == ["Body"]
+    assert [source["object_name"] for source in inventory["sources"]] == ["Body"]
+    assert visible.Shape.validity_checks == 0
+    assert hidden.Shape.validity_checks == 0
+
+
+def test_complete_drawing_catalog_cache_returns_an_isolated_detached_copy() -> None:
+    drawing_catalog.invalidate_drawing_source_catalog_cache()
+    drawing_catalog.cache_drawing_source_catalog_state(
+        "document-a",
+        7,
+        [{"object_name": "Body", "label": "Body"}],
+    )
+
+    cached = drawing_catalog.cached_drawing_source_catalog_state("document-a", 7)
+    assert cached == [{"object_name": "Body", "label": "Body"}]
+    cached[0]["label"] = "mutated"
+
+    assert drawing_catalog.cached_drawing_source_catalog_state(
+        "document-a",
+        7,
+    ) == [{"object_name": "Body", "label": "Body"}]
+    drawing_catalog.invalidate_drawing_source_catalog_cache()
 
 
 def test_drawing_source_catalog_pages_one_hundred_bodies_without_guessing(

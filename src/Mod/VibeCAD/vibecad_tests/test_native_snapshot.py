@@ -31,6 +31,9 @@ class _Object:
         self.Label = name
         self.TypeId = type_id
         self.State = []
+        self.ViewObject = SimpleNamespace(Visibility=True)
+        self.getParentGroup = lambda: None
+        self.getParentGeoFeatureGroup = lambda: None
 
     def isDerivedFrom(self, expected: str) -> bool:
         return self.TypeId == expected
@@ -184,6 +187,87 @@ def test_drawing_base_context_omits_hidden_and_fem_working_objects() -> None:
     assert [item["object_name"] for item in result["working_set"]] == [
         "VisibleBody"
     ]
+
+
+def test_analyze_base_context_keeps_fem_graph_but_omits_hidden_geometry() -> None:
+    document = _Document()
+    visible = document.add("VisibleBody", "PartDesign::Body")
+    hidden = document.add("HiddenBody", "PartDesign::Body")
+    suppressed = document.add("SuppressedBody", "PartDesign::Body")
+    solver = document.add("Solver", "Fem::FemSolverObjectPython")
+    for obj, shown in (
+        (visible, True),
+        (hidden, False),
+        (suppressed, True),
+        (solver, False),
+    ):
+        obj.ViewObject = SimpleNamespace(Visibility=shown)
+        obj.getParentGroup = lambda: None
+        obj.getParentGeoFeatureGroup = lambda: None
+    suppressed.Suppressed = True
+    document.isObjectUsableAtCurrentTimelinePosition = lambda obj: obj is not suppressed
+    selection = {
+        "document_uid": document.Uid,
+        "selected_count": 4,
+        "items": [
+            {
+                "object": {
+                    "document_uid": document.Uid,
+                    "object_name": obj.Name,
+                    "type_id": obj.TypeId,
+                },
+                "subelements": [],
+            }
+            for obj in (visible, hidden, suppressed, solver)
+        ],
+    }
+    native_state = {
+        "document_uid": document.Uid,
+        "structural_revision": 7,
+        "recent_receipts": [
+            {
+                "created": [
+                    {
+                        "document_uid": document.Uid,
+                        "object_name": obj.Name,
+                        "type_id": obj.TypeId,
+                    }
+                    for obj in (visible, hidden, suppressed, solver)
+                ]
+            }
+        ],
+    }
+
+    result = capture_active_snapshot_base(
+        document,
+        "analyze",
+        native_state,
+        selection=selection,
+    )
+
+    assert [item["object"]["object_name"] for item in result["selection"]["items"]] == [
+        "VisibleBody",
+        "Solver",
+    ]
+    assert [item["object_name"] for item in result["working_set"]] == [
+        "VisibleBody",
+        "Solver",
+    ]
+
+
+def test_detached_drawing_sources_preserve_the_snapshot_bound() -> None:
+    sources = [
+        {"object_name": f"Body{index}", "type_id": "PartDesign::Body"}
+        for index in range(drawing_snapshot_module.MAX_DRAWING_SOURCES + 2)
+    ]
+
+    count, bounded = drawing_snapshot_module._drawing_sources(
+        None,
+        detached_sources=sources,
+    )
+
+    assert count == len(sources)
+    assert len(bounded) == drawing_snapshot_module.MAX_DRAWING_SOURCES
 
 
 def _state() -> dict:

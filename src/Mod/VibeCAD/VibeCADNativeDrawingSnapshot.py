@@ -1055,9 +1055,13 @@ def _drawing_sources(
     document: Any,
     *,
     structural_revision: int | None = None,
+    detached_sources: list[Mapping[str, Any]] | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
     """Return each active design shape once at its public Body boundary."""
 
+    if detached_sources is not None:
+        sources = [dict(source) for source in detached_sources]
+        return len(sources), sources[:MAX_DRAWING_SOURCES]
     page = drawing_source_catalog_state_page(
         document,
         offset=0,
@@ -1519,11 +1523,13 @@ def build_drawing_snapshot(
     *,
     selection: Mapping[str, Any] | None = None,
     structural_revision: int | None = None,
+    detached_sources: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     pages = objects_of_type(document, "TechDraw::DrawPage")
     source_count, sources = _drawing_sources(
         document,
         structural_revision=structural_revision,
+        detached_sources=detached_sources,
     )
     selected = _selected_pages(document, pages, selection)
     if len(selected) == 1:

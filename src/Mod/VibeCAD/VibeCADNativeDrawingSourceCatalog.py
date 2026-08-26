@@ -10,8 +10,15 @@ import threading
 from typing import Any
 
 from VibeCADNativeDrawingProviderState import compact_drawing_source
-from VibeCADNativeDrawingViewState import drawing_source_catalog_state
-from VibeCADNativeGeometrySources import active_design_geometry_sources
+from VibeCADNativeDrawingViewState import (
+    drawing_source_catalog_identity_state,
+    drawing_source_catalog_state,
+)
+from VibeCADNativeGeometrySources import (
+    active_design_geometry_sources,
+    drawing_analysis_artifact_names,
+    is_potential_design_geometry_source,
+)
 
 
 MAX_DRAWING_SOURCE_PAGE_SIZE = 48
@@ -33,6 +40,32 @@ _source_catalog_cache: OrderedDict[
     tuple[str, int],
     tuple[dict[str, Any], ...],
 ] = OrderedDict()
+
+
+def capture_drawing_source_catalog_inventory(document: Any) -> dict[str, Any]:
+    """Detach every effectively available Drawing source without reading BREP."""
+
+    analysis_artifacts = drawing_analysis_artifact_names(document)
+    names = []
+    sources = []
+    for obj in tuple(getattr(document, "Objects", ()) or ()):
+        if not is_potential_design_geometry_source(
+            document,
+            obj,
+            analysis_artifact_names=analysis_artifacts,
+        ):
+            continue
+        try:
+            source = drawing_source_catalog_identity_state(obj)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            continue
+        names.append(str(source["object_name"]))
+        sources.append(source)
+    return {
+        "object_names": names,
+        "sources": sources,
+        "analysis_artifact_names": sorted(analysis_artifacts),
+    }
 
 
 def invalidate_drawing_source_catalog_cache(
@@ -106,6 +139,24 @@ def drawing_source_catalog_is_cached(
             return False
         _source_catalog_cache.move_to_end(key)
         return True
+
+
+def cached_drawing_source_catalog_state(
+    document_uid: str,
+    structural_revision: int,
+) -> list[dict[str, Any]] | None:
+    """Return a detached complete catalog when its exact revision is cached."""
+
+    uid = str(document_uid or "").strip()
+    if not uid or type(structural_revision) is not int or structural_revision < 0:
+        return None
+    key = (uid, structural_revision)
+    with _source_page_cache_lock:
+        cached = _source_catalog_cache.get(key)
+        if cached is None:
+            return None
+        _source_catalog_cache.move_to_end(key)
+        return deepcopy(list(cached))
 
 
 def _validate_page_arguments(offset: int, page_size: int) -> None:
@@ -237,9 +288,11 @@ def drawing_source_catalog_page(
 
 
 __all__ = [
+    "capture_drawing_source_catalog_inventory",
     "DrawingSourceCatalogNotReady",
     "MAX_DRAWING_SOURCE_OFFSET",
     "MAX_DRAWING_SOURCE_PAGE_SIZE",
+    "cached_drawing_source_catalog_state",
     "cache_drawing_source_catalog_state",
     "drawing_source_catalog_page",
     "drawing_source_catalog_is_cached",

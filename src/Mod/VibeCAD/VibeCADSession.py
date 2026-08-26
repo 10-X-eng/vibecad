@@ -10,6 +10,7 @@ in the live state packet. There is no workflow phase machine or prose parser.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import threading
@@ -1496,9 +1497,14 @@ def _build_responsive_analyze_native_state(
                 progress_callback=emit_progress,
             )
             if cache_hit:
-                current_clipping = _on_document_thread(
-                    document_thread_dispatch,
-                    lambda: capture_clipping(request),
+                detached_clipping = request.get("detached_clipping")
+                current_clipping = (
+                    deepcopy(dict(detached_clipping))
+                    if isinstance(detached_clipping, Mapping)
+                    else _on_document_thread(
+                        document_thread_dispatch,
+                        lambda: capture_clipping(request),
+                    )
                 )
                 domain = dict(domain)
                 domain["clipping"] = dict(current_clipping)
@@ -1669,6 +1675,9 @@ def _build_responsive_drawing_native_state(
         )
         if request is None:
             return None
+        completed = request.get("completed_snapshot")
+        if isinstance(completed, Mapping):
+            return deepcopy(dict(completed))
         try:
             return _on_document_thread(
                 document_thread_dispatch,

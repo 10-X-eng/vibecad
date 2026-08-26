@@ -810,13 +810,18 @@ class VibeCADService:
         )
 
     def begin_native_analyze_context_request(self) -> dict[str, Any] | None:
-        """Capture detached identity for one bounded Analyze context read."""
+        """Capture one detached, visibility-scoped Analyze context request."""
 
         document = self._active_document()
         if document is None:
             return None
         from VibeCADModelingSurface import provider_engine_for_ribbon
-        from VibeCADNativeAnalyzeSnapshot import begin_analyze_snapshot_capture
+        from VibeCADNativeAnalyzeSnapshot import (
+            begin_analyze_snapshot_capture,
+            capture_analyze_clipping,
+            capture_analyze_snapshot_batch,
+        )
+        from VibeCADNativeGeometrySources import drawing_analysis_artifact_names
         from VibeCADNativeSnapshot import capture_active_snapshot_base
         from VibeCADRibbonSurface import read_active_ribbon_surface
 
@@ -831,26 +836,48 @@ class VibeCADService:
             str(document.Uid),
             capability_prefix="analyze.",
         )
+        analysis_artifacts = drawing_analysis_artifact_names(document)
         base = capture_active_snapshot_base(
             document,
             "analyze",
             native_state,
+            analysis_artifact_names=analysis_artifacts,
         )
         details = begin_analyze_snapshot_capture(
             document,
             background_job=background_job,
             validate_brep=False,
+            analysis_artifact_names=analysis_artifacts,
         )
-        return {
+        revision = int(native_state.get("structural_revision", 0) or 0)
+        cacheable = bool(
+            background_job is None or bool(getattr(background_job, "terminal", False))
+        )
+        cache_hit = bool(
+            cacheable
+            and self._native_analyze_contexts.has_cached(
+                str(document.Uid),
+                revision,
+                variant=str(details.get("active_analysis_name") or ""),
+            )
+        )
+        detached_clipping = capture_analyze_clipping(document, details)
+        request = {
             **details,
-            "structural_revision": int(
-                native_state.get("structural_revision", 0) or 0
-            ),
+            "detached_clipping": detached_clipping,
+            "structural_revision": revision,
             "base_snapshot": base,
-            "cacheable": bool(
-                background_job is None or bool(getattr(background_job, "terminal", False))
-            ),
+            "cacheable": cacheable,
         }
+        if not cache_hit:
+            request["detached_parts"] = [
+                capture_analyze_snapshot_batch(
+                    document,
+                    details,
+                    list(details["object_names"]),
+                )
+            ]
+        return request
 
     def _validate_native_analyze_context_request(
         self,
@@ -909,13 +936,22 @@ class VibeCADService:
         return self._native_analyze_contexts
 
     def begin_native_drawing_context_request(self) -> dict[str, Any] | None:
-        """Capture detached identity for bounded Drawing source preparation."""
+        """Capture one detached, visibility-scoped Drawing context request."""
 
         document = self._active_document()
         if document is None:
             return None
         from VibeCADModelingSurface import provider_engine_for_ribbon
-        from VibeCADNativeSnapshot import capture_active_snapshot_base
+        from VibeCADNativeDrawingSnapshot import build_drawing_snapshot
+        from VibeCADNativeDrawingSourceCatalog import (
+            cached_drawing_source_catalog_state,
+            capture_drawing_source_catalog_inventory,
+        )
+        from VibeCADNativeGeometrySources import drawing_analysis_artifact_names
+        from VibeCADNativeSnapshot import (
+            capture_active_snapshot_base,
+            complete_active_snapshot,
+        )
         from VibeCADRibbonSurface import read_active_ribbon_surface
 
         surface = read_active_ribbon_surface()
@@ -925,24 +961,39 @@ class VibeCADService:
         ) != "native":
             return None
         native_state = self.native_document_state()
-        names = []
-        seen = set()
-        for obj in tuple(getattr(document, "Objects", ()) or ()):
-            name = str(getattr(obj, "Name", "") or "")
-            if name and name not in seen:
-                seen.add(name)
-                names.append(name)
+        revision = int(native_state.get("structural_revision", 0) or 0)
+        sources = cached_drawing_source_catalog_state(
+            str(document.Uid),
+            revision,
+        )
+        if sources is None:
+            inventory = capture_drawing_source_catalog_inventory(document)
+            sources = [dict(source) for source in inventory["sources"]]
+            object_names = list(inventory["object_names"])
+            analysis_artifacts = frozenset(inventory["analysis_artifact_names"])
+        else:
+            object_names = [str(source["object_name"]) for source in sources]
+            analysis_artifacts = drawing_analysis_artifact_names(document)
+        base = capture_active_snapshot_base(
+            document,
+            "drawing",
+            native_state,
+            analysis_artifact_names=analysis_artifacts,
+        )
+        selection = base.get("_selection")
+        domain = build_drawing_snapshot(
+            document,
+            selection=selection if isinstance(selection, Mapping) else None,
+            structural_revision=revision,
+            detached_sources=sources,
+        )
         return {
             "document_uid": str(document.Uid),
-            "structural_revision": int(
-                native_state.get("structural_revision", 0) or 0
-            ),
-            "object_names": names,
-            "base_snapshot": capture_active_snapshot_base(
-                document,
-                "drawing",
-                native_state,
-            ),
+            "structural_revision": revision,
+            "object_names": object_names,
+            "detached_sources": sources,
+            "base_snapshot": base,
+            "completed_snapshot": complete_active_snapshot(base, domain),
         }
 
     def _validate_native_drawing_context_request(

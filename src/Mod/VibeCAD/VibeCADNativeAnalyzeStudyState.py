@@ -39,7 +39,11 @@ def _read_member(
     return None
 
 
-def study_inventory(analysis: Any) -> dict[str, Any]:
+def study_inventory(
+    analysis: Any,
+    *,
+    mesh_state_reader: Callable[[Any], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     from VibeCADNativeAnalyzeAssignments import validate_assignments
     from VibeCADNativeAnalyzeConnectionState import connection_state
     from VibeCADNativeAnalyzeConstraintState import electromagnetic_constraint_state
@@ -53,6 +57,7 @@ def study_inventory(analysis: Any) -> dict[str, Any]:
     from VibeCADNativeAnalyzeThermalState import thermal_condition_state
     from VibeCADNativeAnalyzeEquationState import equation_state
 
+    mesh_reader = mesh_state_reader or fem_mesh_definition_state
     readers = (
         ("material", material_state),
         ("element", element_definition_state),
@@ -62,7 +67,7 @@ def study_inventory(analysis: Any) -> dict[str, Any]:
         ("connection", connection_state),
         ("load", load_state),
         ("thermal", thermal_condition_state),
-        ("mesh", fem_mesh_definition_state),
+        ("mesh", mesh_reader),
         ("solver", solver_state),
     )
     states: dict[str, list[dict[str, Any]]] = {
@@ -177,9 +182,13 @@ def study_inventory(analysis: Any) -> dict[str, Any]:
     }
 
 
-def study_state(analysis: Any) -> dict[str, Any]:
+def study_state(
+    analysis: Any,
+    *,
+    mesh_state_reader: Callable[[Any], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     intent = study_intent_state(analysis)
-    inventory = study_inventory(analysis)
+    inventory = study_inventory(analysis, mesh_state_reader=mesh_state_reader)
     solver_kinds = set(inventory["solver_kinds"])
     if solver_kinds:
         from femsolver.runtime import solver_runtime_statuses

@@ -231,6 +231,7 @@ def capture_active_snapshot_base(
     native_state: Mapping[str, Any],
     *,
     selection: Mapping[str, Any] | None = None,
+    analysis_artifact_names: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Capture detached active-surface identity before domain preparation."""
 
@@ -245,14 +246,44 @@ def capture_active_snapshot_base(
     if str(selected.get("document_uid") or "") != uid:
         raise NativeSnapshotError("Native selection belongs to another document.")
     include_working_object = None
-    if surface_id == "drawing":
+    if surface_id == "analyze":
+        from VibeCADNativeGeometrySources import (
+            drawing_analysis_artifact_names,
+            filter_analyze_selection,
+            is_analyze_context_reference,
+        )
+
+        analysis_artifacts = (
+            drawing_analysis_artifact_names(document)
+            if analysis_artifact_names is None
+            else analysis_artifact_names
+        )
+        selected = filter_analyze_selection(
+            document,
+            selected,
+            analysis_artifact_names=analysis_artifacts,
+        )
+
+        def include_available_object(obj: Any) -> bool:
+            return is_analyze_context_reference(
+                document,
+                obj,
+                analysis_artifact_names=analysis_artifacts,
+            )
+
+        include_working_object = include_available_object
+    elif surface_id == "drawing":
         from VibeCADNativeGeometrySources import (
             drawing_analysis_artifact_names,
             drawing_source_exclusion_reason,
             filter_drawing_selection,
         )
 
-        analysis_artifacts = drawing_analysis_artifact_names(document)
+        analysis_artifacts = (
+            drawing_analysis_artifact_names(document)
+            if analysis_artifact_names is None
+            else analysis_artifact_names
+        )
 
         def include_drawing_object(obj: Any) -> bool:
             return (
