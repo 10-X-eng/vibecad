@@ -80,8 +80,10 @@ def test_detect_grok_bot_uses_env_when_no_explicit(tmp_path, monkeypatch) -> Non
 
 
 def test_detect_grok_bot_returns_none_when_missing(monkeypatch) -> None:
-    # Empty PATH so the default candidate names cannot resolve.
+    # Isolate command discovery from both PATH and real desktop installs.
     monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv(agent.GROK_BOT_CMD_ENV, raising=False)
+    monkeypatch.setattr(agent, "_default_grok_bot_candidates", lambda: [])
     assert agent.detect_grok_bot_command("/no/such/grok-bot/binary") is None
 
 
