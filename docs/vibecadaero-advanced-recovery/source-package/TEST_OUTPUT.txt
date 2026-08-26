@@ -1,0 +1,8 @@
+VibeCADAero Reconciliation Pass 03 Correction 01 — Final Pure-Python Validation
+
+python -m compileall -q .: PASS
+pytest -q: 45 passed in 0.56s
+
+Validated from proposed_overlay/ with no caller-supplied PYTHONPATH.
+FreeCAD/FEM/OpenFOAM/FluidX3D/Kaggle live integrations: NOT EXECUTED / NOT CLAIMED.
+Upstream writes: NONE.

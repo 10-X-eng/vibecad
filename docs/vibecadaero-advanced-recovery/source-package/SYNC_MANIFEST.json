@@ -1,0 +1,566 @@
+{
+  "correction": "Non-destructive host Analysis Runtime migration with source-verified FEM compatibility, isolated lifecycle/process correctness work, durable persistence/recovery, and separate fresh publication authority. Durable jobs persist provenance, not standing Native mutation permission; FEM proves parity first, Aero second.",
+  "external_pins": {
+    "CfdOF": "a90f60c2313ceba09c236c81f0693d93357d1614",
+    "FluidX3D": "8986874e626e0aebd317ab16c420b39e30dfa273"
+  },
+  "files": [
+    {
+      "path": "AERO_FIRST_USE_INFORMATIONAL_NOTICE.md",
+      "sha256": "a25a55305de37fcdb0f25bd685a6914f7eba1bea4c840e972ac6f9c5050d1620",
+      "size_bytes": 1131
+    },
+    {
+      "path": "AERO_JOB_REUSE_DECISION.md",
+      "sha256": "980353f7dde4c24d933ab4d4843c0ee3077ddb7b8bb33437385df03b4f798a1e",
+      "size_bytes": 3975
+    },
+    {
+      "path": "BUILDER_HANDOFF.md",
+      "sha256": "61878bdd44ede9692dc8fd7e11e159bd95f0077d4283280ad40f0fbeaf53a27b",
+      "size_bytes": 10422
+    },
+    {
+      "path": "CANONICAL_ARCHITECTURE.md",
+      "sha256": "cd430ee7bda2836570b0329e6f6d1ccd38ca1e00feb56325290e6a1019cdcfe7",
+      "size_bytes": 16812
+    },
+    {
+      "path": "CANONICAL_CODE_REFERENCE.md",
+      "sha256": "a56e94b9da4396362c37ab335210a95ee56aac69dc85a5b46853f170fdd6d577",
+      "size_bytes": 191827
+    },
+    {
+      "path": "CANONICAL_ENGINEERING_PAPER.md",
+      "sha256": "10c742763f7d24de15442a63dd16bc900bbeb6e07b14ad85031bfccdfbb422a0",
+      "size_bytes": 52297
+    },
+    {
+      "path": "CORRECTION_01_DEEPENING_LEDGER.md",
+      "sha256": "56e331bc88d8d04094a7741a31a967ec4656ce11e10f72c7066fb0f0fdda42cc",
+      "size_bytes": 4160
+    },
+    {
+      "path": "CORRECTION_01_HOST_ANALYSIS_RUNTIME.md",
+      "sha256": "b6f5933a632400150b6c8f1136741065dfe1331c7ecfb1ded679e3e8ede0c06e",
+      "size_bytes": 6051
+    },
+    {
+      "path": "CURRENT_UPSTREAM_DRIFT_CHECK.md",
+      "sha256": "2a62e62a7580a5f0fae8a4ee544f50ae1e3d9d0f4a62a00a8bde639cb00e0594",
+      "size_bytes": 554
+    },
+    {
+      "path": "DESTRUCTIVE_CHANGE_AUDIT.md",
+      "sha256": "0bd4ca1c3fd509fd45e1390971b1e88e7e8ed685dbd067db0ed905e95f493d56",
+      "size_bytes": 9835
+    },
+    {
+      "path": "DIFF_FROM_PASS_01.md",
+      "sha256": "5935dcefb456227d0d019c32c85be89954e503747d2b7e62040feaf3fa412307",
+      "size_bytes": 3488
+    },
+    {
+      "path": "DIFF_FROM_PASS_02.md",
+      "sha256": "ce5660ecb4b35cf6aaefb36aa3330ae1496a9c3125c3200772e0b1f20e621bbb",
+      "size_bytes": 4300
+    },
+    {
+      "path": "EVIDENCE_AND_ARTIFACT_TAXONOMY.md",
+      "sha256": "dae0cb618a83451d7ef4dca732683e108193a7cda92a4a8625bb2e32da58ccaa",
+      "size_bytes": 2699
+    },
+    {
+      "path": "FEM_CHARACTERIZATION_AND_PARITY_TEST_PLAN.md",
+      "sha256": "12c09828f99845e2da39881e3909e01c44add4ecf7b5b999a6350cd90e3215e6",
+      "size_bytes": 10549
+    },
+    {
+      "path": "FLUIDX3D_COMMERCIAL_LICENSING_STATUS.md",
+      "sha256": "821bfda9ec4d4774df457f167a59bfd633d817d8b2102485b43c7c290d18fb46",
+      "size_bytes": 1102
+    },
+    {
+      "path": "GEOMETRY_READINESS_MODEL.md",
+      "sha256": "d22968fed50fd4c3d4aea0b180633ddc6e43c733d727656b8b94a745ce24ce01",
+      "size_bytes": 1794
+    },
+    {
+      "path": "HOST_ANALYSIS_RUNTIME_ARCHITECTURAL_DECISIONS.md",
+      "sha256": "9371bc493d071edbe0c46f36375854ef5a4601db8d2bbf26a08570d959ad5467",
+      "size_bytes": 3969
+    },
+    {
+      "path": "HOST_ANALYSIS_RUNTIME_CONTRACT.md",
+      "sha256": "c7b2f9734ca45656f883e624d0d35630be5fd61860ad7351bfd20b9a88339c44",
+      "size_bytes": 17310
+    },
+    {
+      "path": "HOST_ANALYSIS_RUNTIME_CUTOVER_AND_ROLLBACK.md",
+      "sha256": "349b430b9d1af779fbd20f52b6a4f355879b9094d9689cbc14c099348a478999",
+      "size_bytes": 11114
+    },
+    {
+      "path": "HOST_ANALYSIS_RUNTIME_IDENTITY_PERSISTENCE_AND_RECOVERY.md",
+      "sha256": "2f19d8fdfd249b176bc555cca10b05d28f196bf4757a3cd62ee5f4578f2e1dce",
+      "size_bytes": 8740
+    },
+    {
+      "path": "HOST_ANALYSIS_RUNTIME_MIGRATION_PLAN.md",
+      "sha256": "826306708b0c9c3cb903af1530ac21a36281a3380f3e06b07f131c51053343c0",
+      "size_bytes": 27101
+    },
+    {
+      "path": "HOST_ANALYSIS_RUNTIME_PUBLICATION_AUTHORITY.md",
+      "sha256": "48bf354b431c9addc2bcacfa9cab871a062b50ff3c97e9b8ceded62e01e6362f",
+      "size_bytes": 14859
+    },
+    {
+      "path": "HOST_ANALYSIS_RUNTIME_RISK_REGISTER.md",
+      "sha256": "36793f23e2168a195daf66805f31024bbf8afa24b5fdbd5c7cd9b1be68b517ec",
+      "size_bytes": 10902
+    },
+    {
+      "path": "HOST_RUNTIME_COMPATIBILITY_CONTRACT.md",
+      "sha256": "da8c73f7d4151ae5292dc68cc8e544f20d98c5668f80f2108fb08c9eb32ccdcd",
+      "size_bytes": 3611
+    },
+    {
+      "path": "HOST_RUNTIME_DOCUMENT_LIFECYCLE.md",
+      "sha256": "ebbf9e25b575e07bdb5debc6aa01a27b99f591ad7d30ff65b468584426d82dc1",
+      "size_bytes": 4822
+    },
+    {
+      "path": "HOST_RUNTIME_EXTRACTION_SEQUENCE.md",
+      "sha256": "858f05f8c70a483a991ee0b16090c54045767311b6a2aa87476bcffb172e9bba",
+      "size_bytes": 5200
+    },
+    {
+      "path": "HOST_RUNTIME_PERSISTENCE_AND_RECOVERY.md",
+      "sha256": "87516f3c6e866571210879cb06f1384238aea591f7cbe90c416dfbc71d1304cd",
+      "size_bytes": 5148
+    },
+    {
+      "path": "HOST_RUNTIME_PROCESS_CONTROL.md",
+      "sha256": "32bd2f7d11320d144dc3fddcd758f84df1bb754cc8bf1886c8e787047ced707f",
+      "size_bytes": 2388
+    },
+    {
+      "path": "HOST_RUNTIME_PROVIDER_CONTRACT.md",
+      "sha256": "3d59032580d53a6e5d4eba2ad417c7b37ce63b1841dcd31b12967ccad368e026",
+      "size_bytes": 2152
+    },
+    {
+      "path": "HOST_RUNTIME_REGRESSION_GATES.md",
+      "sha256": "7aed75945e91e3d761793480ea3110ef16f5711497d9a1a9aba7e8287ed59af2",
+      "size_bytes": 5867
+    },
+    {
+      "path": "HOST_RUNTIME_STATE_MACHINE.md",
+      "sha256": "9b208a92b9fdf03c1a18818cd7bed574d7516bec11bc12c00838ca336e0c89a2",
+      "size_bytes": 4783
+    },
+    {
+      "path": "IMPLEMENTATION_SPEC.md",
+      "sha256": "04736e4180836eb9e925acdf7f27f745685e3b817fbbf021279fe37dc09e47ab",
+      "size_bytes": 14878
+    },
+    {
+      "path": "KNOWN_ERRORS_AND_BUGS.md",
+      "sha256": "56121aaa3d71df16aa1f0aab2b301e77fb8d91ca8dec4d72f2229d0cf8be1e7d",
+      "size_bytes": 13898
+    },
+    {
+      "path": "LIVE_DRIFT_AFTER_PASS_03.md",
+      "sha256": "d41bea11c800b4083306d0167e98129f2b48e871a451cdb3154e5e945b09475a",
+      "size_bytes": 1442
+    },
+    {
+      "path": "MISSING_FROM_PLAN.md",
+      "sha256": "5644c3bc4335b5984347c6ad57f1561ffc6243e98e82f4cfee6a2ec04fc62155",
+      "size_bytes": 6878
+    },
+    {
+      "path": "NATIVE_CONTROL_RECONCILIATION.md",
+      "sha256": "2805bbf43921fd38a0e5f53923030e757261c489f646a14ca51045dc0a2d35dc",
+      "size_bytes": 4605
+    },
+    {
+      "path": "NON_DESTRUCTIVE_MIGRATION_MATRIX.md",
+      "sha256": "fe846c073296b38f2fe0acbca3f72ca2a99e3f048da3f2e0aa7334d8e53598c6",
+      "size_bytes": 9092
+    },
+    {
+      "path": "POLICY_AND_RESTRICTION_PRINCIPLES.md",
+      "sha256": "bb5e247a256fd6fc09e658035c387d5ce0d4e549a34cf9ae1d044b1d5f626b91",
+      "size_bytes": 1180
+    },
+    {
+      "path": "README.md",
+      "sha256": "241e7124a6ea392bb5cd92cf4745fc81c29f56f4135dd61b1e5ad0023317e291",
+      "size_bytes": 11036
+    },
+    {
+      "path": "RECHECK_PLAYBOOK.md",
+      "sha256": "2cf3f23bc5d9406e6fdae101bf5dcdfb1287fc0efbe99bfc7135a36f37cdb01e",
+      "size_bytes": 1396
+    },
+    {
+      "path": "RECONCILIATION_LEDGER.md",
+      "sha256": "c609afac746d676567eb28f997e7655e40e965e1c4afd3002039025d94324614",
+      "size_bytes": 13435
+    },
+    {
+      "path": "SOURCE_TRACEABILITY.md",
+      "sha256": "79d1106b58ffae3185de662de1f4b7cf66b61a6c673d96daa4552640746c6b78",
+      "size_bytes": 2992
+    },
+    {
+      "path": "SOURCE_VERIFIED_HOST_RUNTIME_BASELINE.md",
+      "sha256": "a7aa33b0c69d8ef4f990d42be6999c0363af46f938d0f6b8b4147e62b6660820",
+      "size_bytes": 8464
+    },
+    {
+      "path": "TEST_OUTPUT.txt",
+      "sha256": "5a91dc91f71ffa291d7d33c31f0ebeba059d70bdd72d251d2fa0a3c8352801d1",
+      "size_bytes": 322
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "77d3e3ca187cb4c6484f2e797e76b3d9740d1692cebb58bcbed391902165803a",
+      "size_bytes": 2073
+    },
+    {
+      "path": "TREE.md",
+      "sha256": "0854238092075878a364e40252e6fd996bf443dfc4be4fa5fdd25f62eed24f63",
+      "size_bytes": 5656
+    },
+    {
+      "path": "UPSTREAM_BASELINE.md",
+      "sha256": "b9c0446b11bb9e0c6c1374bf9a74bc2d2f4f72232b71787d27c3ae3cdb7740e0",
+      "size_bytes": 1767
+    },
+    {
+      "path": "VALIDATION_REPORT.md",
+      "sha256": "7d7ddaaefdbb4c52d5d2867f60a4d49747a64c3097485a907b3b2bb6aa4d9f34",
+      "size_bytes": 4612
+    },
+    {
+      "path": "history/PASS_02_DIFF_FROM_PASS_01.md",
+      "sha256": "5935dcefb456227d0d019c32c85be89954e503747d2b7e62040feaf3fa412307",
+      "size_bytes": 3488
+    },
+    {
+      "path": "integration/FILE_CHANGE_MAP.md",
+      "sha256": "c52640161f5568ddb78a2d9f77c2827c21403a59ddc08b652eef59b9fbe6378d",
+      "size_bytes": 4312
+    },
+    {
+      "path": "proposed_overlay/README.md",
+      "sha256": "d2e21804b4520c4c76ea3561b299b354b9a3e01c4009e7a845db06d5f30c4f34",
+      "size_bytes": 2184
+    },
+    {
+      "path": "proposed_overlay/fluidx3d_bridge/README.md",
+      "sha256": "60ccc0950a1f1fbc80d68224d77180edd8b532b61d35b15f67872b64a68dac67",
+      "size_bytes": 973
+    },
+    {
+      "path": "proposed_overlay/fluidx3d_bridge/setup_vibecad.cpp",
+      "sha256": "3615ce36bf815222f4a407c24803f06efc1c4848cafd3353099ca984f97cd2ad",
+      "size_bytes": 9037
+    },
+    {
+      "path": "proposed_overlay/reference_host_runtime/README.md",
+      "sha256": "47ddad66b6822a4cee153089001ab15f88c45a93cb067f7ac2093acd4bbbc617",
+      "size_bytes": 885
+    },
+    {
+      "path": "proposed_overlay/reference_host_runtime/VibeCADAnalysisJobState.py",
+      "sha256": "2d163626d2bb082c11a9b976f5f310e08ad65585037e24bfe2bea8470cddb5b4",
+      "size_bytes": 4429
+    },
+    {
+      "path": "proposed_overlay/reference_host_runtime/VibeCADAnalysisPublication.py",
+      "sha256": "52dec447a2b35ab06ef7e9f8cdc38fa1598c9f924752f6c61a5400114110516a",
+      "size_bytes": 1999
+    },
+    {
+      "path": "proposed_overlay/reference_host_runtime/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "proposed_overlay/reference_host_runtime/test_analysis_job_state.py",
+      "sha256": "77ccf8f71c0260861e5f5fb41705c1435572a9f73c9be122f1a5e21c5bbc3ae1",
+      "size_bytes": 1467
+    },
+    {
+      "path": "proposed_overlay/reference_host_runtime/test_analysis_publication.py",
+      "sha256": "46b7b449932dcfaf60d7f63e4cf2e8b6bcba8dc8e8770155b638bf99e42c43bd",
+      "size_bytes": 1809
+    },
+    {
+      "path": "proposed_overlay/schema/aero-cfd-result.schema.json",
+      "sha256": "b214e38a28ebbe150cf36eb198f504dc447e3800c135cd77230406d7bfa0f1bc",
+      "size_bytes": 2190
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroAcknowledgement.py",
+      "sha256": "52b4b94d6ea28578cc137bfc6b69b08dc74f09638abd7759bd376820048acef4",
+      "size_bytes": 2055
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroCFD.py",
+      "sha256": "0ed76d6cbe53199ec87dd01833668489e52a4ff5fc55fff36afe59300be0466c",
+      "size_bytes": 5505
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroCFDContracts.py",
+      "sha256": "1e7192087e55bfea49cea80cab6357e50ea86f0f96b5a3aeb60613ad489de6df",
+      "size_bytes": 12711
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroCFDUpstreamAdapter.py",
+      "sha256": "8c21cb659a6333288d7e065df8b6100f774a19f92e2f7709b3fed9afdf2fe0db",
+      "size_bytes": 3887
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroDetachedExecution.py",
+      "sha256": "59d99c16ae507830867554ba6839907ab1323fe70a0702f82617f09325ef4307",
+      "size_bytes": 2220
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroDynamicStall.py",
+      "sha256": "f3aba372295d6ff5867757d88d0605cfa01ecac2ea97b16e7a5b9c6c45e84f11",
+      "size_bytes": 11491
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroFieldResults.py",
+      "sha256": "594abc19f337323e3f79b2c01a9bfcb23ac146db0927c28669756edf204c3980",
+      "size_bytes": 3779
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroGeometryReadiness.py",
+      "sha256": "49445820cab56ccfb975d6d9a3662a9923fb5eba29f9c930eb8ce5e290ea7541",
+      "size_bytes": 1346
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroHostEvidence.py",
+      "sha256": "5ef38d4fa8b7903cbcad00c330b5765c4bef8caea100f575951708be605ea71d",
+      "size_bytes": 4001
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroJobStore.py",
+      "sha256": "c5f8fa6f11f9983ee17b7e4242623126c5a53d35e959479fb1da2e31f01fb0ae",
+      "size_bytes": 9148
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroKaggle.py",
+      "sha256": "837861f82a903fb9334be4fd802482d422f92a150629226d9d80b4b5bfd50a19",
+      "size_bytes": 9983
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroLBM.py",
+      "sha256": "4923b2479169fcebe6215417d9d0ad4e2a7a909c51d9cd6e6e03f425f3976800",
+      "size_bytes": 11096
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroLocalCompute.py",
+      "sha256": "2c78e56f3fa2e93eaef2f8083f50e1bfe2e520245eaa3e9f40bcec2d8a47dfd6",
+      "size_bytes": 2376
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroMesh.py",
+      "sha256": "a43dac312257862ffe3e3a87d1f738808f51245a5d16e4ebdf1e3c774df21b1e",
+      "size_bytes": 11077
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroNativeBridge.py",
+      "sha256": "dd9682d2ba1e3bad3070f2785f3788fa38aa1f7cc6592202fa48cc4f3d3241b9",
+      "size_bytes": 3441
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroNativeRepairBridge.py",
+      "sha256": "73f8c87be161845acc2b6169466420d3d58e5feda1f0441058b94c8677c11d79",
+      "size_bytes": 2399
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroOpenFOAM.py",
+      "sha256": "f0127c1567c63d54b88b75811865b6149503b61e3f6a1d515dd8afca031cd9b8",
+      "size_bytes": 7751
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroQualification.py",
+      "sha256": "af3de7754651a961d1cd57bace3d40e8ca561d356ff281a246a8bb22946fd97d",
+      "size_bytes": 3418
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroRouting.py",
+      "sha256": "965fd845fe32bdbe4c1e3ef61e67c786082f7fc72808606d91a43206b57c301d",
+      "size_bytes": 2995
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroSixDOF.py",
+      "sha256": "772129eb1bb245aef3d32efc4529a4564942d9a47c2999054c666c7620e8dab1",
+      "size_bytes": 9688
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroStripTheory.py",
+      "sha256": "a63f8adba05df9fc13534a3fb2882b9d2ab2794eb69b31d8fe2cb5f519860c3d",
+      "size_bytes": 6287
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/AeroUnsteady.py",
+      "sha256": "d0307996dfd3aa7540dde2060782907cc334b1f3f1d6083edc9207e356fe57b1",
+      "size_bytes": 5422
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/openfoam_collect.py",
+      "sha256": "db3217a7610915271b9fedabbd719931f5af09770e3cbfdd5fbca9eda52a3fa7",
+      "size_bytes": 3661
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/conftest.py",
+      "sha256": "7e15a3254918148436d921c11bd89e2d71510e64613a2c0e79792ab6127a5a39",
+      "size_bytes": 436
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_aero_acknowledgement.py",
+      "sha256": "d933ae9556ce9646a1becb1a48f449d758f6bc1972f8bb66b8349c571427b908",
+      "size_bytes": 1254
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_cfd_contracts.py",
+      "sha256": "e23120e77caebcf194634039209c85a0a80c288b234eea7a57c3e387eddb19a4",
+      "size_bytes": 1106
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_detached_execution_overlay.py",
+      "sha256": "9db606d796af554aac0d4a4cd11ddd169af2a89afe6794c679aa44f2ca4acb71",
+      "size_bytes": 690
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_dynamic_stall_overlay.py",
+      "sha256": "5e144cdc9f93a85d9b3f511e9cc59e93a4b7bb06264d06e40b06e45746684ce1",
+      "size_bytes": 1141
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_fluidx3d_vendor_policy.py",
+      "sha256": "77280e9b2a72902370d927ed25175ef66686f61b32464159dce5d6f774a4084d",
+      "size_bytes": 1871
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_geometry_readiness_overlay.py",
+      "sha256": "ae73b8761818e078edb6ecd3a3679a0f98b5d291f7e929e41796a7aaffed4450",
+      "size_bytes": 522
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_host_evidence_overlay.py",
+      "sha256": "b13bfa8691710965d961d13908f9181abc8a7a8076cf19723a1b7ddd8608b85f",
+      "size_bytes": 1035
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_host_runtime_atomic_commit_gate.py",
+      "sha256": "a795664b9a9cc69cfeb9c2c5b48eeb42d5ae7df30f3423a175cae4479546d1ce",
+      "size_bytes": 1871
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_host_runtime_migration_overlay.py",
+      "sha256": "94485f46741ed59da3424bbd14460edb6042606cf8e31105e8e4212cb1d3fe3a",
+      "size_bytes": 718
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_host_runtime_plan_integrity.py",
+      "sha256": "7ca2d24a604a6df9c70ec46f5ec167bf2da8de4d4c4705aef462f2a331cfaf49",
+      "size_bytes": 3037
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_job_store_overlay.py",
+      "sha256": "af7f5324a7636f8db3ee4975d277e2fc3b2b151d03804be9e7d9ef94e52ac1dd",
+      "size_bytes": 1013
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_kaggle_overlay.py",
+      "sha256": "811ecdf11b7c215b3174dc506d33c042e0940ed11add843575c44073932e8c10",
+      "size_bytes": 306
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_mesh_overlay.py",
+      "sha256": "73e537792adc779a868a0480f22485519b362239f25ba4f8a7dfd1067b2453af",
+      "size_bytes": 191
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_native_bridge_overlay.py",
+      "sha256": "9764ecd3fc4b2e3b617b049f7cf587087d7d19ab71196ed5a9add6ec7f5852ac",
+      "size_bytes": 827
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_native_repair_bridge_overlay.py",
+      "sha256": "6438e1823a29e76a380527844c252f9d28a4fa7cae3e9b6699c09f98683c33b0",
+      "size_bytes": 1011
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_qualification_overlay.py",
+      "sha256": "24037f5b21f526cdd44894297ccd1fdaff9515e5bec1508fd44381fb18be6450",
+      "size_bytes": 1660
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_routing_overlay.py",
+      "sha256": "d6fa33630c1179654ebb1c3496fcf991b82fabab53fbb1ccc0122a2726fcdb12",
+      "size_bytes": 712
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_sixdof_overlay.py",
+      "sha256": "e5f9987f7e1e36f466a82ff44a733d69b663d7b65e8eddafb02219758aa75a89",
+      "size_bytes": 612
+    },
+    {
+      "path": "proposed_overlay/src/Mod/VibeCADAero/tests/test_strip_overlay.py",
+      "sha256": "a3889172dd84b42fc8f7e2a70862284ea4cf9e4779abdeb8d14c049c9e68df77",
+      "size_bytes": 263
+    },
+    {
+      "path": "proposed_overlay/vendor/FluidX3D/FLUIDX3D_VENDOR_MANIFEST.json",
+      "sha256": "d2cdac443e2d9ad49bd1125dbbafa3e02e7ea5730fe99fb81794e45ec7a8a71b",
+      "size_bytes": 927
+    },
+    {
+      "path": "proposed_overlay/vendor/FluidX3D/LICENSE.md",
+      "sha256": "1c00d80544659d334c5880ba62ebe9f04307c1cfae856864c1433b63f55403e7",
+      "size_bytes": 2911
+    },
+    {
+      "path": "proposed_overlay/vendor/FluidX3D/VENDOR_POLICY.md",
+      "sha256": "fd910f0f345802698876e4588eded54cf54bda2374eb250a39f8d002e7bbb3fe",
+      "size_bytes": 2171
+    },
+    {
+      "path": "proposed_overlay/vendor/FluidX3D/VIBECAD_VENDOR.md",
+      "sha256": "24b57011153cf2569f462d1284600ae8dd1ab69acf479506ce8d9268ae2231ec",
+      "size_bytes": 746
+    },
+    {
+      "path": "sources/CONVERSATION_SOURCE.md",
+      "sha256": "ccec51399b4d9320505300523de4eaf463020765c76ef4050618298dfd498c61",
+      "size_bytes": 313430
+    },
+    {
+      "path": "sources/CONVERSATION_SOURCE.sha256",
+      "sha256": "8c24bcffaef71fb9e30f3494c305763fc16ad9117b3fcb0bf2259223696cb59f",
+      "size_bytes": 89
+    }
+  ],
+  "frozen_upstream": "df07a5e82ec2fb31515e10b33822253d69d496ff",
+  "observed_live_main_during_finalization": "24fe48bb3fdcb84b558d34e23fedb0988ee4e548",
+  "parent_package": "VibeCADAero_Reconciliation_Pass_03_df07a5e",
+  "pass": "03-correction-01",
+  "schema": "vibecadaero.reconciliation.sync/1",
+  "upstream_writes_performed": false,
+  "validation": {
+    "compileall": "PASS",
+    "freecad_fem_provider_integration": "NOT EXECUTED / NOT CLAIMED",
+    "pytest": "45 passed in 0.56s",
+    "upstream_writes": "NONE"
+  }
+}

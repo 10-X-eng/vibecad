@@ -1,0 +1,2 @@
+# Preserve the recovered evidence package byte-for-byte on every platform.
+docs/vibecadaero-advanced-recovery/** -text
