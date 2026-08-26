@@ -89,6 +89,8 @@
 #include "PreferencesGui.h"
 #include "ThreadRepresentationBuilder.h"
 #include "QGIView.h"
+#include "QGIDatumLabel.h"
+#include "QGIViewDimension.h"
 #include "QGSPage.h"
 #include "ViewProviderPage.h"
 #include "ViewProviderDrawingView.h"
@@ -109,6 +111,12 @@ public:
        );
        add_varargs_method("exportPageAsPdf", &Module::exportPageAsPdf,
             "exportPageAsPdf(DrawPageObject, FilePath) -- print page as Pdf to file."
+        );
+        add_varargs_method(
+            "exportAllDrawingPagesAsPdf",
+            &Module::exportAllDrawingPagesAsPdf,
+            "exportAllDrawingPagesAsPdf(Document, FilePath) -- export every "
+            "current-History Drawing page to one PDF file."
         );
        add_varargs_method("exportPageAsSvg", &Module::exportPageAsSvg,
             "exportPageAsSvg(DrawPageObject, FilePath) -- print page as Svg to file."
@@ -147,6 +155,12 @@ public:
         add_varargs_method("getSceneForPage", &Module::getSceneForPage,
             "QGSPage = getSceneForPage(page) -- get the scene for a DrawPage."
         );
+        add_varargs_method(
+            "inspectPageLayout",
+            &Module::inspectPageLayout,
+            "inspectPageLayout(page) -- return exact object-backed rendered bounds "
+            "and collisions without exposing Qt graphics-item ownership to Python."
+        );
         add_varargs_method("getViewStackState", &Module::getViewStackState,
             "getViewStackState(DrawViewObject) -- return the exact graphical stacking scope."
         );
@@ -158,6 +172,12 @@ public:
             &Module::validateProjectedDimension,
             "validateProjectedDimension(view, type, subelements, allow_approximate) "
             "-- validate exact projected references without changing the document."
+        );
+       add_varargs_method(
+            "inspectProjectedDimensionApplicability",
+            &Module::inspectProjectedDimensionApplicability,
+            "inspectProjectedDimensionApplicability(view, subelements) -- return "
+            "the exact single-reference dimensions accepted by TechDraw."
         );
        add_varargs_method(
             "createProjectedDimension",
@@ -1748,6 +1768,59 @@ private:
             "geometry_configuration",
             Py::String(validation.geometryConfiguration));
         result.setItem("approximate", Py::Boolean(validation.approximate));
+        return result;
+    }
+
+    Py::Object inspectProjectedDimensionApplicability(const Py::Tuple& args)
+    {
+        PyObject* viewPy = nullptr;
+        PyObject* subelementsPy = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "OO", &viewPy, &subelementsPy)) {
+            throw Py::TypeError("expected (view, subelements)");
+        }
+        auto* view = drawingPart(viewPy);
+        const auto subelements = projectedMeasurementElements(subelementsPy);
+        std::unordered_set<std::string> distinct;
+        Py::Dict result;
+        for (const auto& subelement : subelements) {
+            if (!distinct.insert(subelement).second) {
+                throw Py::ValueError(
+                    "projected dimension applicability requires unique subelements");
+            }
+            const TechDraw::ReferenceVector references = {
+                TechDraw::ReferenceEntry(view, subelement),
+            };
+            Py::List valid;
+            Py::List approximate;
+            const auto dimension = [&](const char* type, const char* name) {
+                try {
+                    const auto validation = TechDrawGui::validateProjectedDimension(
+                        view, type, references, true);
+                    valid.append(Py::String(name));
+                    if (validation.approximate) {
+                        approximate.append(Py::String(name));
+                    }
+                }
+                catch (const Base::Exception&) {
+                }
+            };
+            dimension("Distance", "aligned");
+            dimension("DistanceX", "horizontal");
+            dimension("DistanceY", "vertical");
+            dimension("Radius", "radius");
+            dimension("Diameter", "diameter");
+            dimension("Area", "area");
+            try {
+                TechDrawGui::validateProjectedArcLength(view, subelement);
+                valid.append(Py::String("arc_length"));
+            }
+            catch (const Base::Exception&) {
+            }
+            Py::Dict applicability;
+            applicability.setItem("valid_dimensions", valid);
+            applicability.setItem("approximate_dimensions", approximate);
+            result.setItem(subelement, applicability);
+        }
         return result;
     }
 
@@ -5346,7 +5419,33 @@ private:
         return Py::None();
     }
 
-//!exportPageAsPdf(PageObject, FullPath)
+//!exportAllDrawingPagesAsPdf(Document, FullPath)
+    Py::Object exportAllDrawingPagesAsPdf(const Py::Tuple& args)
+    {
+        PyObject* documentPy = nullptr;
+        char* name = nullptr;
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "O!et",
+                &(App::DocumentPy::Type),
+                &documentPy,
+                "utf-8",
+                &name)) {
+            throw Py::TypeError("expected (Document, path)");
+        }
+        const std::string filePath(name);
+        PyMem_Free(name);
+
+        auto* document =
+            static_cast<App::DocumentPy*>(documentPy)->getDocumentPtr();
+        QPrinter printer(QPrinter::HighResolution);
+        printer.setFullPage(true);
+        printer.setOutputFileName(QString::fromUtf8(filePath.c_str()));
+        PagePrinter::printAllPdf(&printer, document);
+        return Py::None();
+    }
+
+//!printAllDrawingPages(Document, Validator)
     Py::Object printAllDrawingPages(const Py::Tuple& args)
     {
         PyObject* documentPy = nullptr;
@@ -5660,6 +5759,178 @@ private:
         }
 
         return Py::None();
+    }
+
+    Py::Object inspectPageLayout(const Py::Tuple& args)
+    {
+        PyObject* pagePy = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &pagePy)) {
+            throw Py::TypeError("expected (page)");
+        }
+        auto* provider = drawingPageProvider(pagePy);
+        auto* scene = provider->getQGSPage();
+        if (!scene) {
+            throw Py::RuntimeError("the Drawing page has no live graphical scene");
+        }
+        struct LayoutItem {
+            QGIView* graphics{nullptr};
+            TechDraw::DrawView* view{nullptr};
+            std::string name;
+            std::string type;
+            std::string parent;
+            QRectF bounds;
+            QPainterPath shape;
+            QPainterPath labelShape;
+            bool dimension{false};
+        };
+        std::vector<LayoutItem> items;
+        std::unordered_set<std::string> names;
+        std::unordered_set<std::string> duplicates;
+        for (auto* graphics : scene->getViews()) {
+            if (!graphics || !graphics->isVisible()) {
+                continue;
+            }
+            auto* view = graphics->getViewObject();
+            if (!view || !view->getDocument()) {
+                continue;
+            }
+            const std::string type(view->getTypeId().getName());
+            if (type == "TechDraw::DrawProjGroup") {
+                continue;
+            }
+            const std::string name = view->getNameInDocument();
+            const QRectF bounds = graphics->mapRectToScene(
+                graphics->contentBoundingRect());
+            const QPainterPath shape = graphics->mapToScene(
+                graphics->contentShape());
+            if (name.empty() || bounds.isEmpty()) {
+                continue;
+            }
+            if (!names.insert(name).second) {
+                duplicates.insert(name);
+                continue;
+            }
+            std::string parentName;
+            for (auto* parent = graphics->parentItem(); parent; parent = parent->parentItem()) {
+                auto* parentView = dynamic_cast<QGIView*>(parent);
+                auto* parentObject = parentView ? parentView->getViewObject() : nullptr;
+                if (parentObject && parentObject->getDocument()) {
+                    parentName = parentObject->getNameInDocument();
+                    break;
+                }
+            }
+            auto* dimensionGraphics = dynamic_cast<QGIViewDimension*>(graphics);
+            QPainterPath labelShape;
+            if (dimensionGraphics && dimensionGraphics->getDatumLabel()
+                && dimensionGraphics->getDatumLabel()->isVisible()) {
+                auto* label = dimensionGraphics->getDatumLabel();
+                labelShape = label->mapToScene(label->shape());
+            }
+            items.push_back({
+                graphics,
+                view,
+                name,
+                type,
+                parentName,
+                bounds,
+                shape,
+                labelShape,
+                dimensionGraphics != nullptr,
+            });
+        }
+        std::ranges::sort(items, {}, &LayoutItem::name);
+
+        const auto millimetreBounds = [](const QRectF& bounds) {
+            Py::Dict result;
+            result.setItem("min_x_mm", Py::Float(bounds.left() / 10.0));
+            result.setItem("min_y_mm", Py::Float(-bounds.bottom() / 10.0));
+            result.setItem("max_x_mm", Py::Float(bounds.right() / 10.0));
+            result.setItem("max_y_mm", Py::Float(-bounds.top() / 10.0));
+            return result;
+        };
+        const auto isAncestor = [](const QGraphicsItem* ancestor, const QGraphicsItem* item) {
+            for (auto* parent = item ? item->parentItem() : nullptr;
+                 parent;
+                 parent = parent->parentItem()) {
+                if (parent == ancestor) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        Py::List itemResults;
+        for (const auto& item : items) {
+            Py::Dict result;
+            result.setItem("object_name", Py::String(item.name));
+            result.setItem("type_id", Py::String(item.type));
+            result.setItem("parent_object_name", Py::String(item.parent));
+            result.setItem("bounds_mm", millimetreBounds(item.bounds));
+            if (item.dimension && !item.labelShape.isEmpty()) {
+                result.setItem(
+                    "label_bounds_mm",
+                    millimetreBounds(item.labelShape.boundingRect()));
+            }
+            itemResults.append(result);
+        }
+
+        Py::List collisionResults;
+        for (std::size_t leftIndex = 0; leftIndex < items.size(); ++leftIndex) {
+            const auto& left = items[leftIndex];
+            for (std::size_t rightIndex = leftIndex + 1;
+                rightIndex < items.size();
+                 ++rightIndex) {
+                const auto& right = items[rightIndex];
+                if (!left.bounds.intersects(right.bounds)) {
+                    continue;
+                }
+                const bool leftIsAncestor = isAncestor(left.graphics, right.graphics);
+                const bool rightIsAncestor = isAncestor(right.graphics, left.graphics);
+                QPainterPath overlap;
+                if (leftIsAncestor || rightIsAncestor) {
+                    if (leftIsAncestor && right.dimension) {
+                        overlap = right.labelShape.intersected(left.shape);
+                    }
+                    else if (rightIsAncestor && left.dimension) {
+                        overlap = left.labelShape.intersected(right.shape);
+                    }
+                    else {
+                        continue;
+                    }
+                }
+                else if (left.dimension && right.dimension && left.parent == right.parent) {
+                    overlap.addPath(left.labelShape.intersected(right.shape));
+                    overlap.addPath(right.labelShape.intersected(left.shape));
+                }
+                else {
+                    overlap = left.shape.intersected(right.shape);
+                }
+                if (overlap.isEmpty()) {
+                    continue;
+                }
+                Py::Dict result;
+                result.setItem("first_object_name", Py::String(left.name));
+                result.setItem("second_object_name", Py::String(right.name));
+                result.setItem("first_type_id", Py::String(left.type));
+                result.setItem("second_type_id", Py::String(right.type));
+                result.setItem(
+                    "overlap_bounds_mm",
+                    millimetreBounds(overlap.boundingRect()));
+                collisionResults.append(result);
+            }
+        }
+
+        std::vector<std::string> duplicateNames(duplicates.begin(), duplicates.end());
+        std::ranges::sort(duplicateNames);
+        Py::List duplicateResults;
+        for (const auto& name : duplicateNames) {
+            duplicateResults.append(Py::String(name));
+        }
+        Py::Dict result;
+        result.setItem("items", itemResults);
+        result.setItem("collisions", collisionResults);
+        result.setItem("duplicate_object_names", duplicateResults);
+        return result;
     }
 };
 

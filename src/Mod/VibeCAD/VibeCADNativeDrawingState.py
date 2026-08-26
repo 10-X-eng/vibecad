@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any, Mapping
 
 from VibeCADNativeInput import NativeInputError, inspect_native_input_file
@@ -89,6 +90,39 @@ def _template_geometry(template: Any) -> dict[str, Any]:
         except Exception:
             result[output_name] = None
     result["orientation"] = str(getattr(template, "Orientation", "") or "")
+    try:
+        x = float(getattr(template, "DrawableX"))
+        y = float(getattr(template, "DrawableY"))
+        width = float(getattr(template, "DrawableWidth"))
+        height = float(getattr(template, "DrawableHeight"))
+        clearance = float(getattr(template, "DrawableClearance", 0.0))
+    except Exception:
+        x = y = width = height = clearance = 0.0
+    page_height = result.get("height_mm")
+    valid_clearance = (
+        math.isfinite(clearance)
+        and clearance >= 0.0
+        and 2.0 * clearance < width
+        and 2.0 * clearance < height
+    )
+    if (
+        width > 0.0
+        and height > 0.0
+        and valid_clearance
+        and isinstance(page_height, (int, float))
+    ):
+        minimum_y = float(page_height) - y - height + clearance
+        maximum_y = float(page_height) - y - clearance
+        result["drawing_clearance_mm"] = round(clearance, 9)
+        result["drawing_bounds_mm"] = {
+            "min_x_mm": round(x + clearance, 9),
+            "min_y_mm": round(minimum_y, 9),
+            "max_x_mm": round(x + width - clearance, 9),
+            "max_y_mm": round(maximum_y, 9),
+        }
+    else:
+        result["drawing_clearance_mm"] = None
+        result["drawing_bounds_mm"] = None
     return result
 
 

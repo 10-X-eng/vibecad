@@ -16,11 +16,9 @@ from VibeCADNativeDrawingRichAnnotationState import (
 )
 
 
-DRAWING_RICH_ANNOTATION_CAPABILITY_NAME = "drawing.rich_annotation"
-DRAWING_RICH_ANNOTATION_OPERATIONS = (
-    "create_plain_text",
-    "create_rich_text",
-    "read_defaults",
+DRAWING_NOTE_CAPABILITY_NAMES = (
+    "drawing.note",
+    "drawing.rich_note",
 )
 _ACTIONS = frozenset({"TechDraw_RichTextAnnotation"})
 _OBJECT_NAME = {
@@ -50,24 +48,17 @@ _PAGE = _closed(
     ("object_name", "expected_state_sha256"),
 )
 _OWNER = {
+    "default": "page",
     "oneOf": [
-        _closed(
-            {"kind": {"type": "string", "const": "page"}},
-            ("kind",),
-        ),
+        {"type": "string", "const": "page"},
         _closed(
             {
-                "kind": {"type": "string", "const": "view"},
                 "object_name": _OBJECT_NAME,
                 "expected_owner_state_sha256": _SHA256,
             },
-            ("kind", "object_name", "expected_owner_state_sha256"),
+            ("object_name", "expected_owner_state_sha256"),
         ),
     ],
-    "description": (
-        "Attach to the page itself, or to one exact page view using the "
-        "annotation_owner_state_sha256 published in Drawing context."
-    ),
 }
 _PLACEMENT = _closed(
     {
@@ -76,25 +67,20 @@ _PLACEMENT = _closed(
     },
     ("x_mm", "y_mm"),
 )
+_PLACEMENT["description"] = (
+    "Page coordinates in mm; use template_geometry width and height."
+)
 _WIDTH = {
+    "default": "automatic",
+    "description": "Width in mm wraps text; automatic keeps one line.",
     "oneOf": [
-        _closed(
-            {"mode": {"type": "string", "const": "automatic"}},
-            ("mode",),
-        ),
-        _closed(
-            {
-                "mode": {"type": "string", "const": "fixed"},
-                "value_mm": {
-                    "type": "number",
-                    "exclusiveMinimum": 0.0,
-                    "maximum": 1_000_000.0,
-                },
-            },
-            ("mode", "value_mm"),
-        ),
+        {"type": "string", "enum": ["auto", "automatic"]},
+        {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "maximum": 1_000_000.0,
+        },
     ],
-    "description": "Automatic wrapping or one positive width in millimetres.",
 }
 _COLOR = _closed(
     {
@@ -121,7 +107,7 @@ _FRAME = _closed(
         },
         "color_rgb": _COLOR,
     },
-    ("visible", "line_width_mm", "line_style", "color_rgb"),
+    (),
 )
 
 
@@ -131,93 +117,68 @@ def _parameters(*, rich: bool) -> dict:
         "type": "string",
         "minLength": 1,
         "maxLength": MAX_DRAWING_RICH_ANNOTATION_PROVIDER_CONTENT_CHARACTERS,
-        "description": (
-            "Bounded Qt rich-text HTML with visible text. Images, external resources, "
-            "active content, event handlers, media, forms, SVG, stylesheets, CSS URLs, "
-            "and non-http(s)/mailto links are rejected."
-            if rich
-            else "Visible UTF-8 text; TechDraw safely escapes and stores canonical HTML."
-        ),
     }
     return _closed(
         {
             "page": deepcopy(_PAGE),
-            "owner": deepcopy(_OWNER),
             content_name: content,
             "label": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 160,
-                "description": (
-                    "Preferred document label without padding. FreeCAD may append a "
-                    "numeric suffix; the result reports the exact assigned label."
-                ),
             },
             "placement_on_page_mm": deepcopy(_PLACEMENT),
+            "owner": deepcopy(_OWNER),
             "width": deepcopy(_WIDTH),
             "frame": deepcopy(_FRAME),
         },
         (
             "page",
-            "owner",
             content_name,
             "label",
             "placement_on_page_mm",
-            "width",
-            "frame",
         ),
     )
 
 
-def drawing_rich_annotation_capability_definition() -> NativeCapabilityDefinition:
-    return NativeCapabilityDefinition(
-        name=DRAWING_RICH_ANNOTATION_CAPABILITY_NAME,
-        description=(
-            "Create one exact page- or view-owned Drawing annotation with explicit "
-            "placement, semantic wrapping, and complete frame style."
+def drawing_rich_annotation_capability_definitions() -> tuple[
+    NativeCapabilityDefinition, ...
+]:
+    definitions = []
+    for name, rich, description, target_type in (
+        (
+            "drawing.note",
+            False,
+            "Create a plain-text Drawing note.",
+            "ExactDrawingPageOwnerPlainTextPlacementWidthAndFrame",
         ),
-        primary_classification="mutation",
-        variants=(
-            NativeCapabilityVariant(
-                operation="create_plain_text",
-                description="Create a safely escaped plain-text annotation.",
-                action_ids=_ACTIONS,
-                surface_ids=frozenset({"drawing"}),
-                exact_target_type=(
-                    "ExactDrawingPageOwnerPlainTextPlacementWidthAndFrame"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters=_parameters(rich=False),
-            ),
-            NativeCapabilityVariant(
-                operation="create_rich_text",
-                description="Create a bounded resource-free annotation from safe HTML.",
-                action_ids=_ACTIONS,
-                surface_ids=frozenset({"drawing"}),
-                exact_target_type=(
-                    "ExactDrawingPageOwnerSafeHtmlPlacementWidthAndFrame"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters=_parameters(rich=True),
-                provider_supplemental=True,
-            ),
-            NativeCapabilityVariant(
-                operation="read_defaults",
-                description=(
-                    "Read the human command's automatic-width and complete frame defaults."
-                ),
-                action_ids=_ACTIONS,
-                surface_ids=frozenset({"drawing"}),
-                exact_target_type="DrawingRichAnnotationDefaults",
-                transaction_behavior="none",
-                background_required=False,
-                parameters=_closed({}, ()),
-                provider_supplemental=True,
-            ),
+        (
+            "drawing.rich_note",
+            True,
+            "Create a formatted Drawing note.",
+            "ExactDrawingPageOwnerHtmlPlacementWidthAndFrame",
         ),
-    )
+    ):
+        definitions.append(
+            NativeCapabilityDefinition(
+                name=name,
+                description=description,
+                primary_classification="mutation",
+                variants=(
+                    NativeCapabilityVariant(
+                        operation="create",
+                        description=description,
+                        action_ids=_ACTIONS,
+                        surface_ids=frozenset({"drawing"}),
+                        exact_target_type=target_type,
+                        transaction_behavior="document",
+                        background_required=False,
+                        parameters=_parameters(rich=rich),
+                    ),
+                ),
+            )
+        )
+    return tuple(definitions)
 
 
 def register_drawing_rich_annotation_capability_definition(
@@ -225,4 +186,5 @@ def register_drawing_rich_annotation_capability_definition(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_definition(drawing_rich_annotation_capability_definition())
+    for definition in drawing_rich_annotation_capability_definitions():
+        registry.register_definition(definition)

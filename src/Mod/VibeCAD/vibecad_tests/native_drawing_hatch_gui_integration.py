@@ -132,6 +132,7 @@ def _create_fixture(document):
         raise
     App.closeActiveTransaction(False, transaction)
     page.ViewObject.show()
+    TechDrawGui.showDrawingPage(page)
     _events(28)
     geometry = drawing_projected_geometry_state(view)
     faces = [
@@ -161,23 +162,9 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     definition = registry.definition(DRAWING_HATCH_CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(DRAWING_HATCH_OPERATIONS)
-    branches = schema["parameters"]["oneOf"]
-    assert [branch["properties"]["operation"]["const"] for branch in branches] == list(
+    assert schema["parameters"]["properties"]["operation"]["enum"] == list(
         DRAWING_HATCH_OPERATIONS
     )
-    by_operation = {
-        branch["properties"]["operation"]["const"]: branch for branch in branches
-    }
-    assert by_operation["create_image_default"]["required"] == [
-        "operation",
-        "page",
-        "view",
-        "faces",
-        "label",
-        "style",
-    ]
-    assert "pattern_name" in by_operation["create_geometric_default"]["required"]
-    assert by_operation["read_defaults"]["required"] == ["operation"]
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert "pattern_file" not in encoded
@@ -203,7 +190,6 @@ def _arguments(page, view, faces: tuple[str, ...], operation: str, defaults) -> 
     page_state = drawing_page_state(page)
     view_state = drawing_view_state(view)
     geometry = drawing_projected_geometry_state(view)
-    by_name = {item["name"]: item for item in geometry["elements"]}
     kind = "image" if operation.startswith("create_image") else "geometric"
     style = json.loads(json.dumps(defaults[kind]["default_style"]))
     result = {
@@ -220,12 +206,7 @@ def _arguments(page, view, faces: tuple[str, ...], operation: str, defaults) -> 
             ],
         },
         "faces": [
-            {
-                "subelement": face,
-                "expected_element_state_sha256": by_name[face][
-                    "element_state_sha256"
-                ],
-            }
+            {"subelement": face}
             for face in faces
         ],
         "label": f"Native {kind.title()} Hatch",
@@ -397,9 +378,9 @@ def _run() -> None:
         stale_arguments = _arguments(
             page, view, (faces[3],), "create_geometric_default", defaults
         )
-        stale_arguments["faces"][0]["expected_element_state_sha256"] = "0" * 64
+        stale_arguments["view"]["expected_projection_state_sha256"] = "0" * 64
         stale = call(stale_arguments, False)
-        assert stale["error_code"] == "NATIVE_DRAWING_HATCH_REFERENCE_STALE"
+        assert stale["error_code"] == "NATIVE_DRAWING_HATCH_PROJECTION_STALE"
 
         wrong_type = _arguments(
             page, view, (faces[3],), "create_geometric_default", defaults
@@ -422,13 +403,18 @@ def _run() -> None:
         geometric_before_native = _page_image_sha256()
         native_geometric_response = call(
             _arguments(
-                page, view, (faces[3],), "create_geometric_default", defaults
+                page,
+                view,
+                (faces[3], faces[4], faces[5]),
+                "create_geometric_default",
+                defaults,
             )
         )
         _events(20)
         assert _page_image_sha256() != geometric_before_native
         native_geometric_name = native_geometric_response["hatch"]["object_name"]
         assert native_geometric_response["hatch"]["kind"] == "geometric"
+        assert native_geometric_response["hatch"]["faces"] == list(faces[3:6])
 
         objects_before_cancel = tuple(document.Objects)
         history_before_cancel = tuple(document.VibeCADTimeline.Operations)
@@ -553,7 +539,7 @@ def _run() -> None:
         print(
             "VIBECAD_NATIVE_DRAWING_HATCH_GUI_OK operations=5 image=true "
             "geometric=true human_oracle=true shared_host_builder=true "
-            "exact_faces=true explicit_style=true defaults=true catalog=true "
+            "exact_faces=true multi_face=true explicit_style=true defaults=true catalog=true "
             "human_authorized_files=true path_free=true artifact_hash=true "
             "embedded_reopen=true visual_hash=true tree=true history=true "
             "snapshot=true stale=true wrong_type=true duplicate_refusal=true "

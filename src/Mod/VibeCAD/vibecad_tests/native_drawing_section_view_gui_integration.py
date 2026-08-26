@@ -24,7 +24,7 @@ from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeBackgroundSchema import NATIVE_BACKGROUND_CAPABILITY_NAME
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAME
+from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAMES
 from VibeCADNativeDrawingSectionSchema import DRAWING_SECTION_CAPABILITY_NAME
 from VibeCADNativeDrawingState import drawing_page_state
 from VibeCADNativeDrawingViewState import drawing_source_state, drawing_view_state
@@ -113,7 +113,7 @@ def _create_base_view(document, page, source):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAME)
+    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAMES[0])
     section_definition = registry.definition(DRAWING_SECTION_CAPABILITY_NAME)
     job_definition = registry.definition(NATIVE_BACKGROUND_CAPABILITY_NAME)
     assert all(
@@ -147,7 +147,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             available=True,
             unavailable_reason="",
             tool_names=(
-                DRAWING_PAGE_CAPABILITY_NAME,
+                DRAWING_PAGE_CAPABILITY_NAMES[0],
                 DRAWING_SECTION_CAPABILITY_NAME,
                 NATIVE_BACKGROUND_CAPABILITY_NAME,
             ),
@@ -250,15 +250,21 @@ def _run() -> None:
             background_manager=service.native_background_manager(),
             document_thread_dispatch=VibeGui._dispatch_to_document_thread,
         )
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state_store,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def refresh_dispatcher() -> NativeTurnDispatcher:
+            nonlocal turn, frozen
+            turn = _turn(surface, registry)
+            frozen = turn.surface
+            return NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = refresh_dispatcher()
         call_index = 0
 
         def call(tool_name: str, arguments: dict, *, succeeds: bool = True) -> dict:
@@ -285,7 +291,7 @@ def _run() -> None:
                 time.sleep(0.01)
             raise AssertionError(f"Background section-view job {job_id} did not finish")
 
-        page_result = call(DRAWING_PAGE_CAPABILITY_NAME, {"operation": "page_default"})
+        page_result = call(DRAWING_PAGE_CAPABILITY_NAMES[0], {"operation": "page_default"})
         _events(12)
         page = document.getObject(page_result["page"]["object_name"])
         assert page is not None
@@ -302,6 +308,7 @@ def _run() -> None:
         page_state = drawing_page_state(page)
         base_state = drawing_view_state(base)
         source_state = drawing_source_state(source)
+        dispatcher = refresh_dispatcher()
 
         active = build_active_snapshot(
             document,
@@ -426,6 +433,7 @@ def _run() -> None:
         page = document.getObject(page.Name)
         assert drawing_source_state(source)["state_sha256"] == source_state["state_sha256"]
         assert drawing_view_state(base)["state_sha256"] == base_state["state_sha256"]
+        dispatcher = refresh_dispatcher()
 
         undo_before = int(document.UndoCount)
         ui_ticks = 0
@@ -516,7 +524,13 @@ def _run() -> None:
         reopened_page = document.getObject(page_name)
         assert reopened_section is not None and reopened_page is not None
         assert reopened_section in tuple(reopened_page.Views)
-        assert drawing_view_state(reopened_section) == state
+        reopened_state = drawing_view_state(reopened_section)
+        restore_deadline = time.monotonic() + 5.0
+        while reopened_state != state and time.monotonic() < restore_deadline:
+            _events(2)
+            time.sleep(0.01)
+            reopened_state = drawing_view_state(reopened_section)
+        assert reopened_state == state
         assert len(tuple(reopened_section.getPrecomputedSection()["section_faces"].Faces)) >= 1
         assert str(reopened_section.VibeCADTimelineRole) == "operation"
 

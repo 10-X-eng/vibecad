@@ -169,7 +169,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     assert len(encoded.encode("utf-8")) < 5 * 1024
     branch = schema["parameters"]["oneOf"][0]
     assert branch["properties"]["operation"]["const"] == "create"
-    assert branch["required"] == ["operation", "page", "view", "holes"]
+    assert branch["required"] == ["page", "view", "holes"]
     assert branch["additionalProperties"] is False
     assert branch["properties"]["holes"]["minItems"] == 3
     assert branch["properties"]["holes"]["maxItems"] == 32
@@ -206,12 +206,7 @@ def _arguments(page, view, elements) -> dict:
             ],
         },
         "holes": [
-            {
-                "subelement": element["name"],
-                "expected_element_state_sha256": element[
-                    "element_state_sha256"
-                ],
-            }
+            {"subelement": element["name"]}
             for element in elements
         ],
     }
@@ -240,6 +235,8 @@ def _line_boundaries(inventory):
 
 
 def _human_oracle(document, view, circular):
+    attributes_before = drawing_line_attribute_inventory_state(view)
+    lengths_before = drawing_line_length_inventory_state(view)
     Gui.Selection.clearSelection()
     for element in circular:
         Gui.Selection.addSelection(view, element["name"])
@@ -249,12 +246,14 @@ def _human_oracle(document, view, circular):
     assert not Gui.Selection.getSelectionEx()
     attributes = drawing_line_attribute_inventory_state(view)
     lengths = drawing_line_length_inventory_state(view)
-    assert attributes["line_count"] == 6
+    assert attributes["line_count"] == attributes_before["line_count"] + 6
     assert attributes["cosmetic_edge_count"] == 6
-    assert lengths["line_count"] == 5
+    assert lengths["line_count"] == lengths_before["line_count"] + 5
     document.undo()
     _events(16)
-    assert drawing_line_attribute_inventory_state(view)["line_count"] == 0
+    assert drawing_line_attribute_inventory_state(view)[
+        "inventory_state_sha256"
+    ] == attributes_before["inventory_state_sha256"]
     document.redo()
     _events(16)
     redone = drawing_line_attribute_inventory_state(view)
@@ -312,7 +311,7 @@ def _run() -> None:
         human_attributes, human_lengths = _human_oracle(
             document, view, circular
         )
-        assert drawing_line_attribute_inventory_state(view)["line_count"] == 0
+        assert drawing_line_attribute_inventory_state(view)["cosmetic_edge_count"] == 0
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -392,8 +391,8 @@ def _run() -> None:
 
         native_attributes = drawing_line_attribute_inventory_state(view)
         native_lengths = drawing_line_length_inventory_state(view)
-        assert native_attributes["line_count"] == 6
-        assert native_lengths["line_count"] == 5
+        assert native_attributes["line_count"] == human_attributes["line_count"]
+        assert native_lengths["line_count"] == human_lengths["line_count"]
         assert [line["format"] for line in native_attributes["lines"]] == [
             line["format"] for line in human_attributes["lines"]
         ]
@@ -478,7 +477,7 @@ def _run() -> None:
 
         document.undo()
         _events(16)
-        assert drawing_line_attribute_inventory_state(view)["line_count"] == 0
+        assert drawing_line_attribute_inventory_state(view)["cosmetic_edge_count"] == 0
         document.redo()
         _events(16)
         redone = drawing_line_attribute_inventory_state(view)
@@ -503,7 +502,9 @@ def _run() -> None:
         assert reopened["inventory_state_sha256"] == redone[
             "inventory_state_sha256"
         ]
-        assert {line["tag"] for line in reopened["lines"]} == tags
+        assert {
+            line["tag"] for line in reopened["lines"] if "tag" in line
+        } == tags
 
         print(
             "VIBECAD_NATIVE_DRAWING_BOLT_CIRCLE_CENTER_LINES_GUI_OK operations=1 "

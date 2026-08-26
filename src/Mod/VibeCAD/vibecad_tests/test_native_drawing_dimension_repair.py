@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 
 from VibeCADNativeCapabilityRegistry import NativeCapabilityRegistry
+from VibeCADNativeDrawingDimensionRepair import _spec
 from VibeCADNativeDrawingDimensionRepairBindings import (
     register_drawing_dimension_repair_capability_implementation,
 )
@@ -41,17 +42,14 @@ def test_dimension_repair_schema_is_one_closed_exact_operation() -> None:
     schema = definition.provider_schema(DRAWING_DIMENSION_REPAIR_OPERATIONS)
     branches = schema["parameters"]["oneOf"]
 
-    assert definition.preserve_operation_branches is True
+    assert definition.preserve_operation_branches is False
     assert DRAWING_DIMENSION_REPAIR_OPERATIONS == ("repair_references",)
     assert len(branches) == 1
     operation = branches[0]
-    assert operation["properties"]["operation"] == {
-        "type": "string",
-        "const": "repair_references",
-    }
+    assert operation["properties"]["operation"]["type"] == "string"
+    assert operation["properties"]["operation"]["const"] == "repair_references"
     assert operation["additionalProperties"] is False
     assert set(operation["required"]) == {
-        "operation",
         "dimension",
         "page",
         "view",
@@ -79,11 +77,11 @@ def test_dimension_repair_schema_is_one_closed_exact_operation() -> None:
         and "kind" in branch["required"]
         for branch in repair_branches.values()
     )
-    assert repair_branches["radius"]["required"] == [
-        "kind",
-        "edge",
-        "allow_approximate",
-    ]
+    assert repair_branches["radius"]["required"] == ["kind", "edge"]
+    assert repair_branches["radius"]["properties"]["allow_approximate"] == {
+        "type": "boolean",
+        "default": False,
+    }
     assert repair_branches["three_point_angle"]["required"] == [
         "kind",
         "first_arm_point",
@@ -111,6 +109,12 @@ def test_dimension_repair_schema_is_one_closed_exact_operation() -> None:
     assert "unknown" not in encoded.casefold()
     assert "path" not in encoded.casefold()
     assert len(encoded.encode("utf-8")) < 24 * 1024
+
+
+def test_radial_dimension_repair_defaults_to_exact_geometry() -> None:
+    spec = _spec({"kind": "diameter", "edge": {"subelement": "Edge9"}})
+    assert spec.kind == "diameter"
+    assert spec.allow_approximate is False
 
 
 def test_dimension_repair_registry_has_one_definition_and_implementation() -> None:

@@ -71,9 +71,8 @@ def _element(name_schema: dict) -> dict:
     return _closed(
         {
             "subelement": name_schema,
-            "expected_element_state_sha256": _SHA256,
         },
-        ("subelement", "expected_element_state_sha256"),
+        ("subelement",),
     )
 
 

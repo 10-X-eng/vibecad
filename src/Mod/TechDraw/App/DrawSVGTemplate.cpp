@@ -22,6 +22,7 @@
  ***************************************************************************/
 
 
+# include <cmath>
 # include <sstream>
 # include <QFile>
 
@@ -49,11 +50,26 @@ DrawSVGTemplate::DrawSVGTemplate()
 
     ADD_PROPERTY_TYPE(PageResult, (nullptr),  group, App::Prop_Output,    "Embedded SVG code for template. For system use.");   //n/a for users
     ADD_PROPERTY_TYPE(Template,   (""), group, App::Prop_None, "Template file name.");
+    ADD_PROPERTY_TYPE(DrawableX, (0.0), group, App::Prop_Output,
+                      "Left edge of the template-declared drawing area.");
+    ADD_PROPERTY_TYPE(DrawableY, (0.0), group, App::Prop_Output,
+                      "Top edge of the template-declared drawing area.");
+    ADD_PROPERTY_TYPE(DrawableWidth, (0.0), group, App::Prop_Output,
+                      "Width of the template-declared drawing area.");
+    ADD_PROPERTY_TYPE(DrawableHeight, (0.0), group, App::Prop_Output,
+                      "Height of the template-declared drawing area.");
+    ADD_PROPERTY_TYPE(DrawableClearance, (0.0), group, App::Prop_Output,
+                      "Clearance inside the template-declared drawing area.");
 
     // Width and Height properties shouldn't be set by the user
     Height.setStatus(App::Property::ReadOnly, true);
     Width.setStatus(App::Property::ReadOnly, true);
     Orientation.setStatus(App::Property::ReadOnly, true);
+    DrawableX.setStatus(App::Property::ReadOnly, true);
+    DrawableY.setStatus(App::Property::ReadOnly, true);
+    DrawableWidth.setStatus(App::Property::ReadOnly, true);
+    DrawableHeight.setStatus(App::Property::ReadOnly, true);
+    DrawableClearance.setStatus(App::Property::ReadOnly, true);
 
     std::string svgFilter("Svg files (*.svg *.SVG);;All files (*)");
     Template.setFilter(svgFilter);
@@ -201,6 +217,61 @@ void DrawSVGTemplate::extractTemplateAttributes(QDomDocument& templateDocument)
     const int orientation = isLandscape ? 1 : 0;
     if (Orientation.getValue() != orientation) {
         Orientation.setValue(orientation);
+    }
+
+    const auto readDrawableLength = [&docElement](const char* name, double& value) {
+        const QString text = docElement.attribute(QString::fromLatin1(name));
+        if (text.isEmpty()) {
+            return false;
+        }
+        Base::Quantity parsed = Base::Quantity::parse(text.toStdString());
+        parsed.setUnit(Base::Unit::Length);
+        value = parsed.getValue();
+        return std::isfinite(value);
+    };
+    double drawableX = 0.0;
+    double drawableY = 0.0;
+    double drawableWidth = 0.0;
+    double drawableHeight = 0.0;
+    double drawableClearance = 0.0;
+    const bool complete =
+        readDrawableLength("freecad:drawable-x-mm", drawableX)
+        && readDrawableLength("freecad:drawable-y-mm", drawableY)
+        && readDrawableLength("freecad:drawable-width-mm", drawableWidth)
+        && readDrawableLength("freecad:drawable-height-mm", drawableHeight);
+    const bool clearanceValid =
+        !docElement.hasAttribute(QStringLiteral("freecad:drawable-clearance-mm"))
+        || readDrawableLength(
+            "freecad:drawable-clearance-mm", drawableClearance);
+    const bool valid = complete && clearanceValid
+        && drawableX >= 0.0 && drawableY >= 0.0
+        && drawableWidth > 0.0 && drawableHeight > 0.0
+        && drawableClearance >= 0.0
+        && 2.0 * drawableClearance < drawableWidth
+        && 2.0 * drawableClearance < drawableHeight
+        && drawableX + drawableWidth <= width
+        && drawableY + drawableHeight <= height;
+    if (!valid) {
+        drawableX = 0.0;
+        drawableY = 0.0;
+        drawableWidth = 0.0;
+        drawableHeight = 0.0;
+        drawableClearance = 0.0;
+    }
+    if (DrawableX.getValue() != drawableX) {
+        DrawableX.setValue(drawableX);
+    }
+    if (DrawableY.getValue() != drawableY) {
+        DrawableY.setValue(drawableY);
+    }
+    if (DrawableWidth.getValue() != drawableWidth) {
+        DrawableWidth.setValue(drawableWidth);
+    }
+    if (DrawableHeight.getValue() != drawableHeight) {
+        DrawableHeight.setValue(drawableHeight);
+    }
+    if (DrawableClearance.getValue() != drawableClearance) {
+        DrawableClearance.setValue(drawableClearance);
     }
 }
 

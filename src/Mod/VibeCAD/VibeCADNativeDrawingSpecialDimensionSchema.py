@@ -59,9 +59,8 @@ _VERTEX = _closed(
             "pattern": r"^Vertex(0|[1-9][0-9]*)$",
             "maxLength": 32,
         },
-        "expected_element_state_sha256": _SHA256,
     },
-    ("subelement", "expected_element_state_sha256"),
+    ("subelement",),
 )
 _EDGE = _closed(
     {
@@ -70,9 +69,8 @@ _EDGE = _closed(
             "pattern": r"^Edge(0|[1-9][0-9]*)$",
             "maxLength": 32,
         },
-        "expected_element_state_sha256": _SHA256,
     },
-    ("subelement", "expected_element_state_sha256"),
+    ("subelement",),
 )
 _BASE = {
     "label": {
@@ -85,7 +83,7 @@ _BASE = {
     },
     "page": _PAGE,
     "view": _VIEW,
-    "label_position_in_view_mm": {
+    "label_position_on_page_mm": {
         **_closed(
             {
                 "x_mm": {
@@ -101,9 +99,7 @@ _BASE = {
             },
             ("x_mm", "y_mm"),
         ),
-        "description": (
-            "Label center in scaled view coordinates: +X right and +Y up, in millimetres."
-        ),
+        "description": "Dimension-label center in page coordinates, in mm.",
     },
 }
 _CHAMFER = {**_BASE, "first_vertex": _VERTEX, "second_vertex": _VERTEX}

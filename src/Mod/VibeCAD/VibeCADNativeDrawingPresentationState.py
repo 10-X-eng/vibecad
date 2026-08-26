@@ -37,6 +37,24 @@ _SHOW_PAGE_RESULT_FIELDS = frozenset(
 class NativeDrawingPresentationStateError(RuntimeError):
     """The host returned malformed or inconsistent Drawing presentation state."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        repair: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(str(message).strip())
+        self.repair = dict(repair or {})
+
+    def failure(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "error_code": "NATIVE_DRAWING_PRESENTATION_UNAVAILABLE",
+            "message": str(self),
+        }
+        if self.repair:
+            result["repair"] = dict(self.repair)
+        return result
+
 
 def _normalize_page_presentation(
     raw: Any,
@@ -158,7 +176,13 @@ def drawing_frame_visibility_state(page: Any) -> dict[str, Any]:
 
     if TechDrawGui.drawingFrameVisibilityAvailable() is not True:
         raise NativeDrawingPresentationStateError(
-            "Drawing frame visibility is available only in Manual mode."
+            "Drawing frame visibility is available only in Manual mode.",
+            repair={
+                "requirement": (
+                    "Open the Drawing page and set View Frames Visibility "
+                    "to Manual."
+                )
+            },
         )
     plan = normalize_drawing_frame_visibility_plan(
         TechDrawGui.drawingFrameVisibility(page)

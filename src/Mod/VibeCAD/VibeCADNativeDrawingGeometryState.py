@@ -145,6 +145,44 @@ def _bounds(value: Any) -> dict[str, float]:
     return result
 
 
+def _view_bounds(elements: list[Mapping[str, Any]]) -> dict[str, float]:
+    minimum_x = math.inf
+    minimum_y = math.inf
+    maximum_x = -math.inf
+    maximum_y = -math.inf
+    for item in elements:
+        bounds = item.get("bounds_in_view_mm")
+        if isinstance(bounds, Mapping):
+            minimum_x = min(minimum_x, float(bounds["min_x_mm"]))
+            minimum_y = min(minimum_y, float(bounds["min_y_mm"]))
+            maximum_x = max(maximum_x, float(bounds["max_x_mm"]))
+            maximum_y = max(maximum_y, float(bounds["max_y_mm"]))
+            continue
+        point = item.get("point_in_view_mm")
+        if isinstance(point, Mapping):
+            x_mm = float(point["x_mm"])
+            y_mm = float(point["y_mm"])
+            minimum_x = min(minimum_x, x_mm)
+            minimum_y = min(minimum_y, y_mm)
+            maximum_x = max(maximum_x, x_mm)
+            maximum_y = max(maximum_y, y_mm)
+    if not all(math.isfinite(value) for value in (
+        minimum_x,
+        minimum_y,
+        maximum_x,
+        maximum_y,
+    )):
+        raise NativeDrawingGeometryStateError(
+            "The Drawing view has no bounded projected geometry."
+        )
+    return {
+        "min_x_mm": round(minimum_x, 12),
+        "min_y_mm": round(minimum_y, 12),
+        "max_x_mm": round(maximum_x, 12),
+        "max_y_mm": round(maximum_y, 12),
+    }
+
+
 def _source_mapping(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise NativeDrawingGeometryStateError(
@@ -401,7 +439,10 @@ def drawing_projected_geometry_page(
     if not 0 <= int(offset) <= MAX_DRAWING_PROJECTED_ELEMENTS:
         raise ValueError("Projected Drawing geometry offset must be 0 through 4096.")
     if not 1 <= int(page_size) <= MAX_DRAWING_PROJECTED_PAGE_SIZE:
-        raise ValueError("Projected Drawing geometry page_size must be 1 through 48.")
+        raise ValueError(
+            "Projected Drawing geometry page_size must be 1 through "
+            f"{MAX_DRAWING_PROJECTED_PAGE_SIZE}."
+        )
     state = drawing_projected_geometry_state(view)
     expected = str(expected_projection_state_sha256 or "")
     if int(offset) > 0 and not expected:
@@ -418,11 +459,14 @@ def drawing_projected_geometry_page(
     if start > len(elements):
         raise ValueError("Projected Drawing geometry offset exceeds the element count.")
     return {
-        "view": state["view"],
-        "projection_state_sha256": state["projection_state_sha256"],
+        "view": {
+            **state["view"],
+            "projection_state_sha256": state["projection_state_sha256"],
+        },
         "coordinate_space": state["coordinate_space"],
         "axis_convention": state["axis_convention"],
         "view_scale": state["view_scale"],
+        "view_bounds_in_view_mm": _view_bounds(elements),
         "counts": {
             "edges": state["edge_count"],
             "vertices": state["vertex_count"],
@@ -434,6 +478,200 @@ def drawing_projected_geometry_page(
         "next_offset": stop if stop < len(elements) else None,
         "elements": elements[start:stop],
     }
+
+
+def _provider_point(value: Mapping[str, Any]) -> dict[str, float]:
+    return {
+        "x_mm": float(value["x_mm"]),
+        "y_mm": float(value["y_mm"]),
+    }
+
+
+def _provider_source(value: Mapping[str, Any], result: dict[str, Any]) -> None:
+    status = str(value.get("status") or "")
+    candidates = list(value.get("candidates") or ())
+    if status == "exact" and len(candidates) == 1:
+        result["source"] = dict(candidates[0])
+    elif status and status != "unmapped":
+        result["source_status"] = status
+
+
+def _provider_edge(
+    value: Mapping[str, Any],
+    view_scale: float,
+) -> dict[str, Any]:
+    geometry_type = str(value["geometry_type"] or "")
+    kind = {
+        "arcofcircle": "circular_arc",
+        "arcofellipse": "elliptical_arc",
+        "bsplinecircle": "b_spline_circle",
+    }.get(geometry_type.casefold(), geometry_type.casefold())
+    result: dict[str, Any] = {
+        "name": str(value["name"]),
+        "kind": kind,
+        "visible": bool(value["visible"]),
+        "edge_class": str(value["edge_class"]),
+        "start_in_view_mm": _provider_point(value["start_in_view_mm"]),
+        "end_in_view_mm": _provider_point(value["end_in_view_mm"]),
+        "length_mm": float(value["length_view_mm"]) / view_scale,
+    }
+    if kind == "line":
+        dx = (
+            result["end_in_view_mm"]["x_mm"]
+            - result["start_in_view_mm"]["x_mm"]
+        )
+        dy = (
+            result["end_in_view_mm"]["y_mm"]
+            - result["start_in_view_mm"]["y_mm"]
+        )
+        tolerance = 1.0e-9
+        result["orientation"] = (
+            "vertical"
+            if abs(dx) <= tolerance and abs(dy) > tolerance
+            else "horizontal"
+            if abs(dy) <= tolerance and abs(dx) > tolerance
+            else "diagonal"
+        )
+    if "center_in_view_mm" in value:
+        radius = float(value["radius_view_mm"]) / view_scale
+        result["center_in_view_mm"] = _provider_point(
+            value["center_in_view_mm"]
+        )
+        result["radius_mm"] = radius
+        result["diameter_mm"] = radius * 2.0
+        result["closed"] = bool(value["closed"])
+    value_mode = str(value.get("axonometric_value_mode") or "")
+    if value_mode.endswith("_axis_true_length"):
+        result["true_length_axis"] = value_mode[0]
+    _provider_source(value["source_mapping"], result)
+    return result
+
+
+def _provider_vertex(value: Mapping[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "name": str(value["name"]),
+        "kind": "point",
+        "visible": bool(value["visible"]),
+        "point_in_view_mm": _provider_point(value["point_in_view_mm"]),
+    }
+    if value["is_center"]:
+        result["center"] = True
+    if value["is_reference"]:
+        result["reference"] = True
+    _provider_source(value["source_mapping"], result)
+    return result
+
+
+def _provider_face(
+    value: Mapping[str, Any],
+    view_scale: float,
+) -> dict[str, Any]:
+    bounds = value["bounds_in_view_mm"]
+    return {
+        "name": str(value["name"]),
+        "kind": "face",
+        "visible": bool(value["visible"]),
+        "area_mm2": float(value["area_view_mm2"]) / (view_scale * view_scale),
+        "center_in_view_mm": _provider_point(value["center_in_view_mm"]),
+        "bounds_in_view_mm": {
+            "min_x_mm": float(bounds["min_x_mm"]),
+            "min_y_mm": float(bounds["min_y_mm"]),
+            "max_x_mm": float(bounds["max_x_mm"]),
+            "max_y_mm": float(bounds["max_y_mm"]),
+        },
+        "wire_count": int(value["wire_count"]),
+    }
+
+
+def _dimension_applicability(
+    view: Any,
+    elements: list[dict[str, Any]],
+) -> None:
+    try:
+        import TechDrawGui
+
+        raw = TechDrawGui.inspectProjectedDimensionApplicability(
+            view,
+            [item["name"] for item in elements],
+        )
+    except Exception as exc:
+        raise NativeDrawingGeometryStateError(
+            "Projected Drawing dimension applicability is unavailable."
+        ) from exc
+    allowed = frozenset(
+        {
+            "aligned",
+            "horizontal",
+            "vertical",
+            "radius",
+            "diameter",
+            "area",
+            "arc_length",
+        }
+    )
+    if not isinstance(raw, Mapping) or set(raw) != {
+        item["name"] for item in elements
+    }:
+        raise NativeDrawingGeometryStateError(
+            "Projected Drawing dimension applicability is malformed."
+        )
+    for item in elements:
+        applicability = raw[item["name"]]
+        if (
+            not isinstance(applicability, Mapping)
+            or set(applicability)
+            != {"valid_dimensions", "approximate_dimensions"}
+        ):
+            raise NativeDrawingGeometryStateError(
+                "Projected Drawing dimension applicability is malformed."
+            )
+        valid = [str(value) for value in applicability["valid_dimensions"]]
+        approximate = [
+            str(value) for value in applicability["approximate_dimensions"]
+        ]
+        if (
+            len(valid) != len(set(valid))
+            or len(approximate) != len(set(approximate))
+            or any(value not in allowed for value in valid)
+            or any(value not in valid for value in approximate)
+        ):
+            raise NativeDrawingGeometryStateError(
+                "Projected Drawing dimension applicability is inconsistent."
+            )
+        if valid:
+            item["valid_dimensions"] = valid
+        if approximate:
+            item["approximate_dimensions"] = approximate
+
+
+def provider_projected_geometry_page(
+    page: Mapping[str, Any],
+    *,
+    view: Any | None = None,
+) -> dict[str, Any]:
+    """Return the compact exact geometry needed to choose Drawing references."""
+
+    view_scale = float(page["view_scale"])
+    if not math.isfinite(view_scale) or view_scale <= 0.0:
+        raise NativeDrawingGeometryStateError(
+            "Projected Drawing view scale must be positive."
+        )
+    elements = []
+    for value in page["elements"]:
+        element_type = str(value["element_type"])
+        if element_type == "edge":
+            elements.append(_provider_edge(value, view_scale))
+        elif element_type == "vertex":
+            elements.append(_provider_vertex(value))
+        elif element_type == "face":
+            elements.append(_provider_face(value, view_scale))
+        else:
+            raise NativeDrawingGeometryStateError(
+                "Projected Drawing element type is unsupported."
+            )
+    if view is not None and elements:
+        _dimension_applicability(view, elements)
+    return {**dict(page), "elements": elements}
 
 
 def selected_projected_geometry_state(
@@ -465,6 +703,7 @@ def selected_projected_geometry_state(
         "projection_state_sha256": state["projection_state_sha256"],
         "coordinate_space": state["coordinate_space"],
         "axis_convention": state["axis_convention"],
+        "view_bounds_in_view_mm": _view_bounds(state["elements"]),
         "counts": {
             "edges": state["edge_count"],
             "vertices": state["vertex_count"],

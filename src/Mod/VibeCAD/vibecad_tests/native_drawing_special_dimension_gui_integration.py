@@ -24,10 +24,7 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeDrawingGeometryState import drawing_projected_geometry_state
 from VibeCADNativeDrawingDimensionState import drawing_dimension_repair_state
 from VibeCADNativeDrawingDimensionSchema import (
-    DRAWING_DIMENSION_CAPABILITY_NAME,
-)
-from VibeCADNativeDrawingSpecialDimensionSchema import (
-    DRAWING_SPECIAL_DIMENSION_OPERATIONS,
+    DRAWING_DIMENSION_CAPABILITY_BY_OPERATION,
 )
 from VibeCADNativeDrawingSpecialDimensionState import (
     drawing_arc_length_dimension_state,
@@ -49,18 +46,25 @@ from VibeCADRibbonSurface import read_active_ribbon_surface
 
 _ACTION_CONTRACTS = {
     "TechDraw_ExtensionCreateHorizChamferDimension": (
-        "create_horizontal_chamfer",
-        "ExactDrawingHorizontalChamferVertices",
+        "drawing.chamfer_dimension",
+        "create_chamfer",
+        "ExactDrawingChamferVerticesAndDirection",
     ),
     "TechDraw_ExtensionCreateVertChamferDimension": (
-        "create_vertical_chamfer",
-        "ExactDrawingVerticalChamferVertices",
+        "drawing.chamfer_dimension",
+        "create_chamfer",
+        "ExactDrawingChamferVerticesAndDirection",
     ),
     "TechDraw_ExtensionCreateLengthArc": (
+        "drawing.arc_length_dimension",
         "create_arc_length_dimension",
         "ExactDrawingCircularArcLength",
     ),
 }
+_SPECIAL_CAPABILITY_NAMES = (
+    "drawing.chamfer_dimension",
+    "drawing.arc_length_dimension",
+)
 
 
 def _events(rounds: int = 16) -> None:
@@ -216,19 +220,16 @@ def _arc_edge(view) -> dict:
 
 
 def _target(element: dict) -> dict[str, str]:
-    return {
-        "subelement": element["name"],
-        "expected_element_state_sha256": element["element_state_sha256"],
-    }
+    return {"subelement": element["name"]}
 
 
-def _arguments(operation: str, page, view, first: dict, second: dict) -> dict:
+def _arguments(direction: str, page, view, first: dict, second: dict) -> dict:
     page_state = drawing_page_state(page)
     view_state = drawing_view_state(view)
     projection = drawing_projected_geometry_state(view)
     return {
-        "operation": operation,
-        "label": operation.replace("create_", "").replace("_", " ").title(),
+        "operation": "create_chamfer",
+        "label": f"{direction.title()} Chamfer",
         "page": {
             "object_name": page_state["object_name"],
             "expected_state_sha256": page_state["state_sha256"],
@@ -242,9 +243,12 @@ def _arguments(operation: str, page, view, first: dict, second: dict) -> dict:
         },
         "first_vertex": _target(first),
         "second_vertex": _target(second),
-        "label_position_in_view_mm": {
-            "x_mm": -12.0 if operation == "create_horizontal_chamfer" else 32.0,
-            "y_mm": 28.0 if operation == "create_horizontal_chamfer" else -4.0,
+        "direction": direction,
+        "label_position_on_page_mm": {
+            "x_mm": float(view.X)
+            + (-12.0 if direction == "horizontal" else 32.0),
+            "y_mm": float(view.Y)
+            + (28.0 if direction == "horizontal" else -4.0),
         },
     }
 
@@ -268,26 +272,35 @@ def _arc_arguments(page, view, arc_edge: dict) -> dict:
             ],
         },
         "arc_edge": _target(arc_edge),
-        "label_position_in_view_mm": {"x_mm": 38.0, "y_mm": 18.0},
+        "label_position_on_page_mm": {
+            "x_mm": float(view.X) + 38.0,
+            "y_mm": float(view.Y) + 18.0,
+        },
     }
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(DRAWING_DIMENSION_CAPABILITY_NAME)
-    assert definition is not None
-    schema = definition.provider_schema(DRAWING_SPECIAL_DIMENSION_OPERATIONS)
-    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    schemas = []
+    for name in _SPECIAL_CAPABILITY_NAMES:
+        definition = registry.definition(name)
+        assert definition is not None
+        schemas.append(
+            definition.provider_schema(
+                tuple(variant.operation for variant in definition.variants)
+            )
+        )
+    encoded = json.dumps(schemas, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert "path" not in encoded.casefold()
     assert len(encoded.encode("utf-8")) < 16 * 1024
-    assert len(schema["parameters"]["oneOf"]) == 3
+    assert len(schemas) == 2
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(DRAWING_DIMENSION_CAPABILITY_NAME,),
-            schemas=(schema,),
+            tool_names=_SPECIAL_CAPABILITY_NAMES,
+            schemas=tuple(schemas),
             human_only_action_ids=(),
             missing_definition_names=(),
             missing_implementation_names=(),
@@ -327,7 +340,7 @@ def _run() -> None:
             plan.command_id: plan
             for plan in resolve_native_action_inventory(surface).plans
         }
-        for command_id, (operation, target_type) in _ACTION_CONTRACTS.items():
+        for command_id, (capability, operation, target_type) in _ACTION_CONTRACTS.items():
             plan = plans[command_id]
             assert (
                 plan.capability_family,
@@ -336,7 +349,7 @@ def _run() -> None:
                 plan.transaction_behavior,
                 plan.background_required,
             ) == (
-                DRAWING_DIMENSION_CAPABILITY_NAME,
+                capability,
                 operation,
                 target_type,
                 "document",
@@ -455,7 +468,9 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                DRAWING_DIMENSION_CAPABILITY_NAME,
+                DRAWING_DIMENSION_CAPABILITY_BY_OPERATION[
+                    str(arguments["operation"])
+                ],
                 json.dumps(arguments, separators=(",", ":")),
                 f"native-drawing-special-dimension-{call_index}",
             )
@@ -475,15 +490,11 @@ def _run() -> None:
         history_before = tuple(document.VibeCADTimeline.Operations)
         revision_before = state_store.current_revision(str(document.Uid))
         created_names = []
-        for operation, direction in zip(
-            DRAWING_SPECIAL_DIMENSION_OPERATIONS[:2],
-            ("horizontal", "vertical"),
-            strict=True,
-        ):
-            result = call(_arguments(operation, page, view, first, second))
+        for direction in ("horizontal", "vertical"):
+            result = call(_arguments(direction, page, view, first, second))
             state = result["dimension"]
             created_names.append(state["object_name"])
-            assert result["operation"] == operation
+            assert result["operation"] == f"create_{direction}_chamfer"
             assert result["geometry_configuration"] == "diagonal"
             assert state["chamfer"]["direction"] == direction
             assert 0 < state["chamfer"]["angle_degrees"] < 180
@@ -533,20 +544,17 @@ def _run() -> None:
         )
         assert all(dimension in tuple(view.InList) for dimension in dimensions)
 
-        repeated = _arguments(
-            "create_horizontal_chamfer", page, view, first, second
-        )
+        repeated = _arguments("horizontal", page, view, first, second)
         repeated["second_vertex"] = dict(repeated["first_vertex"])
         rejected = call(repeated, succeeds=False)
         assert rejected["error_code"] == (
             "NATIVE_DRAWING_DIMENSION_REFERENCES_INVALID"
         )
 
-        stale = _arguments("create_vertical_chamfer", page, view, first, second)
-        stale["second_vertex"]["expected_element_state_sha256"] = "0" * 64
+        stale = _arguments("vertical", page, view, first, second)
+        stale["view"]["expected_projection_state_sha256"] = "0" * 64
         rejected = call(stale, succeeds=False)
-        assert rejected["error_code"] == "NATIVE_DRAWING_DIMENSION_REFERENCE_STALE"
-        assert rejected["repair"]["subelement"] == second["name"]
+        assert rejected["error_code"] == "NATIVE_DRAWING_DIMENSION_PROJECTION_STALE"
 
         invalid_arc = _arc_arguments(page, view, arc_edge)
         linear_edge = next(
@@ -631,6 +639,7 @@ def _run() -> None:
         assert len(selected) == 1
         selected_dimension = dict(selected[0])
         repair_target = selected_dimension.pop("repair_target")
+        selected_dimension.pop("edit_target")
         assert selected_dimension == drawing_arc_length_dimension_state(redone)
         repair_state = drawing_dimension_repair_state(redone)
         assert repair_target["expected_repair_state_sha256"] == (
@@ -680,7 +689,7 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_DRAWING_SPECIAL_DIMENSION_GUI_OK "
-            "operations=" + ",".join(DRAWING_SPECIAL_DIMENSION_OPERATIONS) + " "
+            "operations=create_chamfer,create_arc_length_dimension "
             "human_oracle=true shared_host_builder=true exact_page=true "
             "exact_view=true projection_hash=true element_hash=true "
             "ordered_vertices=true angle_format=true selection=true "

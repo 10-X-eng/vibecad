@@ -2332,8 +2332,9 @@ QColor QGIViewDimension::prefNormalColor()
         vpDim = freecad_cast<ViewProviderDimension*>(vp);
         if (vpDim) {
             Base::Color fcColor = vpDim->Color.getValue();
-            fcColor = Preferences::getAccessibleColor(fcColor);
-            setNormalColor(fcColor.asValue<QColor>());
+            setNormalColor(
+                PreferencesGui::getAccessibleQColor(fcColor.asValue<QColor>())
+            );
         }
     }
     return getNormalColor();

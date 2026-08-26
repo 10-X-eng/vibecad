@@ -95,6 +95,10 @@ _REPLACEMENT_KEYS = {
         }
     ),
 }
+_OPTIONAL_REPLACEMENT_KEYS = {
+    "radius": frozenset({"allow_approximate"}),
+    "diameter": frozenset({"allow_approximate"}),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +137,7 @@ def _error(
 def _element(value: Any, noun: str, prefix: str) -> Mapping[str, Any]:
     target = exact_drawing_mapping(
         value,
-        frozenset({"subelement", "expected_element_state_sha256"}),
+        frozenset({"subelement"}),
         noun,
         family="dimension repair",
         error_code="NATIVE_DRAWING_DIMENSION_REPAIR_PARAMETERS_INVALID",
@@ -156,7 +160,7 @@ def _linear_references(value: Any) -> tuple[Mapping[str, Any], ...]:
     result = tuple(
         exact_drawing_mapping(
             item,
-            frozenset({"subelement", "expected_element_state_sha256"}),
+            frozenset({"subelement"}),
             "linear reference",
             family="dimension repair",
             error_code="NATIVE_DRAWING_DIMENSION_REPAIR_PARAMETERS_INVALID",
@@ -268,7 +272,10 @@ def _spec(value: Any) -> DimensionRepairSpec:
             "NATIVE_DRAWING_DIMENSION_REPAIR_PARAMETERS_INVALID",
             repair={"allowed_values": sorted(_KIND_TYPES)},
         )
-    if frozenset(value) != _REPLACEMENT_KEYS[kind]:
+    keys = frozenset(value)
+    allowed_keys = _REPLACEMENT_KEYS[kind]
+    required_keys = allowed_keys - _OPTIONAL_REPLACEMENT_KEYS.get(kind, frozenset())
+    if not required_keys <= keys or not keys <= allowed_keys:
         _error(
             f"The {kind} replacement contains missing or unrelated fields.",
             "NATIVE_DRAWING_DIMENSION_REPAIR_PARAMETERS_INVALID",
@@ -283,7 +290,7 @@ def _spec(value: Any) -> DimensionRepairSpec:
         targets = _linear_references(value["references"])
     elif kind in {"radius", "diameter"}:
         targets = (_element(value["edge"], "radial edge", "Edge"),)
-        allow_approximate = value["allow_approximate"]
+        allow_approximate = value.get("allow_approximate", False)
         if type(allow_approximate) is not bool:
             _error(
                 "allow_approximate must be true or false.",
@@ -474,7 +481,7 @@ def _validate_host(view: Any, spec: DimensionRepairSpec) -> dict[str, Any]:
             repair={
                 "repair_kind": spec.kind,
                 "requested_subelements": list(spec.subelements),
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
 

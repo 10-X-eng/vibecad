@@ -16,7 +16,19 @@ from VibeCADNativeDrawingViewState import (
 )
 
 
-DRAWING_VIEW_CAPABILITY_NAME = "drawing.view"
+DRAWING_VIEW_CAPABILITY_NAMES = (
+    "drawing.standard_view",
+    "drawing.projection_group",
+    "drawing.broken_view",
+)
+DRAWING_PROJECTION_GROUP_VIEWS = (
+    "front",
+    "top",
+    "right",
+    "left",
+    "bottom",
+    "rear",
+)
 _OBJECT_NAME = {
     "type": "string",
     "pattern": r"^[A-Za-z_][A-Za-z0-9_]*$",
@@ -55,7 +67,15 @@ _POSITION = _closed(
 )
 _SCALE = {
     "oneOf": [
-        _closed({"kind": {"type": "string", "const": "page"}}, ("kind",)),
+        {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "maximum": 1_000.0,
+        },
+        _closed(
+            {"kind": {"type": "string", "const": "page"}},
+            ("kind",),
+        ),
         _closed(
             {
                 "kind": {"type": "string", "const": "custom"},
@@ -71,15 +91,8 @@ _SCALE = {
 }
 
 
-def drawing_view_capability_definition() -> NativeCapabilityDefinition:
-    return NativeCapabilityDefinition(
-        name=DRAWING_VIEW_CAPABILITY_NAME,
-        description=(
-            "Create deterministic standard or broken projections from exact "
-            "whole-object shapes on one exact Drawing page."
-        ),
-        primary_classification="mutation",
-        variants=(
+def drawing_view_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
+    variants = (
             NativeCapabilityVariant(
                 operation="create_standard_view",
                 description=(
@@ -126,7 +139,71 @@ def drawing_view_capability_definition() -> NativeCapabilityDefinition:
                         "sources",
                         "orientation",
                         "position",
-                        "scale",
+                        "line_style",
+                    ),
+                ),
+            ),
+            NativeCapabilityVariant(
+                operation="create_projection_group",
+                description=(
+                    "Create one page-fitted orthographic view set at a shared "
+                    "standard scale."
+                ),
+                action_ids=frozenset({"TechDraw_ProjectionGroup"}),
+                surface_ids=frozenset({"drawing"}),
+                exact_target_type=(
+                    "ExactDrawingPageSourcesProjectionSetAndConvention"
+                ),
+                transaction_behavior="background",
+                background_required=True,
+                parameters=_closed(
+                    {
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160,
+                        },
+                        "page": _EXACT_OBJECT,
+                        "sources": {
+                            "type": "array",
+                            "items": _EXACT_OBJECT,
+                            "minItems": 1,
+                            "maxItems": MAX_DRAWING_VIEW_SOURCES,
+                        },
+                        "front_orientation": {
+                            "type": "string",
+                            "enum": list(DRAWING_VIEW_ORIENTATIONS),
+                        },
+                        "views": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": list(DRAWING_PROJECTION_GROUP_VIEWS),
+                            },
+                            "minItems": 2,
+                            "maxItems": len(DRAWING_PROJECTION_GROUP_VIEWS),
+                            "uniqueItems": True,
+                        },
+                        "convention": {
+                            "type": "string",
+                            "enum": ["first_angle", "third_angle"],
+                        },
+                        "line_style": {
+                            "type": "string",
+                            "enum": [
+                                "visible",
+                                "visible_and_hidden",
+                                "hard_only",
+                            ],
+                        },
+                    },
+                    (
+                        "label",
+                        "page",
+                        "sources",
+                        "front_orientation",
+                        "views",
+                        "convention",
                         "line_style",
                     ),
                 ),
@@ -192,12 +269,29 @@ def drawing_view_capability_definition() -> NativeCapabilityDefinition:
                         "gap_mm",
                         "orientation",
                         "position",
-                        "scale",
                         "line_style",
                     ),
                 ),
             ),
-        ),
+    )
+    descriptions = (
+        "Create one standard projected view from exact whole-object shapes.",
+        "Create a coordinated orthographic view set from exact whole-object shapes.",
+        "Create one broken view from exact shapes and break definitions.",
+    )
+    return tuple(
+        NativeCapabilityDefinition(
+            name=name,
+            description=description,
+            primary_classification="mutation",
+            variants=(variant,),
+        )
+        for name, description, variant in zip(
+            DRAWING_VIEW_CAPABILITY_NAMES,
+            descriptions,
+            variants,
+            strict=True,
+        )
     )
 
 
@@ -206,4 +300,5 @@ def register_drawing_view_capability_definition(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_definition(drawing_view_capability_definition())
+    for definition in drawing_view_capability_definitions():
+        registry.register_definition(definition)

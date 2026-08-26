@@ -73,6 +73,28 @@
 
 using namespace TechDrawGui;
 using namespace TechDraw;
+
+
+namespace
+{
+bool isFrameChild(const QGraphicsItem* child)
+{
+    return child
+        && child->isVisible()
+        && child->type() != UserType::QGIRichAnno
+        && child->type() != UserType::QGEPath
+        && child->type() != UserType::QGMText
+        && child->type() != UserType::QGCustomBorder
+        && child->type() != UserType::QGCustomLabel
+        && child->type() != UserType::QGICaption
+        && child->type() != UserType::QGICMark;
+}
+
+bool isRenderedContentChild(const QGraphicsItem* child)
+{
+    return isFrameChild(child) && dynamic_cast<const QGIView*>(child) == nullptr;
+}
+}
 using DU = DrawUtil;
 
 QGIView::QGIView()
@@ -587,7 +609,8 @@ void QGIView::updatePositionFromFeatureXY()
         const bool usesOwnerLocalCoordinates =
             type() == UserType::QGILeaderLine
             || type() == UserType::QGIViewDimension
-            || type() == UserType::QGIViewBalloon;
+            || type() == UserType::QGIViewBalloon
+            || dynamic_cast<TechDraw::DrawProjGroupItem*>(getViewObject());
         if (parentItem()
             && getViewObject()->claimParent()
             && !usesOwnerLocalCoordinates) {
@@ -846,20 +869,7 @@ QRectF QGIView::customChildrenBoundingRect() const
     // exceptions not to be included in determining the frame rectangle
     QRectF result;
     for (auto& child : children) {
-        if (!child->isVisible()) {
-            continue;
-        }
-        if (
-            child->type() != UserType::QGIRichAnno &&
-            child->type() != UserType::QGEPath &&
-            child->type() != UserType::QGMText &&
-            child->type() != UserType::QGCustomBorder &&
-            child->type() != UserType::QGCustomLabel &&
-            child->type() != UserType::QGICaption &&
-            // we treat vertices as part of the boundingRect to allow loose vertices outside of the
-            // area defined by the edges as in frameRect()
-            // child->type() != UserType::QGIVertex &&
-            child->type() != UserType::QGICMark) {
+        if (isFrameChild(child)) {
             QRectF childRect = mapFromItem(child, child->boundingRect()).boundingRect();
             result = result.united(childRect);
         }
@@ -881,6 +891,22 @@ QRectF QGIView::boundingRect() const
         return QRectF(0, 0, 1, 1);
     }
     return totalRect;
+}
+
+QRectF QGIView::contentBoundingRect() const
+{
+    return contentShape().boundingRect();
+}
+
+QPainterPath QGIView::contentShape() const
+{
+    QPainterPath result;
+    for (auto* child : childItems()) {
+        if (isRenderedContentChild(child)) {
+            result.addPath(child->mapToItem(this, child->shape()));
+        }
+    }
+    return result.simplified();
 }
 
 QGIView* QGIView::getQGIVByName(std::string name) const

@@ -69,9 +69,8 @@ _HOLE = _closed(
             **_EDGE,
             "description": "Exact selected projected hole circle or circular-arc EdgeN.",
         },
-        "expected_element_state_sha256": _SHA256,
     },
-    ("subelement", "expected_element_state_sha256"),
+    ("subelement",),
 )
 
 
@@ -81,8 +80,8 @@ def drawing_bolt_circle_center_line_capability_definition() -> (
     return NativeCapabilityDefinition(
         name=DRAWING_BOLT_CIRCLE_CENTER_LINE_CAPABILITY_NAME,
         description=(
-            "Create one persistent bolt-pattern circle and one radial center mark "
-            "through each of three or more exact projected circular holes."
+            "Create a persistent bolt-pattern pitch circle with radial marks through "
+            "three or more projected holes."
         ),
         primary_classification="mutation",
         variants=(
@@ -105,7 +104,10 @@ def drawing_bolt_circle_center_line_capability_definition() -> (
                             "items": _HOLE,
                             "minItems": MIN_DRAWING_BOLT_CIRCLE_TARGETS,
                             "maxItems": MAX_DRAWING_BOLT_CIRCLE_TARGETS,
-                            "description": "Ordered projected circular holes defining the pattern circle.",
+                            "description": (
+                                "Ordered projected holes; the first three centers "
+                                "define the pitch circle."
+                            ),
                         },
                     },
                     ("page", "view", "holes"),

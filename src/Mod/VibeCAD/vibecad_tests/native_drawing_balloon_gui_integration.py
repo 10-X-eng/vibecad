@@ -129,13 +129,8 @@ def _anchor(view, kind: str = "edge") -> dict:
     )
 
 
-def _target(element: dict, *, state_hash: str | None = None) -> dict[str, str]:
-    return {
-        "subelement": element["name"],
-        "expected_element_state_sha256": (
-            element["element_state_sha256"] if state_hash is None else state_hash
-        ),
-    }
+def _target(element: dict) -> dict[str, str]:
+    return {"subelement": element["name"]}
 
 
 def _arguments(page, view, anchor: dict, *, suffix: str = "") -> dict:
@@ -203,12 +198,11 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     assert "path" not in encoded.casefold()
     assert len(encoded.encode("utf-8")) < 8 * 1024
     branches = {
-        branch["properties"]["operation"]["const"]: branch
-        for branch in schema["parameters"]["oneOf"]
+        operation: definition.provider_schema((operation,))["parameters"]["oneOf"][0]
+        for operation in DRAWING_BALLOON_OPERATIONS
     }
     assert set(branches) == set(DRAWING_BALLOON_OPERATIONS)
     assert branches["create"]["required"] == [
-        "operation",
         "label",
         "text",
         "page",
@@ -216,10 +210,9 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
         "anchor",
         "bubble_offset_in_view_mm",
     ]
-    assert branches["set_text"]["required"] == ["operation", "balloon", "text"]
-    assert branches["set_style"]["required"] == ["operation", "balloon", "style"]
+    assert branches["set_text"]["required"] == ["balloon", "text"]
+    assert branches["set_style"]["required"] == ["balloon", "style"]
     assert branches["move_bubble"]["required"] == [
-        "operation",
         "balloon",
         "bubble_offset_in_view_mm",
     ]
@@ -408,13 +401,6 @@ def _run() -> None:
         index_before = int(page.NextBalloonIndex)
         revision_before = state_store.current_revision(str(document.Uid))
 
-        stale = _arguments(page, view, edge, suffix=" stale")
-        stale["anchor"] = _target(edge, state_hash="0" * 64)
-        rejected = call(stale, succeeds=False)
-        assert rejected["error_code"] == "NATIVE_DRAWING_BALLOON_REFERENCE_STALE"
-        assert _balloons(document) == ()
-        assert state_store.current_revision(str(document.Uid)) == revision_before
-
         result = call(_arguments(page, view, edge))
         state = result["balloon"]
         assert result["operation"] == "create"
@@ -490,6 +476,17 @@ def _run() -> None:
             "state_sha256"
         ]
 
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         no_change_revision = state_store.current_revision(str(document.Uid))
         no_change_undo = int(document.UndoCount)
         rejected = call(
@@ -532,6 +529,17 @@ def _run() -> None:
             "state_sha256"
         ]
 
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         move_before = drawing_balloon_state(first_balloon)
         move_result = call(_move_arguments(first_balloon, -19.25, 31.5))
         move_after = move_result["balloon"]
@@ -578,6 +586,17 @@ def _run() -> None:
             "projection_state_sha256"
         ] == projection_before
 
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         edit_rollback_state = drawing_balloon_state(first_balloon)
         edit_rollback_objects = tuple(document.Objects)
         edit_rollback_views = tuple(page.Views)

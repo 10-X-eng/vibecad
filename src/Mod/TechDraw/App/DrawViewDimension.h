@@ -281,6 +281,13 @@ protected:
     void resetArc();
     void resetArea();
 
+    void setDescriptiveGeometryAvailable(bool available)
+    {
+        m_hasGeometry = available;
+    }
+
+    void persistCurrentDimensionGeometry();
+
     bool okToProceed();
     void updateSavedGeometry();
 

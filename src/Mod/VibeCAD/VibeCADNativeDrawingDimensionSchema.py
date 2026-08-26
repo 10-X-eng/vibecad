@@ -4,40 +4,49 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityDefinition,
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
 )
-from VibeCADNativeDrawingMeasurementAnnotationSchema import (
-    DRAWING_MEASUREMENT_ANNOTATION_OPERATIONS,
-    drawing_measurement_annotation_variants,
-)
-from VibeCADNativeDrawingSpecialDimensionSchema import (
-    DRAWING_SPECIAL_DIMENSION_OPERATIONS,
-    drawing_special_dimension_variants,
-)
+from VibeCADNativeDrawingMeasurementAnnotationSchema import drawing_measurement_annotation_variants
+from VibeCADNativeDrawingSpecialDimensionSchema import drawing_special_dimension_variants
 
 
-DRAWING_DIMENSION_CAPABILITY_NAME = "drawing.dimension"
-DRAWING_GENERAL_DIMENSION_OPERATIONS = (
-    "create_length",
-    "create_horizontal",
-    "create_vertical",
-    "create_radius",
-    "create_diameter",
+DRAWING_DIMENSION_OPERATIONS = (
+    "create_linear",
+    "create_radial",
     "create_angle",
     "create_three_point_angle",
     "create_area",
-    "create_horizontal_extent",
-    "create_vertical_extent",
+    "create_view_extent",
+    "create_edge_extent",
     "create_axonometric_length",
-)
-DRAWING_DIMENSION_OPERATIONS = (
-    *DRAWING_GENERAL_DIMENSION_OPERATIONS,
-    *DRAWING_SPECIAL_DIMENSION_OPERATIONS,
-    *DRAWING_MEASUREMENT_ANNOTATION_OPERATIONS,
+    "create_chamfer",
+    "create_arc_length_dimension",
+    "create_area_annotation",
+    "create_arc_length_annotation",
     "edit",
+)
+DRAWING_DIMENSION_CAPABILITY_BY_OPERATION = {
+    "create_linear": "drawing.linear_dimension",
+    "create_radial": "drawing.radial_dimension",
+    "create_angle": "drawing.angle_dimension",
+    "create_three_point_angle": "drawing.three_point_angle",
+    "create_area": "drawing.area_dimension",
+    "create_view_extent": "drawing.view_extent_dimension",
+    "create_edge_extent": "drawing.edge_extent_dimension",
+    "create_axonometric_length": "drawing.axonometric_dimension",
+    "create_chamfer": "drawing.chamfer_dimension",
+    "create_arc_length_dimension": "drawing.arc_length_dimension",
+    "create_area_annotation": "drawing.area_annotation",
+    "create_arc_length_annotation": "drawing.arc_length_annotation",
+    "edit": "drawing.edit_dimension",
+}
+DRAWING_DIMENSION_CAPABILITY_NAMES = tuple(
+    DRAWING_DIMENSION_CAPABILITY_BY_OPERATION.values()
 )
 _OBJECT_NAME = {
     "type": "string",
@@ -194,9 +203,8 @@ def _element(kind: str, description: str) -> dict:
                     "pattern": rf"^{kind}(0|[1-9][0-9]*)$",
                     "maxLength": 32,
                 },
-                "expected_element_state_sha256": _SHA256,
             },
-            ("subelement", "expected_element_state_sha256"),
+            ("subelement",),
         ),
         "description": description,
     }
@@ -209,38 +217,18 @@ _LINEAR_REFERENCE = _element(
 _EDGE = _element("Edge", "One exact projected EdgeN from the target view.")
 _VERTEX = _element("Vertex", "One exact projected VertexN from the target view.")
 _FACE = _element("Face", "One exact projected FaceN from the target view.")
-_EXTENT_TARGET = {
-    "oneOf": [
-        _closed(
-            {
-                "scope": {
-                    "type": "string",
-                    "const": "whole_view",
-                    "description": "Measure the complete projected view extent.",
-                }
-            },
-            ("scope",),
-        ),
-        _closed(
-            {
-                "scope": {"type": "string", "const": "edges"},
-                "edges": {
-                    "type": "array",
-                    "items": _EDGE,
-                    "minItems": 1,
-                    "maxItems": 64,
-                    "description": (
-                        "Unique exact projected EdgeN references whose combined "
-                        "overall extent will be measured."
-                    ),
-                },
-            },
-            ("scope", "edges"),
-        ),
-    ],
+_EXTENT_DIRECTION = {
+    "type": "string",
+    "enum": ["horizontal", "vertical"],
+}
+_EXTENT_EDGES = {
+    "type": "array",
+    "items": _EDGE,
+    "minItems": 1,
+    "maxItems": 64,
     "description": (
-        "A closed discriminated target: the complete projected view, or one "
-        "to sixty-four exact projected edges."
+        "One to 64 projected edges whose combined horizontal or vertical "
+        "bounding extent is measured."
     ),
 }
 _AXONOMETRIC_MEASUREMENT = {
@@ -278,19 +266,16 @@ _COMMON = {
     "label": _LABEL,
     "page": _PAGE,
     "view": _VIEW,
-    "label_position_in_view_mm": {
+    "label_position_on_page_mm": {
         **_LABEL_POSITION,
-        "description": (
-            "Dimension-label center in the projected view coordinate system: "
-            "+X right and +Y up, in scaled view millimetres."
-        ),
+        "description": "Dimension-label center in page coordinates, in mm.",
     },
 }
 _COMMON_REQUIRED = (
     "label",
     "page",
     "view",
-    "label_position_in_view_mm",
+    "label_position_on_page_mm",
 )
 
 
@@ -304,12 +289,22 @@ def _linear_parameters() -> dict:
                 "minItems": 1,
                 "maxItems": 2,
                 "description": (
-                    "One edge measures that edge; two edges or vertices measure "
-                    "between the exact projected references."
+                    "One line edge measures its length. Two parallel line edges "
+                    "measure perpendicular separation. Two vertices must differ "
+                    "on the chosen axis."
+                ),
+            },
+            "direction": {
+                "type": "string",
+                "enum": ["aligned", "horizontal", "vertical"],
+                "description": (
+                    "Measurement axis. For one line edge, use aligned or its "
+                    "valid_dimensions value. For parallel line edges, use the "
+                    "perpendicular axis."
                 ),
             },
         },
-        (*_COMMON_REQUIRED, "references"),
+        (*_COMMON_REQUIRED, "references", "direction"),
     )
 
 
@@ -320,24 +315,28 @@ def _radial_parameters() -> dict:
             "edge": _EDGE,
             "allow_approximate": {
                 "type": "boolean",
+                "default": False,
                 "description": "Enable ellipse or circle-like B-spline approximation.",
             },
+            "kind": {"type": "string", "enum": ["radius", "diameter"]},
         },
-        (*_COMMON_REQUIRED, "edge", "allow_approximate"),
+        (*_COMMON_REQUIRED, "edge", "kind"),
     )
 
 
 def _variant(
     operation: str,
     description: str,
-    action_id: str,
+    action_id: str | tuple[str, ...],
     parameters: dict,
     exact_target_type: str,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
         description=description,
-        action_ids=frozenset({action_id}),
+        action_ids=frozenset(
+            (action_id,) if isinstance(action_id, str) else action_id
+        ),
         surface_ids=frozenset({"drawing"}),
         exact_target_type=exact_target_type,
         transaction_behavior="document",
@@ -346,49 +345,41 @@ def _variant(
     )
 
 
-def drawing_dimension_capability_definition() -> NativeCapabilityDefinition:
-    return NativeCapabilityDefinition(
-        name=DRAWING_DIMENSION_CAPABILITY_NAME,
-        description=(
-            "Create explicit projected TechDraw dimensions from hash-pinned "
-            "semantic references, or replace one exact dimension's complete edit state."
-        ),
-        primary_classification="mutation",
-        variants=(
+def _drawing_dimension_variants() -> tuple[NativeCapabilityVariant, ...]:
+    special = {
+        variant.operation: variant for variant in drawing_special_dimension_variants()
+    }
+    annotations = {
+        variant.operation: variant
+        for variant in drawing_measurement_annotation_variants()
+    }
+    chamfer_parameters = deepcopy(special["create_horizontal_chamfer"].parameters)
+    chamfer_parameters["properties"]["direction"] = {
+        "type": "string",
+        "enum": ["horizontal", "vertical"],
+    }
+    chamfer_parameters["required"].append("direction")
+    return (
             _variant(
-                "create_length",
-                "Create a projected aligned length from one edge or one/two references.",
-                "TechDraw_LengthDimension",
+                "create_linear",
+                (
+                    "Dimension one projected edge, two vertices, or the separation "
+                    "between two parallel edges."
+                ),
+                (
+                    "TechDraw_LengthDimension",
+                    "TechDraw_HorizontalDimension",
+                    "TechDraw_VerticalDimension",
+                ),
                 _linear_parameters(),
-                "ExactDrawingAlignedDimensionReferences",
+                "ExactDrawingLinearDimensionReferencesAndDirection",
             ),
             _variant(
-                "create_horizontal",
-                "Create a projected horizontal distance from one or two references.",
-                "TechDraw_HorizontalDimension",
-                _linear_parameters(),
-                "ExactDrawingHorizontalDimensionReferences",
-            ),
-            _variant(
-                "create_vertical",
-                "Create a projected vertical distance from one or two references.",
-                "TechDraw_VerticalDimension",
-                _linear_parameters(),
-                "ExactDrawingVerticalDimensionReferences",
-            ),
-            _variant(
-                "create_radius",
-                "Create a projected radius from one circular or explicitly accepted approximate edge.",
-                "TechDraw_RadiusDimension",
+                "create_radial",
+                "Create a radius or diameter from one projected circular edge.",
+                ("TechDraw_RadiusDimension", "TechDraw_DiameterDimension"),
                 _radial_parameters(),
-                "ExactDrawingRadialEdge",
-            ),
-            _variant(
-                "create_diameter",
-                "Create a projected diameter from one circular or explicitly accepted approximate edge.",
-                "TechDraw_DiameterDimension",
-                _radial_parameters(),
-                "ExactDrawingRadialEdge",
+                "ExactDrawingRadialEdgeAndKind",
             ),
             _variant(
                 "create_angle",
@@ -438,24 +429,40 @@ def drawing_dimension_capability_definition() -> NativeCapabilityDefinition:
                 "ExactDrawingProjectedFace",
             ),
             _variant(
-                "create_horizontal_extent",
-                "Create the overall horizontal extent of a whole view or exact edge subset.",
-                "TechDraw_HorizontalExtentDimension",
-                _closed(
-                    {**_COMMON, "extent": _EXTENT_TARGET},
-                    (*_COMMON_REQUIRED, "extent"),
+                "create_view_extent",
+                (
+                    "Dimension an entire projected view's overall width or height "
+                    "without selecting edges."
                 ),
-                "ExactDrawingHorizontalExtentTarget",
+                (
+                    "TechDraw_HorizontalExtentDimension",
+                    "TechDraw_VerticalExtentDimension",
+                ),
+                _closed(
+                    {
+                        **_COMMON,
+                        "direction": _EXTENT_DIRECTION,
+                    },
+                    (*_COMMON_REQUIRED, "direction"),
+                ),
+                "ExactDrawingViewExtentAndDirection",
             ),
             _variant(
-                "create_vertical_extent",
-                "Create the overall vertical extent of a whole view or exact edge subset.",
-                "TechDraw_VerticalExtentDimension",
-                _closed(
-                    {**_COMMON, "extent": _EXTENT_TARGET},
-                    (*_COMMON_REQUIRED, "extent"),
+                "create_edge_extent",
+                "Dimension the combined width or height of a selected subset of projected edges.",
+                (
+                    "TechDraw_HorizontalExtentDimension",
+                    "TechDraw_VerticalExtentDimension",
                 ),
-                "ExactDrawingVerticalExtentTarget",
+                _closed(
+                    {
+                        **_COMMON,
+                        "edges": _EXTENT_EDGES,
+                        "direction": _EXTENT_DIRECTION,
+                    },
+                    (*_COMMON_REQUIRED, "edges", "direction"),
+                ),
+                "ExactDrawingEdgeExtentAndDirection",
             ),
             _variant(
                 "create_axonometric_length",
@@ -489,13 +496,29 @@ def drawing_dimension_capability_definition() -> NativeCapabilityDefinition:
                 ),
                 "ExactDrawingAxonometricMeasurementDirectionsAndValueMode",
             ),
-            *drawing_special_dimension_variants(),
-            *drawing_measurement_annotation_variants(),
+            NativeCapabilityVariant(
+                operation="create_chamfer",
+                description="Create a horizontal or vertical size-and-angle chamfer.",
+                action_ids=frozenset(
+                    {
+                        "TechDraw_ExtensionCreateHorizChamferDimension",
+                        "TechDraw_ExtensionCreateVertChamferDimension",
+                    }
+                ),
+                surface_ids=frozenset({"drawing"}),
+                exact_target_type="ExactDrawingChamferVerticesAndDirection",
+                transaction_behavior="document",
+                background_required=False,
+                parameters=chamfer_parameters,
+            ),
+            special["create_arc_length_dimension"],
+            annotations["create_area_annotation"],
+            annotations["create_arc_length_annotation"],
             NativeCapabilityVariant(
                 operation="edit",
                 description=(
-                    "Replace one hash-pinned dimension's complete display, tolerance, "
-                    "layout, and appearance state without opening its human task dialog."
+                    "Replace a dimension's complete display, tolerance, layout, "
+                    "and appearance."
                 ),
                 action_ids=frozenset({"TechDrawContextEditDimension"}),
                 surface_ids=frozenset({"drawing"}),
@@ -514,7 +537,21 @@ def drawing_dimension_capability_definition() -> NativeCapabilityDefinition:
                 ),
                 provider_supplemental=True,
             ),
-        ),
+    )
+
+
+def drawing_dimension_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
+    variants = _drawing_dimension_variants()
+    if tuple(variant.operation for variant in variants) != DRAWING_DIMENSION_OPERATIONS:
+        raise RuntimeError("Drawing dimension operations and focused tools diverged")
+    return tuple(
+        NativeCapabilityDefinition(
+            name=DRAWING_DIMENSION_CAPABILITY_BY_OPERATION[variant.operation],
+            description=variant.description,
+            primary_classification="mutation",
+            variants=(variant,),
+        )
+        for variant in variants
     )
 
 
@@ -523,4 +560,5 @@ def register_drawing_dimension_capability_definition(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_definition(drawing_dimension_capability_definition())
+    for definition in drawing_dimension_capability_definitions():
+        registry.register_shared_definition(definition)

@@ -32,6 +32,13 @@ from VibeCADNativeState import (
         "PrecomputedDimensionFlags",
         "PrecomputedDimensionScalars",
         "PrecomputedDimensionVectors",
+        "PrecomputedEdgeClasses",
+        "PrecomputedEdgeVisibility",
+        "PrecomputedProjectionCentroid",
+        "PrecomputedProjectionEdges",
+        "PrecomputedProjectionFaces",
+        "PrecomputedProjectionSourceState",
+        "PrecomputedSourceIndices",
         "VibeCADVibeScriptEditorDraft",
     ),
 )
@@ -68,6 +75,14 @@ def test_structural_revision_is_monotonic_and_presentation_is_ignored() -> None:
     assert store.current_revision("document-a") == 2
 
 
+def test_techdraw_dimension_caches_do_not_advance_structural_revision() -> None:
+    store = NativeDocumentStateStore()
+
+    assert store.note_object_property_change("document-a", "SavedGeometry") == 0
+    assert store.note_object_property_change("document-a", "BoxCorners") == 0
+    assert store.note_object_property_change("document-a", "References2D") == 1
+
+
 def test_manual_visibility_change_does_not_lock_native_authority() -> None:
     store = NativeDocumentStateStore()
     store.begin_native_authority("document-a")
@@ -101,6 +116,31 @@ def test_scoped_analyze_authority_does_not_take_geometry_authority() -> None:
         store.authorize_mutation(model_ticket)
 
     store.end_scoped_authority("document-a", scope)
+    store.require_vibescript_return_safe("document-a")
+    assert store.snapshot("document-a")["native_authority"]["active"] is False
+    assert store.snapshot("document-a")["recent_receipts"] == []
+
+
+def test_scoped_drawing_authority_cannot_mutate_source_or_analysis_namespaces() -> None:
+    store = NativeDocumentStateStore()
+    scope = store.begin_scoped_authority(
+        "document-a",
+        "drawing",
+        exact_capabilities=("document.undo",),
+    )
+
+    drawing_ticket = store.begin_call("document-a", "drawing.page")
+    assert store.authorize_mutation(drawing_ticket).duplicate is False
+    undo_ticket = store.begin_call("document-a", "document.undo")
+    assert store.authorize_mutation(undo_ticket).duplicate is False
+
+    for capability in ("model.feature", "analyze.model", "vibescript.create_program"):
+        with pytest.raises(NativeStateError, match="not active"):
+            store.authorize_mutation(store.begin_call("document-a", capability))
+
+    store.end_scoped_authority("document-a", scope)
+    store.cancel_mutation(undo_ticket)
+    store.complete_mutation(drawing_ticket, {"page": "Page"})
     store.require_vibescript_return_safe("document-a")
     assert store.snapshot("document-a")["native_authority"]["active"] is False
     assert store.snapshot("document-a")["recent_receipts"] == []
@@ -189,6 +229,25 @@ def test_committed_mutation_observation_is_one_semantic_revision() -> None:
 
     assert receipt.revision_before == 0
     assert receipt.revision_after == 1
+
+
+def test_verified_read_observation_discards_transient_host_events() -> None:
+    store = NativeDocumentStateStore()
+    ticket = store.begin_call("document-a", "drawing.export")
+    store.begin_read_observation(ticket)
+
+    store.note_object_property_change("document-a", "References2D")
+    store.note_object_property_change("document-a", "X")
+    assert store.current_revision("document-a") == 0
+    assert store.complete_read_observation(ticket) == 0
+
+    stale = store.begin_call("document-a", "drawing.export")
+    store.begin_read_observation(stale)
+    store.note_object_property_change("document-a", "References2D")
+    assert store.fail_read_observation(stale) == 1
+
+    with pytest.raises(NativeRevisionConflict):
+        store.begin_read_observation(stale)
 
 
 def test_completed_call_replays_prior_verified_result_before_revision_check() -> None:

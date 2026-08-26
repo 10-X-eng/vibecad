@@ -18,8 +18,8 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistryError,
     NativeCapabilityRegistry,
     NativeProviderSurface,
+    _authorized_provider_schema_operations,
     _provider_schema_operations,
-    provider_visible_native_schema,
     project_native_provider_operations,
     project_native_provider_surface,
     resolve_native_provider_surface,
@@ -89,14 +89,7 @@ def _captured_schema_operations(
         raise NativeTurnUnavailable(
             f"The captured Native capability {name!r} has no definition."
         )
-    matches = tuple(
-        variant.operation
-        for variant in definition.variants
-        if provider_visible_native_schema(
-            definition.provider_schema((variant.operation,))
-        )
-        == schema
-    )
+    matches = _authorized_provider_schema_operations(schema, definition)
     if len(matches) != 1:
         raise NativeTurnUnavailable(
             f"The captured Native schema for {name!r} does not identify one exact operation."

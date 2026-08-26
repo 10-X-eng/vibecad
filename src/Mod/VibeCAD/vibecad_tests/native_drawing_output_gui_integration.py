@@ -75,18 +75,73 @@ def _fixture(document):
         view.Source = [source]
         view.Direction = App.Vector(0.0, 0.0, 1.0)
         view.XDirection = App.Vector(1.0, 0.0, 0.0)
-        view.X = 105.0
-        view.Y = 70.0
         assert int(page.addView(view)) >= 1
+        view.X = 190.0
+        view.Y = 70.0
         document.publishProvisionalTimelineOperationBlock(view, (), ())
-        assert document.recompute([source, view, page], True, True) is not False
+        group = document.addObject("TechDraw::DrawProjGroup", "OutputProjectionGroup")
+        group.Source = [source]
+        group.ProjectionType = "Third angle"
+        group.ScaleType = "Custom"
+        group.Scale = 1.0
+        group.spacingX = 12.0
+        group.spacingY = 14.0
+        assert int(page.addView(group)) >= 1
+        group.X = 70.0
+        group.Y = 125.0
+        front = group.addProjection("Front")
+        top = group.addProjection("Top")
+        right = group.addProjection("Right")
+        front.Direction = App.Vector(0.0, 0.0, 1.0)
+        front.XDirection = App.Vector(1.0, 0.0, 0.0)
+        document.publishProvisionalTimelineOperationBlock(
+            group,
+            (front, top, right),
+            (),
+        )
+        assert document.recompute([source, view, group, page], True, True) is not False
+        dimension = document.addObject(
+            "TechDraw::DrawViewDimension",
+            "OutputDimension",
+        )
+        dimension.Type = "Distance"
+        dimension.MeasureType = "Projected"
+        dimension.References2D = [(view, "Edge1")]
+        dimension.X = 0.0
+        dimension.Y = -24.0
+        assert int(page.addView(dimension)) >= 1
+        document.publishProvisionalTimelineOperationBlock(dimension, (), ())
+        assert document.recompute([dimension, group, page], True, True) is not False
+
+        second_page = document.addObject("TechDraw::DrawPage", "OutputPage002")
+        second_page.Label = "Output Page 2"
+        second_template = document.addObject(
+            "TechDraw::DrawSVGTemplate",
+            "OutputTemplate002",
+        )
+        second_template.Template = template.Template
+        second_page.Template = second_template
+        document.publishProvisionalTimelineOperationBlock(
+            second_page,
+            (second_template,),
+            (),
+        )
+        second_view = document.addObject("TechDraw::DrawViewPart", "OutputView002")
+        second_view.Source = [source]
+        second_view.Direction = App.Vector(1.0, 0.0, 0.0)
+        second_view.XDirection = App.Vector(0.0, 1.0, 0.0)
+        assert int(second_page.addView(second_view)) >= 1
+        second_view.X = 145.0
+        second_view.Y = 95.0
+        document.publishProvisionalTimelineOperationBlock(second_view, (), ())
+        assert document.recompute([second_view, second_page], True, True) is not False
     except Exception:
         App.closeActiveTransaction(True, transaction)
         raise
     App.closeActiveTransaction(False, transaction)
     page.ViewObject.show()
     _events(24)
-    return page
+    return page, second_page
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
@@ -142,12 +197,15 @@ def _run() -> None:
             suffix: root / f"drawing-output.{suffix}"
             for suffix in ("svg", "dxf", "pdf")
         }
+        all_pages_pdf = root / "drawing-output-all.pdf"
         controller, surface = _surface()
         document = App.newDocument("NativeDrawingOutputGate")
         document.UndoMode = 1
         VibeGui._ensure_document_thread_invoker()
         VibeGui._connect_document_observer()
-        page = _fixture(document)
+        page, second_page = _fixture(document)
+        saved_document = root / "drawing-output.FCStd"
+        document.saveAs(str(saved_document))
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -165,7 +223,11 @@ def _run() -> None:
 
         def authorize(request):
             suffix = request.allowed_suffixes[0].lstrip(".")
-            path = outputs[suffix]
+            path = (
+                all_pages_pdf
+                if request.purpose == "drawing_document_pdf_export"
+                else outputs[suffix]
+            )
             authorized.append((request.purpose, path.name))
             return authorize_native_output_path(request, path)
 
@@ -227,6 +289,17 @@ def _run() -> None:
             validate_drawing_output(output, format_name)
             artifacts[format_name] = artifact
 
+        queued = call({"operation": "pdf_all"})
+        all_pages = _wait(manager, queued["job"]["job_id"])
+        assert all_pages.phase == "completed", all_pages.error
+        assert all_pages.result["source"]["page_count"] == 2
+        assert [
+            item["object_name"] for item in all_pages.result["source"]["pages"]
+        ] == [page.Name, second_page.Name]
+        assert all_pages.result["output"]["file_name"] == all_pages_pdf.name
+        assert all_pages.result["output"]["sha256"] == _sha256(all_pages_pdf)
+        validate_drawing_output(all_pages_pdf, "pdf")
+
         print_dialog_seen = {"value": False}
 
         def cancel_print_dialog() -> None:
@@ -254,14 +327,28 @@ def _run() -> None:
         }
         assert print_dialog_seen["value"] is True
 
-        assert len(authorized) == 3
+        checkpoint_revision = state_store.current_revision(str(document.Uid))
+        document.save()
+        _events(24)
+        assert (
+            state_store.current_revision(str(document.Uid)) == checkpoint_revision
+        )
+        saved = dispatcher.call(
+            "document.save",
+            "{}",
+            "native-drawing-output-save",
+        )
+        assert saved.get("ok") is True, saved
+
+        assert len(authorized) == 4
         assert int(document.UndoCount) == undo_before
         assert state_store.current_revision(str(document.Uid)) == revision_before
         assert document.getBookedTransactionID() == 0
         assert drawing_page_state(page) == page_state_before
         print(
-            "VIBECAD_NATIVE_DRAWING_OUTPUT_GUI_OK operations=4 "
-            "svg=true dxf=true pdf=true print_all_dialog=true cancellation=true "
+            "VIBECAD_NATIVE_DRAWING_OUTPUT_GUI_OK operations=5 "
+            "svg=true dxf=true pdf=true pdf_all=true pages=2 "
+            "print_all_dialog=true cancellation=true "
             "background=true atomic_publication=true bounded_validation=true "
             "paths_hidden=true exact_target=true stale_refusal=true "
             "revision_stable=true undo_stable=true low_noise=true",

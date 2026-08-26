@@ -72,7 +72,7 @@ def _spec(operation: str, values: Mapping[str, Any]) -> BalloonSpec:
         )
     anchor = exact_drawing_mapping(
         values["anchor"],
-        frozenset({"subelement", "expected_element_state_sha256"}),
+        frozenset({"subelement"}),
         "anchor",
         family="balloon",
         error_code="NATIVE_DRAWING_BALLOON_PARAMETERS_INVALID",
@@ -165,7 +165,7 @@ def _validate_host(
             "NATIVE_DRAWING_BALLOON_REFERENCE_INVALID",
             repair={
                 "accepted_reference_types": ["edge", "vertex"],
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if not isinstance(raw, Mapping) or frozenset(raw) != frozenset(
@@ -205,7 +205,7 @@ def _validate_host(
         _error(
             "TechDraw's projected balloon anchor does not match the inspected geometry.",
             "NATIVE_DRAWING_BALLOON_REFERENCE_INVALID",
-            repair={"inspect_operation": "drawing_projected_geometry"},
+            repair={"tool": "drawing.projected_geometry"},
         )
     return {
         "element_type": element_type,

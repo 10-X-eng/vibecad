@@ -44,6 +44,17 @@ class DrawingProjectionJob:
 
 
 @dataclass(frozen=True, slots=True)
+class DrawingProjectionFit:
+    views: tuple[str, ...]
+    convention: str
+    page_width_mm: float
+    page_height_mm: float
+    spacing_x_mm: float = 15.0
+    spacing_y_mm: float = 15.0
+    drawable_bounds_mm: tuple[float, float, float, float] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class FrozenFile:
     path: Path = field(repr=False, compare=False)
     size_bytes: int
@@ -63,6 +74,7 @@ class FrozenDrawingProjectionBatch:
     child: FrozenFile = field(repr=False)
     source_files: tuple[FrozenFile, ...] = field(repr=False)
     projection_keys: tuple[str, ...]
+    fit: DrawingProjectionFit | None
 
     def cleanup(self) -> None:
         self.workspace.cleanup()
@@ -263,6 +275,8 @@ def _validated_jobs(
 
 def freeze_projection_batch(
     jobs: Sequence[DrawingProjectionJob],
+    *,
+    fit: DrawingProjectionFit | None = None,
 ) -> FrozenDrawingProjectionBatch:
     """Freeze exact source B-reps and an authenticated child request."""
 
@@ -320,6 +334,79 @@ def freeze_projection_batch(
                 }
             )
 
+        fit_value = None
+        if fit is not None:
+            views = tuple(str(value or "") for value in fit.views)
+            if (
+                not 2 <= len(views) <= 6
+                or "front" not in views
+                or len(views) != len(set(views))
+                or set(views) - {"front", "top", "right", "left", "bottom", "rear"}
+                or fit.convention not in {"first_angle", "third_angle"}
+                or tuple(job.key for job in validated)
+                != tuple(f"projection_group:{view}" for view in views)
+            ):
+                _error(
+                    "A Drawing projection fit request is malformed.",
+                    "NATIVE_DRAWING_PROJECTION_INPUT_INVALID",
+                )
+            dimensions = (
+                fit.page_width_mm,
+                fit.page_height_mm,
+                fit.spacing_x_mm,
+                fit.spacing_y_mm,
+            )
+            if (
+                any(type(value) not in {int, float} for value in dimensions)
+                or any(not math.isfinite(float(value)) for value in dimensions)
+                or float(fit.page_width_mm) <= 0.0
+                or float(fit.page_height_mm) <= 0.0
+                or float(fit.spacing_x_mm) < 0.0
+                or float(fit.spacing_y_mm) < 0.0
+            ):
+                _error(
+                    "A Drawing projection fit request is malformed.",
+                    "NATIVE_DRAWING_PROJECTION_INPUT_INVALID",
+                )
+            drawable = fit.drawable_bounds_mm or (
+                0.0,
+                0.0,
+                float(fit.page_width_mm),
+                float(fit.page_height_mm),
+            )
+            if (
+                not isinstance(drawable, (list, tuple))
+                or len(drawable) != 4
+                or any(type(value) not in {int, float} for value in drawable)
+            ):
+                _error(
+                    "A Drawing projection fit request has invalid drawable bounds.",
+                    "NATIVE_DRAWING_PROJECTION_INPUT_INVALID",
+                )
+            drawable = tuple(float(value) for value in drawable)
+            if (
+                any(not math.isfinite(value) for value in drawable)
+                or drawable[0] < 0.0
+                or drawable[1] < 0.0
+                or drawable[2] <= drawable[0]
+                or drawable[3] <= drawable[1]
+                or drawable[2] > float(fit.page_width_mm)
+                or drawable[3] > float(fit.page_height_mm)
+            ):
+                _error(
+                    "A Drawing projection fit request has invalid drawable bounds.",
+                    "NATIVE_DRAWING_PROJECTION_INPUT_INVALID",
+                )
+            fit_value = {
+                "views": list(views),
+                "convention": fit.convention,
+                "page_width_mm": float(fit.page_width_mm),
+                "page_height_mm": float(fit.page_height_mm),
+                "spacing_x_mm": float(fit.spacing_x_mm),
+                "spacing_y_mm": float(fit.spacing_y_mm),
+                "drawable_bounds_mm": list(drawable),
+            }
+
         request_value = {
             "protocol": DRAWING_PROJECTION_PROTOCOL,
             "workspace": str(root),
@@ -337,6 +424,7 @@ def freeze_projection_batch(
                 }
                 for job in validated
             ],
+            "fit": fit_value,
             "result": "result.json",
         }
         encoded = json.dumps(
@@ -368,6 +456,7 @@ def freeze_projection_batch(
             child=_hash_open_file(child_path, maximum=1024 * 1024),
             source_files=tuple(source_files),
             projection_keys=tuple(job.key for job in validated),
+            fit=fit,
         )
     except Exception:
         workspace.cleanup()

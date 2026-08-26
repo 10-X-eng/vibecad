@@ -213,6 +213,12 @@ bool DrawViewDetail::restorePrecomputedDetail()
     return true;
 }
 
+bool DrawViewDetail::restorePrecomputedState()
+{
+    return DrawViewPart::restorePrecomputedState()
+        && restorePrecomputedDetail();
+}
+
 DrawViewDetail::~DrawViewDetail()
 {
     //don't delete this object while it still has dependent tasks running

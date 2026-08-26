@@ -170,13 +170,6 @@ void DrawProjGroupItem::onDocumentRestored()
 {
 //    Base::Console().message("DPGI::onDocumentRestored() - %s\n", getNameInDocument());
     DrawViewPart::onDocumentRestored();
-    if (isFreezed()) {
-        return;
-    }
-    App::DocumentObjectExecReturn* rc = DrawProjGroupItem::execute();
-    if (rc) {
-        delete rc;
-    }
 }
 
 DrawProjGroup* DrawProjGroupItem::getPGroup() const

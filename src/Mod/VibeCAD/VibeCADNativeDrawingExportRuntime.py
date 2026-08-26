@@ -11,16 +11,24 @@ from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeBackground import NativeBackgroundCancelled, NativeBackgroundError
 from VibeCADNativeDrawingErrors import NativeDrawingError
 from VibeCADNativeDrawingExport import (
+    drawing_document_pdf_source_summary,
     drawing_output_source_summary,
     drawing_print_source_summary,
+    prepare_drawing_document_pdf_export,
     prepare_drawing_page_export,
     prepare_drawing_print_all,
     validate_drawing_output,
+    verify_drawing_document_pdf_source,
     verify_drawing_page_export_source,
     verify_drawing_print_all_source,
+    write_drawing_document_pdf,
     write_drawing_page,
 )
 from VibeCADNativeOutput import NativeOutputError, publish_authorized_output
+from VibeCADNativeDrawingReadiness import (
+    drawing_page_readiness,
+    require_drawing_export_readiness,
+)
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
@@ -72,6 +80,7 @@ class NativeDrawingExportRuntime:
                 "svg": frozenset({"page"}),
                 "dxf": frozenset({"page"}),
                 "pdf": frozenset({"page"}),
+                "pdf_all": frozenset(),
                 "print_all": frozenset(),
             },
         )
@@ -79,6 +88,8 @@ class NativeDrawingExportRuntime:
         self._require_ticket(ticket)
         if operation == "print_all":
             return self._print_all(ticket)
+        if operation == "pdf_all":
+            return self._export_all_pdf(ticket)
         return self._export_page(operation, values["page"], ticket)
 
     def _export_page(
@@ -86,6 +97,70 @@ class NativeDrawingExportRuntime:
         operation: str,
         page_target: Any,
         ticket: NativeCallTicket,
+    ) -> dict[str, Any]:
+        prepared = prepare_drawing_page_export(
+            self._context,
+            page_target=page_target,
+            format_name=operation,
+        )
+        require_drawing_export_readiness(
+            drawing_page_readiness(
+                self._context.document,
+                target={
+                    "object_name": prepared.page_ref.object_name,
+                    "expected_state_sha256": prepared.page_state["state_sha256"],
+                },
+            )
+        )
+        return self._queue_authorized_export(
+            ticket,
+            prepared=prepared,
+            format_name=operation,
+            capability_name=f"drawing.export.{operation}",
+            progress_message=f"Rendering Drawing page as {operation.upper()}",
+            verify_source=verify_drawing_page_export_source,
+            writer=write_drawing_page,
+            source_summary=drawing_output_source_summary,
+        )
+
+    def _export_all_pdf(self, ticket: NativeCallTicket) -> dict[str, Any]:
+        prepared = prepare_drawing_document_pdf_export(self._context)
+        for page, state in zip(
+            prepared.pages,
+            prepared.page_states,
+            strict=True,
+        ):
+            require_drawing_export_readiness(
+                drawing_page_readiness(
+                    self._context.document,
+                    target={
+                        "object_name": str(page.Name),
+                        "expected_state_sha256": state["state_sha256"],
+                    },
+                )
+            )
+        return self._queue_authorized_export(
+            ticket,
+            prepared=prepared,
+            format_name="pdf",
+            capability_name="drawing.export.pdf_all",
+            progress_message="Rendering all Drawing pages as PDF",
+            verify_source=verify_drawing_document_pdf_source,
+            writer=write_drawing_document_pdf,
+            source_summary=drawing_document_pdf_source_summary,
+        )
+
+    def _queue_authorized_export(
+        self,
+        ticket: NativeCallTicket,
+        *,
+        prepared: Any,
+        format_name: str,
+        capability_name: str,
+        progress_message: str,
+        verify_source: Any,
+        writer: Any,
+        source_summary: Any,
     ) -> dict[str, Any]:
         context = self._context
         manager = context.background_manager
@@ -96,11 +171,6 @@ class NativeDrawingExportRuntime:
                 "Background human-authorized Drawing export is unavailable in this session.",
                 error_code="NATIVE_DRAWING_OUTPUT_UNAVAILABLE",
             )
-        prepared = prepare_drawing_page_export(
-            context,
-            page_target=page_target,
-            format_name=operation,
-        )
         try:
             authorization = authorizer(prepared.output_request)
         except NativeOutputError as exc:
@@ -114,38 +184,60 @@ class NativeDrawingExportRuntime:
 
         def validate_source() -> None:
             self._require_ticket(ticket)
-            verify_drawing_page_export_source(context, prepared)
+            verify_source(context, prepared)
+
+        def begin_verified_read() -> None:
+            validate_source()
+            context.state.begin_read_observation(ticket)
+
+        def complete_verified_read() -> None:
+            try:
+                verify_source(context, prepared)
+            except Exception:
+                context.state.fail_read_observation(ticket)
+                raise
+            context.state.complete_read_observation(ticket)
 
         def prepare(cancelled: Any, progress: Any) -> Mapping[str, Any]:
             if cancelled():
                 raise NativeBackgroundCancelled()
-            progress(10, f"Rendering Drawing page as {operation.upper()}")
+            progress(10, progress_message)
 
-            def writer(path: str) -> None:
+            def write(path: str) -> None:
                 if cancelled():
                     raise NativeBackgroundCancelled()
-                dispatcher(lambda: write_drawing_page(prepared, path))
+                dispatcher(lambda: writer(prepared, path))
 
-            artifact = publish_authorized_output(
-                prepared.output_request,
-                authorization,
-                writer=writer,
-                guard=lambda: dispatcher(validate_source),
-                validator=lambda path: validate_drawing_output(
-                    Path(path), operation
-                ),
-                temporary_suffix=f".{operation}",
-            )
+            observation_open = False
+            try:
+                dispatcher(begin_verified_read)
+                observation_open = True
+                artifact = publish_authorized_output(
+                    prepared.output_request,
+                    authorization,
+                    writer=write,
+                    guard=lambda: dispatcher(validate_source),
+                    validator=lambda path: validate_drawing_output(
+                        Path(path), format_name
+                    ),
+                    temporary_suffix=f".{format_name}",
+                )
+            except Exception:
+                if observation_open:
+                    dispatcher(complete_verified_read)
+                raise
+            else:
+                dispatcher(complete_verified_read)
             progress(90, "Drawing output verified and published")
             return {
                 "output": artifact.summary(),
-                "source": drawing_output_source_summary(prepared),
+                "source": source_summary(prepared),
             }
 
         try:
             snapshot = manager.submit(
                 document_uid=context.document_uid,
-                capability_name=f"drawing.export.{operation}",
+                capability_name=capability_name,
                 prepare=prepare,
                 validate_before_commit=lambda: None,
                 commit=lambda result: result,
@@ -168,6 +260,20 @@ class NativeDrawingExportRuntime:
                 error_code="NATIVE_DRAWING_PRINT_UNAVAILABLE",
             )
         prepared = prepare_drawing_print_all(context)
+        for page, state in zip(
+            prepared.pages,
+            prepared.page_states,
+            strict=True,
+        ):
+            require_drawing_export_readiness(
+                drawing_page_readiness(
+                    context.document,
+                    target={
+                        "object_name": str(page.Name),
+                        "expected_state_sha256": state["state_sha256"],
+                    },
+                )
+            )
 
         def validate_source() -> None:
             self._require_ticket(ticket)

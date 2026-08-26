@@ -13,8 +13,7 @@ import pytest
 from VibeCADNativeDrawingErrors import NativeDrawingError
 from VibeCADNativeDrawingLeader import _normalize_host_plan
 from VibeCADNativeDrawingLeaderSchema import (
-    DRAWING_ANNOTATION_CAPABILITY_NAME,
-    DRAWING_LEADER_OPERATIONS,
+    DRAWING_LEADER_CAPABILITY_NAME,
     drawing_leader_capability_definition,
 )
 from VibeCADNativeDrawingLeaderState import MAX_DRAWING_LEADER_POINTS
@@ -68,30 +67,18 @@ def _host_plan() -> dict:
     }
 
 
-def test_leader_schema_has_two_sharp_closed_branches() -> None:
+def test_leader_line_is_one_focused_tool_with_optional_human_style() -> None:
     definition = drawing_leader_capability_definition()
-    schema = definition.provider_schema(DRAWING_LEADER_OPERATIONS)
-    branches = schema["parameters"]["oneOf"]
-    by_operation = {
-        branch["properties"]["operation"]["const"]: branch
-        for branch in branches
-    }
+    schema = definition.provider_schema(("create",))
+    create = schema["parameters"]["oneOf"][0]
 
-    assert definition.name == DRAWING_ANNOTATION_CAPABILITY_NAME
-    assert tuple(by_operation) == DRAWING_LEADER_OPERATIONS
-    assert by_operation["read_leader_defaults"]["required"] == ["operation"]
-    assert by_operation["read_leader_defaults"]["additionalProperties"] is False
-
-    create = by_operation["leader_line"]
+    assert definition.name == DRAWING_LEADER_CAPABILITY_NAME == "drawing.leader_line"
+    assert create["properties"]["operation"]["const"] == "create"
     assert create["required"] == [
-        "operation",
         "page",
         "owner",
         "points_on_page_mm",
         "label",
-        "symbols",
-        "behavior",
-        "line",
     ]
     assert create["additionalProperties"] is False
     points = create["properties"]["points_on_page_mm"]
@@ -101,6 +88,9 @@ def test_leader_schema_has_two_sharp_closed_branches() -> None:
     )
     for field in ("page", "owner", "symbols", "behavior", "line"):
         assert create["properties"][field]["additionalProperties"] is False
+    assert create["properties"]["symbols"]["required"] == []
+    assert create["properties"]["behavior"]["required"] == []
+    assert create["properties"]["line"]["required"] == []
     assert create["properties"]["line"]["properties"]["color_rgb"][
         "additionalProperties"
     ] is False
@@ -109,6 +99,8 @@ def test_leader_schema_has_two_sharp_closed_branches() -> None:
     assert "unknown" not in encoded.casefold()
     assert "file_path" not in encoded.casefold()
     assert "data_url" not in encoded.casefold()
+    assert "read_leader_defaults" not in encoded
+    assert '"kind"' not in encoded
     assert len(encoded.encode("utf-8")) < 10 * 1024
 
 
@@ -165,13 +157,12 @@ def test_leader_host_plan_rejects_malformed_nested_state(
 def test_leader_registry_has_one_definition_and_implementation() -> None:
     registry = build_native_capability_registry()
 
-    definition = registry.definition(DRAWING_ANNOTATION_CAPABILITY_NAME)
-    implementation = registry.implementation(DRAWING_ANNOTATION_CAPABILITY_NAME)
+    assert registry.definition("drawing.annotation") is None
+    definition = registry.definition(DRAWING_LEADER_CAPABILITY_NAME)
+    implementation = registry.implementation(DRAWING_LEADER_CAPABILITY_NAME)
     assert definition is not None
     assert implementation is not None
-    assert tuple(item.operation for item in definition.variants) == (
-        DRAWING_LEADER_OPERATIONS
-    )
+    assert tuple(item.operation for item in definition.variants) == ("create",)
 
 
 def test_human_and_native_paths_share_one_compiled_builder() -> None:
@@ -204,3 +195,9 @@ def test_human_and_native_paths_share_one_compiled_builder() -> None:
         assert function in builder
         assert function in binding
     assert "UserType::QGILeaderLine" in scene
+
+    implementation = (
+        MOD_ROOT / "VibeCAD" / "VibeCADNativeDrawingLeader.py"
+    ).read_text(encoding="utf-8")
+    verify_return = implementation[implementation.index("def verify_drawing_leader") :]
+    assert '"page": {' in verify_return

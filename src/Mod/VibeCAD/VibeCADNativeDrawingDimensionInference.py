@@ -162,7 +162,7 @@ def prepare_drawing_dimension_inference(
             "label": values["label"],
             "page": values["page"],
             "view": values["view"],
-            "label_position_in_view_mm": values["label_position_in_view_mm"],
+            "label_position_on_page_mm": values["label_position_on_page_mm"],
             "face": raw_elements[0],
         },
     )

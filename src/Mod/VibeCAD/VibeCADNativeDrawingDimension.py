@@ -8,7 +8,6 @@ from dataclasses import dataclass
 import math
 from typing import Any, Mapping
 
-from VibeCADNativeDrawingDimensionSchema import DRAWING_DIMENSION_OPERATIONS
 from VibeCADNativeDrawingDimensionState import (
     drawing_axonometric_dimension_state,
     drawing_dimension_state,
@@ -18,6 +17,10 @@ from VibeCADNativeDrawingDimensionState import (
 )
 from VibeCADNativeDrawingErrors import NativeDrawingError
 from VibeCADNativeDrawingGeometryState import drawing_projected_geometry_state
+from VibeCADNativeDrawingDimensionSupport import (
+    drawing_label_position_in_view_mm,
+    provider_drawing_dimension_state,
+)
 from VibeCADNativeDrawingState import drawing_page_state
 from VibeCADNativeDrawingViewState import drawing_view_state
 from VibeCADNativeMutation import NativeMutationDraft, NativeMutationError
@@ -38,6 +41,7 @@ _OPERATION_TYPES = {
     "create_vertical_extent": "DistanceY",
     "create_axonometric_length": "Distance",
 }
+_DRAWING_DIMENSION_OPERATIONS = frozenset(_OPERATION_TYPES)
 _REFERENCE_FIELDS = {
     "create_length": ("references",),
     "create_horizontal": ("references",),
@@ -99,6 +103,12 @@ _AXONOMETRIC_VALUE_MODES = frozenset(
         "z_axis_true_length",
     }
 )
+_LINEAR_DIRECTION = {
+    "create_length": "aligned",
+    "create_horizontal": "horizontal",
+    "create_vertical": "vertical",
+}
+_GEOMETRY_TOLERANCE = 1.0e-9
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +219,7 @@ def _exact_mapping(value: Any, keys: frozenset[str], noun: str) -> Mapping[str, 
 
 
 def _spec(operation: str, values: Mapping[str, Any]) -> DimensionSpec:
-    if operation not in DRAWING_DIMENSION_OPERATIONS:
+    if operation not in _DRAWING_DIMENSION_OPERATIONS:
         raise ValueError("operation is not an explicit Drawing dimension operation")
     label = str(values["label"] or "")
     if label != label.strip() or not 1 <= len(label) <= 160:
@@ -316,7 +326,7 @@ def _extent_target(
 def _element_target(value: Any, noun: str) -> Mapping[str, Any]:
     return _exact_mapping(
         value,
-        frozenset({"subelement", "expected_element_state_sha256"}),
+        frozenset({"subelement"}),
         noun,
     )
 
@@ -430,7 +440,7 @@ def _reference_targets(
     return tuple(
         _exact_mapping(
             item,
-            frozenset({"subelement", "expected_element_state_sha256"}),
+            frozenset({"subelement"}),
             "projected reference",
         )
         for item in raw
@@ -480,7 +490,10 @@ def _resolve_view(
         {"document_uid": str(document.Uid), "object_name": exact["object_name"]},
         expected_types=("TechDraw::DrawViewPart",),
     )
-    if view.findParentPage() is not page or view not in tuple(page.Views or ()):
+    # Projection-group items are real page views, but TechDraw nests them
+    # under DrawProjGroup instead of listing them directly in DrawPage.Views.
+    # findParentPage() is the authoritative relationship for both forms.
+    if view.findParentPage() is not page:
         _error(
             "The exact Drawing view does not belong to the exact page.",
             "NATIVE_DRAWING_DIMENSION_PAGE_MISMATCH",
@@ -525,7 +538,7 @@ def _resolve_elements(
             _error(
                 f"Projected reference {name!r} no longer exists in the exact view.",
                 "NATIVE_DRAWING_DIMENSION_REFERENCE_STALE",
-                repair={"inspect_operation": "drawing_projected_geometry"},
+                repair={"tool": "drawing.projected_geometry"},
             )
         if element["element_type"] not in allowed:
             _error(
@@ -534,22 +547,129 @@ def _resolve_elements(
                 "NATIVE_DRAWING_DIMENSION_REFERENCE_TYPE_INVALID",
                 repair={"accepted_reference_types": sorted(allowed)},
             )
-        if (
-            str(target["expected_element_state_sha256"])
-            != element["element_state_sha256"]
-        ):
-            _error(
-                f"Projected reference {name!r} changed after it was inspected.",
-                "NATIVE_DRAWING_DIMENSION_REFERENCE_STALE",
-                repair={
-                    "subelement": name,
-                    "current_element_state_sha256": element[
-                        "element_state_sha256"
-                    ],
-                },
-            )
         result.append(element)
     return tuple(result)
+
+
+def _point_xy(value: Mapping[str, Any]) -> tuple[float, float]:
+    return float(value["x_mm"]), float(value["y_mm"])
+
+
+def _line_vector(element: Mapping[str, Any]) -> tuple[float, float]:
+    start_x, start_y = _point_xy(element["start_in_view_mm"])
+    end_x, end_y = _point_xy(element["end_in_view_mm"])
+    return end_x - start_x, end_y - start_y
+
+
+def _is_line(element: Mapping[str, Any]) -> bool:
+    return (
+        element.get("element_type") == "edge"
+        and str(element.get("geometry_type") or "").casefold() == "line"
+        and not bool(element.get("closed"))
+    )
+
+
+def _validate_linear_reference_geometry(
+    operation: str,
+    elements: tuple[Mapping[str, Any], ...],
+) -> None:
+    """Reject exactly measurable linear-reference mistakes before mutation."""
+
+    if operation not in _LINEAR_DIRECTION:
+        raise ValueError("operation is not a linear Drawing dimension")
+    names = [str(element["name"]) for element in elements]
+    kinds = tuple(str(element["element_type"]) for element in elements)
+    valid: list[str] = []
+
+    if len(elements) == 1 and kinds == ("edge",):
+        edge = elements[0]
+        if not _is_line(edge):
+            _error(
+                f"Projected reference {names[0]} is not a projected line.",
+                "NATIVE_DRAWING_DIMENSION_REFERENCES_INVALID",
+                repair={
+                    "requested_subelements": names,
+                    "accepted_references": (
+                        "one line edge, two vertices, or two parallel line edges"
+                    ),
+                },
+            )
+        dx, dy = _line_vector(edge)
+        if math.hypot(dx, dy) > _GEOMETRY_TOLERANCE:
+            valid.append("aligned")
+            if abs(dx) > _GEOMETRY_TOLERANCE:
+                valid.append("horizontal")
+            if abs(dy) > _GEOMETRY_TOLERANCE:
+                valid.append("vertical")
+    elif len(elements) == 2 and kinds == ("vertex", "vertex"):
+        first_x, first_y = _point_xy(elements[0]["point_in_view_mm"])
+        second_x, second_y = _point_xy(elements[1]["point_in_view_mm"])
+        dx, dy = second_x - first_x, second_y - first_y
+        if math.hypot(dx, dy) > _GEOMETRY_TOLERANCE:
+            valid.append("aligned")
+        if abs(dx) > _GEOMETRY_TOLERANCE:
+            valid.append("horizontal")
+        if abs(dy) > _GEOMETRY_TOLERANCE:
+            valid.append("vertical")
+    elif len(elements) == 2 and kinds == ("edge", "edge"):
+        if not all(_is_line(element) for element in elements):
+            _error(
+                "Linear edge-pair references must both be projected lines.",
+                "NATIVE_DRAWING_DIMENSION_REFERENCES_INVALID",
+                repair={
+                    "requested_subelements": names,
+                    "accepted_references": "two parallel projected line edges",
+                },
+            )
+        first_dx, first_dy = _line_vector(elements[0])
+        second_dx, second_dy = _line_vector(elements[1])
+        first_length = math.hypot(first_dx, first_dy)
+        second_length = math.hypot(second_dx, second_dy)
+        cross = first_dx * second_dy - first_dy * second_dx
+        if (
+            first_length <= _GEOMETRY_TOLERANCE
+            or second_length <= _GEOMETRY_TOLERANCE
+            or abs(cross)
+            > _GEOMETRY_TOLERANCE * first_length * second_length
+        ):
+            _error(
+                "Linear edge-pair references must be two parallel projected lines.",
+                "NATIVE_DRAWING_DIMENSION_REFERENCES_INVALID",
+                repair={
+                    "requested_subelements": names,
+                    "accepted_references": "two parallel projected line edges",
+                },
+            )
+        first_x, first_y = _point_xy(elements[0]["start_in_view_mm"])
+        second_x, second_y = _point_xy(elements[1]["start_in_view_mm"])
+        separation = abs(
+            first_dx * (second_y - first_y)
+            - first_dy * (second_x - first_x)
+        ) / first_length
+        if separation > _GEOMETRY_TOLERANCE:
+            valid.append("aligned")
+            if abs(first_dx) <= _GEOMETRY_TOLERANCE:
+                valid.append("horizontal")
+            if abs(first_dy) <= _GEOMETRY_TOLERANCE:
+                valid.append("vertical")
+    else:
+        # TechDraw also supports explicit point-to-line and single-point
+        # coordinate forms. Its validator remains authoritative for those.
+        return
+
+    requested = _LINEAR_DIRECTION[operation]
+    if requested not in valid:
+        noun = " and ".join(names)
+        _error(
+            f"Projected line references {noun} cannot measure {requested} separation."
+            if kinds == ("edge", "edge")
+            else f"Projected references {noun} measure 0 mm {requested}.",
+            "NATIVE_DRAWING_DIMENSION_REFERENCES_INVALID",
+            repair={
+                "requested_subelements": names,
+                "valid_directions": valid,
+            },
+        )
 
 
 def _validate_with_host(view: Any, spec: DimensionSpec) -> dict[str, Any]:
@@ -612,7 +732,7 @@ def _validate_with_host(view: Any, spec: DimensionSpec) -> dict[str, Any]:
             repair={
                 "accepted_references": _REFERENCE_GUIDANCE[spec.operation],
                 "requested_subelements": list(spec.subelements),
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if not isinstance(raw, Mapping) or set(raw) != {
@@ -642,13 +762,19 @@ def prepare_drawing_dimension(
     operation: str,
     values: Mapping[str, Any],
 ) -> PreparedDrawingDimension:
-    spec = _spec(operation, values)
     page, page_state = _resolve_page(document, values["page"])
     view, view_state, projection_state = _resolve_view(
         document,
         page,
         values["view"],
     )
+    host_values = dict(values)
+    host_values["label_position_in_view_mm"] = drawing_label_position_in_view_mm(
+        view,
+        host_values.pop("label_position_on_page_mm"),
+        page=page,
+    )
+    spec = _spec(operation, host_values)
     targets = _reference_targets(operation, values)
     element_states = _resolve_elements(operation, projection_state, targets)
     if tuple(item["name"] for item in element_states) != tuple(
@@ -658,6 +784,8 @@ def prepare_drawing_dimension(
             "The Drawing dimension reference order is inconsistent.",
             "NATIVE_DRAWING_DIMENSION_REFERENCES_INVALID",
         )
+    if operation in _LINEAR_DIRECTION:
+        _validate_linear_reference_geometry(operation, element_states)
     validation = _validate_with_host(view, spec)
     return PreparedDrawingDimension(
         page=page,
@@ -722,6 +850,11 @@ def mutate_drawing_dimension(
                 spec.y_mm,
             )
         dimension.Label = spec.label
+        # The host helper touches the source view so dependent presentation
+        # can refresh.  This exact mutation recomputes the new dimension and
+        # page itself; retain the accepted projection instead of leaving it
+        # queued for an unrelated HLR pass on the next dimension.
+        prepared.view.purgeTouched()
     except Exception as exc:
         raise NativeMutationError(
             "NATIVE_DRAWING_DIMENSION_CREATE_FAILED",
@@ -753,9 +886,12 @@ def mutate_drawing_dimension(
             "dimension": dimension,
             "creation_details": creation_details,
         },
-        recompute_targets=(dimension, prepared.view, prepared.page),
+        # The source projection is verified immutable.  Recomputing it here is
+        # both unnecessary and, for projection-group items, starts a second
+        # asynchronous HLR pass after the detached projection was accepted.
+        recompute_targets=(dimension, prepared.page),
         created=(object_identity(dimension),),
-        changed=(object_identity(prepared.page), object_identity(prepared.view)),
+        changed=(object_identity(prepared.page),),
     )
 
 
@@ -771,6 +907,58 @@ def _matches_document_label(actual: str, requested: str) -> bool:
     """Accept the request or FreeCAD's deterministic unique-label form."""
 
     return matches_preferred_document_label(actual, requested)
+
+
+def _dimension_state_mismatches(
+    state: Mapping[str, Any],
+    *,
+    spec: DimensionSpec,
+    page_name: str,
+    view_name: str,
+    is_extent: bool,
+) -> tuple[str, ...]:
+    expected_references = [
+        {"view_name": view_name, "subelement": name}
+        for name in spec.subelements
+    ]
+    mismatches = []
+    checks = (
+        ("label", _matches_document_label(str(state["label"]), spec.label)),
+        ("page", state["page_name"] == page_name),
+        ("view", state["view_name"] == view_name),
+        ("dimension_type", state["dimension_type"] == spec.dimension_type),
+        ("measure_type", state["measure_type"] == "Projected"),
+        (
+            "references",
+            state["target"]
+            == {"scope": spec.target_scope, "subelements": list(spec.subelements)}
+            if is_extent
+            else state["references"] == expected_references,
+        ),
+        (
+            "label_position_x",
+            math.isclose(
+                float(state["label_position_in_view_mm"]["x_mm"]),
+                spec.x_mm,
+                abs_tol=1.0e-9,
+            ),
+        ),
+        (
+            "label_position_y",
+            math.isclose(
+                float(state["label_position_in_view_mm"]["y_mm"]),
+                spec.y_mm,
+                abs_tol=1.0e-9,
+            ),
+        ),
+        ("measured_value", float(state["measured_value"]["value"]) > 1.0e-12),
+        ("timeline_role", state["timeline_role"] == "operation"),
+        ("timeline_owner", not state["timeline_owner_name"]),
+        ("timeline_usable", bool(state["timeline_usable"])),
+        ("valid", bool(state["valid"])),
+    )
+    mismatches.extend(name for name, matches in checks if not matches)
+    return tuple(mismatches)
 
 
 def _verify_drawing_dimension(
@@ -794,12 +982,12 @@ def _verify_drawing_dimension(
             "Drawing dimension creation changed objects, page membership, or History "
             "outside its exact result."
         )
+    current_view_state = drawing_view_state(prepared.view)
+    current_projection_state = drawing_projected_geometry_state(prepared.view)
     if (
-        drawing_view_state(prepared.view)["state_sha256"]
+        current_view_state["state_sha256"]
         != prepared.view_state_before["state_sha256"]
-        or drawing_projected_geometry_state(prepared.view)[
-            "projection_state_sha256"
-        ]
+        or current_projection_state["projection_state_sha256"]
         != prepared.projection_state_before["projection_state_sha256"]
     ):
         _postcondition_error(
@@ -826,41 +1014,27 @@ def _verify_drawing_dimension(
         if is_axonometric
         else drawing_dimension_state(dimension)
     )
-    expected_references = [
-        {"view_name": str(prepared.view.Name), "subelement": name}
-        for name in spec.subelements
-    ]
-    measured_value = float(state["measured_value"]["value"])
-    if (
-        not _matches_document_label(state["label"], spec.label)
-        or state["page_name"] != str(prepared.page.Name)
-        or state["view_name"] != str(prepared.view.Name)
-        or state["dimension_type"] != spec.dimension_type
-        or state["measure_type"] != "Projected"
-        or (
-            is_extent
-            and state["target"]
-            != {"scope": spec.target_scope, "subelements": list(spec.subelements)}
-        )
-        or (not is_extent and state["references"] != expected_references)
-        or not math.isclose(
-            float(state["label_position_in_view_mm"]["x_mm"]),
-            spec.x_mm,
-            abs_tol=1.0e-9,
-        )
-        or not math.isclose(
-            float(state["label_position_in_view_mm"]["y_mm"]),
-            spec.y_mm,
-            abs_tol=1.0e-9,
-        )
-        or measured_value <= 1.0e-12
-        or state["timeline_role"] != "operation"
-        or state["timeline_owner_name"]
-        or not state["timeline_usable"]
-        or not state["valid"]
-    ):
+    mismatches = _dimension_state_mismatches(
+        state,
+        spec=spec,
+        page_name=str(prepared.page.Name),
+        view_name=str(prepared.view.Name),
+        is_extent=is_extent,
+    )
+    if mismatches == ("measured_value",):
+        direction = {
+            "create_horizontal": "horizontally",
+            "create_vertical": "vertically",
+        }.get(spec.operation, "in the requested direction")
         _postcondition_error(
-            "The projected Drawing dimension did not retain its exact requested state.",
+            "The projected references "
+            f"{', '.join(spec.subelements)} measure 0 mm {direction}."
+        )
+    if mismatches:
+        _postcondition_error(
+            "The projected Drawing dimension did not retain: "
+            + ", ".join(mismatches)
+            + ".",
         )
     creation_details = draft.value.get("creation_details", {})
     if is_axonometric:
@@ -901,7 +1075,7 @@ def _verify_drawing_dimension(
             "state_sha256": page_state["state_sha256"],
             "view_count": page_state["view_count"],
         },
-        "dimension": state,
+        "dimension": provider_drawing_dimension_state(state, prepared.view),
     }
     if is_axonometric:
         result["value_mode"] = spec.expected_value_mode

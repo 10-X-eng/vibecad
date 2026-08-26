@@ -73,6 +73,92 @@ class NativeProviderToolRunner:
         self._turn_transition_requested = False
         self._pending_context: dict[str, Any] | None = None
 
+    @staticmethod
+    def _background_job(snapshot: Any) -> dict[str, Any]:
+        result = {
+            "job_id": str(getattr(snapshot, "job_id", "") or ""),
+            "capability": str(
+                getattr(snapshot, "capability_name", "") or ""
+            ),
+            "phase": str(getattr(snapshot, "phase", "") or ""),
+            "terminal": bool(getattr(snapshot, "terminal", False)),
+        }
+        failure = getattr(snapshot, "error", None)
+        if isinstance(failure, Mapping):
+            result["failure"] = dict(failure)
+        return result
+
+    def _wait_for_active_background_job(
+        self,
+        tool_name: str,
+    ) -> dict[str, Any] | None:
+        if tool_name == "native.job":
+            return None
+        manager = self._execution.background_manager
+        document_uid = str(self._execution.document_uid or "")
+        if manager is None or not document_uid:
+            return None
+        try:
+            snapshot = manager.latest_document_snapshot(document_uid)
+        except Exception:
+            return {
+                "ok": False,
+                "error_code": "NATIVE_BACKGROUND_STATE_INVALID",
+                "error": "The active document background state is unavailable.",
+            }
+        if snapshot is None or bool(getattr(snapshot, "terminal", False)):
+            return None
+        job_id = str(getattr(snapshot, "job_id", "") or "")
+        _emit(
+            self._progress,
+            {
+                "event": "native_background_waiting",
+                "job_id": job_id,
+                "capability": str(
+                    getattr(snapshot, "capability_name", "") or ""
+                ),
+            },
+        )
+        while not bool(getattr(snapshot, "terminal", False)):
+            if self._cancelled is not None and self._cancelled():
+                try:
+                    manager.cancel(job_id)
+                except Exception:
+                    pass
+                return {
+                    "ok": False,
+                    "error_code": "NATIVE_RUN_CANCELLED",
+                    "error": "VibeCAD stopped before this Native call executed.",
+                    "job": self._background_job(snapshot),
+                }
+            try:
+                snapshot = manager.wait(job_id, timeout=0.1)
+            except Exception:
+                return {
+                    "ok": False,
+                    "error_code": "NATIVE_BACKGROUND_STATE_INVALID",
+                    "error": "The active document background state is unavailable.",
+                }
+        if str(getattr(snapshot, "phase", "") or "") == "completed":
+            return None
+        failure = getattr(snapshot, "error", None)
+        return {
+            "ok": False,
+            "error_code": str(
+                failure.get("error_code")
+                if isinstance(failure, Mapping)
+                else ""
+            )
+            or "NATIVE_BACKGROUND_PREREQUISITE_FAILED",
+            "error": str(
+                failure.get("message")
+                if isinstance(failure, Mapping)
+                else ""
+            )
+            or "The active document background operation did not complete.",
+            "job": self._background_job(snapshot),
+        }
+
     def __call__(
         self,
         tool_name: str,
@@ -97,13 +183,15 @@ class NativeProviderToolRunner:
             self._progress,
             {"event": "native_tool_started", "tool_name": name},
         )
-        result = self._document_dispatch(
-            lambda: self._execution.dispatcher.call(
-                name,
-                arguments_json,
-                provider_call_id,
+        result = self._wait_for_active_background_job(name)
+        if result is None:
+            result = self._document_dispatch(
+                lambda: self._execution.dispatcher.call(
+                    name,
+                    arguments_json,
+                    provider_call_id,
+                )
             )
-        )
         if self._debug_events is not None and self._debug_capture_directory:
             events = [dict(event) for event in self._debug_events]
             self._debug_events.clear()

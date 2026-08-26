@@ -125,6 +125,7 @@ public:
     void setPrecomputedSection(const TopoDS_Shape& cutPieces,
                                const TopoDS_Shape& sectionFaces,
                                const Base::Vector3d& centroid);
+    bool restorePrecomputedState() override;
     void requestPrecomputedSectionPaint();
     PyObject* getPyObject() override;
 

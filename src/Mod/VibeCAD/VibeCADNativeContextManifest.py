@@ -1136,31 +1136,31 @@ NATIVE_CONTEXT_ACTIONS = (
     ),
     _action(
         "TechDrawContextEditBalloon", ("drawing",), ("tree_context",),
-        "human_only", "drawing.annotation", None,
+        "human_only", "drawing.balloon", None,
         "TechDraw::DrawViewBalloon", "human", interactive=True,
     ),
     _action(
         "TechDrawContextEditDimension", ("drawing",), ("tree_context",),
-        "human_only", "drawing.dimension", None,
+        "human_only", "drawing.edit_dimension", None,
         "TechDraw::DrawViewDimension", "human", interactive=True,
     ),
     _action(
         "TechDrawContextShowDrawing", ("drawing",), ("tree_context",),
-        "view", "drawing.presentation", "show", "TechDraw::DrawPage", "presentation",
+        "view", "drawing.show_page", "show", "TechDraw::DrawPage", "presentation",
     ),
     _action(
         "TechDrawContextToggleKeepUpdated", ("drawing",),
-        ("tree_context", "drawing_canvas_context"), "mutation", "drawing.page",
+        ("tree_context", "drawing_canvas_context"), "mutation", "drawing.page_updates",
         "set_keep_updated", "ExactDrawingPageAndUpdatePolicyState", "document",
     ),
     _action(
         "TechDrawContextToggleFrames", ("drawing",), ("drawing_canvas_context",),
-        "view", "drawing.presentation", "set_frame_visibility",
+        "view", "drawing.page_frames", "set_visibility",
         "HumanActiveDrawingPageAndExactFrameVisibilityState", "presentation",
     ),
     _action(
         "TechDrawContextToggleGrid", ("drawing",), ("drawing_canvas_context",),
-        "view", "drawing.presentation", "set_grid_visibility",
+        "view", "drawing.page_grid", "set_visibility",
         "HumanActiveDrawingPageAndExactGridVisibilityState", "presentation",
     ),
     _action(

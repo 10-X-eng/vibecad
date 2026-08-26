@@ -63,6 +63,7 @@
 #include <gp_Pnt.hxx>
 #include <algorithm>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 
@@ -218,6 +219,24 @@ void DrawViewPart::setPrecomputedProjection(
     const TopoDS_Shape& faces,
     const Base::Vector3d& centroid)
 {
+    adoptPrecomputedProjection(edges,
+                               edgeClasses,
+                               edgeVisibility,
+                               sourceIndices,
+                               faces,
+                               centroid,
+                               true);
+}
+
+void DrawViewPart::adoptPrecomputedProjection(
+    const TopoDS_Shape& edges,
+    const std::vector<long>& edgeClasses,
+    const std::vector<bool>& edgeVisibility,
+    const std::vector<long>& sourceIndices,
+    const TopoDS_Shape& faces,
+    const Base::Vector3d& centroid,
+    bool persist)
+{
     constexpr size_t maxProjectedEdges = 200000;
     constexpr size_t maxProjectedFaces = 50000;
 
@@ -271,21 +290,23 @@ void DrawViewPart::setPrecomputedProjection(
         throw Base::ValueError("Precomputed TechDraw projection contains no valid edges");
     }
 
-    // Persist the exact worker result only after it has been validated and
-    // reconstructed successfully.  This preserves the previous accepted
-    // cache if a candidate is malformed.
-    PrecomputedProjectionEdges.setValue(edges, false);
-    PrecomputedProjectionFaces.setValue(faces, false);
-    PrecomputedEdgeClasses.setValues(edgeClasses);
-    boost::dynamic_bitset<> visibilityBits(edgeVisibility.size());
-    for (size_t index = 0; index < edgeVisibility.size(); ++index) {
-        visibilityBits.set(index, edgeVisibility[index]);
-    }
-    PrecomputedEdgeVisibility.setValues(visibilityBits);
-    PrecomputedSourceIndices.setValues(sourceIndices);
-    PrecomputedProjectionCentroid.setValue(centroid);
     const std::string sourceState = geometrySourceStateSignature();
-    PrecomputedProjectionSourceState.setValue(sourceState.c_str());
+    if (persist) {
+        // Persist a new worker result only after it has been validated and
+        // reconstructed successfully.  Restoring an existing result must not
+        // rewrite these properties or mark the view for native recomputation.
+        PrecomputedProjectionEdges.setValue(edges, false);
+        PrecomputedProjectionFaces.setValue(faces, false);
+        PrecomputedEdgeClasses.setValues(edgeClasses);
+        boost::dynamic_bitset<> visibilityBits(edgeVisibility.size());
+        for (size_t index = 0; index < edgeVisibility.size(); ++index) {
+            visibilityBits.set(index, edgeVisibility[index]);
+        }
+        PrecomputedEdgeVisibility.setValues(visibilityBits);
+        PrecomputedSourceIndices.setValues(sourceIndices);
+        PrecomputedProjectionCentroid.setValue(centroid);
+        PrecomputedProjectionSourceState.setValue(sourceState.c_str());
+    }
 
     geometryObject = std::move(candidate);
     m_tempGeometryObject.reset();
@@ -306,8 +327,11 @@ bool DrawViewPart::restorePrecomputedProjection()
     const TopoDS_Shape& edges = PrecomputedProjectionEdges.getValue();
     const std::string storedSourceState =
         PrecomputedProjectionSourceState.getValue();
+    const std::string currentSourceState = geometrySourceStateSignature();
+    const std::string legacySourceState = sourceStateSignature(getActiveSources());
     if (edges.IsNull() || storedSourceState.empty()
-        || storedSourceState != geometrySourceStateSignature()) {
+        || (storedSourceState != currentSourceState
+            && storedSourceState != legacySourceState)) {
         return false;
     }
     const auto& visibilityBits = PrecomputedEdgeVisibility.getValues();
@@ -315,28 +339,25 @@ bool DrawViewPart::restorePrecomputedProjection()
     for (size_t index = 0; index < visibilityBits.size(); ++index) {
         visibility[index] = visibilityBits.test(index);
     }
-    setPrecomputedProjection(edges,
-                             PrecomputedEdgeClasses.getValues(),
-                             visibility,
-                             PrecomputedSourceIndices.getValues(),
-                             PrecomputedProjectionFaces.getValue(),
-                             PrecomputedProjectionCentroid.getValue());
+    adoptPrecomputedProjection(edges,
+                               PrecomputedEdgeClasses.getValues(),
+                               visibility,
+                               PrecomputedSourceIndices.getValues(),
+                               PrecomputedProjectionFaces.getValue(),
+                               PrecomputedProjectionCentroid.getValue(),
+                               false);
+    refreshAllCosmetic();
     return true;
+}
+
+bool DrawViewPart::restorePrecomputedState()
+{
+    return restorePrecomputedProjection();
 }
 
 void DrawViewPart::onDocumentRestored()
 {
     DrawView::onDocumentRestored();
-    try {
-        restorePrecomputedProjection();
-    }
-    catch (const Base::Exception& error) {
-        Base::Console().error(
-            "Could not restore precomputed TechDraw projection for %s: %s\n",
-            getNameInDocument(),
-            error.what());
-        geometryObject.reset();
-    }
 }
 
 //! returns a compound of all the shapes from the DocumentObjects in the Source &
@@ -557,7 +578,47 @@ std::string DrawViewPart::sourceStateSignature(
 
 std::string DrawViewPart::geometrySourceStateSignature() const
 {
-    return sourceStateSignature(getActiveSources());
+    std::ostringstream state;
+    state << sourceStateSignature(getActiveSources())
+          << "projection=v1;"
+          << std::setprecision(std::numeric_limits<double>::max_digits10);
+    const auto direction = Direction.getValue();
+    const auto xDirection = XDirection.getValue();
+    const auto canonicalDirectionComponent = [](double value) {
+        if (DrawUtil::fpCompare(value, 0.0)) {
+            return 0.0;
+        }
+        if (DrawUtil::fpCompare(value, 1.0)) {
+            return 1.0;
+        }
+        if (DrawUtil::fpCompare(value, -1.0)) {
+            return -1.0;
+        }
+        return value;
+    };
+    state << "scale=" << Scale.getValue()
+          << ":scale-type=" << ScaleType.getValueAsString()
+          << ":direction=" << canonicalDirectionComponent(direction.x) << ','
+          << canonicalDirectionComponent(direction.y) << ','
+          << canonicalDirectionComponent(direction.z)
+          << ":x-direction=" << canonicalDirectionComponent(xDirection.x) << ','
+          << canonicalDirectionComponent(xDirection.y) << ','
+          << canonicalDirectionComponent(xDirection.z)
+          << ":perspective=" << (Perspective.getValue() ? '1' : '0')
+          << ":focus=" << Focus.getValue()
+          << ":rotation=" << Rotation.getValue()
+          << ":smooth-visible=" << (SmoothVisible.getValue() ? '1' : '0')
+          << ":seam-visible=" << (SeamVisible.getValue() ? '1' : '0')
+          << ":iso-visible=" << (IsoVisible.getValue() ? '1' : '0')
+          << ":hard-hidden=" << (HardHidden.getValue() ? '1' : '0')
+          << ":smooth-hidden=" << (SmoothHidden.getValue() ? '1' : '0')
+          << ":seam-hidden=" << (SeamHidden.getValue() ? '1' : '0')
+          << ":iso-hidden=" << (IsoHidden.getValue() ? '1' : '0')
+          << ":iso-count=" << IsoCount.getValue()
+          << ":scrub-count=" << ScrubCount.getValue()
+          << ":coarse=" << (CoarseView.getValue() ? '1' : '0')
+          << ';';
+    return state.str();
 }
 
 bool DrawViewPart::geometryMatchesActiveSources() const
@@ -612,6 +673,24 @@ App::DocumentObjectExecReturn* DrawViewPart::execute()
     }
 
     if (!keepUpdated()) {
+        return DrawView::execute();
+    }
+
+    const bool cosmeticGeometryTouched = CosmeticVertexes.isTouched()
+        || CosmeticEdges.isTouched() || CenterLines.isTouched();
+    const bool projectionGeometryTouched = Scale.isTouched()
+        || ScaleType.isTouched() || Direction.isTouched()
+        || XDirection.isTouched() || Source.isTouched() || XSource.isTouched()
+        || Perspective.isTouched() || Focus.isTouched() || Rotation.isTouched()
+        || SmoothVisible.isTouched() || SeamVisible.isTouched()
+        || IsoVisible.isTouched() || HardHidden.isTouched()
+        || SmoothHidden.isTouched() || SeamHidden.isTouched()
+        || IsoHidden.isTouched() || IsoCount.isTouched()
+        || ScrubCount.isTouched() || CoarseView.isTouched();
+    if (cosmeticGeometryTouched && !projectionGeometryTouched
+        && geometryObject && geometryMatchesActiveSources()) {
+        refreshAllCosmetic();
+        requestPaint();
         return DrawView::execute();
     }
 

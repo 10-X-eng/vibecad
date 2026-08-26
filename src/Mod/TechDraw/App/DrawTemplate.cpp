@@ -27,6 +27,8 @@
 
 
 #include <Base/Console.h>
+#include <Base/UnitsApi.h>
+#include <Base/UnitsSchema.h>
 
 #include <App/Application.h>
 #include <App/Document.h>
@@ -168,6 +170,11 @@ QString DrawTemplate::getAutofillValue(const QString &id) const
             std::pair<int, int> scale = DrawUtil::nearestFraction(page->Scale.getValue());
             return QString::asprintf("%d : %d", scale.first, scale.second);
         }
+    }
+    // governing length unit
+    else if (id.compare(QString::fromUtf8(Autofill::Units)) == 0) {
+        const auto schema = Base::UnitsApi::createSchema(doc->UnitSystem.getValue());
+        return QString::fromStdString(schema->getBasicLengthUnit());
     }
     // sheet
     else if (id.compare(QString::fromUtf8(Autofill::Sheet)) == 0) {

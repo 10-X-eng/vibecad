@@ -9,6 +9,7 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeDrawingErrors import NativeDrawingError
+from VibeCADNativeDrawingDimensionSupport import drawing_position_within_page_bounds
 from VibeCADNativeDrawingState import drawing_page_state, is_drawing_page
 from VibeCADNativeDrawingViewState import (
     DRAWING_VIEW_ORIENTATIONS,
@@ -116,25 +117,40 @@ def _spec(values: Mapping[str, Any]) -> StandardViewSpec:
             "Drawing view position requires only x_mm and y_mm.",
             error_code="NATIVE_DRAWING_VIEW_PARAMETERS_INVALID",
         )
-    scale_value = values["scale"]
-    if not isinstance(scale_value, Mapping):
-        raise NativeDrawingError(
-            "Drawing view scale requires an exact page or custom choice.",
-            error_code="NATIVE_DRAWING_VIEW_PARAMETERS_INVALID",
-        )
-    scale_kind = str(scale_value.get("kind") or "")
-    if scale_kind == "page" and set(scale_value) == {"kind"}:
+    scale_value = values.get("scale", "page")
+    if scale_value == "page":
+        scale_kind = "page"
         scale = None
-    elif scale_kind == "custom" and set(scale_value) == {"kind", "value"}:
+    elif (
+        isinstance(scale_value, Mapping)
+        and set(scale_value) == {"kind"}
+        and scale_value["kind"] == "page"
+    ):
+        scale_kind = "page"
+        scale = None
+    elif (
+        isinstance(scale_value, Mapping)
+        and set(scale_value) == {"kind", "value"}
+        and scale_value["kind"] == "custom"
+    ):
+        scale_kind = "custom"
         scale = _finite(
             scale_value["value"],
             name="Drawing view scale",
             minimum=1.0e-12,
             maximum=1_000.0,
         )
+    elif type(scale_value) in {int, float}:
+        scale_kind = "custom"
+        scale = _finite(
+            scale_value,
+            name="Drawing view scale",
+            minimum=1.0e-12,
+            maximum=1_000.0,
+        )
     else:
         raise NativeDrawingError(
-            "Drawing view scale must be exactly page or custom with value.",
+            "Drawing view scale must select page or a positive custom value.",
             error_code="NATIVE_DRAWING_VIEW_PARAMETERS_INVALID",
         )
     line_style = str(values["line_style"] or "")
@@ -177,6 +193,7 @@ def prepare_standard_view_create(
     document: Any,
     *,
     values: Mapping[str, Any],
+    validate_position: bool = True,
 ) -> PreparedStandardView:
     spec = _spec(values)
     page_target = values["page"]
@@ -196,6 +213,13 @@ def prepare_standard_view_create(
             repair={"current_state_sha256": page_state["state_sha256"]},
         )
     _require_usable(document, page, "Drawing page")
+    if validate_position:
+        drawing_position_within_page_bounds(
+            page,
+            {"x_mm": spec.x_mm, "y_mm": spec.y_mm},
+            noun="view",
+            error_code="NATIVE_DRAWING_VIEW_POSITION_INVALID",
+        )
     source_targets = tuple(values["sources"])
     names = tuple(str(target["object_name"]) for target in source_targets)
     if len(names) != len(set(names)):

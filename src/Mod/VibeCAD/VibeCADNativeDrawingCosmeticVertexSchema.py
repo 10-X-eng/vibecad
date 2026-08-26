@@ -73,16 +73,14 @@ _VIEW = _closed(
 _EDGE = _closed(
     {
         "subelement": _EDGE_NAME,
-        "expected_element_state_sha256": _SHA256,
     },
-    ("subelement", "expected_element_state_sha256"),
+    ("subelement",),
 )
 _VERTEX = _closed(
     {
         "subelement": _VERTEX_NAME,
-        "expected_element_state_sha256": _SHA256,
     },
-    ("subelement", "expected_element_state_sha256"),
+    ("subelement",),
 )
 _OFFSET = _closed(
     {
@@ -121,7 +119,7 @@ def drawing_cosmetic_vertex_capability_definition() -> NativeCapabilityDefinitio
         name=DRAWING_COSMETIC_VERTEX_CAPABILITY_NAME,
         description=(
             "Create durable host-styled Drawing cosmetic vertices at an explicit "
-            "unscaled view point or from exact hash-pinned projected geometry. "
+            "unscaled view point or from exact projected geometry. "
             "TechDraw owns coordinate conversion, formatting, and persistence."
         ),
         primary_classification="mutation",

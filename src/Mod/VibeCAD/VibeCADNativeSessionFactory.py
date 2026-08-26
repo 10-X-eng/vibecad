@@ -16,6 +16,7 @@ from VibeCADNativeCapabilityRegistry import (
     provider_visible_native_schema,
 )
 from VibeCADNativeInput import NativeInputAuthorizer
+from VibeCADModelingSurface import NATIVE_DERIVED_ARTIFACT_SURFACES
 from VibeCADNativeOutput import NativeOutputAuthorizer
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -37,6 +38,8 @@ class NativeSessionExecution:
     undo_ledger: NativeAssistantUndoLedger
     run_id: str
     authority_release: Callable[[], None] | None = None
+    background_manager: Any | None = None
+    document_uid: str = ""
     _closed: bool = field(default=False, init=False, repr=False)
 
     def close(self) -> None:
@@ -182,11 +185,16 @@ def create_native_session_execution(
     document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = None,
 ) -> NativeSessionExecution:
     authoring_engine = str(service.modeling_engine() or "").strip().lower()
-    scoped_analyze = (
-        authoring_engine == "vibescript"
-        and str(expected_surface.get("domain") or "") == "analyze"
+    requested_surface_id = str(expected_surface.get("domain") or "")
+    scoped_surface_id = (
+        requested_surface_id
+        if (
+            authoring_engine == "vibescript"
+            and requested_surface_id in NATIVE_DERIVED_ARTIFACT_SURFACES
+        )
+        else None
     )
-    if authoring_engine != "native" and not scoped_analyze:
+    if authoring_engine != "native" and scoped_surface_id is None:
         raise NativeDispatchError(
             "NATIVE_AUTHORITY_CHANGED",
             "The document is no longer under Native authority.",
@@ -234,10 +242,10 @@ def create_native_session_execution(
                 "NATIVE_AUTHORITY_CHANGED",
                 "Native mutation authority is not active for the exact document.",
             )
-    elif turn.surface.surface_id != "analyze":
+    elif turn.surface.surface_id != scoped_surface_id:
         raise NativeDispatchError(
             "NATIVE_AUTHORITY_CHANGED",
-            "Only the Analyze ribbon can use scoped Native authority.",
+            "The frozen ribbon cannot use scoped Native authority.",
         )
 
     def reauthorize() -> NativeTurnSnapshot:
@@ -262,9 +270,20 @@ def create_native_session_execution(
         )
     undo.begin_run(run_id)
     scope_token = (
-        state.begin_scoped_authority(uid, "analyze") if scoped_analyze else None
+        state.begin_scoped_authority(
+            uid,
+            scoped_surface_id,
+            exact_capabilities=("document.undo",),
+        )
+        if scoped_surface_id is not None
+        else None
     )
     background_manager_factory = getattr(service, "native_background_manager", None)
+    background_manager = (
+        background_manager_factory()
+        if callable(background_manager_factory)
+        else None
+    )
     try:
         context = NativeRuntimeContext(
             service=service,
@@ -277,13 +296,10 @@ def create_native_session_execution(
             edit_or_task_active=lambda: _edit_or_task_active(service),
             authorize_output=output_authorizer,
             authorize_input=input_authorizer,
-            background_manager=(
-                background_manager_factory()
-                if callable(background_manager_factory)
-                else None
-            ),
+            background_manager=background_manager,
             document_thread_dispatch=document_thread_dispatch,
             run_id=run_id,
+            scoped_capability_prefix=scoped_surface_id,
         )
         dispatcher = NativeTurnDispatcher(
             document=document,
@@ -305,4 +321,12 @@ def create_native_session_execution(
         if scope_token is not None
         else None
     )
-    return NativeSessionExecution(dispatcher, turn, undo, run_id, release)
+    return NativeSessionExecution(
+        dispatcher,
+        turn,
+        undo,
+        run_id,
+        release,
+        background_manager,
+        uid,
+    )

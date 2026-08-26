@@ -397,6 +397,11 @@ set(VibeCAD_Scripts
     VibeCADNativeDrawingViewLockRuntime.py
     VibeCADNativeDrawingViewLockSchema.py
     VibeCADNativeDrawingViewLockState.py
+    VibeCADNativeDrawingPlacement.py
+    VibeCADNativeDrawingPlacementBindings.py
+    VibeCADNativeDrawingPlacementRuntime.py
+    VibeCADNativeDrawingPlacementSchema.py
+    VibeCADNativeDrawingPlacementState.py
     VibeCADNativeDrawingSectionPosition.py
     VibeCADNativeDrawingSectionPositionBindings.py
     VibeCADNativeDrawingSectionPositionRuntime.py
@@ -421,6 +426,9 @@ set(VibeCAD_Scripts
     VibeCADNativeDrawingPresentationRuntime.py
     VibeCADNativeDrawingPresentationSchema.py
     VibeCADNativeDrawingPresentationState.py
+    VibeCADNativeDrawingInternalTargets.py
+    VibeCADNativeDrawingProviderState.py
+    VibeCADNativeDrawingSourceCatalog.py
     VibeCADNativeDrawingHatch.py
     VibeCADNativeDrawingHatchBindings.py
     VibeCADNativeDrawingHatchRuntime.py
@@ -526,6 +534,7 @@ set(VibeCAD_Scripts
     VibeCADNativeDrawingPageBindings.py
     VibeCADNativeDrawingPageRuntime.py
     VibeCADNativeDrawingPageSchema.py
+    VibeCADNativeDrawingReadiness.py
     VibeCADNativeDrawingProjectionChild.py
     VibeCADNativeDrawingProjectionInput.py
     VibeCADNativeDrawingProjectionWorker.py
@@ -543,9 +552,11 @@ set(VibeCAD_Scripts
     VibeCADNativeDrawingSnapshot.py
     VibeCADNativeDrawingState.py
     VibeCADNativeDrawingView.py
+    VibeCADNativeDrawingProjectionGroup.py
     VibeCADNativeDrawingViewBindings.py
     VibeCADNativeDrawingViewRuntime.py
     VibeCADNativeDrawingViewSchema.py
+    VibeCADNativeGeometrySources.py
     VibeCADNativeDrawingViewState.py
     VibeCADNativeDesignBodies.py
     VibeCADNativeDesignChamfer.py
@@ -1117,6 +1128,7 @@ set(VibeCAD_Scripts
     VibeCADPreferences.py
     VibeCADPromptStarters.py
     VibeCADProvider.py
+    VibeCADProviderDrawingResult.py
     VibeCADReferenceContracts.py
     VibeCADReferenceRebindAssembly.py
     VibeCADReferenceRebindDrawing.py
@@ -1301,6 +1313,7 @@ if(BUILD_TEST AND BUILD_GUI)
 	    vibecad_tests/native_drawing_page_gui_integration.py
 	    vibecad_tests/native_drawing_redraw_gui_integration.py
 	    vibecad_tests/native_drawing_standard_view_gui_integration.py
+	    vibecad_tests/native_drawing_projection_group_gui_integration.py
 	    vibecad_tests/native_drawing_broken_view_gui_integration.py
 	    vibecad_tests/native_drawing_section_view_gui_integration.py
 	    vibecad_tests/native_drawing_complex_section_gui_integration.py
@@ -1316,6 +1329,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_drawing_line_attributes_gui_integration.py
     vibecad_tests/native_drawing_line_length_gui_integration.py
     vibecad_tests/native_drawing_view_lock_gui_integration.py
+    vibecad_tests/native_drawing_placement_gui_integration.py
     vibecad_tests/native_drawing_section_position_gui_integration.py
 	    vibecad_tests/native_drawing_measurement_annotation_gui_integration.py
 	    vibecad_tests/native_drawing_format_gui_integration.py
@@ -1360,6 +1374,9 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/test_native_drawing_special_dimension.py
     vibecad_tests/test_native_drawing_balloon.py
     vibecad_tests/test_native_drawing_view.py
+    vibecad_tests/test_native_drawing_internal_targets.py
+    vibecad_tests/test_native_drawing_provider_state.py
+    vibecad_tests/test_native_geometry_sources.py
     vibecad_tests/native_parameters_gui_integration.py
     vibecad_tests/native_mesh_io_gui_integration.py
     vibecad_tests/native_mesh_convert_gui_integration.py

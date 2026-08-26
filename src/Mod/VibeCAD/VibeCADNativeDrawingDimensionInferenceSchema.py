@@ -61,9 +61,8 @@ def _element(kind: str) -> dict:
                 "pattern": rf"^{kind}(0|[1-9][0-9]*)$",
                 "maxLength": 32,
             },
-            "expected_element_state_sha256": _SHA256,
         },
-        ("subelement", "expected_element_state_sha256"),
+        ("subelement",),
     )
 
 
@@ -73,13 +72,24 @@ def drawing_dimension_inference_capability_definition() -> NativeCapabilityDefin
             "label": {"type": "string", "minLength": 1, "maxLength": 160},
             "page": _PAGE,
             "view": _VIEW,
-            "label_position_in_view_mm": _closed(
-                {
-                    "x_mm": {"type": "number", "minimum": -10_000.0, "maximum": 10_000.0},
-                    "y_mm": {"type": "number", "minimum": -10_000.0, "maximum": 10_000.0},
-                },
-                ("x_mm", "y_mm"),
-            ),
+            "label_position_on_page_mm": {
+                **_closed(
+                    {
+                        "x_mm": {
+                            "type": "number",
+                            "minimum": -10_000.0,
+                            "maximum": 10_000.0,
+                        },
+                        "y_mm": {
+                            "type": "number",
+                            "minimum": -10_000.0,
+                            "maximum": 10_000.0,
+                        },
+                    },
+                    ("x_mm", "y_mm"),
+                ),
+                "description": "Dimension-label center in page coordinates, in mm.",
+            },
             "elements": {
                 "type": "array",
                 "items": {
@@ -90,7 +100,7 @@ def drawing_dimension_inference_capability_definition() -> NativeCapabilityDefin
                 "description": "Ordered projected elements with unambiguous dimension semantics.",
             },
         },
-        ("label", "page", "view", "label_position_in_view_mm", "elements"),
+        ("label", "page", "view", "label_position_on_page_mm", "elements"),
     )
     return NativeCapabilityDefinition(
         name=DRAWING_DIMENSION_INFERENCE_CAPABILITY_NAME,

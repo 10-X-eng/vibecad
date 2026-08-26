@@ -37,7 +37,7 @@ from VibeCADNativeTargets import object_identity
 _OPERATIONS = frozenset(
     f"create_{construction}" for construction in DRAWING_COSMETIC_LINE_CONSTRUCTIONS
 ) | frozenset({"create_between_vertices"})
-_TARGET_FIELDS = frozenset({"subelement", "expected_element_state_sha256"})
+_TARGET_FIELDS = frozenset({"subelement"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,7 +181,7 @@ def _validate_host(
                     "projected straight edge",
                     "projected vertex",
                 ],
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if spec.operation == "create_between_vertices":
@@ -255,7 +255,7 @@ def prepare_drawing_cosmetic_line(
             repair={
                 "reference_edge": "projected straight edge",
                 "through_vertex": "projected vertex",
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     spec = DrawingCosmeticLineSpec(

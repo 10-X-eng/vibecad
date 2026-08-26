@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from VibeCADNativeDrawingDimensionSupport import (
     drawing_object_key,
+    drawing_position_within_page_bounds,
     drawing_selection_state,
     drawing_timeline_operations,
     drawing_visibility_state,
@@ -157,6 +158,26 @@ def _width(
     }
 
 
+def _requested_width(value: Any) -> dict[str, Any]:
+    if isinstance(value, str) and value in {"auto", "automatic"}:
+        return {"mode": "automatic"}
+    if type(value) in {int, float}:
+        return {
+            "mode": "fixed",
+            "value_mm": _finite(
+                value,
+                "fixed width",
+                minimum=0.0,
+                maximum=1_000_000.0,
+                strictly_positive=True,
+            ),
+        }
+    _error(
+        "Drawing note width must be automatic or a positive number.",
+        "NATIVE_DRAWING_RICH_ANNOTATION_PARAMETERS_INVALID",
+    )
+
+
 def _color(
     value: Any,
     *,
@@ -214,6 +235,26 @@ def _frame(
     }
 
 
+def _requested_frame(
+    value: Any,
+    defaults: Mapping[str, Any],
+) -> dict[str, Any]:
+    if value is None:
+        return dict(defaults)
+    if not isinstance(value, Mapping) or not set(value) <= {
+        "visible",
+        "line_width_mm",
+        "line_style",
+        "color_rgb",
+    }:
+        _error(
+            "Drawing note frame fields are invalid.",
+            "NATIVE_DRAWING_RICH_ANNOTATION_PARAMETERS_INVALID",
+        )
+    merged = {**defaults, **value}
+    return _frame(merged)
+
+
 def _same_number(left: Any, right: Any, *, tolerance: float = 1.0e-9) -> bool:
     return math.isclose(float(left), float(right), rel_tol=0.0, abs_tol=tolerance)
 
@@ -245,7 +286,11 @@ def _same_frame(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
     )
 
 
-def _spec(operation: str, values: Mapping[str, Any]) -> DrawingRichAnnotationSpec:
+def _spec(
+    operation: str,
+    values: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+) -> DrawingRichAnnotationSpec:
     label = str(values["label"] or "")
     if label != label.strip() or not 1 <= len(label) <= 160:
         _error(
@@ -268,10 +313,10 @@ def _spec(operation: str, values: Mapping[str, Any]) -> DrawingRichAnnotationSpe
         )
         for name in ("x_mm", "y_mm")
     }
-    if operation == "create_plain_text":
+    if operation == "plain_text":
         content_kind = "plain_text"
         content = str(values["text"] or "")
-    elif operation == "create_rich_text":
+    elif operation == "safe_html":
         content_kind = "safe_html"
         content = str(values["html"] or "")
     else:
@@ -287,8 +332,8 @@ def _spec(operation: str, values: Mapping[str, Any]) -> DrawingRichAnnotationSpe
         content=content,
         label=label,
         placement=placement,
-        width=_width(values["width"]),
-        frame=_frame(values["frame"]),
+        width=_requested_width(values.get("width", "automatic")),
+        frame=_requested_frame(values.get("frame"), defaults["frame"]),
     )
 
 
@@ -328,28 +373,17 @@ def _target(
         )
     _require_usable(document, page, "Drawing page")
 
-    if not isinstance(owner_target, Mapping):
-        _error(
-            "The Drawing rich annotation owner is malformed.",
-            "NATIVE_DRAWING_RICH_ANNOTATION_PARAMETERS_INVALID",
-        )
-    kind = str(owner_target.get("kind") or "")
-    expected_owner_fields = (
-        frozenset({"kind"})
-        if kind == "page"
-        else frozenset({"kind", "object_name", "expected_owner_state_sha256"})
-    )
-    owner_exact = exact_drawing_mapping(
-        owner_target,
-        expected_owner_fields,
-        "owner target",
-        family="rich annotation",
-        error_code="NATIVE_DRAWING_RICH_ANNOTATION_PARAMETERS_INVALID",
-    )
-    if kind == "page":
+    if owner_target == "page":
         owner = None
         owner_state = None
-    elif kind == "view":
+    elif isinstance(owner_target, Mapping):
+        owner_exact = exact_drawing_mapping(
+            owner_target,
+            frozenset({"object_name", "expected_owner_state_sha256"}),
+            "owner target",
+            family="rich annotation",
+            error_code="NATIVE_DRAWING_RICH_ANNOTATION_PARAMETERS_INVALID",
+        )
         owner = resolve_object(
             document,
             {"document_uid": str(document.Uid), "object_name": owner_exact["object_name"]},
@@ -365,7 +399,7 @@ def _target(
         _require_usable(document, owner, "Drawing annotation owner")
     else:
         _error(
-            "Drawing rich annotation owner kind must be page or view.",
+            "Drawing note owner must be page or one exact Drawing view.",
             "NATIVE_DRAWING_RICH_ANNOTATION_PARAMETERS_INVALID",
         )
     return PreparedDrawingRichAnnotationTarget(
@@ -602,7 +636,6 @@ def _host_plan(
             "NATIVE_DRAWING_RICH_ANNOTATION_CONTENT_INVALID",
             repair={
                 "accepted_content": "plain_text or bounded resource-free safe_html",
-                "read_operation": "read_defaults",
             },
         )
     annotation = raw.get("annotation") if apply and isinstance(raw, Mapping) else None
@@ -640,11 +673,18 @@ def prepare_drawing_rich_annotation(
     operation: str,
     values: Mapping[str, Any],
 ) -> PreparedDrawingRichAnnotation:
-    spec = _spec(operation, values)
+    defaults = drawing_rich_annotation_defaults_state()
+    spec = _spec(operation, values, defaults)
     target = _target(
         document,
         page_target=values["page"],
-        owner_target=values["owner"],
+        owner_target=values.get("owner", "page"),
+    )
+    drawing_position_within_page_bounds(
+        target.page,
+        spec.placement,
+        noun="note",
+        error_code="NATIVE_DRAWING_RICH_ANNOTATION_PLACEMENT_INVALID",
     )
     plan, _annotation = _host_plan(target, spec, apply=False)
     expected_owner = (
@@ -786,7 +826,15 @@ def verify_drawing_rich_annotation(
         _postcondition(
             f"The created Drawing rich annotation does not match its requested {mismatch}."
         )
+    page_state = drawing_page_state(target.page)
+    if page_state["view_count"] != target.page_state_before["view_count"] + 1:
+        _postcondition("The Drawing page did not retain the new rich annotation.")
     return {
+        "page": {
+            "object_name": page_state["object_name"],
+            "state_sha256": page_state["state_sha256"],
+            "view_count": page_state["view_count"],
+        },
         "annotation": state,
         "next": {
             "tool": "inspect.query",

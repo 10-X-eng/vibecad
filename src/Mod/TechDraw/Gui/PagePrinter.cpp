@@ -457,8 +457,20 @@ void PagePrinter::saveSVG(ViewProviderPage* vpPage, const std::string& file)
     auto ourDoc = vpPage->getDocument();
     auto docModifiedState = ourDoc->isModified();
 
+    // SVG pages have the template's paper background, so render annotations
+    // with their document colors just as the PDF path does.
+    bool saveLightOnDark = Preferences::lightOnDark();
+    if (saveLightOnDark) {
+        Preferences::lightOnDark(false);
+        ourScene->redrawAllViews();
+    }
+
     ourScene->saveSvg(filename);
 
+    Preferences::lightOnDark(saveLightOnDark);
+    if (saveLightOnDark) {
+        ourScene->redrawAllViews();
+    }
     ourScene->setExportingSvg(false);
     ourDoc->setModified(docModifiedState);
 }

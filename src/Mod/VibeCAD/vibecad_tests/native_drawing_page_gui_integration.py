@@ -22,7 +22,7 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAME
+from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAMES
 from VibeCADNativeDrawingSnapshot import build_drawing_snapshot
 from VibeCADNativeDrawingState import drawing_page_state, template_content_state
 from VibeCADNativeInput import authorize_native_input_path
@@ -34,6 +34,20 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+PAGE_TOOLS = (
+    DRAWING_PAGE_CAPABILITY_NAMES[0],
+    DRAWING_PAGE_CAPABILITY_NAMES[1],
+    DRAWING_PAGE_CAPABILITY_NAMES[2],
+    DRAWING_PAGE_CAPABILITY_NAMES[4],
+)
+PAGE_TOOL_BY_OPERATION = {
+    "page_default": PAGE_TOOLS[0],
+    "page_template": PAGE_TOOLS[1],
+    "fill_template_fields": PAGE_TOOLS[2],
+    "set_keep_updated": PAGE_TOOLS[3],
+}
 
 
 def _events(rounds: int = 16) -> None:
@@ -100,16 +114,12 @@ def _human_default_page_hash() -> str:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAME)
-    assert definition is not None
-    operations = (
-        "page_default",
-        "page_template",
-        "fill_template_fields",
-        "set_keep_updated",
-    )
-    schema = definition.provider_schema(operations)
-    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    schemas = []
+    for operation, tool_name in PAGE_TOOL_BY_OPERATION.items():
+        definition = registry.definition(tool_name)
+        assert definition is not None
+        schemas.append(definition.provider_schema((operation,)))
+    encoded = json.dumps(schemas, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert "expected_state_sha256" in encoded
     assert "expected_value" in encoded
@@ -119,8 +129,8 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(DRAWING_PAGE_CAPABILITY_NAME,),
-            schemas=(schema,),
+            tool_names=PAGE_TOOLS,
+            schemas=tuple(schemas),
             human_only_action_ids=(),
             missing_definition_names=(),
             missing_implementation_names=(),
@@ -164,17 +174,17 @@ def _run() -> None:
             )
         } == {
             "TechDraw_PageDefault": (
-                DRAWING_PAGE_CAPABILITY_NAME,
+                PAGE_TOOL_BY_OPERATION["page_default"],
                 "page_default",
                 "NewDrawingPageWithConfiguredTemplate",
             ),
             "TechDraw_PageTemplate": (
-                DRAWING_PAGE_CAPABILITY_NAME,
+                PAGE_TOOL_BY_OPERATION["page_template"],
                 "page_template",
                 "HumanAuthorizedSvgTemplateForNewDrawingPage",
             ),
             "TechDraw_FillTemplateFields": (
-                DRAWING_PAGE_CAPABILITY_NAME,
+                PAGE_TOOL_BY_OPERATION["fill_template_fields"],
                 "fill_template_fields",
                 "ExactDrawingPageAndEditableTemplateFields",
             ),
@@ -231,22 +241,28 @@ def _run() -> None:
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
             authorize_input=authorize,
         )
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state_store,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def refresh_dispatcher() -> NativeTurnDispatcher:
+            nonlocal turn, frozen
+            turn = _turn(surface, registry)
+            frozen = turn.surface
+            return NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = refresh_dispatcher()
         call_index = 0
 
         def call(arguments: dict, *, succeeds: bool = True) -> dict:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                DRAWING_PAGE_CAPABILITY_NAME,
+                PAGE_TOOL_BY_OPERATION[str(arguments.get("operation") or "")],
                 json.dumps(arguments, separators=(",", ":")),
                 f"native-drawing-page-{call_index}",
             )
@@ -284,10 +300,11 @@ def _run() -> None:
         default_page = document.getObject(default_page_name)
         assert default_page is not None
         assert drawing_page_state(default_page)["state_sha256"] == default_state["state_sha256"]
+        dispatcher = refresh_dispatcher()
 
         input_mode["kind"] = "cancel"
         cancelled = call({"operation": "page_template"}, succeeds=False)
-        assert cancelled["error_code"] == "NATIVE_DRAWING_TEMPLATE_INPUT_CANCELLED"
+        assert cancelled["error_code"] == "NATIVE_DRAWING_TEMPLATE_INPUT_CANCELLED", cancelled
         pages_before_custom = tuple(document.findObjects(Type="TechDraw::DrawPage"))
 
         input_mode["kind"] = "drift"
@@ -349,7 +366,6 @@ def _run() -> None:
         updates = [
             {
                 "field_name": name,
-                "expected_value": fields[name],
                 "value": f"Native {index + 1}",
             }
             for index, name in enumerate(selected_fields)
@@ -426,6 +442,7 @@ def _run() -> None:
         keep_updated_action.trigger()
         _events(12)
         assert bool(custom_page.KeepUpdated) is keep_updated_before
+        dispatcher = refresh_dispatcher()
 
         keep_updated_state = drawing_page_state(custom_page)
         update_arguments = {

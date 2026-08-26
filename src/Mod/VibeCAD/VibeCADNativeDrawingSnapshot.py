@@ -66,6 +66,12 @@ from VibeCADNativeDrawingGeometryState import (
     drawing_projected_geometry_state,
     selected_projected_geometry_state,
 )
+from VibeCADNativeDrawingProjectionGroup import projection_group_summary
+from VibeCADNativeDrawingPlacementState import (
+    NativeDrawingPlacementStateError,
+    drawing_view_placement_state,
+    is_positionable_drawing_view,
+)
 from VibeCADNativeDrawingLineAttributeState import (
     MAX_DRAWING_LINE_ATTRIBUTE_TARGETS,
     NativeDrawingLineAttributeStateError,
@@ -120,6 +126,7 @@ from VibeCADNativeDrawingViewState import (
     is_drawing_view,
     is_part_drawing_view,
 )
+from VibeCADNativeGeometrySources import active_design_geometry_sources
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
@@ -128,6 +135,7 @@ MAX_SELECTED_CLIP_GROUPS = 4
 MAX_SELECTED_PROJECTED_VIEWS = 4
 MAX_SELECTED_DIMENSIONS = 16
 MAX_UNRESOLVED_DRAWING_REFERENCES = 16
+MAX_DRAWING_SOURCES = 48
 _PROJECTED_ELEMENT_NAME = re.compile(r"^(?:Edge|Vertex|Face)(?:0|[1-9][0-9]*)$")
 
 
@@ -223,6 +231,24 @@ def _view_summary(
     line_length_inventories_by_view: dict[str, dict[str, Any] | None],
 ) -> dict[str, Any]:
     result = concise_object(view)
+    if is_positionable_drawing_view(view):
+        try:
+            placement = drawing_view_placement_state(view)
+            result["placement"] = {
+                "placement_target": {"object_name": placement["object_name"]},
+                "position_on_page_mm": placement["position_on_page_mm"],
+                "locked": placement["locked"],
+            }
+        except (
+            AttributeError,
+            NativeDrawingPlacementStateError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
+            pass
+    if str(getattr(view, "TypeId", "") or "") == "TechDraw::DrawProjGroup":
+        result["projection_group"] = projection_group_summary(view)
     if is_drawing_surface_finish_symbol(view):
         try:
             result["surface_finish_symbol"] = drawing_surface_finish_symbol_state(view)
@@ -894,6 +920,19 @@ def _selected_sources(
     return result
 
 
+def _drawing_sources(document: Any) -> tuple[int, list[dict[str, Any]]]:
+    """Return each active design shape once at its public Body boundary."""
+
+    result = []
+    sources = active_design_geometry_sources(document)
+    for source in sources[:MAX_DRAWING_SOURCES]:
+        try:
+            result.append(drawing_source_state(source))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            continue
+    return len(sources), result
+
+
 def _selected_break_definitions(
     document: Any,
     selection: Mapping[str, Any] | None,
@@ -1337,6 +1376,7 @@ def build_drawing_snapshot(
     selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     pages = objects_of_type(document, "TechDraw::DrawPage")
+    source_count, sources = _drawing_sources(document)
     selected = _selected_pages(document, pages, selection)
     if len(selected) == 1:
         active = selected[0]
@@ -1376,6 +1416,8 @@ def build_drawing_snapshot(
         "rich_annotation_defaults": _rich_annotation_defaults_summary(),
         "weld_symbol_catalog": _weld_catalog_summary(),
         "leader_defaults": _leader_defaults_summary(),
+        "source_count": source_count,
+        "sources": sources,
         "page_count": len(pages),
         "pages": [
             _page_summary(
@@ -1430,6 +1472,9 @@ def build_drawing_snapshot(
     }
     if len(pages) > MAX_PAGES:
         result["pages_truncated"] = True
+    if source_count > len(sources):
+        result["sources_truncated"] = True
+        result["source_next_offset"] = len(sources)
     if projected_geometry_truncated:
         result["selected_projected_geometry_truncated"] = True
     if line_attributes_truncated:

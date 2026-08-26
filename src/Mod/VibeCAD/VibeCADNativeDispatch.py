@@ -236,6 +236,7 @@ def _failure_payload(exc: BaseException) -> dict[str, Any]:
         "exact_target",
         "actual_type",
         "accepted_types",
+        "candidates",
     ):
         if name in details:
             result[name] = details[name]
@@ -565,6 +566,17 @@ class NativeTurnDispatcher:
                 },
             )
         exact_schema = variant.provider_parameters()
+        if tool_name.startswith("drawing."):
+            from VibeCADNativeDrawingInternalTargets import (
+                materialize_drawing_internal_targets,
+            )
+
+            normalized = materialize_drawing_internal_targets(
+                self._document,
+                tool_name,
+                exact_schema,
+                normalized,
+            )
         exact_validator = Draft202012Validator(exact_schema)
         exact_error = next(iter(exact_validator.iter_errors(normalized)), None)
         if exact_error is not None:
@@ -627,6 +639,9 @@ class NativeTurnDispatcher:
                         "NATIVE_TOOL_UNAVAILABLE",
                         "That capability is not on the frozen Native ribbon surface.",
                     )
+                self._guard()
+                if name != "native.job":
+                    self._guard_revision()
                 variant, normalized_arguments = self._validate_arguments(
                     name,
                     arguments,
@@ -637,9 +652,6 @@ class NativeTurnDispatcher:
                         "This Native turn reached its deterministic call limit.",
                     )
 
-                self._guard()
-                if name != "native.job":
-                    self._guard_revision()
                 ticket = self._state.begin_call(self._document_uid, name)
                 record = _CallRecord(name, canonical, ticket=ticket)
                 self._calls[call_id] = record

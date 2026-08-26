@@ -116,7 +116,7 @@ def _spec(operation: str, values: Mapping[str, Any]) -> MeasurementAnnotationSpe
     for index, raw in enumerate(raw_elements):
         exact = exact_drawing_mapping(
             raw,
-            frozenset({"subelement", "expected_element_state_sha256"}),
+            frozenset({"subelement"}),
             f"element {index}",
             family="measurement annotation",
             error_code="NATIVE_DRAWING_MEASUREMENT_PARAMETERS_INVALID",
@@ -184,7 +184,7 @@ def _validate_host(
             "TechDraw rejected the projected measurement annotation: "
             f"{str(exc).strip()}",
             "NATIVE_DRAWING_MEASUREMENT_REFERENCE_INVALID",
-            repair={"inspect_operation": "drawing_projected_geometry"},
+            repair={"tool": "drawing.projected_geometry"},
         )
     expected_fields = frozenset(
         {
@@ -222,7 +222,7 @@ def _validate_host(
         _error(
             "TechDraw's measured annotation does not match the inspected geometry.",
             "NATIVE_DRAWING_MEASUREMENT_REFERENCE_INVALID",
-            repair={"inspect_operation": "drawing_projected_geometry"},
+            repair={"tool": "drawing.projected_geometry"},
         )
     return {
         "kind": spec.kind,
