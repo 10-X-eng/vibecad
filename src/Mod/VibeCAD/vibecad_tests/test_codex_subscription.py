@@ -1134,18 +1134,71 @@ def test_codex_thread_config_enables_only_web_and_skill_capabilities() -> None:
     assert config["features.plugins"] is False
 
 
-def test_codex_thread_config_keeps_one_conversation_mode_with_api_key_provider() -> None:
+def test_codex_thread_config_preserves_deprecated_plan_mode_with_api_key_provider() -> None:
     config = codex.vibecad_thread_config(
+        collaboration_mode_enabled=True,
         openai_base_url="https://api.example.test/v1/",
     )
 
-    assert config["include_collaboration_mode_instructions"] is False
+    assert config["include_collaboration_mode_instructions"] is True
     assert config["model_provider"] == codex.CODEX_OPENAI_PROVIDER_ID
     prefix = f"model_providers.{codex.CODEX_OPENAI_PROVIDER_ID}"
     assert config[f"{prefix}.base_url"] == "https://api.example.test/v1"
     assert config[f"{prefix}.env_key"] == codex.CODEX_OPENAI_API_KEY_ENV
     assert config[f"{prefix}.wire_api"] == "responses"
     assert config[f"{prefix}.requires_openai_auth"] is False
+
+
+def test_plan_surface_excludes_document_mutation_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Spec:
+        def supports_edit_mode(self, _edit_mode: str) -> bool:
+            return True
+
+    tools = {
+        "core.read": SimpleNamespace(
+            safety=SafetyLevel.READ,
+            spec=_Spec(),
+            to_schema=lambda **_kwargs: _tool_schema("core.read"),
+        ),
+        "core.view": SimpleNamespace(
+            safety=SafetyLevel.VIEW,
+            spec=_Spec(),
+            to_schema=lambda **_kwargs: _tool_schema("core.view"),
+        ),
+        "partdesign.write": SimpleNamespace(
+            safety=SafetyLevel.SAFE_WRITE,
+            spec=_Spec(),
+            to_schema=lambda **_kwargs: _tool_schema("partdesign.write"),
+        ),
+    }
+    service = SimpleNamespace(
+        registry=SimpleNamespace(get=lambda name: tools[name]),
+        modeling_engine=lambda: "vibescript",
+    )
+    monkeypatch.setattr(
+        session,
+        "provider_engine_from_service",
+        lambda _service: "vibescript",
+    )
+    monkeypatch.setattr(session, "_surface_tool_names", lambda *_args: set(tools))
+
+    schemas = session.provider_tool_schemas(
+        service,
+        "PartDesignWorkbench",
+        runtime_state={"edit_mode": False, "active_sketch": None},
+        interaction_mode="plan",
+    )
+
+    assert [schema["name"] for schema in schemas] == ["core.read", "core.view"]
+
+
+def test_run_prompt_keeps_the_public_interaction_mode_keyword() -> None:
+    import inspect
+
+    parameter = inspect.signature(session.run_prompt).parameters["interaction_mode"]
+    assert parameter.default == "build"
 
 
 def test_codex_environment_uses_only_the_selected_vibecad_api_key(
