@@ -8,8 +8,55 @@ import os
 from pathlib import Path
 import signal
 import sys
+from types import SimpleNamespace
+
+import pytest
 
 from VibeCADScriptedProcess import run_process
+
+
+def test_windows_termination_targets_the_entire_worker_tree(monkeypatch) -> None:
+    import VibeCADScriptedProcess as scripted
+
+    calls = []
+
+    class Process:
+        pid = 4321
+        returncode = None
+
+        def poll(self):
+            return None if self.returncode is None else self.returncode
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                self.returncode = -1
+            return self.returncode
+
+        def terminate(self):
+            pytest.fail("a Windows worker cancellation must terminate its process tree")
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(scripted.sys, "platform", "win32")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr(
+        scripted.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or SimpleNamespace(returncode=0),
+    )
+
+    scripted.terminate_process_tree(Process())
+
+    assert calls[0][0] == [
+        r"C:\Windows\System32\taskkill.exe",
+        "/PID",
+        "4321",
+        "/T",
+        "/F",
+    ]
+    assert calls[0][1]["shell"] is False
 
 
 def test_large_worker_output_cannot_fill_a_parent_pipe(tmp_path: Path) -> None:

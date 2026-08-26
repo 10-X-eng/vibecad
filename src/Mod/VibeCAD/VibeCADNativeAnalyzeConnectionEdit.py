@@ -91,24 +91,21 @@ def _require_current_history(document: Any, connection: Any) -> None:
 
 
 def _current_endpoints(connection: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-    references = tuple(getattr(connection, "References", ()) or ())
-    if len(references) != 2:
-        raise NativeAnalyzeError(
-            "The exact FEM connection no longer has one slave and one master endpoint."
-        )
     result = []
-    for source, raw_names in references:
+    for source, raw_names in tuple(getattr(connection, "References", ()) or ()):
         names = (raw_names,) if isinstance(raw_names, str) else tuple(raw_names or ())
-        if len(names) != 1:
-            raise NativeAnalyzeError(
-                "The exact FEM connection contains a malformed endpoint."
-            )
-        result.append(
+        source_state = mesh_object_state(source)["state_sha256"]
+        result.extend(
             {
                 "object_name": str(source.Name),
-                "expected_state_sha256": mesh_object_state(source)["state_sha256"],
-                "subelement": str(names[0]),
+                "expected_state_sha256": source_state,
+                "subelement": str(name),
             }
+            for name in names
+        )
+    if len(result) != 2:
+        raise NativeAnalyzeError(
+            "The exact FEM connection no longer has one slave and one master endpoint."
         )
     return result[0], result[1]
 

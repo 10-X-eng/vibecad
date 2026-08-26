@@ -20,6 +20,7 @@ class NativeBackgroundRuntimeError(RuntimeError):
 
 
 def _summary(snapshot: NativeBackgroundSnapshot) -> dict[str, Any]:
+    active = bool(snapshot.worker_active and not snapshot.terminal)
     result: dict[str, Any] = {
         "job_id": snapshot.job_id,
         "capability": snapshot.capability_name,
@@ -28,11 +29,23 @@ def _summary(snapshot: NativeBackgroundSnapshot) -> dict[str, Any]:
         "progress_message": snapshot.progress_message,
         "terminal": snapshot.terminal,
         "cancel_requested": snapshot.cancel_requested,
+        "worker_state": "active" if active else "terminal",
+        "elapsed_seconds": int(snapshot.elapsed_seconds),
+        "seconds_since_progress": int(snapshot.seconds_since_progress),
+        "recommended_poll_seconds": 30 if active else 0,
+        "guidance": (
+            "Continue waiting. Do not cancel an active job solely because its percent "
+            "is unchanged."
+            if active
+            else "The job is terminal; read its result or failure."
+        ),
     }
     if snapshot.result is not None:
         result["result"] = dict(snapshot.result)
     if snapshot.error is not None:
         result["failure"] = dict(snapshot.error)
+    if snapshot.document_changed:
+        result["document_changed"] = True
     return result
 
 

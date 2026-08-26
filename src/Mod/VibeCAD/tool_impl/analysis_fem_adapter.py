@@ -181,6 +181,97 @@ class CompletedFEMSolverExecution:
     legacy_prepared: Any
 
 
+def _completed_contract(
+    request: _legacy.SolverExecutionRequest,
+    *,
+    document_uid: str,
+) -> PreparedAnalysis:
+    """Describe an authenticated isolated-worker result at the host seam."""
+
+    target = request.target
+    solver = target.solver
+    dependencies = DependencySnapshot(
+        (
+            DependencyRecord(
+                key="solver_state",
+                kind="fem_solver_state",
+                canonical_digest=str(target.expected_state_sha256),
+                human_summary="Exact captured FEM solver state",
+            ),
+            DependencyRecord(
+                key="history_operations",
+                kind="fem_history_sequence",
+                canonical_digest=json_sha256(
+                    _history_identity(request.history_operations)
+                ),
+                human_summary="Exact History operation sequence at capture",
+            ),
+            DependencyRecord(
+                key="keep_results_on_rerun",
+                kind="fem_result_retention_preference",
+                canonical_digest=json_sha256(bool(request.keep_results)),
+                human_summary="KeepResultsOnReRun preference at capture",
+            ),
+        )
+    )
+    return PreparedAnalysis.create(
+        domain="fem",
+        adapter_id=FEM_ANALYSIS_ADAPTER_ID,
+        adapter_version=FEM_ANALYSIS_ADAPTER_VERSION,
+        source_document_uid=document_uid,
+        source_summary={
+            "solver_object_name": str(getattr(solver, "Name", "") or ""),
+            "solver_kind": str(target.kind),
+            "implementation": str(request.implementation),
+        },
+        dependency_snapshot=dependencies,
+        input_manifest=PreparedInputManifest(
+            storage_reference=str(request.working_directory),
+            sha256=str(request.input_sha256),
+            file_count=int(request.input_file_count),
+            manifest_version="fem-isolated-worker-v1",
+            digest_algorithm="vibecad-native-fem-case-sha256-v1",
+        ),
+        execution_spec=ExecutionSpec(
+            provider_id="local-process",
+            commands=(),
+            timeout_seconds=int(request.timeout_seconds),
+        ),
+        expected_outputs=("fem_result_graph",),
+        publication_descriptor={
+            "solver_kind": str(target.kind),
+            "implementation": str(request.implementation),
+            "importer_state_keys": sorted(
+                str(key) for key in request.importer_state
+            ),
+        },
+        provenance={
+            "legacy_module": "VibeCADNativeAnalyzeSolverExecution",
+            "input_sha256": str(request.input_sha256),
+            "authenticated_isolated_worker": True,
+            "compatibility_mode": True,
+        },
+    )
+
+
+def adopt_isolated_solver_execution(
+    prepared: _legacy.PreparedSolverExecution,
+    *,
+    document_uid: str,
+) -> CompletedFEMSolverExecution:
+    """Wrap a validated isolated-worker result in the host Analysis contract."""
+
+    if not isinstance(prepared, _legacy.PreparedSolverExecution):
+        raise TypeError("prepared must be PreparedSolverExecution")
+    return CompletedFEMSolverExecution(
+        analysis=_completed_contract(
+            prepared.request,
+            document_uid=document_uid,
+        ),
+        legacy_prepared=prepared,
+    )
+
+
 def prepare_solver_execution_request(
     document: Any,
     document_uid: str,

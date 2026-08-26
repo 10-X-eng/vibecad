@@ -502,7 +502,6 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "vibescript.read_api",
         "vibescript.read_geometry",
         "vibescript.read_placement",
-        "vibescript.create_program",
         "vibescript.build_program",
         "vibescript.edit_source",
         "vibescript.set_inputs",
@@ -510,6 +509,8 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "vibescript.delete_output",
         "vibescript.delete_program",
         "vibescript.delete_object",
+        "vibescript.create_part",
+        "vibescript.create_assembly",
         "assembly.list_structure",
     )
     surface = resolve_modeling_surface("PartDesignWorkbench", "vibescript")
@@ -544,7 +545,7 @@ def test_model_and_assembly_share_one_stable_provider_contract() -> None:
         "assembly.play_simulation",
         "assembly.stop_simulation",
         "material_catalog.search",
-        "vibescript.create_program",
+        "vibescript.create_part",
         "vibescript.edit_source",
     } <= set(model.tool_names)
 
@@ -576,7 +577,7 @@ def test_model_authoring_contract_survives_document_and_task_transitions(specs) 
     assert [item["name"] for item in no_document] == [
         item["name"] for item in sketch_task
     ]
-    assert "vibescript.create_program" in {
+    assert "vibescript.create_part" in {
         item["name"] for item in no_document
     }
 
@@ -697,6 +698,9 @@ def test_vibescript_uses_one_universal_lifecycle_and_retains_qualified_aliases(
     }
     universal_names = {
         f"vibescript.{operation}" for operation in domains.UNIVERSAL_SOURCE_OPERATIONS
+    } | {
+        f"vibescript.{operation}"
+        for operation in domains.MODEL_ASSEMBLY_SOURCE_OPERATIONS
     }
     domain_names = {name for name in specs if name.startswith("vibescript.")}
     assert domain_names

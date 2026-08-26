@@ -92,15 +92,9 @@ def _joint_group(assembly):
 
 
 def _solve_arguments(summary: dict) -> dict:
-    solver_state = summary["solver_state"]
-    assert solver_state["available"] is True
     return {
         "operation": "solve_assembly",
         "assembly": {"object_name": summary["object_name"]},
-        "expected_solver_state_sha256": solver_state["state_sha256"],
-        "expected_component_count": summary["counts"]["components"],
-        "expected_grounded_count": summary["counts"]["grounded"],
-        "expected_joint_count": summary["counts"]["joints"],
     }
 
 
@@ -206,16 +200,19 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
-        turn = _focused_turn(surface, registry)
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def new_dispatcher() -> NativeTurnDispatcher:
+            turn = _focused_turn(surface, registry)
+            return NativeTurnDispatcher(
+                document=document,
+                state=state,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = new_dispatcher()
 
         initial = dispatcher.call(
             "state.read",
@@ -229,7 +226,6 @@ def _run() -> None:
             "joints": 0,
             "grounded": 0,
         }
-        assert initial_summary["solver_state"]["placement_object_count"] == 2
         before_free_objects = tuple(document.Objects)
         before_free_placements = tuple(component.Placement for component in components)
         free_result = dispatcher.call(
@@ -254,6 +250,7 @@ def _run() -> None:
         for property_name in ("Placement", "LinkPlacement"):
             if property_name in components[0].PropertiesList:
                 components[0].setPropertyStatus(property_name, "ReadOnly")
+        dispatcher = new_dispatcher()
         repair_state = dispatcher.call(
             "state.read",
             '{"operation":"active"}',
@@ -298,6 +295,7 @@ def _run() -> None:
         Gui.Selection.addSelection(components[1])
         _process_events(8)
         misaligned = components[1].Placement
+        dispatcher = new_dispatcher()
 
         current = dispatcher.call(
             "state.read",
@@ -311,20 +309,6 @@ def _run() -> None:
             "joints": 1,
             "grounded": 1,
         }
-        stale_arguments = _solve_arguments(current_summary)
-        stale_arguments["expected_solver_state_sha256"] = initial_summary[
-            "solver_state"
-        ]["state_sha256"]
-        stale = dispatcher.call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
-            json.dumps(stale_arguments, separators=(",", ":")),
-            "assembly-solve-stale-placement",
-        )
-        assert stale["ok"] is False, stale
-        assert stale["error_code"] == "NATIVE_ASSEMBLY_SOLVE_FAILED"
-        assert components[1].Placement.isSame(misaligned, 1.0e-9)
-        assert int(document.UndoCount) == 0
-
         arguments = _solve_arguments(current_summary)
         encoded = json.dumps(arguments, separators=(",", ":"))
         result = dispatcher.call(
@@ -344,10 +328,6 @@ def _run() -> None:
         assert (
             result["placement_changes"][0]["object"]["object_name"]
             == components[1].Name
-        )
-        assert (
-            result["placement_state_before_sha256"]
-            == arguments["expected_solver_state_sha256"]
         )
         assert (
             result["placement_state_after_sha256"]

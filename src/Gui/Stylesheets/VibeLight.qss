@@ -644,6 +644,27 @@ QFileDialog {
 SpreadsheetGui--SheetTableView QLineEdit {
   min-width: 186px; }
 
+QWidget#Sheet {
+  background-color: #f2f4f8; }
+
+QFrame#spreadsheetFormulaBar {
+  background-color: #fbfcfe;
+  border: 1px solid #d6dce4;
+  border-radius: 8px; }
+  QFrame#spreadsheetFormulaBar QLabel {
+    color: #5c6b7a;
+    font-weight: 600;
+    background: transparent; }
+
+QFrame#spreadsheetFooter {
+  background-color: #e9edf3;
+  border: 1px solid #d6dce4;
+  border-radius: 8px; }
+  QFrame#spreadsheetFooter QToolButton {
+    min-width: 28px;
+    min-height: 24px;
+    background: transparent; }
+
 /*--------------------------------------------------------------------------------------------------
 Tree branch decorations
 --------------------------------------------------------------------------------------------------*/

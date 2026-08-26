@@ -137,26 +137,56 @@ def _windows_process_memory_bytes(pid: int) -> int | None:
         kernel32.CloseHandle(handle)
 
 
-def terminate_process(process: subprocess.Popen[Any], *, timeout_seconds: float = 3.0) -> None:
-    """Terminate a child process or process group and escalate to kill."""
+def terminate_process_tree(
+    process: subprocess.Popen[Any],
+    *,
+    timeout_seconds: float = 3.0,
+) -> None:
+    """Terminate a worker and every subprocess it owns."""
 
     if process.poll() is not None:
         return
     try:
         if sys.platform == "win32":
-            process.terminate()
+            system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+            taskkill = system_root / "System32" / "taskkill.exe"
+            subprocess.run(
+                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+                timeout=timeout_seconds,
+                check=False,
+            )
         else:
             os.killpg(process.pid, signal.SIGTERM)
         process.wait(timeout=timeout_seconds)
     except Exception:
-        process.kill()
-        process.wait(timeout=timeout_seconds)
+        try:
+            process.kill()
+            process.wait(timeout=timeout_seconds)
+        except Exception:
+            # The caller still owns the authoritative timeout/cancellation
+            # result even if the OS races final process-tree reaping.
+            pass
+
+
+def terminate_process(
+    process: subprocess.Popen[Any],
+    *,
+    timeout_seconds: float = 3.0,
+) -> None:
+    """Compatibility wrapper for the bounded process-sequence runner."""
+
+    terminate_process_tree(process, timeout_seconds=timeout_seconds)
 
 
 def _terminate(process: subprocess.Popen[Any]) -> None:
-    """Compatibility alias for the original scripted-process runner."""
+    """Compatibility wrapper for existing internal callers and tests."""
 
-    terminate_process(process)
+    terminate_process_tree(process)
 
 
 def _read_output_tail(stream: Any, *, max_bytes: int = 64_000) -> str:
@@ -209,6 +239,8 @@ def run_process_sequence(
     cancellation_check: Callable[[], bool],
     log_name: Callable[[int], str] | None = None,
     stage_started: Callable[[int, int], None] | None = None,
+    stage_heartbeat: Callable[[int, int, int], None] | None = None,
+    heartbeat_seconds: float = 5.0,
     maximum_log_bytes: int | None = None,
     poll_seconds: float = DEFAULT_PROCESS_POLL_SECONDS,
 ) -> tuple[ExternalProcessStage, ...]:
@@ -229,6 +261,10 @@ def run_process_sequence(
         raise TypeError("cancellation_check must be callable")
     if stage_started is not None and not callable(stage_started):
         raise TypeError("stage_started must be callable")
+    if stage_heartbeat is not None and not callable(stage_heartbeat):
+        raise TypeError("stage_heartbeat must be callable")
+    if heartbeat_seconds <= 0:
+        raise ValueError("heartbeat_seconds must be positive")
     if type(timeout_seconds) is not int or timeout_seconds < 1:
         raise ValueError("timeout_seconds must be a positive integer")
     if maximum_log_bytes is not None and (
@@ -250,6 +286,8 @@ def run_process_sequence(
             raise ExternalProcessCancelled()
         if stage_started is not None:
             stage_started(index, len(exact_commands))
+        stage_started_at = time.monotonic()
+        next_heartbeat = stage_started_at + heartbeat_seconds
         log_path = root / str(make_log_name(index))
         process: subprocess.Popen[Any] | None = None
         try:
@@ -282,6 +320,14 @@ def run_process_sequence(
                             stage=index,
                             program=program,
                         )
+                    now = time.monotonic()
+                    if stage_heartbeat is not None and now >= next_heartbeat:
+                        stage_heartbeat(
+                            index,
+                            len(exact_commands),
+                            max(0, int(now - stage_started_at)),
+                        )
+                        next_heartbeat = now + heartbeat_seconds
                     time.sleep(poll_seconds)
                 exit_code = int(process.returncode or 0)
         except (ExternalProcessCancelled, ExternalProcessError):
@@ -332,6 +378,7 @@ def run_process(
     cancellation_check: Callable[[], bool] | None,
     timeout_seconds: float,
     memory_limit_bytes: int,
+    poll_callback: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Run one child process without a console window and enforce hard bounds."""
     creation_flags = (
@@ -370,6 +417,12 @@ def run_process(
             if cancellation_check is not None and cancellation_check():
                 cancelled = True
                 break
+            if poll_callback is not None:
+                try:
+                    poll_callback()
+                except Exception:
+                    terminate_process_tree(process)
+                    raise
             now = time.monotonic()
             if now - started > timeout_seconds:
                 timed_out = True
@@ -382,7 +435,7 @@ def run_process(
                     break
             time.sleep(0.05)
         if cancelled or timed_out or memory_exceeded:
-            _terminate(process)
+            terminate_process_tree(process)
         process.wait()
         cpu_exceeded = bool(
             sys.platform != "win32"
@@ -392,13 +445,15 @@ def run_process(
         termination_reason = (
             "host_cancellation_request"
             if cancelled
-            else "wall_time_limit"
-            if timed_out
-            else "memory_limit"
-            if memory_exceeded
-            else "cpu_time_limit"
-            if cpu_exceeded
-            else "process_exit"
+            else (
+                "wall_time_limit"
+                if timed_out
+                else (
+                    "memory_limit"
+                    if memory_exceeded
+                    else "cpu_time_limit" if cpu_exceeded else "process_exit"
+                )
+            )
         )
         return {
             "started": True,
@@ -413,11 +468,11 @@ def run_process(
             "limit_reached": (
                 "wall_time_seconds"
                 if timed_out
-                else "memory_bytes"
-                if memory_exceeded
-                else "cpu_seconds"
-                if cpu_exceeded
-                else None
+                else (
+                    "memory_bytes"
+                    if memory_exceeded
+                    else "cpu_seconds" if cpu_exceeded else None
+                )
             ),
             "termination_reason": termination_reason,
             "timeout_seconds": float(timeout_seconds),

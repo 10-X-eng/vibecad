@@ -51,6 +51,7 @@ class ElmerTools(ObjectTools):
         )
         self.model_file = ""
         self._result_format = ""
+        self.ignored_constraints = ()
 
     def prepare(self, *, run_grid=True):
         grid_bin = settings.require_binary("ElmerGrid")
@@ -80,7 +81,13 @@ class ElmerTools(ObjectTools):
         self.model_file = os.path.join(self.working_directory, writer._SIF_NAME)
         handled = w.getHandledConstraints()
         allConstraints = membertools.get_member(self.analysis, "Fem::Constraint")
-        for obj in set(allConstraints) - handled:
+        self.ignored_constraints = tuple(
+            sorted(
+                set(allConstraints) - handled,
+                key=lambda obj: (str(obj.Name), int(obj.ID)),
+            )
+        )
+        for obj in self.ignored_constraints:
             FreeCAD.Console.PrintWarning(f"Ignored constraint {obj.Label}")
 
     def compute(self):

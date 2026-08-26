@@ -336,6 +336,137 @@ class TestDesignModeling(unittest.TestCase):
         assert_shape_matches_generator(generator, body)
         PartDesign.validateDesign(operation)
 
+    def test_restored_publication_preserves_global_solid_reference(self):
+        _operation, body = self._new_body_operation(
+            "PartDesign::DesignBox",
+            "ReferencedBox",
+            lambda box: (
+                setattr(box, "Length", 30.0),
+                setattr(box, "Width", 20.0),
+                setattr(box, "Height", 10.0),
+            ),
+        )
+
+        self.document.openTransaction("Create global solid reference")
+        reference = self.document.addObject(
+            "App::FeaturePython",
+            "GlobalSolidReference",
+        )
+        reference.addProperty("App::PropertyLinkSubListGlobal", "References")
+        reference.References = [(body, ("Solid1",))]
+        self.document.publishProvisionalTimelineOperationBlock(reference, (), ())
+        self.document.recompute()
+        self.document.commitTransaction()
+        body_name = body.Name
+        reference_name = reference.Name
+
+        path = Path(self._temporary_directory.name) / "global-solid-reference.FCStd"
+        self.document.saveAs(str(path))
+        App.closeDocument(self.document.Name)
+        self.document = App.openDocument(str(path))
+        body = self.document.getObject(body_name)
+        reference = self.document.getObject(reference_name)
+        self.assertEqual(tuple(reference.References), ((body, ("Solid1",)),))
+
+        self.document.openTransaction("Create downstream reference")
+        downstream = self.document.addObject(
+            "App::FeaturePython",
+            "DownstreamReference",
+        )
+        downstream.addProperty("App::PropertyLinkSubList", "References")
+        downstream.References = [(body, ("Face1",))]
+        self.document.publishProvisionalTimelineOperationBlock(downstream, (), ())
+        self.document.recompute()
+        self.document.commitTransaction()
+        self.document.save()
+        App.closeDocument(self.document.Name)
+        self.document = App.openDocument(str(path))
+        body = self.document.getObject(body_name)
+        reference = self.document.getObject(reference_name)
+        self.assertEqual(tuple(reference.References), ((body, ("Solid1",)),))
+
+    def test_restored_combined_body_preserves_global_solid_reference(self):
+        _, result_body = self._new_body_operation(
+            "PartDesign::DesignBox",
+            "ReferenceResult",
+            lambda box: (
+                setattr(box, "Length", 10.0),
+                setattr(box, "Width", 10.0),
+                setattr(box, "Height", 10.0),
+            ),
+        )
+        _, tool_body = self._new_body_operation(
+            "PartDesign::DesignBox",
+            "ReferenceTool",
+            lambda box: (
+                setattr(box, "Length", 10.0),
+                setattr(box, "Width", 10.0),
+                setattr(box, "Height", 10.0),
+                setattr(box, "Placement", App.Placement(App.Vector(5, 0, 0), App.Rotation())),
+            ),
+        )
+        self.document.openTransaction("Create referenced Combine")
+        combine = self.document.addObject(
+            "PartDesign::DesignCombine",
+            "ReferencedCombine",
+        )
+        edit = PartDesign.beginDesignOperationEdit(combine)
+        PartDesign.setDesignCombineBodies(
+            edit,
+            "Join",
+            result_body,
+            [tool_body],
+            False,
+        )
+        PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+        body_name = result_body.Name
+
+        path = Path(self._temporary_directory.name) / "combined-global-reference.FCStd"
+        self.document.saveAs(str(path))
+        App.closeDocument(self.document.Name)
+        self.document = App.openDocument(str(path))
+        result_body = self.document.getObject(body_name)
+
+        self.document.openTransaction("Create combined Body reference")
+        reference = self.document.addObject(
+            "App::FeaturePython",
+            "CombinedGlobalSolidReference",
+        )
+        reference.addProperty("App::PropertyLinkSubListGlobal", "References")
+        reference.References = [(result_body, ("Solid1",))]
+        self.document.publishProvisionalTimelineOperationBlock(reference, (), ())
+        self.document.recompute([reference], True, True)
+        self.document.commitTransaction()
+        reference_name = reference.Name
+        self.document.save()
+        App.closeDocument(self.document.Name)
+        self.document = App.openDocument(str(path))
+        result_body = self.document.getObject(body_name)
+        reference = self.document.getObject(reference_name)
+        self.assertEqual(tuple(reference.References), ((result_body, ("Solid1",)),))
+
+        restored_body_shape = result_body.Shape
+        restored_publication_shape = result_body.Tip.Shape
+        restored_state_shape = result_body.Tip.CurrentState.Shape
+        self.assertTrue(result_body.Shape.isPartner(restored_body_shape))
+        self.assertTrue(result_body.Tip.Shape.isPartner(restored_publication_shape))
+        self.assertTrue(
+            result_body.Tip.CurrentState.Shape.isPartner(restored_state_shape)
+        )
+        self.document.recompute()
+        self.assertTrue(result_body.Shape.isPartner(restored_body_shape))
+        self.assertTrue(result_body.Tip.Shape.isPartner(restored_publication_shape))
+        self.assertTrue(
+            result_body.Tip.CurrentState.Shape.isPartner(restored_state_shape)
+        )
+        self.document.save()
+        App.closeDocument(self.document.Name)
+        self.document = App.openDocument(str(path))
+        result_body = self.document.getObject(body_name)
+        reference = self.document.getObject(reference_name)
+        self.assertEqual(tuple(reference.References), ((result_body, ("Solid1",)),))
+
     def test_generated_operation_preserves_a_multi_solid_body_shape(self):
         self.document.openTransaction("Create compound generated operation")
         generator = self.document.addObject(

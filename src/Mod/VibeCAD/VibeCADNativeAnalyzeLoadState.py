@@ -122,6 +122,8 @@ def _link_sub(value: Any) -> tuple[Any, tuple[str, ...]] | None:
 
 
 def _direction_definition(obj: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if bool(getattr(obj, "UseCustomDirection", False)):
+        return {"kind": "vector", **_vector(obj.DirectionVector)}, None
     link = _link_sub(obj.Direction)
     reversed_value = bool(obj.Reversed)
     if link is None:
@@ -178,13 +180,17 @@ def _definition(obj: Any, kind: str, references: list[dict[str, Any]]) -> tuple[
 
 def _native_values(obj: Any, kind: str) -> dict[str, Any]:
     if kind == "force":
-        return {
+        values = {
             "ForceN": _finite(obj.Force.getValueAs("N").Value),
             "DirectionVector": list(_vector(obj.DirectionVector).values()),
             "Reversed": bool(obj.Reversed),
             "EnableAmplitude": bool(obj.EnableAmplitude),
             "AmplitudeValues": [str(value) for value in obj.AmplitudeValues],
         }
+        if "UseCustomDirection" in tuple(getattr(obj, "PropertiesList", ()) or ()):
+            values["UseCustomDirection"] = bool(obj.UseCustomDirection)
+            values["CustomDirection"] = list(_vector(obj.CustomDirection).values())
+        return values
     if kind == "pressure":
         return {
             "PressurePa": _finite(obj.Pressure.getValueAs("Pa").Value),

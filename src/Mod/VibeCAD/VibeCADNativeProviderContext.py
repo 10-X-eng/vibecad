@@ -10,6 +10,7 @@ from typing import Any
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeProviderSurface,
+    project_native_provider_surface,
     provider_visible_native_schema,
     resolve_native_provider_surface,
 )
@@ -45,23 +46,47 @@ def resolve_production_native_surface(
     return registry, surface
 
 
-def native_provider_tool_schemas(
+def provider_authorized_native_surface(
+    surface: NativeProviderSurface,
+    active_state: dict[str, Any] | None = None,
     *,
-    interaction_mode: str,
+    registry: NativeCapabilityRegistry | None = None,
+) -> NativeProviderSurface:
+    """Keep ribbon choice human-owned, then apply exact document scope."""
+
+    if not isinstance(surface, NativeProviderSurface):
+        raise TypeError("surface must be a NativeProviderSurface")
+    if not surface.available:
+        return surface
+    surface = project_native_provider_surface(
+        surface,
+        tuple(name for name in surface.tool_names if name != "workspace.switch"),
+    )
+    if active_state is not None and surface.snapshot.surface_id == "analyze":
+        from VibeCADNativeAnalyzeProviderScope import scope_analyze_provider_surface
+
+        surface = scope_analyze_provider_surface(
+            surface,
+            active_state,
+            registry=registry,
+        )
+    return surface
+
+
+def native_provider_tool_schemas(
+    active_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     registry, surface = resolve_production_native_surface()
-    return schemas_for_native_provider_surface(
+    surface = provider_authorized_native_surface(
         surface,
-        interaction_mode=interaction_mode,
+        active_state,
         registry=registry,
     )
+    return schemas_for_native_provider_surface(surface)
 
 
 def schemas_for_native_provider_surface(
     surface: NativeProviderSurface,
-    *,
-    interaction_mode: str,
-    registry: NativeCapabilityRegistry | None = None,
 ) -> list[dict[str, Any]]:
     """Copy schemas from one already-resolved live manifest surface."""
 
@@ -69,35 +94,23 @@ def schemas_for_native_provider_surface(
         raise TypeError("surface must be a NativeProviderSurface")
     if not surface.available:
         return []
-    mode = str(interaction_mode or "build").strip().lower()
-    if mode == "build":
-        schemas = surface.schemas
-    elif mode == "plan":
-        if registry is None:
-            from VibeCADNativeRegistry import build_native_capability_registry
-
-            selected_registry = build_native_capability_registry()
-        else:
-            selected_registry = registry
-        schemas = []
-        for name, schema in zip(
-            surface.tool_names,
-            surface.schemas,
-            strict=True,
-        ):
-            definition = selected_registry.definition(name)
-            if (
-                definition is not None
-                and definition.primary_classification in {"read", "view"}
-            ):
-                schemas.append(schema)
-    else:
-        raise ValueError(f"Unknown Native interaction mode {mode!r}.")
-    return [provider_visible_native_schema(schema) for schema in schemas]
+    return [provider_visible_native_schema(schema) for schema in surface.schemas]
 
 
 def native_active_state(service: Any) -> dict[str, Any]:
     state = service.native_active_snapshot()
     if not isinstance(state, dict):
         raise RuntimeError("Native active state did not return an object.")
+    return state
+
+
+def provider_visible_native_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Return only live facts that affect the provider's next decision."""
+
+    if not isinstance(state, dict):
+        raise TypeError("state must be a Native active-state object")
+    if state.get("surface_id") == "analyze":
+        from VibeCADNativeAnalyzeProviderState import compact_analyze_provider_state
+
+        return compact_analyze_provider_state(state)
     return state

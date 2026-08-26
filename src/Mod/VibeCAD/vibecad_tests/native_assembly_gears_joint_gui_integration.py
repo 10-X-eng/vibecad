@@ -124,11 +124,8 @@ def _reference(component):
 
 def _connector(component) -> dict:
     return {
-        "component": {"object_name": component.Name},
-        "element_path": "Face6",
-        "anchor_path": "Face6",
-        "offset": IDENTITY_OFFSET,
-        "expected_component_placement": placement_summary(component.Placement),
+        "component": component.Name,
+        "element": "Face6",
     }
 
 
@@ -154,28 +151,20 @@ def _create_revolute(
 
 
 def _arguments(
-    assembly,
     first_gear,
     second_gear,
     first_revolute,
     second_revolute,
-    *,
-    expected_joint_count: int,
 ) -> dict:
     return {
         "operation": "create_gears",
-        "assembly": {"object_name": assembly.Name},
-        "first_gear_connector": _connector(first_gear),
-        "second_gear_connector": _connector(second_gear),
-        "first_revolute_joint": {"object_name": first_revolute.Name},
-        "second_revolute_joint": {"object_name": second_revolute.Name},
+        "first": _connector(first_gear),
+        "second": _connector(second_gear),
+        "first_revolute_joint": first_revolute.Name,
+        "second_revolute_joint": second_revolute.Name,
         "label": "Native External Gear Coupling",
         "radius1_mm": RADIUS1_MM,
         "radius2_mm": RADIUS2_MM,
-        "expected_component_count": 3,
-        "expected_grounded_count": 1,
-        "expected_joint_count": expected_joint_count,
-        "expected_solve_on_creation": True,
     }
 
 
@@ -337,19 +326,17 @@ def _run() -> None:
         }
 
         before_invalid = tuple(document.Objects)
+        invalid_arguments = _arguments(
+            first_gear,
+            second_gear,
+            first_revolute,
+            second_revolute,
+        )
+        invalid_arguments["second"] = invalid_arguments["first"]
         invalid = dispatcher.call(
             ASSEMBLY_JOINT_CAPABILITY_NAME,
-            json.dumps(
-                _arguments(
-                    assembly,
-                    first_gear,
-                    second_gear,
-                    first_revolute,
-                    second_revolute,
-                    expected_joint_count=1,
-                )
-            ),
-            "assembly-gears-stale",
+            json.dumps(invalid_arguments),
+            "assembly-gears-invalid",
         )
         assert invalid["ok"] is False, invalid
         assert invalid["error_code"] == "NATIVE_ASSEMBLY_GEAR_JOINT_FAILED"
@@ -357,12 +344,10 @@ def _run() -> None:
         assert int(document.UndoCount) == 0
 
         arguments = _arguments(
-            assembly,
             first_gear,
             second_gear,
             first_revolute,
             second_revolute,
-            expected_joint_count=2,
         )
         encoded = json.dumps(arguments, separators=(",", ":"))
         result = dispatcher.call(

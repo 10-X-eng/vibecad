@@ -395,10 +395,22 @@ def _connector(
                 f"{path}.selection",
                 "published_interface requires one valid interface_name",
             )
+    elif selection_type == "query":
+        try:
+            from vibescript_partdesign_api import normalize_geometry_selection
+
+            selection = normalize_geometry_selection("connector", selection)
+        except (TypeError, ValueError) as exc:
+            raise _error(f"{path}.selection", str(exc)) from exc
+        if selection["expected_count"] != 1:
+            raise _error(
+                f"{path}.selection.expected_count",
+                "must be 1 for a connector",
+            )
     else:
         raise _error(
             f"{path}.selection",
-            "must be component_origin, exact_subelement, or published_interface",
+            "must be component_origin, exact_subelement, published_interface, or query",
         )
     occurrence_path = raw["occurrence_path"]
     anchor = raw["anchor"]

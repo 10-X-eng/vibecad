@@ -548,13 +548,28 @@ App::DocumentObjectExecReturn* Body::execute()
         }
 
         // We should hide here the transformation of the baseFeature
-        tipShape.transformShape(tipShape.getTransform(), true);
+        const Base::Matrix4D transform = tipShape.getTransform();
+        if (!transform.isUnity()) {
+            tipShape.transformShape(transform, true);
+        }
     }
     else {
         tipShape = Part::TopoShape();
     }
 
-    Shape.setValue(tipShape);
+    const auto* tipFeature = freecad_cast<const Part::Feature*>(Tip.getValue());
+    const bool unchangedRestoredTip =
+        preserveRestoredShape && restoredTip == Tip.getValue() && tipFeature
+        && !tipFeature->Shape.isTouched();
+    const Part::TopoShape& currentShape = Shape.getShape();
+    if (!unchangedRestoredTip
+        && (currentShape.isNull() != tipShape.isNull()
+            || (!tipShape.isNull()
+                && !currentShape.getShape().IsPartner(tipShape.getShape())))) {
+        Shape.setValue(tipShape);
+    }
+    preserveRestoredShape = false;
+    restoredTip = Tip.getValue();
     return App::DocumentObject::StdReturn;
 }
 
@@ -787,6 +802,9 @@ void Body::onDocumentRestored()
         }
     }
     _GroupTouched.setStatus(App::Property::Output, true);
+
+    restoredTip = Tip.getValue();
+    preserveRestoredShape = !Shape.getShape().isNull();
 
     // trigger ViewProviderBody::copyColorsfromTip
     if (Tip.getValue()) {

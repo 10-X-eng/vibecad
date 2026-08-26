@@ -13,12 +13,14 @@ import hashlib
 from typing import Any, Iterable
 
 from VibeCADVibeScriptDomains import (
+    MODEL_ASSEMBLY_SOURCE_OPERATIONS,
     UNIVERSAL_SOURCE_OPERATIONS,
     domain_availability,
     get_vibescript_pack,
 )
 
 MODELING_ENGINES = frozenset({"native", "vibescript"})
+NATIVE_ANALYSIS_SURFACES = frozenset({"analyze"})
 UNSUPPORTED_WORKBENCHES = frozenset({"NoneWorkbench", "TestWorkbench"})
 
 CORE_CONVERSATION_VIEW_TOOLS = frozenset(
@@ -58,6 +60,20 @@ def is_model_assembly_workbench(workbench: str | None) -> bool:
     """Return whether the ribbon belongs to the unified authoring surface."""
 
     return str(workbench or "") in MODEL_ASSEMBLY_WORKBENCHES
+
+
+def provider_engine_for_ribbon(authoring_engine: str, surface_id: str) -> str:
+    """Return the provider engine selected by document authority and ribbon.
+
+    Analyze owns derived study artifacts, not source design geometry.  It uses
+    the Native Analyze contract while preserving the document's VibeScript or
+    Native geometry-authoring authority.
+    """
+
+    engine = str(authoring_engine or "").strip().lower()
+    if engine not in MODELING_ENGINES:
+        raise ValueError(f"Unknown modeling engine: {engine or '<missing>'}.")
+    return "native" if str(surface_id or "") in NATIVE_ANALYSIS_SURFACES else engine
 
 
 def share_authoring_surface(
@@ -295,7 +311,7 @@ def resolve_modeling_surface(
                     if is_model_assembly_workbench(clean_workbench)
                     else vibescript_pack.domain
                 ),
-                generation="domain-v7-stable-authoring-tools",
+                generation="domain-v10-atomic-assembly-graph",
             ),
             core_tool_names=_core_tool_names(clean_workbench),
             cad_tool_names=_provider_cad_tool_names(
@@ -351,6 +367,20 @@ def engine_from_service(service: Any) -> str:
     return engine
 
 
+def provider_engine_from_service(service: Any) -> str:
+    """Resolve the next-turn engine without changing document authority."""
+
+    authoring_engine = engine_from_service(service)
+    if authoring_engine == "native":
+        return "native"
+    from VibeCADRibbonSurface import read_active_ribbon_surface
+
+    return provider_engine_for_ribbon(
+        authoring_engine,
+        read_active_ribbon_surface().surface_id,
+    )
+
+
 def resolve_service_surface(service: Any, workbench: str | None) -> ModelingSurface:
     return resolve_modeling_surface(workbench, engine_from_service(service))
 
@@ -361,7 +391,10 @@ def _vibescript_domains(names: Iterable[str]) -> set[str]:
         parts = str(name).split(".")
         if not parts or parts[0] != "vibescript":
             continue
-        if len(parts) == 2 and parts[1] in UNIVERSAL_SOURCE_OPERATIONS:
+        if len(parts) == 2 and parts[1] in {
+            *UNIVERSAL_SOURCE_OPERATIONS,
+            *MODEL_ASSEMBLY_SOURCE_OPERATIONS,
+        }:
             continue
         if len(parts) == 3:
             result.add(parts[1])

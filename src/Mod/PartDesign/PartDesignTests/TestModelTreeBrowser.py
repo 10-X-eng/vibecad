@@ -16,6 +16,11 @@ import Sketcher  # noqa: F401 - registers Sketcher document types
 from PySide import QtCore, QtGui
 from pivy import coin
 
+try:
+    import Fem  # noqa: F401 - registers optional FEM document types
+except ImportError:
+    Fem = None
+
 
 BROWSER_FOLDER_TYPE = 1002
 BROWSER_DETAIL_TYPE = 1003
@@ -697,6 +702,74 @@ class TestModelTreeBrowser(unittest.TestCase):
         for item in _visible_walk(document_item):
             if item.type() == BROWSER_FOLDER_TYPE:
                 self.assertFalse(item.icon(0).isNull(), item.text(0))
+
+    @unittest.skipIf(Fem is None, "Requires FEM")
+    def test_analyze_folder_preserves_study_membership_without_duplicates(self):
+        analysis = self.document.addObject(
+            "Fem::FemAnalysis",
+            "StructuralAnalysis",
+        )
+        analysis.Label = "Structural Analysis"
+        _tag_timeline_role(analysis, "operation")
+
+        material = self.document.addObject(
+            "App::MaterialObjectPython",
+            "StructuralMaterial",
+        )
+        material.Label = "PETG Material"
+        _tag_timeline_role(material, "resource")
+        analysis.addObject(material)
+
+        constraint = self.document.addObject(
+            "Fem::ConstraintFixed",
+            "FixedSupport",
+        )
+        constraint.Label = "Fixed Support"
+        _tag_timeline_role(constraint, "resource")
+        analysis.addObject(constraint)
+
+        solver = self.document.addObject(
+            "Fem::FemSolverObjectPython",
+            "CalculiXSolver",
+        )
+        solver.Label = "CalculiX Solver"
+        _tag_timeline_role(solver, "resource")
+        analysis.addObject(solver)
+
+        loose_solver = self.document.addObject(
+            "Fem::FemSolverObjectPython",
+            "UnassignedSolver",
+        )
+        loose_solver.Label = "Unassigned Solver"
+        self.document.recompute()
+
+        def analyze_items():
+            _tree, document_item = self._tree_and_document_item()
+            analyze = _child(document_item, "Analyze", BROWSER_FOLDER_TYPE)
+            study = _child(analyze, analysis.Label)
+            values = (document_item, analyze, study)
+            return values if all(value is not None for value in values) else None
+
+        observed = _wait_until(analyze_items)
+        self.assertIsNotNone(observed, self._snapshot())
+        document_item, analyze, study = observed
+        self.assertEqual(
+            [item.text(0) for item in _visible_children(study)],
+            [material.Label, constraint.Label, solver.Label],
+        )
+        self.assertIsNotNone(_child(analyze, loose_solver.Label))
+
+        operations = _child(document_item, "Operations", BROWSER_FOLDER_TYPE)
+        other = _child(document_item, "Other", BROWSER_FOLDER_TYPE)
+        for label in (
+            analysis.Label,
+            material.Label,
+            constraint.Label,
+            solver.Label,
+            loose_solver.Label,
+        ):
+            self.assertFalse(_snapshot_has_label(_snapshot(operations), label))
+            self.assertFalse(_snapshot_has_label(_snapshot(other), label))
 
     def test_vibecad_outputs_are_badged_and_not_classified_as_references(self):
         model_id = "browser-target-backed-publication"
@@ -1729,6 +1802,80 @@ class TestModelTreeBrowser(unittest.TestCase):
             ),
         )
 
+    def test_selected_bodies_toggle_while_a_feature_task_is_open(self):
+        other = self.document.addObject("PartDesign::Body", "OtherToggleBody")
+        other.Label = "Other Toggle Body"
+        other_tip = other.newObject("PartDesign::Feature", "OtherToggleResult")
+        other_tip.Shape = Part.makeBox(4, 4, 4)
+        other.Tip = other_tip
+        other.Visibility = True
+        other_tip.Visibility = True
+        self.document.recompute()
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: other.Visibility and other_tip.Visibility
+            )
+        )
+
+        Gui.activeView().setActiveObject("pdbody", self.vibe_body)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.vibe_body)
+        Gui.Selection.addSelection(other)
+        entered = bool(Gui.activeDocument().setEdit(self.vibe_sketch.Name))
+        self.assertTrue(entered or Gui.Control.activeDialog())
+        try:
+            self.assertTrue(
+                self.document.HasPendingTransaction
+                or Gui.activeDocument().getInEdit() is not None
+            )
+
+            other.ViewObject.hide()
+            self.assertIsNotNone(
+                _wait_until(
+                    lambda: (
+                        not other.Visibility
+                        and not other_tip.Visibility
+                    )
+                ),
+                (other.Visibility, other_tip.Visibility),
+            )
+
+            self.vibe_body.ViewObject.hide()
+            self.assertIsNotNone(
+                _wait_until(
+                    lambda: (
+                        not self.vibe_body.Visibility
+                        and not self.vibe_result.Visibility
+                    )
+                ),
+                (
+                    self.vibe_body.Visibility,
+                    self.vibe_result.Visibility,
+                ),
+            )
+
+            self.vibe_body.ViewObject.show()
+            other.ViewObject.show()
+            self.assertIsNotNone(
+                _wait_until(
+                    lambda: (
+                        self.vibe_body.Visibility
+                        and self.vibe_result.Visibility
+                        and other.Visibility
+                        and other_tip.Visibility
+                    )
+                )
+            )
+        finally:
+            if Gui.activeDocument() and Gui.activeDocument().getInEdit():
+                Gui.activeDocument().resetEdit()
+            if Gui.Control.activeDialog():
+                try:
+                    Gui.Control.activeTaskDialog().reject()
+                except Exception:
+                    Gui.Control.closeDialog()
+            _event_step(50)
+
     def test_tip_change_and_undo_replace_the_sole_rendered_result(self):
         self.document.openTransaction("Move Body Tip")
         self.vibe_body.Tip = self.vibe_prior_result
@@ -1921,6 +2068,77 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertTrue(second.Visibility)
         self.assertTrue(self.vibe_body.Visibility)
         self.assertTrue(self.vibe_result.Visibility)
+
+    def test_component_and_owned_body_visibility_stay_together(self):
+        component = self.document.addObject(
+            "PartDesign::Component",
+            "ImportedScrew",
+        )
+        component.Label = "91251A051"
+        body = self.document.addObject(
+            "PartDesign::Body",
+            "ImportedScrewBody",
+        )
+        body.Label = "91251A051 Body"
+        component.addObject(body)
+        solid = body.newObject(
+            "PartDesign::Feature",
+            "ImportedScrewGeometry",
+        )
+        solid.Label = "91251A051 Geometry"
+        solid.Shape = Part.makeCylinder(2, 8)
+        body.Tip = solid
+        self.document.recompute()
+        _event_step()
+
+        component.Visibility = True
+        body.Visibility = True
+        solid.Visibility = True
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    component.Visibility
+                    and body.Visibility
+                    and solid.Visibility
+                )
+            )
+        )
+
+        component.Visibility = False
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    not component.Visibility
+                    and not body.Visibility
+                    and not solid.Visibility
+                )
+            ),
+            (component.Visibility, body.Visibility, solid.Visibility),
+        )
+
+        component.Visibility = True
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    component.Visibility
+                    and body.Visibility
+                    and solid.Visibility
+                )
+            ),
+            (component.Visibility, body.Visibility, solid.Visibility),
+        )
+
+        body.Visibility = False
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    not body.Visibility
+                    and not solid.Visibility
+                    and not component.Visibility
+                )
+            ),
+            (component.Visibility, body.Visibility, solid.Visibility),
+        )
 
     def test_standard_visibility_commands_use_the_same_body_contract(self):
         Gui.Selection.clearSelection()

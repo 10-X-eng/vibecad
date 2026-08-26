@@ -13,7 +13,7 @@ from VibeCADNativeCapabilityRegistry import (
 )
 
 
-ASSEMBLY_PLAYBACK_CAPABILITY_NAME = "assembly.simulation"
+ASSEMBLY_PLAYBACK_CAPABILITY_NAME = "assembly.playback"
 
 
 def _playback(call: Any) -> Mapping[str, Any]:
@@ -23,7 +23,7 @@ def _playback(call: Any) -> Mapping[str, Any]:
         raise TypeError("An Assembly playback call requires its exact runtime.")
     if not isinstance(arguments, Mapping):
         raise TypeError("An Assembly playback call requires argument data.")
-    return runtime.control(arguments)
+    return runtime.control(arguments, ticket=getattr(call, "ticket", None))
 
 
 def register_assembly_playback_capability_implementation(

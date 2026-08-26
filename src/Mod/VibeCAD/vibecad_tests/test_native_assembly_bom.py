@@ -7,8 +7,8 @@ from dataclasses import replace
 import pytest
 
 import VibeCADNativeAssemblyBom as bom_module
+import VibeCADNativeAssemblyBomRuntime as runtime_module
 import VibeCADNativeAssemblyBomState as state_module
-import VibeCADNativeAssemblyStructureRuntime as runtime_module
 from VibeCADNativeAssemblyBom import (
     AssemblyBomCreateSpec,
     NativeAssemblyBomError,
@@ -18,12 +18,14 @@ from VibeCADNativeAssemblyBom import (
 from VibeCADNativeAssemblyBomState import (
     AssemblyBomState,
     NativeAssemblyBomStateError,
+    _bom_graph,
     _source_graph,
     read_bom_table,
 )
 from VibeCADNativeAssemblySolveState import AssemblySolverState
-from VibeCADNativeAssemblyStructureSchema import (
-    assembly_structure_capability_definition,
+from VibeCADNativeAssemblyBomSchema import (
+    ASSEMBLY_BOM_CAPABILITY_NAME,
+    assembly_bom_capability_definition,
 )
 from VibeCADNativeTargets import NativeObjectRef
 
@@ -109,9 +111,6 @@ def _spec(document: _Document, assembly: _Object) -> AssemblyBomCreateSpec:
         detail_subassemblies=True,
         detail_parts=False,
         only_parts=True,
-        expected_bom_state_sha256="a" * 64,
-        expected_component_count=1,
-        expected_bom_count=0,
     )
 
 
@@ -130,30 +129,34 @@ def _patch_preflight_state(monkeypatch, state: AssemblyBomState) -> None:
 
 
 def test_schema_maps_only_bom_action_to_one_closed_bounded_contract() -> None:
-    definition = assembly_structure_capability_definition()
-    variant = next(
-        value for value in definition.variants if value.operation == "create_bom"
-    )
-    schema = definition.provider_schema(("create_bom",))["parameters"]["oneOf"][0]
+    definition = assembly_bom_capability_definition()
+    variant = definition.variants[0]
+    schema = definition.provider_schema(("create",))["parameters"]["oneOf"][0]
 
+    assert definition.name == ASSEMBLY_BOM_CAPABILITY_NAME == "assembly.bom"
+    assert definition.description == "Create a BOM for the active Assembly."
+    assert variant.operation == "create"
     assert variant.action_ids == frozenset({"Assembly_CreateBom"})
     assert variant.surface_ids == frozenset({"assemble"})
     assert variant.transaction_behavior == "document"
     assert variant.background_required is False
-    assert set(schema["required"]) == {
-        "operation",
-        "assembly",
-        "label",
-        "columns",
-        "detail_subassemblies",
-        "detail_parts",
-        "only_parts",
-        "expected_bom_state_sha256",
-        "expected_component_count",
-        "expected_bom_count",
-    }
+    assert schema["required"] == []
     assert schema["additionalProperties"] is False
+    assert schema["properties"]["label"]["default"] == "Bill of Materials"
+    assert schema["properties"]["detail_subassemblies"]["default"] is True
+    assert schema["properties"]["detail_parts"]["default"] is True
+    assert schema["properties"]["only_parts"]["default"] is False
+    assert schema["properties"]["only_parts"]["description"] == (
+        "Part containers and subassemblies only."
+    )
     columns = schema["properties"]["columns"]
+    assert columns["default"] == [
+        "Index",
+        "Name",
+        "Description",
+        "File Name",
+        "Quantity",
+    ]
     assert columns["minItems"] == 1
     assert columns["maxItems"] == 32
     assert columns["uniqueItems"] is True
@@ -161,20 +164,10 @@ def test_schema_maps_only_bom_action_to_one_closed_bounded_contract() -> None:
     assert "A-Za-z_" in columns["items"]["pattern"]
 
 
-def test_runtime_decodes_exact_bom_references_and_ordered_columns() -> None:
-    reference = runtime_module._bom_object_ref(
-        _Document.Uid,
-        {"object_name": "Assembly"},
-    )
+def test_runtime_decodes_ordered_bom_columns() -> None:
     columns = runtime_module._bom_columns(["Index", ".PartNumber", "Quantity"])
 
-    assert reference == NativeObjectRef(_Document.Uid, "Assembly")
     assert columns == ("Index", ".PartNumber", "Quantity")
-    with pytest.raises(NativeAssemblyBomError, match="exact object"):
-        runtime_module._bom_object_ref(
-            _Document.Uid,
-            {"object_name": "Assembly", "label": "ambiguous"},
-        )
     with pytest.raises(NativeAssemblyBomError, match="ordered list"):
         runtime_module._bom_columns("Index")
 
@@ -207,24 +200,11 @@ def test_preflight_freezes_exact_state_and_allows_human_column_sets(
     ).columns == ("Quantity",)
 
 
-def test_preflight_rejects_stale_or_ambiguous_requests_before_factory(
+def test_preflight_rejects_invalid_requests_before_factory(
     monkeypatch,
 ) -> None:
     document, assembly, _component, state = _fixture()
     _patch_preflight_state(monkeypatch, state)
-    calls = []
-
-    with pytest.raises(NativeAssemblyBomError, match="state changed"):
-        create_assembly_bom(
-            document,
-            replace(
-                _spec(document, assembly),
-                expected_bom_state_sha256="c" * 64,
-            ),
-            active_reader=lambda _document: assembly,
-            factory=lambda *_args: calls.append(True),
-        )
-    assert calls == []
 
     for columns, message in (
         (("Name", "Name"), "unique"),
@@ -338,3 +318,45 @@ def test_bom_table_reader_returns_bounded_literal_preview_and_stable_digest() ->
     assert truncated["row_preview"][0]["Name"].endswith("...")
     with pytest.raises(NativeAssemblyBomStateError, match="cell budget"):
         read_bom_table(sheet, maximum_cells=8)
+
+
+def test_bom_graph_accepts_an_exact_resource_owned_by_its_bom(monkeypatch) -> None:
+    document = _Document()
+    assembly = document.add("Assembly", "Assembly::AssemblyObject")
+    group = document.add("BOMs", "Assembly::BomGroup")
+    bom = document.add("BOM", "Assembly::BomObject")
+    guard = document.add("RestoreBOM", "App::FeaturePython")
+    assembly.Group = [group]
+    group.Group = [bom, guard]
+    bom.columnsNames = ["Index", "Name", "Quantity"]
+    bom.detailSubAssemblies = True
+    bom.detailParts = True
+    bom.onlyParts = False
+    bom.autoGenerate = False
+    bom.getUsedRange = lambda: ("A1", "C2")
+    cells = {
+        "A1": "'Index",
+        "B1": "'Name",
+        "C1": "'Quantity",
+        "A2": "'1",
+        "B2": "'Bracket",
+        "C2": "'2",
+    }
+    bom.getContents = lambda address: cells.get(address, "")
+    guard.VibeCADTimelineRole = "resource"
+    guard.VibeCADTimelineOwner = bom
+    monkeypatch.setattr(state_module, "_timeline_active", lambda _obj: True)
+
+    found_group, boms, records = _bom_graph(assembly)
+
+    assert found_group is group
+    assert boms == (bom,)
+    assert records[0]["resources"] == [
+        {
+            "document_uid": document.Uid,
+            "object_name": guard.Name,
+            "document_name": document.Name,
+            "object_id": guard.ID,
+            "type_id": guard.TypeId,
+        }
+    ]

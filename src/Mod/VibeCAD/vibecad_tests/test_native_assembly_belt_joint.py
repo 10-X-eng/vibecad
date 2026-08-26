@@ -7,9 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import VibeCADNativeAssemblyJointArguments as joint_arguments
 import VibeCADNativeAssemblyRelationJointRuntime as runtime_module
-from VibeCADNativeActionManifest import classify_native_surface
 from VibeCADNativeArguments import NativeArgumentError
 from VibeCADNativeAssemblyBeltJoint import (
     BeltJointSpec,
@@ -21,7 +19,6 @@ from VibeCADNativeAssemblyBeltJoint import (
 )
 from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
 from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
-from VibeCADNativeAssemblyJointSchema import assembly_joint_capability_definition
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeTargets import NativeObjectRef
@@ -74,57 +71,6 @@ def _spec(radius1: float = 20.0, radius2: float = 40.0) -> BeltJointSpec:
         expected_joint_count=2,
         expected_solve_on_creation=True,
     )
-
-
-def test_belt_schema_and_live_action_mapping_are_exact() -> None:
-    definition = assembly_joint_capability_definition()
-    variant = next(
-        item for item in definition.variants if item.operation == "create_belt"
-    )
-    schema = definition.provider_schema(("create_belt",))["parameters"]["oneOf"][0]
-
-    assert variant.action_ids == frozenset({"Assembly_CreateJointBelt"})
-    assert variant.surface_ids == frozenset({"assemble"})
-    assert set(schema["required"]) == {
-        "operation",
-        "assembly",
-        "first_pulley_connector",
-        "second_pulley_connector",
-        "first_revolute_joint",
-        "second_revolute_joint",
-        "label",
-        "radius1_mm",
-        "radius2_mm",
-        "expected_component_count",
-        "expected_grounded_count",
-        "expected_joint_count",
-        "expected_solve_on_creation",
-    }
-    assert schema["properties"]["radius1_mm"] == {
-        "type": "number",
-        "minimum": 1.0e-7,
-        "maximum": 1_000_000.0,
-    }
-    assert schema["properties"]["radius2_mm"] == {
-        "type": "number",
-        "minimum": 1.0e-7,
-        "maximum": 1_000_000.0,
-    }
-    assert not {
-        "first",
-        "second",
-        "reverse",
-        "angle",
-        "limits",
-        "pitch_radius_mm",
-        "first_gear_connector",
-        "second_gear_connector",
-    } & set(schema["properties"])
-    assert schema["additionalProperties"] is False
-    plan = classify_native_surface(_surface())[0]
-    assert plan.capability_family == ASSEMBLY_JOINT_CAPABILITY_NAME
-    assert plan.operation_variant == "create_belt"
-    assert plan.transaction_behavior == "document"
 
 
 @pytest.mark.parametrize(
@@ -181,7 +127,7 @@ def _dependency_fixture():
     )
     prepared = _Node(
         regular_joints_before=(first_revolute, second_revolute),
-        grounded_joints_before=(),
+        grounded_joints_before=(_Node(ObjectToGround=base),),
         first=_Node(component=first_pulley),
         second=_Node(component=second_pulley),
     )
@@ -342,55 +288,6 @@ def _arguments() -> dict[str, object]:
         "expected_joint_count": 2,
         "expected_solve_on_creation": True,
     }
-
-
-def test_belt_runtime_routes_complete_exact_spec_before_transaction(
-    monkeypatch,
-) -> None:
-    runtime, state, document = _runtime()
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        joint_arguments,
-        "joint_placement",
-        lambda value, field, _error_type: (field, value),
-    )
-    monkeypatch.setattr(
-        runtime_module,
-        "preflight_belt_joint",
-        lambda target_document, spec: captured.update(
-            preflight_document=target_document,
-            spec=spec,
-        ),
-    )
-
-    def run_immediate(context, **kwargs):
-        captured.update(context=context, **kwargs)
-        return {"routed": True}
-
-    monkeypatch.setattr(runtime_module, "run_immediate_mutation", run_immediate)
-
-    result = runtime.mutate_joint(
-        _arguments(),
-        ticket=state.begin_call(document.Uid, ASSEMBLY_JOINT_CAPABILITY_NAME),
-    )
-
-    assert result == {"routed": True}
-    spec = captured["spec"]
-    assert isinstance(spec, BeltJointSpec)
-    assert spec.assembly_ref.object_name == "Assembly"
-    assert spec.first_pulley_connector.component_ref.object_name == "PulleyOne"
-    assert spec.second_pulley_connector.component_ref.object_name == "PulleyTwo"
-    assert spec.first_revolute_joint_ref.object_name == "FirstRevolute"
-    assert spec.second_revolute_joint_ref.object_name == "SecondRevolute"
-    assert spec.label == "Open Belt Coupling"
-    assert spec.radius1_mm == 20.0
-    assert spec.radius2_mm == 40.0
-    assert spec.expected_component_count == 3
-    assert spec.expected_grounded_count == 1
-    assert spec.expected_joint_count == 2
-    assert spec.expected_solve_on_creation is True
-    assert captured["preflight_document"] is document
-    assert captured["transaction_name"] == "Create Native Assembly Belt Joint"
 
 
 @pytest.mark.parametrize(

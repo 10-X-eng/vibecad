@@ -19,6 +19,7 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeAnalyzeInspectSchema import ANALYZE_INSPECT_CAPABILITY_NAME
 from VibeCADNativeAnalyzeMeshSchema import ANALYZE_MESH_CAPABILITY_NAME
+from VibeCADNativeAnalyzeMeshLifecycleSchema import ANALYZE_GMSH_MESH
 from VibeCADNativeAnalyzeMeshState import fem_mesh_definition_state
 from VibeCADNativeAnalyzeModelSchema import ANALYZE_MODEL_CAPABILITY_NAME
 from VibeCADNativeAnalyzeSnapshot import build_analyze_snapshot
@@ -68,7 +69,8 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     model = registry.definition(ANALYZE_MODEL_CAPABILITY_NAME)
     mesh = registry.definition(ANALYZE_MESH_CAPABILITY_NAME)
     inspect = registry.definition(ANALYZE_INSPECT_CAPABILITY_NAME)
-    assert model is not None and mesh is not None and inspect is not None
+    focused_gmsh = registry.definition(ANALYZE_GMSH_MESH)
+    assert all(value is not None for value in (model, mesh, inspect, focused_gmsh))
     plans = {
         plan.command_id: plan
         for plan in resolve_native_action_inventory(surface).plans
@@ -97,11 +99,13 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
                 ANALYZE_MODEL_CAPABILITY_NAME,
                 ANALYZE_MESH_CAPABILITY_NAME,
                 ANALYZE_INSPECT_CAPABILITY_NAME,
+                ANALYZE_GMSH_MESH,
             ),
             schemas=(
                 model.provider_schema(("create_analysis",)),
                 mesh.provider_schema(OPERATIONS),
                 inspect.provider_schema(("fem_mesh_definition",)),
+                focused_gmsh.provider_schema(("update",)),
             ),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -271,6 +275,18 @@ def _run() -> None:
         )["updated_mesh_definition"]
         assert gmsh_updated["source"]["object_name"] == second.Name
         assert not gmsh_updated["generated"]
+        gmsh_updated = call(
+            ANALYZE_GMSH_MESH,
+            {
+                "operation": "update",
+                "mesh_name": gmsh.Name,
+                "maximum_size_mm": 4.0,
+                "minimum_size_mm": 0.5,
+                "label": "Focused CFD Gmsh Definition",
+            },
+        )["updated_mesh_definition"]
+        assert gmsh_updated["settings"]["element_order"] == "first"
+        assert gmsh_updated["settings"]["maximum_size_mm"] == 4.0
 
         stale = call(
             ANALYZE_MESH_CAPABILITY_NAME,

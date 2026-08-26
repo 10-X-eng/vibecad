@@ -20,8 +20,11 @@ import UtilsAssembly
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
-from VibeCADNativeAssemblyJointConnectors import placement_summary
 from VibeCADNativeAssemblyJointSchema import assembly_joint_capability_definition
+from VibeCADNativeAssemblyInspectSchema import (
+    ASSEMBLY_CONNECTORS_CAPABILITY_NAME,
+    assembly_connectors_capability_definition,
+)
 from VibeCADNativeAssemblySnapshot import build_assembly_snapshot
 from VibeCADNativeCapabilityRegistry import (
     NativeProviderSurface,
@@ -68,9 +71,14 @@ def _focused_turn(surface, registry) -> NativeTurnSnapshot:
         snapshot=NativeSurfaceSnapshot.from_surface(surface),
         available=True,
         unavailable_reason="",
-        tool_names=("state.read", ASSEMBLY_JOINT_CAPABILITY_NAME),
+        tool_names=(
+            "state.read",
+            ASSEMBLY_CONNECTORS_CAPABILITY_NAME,
+            ASSEMBLY_JOINT_CAPABILITY_NAME,
+        ),
         schemas=(
             state_definition.provider_schema(("active", "selection")),
+            assembly_connectors_capability_definition().provider_schema(("find",)),
             joint_definition.provider_schema(("create_cylindrical",)),
         ),
         human_only_action_ids=("Assembly_ActivateAssembly",),
@@ -98,46 +106,33 @@ def _regular_joints(assembly):
 
 def _placement(origin_z: float = 0.0, angle: float = 0.0) -> dict:
     return {
-        "origin_mm": {"x": 0.0, "y": 0.0, "z": origin_z},
-        "rotation": {
-            "axis": {"x": 0.0, "y": 0.0, "z": 1.0},
-            "angle_degrees": angle,
-        },
+        "translation_mm": [0.0, 0.0, origin_z],
+        "rotation_axis": [0.0, 0.0, 1.0],
+        "rotation_degrees": angle,
     }
 
 
 def _connector(component, offset: dict) -> dict:
     return {
-        "component": {"object_name": component.Name},
-        "element_path": "Face6",
-        "anchor_path": "Face6",
+        "component": component.Name,
+        "element": "Face6",
         "offset": offset,
-        "expected_component_placement": placement_summary(component.Placement),
     }
 
 
-def _arguments(assembly, components, *, expected_joint_count: int) -> dict:
+def _arguments(assembly, components) -> dict:
     return {
         "operation": "create_cylindrical",
-        "assembly": {"object_name": assembly.Name},
         "first": _connector(components[0], _placement()),
         "second": _connector(components[1], _placement(2.5, 15.0)),
         "label": "Native Base-Guide Cylindrical",
         "reverse": True,
         "limits": {
-            "length": {
-                "minimum": {"enabled": True, "mm": -5.0},
-                "maximum": {"enabled": True, "mm": 20.0},
-            },
-            "angle": {
-                "minimum": {"enabled": True, "degrees": -60.0},
-                "maximum": {"enabled": True, "degrees": 100.0},
-            },
+            "minimum_mm": -5.0,
+            "maximum_mm": 20.0,
+            "minimum_degrees": -60.0,
+            "maximum_degrees": 100.0,
         },
-        "expected_component_count": 2,
-        "expected_grounded_count": 1,
-        "expected_joint_count": expected_joint_count,
-        "expected_solve_on_creation": True,
     }
 
 
@@ -266,18 +261,46 @@ def _run() -> None:
             "grounded": 1,
         }
 
+        connector_pairs = dispatcher.call(
+            ASSEMBLY_CONNECTORS_CAPABILITY_NAME,
+            json.dumps(
+                {
+                    "first_component": {"object_name": components[0].Name},
+                    "second_component": {"object_name": components[1].Name},
+                    "joint_type": "fixed",
+                    "limit": 4,
+                },
+                separators=(",", ":"),
+            ),
+            "assembly-cylindrical-connectors",
+        )
+        assert connector_pairs["ok"] is True, connector_pairs
+        assert connector_pairs["operation"] == "joint_connector_pairs"
+        assert connector_pairs["first_component"]["object_name"] == components[0].Name
+        assert connector_pairs["second_component"]["object_name"] == components[1].Name
+        assert len(connector_pairs["pairs"]) == 4
+        assert all(
+            pair["first"]["component"] == components[0].Name
+            and pair["second"]["component"] == components[1].Name
+            and pair["first"]["element"].startswith("Face")
+            and pair["second"]["element"].startswith("Face")
+            for pair in connector_pairs["pairs"]
+        )
+
         before_invalid = tuple(document.Objects)
+        stale_state_field = _arguments(assembly, components)
+        stale_state_field["expected_joint_count"] = 1
         invalid = dispatcher.call(
             ASSEMBLY_JOINT_CAPABILITY_NAME,
-            json.dumps(_arguments(assembly, components, expected_joint_count=1)),
+            json.dumps(stale_state_field),
             "assembly-cylindrical-stale",
         )
         assert invalid["ok"] is False, invalid
-        assert invalid["error_code"] == "NATIVE_ASSEMBLY_CYLINDRICAL_JOINT_FAILED"
+        assert invalid["error_code"] == "NATIVE_ARGUMENTS_INVALID"
         assert tuple(document.Objects) == before_invalid
         assert int(document.UndoCount) == 0
 
-        arguments = _arguments(assembly, components, expected_joint_count=0)
+        arguments = _arguments(assembly, components)
         encoded = json.dumps(arguments, separators=(",", ":"))
         result = dispatcher.call(
             ASSEMBLY_JOINT_CAPABILITY_NAME,

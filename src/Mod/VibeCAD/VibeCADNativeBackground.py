@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import time
 from typing import Any, Callable, Mapping
 
 from tool_impl.analysis_runtime import (
@@ -19,6 +20,7 @@ from tool_impl.analysis_runtime import (
 MAX_BACKGROUND_JOBS = 32
 MAX_BACKGROUND_RESULT_BYTES = 32 * 1024
 MAX_PROGRESS_MESSAGE_CHARS = 160
+MAX_FAILURE_MESSAGE_CHARS = 320
 
 
 class NativeBackgroundCancelled(RuntimeError):
@@ -40,10 +42,18 @@ class NativeBackgroundSnapshot:
     result: dict[str, Any] | None
     error: dict[str, Any] | None
     cancel_requested: bool
+    changes_document: bool = False
+    elapsed_seconds: int = 0
+    seconds_since_progress: int = 0
+    worker_active: bool = False
 
     @property
     def terminal(self) -> bool:
         return self.phase in _TERMINAL_PHASES
+
+    @property
+    def document_changed(self) -> bool:
+        return self.phase == "completed" and self.changes_document
 
 
 # Preserve the migration-window private shape used by current tests/callers.
@@ -78,6 +88,16 @@ def _canonical_result(result: Mapping[str, Any]) -> str:
     return encoded
 
 
+def _bounded_failure_message(value: Any) -> str:
+    message = str(value or "").strip()
+    if len(message) <= MAX_FAILURE_MESSAGE_CHARS:
+        return message
+    head = message[:96].rstrip()
+    separator = " ... "
+    tail_length = MAX_FAILURE_MESSAGE_CHARS - len(head) - len(separator)
+    return head + separator + message[-tail_length:].lstrip()
+
+
 def _error_summary(exc: Exception, diagnostic_id: str | None) -> dict[str, Any]:
     failure = getattr(exc, "failure", None)
     if callable(failure):
@@ -85,7 +105,7 @@ def _error_summary(exc: Exception, diagnostic_id: str | None) -> dict[str, Any]:
         if isinstance(value, Mapping):
             result = {
                 "error_code": str(value.get("error_code") or "")[:80],
-                "message": str(value.get("message") or "")[:320],
+                "message": _bounded_failure_message(value.get("message")),
             }
             for key in ("current_surface", "current_revision", "exact_target"):
                 if key in value and isinstance(value[key], (str, int)):
@@ -173,6 +193,7 @@ class NativeBackgroundManager(AnalysisRuntimeManager):
         return _error_summary(exc, diagnostic_id)
 
     def _snapshot_locked(self, job: _Job) -> NativeBackgroundSnapshot:
+        now = time.monotonic()
         result = json.loads(job.result_json) if job.result_json is not None else None
         return NativeBackgroundSnapshot(
             job_id=job.job_id,
@@ -184,4 +205,8 @@ class NativeBackgroundManager(AnalysisRuntimeManager):
             result=result,
             error=dict(job.error) if job.error is not None else None,
             cancel_requested=job.cancellation.is_set(),
+            changes_document=job.changes_document,
+            elapsed_seconds=max(0, int(now - job.submitted_at)),
+            seconds_since_progress=max(0, int(now - job.progress_at)),
+            worker_active=not job.completed.is_set(),
         )

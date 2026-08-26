@@ -4,12 +4,16 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+import hashlib
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import time
 import traceback
+import zipfile
 
 import FreeCAD as App
 import FreeCADGui as Gui
@@ -125,8 +129,9 @@ def _source(document, name: str, x: float):
     return source
 
 
-def _write_fake_gmsh(path: Path, fixture: Path) -> None:
-    path.write_text(
+def _write_fake_gmsh(path: Path, fixture: Path) -> Path:
+    script_path = path.with_suffix(".py") if sys.platform == "win32" else path
+    script_path.write_text(
         "#!/usr/bin/python3\n"
         "import pathlib, re, shutil, sys, time\n"
         "time.sleep(0.35)\n"
@@ -138,11 +143,22 @@ def _write_fake_gmsh(path: Path, fixture: Path) -> None:
         f"shutil.copyfile({str(fixture)!r}, output)\n",
         encoding="utf-8",
     )
-    path.chmod(0o700)
+    script_path.chmod(0o700)
+    if sys.platform != "win32":
+        return script_path
+    python = shutil.which("python.exe")
+    assert python is not None
+    wrapper = path.with_suffix(".cmd")
+    wrapper.write_text(
+        f'@echo off\n"{python}" "{script_path}" %*\n',
+        encoding="utf-8",
+    )
+    return wrapper
 
 
-def _write_fake_netgen(path: Path) -> None:
-    path.write_text(
+def _write_fake_netgen(path: Path) -> Path:
+    script_path = path.with_suffix(".py") if sys.platform == "win32" else path
+    script_path.write_text(
         "#!/usr/bin/python3\n"
         "import pathlib, re, sys, time\n"
         "import numpy as np\n"
@@ -157,7 +173,49 @@ def _write_fake_netgen(path: Path) -> None:
         "np.save(match.group(1), np.array([result, groups], dtype=object))\n",
         encoding="utf-8",
     )
-    path.chmod(0o700)
+    script_path.chmod(0o700)
+    if sys.platform != "win32":
+        return script_path
+    python = shutil.which("python.exe")
+    assert python is not None
+    wrapper = path.with_suffix(".cmd")
+    wrapper.write_text(
+        f'@echo off\n"{python}" "{script_path}" %*\n',
+        encoding="utf-8",
+    )
+    return wrapper
+
+
+def _archive_payloads(fem_mesh) -> dict[str, bytes]:
+    archive = zipfile.ZipFile(BytesIO(bytes(fem_mesh.dumpContent())), "r")
+    return {name: archive.read(name) for name in sorted(archive.namelist())}
+
+
+def _archive_difference(before: dict[str, bytes], after: dict[str, bytes]) -> dict:
+    result = {}
+    for name in sorted(set(before) | set(after)):
+        old = before.get(name, b"")
+        new = after.get(name, b"")
+        old_lines = old.decode("utf-8", errors="replace").splitlines()
+        new_lines = new.decode("utf-8", errors="replace").splitlines()
+        differences = []
+        for index, values in enumerate(zip(old_lines, new_lines), start=1):
+            if values[0] != values[1]:
+                differences.append((index, values[0], values[1]))
+                if len(differences) == 8:
+                    break
+        result[name] = {
+            "before": (len(old), hashlib.sha256(old).hexdigest()),
+            "after": (len(new), hashlib.sha256(new).hexdigest()),
+            "before_context": old_lines[max(0, differences[0][0] - 7) : differences[0][0]]
+            if differences
+            else [],
+            "after_context": new_lines[max(0, differences[0][0] - 7) : differences[0][0]]
+            if differences
+            else [],
+            "first_differences": differences,
+        }
+    return result
 
 
 def _run() -> None:
@@ -176,10 +234,8 @@ def _run() -> None:
         path = root / "native-fem-generation.FCStd"
         fixture = Path(App.getHomePath()) / "Mod/Fem/femtest/data/gmsh/Cube_Volume.vtk"
         assert fixture.is_file(), fixture
-        fake_gmsh = root / "fake-gmsh"
-        fake_netgen = root / "fake-netgen"
-        _write_fake_gmsh(fake_gmsh, fixture)
-        _write_fake_netgen(fake_netgen)
+        fake_gmsh = _write_fake_gmsh(root / "fake-gmsh", fixture)
+        fake_netgen = _write_fake_netgen(root / "fake-netgen")
         gmsh_preferences.SetString("gmshBinaryPath", str(fake_gmsh))
         netgen_preferences.SetString("NetgenPythonPath", str(fake_netgen))
 
@@ -197,7 +253,8 @@ def _run() -> None:
         service.select_modeling_engine("native")
         state_store = service.native_document_state_store()
         ledger = NativeAssistantUndoLedger()
-        ledger.begin_run("native-analyze-mesh-generation-gui")
+        run_id = "native-analyze-mesh-generation-gui"
+        ledger.begin_run(run_id)
 
         def authorize() -> None:
             require_frozen_native_surface(frozen, controller)
@@ -213,6 +270,7 @@ def _run() -> None:
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
             background_manager=service.native_background_manager(),
             document_thread_dispatch=VibeGui._dispatch_to_document_thread,
+            run_id=run_id,
         )
         dispatcher = NativeTurnDispatcher(
             document=document,
@@ -287,6 +345,7 @@ def _run() -> None:
 
         gmsh_mesh, gmsh_region = create_mesh(gmsh_source, "gmsh")
         netgen_mesh, netgen_region = create_mesh(netgen_source, "netgen")
+        ledger.end_run(run_id)
 
         ui_ticks = 0
         timer = QtCore.QTimer()
@@ -330,13 +389,6 @@ def _run() -> None:
 
         assert ui_ticks >= 10, ui_ticks
         netgen_before_undo = fem_mesh_definition_state(netgen_mesh)
-        document.undo()
-        assert not fem_mesh_definition_state(netgen_mesh)["generated"]
-        document.redo()
-        assert fem_mesh_definition_state(netgen_mesh)["state_sha256"] == netgen_before_undo[
-            "state_sha256"
-        ]
-
         gmsh_before_cancel = fem_mesh_definition_state(gmsh_mesh)
         revision_before_cancel = state_store.current_revision(str(document.Uid))
         started = call(
@@ -359,9 +411,22 @@ def _run() -> None:
         ]
         assert state_store.current_revision(str(document.Uid)) == revision_before_cancel
 
+        document.undo()
+        assert not fem_mesh_definition_state(netgen_mesh)["generated"]
+        document.redo()
+        assert fem_mesh_definition_state(netgen_mesh)["state_sha256"] == netgen_before_undo[
+            "state_sha256"
+        ]
+
         expected = {
-            gmsh_mesh.Name: fem_mesh_definition_state(gmsh_mesh),
-            netgen_mesh.Name: fem_mesh_definition_state(netgen_mesh),
+            gmsh_mesh.Name: (
+                fem_mesh_definition_state(gmsh_mesh),
+                _archive_payloads(gmsh_mesh.FemMesh),
+            ),
+            netgen_mesh.Name: (
+                fem_mesh_definition_state(netgen_mesh),
+                _archive_payloads(netgen_mesh.FemMesh),
+            ),
             gmsh_region.Name: mesh_refinement_state(gmsh_region),
             netgen_region.Name: mesh_refinement_state(netgen_region),
         }
@@ -373,12 +438,22 @@ def _run() -> None:
         _events(12)
         for name, old in expected.items():
             obj = document.getObject(name)
-            current = (
-                fem_mesh_definition_state(obj)
-                if name in mesh_names
-                else mesh_refinement_state(obj)
-            )
-            assert current["state_sha256"] == old["state_sha256"]
+            if name in mesh_names:
+                old_state, old_archive = old
+                current = fem_mesh_definition_state(obj)
+                assert current["state_sha256"] == old_state["state_sha256"], (
+                    name,
+                    old_state,
+                    current,
+                    _archive_difference(old_archive, _archive_payloads(obj.FemMesh)),
+                )
+            else:
+                current = mesh_refinement_state(obj)
+                assert current["state_sha256"] == old["state_sha256"], (
+                    name,
+                    old,
+                    current,
+                )
 
         timer.stop()
         print(

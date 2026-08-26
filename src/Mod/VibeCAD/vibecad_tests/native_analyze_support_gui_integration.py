@@ -22,6 +22,16 @@ from VibeCADNativeAnalyzeInspectSchema import ANALYZE_INSPECT_CAPABILITY_NAME
 from VibeCADNativeAnalyzeModelSchema import ANALYZE_MODEL_CAPABILITY_NAME
 from VibeCADNativeAnalyzeSnapshot import build_analyze_snapshot
 from VibeCADNativeAnalyzeState import analysis_state
+from VibeCADNativeAnalyzeStructuralLifecycleSchema import (
+    ANALYZE_DISPLACEMENT_SUPPORT,
+    ANALYZE_EDIT_DISPLACEMENT_SUPPORT,
+    ANALYZE_EDIT_FIXED_SUPPORT,
+    ANALYZE_EDIT_RIGID_COUPLING,
+    ANALYZE_EDIT_SPRING_SUPPORT,
+    ANALYZE_FIXED_SUPPORT,
+    ANALYZE_RIGID_COUPLING,
+    ANALYZE_SPRING_SUPPORT,
+)
 from VibeCADNativeAnalyzeSupportSchema import ANALYZE_SUPPORT_CAPABILITY_NAME
 from VibeCADNativeAnalyzeSupportState import support_condition_state
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
@@ -75,6 +85,18 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     support = registry.definition(ANALYZE_SUPPORT_CAPABILITY_NAME)
     inspect = registry.definition(ANALYZE_INSPECT_CAPABILITY_NAME)
     assert model is not None and support is not None and inspect is not None
+    focused_names = (
+        ANALYZE_FIXED_SUPPORT,
+        ANALYZE_EDIT_FIXED_SUPPORT,
+        ANALYZE_RIGID_COUPLING,
+        ANALYZE_EDIT_RIGID_COUPLING,
+        ANALYZE_DISPLACEMENT_SUPPORT,
+        ANALYZE_EDIT_DISPLACEMENT_SUPPORT,
+        ANALYZE_SPRING_SUPPORT,
+        ANALYZE_EDIT_SPRING_SUPPORT,
+    )
+    focused = tuple(registry.definition(name) for name in focused_names)
+    assert all(definition is not None for definition in focused)
     expected_actions = {
         "FEM_ConstraintFixed": "create_fixed",
         "FEM_ConstraintRigidBody": "create_rigid_body",
@@ -130,11 +152,16 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
                 ANALYZE_MODEL_CAPABILITY_NAME,
                 ANALYZE_SUPPORT_CAPABILITY_NAME,
                 ANALYZE_INSPECT_CAPABILITY_NAME,
+                *focused_names,
             ),
             schemas=(
                 model.provider_schema(("create_analysis",)),
                 support.provider_schema((*CREATE_OPERATIONS, *UPDATE_OPERATIONS)),
                 inspect.provider_schema(("support_condition",)),
+                *(
+                    definition.provider_schema((definition.variants[0].operation,))
+                    for definition in focused
+                ),
             ),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -295,60 +322,53 @@ def _run() -> None:
         assert analysis_state(analysis) == current_analysis
 
         fixed_result = call(
-            ANALYZE_SUPPORT_CAPABILITY_NAME,
+            ANALYZE_FIXED_SUPPORT,
             {
-                "operation": "create_fixed",
-                "analysis": _analysis_target(current_analysis),
-                "label": "Fixed Vertices",
-                "references": _references(source, "Vertex1", "Vertex2"),
+                "analysis_name": analysis.Name,
+                "source_name": source.Name,
+                "subelement_names": ["Vertex1", "Vertex2"],
             },
         )
         fixed = document.getObject(fixed_result["created_condition"]["object_name"])
         current_analysis = analysis_state(analysis)
         rigid_result = call(
-            ANALYZE_SUPPORT_CAPABILITY_NAME,
+            ANALYZE_RIGID_COUPLING,
             {
-                "operation": "create_rigid_body",
-                "analysis": _analysis_target(current_analysis),
-                "label": "Mixed Rigid Coupling",
-                "references": _references(source, "Face1"),
-                "condition": {
-                    "reference_node_mm": {"x": 1.0, "y": 2.0, "z": 3.0},
-                    "translation": {
-                        "x": {"kind": "prescribed", "displacement_mm": 0.25},
-                        "y": {"kind": "load", "force_n": 125.0},
-                        "z": {"kind": "free"},
-                    },
-                    "rotation": {
-                        "x": {"kind": "prescribed", "rotation_degrees": -10.0},
-                        "y": {"kind": "free"},
-                        "z": {"kind": "load", "moment_n_mm": 400.0},
-                    },
+                "analysis_name": analysis.Name,
+                "source_name": source.Name,
+                "subelement_names": ["Face1"],
+                "reference_node_mm": {"x": 1.0, "y": 2.0, "z": 3.0},
+                "translation": {
+                    "x": {"kind": "prescribed", "displacement_mm": 0.25},
+                    "y": {"kind": "load", "force_n": 125.0},
+                    "z": {"kind": "free"},
+                },
+                "rotation": {
+                    "x": {"kind": "prescribed", "rotation_degrees": -10.0},
+                    "y": {"kind": "free"},
+                    "z": {"kind": "load", "moment_n_mm": 400.0},
                 },
             },
         )
         rigid = document.getObject(rigid_result["created_condition"]["object_name"])
         current_analysis = analysis_state(analysis)
         displacement_result = call(
-            ANALYZE_SUPPORT_CAPABILITY_NAME,
+            ANALYZE_DISPLACEMENT_SUPPORT,
             {
-                "operation": "create_displacement",
-                "analysis": _analysis_target(current_analysis),
-                "label": "Driven Displacement",
-                "references": _references(source, "Edge1", "Edge2"),
-                "condition": {
-                    "translation": {
-                        "x": {"kind": "formula", "expression": "0.05 * z"},
-                        "y": {"kind": "value", "displacement_mm": -0.1},
-                        "z": {"kind": "free"},
-                    },
-                    "rotation": {
-                        "x": {"kind": "free"},
-                        "y": {"kind": "value", "rotation_degrees": 2.0},
-                        "z": {"kind": "free"},
-                    },
-                    "flow_surface_force": False,
+                "analysis_name": analysis.Name,
+                "source_name": source.Name,
+                "subelement_names": ["Edge1", "Edge2"],
+                "translation": {
+                    "x": {"kind": "formula", "expression": "0.05 * z"},
+                    "y": {"kind": "value", "displacement_mm": -0.1},
+                    "z": {"kind": "free"},
                 },
+                "rotation": {
+                    "x": {"kind": "free"},
+                    "y": {"kind": "value", "rotation_degrees": 2.0},
+                    "z": {"kind": "free"},
+                },
+                "flow_surface_force": False,
             },
         )
         displacement = document.getObject(
@@ -356,17 +376,14 @@ def _run() -> None:
         )
         current_analysis = analysis_state(analysis)
         spring_result = call(
-            ANALYZE_SUPPORT_CAPABILITY_NAME,
+            ANALYZE_SPRING_SUPPORT,
             {
-                "operation": "create_spring",
-                "analysis": _analysis_target(current_analysis),
-                "label": "Surface Spring",
-                "references": _references(source, "Face2"),
-                "condition": {
-                    "normal_stiffness_n_m": 1500.0,
-                    "tangential_stiffness_n_m": 400.0,
-                    "elmer_component": "normal",
-                },
+                "analysis_name": analysis.Name,
+                "source_name": source.Name,
+                "face_names": ["Face2"],
+                "normal_stiffness_n_m": 1500.0,
+                "tangential_stiffness_n_m": 400.0,
+                "elmer_component": "normal",
             },
         )
         spring = document.getObject(spring_result["created_condition"]["object_name"])
@@ -383,21 +400,26 @@ def _run() -> None:
 
         fixed_before = support_condition_state(fixed)
         fixed_update = call(
-            ANALYZE_SUPPORT_CAPABILITY_NAME,
+            ANALYZE_EDIT_FIXED_SUPPORT,
             {
-                "operation": "update_fixed",
-                "target": _condition_target(fixed_before),
-                "label": "Fixed Edges",
-                "references": _references(source, "Edge3", "Edge4"),
+                "support_name": fixed.Name,
+                "changes": {
+                    "applied_to": {
+                        "source_name": source.Name,
+                        "subelement_names": ["Edge3", "Edge4"],
+                    }
+                },
             },
         )
         rigid_update = call(
-            ANALYZE_SUPPORT_CAPABILITY_NAME,
+            ANALYZE_EDIT_RIGID_COUPLING,
             {
-                "operation": "update_rigid_body",
-                "target": _condition_target(support_condition_state(rigid)),
-                "references": _references(source, "Face3"),
-                "condition": {
+                "support_name": rigid.Name,
+                "changes": {
+                    "applied_to": {
+                        "source_name": source.Name,
+                        "subelement_names": ["Face3"],
+                    },
                     "reference_node_mm": {"x": 5.0, "y": 0.0, "z": 1.0},
                     "translation": {
                         "x": {"kind": "free"},
@@ -413,11 +435,10 @@ def _run() -> None:
             },
         )
         displacement_update = call(
-            ANALYZE_SUPPORT_CAPABILITY_NAME,
+            ANALYZE_EDIT_DISPLACEMENT_SUPPORT,
             {
-                "operation": "update_displacement",
-                "target": _condition_target(support_condition_state(displacement)),
-                "condition": {
+                "support_name": displacement.Name,
+                "changes": {
                     "translation": {
                         "x": {"kind": "value", "displacement_mm": 0.2},
                         "y": {"kind": "free"},
@@ -430,13 +451,14 @@ def _run() -> None:
         )
         spring_before = support_condition_state(spring)
         spring_update = call(
-            ANALYZE_SUPPORT_CAPABILITY_NAME,
+            ANALYZE_EDIT_SPRING_SUPPORT,
             {
-                "operation": "update_spring",
-                "target": _condition_target(spring_before),
-                "label": "Updated Surface Spring",
-                "references": _references(source, "Face4"),
-                "condition": {
+                "support_name": spring.Name,
+                "changes": {
+                    "applied_to": {
+                        "source_name": source.Name,
+                        "face_names": ["Face4"],
+                    },
                     "normal_stiffness_n_m": 1750.0,
                     "tangential_stiffness_n_m": 900.0,
                     "elmer_component": "tangential",
@@ -469,7 +491,7 @@ def _run() -> None:
             succeeds=False,
         )
         assert stale["error_code"] == "NATIVE_ANALYZE_STATE_STALE"
-        assert str(spring.Label) == "Updated Surface Spring"
+        assert str(spring.Label) == "Spring support"
 
         conditions = (fixed, rigid, displacement, spring)
         read_revision = state.current_revision(str(document.Uid))

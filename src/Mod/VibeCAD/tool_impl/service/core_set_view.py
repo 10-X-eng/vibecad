@@ -1275,17 +1275,23 @@ def _linked_render_support_names(document: Any, object_names: list[str]) -> set[
 
 def _has_finite_shape_bounds(obj: Any) -> bool:
     shape = getattr(obj, "Shape", None)
-    if shape is None or bool(shape.isNull()):
+    is_null = getattr(shape, "isNull", None)
+    if shape is None or not callable(is_null):
         return False
-    bounds = shape.BoundBox
-    values = (
-        float(bounds.XMin),
-        float(bounds.YMin),
-        float(bounds.ZMin),
-        float(bounds.XMax),
-        float(bounds.YMax),
-        float(bounds.ZMax),
-    )
+    try:
+        if bool(is_null()):
+            return False
+        bounds = shape.BoundBox
+        values = (
+            float(bounds.XMin),
+            float(bounds.YMin),
+            float(bounds.ZMin),
+            float(bounds.XMax),
+            float(bounds.YMax),
+            float(bounds.ZMax),
+        )
+    except Exception:
+        return False
     return all(math.isfinite(value) and abs(value) < 1e50 for value in values)
 
 

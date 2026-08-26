@@ -31,6 +31,13 @@ from VibeCADNativeTargets import (
 
 
 NATIVE_ASSEMBLY_BOM_FAILED = "NATIVE_ASSEMBLY_BOM_FAILED"
+DEFAULT_BOM_COLUMNS = (
+    "Index",
+    "Name",
+    "Description",
+    "File Name",
+    "Quantity",
+)
 _PROPERTY_COLUMN = re.compile(r"^\.[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 
@@ -44,14 +51,11 @@ class NativeAssemblyBomError(NativeMutationError):
 @dataclass(frozen=True, slots=True)
 class AssemblyBomCreateSpec:
     assembly_ref: NativeObjectRef
-    label: str
     columns: tuple[str, ...]
-    detail_subassemblies: bool
-    detail_parts: bool
-    only_parts: bool
-    expected_bom_state_sha256: str
-    expected_component_count: int
-    expected_bom_count: int
+    label: str = "Bill of Materials"
+    detail_subassemblies: bool = True
+    detail_parts: bool = True
+    only_parts: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,25 +75,6 @@ def _timeline_active(obj: Any) -> bool:
         return bool(UtilsAssembly.isTimelineOperationActive(obj))
     except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError):
         return False
-
-
-def _exact_digest(value: Any) -> str:
-    result = str(value or "")
-    if len(result) != 64 or any(
-        character not in "0123456789abcdef" for character in result
-    ):
-        raise NativeAssemblyBomError(
-            "expected_bom_state_sha256 must be one lowercase SHA-256 digest."
-        )
-    return result
-
-
-def _exact_count(value: Any, field: str, maximum: int) -> int:
-    if type(value) is not int or not 0 <= value <= maximum:
-        raise NativeAssemblyBomError(
-            f"{field} must be an integer from 0 through {maximum}."
-        )
-    return value
 
 
 def _label(value: Any) -> str:
@@ -178,31 +163,12 @@ def preflight_create_assembly_bom(
         raise NativeAssemblyBomError(
             "detail_subassemblies, detail_parts, and only_parts must be booleans."
         )
-    expected_digest = _exact_digest(spec.expected_bom_state_sha256)
-    expected_components = _exact_count(
-        spec.expected_component_count,
-        "expected_component_count",
-        100_000,
-    )
-    expected_boms = _exact_count(
-        spec.expected_bom_count,
-        "expected_bom_count",
-        MAX_BOM_OPERATIONS,
-    )
     assembly = _exact_active_assembly(document, spec, active_reader)
     try:
         state = capture_assembly_bom_state(assembly)
         solver = capture_assembly_solver_state(assembly)
     except Exception as exc:
         raise NativeAssemblyBomError(str(exc)) from exc
-    if len(state.components) != expected_components or len(state.boms) != expected_boms:
-        raise NativeAssemblyBomError(
-            "The active Assembly BOM counts changed; read current Assemble state and retry."
-        )
-    if state.state_sha256 != expected_digest:
-        raise NativeAssemblyBomError(
-            "The active Assembly BOM state changed; read current Assemble state and retry."
-        )
     if not state.components:
         raise NativeAssemblyBomError(
             "Insert at least one active component before creating a bill of materials."
@@ -224,9 +190,6 @@ def preflight_create_assembly_bom(
             detail_subassemblies=spec.detail_subassemblies,
             detail_parts=spec.detail_parts,
             only_parts=spec.only_parts,
-            expected_bom_state_sha256=expected_digest,
-            expected_component_count=expected_components,
-            expected_bom_count=expected_boms,
         ),
         state=state,
         columns=columns,
@@ -471,7 +434,8 @@ def verify_created_assembly_bom(
             "The native BOM spreadsheet did not retain its exact ordered columns."
         )
     return {
-        "operation": "create_bom",
+        "operation": "create",
+        "verified": True,
         "assembly": object_reference(assembly),
         "bom_group": object_reference(group),
         "bom": object_reference(bom),
@@ -484,15 +448,9 @@ def verify_created_assembly_bom(
             "auto_generate": True,
         },
         "component_count": len(current.components),
-        "source_node_count": len(current.source_records),
         "bom_count": len(current.boms),
         "row_count": int(table["row_count"]),
         "row_preview": list(table["row_preview"]),
         "rows_truncated": int(table["row_count"]) > len(table["row_preview"]),
         "preview_values_truncated": bool(table["preview_values_truncated"]),
-        "table_sha256": str(table["table_sha256"]),
-        "bom_state_sha256": current.state_sha256,
-        "active_assembly_unchanged": True,
-        "selection_unchanged": True,
-        "assembly_placements_unchanged": True,
     }

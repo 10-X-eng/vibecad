@@ -192,20 +192,8 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
                 "VibeComposerButtons",
             )
             self.assertIsNotNone(composer)
-            interaction_mode = root.findChild(
-                QtWidgets.QComboBox,
-                "VibeInteractionMode",
-            )
-            self.assertIsNotNone(interaction_mode)
-            self.assertEqual(
-                [
-                    (
-                        interaction_mode.itemText(index),
-                        interaction_mode.itemData(index),
-                    )
-                    for index in range(interaction_mode.count())
-                ],
-                [("Build", "build"), ("Plan", "plan")],
+            self.assertIsNone(
+                root.findChild(QtWidgets.QComboBox, "VibeInteractionMode")
             )
             self.assertLess(
                 composer.width(),
@@ -232,17 +220,18 @@ class TestVibeCADResponsiveAssistant(unittest.TestCase):
                 buttons["VibeAttachImage"].icon().cacheKey(),
             )
 
-            # This is the width from the reported dock screenshot: it exceeds
-            # the old 500 px guess but still cannot fit all four full labels.
+            # Removing the mode selector leaves enough room for all four
+            # actions at the width from the reported dock screenshot.
             root.resize(520, 800)
             application.processEvents()
-            self.assertLess(
+            self.assertGreaterEqual(
                 composer.width(),
                 int(composer.property("VibeFullLabelRequiredWidth")),
             )
-            for button in buttons.values():
-                self.assertEqual(button.text(), "")
-                self.assertTrue(button.property("VibeCompactMode"))
+            self.assertEqual(buttons["VibeAttachView"].text(), "Attach View")
+            self.assertEqual(buttons["VibeAttachImage"].text(), "Attach Image")
+            self.assertEqual(buttons["VibeSend"].text(), "Send")
+            self.assertEqual(buttons["VibeStop"].text(), "Stop")
 
             root.resize(760, 800)
             application.processEvents()
@@ -809,7 +798,10 @@ def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
     assert 'modelBrowserWidthPreference = "ModelBrowserWidth"' in main_window
     assert "browserPreferences->GetInt(" in main_window
     assert "browserPreferences->SetInt(modelBrowserWidthPreference, browserWidth)" in main_window
-    assert "workspaceLayout->addWidget(viewportCanvas, 1)" in main_window
+    assert "workspaceLayout->addWidget(d->viewportCanvas, 1)" in main_window
+    assert "setModelBrowserVisible" in main_window
+    assert 'view->property("vibecadUsesModelBrowser")' in main_window
+    assert "browserHost->show()" in main_window
     permanent = source.split("void presentPermanentModelBrowser", 1)[1].split(
         "}  // namespace", 1
     )[0]
@@ -818,7 +810,7 @@ def test_overlaid_dock_visibility_has_one_requested_state_owner() -> None:
     assert "dock->setFeatures(QDockWidget::NoDockWidgetFeatures)" in permanent
     assert "toggle->setEnabled(false)" in permanent
     assert "toggle->setVisible(false)" in permanent
-    assert "host->show()" in permanent
+    assert "host->show()" not in permanent
     assert "dock->show()" in permanent
     assert "VibeCADModelBrowserHost" in tree
     assert "widget.setUpdatesEnabled(false)" in tree

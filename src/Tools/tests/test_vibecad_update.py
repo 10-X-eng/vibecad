@@ -5,8 +5,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +23,7 @@ sys.path.insert(0, str(VIBECAD_MODULE_DIR))
 
 from VibeCADUpdate import (  # noqa: E402
     GITHUB_RELEASES_API_URL,
+    InstallPlan,
     ReleaseIdentity,
     UpdateAsset,
     UpdateError,
@@ -31,10 +36,13 @@ from VibeCADUpdate import (  # noqa: E402
     complete_pending_install_health,
     create_install_plan,
     load_update_policy,
+    macos_install_helper_command,
     normalize_architecture,
     parse_update_manifest,
     record_pending_install,
+    spawn_detached_install_helper,
     update_policy_from_mapping,
+    write_macos_install_helper,
 )
 
 
@@ -74,6 +82,18 @@ def _manifest(*, version: str = "26.3.1-RC3", build: int = 1) -> dict[str, objec
                 ),
                 "size": 20,
                 "sha256": "b" * 64,
+            },
+            {
+                "platform": "macos",
+                "architecture": "aarch64",
+                "kind": "dmg",
+                "name": f"{basename}-macOS12-arm64.dmg",
+                "url": (
+                    "https://github.com/10-X-eng/vibecad/releases/download/"
+                    f"{tag}/{basename}-macOS12-arm64.dmg"
+                ),
+                "size": 30,
+                "sha256": "c" * 64,
             },
         ],
     }
@@ -199,6 +219,14 @@ class UpdateManifestTests(unittest.TestCase):
         asset = release.asset_for("Linux", "x86_64")
         self.assertIsNotNone(asset)
         self.assertEqual(asset.kind, "appimage")
+
+    def test_manifest_selects_native_macos_dmg(self) -> None:
+        release = parse_update_manifest(_manifest())
+        asset = release.asset_for("Darwin", "arm64")
+        self.assertIsNotNone(asset)
+        self.assertEqual(asset.platform, "macos")
+        self.assertEqual(asset.kind, "dmg")
+        self.assertEqual(asset.architecture, "aarch64")
 
     def test_manifest_rejects_release_tag_mismatch(self) -> None:
         manifest = _manifest()
@@ -706,6 +734,512 @@ class UpdateServiceTests(unittest.TestCase):
             )
             result = service.check_for_updates(force=True)
         self.assertEqual(result.status, "current")
+
+    def test_macos_check_selects_the_matching_dmg(self) -> None:
+        release = parse_update_manifest(_manifest(build=2))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = _FakeUpdateService(
+                release,
+                ReleaseIdentity("26.3.1-RC3", 1),
+                UpdatePolicy(),
+                update_directory=Path(temp_dir),
+                system="Darwin",
+                machine="arm64",
+            )
+            result = service.check_for_updates(force=True)
+        self.assertEqual(result.status, "available", result.message)
+        self.assertIsNotNone(result.asset)
+        self.assertEqual(result.asset.kind, "dmg")
+        self.assertEqual(result.asset.platform, "macos")
+
+    def test_macos_plan_requires_an_application_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package = Path(temp_dir) / "VibeCAD.dmg"
+            package.write_bytes(b"dmg")
+            asset = UpdateAsset(
+                "macos",
+                "aarch64",
+                "dmg",
+                package.name,
+                "https://github.com/10-X-eng/vibecad/releases/download/"
+                "v26.3.1-RC3-build2/VibeCAD.dmg",
+                3,
+                hashlib.sha256(b"dmg").hexdigest(),
+            )
+            with self.assertRaisesRegex(Exception, "application bundle"):
+                create_install_plan(
+                    package,
+                    asset,
+                    install_root=Path(temp_dir),
+                )
+
+    def test_macos_plan_uses_the_application_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package = Path(temp_dir) / "VibeCAD.dmg"
+            package.write_bytes(b"dmg")
+            app = Path(temp_dir) / "VibeCAD.app"
+            app.mkdir()
+            asset = UpdateAsset(
+                "macos",
+                "aarch64",
+                "dmg",
+                package.name,
+                "https://github.com/10-X-eng/vibecad/releases/download/"
+                "v26.3.1-RC3-build2/VibeCAD.dmg",
+                3,
+                hashlib.sha256(b"dmg").hexdigest(),
+            )
+            plan = create_install_plan(package, asset, install_root=app)
+            self.assertEqual(plan.kind, "macos-dmg")
+            self.assertEqual(plan.current_install_root, app.resolve())
+
+    def test_macos_health_receipt_commits_and_removes_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            downloads = root / "downloads"
+            downloads.mkdir()
+            package = downloads / "VibeCAD.dmg"
+            package.write_bytes(b"dmg")
+            app = root / "VibeCAD.app"
+            app.mkdir()
+            original = ReleaseIdentity("26.3.1-RC3", 1)
+            target = ReleaseIdentity("26.3.1-RC3", 2)
+            asset = UpdateAsset(
+                "macos",
+                "aarch64",
+                "dmg",
+                package.name,
+                "https://github.com/10-X-eng/vibecad/releases/download/"
+                f"{target.tag}/{package.name}",
+                3,
+                hashlib.sha256(b"dmg").hexdigest(),
+            )
+            plan = create_install_plan(package, asset, install_root=app)
+            record_pending_install(
+                plan,
+                original,
+                target,
+                update_directory=root,
+            )
+            backup = Path(f"{app}.vibecad-rollback")
+            backup.mkdir()
+            (backup / "Contents").mkdir()
+            status = complete_pending_install_health(
+                target,
+                update_directory=root,
+            )
+            receipt = json.loads((root / "health-receipt.json").read_text())
+            backup_exists = backup.exists()
+            package_exists = package.exists()
+        self.assertEqual(status, "healthy")
+        self.assertEqual(receipt["status"], "healthy")
+        self.assertFalse(backup_exists)
+        self.assertFalse(package_exists)
+
+    def test_macos_health_commits_before_removing_the_rollback_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            downloads = root / "downloads"
+            downloads.mkdir()
+            package = downloads / "VibeCAD.dmg"
+            package.write_bytes(b"dmg")
+            app = root / "VibeCAD.app"
+            app.mkdir()
+            original = ReleaseIdentity("26.3.1-RC3", 1)
+            target = ReleaseIdentity("26.3.1-RC3", 2)
+            asset = UpdateAsset(
+                "macos",
+                "aarch64",
+                "dmg",
+                package.name,
+                "https://github.com/10-X-eng/vibecad/releases/download/"
+                f"{target.tag}/{package.name}",
+                3,
+                hashlib.sha256(b"dmg").hexdigest(),
+            )
+            plan = create_install_plan(package, asset, install_root=app)
+            record_pending_install(
+                plan,
+                original,
+                target,
+                update_directory=root,
+            )
+            backup = Path(f"{app}.vibecad-rollback")
+            backup.mkdir()
+            real_rmtree = shutil.rmtree
+
+            def assert_committed_before_cleanup(path) -> None:
+                self.assertFalse((root / "pending-install.json").exists())
+                self.assertTrue((root / "health-receipt.json").is_file())
+                real_rmtree(path)
+
+            with mock.patch(
+                "VibeCADUpdate.shutil.rmtree",
+                side_effect=assert_committed_before_cleanup,
+            ):
+                status = complete_pending_install_health(
+                    target,
+                    update_directory=root,
+                )
+
+        self.assertEqual(status, "healthy")
+
+    def test_updater_gui_launches_a_macos_dmg_helper(self) -> None:
+        gui = (
+            REPO_ROOT / "src" / "Mod" / "VibeCAD" / "VibeCADUpdateGui.py"
+        ).read_text(encoding="utf-8")
+        helper = (
+            REPO_ROOT / "src" / "Mod" / "VibeCAD" / "VibeCADUpdate.py"
+        ).read_text(encoding="utf-8")
+        launch = gui.split("def _launch_macos_install_helper", 1)[1].split(
+            "class CheckForUpdatesCommand", 1
+        )[0]
+        restart = gui.split("def _install_and_restart", 1)[1].split(
+            "def _show_update_notification", 1
+        )[0]
+        self.assertIn("macos-dmg", gui.split("def _launch_pending_install", 1)[1])
+        self.assertIn("write_macos_install_helper", launch)
+        self.assertIn("macos_install_helper_command", launch)
+        self.assertIn("launch_pending_install_now()", restart)
+        self.assertIn("_prepare_to_quit_for_update()", restart)
+        self.assertIn("_exit_process_for_update()", restart)
+        self.assertLess(
+            restart.index("_prepare_to_quit_for_update()"),
+            restart.index("launch_pending_install_now()"),
+        )
+        self.assertLess(
+            restart.index("launch_pending_install_now()"),
+            restart.index("_exit_process_for_update()"),
+        )
+        self.assertIn("closeAllDocuments", gui)
+        self.assertIn("os._exit(0)", gui)
+        self.assertIn("spawn_detached_install_helper", gui)
+        self.assertIn("macos_install_helper_started_path", launch)
+        self.assertIn("wait_for_install_helper_start", launch)
+        self.assertIn("hdiutil attach", helper)
+        self.assertIn("install-helper.started", helper)
+        self.assertLess(
+            helper.index('printf \'%s\\n\' "$$" > "$started"'),
+            helper.index('while kill -0 "$pid"'),
+        )
+        self.assertIn("ditto", helper)
+        self.assertIn('new_app="$mount/VibeCAD.app"', helper)
+        self.assertIn("bundle_executable", helper)
+        self.assertIn("keeping live updated application", helper)
+        self.assertIn("terminate_new_app", helper)
+        self.assertIn("rollback_install", helper)
+        self.assertIn('index($0, prefix)', helper)
+        rollback = helper.split("rollback_install()", 1)[1].split("find_new_pid()", 1)[0]
+        self.assertLess(
+            rollback.index("terminate_new_app"),
+            rollback.index('rm -rf "$app"'),
+        )
+        self.assertIn("QtCore.QTimer.singleShot(0, _complete_startup_health_check)", gui)
+        self.assertIn("QtCore.QTimer.singleShot(2000, _complete_startup_health_check)", gui)
+        self.assertNotIn(
+            "QtCore.QTimer.singleShot(30000, _complete_startup_health_check)",
+            gui,
+        )
+
+    def test_macos_install_helper_command_points_at_the_bundle_and_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            helper = root / "install-macos-update.sh"
+            write_macos_install_helper(helper)
+            package = root / "VibeCAD.dmg"
+            package.write_bytes(b"dmg")
+            app = root / "VibeCAD.app"
+            app.mkdir()
+            plan = InstallPlan(
+                "macos-dmg",
+                package,
+                (),
+                current_install_root=app,
+            )
+            command = macos_install_helper_command(
+                helper,
+                plan,
+                process_id=4242,
+                update_directory=root,
+            )
+        self.assertEqual(command[0], "/bin/sh")
+        self.assertEqual(command[1], str(helper))
+        self.assertEqual(command[2], "4242")
+        self.assertEqual(command[3], str(package))
+        self.assertEqual(command[4], str(app))
+        self.assertEqual(command[5], f"{app}.vibecad-rollback")
+        self.assertEqual(Path(command[6]).resolve(), (root / "install-receipt.json").resolve())
+        self.assertEqual(Path(command[7]).resolve(), (root / "pending-install.json").resolve())
+
+    def test_macos_helper_stamps_started_before_waiting_for_the_app(self) -> None:
+        if sys.platform != "darwin":
+            self.skipTest("Requires the macOS install-helper runtime")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            helper = write_macos_install_helper(root / "install-macos-update.sh")
+            receipt = root / "install-receipt.json"
+            pending = root / "pending-install.json"
+            pending.write_text('{"schema":1,"status":"pending"}\n', encoding="utf-8")
+            waiter = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+            )
+            helper_proc = subprocess.Popen(
+                [
+                    "/bin/sh",
+                    str(helper),
+                    str(waiter.pid),
+                    str(root / "missing.dmg"),
+                    str(root / "VibeCAD.app"),
+                    str(root / "VibeCAD.app.vibecad-rollback"),
+                    str(receipt),
+                    str(pending),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            stamp = root / "install-helper.started"
+            log_path = root / "install-helper.log"
+            waiter_pid = waiter.pid
+            try:
+                deadline = time.time() + 5
+                log = ""
+                while time.time() < deadline:
+                    if stamp.is_file() and log_path.is_file():
+                        log = log_path.read_text(encoding="utf-8")
+                        if "helper started" in log:
+                            break
+                    time.sleep(0.05)
+                started = stamp.is_file()
+                log = log_path.read_text(encoding="utf-8") if log_path.is_file() else ""
+            finally:
+                helper_proc.kill()
+                waiter.kill()
+                helper_proc.wait(timeout=5)
+                waiter.wait(timeout=5)
+        self.assertTrue(started, f"log={log}")
+        self.assertIn("helper started", log)
+        self.assertIn(f"waiting for {waiter_pid}", log)
+
+    def test_spawn_detached_helper_outlives_the_parent_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            marker = root / "alive"
+            log = root / "helper.log"
+            helper_command = [
+                sys.executable,
+                "-c",
+                (
+                    "import time\n"
+                    "from pathlib import Path\n"
+                    "time.sleep(0.4)\n"
+                    f"Path({str(marker)!r}).write_text('ready', encoding='utf-8')\n"
+                ),
+            ]
+            launcher = (
+                "from pathlib import Path\n"
+                "from VibeCADUpdate import spawn_detached_install_helper\n"
+                "spawn_detached_install_helper(\n"
+                f"    {helper_command!r},\n"
+                f"    log_path=Path({str(log)!r}),\n"
+                ")\n"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", launcher],
+                check=False,
+                cwd=str(VIBECAD_MODULE_DIR),
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PYTHONPATH": str(VIBECAD_MODULE_DIR)},
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                f"stdout={completed.stdout}\nstderr={completed.stderr}",
+            )
+            deadline = time.time() + 5
+            while time.time() < deadline and not marker.is_file():
+                time.sleep(0.05)
+            self.assertTrue(
+                marker.is_file(),
+                f"stderr={completed.stderr}\nlog={log.read_text(encoding='utf-8') if log.is_file() else ''}",
+            )
+
+    def test_macos_helper_replaces_the_app_and_keeps_a_live_update(self) -> None:
+        if sys.platform != "darwin" or shutil.which("hdiutil") is None:
+            self.skipTest("Requires macOS hdiutil")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = root / "payload"
+            new_app = payload / "VibeCAD.app"
+            macos = new_app / "Contents" / "MacOS"
+            macos.mkdir(parents=True)
+            stub = macos / "FreeCAD"
+            stub.write_text(
+                "#!/bin/sh\n"
+                'if [ -n "${VIBECAD_UPDATE_MARKER:-}" ]; then\n'
+                '  printf "started\\n" > "$VIBECAD_UPDATE_MARKER"\n'
+                "fi\n"
+                "sleep 20\n",
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+            dmg = root / "VibeCAD.dmg"
+            create = subprocess.run(
+                [
+                    "hdiutil",
+                    "create",
+                    "-srcfolder",
+                    str(payload),
+                    "-volname",
+                    "VibeCAD",
+                    "-format",
+                    "UDZO",
+                    "-ov",
+                    str(dmg),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if create.returncode != 0:
+                self.skipTest(f"hdiutil create failed: {create.stderr}")
+            dest = root / "Applications" / "VibeCAD.app"
+            dest.mkdir(parents=True)
+            (dest / "old.txt").write_text("previous", encoding="utf-8")
+            helper = write_macos_install_helper(root / "install-macos-update.sh")
+            receipt = root / "install-receipt.json"
+            pending = root / "pending-install.json"
+            pending.write_text('{"schema":1,"status":"pending"}\n', encoding="utf-8")
+            marker = root / "started"
+            dead = subprocess.run(
+                ["python3", "-c", "import os; print(os.getpid())"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            dead_pid = dead.stdout.strip()
+            env = os.environ.copy()
+            env["VIBECAD_UPDATE_HEALTH_WAIT"] = "3"
+            env["VIBECAD_UPDATE_MARKER"] = str(marker)
+            completed = subprocess.run(
+                [
+                    "/bin/sh",
+                    str(helper),
+                    dead_pid,
+                    str(dmg),
+                    str(dest),
+                    f"{dest}.vibecad-rollback",
+                    str(receipt),
+                    str(pending),
+                ],
+                check=False,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            receipt_payload = (
+                json.loads(receipt.read_text(encoding="utf-8"))
+                if receipt.is_file()
+                else {}
+            )
+            started = marker.read_text(encoding="utf-8") if marker.is_file() else ""
+            has_old = (dest / "old.txt").exists()
+            has_new = (dest / "Contents" / "MacOS" / "FreeCAD").is_file()
+            log = (root / "install-helper.log").read_text(encoding="utf-8") if (
+                root / "install-helper.log"
+            ).is_file() else ""
+            listing = subprocess.run(
+                ["ps", "-axo", "pid=,command="],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            for line in listing.stdout.splitlines():
+                if f"{dest}/" in line:
+                    try:
+                        os.kill(int(line.split(None, 1)[0]), 9)
+                    except (OSError, ValueError):
+                        pass
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"stdout={completed.stdout}\nstderr={completed.stderr}\nlog={log}",
+        )
+        self.assertEqual(receipt_payload.get("status"), "installed")
+        self.assertEqual(started.strip(), "started")
+        self.assertFalse(has_old)
+        self.assertTrue(has_new)
+
+    def test_macos_helper_rolls_back_when_the_updated_app_never_stays_up(self) -> None:
+        if sys.platform != "darwin" or shutil.which("hdiutil") is None:
+            self.skipTest("Requires macOS hdiutil")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload = root / "payload"
+            new_app = payload / "VibeCAD.app"
+            macos = new_app / "Contents" / "MacOS"
+            macos.mkdir(parents=True)
+            stub = macos / "FreeCAD"
+            stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            stub.chmod(0o755)
+            dmg = root / "VibeCAD.dmg"
+            create = subprocess.run(
+                [
+                    "hdiutil",
+                    "create",
+                    "-srcfolder",
+                    str(payload),
+                    "-volname",
+                    "VibeCAD",
+                    "-format",
+                    "UDZO",
+                    "-ov",
+                    str(dmg),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if create.returncode != 0:
+                self.skipTest(f"hdiutil create failed: {create.stderr}")
+            dest = root / "Applications" / "VibeCAD.app"
+            dest.mkdir(parents=True)
+            (dest / "old.txt").write_text("previous", encoding="utf-8")
+            helper = write_macos_install_helper(root / "install-macos-update.sh")
+            receipt = root / "install-receipt.json"
+            pending = root / "pending-install.json"
+            pending.write_text('{"schema":1,"status":"pending"}\n', encoding="utf-8")
+            env = os.environ.copy()
+            env["VIBECAD_UPDATE_HEALTH_WAIT"] = "2"
+            completed = subprocess.run(
+                [
+                    "/bin/sh",
+                    str(helper),
+                    str(os.getpid() + 10_000_000),
+                    str(dmg),
+                    str(dest),
+                    f"{dest}.vibecad-rollback",
+                    str(receipt),
+                    str(pending),
+                ],
+                check=False,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            restored = (
+                (dest / "old.txt").read_text(encoding="utf-8")
+                if (dest / "old.txt").is_file()
+                else ""
+            )
+            receipt_payload = (
+                json.loads(receipt.read_text(encoding="utf-8"))
+                if receipt.is_file()
+                else {}
+            )
+        self.assertEqual(completed.returncode, 25)
+        self.assertEqual(restored, "previous")
+        self.assertEqual(receipt_payload.get("status"), "rolled-back")
 
     def test_appimage_plan_requires_real_appimage_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

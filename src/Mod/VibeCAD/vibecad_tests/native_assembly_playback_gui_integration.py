@@ -32,10 +32,10 @@ from VibeCADNativeAssemblyPlaybackSchema import (
     assembly_playback_capability_definition,
 )
 from VibeCADNativeAssemblyStructureBindings import (
-    ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+    ASSEMBLY_MOTION_STUDY_CAPABILITY_NAME,
 )
 from VibeCADNativeAssemblyStructureSchema import (
-    assembly_structure_capability_definition,
+    assembly_motion_study_capability_definition,
 )
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
@@ -69,7 +69,7 @@ def _select_assemble_ribbon(main_window) -> None:
 
 def _focused_turn(surface, registry) -> NativeTurnSnapshot:
     state = registry.definition("state.read")
-    structure = assembly_structure_capability_definition()
+    structure = assembly_motion_study_capability_definition()
     playback = assembly_playback_capability_definition()
     assert state is not None
     provider = NativeProviderSurface(
@@ -78,14 +78,14 @@ def _focused_turn(surface, registry) -> NativeTurnSnapshot:
         unavailable_reason="",
         tool_names=(
             "state.read",
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_MOTION_STUDY_CAPABILITY_NAME,
             ASSEMBLY_PLAYBACK_CAPABILITY_NAME,
         ),
         schemas=(
             state.provider_schema(("active", "selection")),
             structure.provider_schema(("create_simulation",)),
             playback.provider_schema(
-                ("open", "seek", "step", "play", "pause", "close")
+                ("show", "seek", "step", "play", "pause", "close")
             ),
         ),
         human_only_action_ids=("Assembly_ActivateAssembly",),
@@ -206,7 +206,7 @@ def _run() -> None:
         playback_definition = registry.definition(ASSEMBLY_PLAYBACK_CAPABILITY_NAME)
         assert playback_definition is not None
         assert tuple(variant.operation for variant in playback_definition.variants) == (
-            "open",
+            "show",
             "seek",
             "step",
             "play",
@@ -272,11 +272,9 @@ def _run() -> None:
 
         initial = call("state.read", {"operation": "active"})
         summary = _assembly_summary(initial, assembly.Name)
-        simulation_state = summary["simulation_state"]
-        assert simulation_state["available"] is True
+        assert summary["artifacts"]["simulations"] == 0
         create_arguments = {
             "operation": "create_simulation",
-            "assembly": {"object_name": assembly.Name},
             "label": "Native playback cycle",
             "time_start_seconds": 0.0,
             "time_end_seconds": 1.0,
@@ -287,16 +285,13 @@ def _run() -> None:
                 {
                     "joint": {"object_name": drive.Name},
                     "motion_type": "linear",
-                    "formula": "initialValue + 8*time",
+                    "linear_speed_mm_per_second": 8.0,
                 }
             ],
-            "expected_simulation_state_sha256": simulation_state["state_sha256"],
-            "expected_component_count": simulation_state["component_count"],
-            "expected_grounded_count": simulation_state["grounded_count"],
-            "expected_eligible_joint_count": simulation_state["eligible_joint_count"],
-            "expected_simulation_count": simulation_state["simulation_count"],
         }
-        created = call(ASSEMBLY_STRUCTURE_CAPABILITY_NAME, create_arguments)
+        created = call(ASSEMBLY_MOTION_STUDY_CAPABILITY_NAME, create_arguments)
+        assert created["verified"] is True
+        assert created["frame_count"] >= 11
         simulation_name = created["simulation"]["object_name"]
         simulation = document.getObject(simulation_name)
         assert simulation is not None
@@ -310,9 +305,8 @@ def _run() -> None:
 
         current = call("state.read", {"operation": "active"})
         current_summary = _assembly_summary(current, assembly.Name)
-        current_state = current_summary["simulation_state"]
-        assert current_state["simulation_count"] == 1
-        assert current_summary["simulation_playback"] == {"active": False}
+        assert current_summary["artifacts"]["simulations"] == 1
+        assert current_summary["playback"] == {"active": False}
 
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(components[1])
@@ -330,25 +324,11 @@ def _run() -> None:
         objects_before = tuple(document.Objects)
         undo_before = int(document.UndoCount)
 
-        stale_open = {
-            "operation": "open",
+        open_arguments = {
+            "operation": "show",
             "simulation": {"object_name": simulation_name},
-            "expected_simulation_state_sha256": "0" * 64,
-            "time_seconds": 0.0,
-            "mode": "hold",
         }
-        stale = call(
-            ASSEMBLY_PLAYBACK_CAPABILITY_NAME,
-            stale_open,
-            succeeds=False,
-        )
-        assert stale["error_code"] == "NATIVE_ASSEMBLY_PLAYBACK_FAILED"
-        assert Gui.Control.activeTaskDialog() is None
-        assert tuple(document.Objects) == objects_before
-
-        off_grid = dict(stale_open)
-        off_grid["expected_simulation_state_sha256"] = current_state["state_sha256"]
-        off_grid["time_seconds"] = 0.15
+        off_grid = {**open_arguments, "time_seconds": 0.15}
         failure = call(
             ASSEMBLY_PLAYBACK_CAPABILITY_NAME,
             off_grid,
@@ -357,23 +337,16 @@ def _run() -> None:
         assert failure["error_code"] == "NATIVE_ASSEMBLY_PLAYBACK_FAILED"
         assert Gui.Control.activeTaskDialog() is None
 
-        open_arguments = {
-            "operation": "open",
-            "simulation": {"object_name": simulation_name},
-            "expected_simulation_state_sha256": current_state["state_sha256"],
-            "time_seconds": 0.0,
-            "mode": "hold",
-        }
+        revision_before_playback = state_store.current_revision(str(document.Uid))
         opened = call(ASSEMBLY_PLAYBACK_CAPABILITY_NAME, open_arguments)
+        assert opened["verified"] is True
         playback_id = opened["playback_id"]
         assert len(playback_id) == 32
         assert opened["frame"] == 1
         assert opened["time_seconds"] == 0.0
         assert opened["playing"] is False
         assert opened["direction"] == "paused"
-        assert opened["kinematics_generated"] is True
         assert opened["frame_count"] >= 11
-        assert opened["restoration_pending"] is True
         assert Gui.Control.activeTaskDialog() is not None
         assert owns_active_native_assembly_playback(document)
         assert Gui.Selection.getSelection() == selection_before
@@ -382,11 +355,13 @@ def _run() -> None:
 
         during = call("state.read", {"operation": "active"})
         during_summary = _assembly_summary(during, assembly.Name)
-        assert during_summary["simulation_playback"]["active"] is True
-        assert during_summary["simulation_playback"]["playback_id"] == playback_id
+        assert during_summary["playback"]["playback_id"] == playback_id
+        assert during_summary["playback"]["simulation"]["object_name"] == (
+            simulation_name
+        )
 
         blocked_mutation = call(
-            ASSEMBLY_STRUCTURE_CAPABILITY_NAME,
+            ASSEMBLY_MOTION_STUDY_CAPABILITY_NAME,
             create_arguments,
             succeeds=False,
         )
@@ -394,10 +369,7 @@ def _run() -> None:
         assert tuple(document.Objects) == objects_before
         assert int(document.UndoCount) == undo_before
 
-        control_base = {
-            "simulation": {"object_name": simulation_name},
-            "playback_id": playback_id,
-        }
+        control_base = {"playback_id": playback_id}
         seeked = call(
             ASSEMBLY_PLAYBACK_CAPABILITY_NAME,
             {**control_base, "operation": "seek", "time_seconds": 1.0},
@@ -452,15 +424,8 @@ def _run() -> None:
             call_id=close_call_id,
         )
         assert closed["closed"] is True
+        assert closed["verified"] is True
         assert closed["playing"] is False
-        assert closed["document_graph_unchanged"] is True
-        assert closed["restored"] == [
-            "placements",
-            "visibility",
-            "selection",
-            "camera",
-            "document_modified_state",
-        ]
         assert Gui.Control.activeTaskDialog() is None
         assert not owns_active_native_assembly_playback(document)
         assert Gui.Selection.getSelection() == selection_before
@@ -503,7 +468,6 @@ def _run() -> None:
             {**open_arguments, "time_seconds": 0.3},
         )
         dirty_control = {
-            "simulation": {"object_name": simulation_name},
             "playback_id": dirty_opened["playback_id"],
         }
         document.save()
@@ -540,13 +504,18 @@ def _run() -> None:
         )
         assert Gui.Selection.getSelection() == selection_before
         assert Gui.getDocument(document.Name).Modified is False
+        assert (
+            state_store.current_revision(str(document.Uid))
+            == revision_before_playback
+        )
 
         print(
             "VIBECAD_NATIVE_ASSEMBLY_PLAYBACK_GUI_OK "
             "generated=true seek=true step=true bidirectional=true pause=true "
             "mutation_blocked=true save_baseline=true dirty_save_clean=true "
             "manual_close=true "
-            "idempotent=true restored=true selection_preserved=true",
+            "idempotent=true restored=true selection_preserved=true "
+            "revision_stable=true",
             flush=True,
         )
         exit_code = 0

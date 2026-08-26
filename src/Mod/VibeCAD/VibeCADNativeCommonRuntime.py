@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
+from VibeCADNativeAssemblyProviderState import provider_assembly_state
 from VibeCADNativeDocument import guarded_save
 from VibeCADNativeDrawingGeometryState import (
     NativeDrawingGeometryStateError,
@@ -19,6 +20,7 @@ from VibeCADNativeInspect import (
     visual_inspection_result,
 )
 from VibeCADNativeMeasure import (
+    MAX_RADIUS_MEASUREMENTS,
     mass_properties,
     measure_angle,
     measure_distance,
@@ -39,6 +41,8 @@ from VibeCADNativeView import (
     set_object_visibility,
     set_grid_visible,
     set_isometric,
+    set_standard_view,
+    set_section_view_visible,
 )
 
 
@@ -88,11 +92,17 @@ class NativeCommonRuntime:
         )
 
     def _snapshot(self) -> dict[str, Any]:
-        return build_active_snapshot(
+        surface_id = str(self._active_surface_id())
+        snapshot = build_active_snapshot(
             self._document,
-            str(self._active_surface_id()),
+            surface_id,
             self._state.snapshot(self._document_uid),
         )
+        if surface_id == "assemble" and isinstance(
+            snapshot.get("domain"), Mapping
+        ):
+            snapshot["domain"] = provider_assembly_state(snapshot["domain"])
+        return snapshot
 
     def _drawing_projected_geometry(
         self,
@@ -136,12 +146,23 @@ class NativeCommonRuntime:
         return self._snapshot()
 
     def control_view(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = dict(arguments)
+        if normalized.get("operation") == "set_grid" and "visible" not in normalized:
+            normalized["visible"] = True
         operation, values = strict_variant_arguments(
-            arguments,
+            normalized,
             {
                 "fit_all": frozenset(),
                 "isometric": frozenset(),
+                "set_isometric": frozenset(),
+                "set_front": frozenset(),
+                "set_rear": frozenset(),
+                "set_left": frozenset(),
+                "set_right": frozenset(),
+                "set_top": frozenset(),
+                "set_bottom": frozenset(),
                 "set_grid": frozenset({"visible"}),
+                "set_section_view": frozenset({"visible"}),
                 "set_object_visibility": frozenset({"targets", "visible"}),
                 "capture_all": frozenset(),
                 "capture_selection": frozenset(),
@@ -152,10 +173,24 @@ class NativeCommonRuntime:
         self._guard(allow_owned_playback=True)
         if operation == "fit_all":
             return fit_all(self._document)
-        if operation == "isometric":
+        if operation in {"isometric", "set_isometric"}:
             return set_isometric(self._document)
+        if operation.startswith("set_") and operation.removeprefix("set_") in {
+            "front",
+            "rear",
+            "left",
+            "right",
+            "top",
+            "bottom",
+        }:
+            return set_standard_view(
+                self._document,
+                operation.removeprefix("set_"),
+            )
         if operation == "set_grid":
             return set_grid_visible(self._document, values["visible"])
+        if operation == "set_section_view":
+            return set_section_view_visible(self._document, values["visible"])
         if operation == "set_object_visibility":
             targets = tuple(
                 self._object(value) for value in list(values["targets"])
@@ -221,7 +256,18 @@ class NativeCommonRuntime:
                 self._element(targets[1]),
             )
         if operation == "radius":
-            return measure_radius(self._document, self._element(targets[0]))
+            if not 1 <= len(targets) <= MAX_RADIUS_MEASUREMENTS:
+                raise NativeCommonRuntimeError(
+                    "Radius inspection requires 1 to "
+                    f"{MAX_RADIUS_MEASUREMENTS} exact elements."
+                )
+            measurements = [
+                measure_radius(self._document, self._element(target))
+                for target in targets
+            ]
+            return measurements[0] if len(measurements) == 1 else {
+                "measurements": measurements
+            }
         if operation == "mass_properties":
             return mass_properties(
                 self._document,

@@ -718,6 +718,137 @@ def test_complete_source_reads_are_not_cut_down_to_the_normal_tool_result_limit(
     assert "_vibecad_complete_source_result" not in visible
 
 
+def test_native_mutation_result_keeps_cad_facts_and_hides_host_bookkeeping() -> None:
+    visible = provider._provider_visible_tool_result(
+        {
+            "ok": True,
+            "changed": True,
+            "mode": "edit",
+            "operation": "trajectory_compound",
+            "trajectory": {
+                "document_uid": "document-uid",
+                "object_id": 42,
+                "object_name": "TrajectorySequence",
+                "type_id": "Robot::TrajectoryCompound",
+            },
+            "sources": [
+                {
+                    "document_uid": "document-uid",
+                    "object_id": 41,
+                    "object_name": "EdgeTrajectory",
+                    "type_id": "Robot::Edge2TracObject",
+                }
+            ],
+            "feature": {
+                "kind": "compound",
+                "sources": [
+                    {
+                        "document_uid": "document-uid",
+                        "object_id": 41,
+                        "object_name": "EdgeTrajectory",
+                        "type_id": "Robot::Edge2TracObject",
+                    }
+                ],
+            },
+            "waypoint_count": 2,
+            "waypoint": {
+                "name": "Pt",
+                "state_sha256": "c" * 64,
+            },
+            "trajectory_state_sha256": "a" * 64,
+            "trajectory_setup_state_sha256": "b" * 64,
+            "receipt": {
+                "capability": "robot.path_sequence",
+                "revision_before": 10,
+                "revision_after": 11,
+                "changed": ["TrajectorySequence"],
+            },
+            "assistant_undo_available": True,
+        }
+    )
+
+    assert visible == {
+        "ok": True,
+        "changed": True,
+        "mode": "edit",
+        "operation": "trajectory_compound",
+        "trajectory": {
+            "object_name": "TrajectorySequence",
+            "type_id": "Robot::TrajectoryCompound",
+        },
+        "feature": {
+            "kind": "compound",
+            "sources": [
+                {
+                    "object_name": "EdgeTrajectory",
+                    "type_id": "Robot::Edge2TracObject",
+                }
+            ],
+        },
+        "waypoint_count": 2,
+        "waypoint": {"name": "Pt"},
+        "assistant_undo_available": True,
+    }
+
+
+def test_native_mutation_result_keeps_exact_follow_up_target() -> None:
+    digest = "d" * 64
+
+    visible = provider._provider_visible_tool_result(
+        {
+            "_vibecad_native_result": True,
+            "ok": True,
+            "changed": True,
+            "analysis_target": {
+                "object_name": "Analysis",
+                "expected_state_sha256": digest,
+                "expected_member_count": 3,
+            },
+            "analysis_state_sha256": "e" * 64,
+        }
+    )
+
+    assert visible == {
+        "ok": True,
+        "changed": True,
+        "analysis_target": {
+            "object_name": "Analysis",
+            "expected_state_sha256": digest,
+            "expected_member_count": 3,
+        },
+    }
+
+
+def test_native_noop_result_hides_host_bookkeeping_without_a_receipt() -> None:
+    visible = provider._provider_visible_tool_result(
+        {
+            "_vibecad_native_result": True,
+            "ok": True,
+            "changed": False,
+            "operation": "restore_home_pos",
+            "robot": {
+                "document_uid": "document-uid",
+                "object_name": "Robot",
+                "type_id": "Robot::RobotObject",
+            },
+            "robot_state_sha256": "a" * 64,
+            "setup_state_sha256": "b" * 64,
+            "axes_degrees": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        }
+    )
+
+    assert visible == {
+        "ok": True,
+        "changed": False,
+        "operation": "restore_home_pos",
+        "robot": {
+            "object_name": "Robot",
+            "type_id": "Robot::RobotObject",
+        },
+        "axes_degrees": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    }
+
+
 def test_source_write_result_is_compact_readable_and_actionable() -> None:
     visible = provider._provider_visible_tool_result(
         {
@@ -917,9 +1048,20 @@ def _context_schema(name: str) -> dict[str, object]:
     }
 
 
+def _isolate_provider_engine(monkeypatch) -> None:
+    """Keep source-only context tests independent of the live ribbon GUI."""
+
+    monkeypatch.setattr(
+        session,
+        "provider_engine_from_service",
+        lambda service: service.modeling_engine(),
+    )
+
+
 def test_vibescript_model_context_includes_only_the_editable_source_index(
     monkeypatch,
 ) -> None:
+    _isolate_provider_engine(monkeypatch)
     schemas = [
         _context_schema("vibescript.read_source"),
         _context_schema("vibescript.read_api"),
@@ -987,6 +1129,7 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
 def test_native_context_replaces_legacy_document_and_selection_summaries(
     monkeypatch,
 ) -> None:
+    _isolate_provider_engine(monkeypatch)
     from VibeCADModelingSurface import ModelingSurface
 
     schema = _context_schema("state.read")
@@ -1000,7 +1143,7 @@ def test_native_context_replaces_legacy_document_and_selection_summaries(
         available=True,
         unavailable_reason="",
     )
-    native_surface = object()
+    native_surface = SimpleNamespace(schemas=(schema,))
     monkeypatch.setitem(
         sys.modules,
         "VibeCADNativeProviderContext",
@@ -1008,6 +1151,8 @@ def test_native_context_replaces_legacy_document_and_selection_summaries(
             resolve_production_native_surface=lambda: (object(), native_surface),
             schemas_for_native_provider_surface=lambda *_args, **_kwargs: [schema],
             native_active_state=lambda service: service.native_active_snapshot(),
+            provider_authorized_native_surface=lambda surface, *_args, **_kwargs: surface,
+            provider_visible_native_state=lambda state: dict(state),
         ),
     )
     monkeypatch.setattr(
@@ -1037,11 +1182,13 @@ def test_native_context_replaces_legacy_document_and_selection_summaries(
     assert "document" not in context
     assert "selection" not in context
     assert context["native_state"]["structural_revision"] == 9
-    assert visible == {
-        "work": "modeling",
-        "state": {"domain": {"kind": "model", "counts": {"bodies": 1}}},
-        "document": {"name": "Part"},
+    assert visible["work"] == "modeling"
+    assert visible["state"] == {
+        "domain": {"kind": "model", "counts": {"bodies": 1}}
     }
+    assert visible["document"] == {"name": "Part"}
+    assert visible["native_preview"]["applied"] is False
+    assert visible["native_preview"]["claim_ceiling"] == "geometry_applied"
     assert "native_state" not in visible
     assert "document-a" not in json.dumps(visible)
     assert session._provider_state_payload(context) == visible
@@ -1052,6 +1199,7 @@ def test_native_context_replaces_legacy_document_and_selection_summaries(
 def test_editable_source_manifests_complete_after_document_thread_capture(
     monkeypatch,
 ) -> None:
+    _isolate_provider_engine(monkeypatch)
     schemas = [
         _context_schema("vibescript.read_source"),
         _context_schema("vibescript.read_api"),
@@ -1102,7 +1250,6 @@ def test_editable_source_manifests_complete_after_document_thread_capture(
     context = session._build_context_for_provider(
         service,
         None,
-        "build",
         dispatch,
     )
 
@@ -1113,11 +1260,12 @@ def test_editable_source_manifests_complete_after_document_thread_capture(
 def test_assembly_turn_injects_copy_ready_available_components(
     monkeypatch,
 ) -> None:
+    _isolate_provider_engine(monkeypatch)
     import VibeCADComponentCatalog as component_catalog
 
     schemas = [
         _context_schema("vibescript.read_source"),
-        _context_schema("vibescript.create_program"),
+        _context_schema("vibescript.create_assembly"),
         _context_schema("component_catalog.search"),
     ]
     monkeypatch.setattr(
@@ -1180,6 +1328,7 @@ def test_assembly_turn_injects_copy_ready_available_components(
 def test_vibescript_context_is_absent_when_the_workbench_has_no_surface(
     monkeypatch,
 ) -> None:
+    _isolate_provider_engine(monkeypatch)
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
@@ -1198,13 +1347,14 @@ def test_vibescript_context_is_absent_when_the_workbench_has_no_surface(
 def test_partdesign_does_not_inject_a_model_manifest_at_turn_start(
     monkeypatch,
 ) -> None:
+    _isolate_provider_engine(monkeypatch)
     models = [{"model_id": "b" * 32, "name": "Rotor"}]
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
         lambda _service, _wb, **_kwargs: [
             _context_schema("vibescript.read_source"),
-            _context_schema("vibescript.create_program"),
+            _context_schema("vibescript.create_part"),
         ],
     )
     service = _ProviderContextService(

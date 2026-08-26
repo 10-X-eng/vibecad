@@ -18,6 +18,7 @@ _READ_ONLY_OR_VIEW_COMMANDS = frozenset(
         "Std_ViewFitAll",
         "Std_ViewIsometric",
         "VibeCAD_ToggleGrid",
+        "VibeCAD_SectionView",
         "Inspection_InspectElement",
         "Part_CheckGeometry",
     }
@@ -327,6 +328,51 @@ def test_every_transaction_owning_implementation_calls_its_boundary_guard() -> N
             fasteners,
             anchor,
         ), command
+
+
+def test_design_dressups_can_start_from_an_active_solid_body() -> None:
+    source = (_REPOSITORY / _PARTDESIGN_COMMAND).read_text(encoding="utf-8")
+    fillet = _cpp_command_section(source, "PartDesign_Fillet")
+    chamfer = _cpp_command_section(source, "PartDesign_Chamfer")
+    draft = _cpp_command_section(source, "PartDesign_Draft")
+    thickness = _cpp_command_section(source, "PartDesign_Thickness")
+    active = _function_section(
+        source, "bool designDressupOperationActive(DesignDressupSelectionKind selectionKind)"
+    )
+    start = _function_section(
+        source, "void startDesignDressupOperation("
+    )
+
+    for section in (fillet, chamfer, draft, thickness):
+        assert "designDressupOperationActive" in section
+    assert "pendingDressupBody" in active
+    assert "pendingDressupSelection" in start
+    assert "pendingFilletOrChamferSelection" not in start
+    assert "selectionHasDressupSubelements" in active
+    assert "selectionHasDressupSubelements" in start
+    assert "DesignDressupSelectionKind::EdgesOrFaces" not in active
+    assert "or start " in start
+    assert "the tool and pick them on a solid Body" in start
+    assert "supported faces, or start the tool" in start
+    assert "starts picking them on a solid Body" in draft
+    assert "starts picking them on a solid Body" in thickness
+
+
+def test_fillet_and_chamfer_ignore_body_picks_without_edges_or_faces() -> None:
+    source = (_REPOSITORY / _PARTDESIGN_COMMAND).read_text(encoding="utf-8")
+    has_sub = _function_section(source, "bool selectionHasDressupSubelements()")
+    is_name = _function_section(source, "bool isDressupSubelementName(")
+    pending = _function_section(source, "PartDesign::Body* pendingDressupBody()")
+    selected = _function_section(
+        source, "DesignDressupSelection selectedDesignDressup(DesignDressupSelectionKind selectionKind)"
+    )
+
+    assert 'starts_with("Edge")' in is_name
+    assert 'starts_with("Face")' in is_name
+    assert "isDressupSubelementName" in has_sub
+    assert "uniqueSolidBodyInDocument" in pending
+    assert "isDressupSubelementName" in selected
+    assert "getSubNames().empty()" not in has_sub
 
 
 def test_inspection_tasks_close_only_their_exact_locked_transactions() -> None:

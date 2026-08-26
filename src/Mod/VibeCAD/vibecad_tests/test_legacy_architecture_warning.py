@@ -27,6 +27,7 @@ def test_detector_ignores_general_draft_and_mechanical_objects():
             _object(type_id="PartDesign::Feature"),
             _object(properties=("PredefinedType",)),
             _object(proxy=SimpleNamespace(Type="Wire")),
+            _object(proxy=SimpleNamespace(Type="WorkingPlaneProxy")),
             _object(type_id="TechDraw::DrawViewDraft"),
         ]
     )

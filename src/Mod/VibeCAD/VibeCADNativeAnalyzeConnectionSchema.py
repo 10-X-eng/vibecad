@@ -58,6 +58,14 @@ _ENDPOINT = _closed(
     },
     ("object_name", "expected_state_sha256", "subelement"),
 )
+_SLAVE_ENDPOINT = {
+    **_ENDPOINT,
+    "description": "Dependent mating face; choose the smaller or finer surface.",
+}
+_MASTER_ENDPOINT = {
+    **_ENDPOINT,
+    "description": "Independent mating face; choose the larger or coarser surface.",
+}
 _FRICTION = {
     "oneOf": [
         _closed({"kind": {"type": "string", "const": "frictionless"}}, ("kind",)),
@@ -106,8 +114,8 @@ def _create(kind: str) -> dict:
         {
             "analysis": _ANALYSIS_TARGET,
             "label": _LABEL,
-            "slave": _ENDPOINT,
-            "master": _ENDPOINT,
+            "slave": _SLAVE_ENDPOINT,
+            "master": _MASTER_ENDPOINT,
             "connection": _DEFINITIONS[kind],
         },
         ("analysis", "label", "slave", "master", "connection"),
@@ -119,8 +127,8 @@ def _update(kind: str) -> dict:
         {
             "target": _TARGET,
             "label": _LABEL,
-            "slave": _ENDPOINT,
-            "master": _ENDPOINT,
+            "slave": _SLAVE_ENDPOINT,
+            "master": _MASTER_ENDPOINT,
             "connection": _DEFINITIONS[kind],
         },
         ("target",),

@@ -10,6 +10,7 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeStudy import study_intent_state
 from VibeCADNativeSnapshot import concise_object
 
 
@@ -20,6 +21,7 @@ _COMMON_PROPERTIES = (
     ("Density", "density_kg_m3", "kg/m^3"),
     ("YoungsModulus", "young_modulus_mpa", "MPa"),
     ("PoissonRatio", "poisson_ratio", None),
+    ("YieldStrength", "yield_strength_mpa", "MPa"),
     ("ThermalConductivity", "thermal_conductivity_w_m_k", "W/m/K"),
     ("ThermalExpansionCoefficient", "thermal_expansion_per_k", "1/K"),
     ("ThermalExpansionReferenceTemperature", "reference_temperature_k", "K"),
@@ -96,8 +98,10 @@ def analysis_state(analysis: Any) -> dict[str, Any]:
         )
         if len(summaries) < MAX_ANALYSIS_MEMBERS:
             summaries.append({**concise_object(member), "category": category})
+    study = study_intent_state(analysis)
     result = {
         **concise_object(analysis),
+        "study": study,
         "member_count": len(members),
         "member_counts": counts,
         "members": summaries,
@@ -108,6 +112,7 @@ def analysis_state(analysis: Any) -> dict[str, Any]:
             "object_name": str(analysis.Name),
             "object_id": int(analysis.ID),
             "label": str(analysis.Label),
+            "study": study,
             "members": identity_records,
         }
     )

@@ -77,7 +77,7 @@ struct DomainDefinition
     const char* surface;
 };
 
-constexpr std::array<DomainDefinition, 8> domains = {{
+constexpr std::array<DomainDefinition, 9> domains = {{
     {"Model", "PartDesignWorkbench", "model"},
     {"Assemble", "AssemblyWorkbench", "assemble"},
     {"Mesh", "MeshWorkbench", "mesh"},
@@ -86,6 +86,7 @@ constexpr std::array<DomainDefinition, 8> domains = {{
     {"Drawing", "TechDrawWorkbench", "drawing"},
     {"Parameters", "SpreadsheetWorkbench", "parameters"},
     {"Aero", "VibeCADAeroWorkbench", "aero"},
+    {"3D Print", "VibeCADPrintWorkbench", "print"},
 }};
 
 constexpr auto chromePreferencesPath = "User parameter:BaseApp/Preferences/VibeCAD/Chrome";
@@ -446,13 +447,25 @@ QVariantMap surfaceEnvironmentRecord(const QString& surfaceId)
 class RibbonGroup final: public QFrame
 {
 public:
-    RibbonGroup(QString title, CommandEntries entries, QWidget* parent = nullptr)
+    RibbonGroup(
+        QString title,
+        CommandEntries entries,
+        int primaryActionCount = 4,
+        QString displayTitle = {},
+        QWidget* parent = nullptr
+    )
         : QFrame(parent)
         , _title(std::move(title))
         , _entries(std::move(entries))
     {
+        displayTitle = displayTitle.trimmed();
+        if (displayTitle.isEmpty()) {
+            displayTitle = _title;
+        }
         setObjectName(QStringLiteral("VibeCADRibbonGroup_") + sanitizedObjectName(_title));
         setProperty("ribbonGroup", true);
+        setProperty("VibeCADSemanticGroupTitle", _title);
+        setProperty("VibeCADDisplayGroupTitle", displayTitle);
         setFrameShape(QFrame::NoFrame);
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
@@ -471,7 +484,7 @@ public:
         commandsLayout->setContentsMargins(0, 0, 0, 0);
         commandsLayout->setSpacing(1);
 
-        constexpr int primaryActionCount = 4;
+        primaryActionCount = std::clamp(primaryActionCount, 1, 4);
         int addedActions = 0;
         for (CommandEntry& entry : _entries) {
             if (entry.ownedAction && entry.action && !entry.action->parent()) {
@@ -490,7 +503,8 @@ public:
 
         auto* groupMenu = new QToolButton(_expanded);
         groupMenu->setObjectName(QStringLiteral("VibeCADRibbonGroupMenu"));
-        groupMenu->setText(_title.toUpper());
+        groupMenu->setText(displayTitle.toUpper());
+        groupMenu->setAccessibleName(_title);
         groupMenu->setToolTip(QObject::tr("Open all %1 tools").arg(_title));
         groupMenu->setToolButtonStyle(Qt::ToolButtonTextOnly);
         groupMenu->setPopupMode(QToolButton::InstantPopup);
@@ -502,7 +516,9 @@ public:
 
         _collapsed = new QToolButton(this);
         _collapsed->setObjectName(QStringLiteral("VibeCADRibbonCollapsedGroup"));
-        _collapsed->setText(_title);
+        _collapsed->setText(displayTitle);
+        _collapsed->setAccessibleName(_title);
+        _collapsed->setToolTip(QObject::tr("Open all %1 tools").arg(_title));
         _collapsed->setToolButtonStyle(Qt::ToolButtonTextOnly);
         _collapsed->setPopupMode(QToolButton::InstantPopup);
         _collapsed->setAutoRaise(true);
@@ -513,7 +529,7 @@ public:
         outer->addWidget(_expanded);
         outer->addWidget(_collapsed);
 
-        const int labelWidth = fontMetrics().horizontalAdvance(_title.toUpper()) + 30;
+        const int labelWidth = fontMetrics().horizontalAdvance(displayTitle.toUpper()) + 30;
         _expandedWidth = std::max(labelWidth, addedActions * 42 + 12);
         _collapsedWidth = std::clamp(labelWidth, 68, 120);
         setFixedHeight(56);
@@ -1005,6 +1021,43 @@ QString presentationGroupTitle(const std::string& implementationTitle)
     return title;
 }
 
+int primaryActionCountFor(const std::string& workbench, const QString& title)
+{
+    if (workbench != "FemWorkbench") {
+        return 4;
+    }
+
+    static const std::array<std::pair<const char*, int>, 10> analyzeCounts = {{
+        {"Model", 3},
+        {"Electromagnetic Boundary Conditions", 1},
+        {"Fluid Boundary Conditions", 2},
+        {"Geometrical Analysis Features", 1},
+        {"Mechanical Boundary Conditions and Loads", 4},
+        {"Thermal Boundary Conditions and Loads", 3},
+        {"Mesh", 3},
+        {"Solve", 3},
+        {"Results", 4},
+        {"Utilities", 1},
+    }};
+    for (const auto& [implementationTitle, count] : analyzeCounts) {
+        if (title == presentationGroupTitle(implementationTitle)) {
+            return count;
+        }
+    }
+    return 4;
+}
+
+QString displayGroupTitleFor(const std::string& workbench, const QString& title)
+{
+    if (
+        workbench == "FemWorkbench"
+        && title == presentationGroupTitle("Electromagnetic Boundary Conditions")
+    ) {
+        return QCoreApplication::translate("VibeCADRibbon", "EM");
+    }
+    return title;
+}
+
 }  // namespace
 
 struct Gui::VibeCADRibbon::Private
@@ -1299,6 +1352,7 @@ struct Gui::VibeCADRibbon::Private
     void rebuildPage()
     {
         const bool sketchEdit = sketchEditActive();
+        const std::string activeWorkbench = WorkbenchManager::instance()->activeName();
         std::vector<RibbonGroup*> groups;
         QVariantList manifestGroups;
         bool inspectionAdded = false;
@@ -1338,7 +1392,7 @@ struct Gui::VibeCADRibbon::Private
                 return entries;
             };
 
-        const auto addGroup = [&groups, &manifestGroups](
+        const auto addGroup = [&activeWorkbench, &groups, &manifestGroups](
                                   const QString& title,
                                   CommandEntries entries
                               ) {
@@ -1346,7 +1400,12 @@ struct Gui::VibeCADRibbon::Private
                 return;
             }
             manifestGroups.push_back(groupManifestRecord(title, entries));
-            groups.push_back(new RibbonGroup(title, std::move(entries)));
+            groups.push_back(new RibbonGroup(
+                title,
+                std::move(entries),
+                primaryActionCountFor(activeWorkbench, title),
+                displayGroupTitleFor(activeWorkbench, title)
+            ));
         };
 
         const auto addInspectionGroup = [&inspectionAdded, &resolveUniqueEntries, &addGroup]() {
@@ -1360,7 +1419,12 @@ struct Gui::VibeCADRibbon::Private
 
         // View controls stay present in every CAD domain.
         CommandEntries viewEntries = resolveUniqueEntries(
-            {"Std_ViewFitAll", "Std_ViewIsometric", "VibeCAD_ToggleGrid"}
+            {
+                "Std_ViewFitAll",
+                "Std_ViewIsometric",
+                "VibeCAD_ToggleGrid",
+                "VibeCAD_SectionView",
+            }
         );
         addGroup(QObject::tr("View"), std::move(viewEntries));
 

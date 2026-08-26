@@ -151,15 +151,114 @@ def _mesh_content_sha256(fem_mesh: Any) -> str | None:
         return None
     try:
         payload = bytes(fem_mesh.dumpContent())
-        archive = zipfile.ZipFile(BytesIO(payload), "r")
         digest = hashlib.sha256()
-        for name in sorted(archive.namelist()):
-            digest.update(name.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(archive.read(name))
+        canonical_groups = []
+        with zipfile.ZipFile(BytesIO(payload), "r") as archive:
+            for name in sorted(archive.namelist()):
+                content = archive.read(name)
+                if name.lower().endswith(".unv"):
+                    canonical_groups.extend(_canonical_unv_groups(content))
+                    content = _unv_without_group_datasets(content)
+                digest.update(name.encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(content)
+        digest.update(b"\0canonical-groups\0")
+        digest.update(
+            json.dumps(
+                _sorted_group_records(canonical_groups),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
         return digest.hexdigest()
     except Exception as exc:
         raise NativeAnalyzeError("The generated FEM mesh could not be hashed exactly.") from exc
+
+
+def _unv_without_group_datasets(payload: bytes) -> bytes:
+    """Remove volatile UNV group records while retaining exact mesh records.
+
+    FreeCAD may renumber and reorder UNV 2467/2477 group records after a file
+    round trip. Group semantics are hashed separately as canonical UNV records.
+    """
+
+    lines = payload.splitlines(keepends=True)
+    stable = []
+    index = 0
+    while index < len(lines):
+        if (
+            lines[index].strip() == b"-1"
+            and index + 1 < len(lines)
+            and lines[index + 1].strip() in {b"2467", b"2477"}
+        ):
+            index += 2
+            while index < len(lines) and lines[index].strip() != b"-1":
+                index += 1
+            if index < len(lines):
+                index += 1
+            continue
+        stable.append(lines[index])
+        index += 1
+    return b"".join(stable)
+
+
+def _canonical_unv_groups(payload: bytes) -> list[dict[str, Any]]:
+    lines = payload.splitlines()
+    groups = []
+    index = 0
+    while index + 1 < len(lines):
+        if (
+            lines[index].strip() != b"-1"
+            or lines[index + 1].strip() not in {b"2467", b"2477"}
+        ):
+            index += 1
+            continue
+        dataset = lines[index + 1].strip().decode("ascii")
+        index += 2
+        while index < len(lines) and lines[index].strip() != b"-1":
+            header = [int(value) for value in lines[index].split()]
+            if len(header) != 8 or header[-1] < 0 or index + 1 >= len(lines):
+                raise ValueError("The UNV mesh contains an invalid group header.")
+            count = header[-1]
+            name = lines[index + 1].decode("utf-8", errors="replace")
+            index += 2
+            members = []
+            while len(members) < count:
+                if index >= len(lines) or lines[index].strip() == b"-1":
+                    raise ValueError("The UNV mesh group has incomplete membership.")
+                values = [int(value) for value in lines[index].split()]
+                if len(values) % 4 != 0:
+                    raise ValueError("The UNV mesh group membership is malformed.")
+                members.extend(
+                    tuple(values[offset : offset + 4])
+                    for offset in range(0, len(values), 4)
+                )
+                index += 1
+            if len(members) != count:
+                raise ValueError("The UNV mesh group contains excess membership.")
+            groups.append(
+                {
+                    "dataset": dataset,
+                    "name": name,
+                    "attributes": header[1:7],
+                    "members": sorted(members),
+                }
+            )
+        index += 1
+    return groups
+
+
+def _sorted_group_records(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        groups,
+        key=lambda value: json.dumps(
+            value,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
 
 
 def _topology(fem_mesh: Any) -> dict[str, int]:

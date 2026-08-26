@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from VibeCADNativeMutation import NativeMutationDraft, NativeMutationError
 from VibeCADNativeTargets import (
@@ -25,6 +25,7 @@ from VibeCADReferenceContracts import (
     PROP_NATIVE_INTERFACE_NAME,
     ReferenceContractError,
     connector_frame_placement,
+    is_native_coordinate_system,
     native_interface_definitions,
     prepare_native_interface,
     publish_native_interface,
@@ -43,6 +44,7 @@ _LCS_TYPES = (
     "PartDesign::CoordinateSystem",
     "Part::LocalCoordinateSystem",
 )
+MAX_COMPONENT_INTERFACE_TARGETS = 48
 
 
 class NativeComponentInterfaceError(NativeMutationError):
@@ -56,6 +58,76 @@ class PreparedComponentInterface:
     lcs_ref: NativeObjectRef
     spec: NativeInterfaceSpec
     initial_state: tuple[tuple[bool, Any], ...]
+
+
+def _copy_reference(obj: Any) -> dict[str, str]:
+    return {"object_name": str(obj.Name)}
+
+
+def _label(obj: Any) -> str | None:
+    label = str(getattr(obj, "Label", "") or "").strip()
+    return label[:160] if label and label != str(obj.Name) else None
+
+
+def _published_interface(component: Any, lcs: Any) -> dict[str, Any] | None:
+    for name, definition in native_interface_definitions(component).items():
+        selection = dict(definition.get("selection") or {})
+        if selection.get("native_lcs") != str(lcs.Name):
+            continue
+        connector = dict(definition.get("connector") or {})
+        return {"name": name, **connector}
+    return None
+
+
+def read_component_interface_targets(
+    document: Any,
+    *,
+    guard: Callable[[], None],
+) -> dict[str, Any]:
+    """List exact component/LCS pairs accepted by interface publication."""
+
+    if not callable(guard):
+        raise TypeError("guard must be callable")
+    guard()
+    objects_before = tuple(getattr(document, "Objects", ()) or ())
+    targets = []
+    truncated = False
+    for component in objects_before:
+        if str(getattr(component, "VibeCADVibeScriptProgramId", "") or ""):
+            continue
+        for lcs in list(getattr(component, "Group", ()) or ()):
+            if not is_native_coordinate_system(lcs):
+                continue
+            if len(targets) >= MAX_COMPONENT_INTERFACE_TARGETS:
+                truncated = True
+                break
+            target = {
+                "component": _copy_reference(component),
+                "lcs": _copy_reference(lcs),
+            }
+            component_label = _label(component)
+            if component_label is not None:
+                target["component_label"] = component_label
+            lcs_label = _label(lcs)
+            if lcs_label is not None:
+                target["lcs_label"] = lcs_label
+            published = _published_interface(component, lcs)
+            if published is not None:
+                target["published_interface"] = published
+            targets.append(target)
+        if truncated:
+            break
+    guard()
+    if tuple(getattr(document, "Objects", ()) or ()) != objects_before:
+        raise NativeComponentInterfaceError(
+            "The document changed while reading component LCS resources."
+        )
+    return {
+        "operation": "find_component_interfaces",
+        "target_count": len(targets),
+        "targets": targets,
+        **({"truncated": True} if truncated else {}),
+    }
 
 
 def _object_ref(uid: str, value: Any, *, label: str) -> NativeObjectRef:
@@ -259,6 +331,7 @@ def verify_component_interface(
             "The component interface failed its exact publication postcondition."
         )
     return {
+        "verified": True,
         "component": object_reference(component),
         "interface": {
             "name": spec.name,

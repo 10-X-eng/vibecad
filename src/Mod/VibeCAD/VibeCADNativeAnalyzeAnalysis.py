@@ -16,6 +16,11 @@ from VibeCADNativeAnalyzeHistory import (
     verify_operation_block,
 )
 from VibeCADNativeAnalyzeState import analysis_state, is_live
+from VibeCADNativeAnalyzeStudy import (
+    configure_study_intent,
+    normalize_study_intent,
+    study_intent_state,
+)
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeSnapshot import concise_object
 from VibeCADNativeTargets import object_identity
@@ -26,6 +31,7 @@ class PreparedAnalysisCreate:
     boundary: AnalyzeCreationBoundary
     label: str
     solver_name: str | None
+    study: tuple[tuple[str, ...], str] | None
 
 
 def _label(value: Any) -> str:
@@ -40,6 +46,7 @@ def prepare_analysis_create(
     *,
     label: Any,
     default_solver_policy: Any,
+    study: Any | None = None,
 ) -> PreparedAnalysisCreate:
     policy = str(default_solver_policy or "")
     if policy not in {"user_preference", "none"}:
@@ -57,6 +64,7 @@ def prepare_analysis_create(
         creation_boundary(document),
         _label(label),
         solver_name,
+        normalize_study_intent(study) if study is not None else None,
     )
 
 
@@ -76,6 +84,11 @@ def create_analysis(
     if analysis is None or not analysis.isDerivedFrom("Fem::FemAnalysis"):
         raise NativeAnalyzeError("The FEM analysis factory returned the wrong object type.")
     analysis.Label = prepared.label
+    if prepared.study is not None:
+        configure_study_intent(
+            analysis,
+            {"physics": list(prepared.study[0]), "regime": prepared.study[1]},
+        )
     solver = None
     if prepared.solver_name is not None:
         from femcommands.commands import createDefaultSolverFeature
@@ -116,6 +129,15 @@ def verify_analysis_create(
         or not bool(analysis.isValid())
     ):
         raise NativeAnalyzeError("The new FEM analysis failed its exact postcondition.")
+    intent = study_intent_state(analysis)
+    if prepared.study is None:
+        if intent.get("declared") is not False:
+            raise NativeAnalyzeError("The new FEM analysis gained unexpected study intent.")
+    elif (
+        tuple(intent.get("physics") or ()) != prepared.study[0]
+        or intent.get("regime") != prepared.study[1]
+    ):
+        raise NativeAnalyzeError("The new FEM analysis lost its study intent.")
     if solver is not None and (
         not is_live(document, solver)
         or not solver.isDerivedFrom("Fem::FemSolverObjectPython")
@@ -125,7 +147,15 @@ def verify_analysis_create(
     import FemGui
 
     FemGui.setActiveAnalysis(analysis)
-    result = {"created_analysis": analysis_state(analysis)}
+    current_analysis = analysis_state(analysis)
+    result = {
+        "created_analysis": current_analysis,
+        "analysis_target": {
+            "object_name": current_analysis["object_name"],
+            "expected_state_sha256": current_analysis["state_sha256"],
+            "expected_member_count": current_analysis["member_count"],
+        },
+    }
     if solver is not None:
         result["created_solver"] = concise_object(solver)
     else:
@@ -139,4 +169,3 @@ def stamp_created_fem_graph(payload: dict[str, Any]) -> dict[str, Any]:
     payload["claim_ceiling"] = "not_solved"
     payload["solved"] = False
     return payload
-

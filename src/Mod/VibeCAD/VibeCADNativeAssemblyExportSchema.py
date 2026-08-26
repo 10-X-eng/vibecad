@@ -13,40 +13,16 @@ from VibeCADNativeCapabilityRegistry import (
 
 ASSEMBLY_EXPORT_CAPABILITY_NAME = "assembly.export"
 
-_OBJECT_REF = {
-    "type": "object",
-    "properties": {
-        "object_name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": r"^[A-Za-z_][A-Za-z0-9_]*$",
-        }
-    },
-    "required": ["object_name"],
-    "additionalProperties": False,
-}
-_STATE_SHA256 = {
-    "type": "string",
-    "minLength": 64,
-    "maxLength": 64,
-    "pattern": r"^[0-9a-f]{64}$",
-}
-_COUNT = {"type": "integer", "minimum": 0, "maximum": 256}
-
 
 def assembly_export_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ASSEMBLY_EXPORT_CAPABILITY_NAME,
-        description="Export the exact human-active Assembly to a human-authorized destination.",
+        description="Export the active Assembly as ASMT.",
         primary_classification="export",
         variants=(
             NativeCapabilityVariant(
                 operation="asmt",
-                description=(
-                    "Ask the human for an ASMT destination, then atomically export "
-                    "the unchanged active Assembly through its native serializer."
-                ),
+                description="Export the active Assembly as ASMT.",
                 action_ids=frozenset({"Assembly_ExportASMT"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="HumanActiveAssemblyAndAuthorizedOutputPath",
@@ -54,24 +30,8 @@ def assembly_export_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters={
                     "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "expected_state_sha256": _STATE_SHA256,
-                        "expected_component_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 100_000,
-                        },
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": _COUNT,
-                    },
-                    "required": [
-                        "assembly",
-                        "expected_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    ],
+                    "properties": {},
+                    "required": [],
                     "additionalProperties": False,
                 },
             ),

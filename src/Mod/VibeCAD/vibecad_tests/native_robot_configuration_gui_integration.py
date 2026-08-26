@@ -191,16 +191,10 @@ def _reset_defaults() -> None:
 
 
 def _tool_arguments(robot, tool_shape) -> dict:
-    setup = capture_robot_setup_state(robot.Document)
-    robot_index = setup.robots.index(robot)
-    tool = capture_robot_tool_shape_record(tool_shape)
     return {
         "operation": "add_tool_shape",
         "robot": {"object_name": robot.Name},
         "tool_shape": {"object_name": tool_shape.Name},
-        "expected_setup_state_sha256": setup.state_sha256,
-        "expected_robot_state_sha256": setup.records[robot_index].state_sha256,
-        "expected_tool_shape_state_sha256": tool.state_sha256,
     }
 
 
@@ -345,6 +339,20 @@ def _run() -> None:
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
+
+        def refresh_dispatcher() -> None:
+            nonlocal turn, dispatcher
+            turn = _focused_turn(surface, registry)
+            dispatcher = NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
         call_index = 0
 
         def call(arguments: dict, *, succeeds: bool = True, call_id: str = "") -> dict:
@@ -374,24 +382,6 @@ def _run() -> None:
 
         _select(human_tool)
         tool_arguments = _tool_arguments(robot, native_tool)
-        original_native_shape = native_tool.Shape
-        native_tool.Shape = Part.makeCylinder(5.0, 9.0)
-        assert document.recompute(None, True, True) is not False
-        tool_drift = call(tool_arguments, succeeds=False)
-        assert tool_drift["error_code"] == "NATIVE_ROBOT_SETUP_FAILED"
-        assert robot.ToolShape is None
-        assert int(document.UndoCount) == 0
-        native_tool.Shape = original_native_shape
-        assert document.recompute(None, True, True) is not False
-        tool_arguments = _tool_arguments(robot, native_tool)
-        stale = call(
-            {**tool_arguments, "expected_robot_state_sha256": "0" * 64},
-            succeeds=False,
-        )
-        assert stale["error_code"] == "NATIVE_ROBOT_SETUP_FAILED"
-        assert robot.ToolShape is None
-        assert int(document.UndoCount) == 0
-
         original_tool_verifier = runtime_module.verify_robot_tool_shape_attachment
 
         def reject_tool(_document, _draft):
@@ -428,6 +418,7 @@ def _run() -> None:
         document.redo()
         _process_events(12)
         assert robot.ToolShape is native_tool
+        refresh_dispatcher()
 
         vrml_attached = call(_tool_arguments(robot, vrml_tool))
         assert vrml_attached["changed"] is True
@@ -441,6 +432,7 @@ def _run() -> None:
         document.redo()
         _process_events(12)
         assert robot.ToolShape is vrml_tool
+        refresh_dispatcher()
 
         document.save()
         undo_count_before_defaults = int(document.UndoCount)
@@ -449,20 +441,12 @@ def _run() -> None:
         receipts_before_defaults = tuple(
             state_store.snapshot(document.Uid)["recent_receipts"]
         )
-        defaults_before = capture_robot_waypoint_defaults()
         motion_arguments = {
             "operation": "set_default_values",
-            "expected_defaults_state_sha256": defaults_before.state_sha256,
             "speed_mm_per_s": 2000.0,
             "continuous": True,
             "acceleration_mm_per_s2": 3000.0,
         }
-        stale_defaults = call(
-            {**motion_arguments, "expected_defaults_state_sha256": "0" * 64},
-            succeeds=False,
-        )
-        assert stale_defaults["error_code"] == "NATIVE_ROBOT_SETUP_FAILED"
-        assert capture_robot_waypoint_defaults() == defaults_before
 
         motion = call(motion_arguments)
         assert motion["scope"] == "application_session"
@@ -475,10 +459,8 @@ def _run() -> None:
             receipts_before_defaults
         )
 
-        current_defaults = capture_robot_waypoint_defaults()
         orientation_arguments = {
             "operation": "set_default_orientation",
-            "expected_defaults_state_sha256": current_defaults.state_sha256,
             "placement": {
                 "origin_mm": {"x": 11.25, "y": -7.5, "z": 3.75},
                 "rotation": {
@@ -501,14 +483,7 @@ def _run() -> None:
         )
         assert "receipt" not in orientation
 
-        no_op_orientation = call(
-            {
-                **orientation_arguments,
-                "expected_defaults_state_sha256": (
-                    capture_robot_waypoint_defaults().state_sha256
-                ),
-            }
-        )
+        no_op_orientation = call(orientation_arguments)
         assert no_op_orientation["changed"] is False
         assert "receipt" not in no_op_orientation
 
@@ -524,7 +499,6 @@ def _run() -> None:
             defaults_rollback = call(
                 {
                     "operation": "set_default_values",
-                    "expected_defaults_state_sha256": before_rollback.state_sha256,
                     "speed_mm_per_s": 4321.125,
                     "continuous": False,
                     "acceleration_mm_per_s2": 8765.375,
@@ -589,8 +563,7 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_ROBOT_CONFIGURATION_GUI_OK "
-            "human_tool_parity=true exact_targets=true tool_drift_noop=true "
-            "stale_noop=true "
+            "human_tool_parity=true exact_targets=true "
             "rollback=true idempotent=true undo_redo=true reopen=true "
             "vrml=true "
             "human_defaults_parity=true session_only=true document_unchanged=true "

@@ -8,14 +8,20 @@ tool execution, workbench activation, ribbon switching, or domain behavior.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import hashlib
 import json
 from typing import Any
 
 from VibeCADNativeCapabilityRegistry import (
+    NativeCapabilityRegistryError,
     NativeCapabilityRegistry,
     NativeProviderSurface,
+    _provider_schema_operations,
+    provider_visible_native_schema,
+    project_native_provider_operations,
+    project_native_provider_surface,
     resolve_native_provider_surface,
 )
 from VibeCADNativeSurface import (
@@ -68,6 +74,34 @@ def _canonical_schemas(schemas: tuple[dict[str, Any], ...]) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _captured_schema_operations(
+    registry: NativeCapabilityRegistry,
+    schema: dict[str, Any],
+) -> tuple[str, ...]:
+    operations = _provider_schema_operations(schema)
+    if operations:
+        return operations
+    name = str(schema.get("name") or "")
+    definition = registry.definition(name)
+    if definition is None:
+        raise NativeTurnUnavailable(
+            f"The captured Native capability {name!r} has no definition."
+        )
+    matches = tuple(
+        variant.operation
+        for variant in definition.variants
+        if provider_visible_native_schema(
+            definition.provider_schema((variant.operation,))
+        )
+        == schema
+    )
+    if len(matches) != 1:
+        raise NativeTurnUnavailable(
+            f"The captured Native schema for {name!r} does not identify one exact operation."
+        )
+    return matches
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,11 +160,98 @@ class NativeTurnSnapshot:
 def freeze_native_turn(
     controller: Any | None = None,
     registry: NativeCapabilityRegistry | None = None,
+    tool_names: tuple[str, ...] | None = None,
+    active_state: dict[str, Any] | None = None,
+    provider_schemas: tuple[dict[str, Any], ...] | None = None,
+    authorized_operations: Mapping[str, Sequence[str]] | None = None,
 ) -> NativeTurnSnapshot:
-    """Freeze the exact complete Native surface without changing UI state."""
+    """Freeze an exact validated Native surface without changing UI state."""
 
     surface = read_active_ribbon_surface(controller)
     provider_surface = resolve_native_provider_surface(surface, registry)
+    if active_state is not None:
+        from VibeCADNativeProviderContext import provider_authorized_native_surface
+
+        provider_surface = provider_authorized_native_surface(
+            provider_surface,
+            active_state,
+            registry=registry,
+        )
+    if tool_names is not None:
+        try:
+            provider_surface = project_native_provider_surface(
+                provider_surface,
+                tool_names,
+            )
+        except NativeCapabilityRegistryError as exc:
+            raise NativeTurnUnavailable(str(exc)) from exc
+    if authorized_operations is not None:
+        if registry is None:
+            raise NativeTurnUnavailable(
+                "Freezing exact Native operations requires a capability registry."
+            )
+        if not isinstance(authorized_operations, Mapping):
+            raise NativeTurnUnavailable(
+                "Captured Native operation authorization must be a mapping."
+            )
+        operations_by_tool = {
+            str(name or "").strip(): tuple(
+                dict.fromkeys(
+                    str(operation or "").strip() for operation in operations
+                )
+            )
+            for name, operations in authorized_operations.items()
+            if str(name or "").strip()
+            and isinstance(operations, Sequence)
+            and not isinstance(operations, (str, bytes))
+        }
+        if len(operations_by_tool) != len(authorized_operations) or any(
+            not operations or any(not operation for operation in operations)
+            for operations in operations_by_tool.values()
+        ):
+            raise NativeTurnUnavailable(
+                "Captured Native operation authorization is malformed."
+            )
+        unknown = set(operations_by_tool) - set(provider_surface.tool_names)
+        if unknown:
+            raise NativeTurnUnavailable(
+                "Captured Native operation authorization contains tools outside "
+                "the complete Native surface."
+            )
+        try:
+            provider_surface = project_native_provider_operations(
+                provider_surface,
+                registry,
+                operations_by_tool,
+            )
+        except NativeCapabilityRegistryError as exc:
+            raise NativeTurnUnavailable(str(exc)) from exc
+    elif provider_schemas is not None:
+        if registry is None:
+            raise NativeTurnUnavailable(
+                "Freezing exact Native operations requires a capability registry."
+            )
+        operations_by_tool = {}
+        for schema in provider_schemas:
+            name = str(schema.get("name") or "")
+            definition = registry.definition(name)
+            if definition is None:
+                raise NativeTurnUnavailable(
+                    f"The captured Native capability {name!r} has no definition."
+                )
+            if len(definition.variants) > 1:
+                operations_by_tool[name] = _captured_schema_operations(
+                    registry,
+                    schema,
+                )
+        try:
+            provider_surface = project_native_provider_operations(
+                provider_surface,
+                registry,
+                operations_by_tool,
+            )
+        except NativeCapabilityRegistryError as exc:
+            raise NativeTurnUnavailable(str(exc)) from exc
     return NativeTurnSnapshot.from_provider_surface(provider_surface)
 
 
@@ -147,8 +268,23 @@ def require_frozen_native_turn(
     require_frozen_native_surface(expected.surface, controller)
     current_provider = resolve_native_provider_surface(current_surface, registry)
     try:
+        current_provider = project_native_provider_surface(
+            current_provider,
+            expected.tool_names,
+        )
+        if registry is not None:
+            operations_by_tool = {
+                str(schema.get("name") or ""): operations
+                for schema in expected.provider_schemas
+                if (operations := _provider_schema_operations(schema))
+            }
+            current_provider = project_native_provider_operations(
+                current_provider,
+                registry,
+                operations_by_tool,
+            )
         current = NativeTurnSnapshot.from_provider_surface(current_provider)
-    except NativeTurnUnavailable as exc:
+    except (NativeCapabilityRegistryError, NativeTurnUnavailable) as exc:
         raise NativeTurnChanged(current_surface.surface_id) from exc
     if (
         current.tool_names != expected.tool_names

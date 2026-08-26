@@ -17,7 +17,7 @@ import UtilsAssembly
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeAssemblyInspectSchema import (
-    ASSEMBLY_INSPECT_CAPABILITY_NAME,
+    ASSEMBLY_LINKED_ASSEMBLY_CAPABILITY_NAME,
     assembly_inspect_capability_definition,
 )
 from VibeCADNativeCapabilityRegistry import (
@@ -70,7 +70,7 @@ def _focused_turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=("state.read", ASSEMBLY_INSPECT_CAPABILITY_NAME),
+            tool_names=("state.read", ASSEMBLY_LINKED_ASSEMBLY_CAPABILITY_NAME),
             schemas=(
                 state.provider_schema(("active", "selection")),
                 inspect.provider_schema(("linked_source",)),
@@ -188,20 +188,23 @@ def _run() -> None:
         assert _selection_objects() == (link,)
 
         registry = build_native_capability_registry()
-        definition = registry.definition(ASSEMBLY_INSPECT_CAPABILITY_NAME)
+        definition = registry.definition(ASSEMBLY_LINKED_ASSEMBLY_CAPABILITY_NAME)
         assert definition is not None
         variant = definition.variants[0]
         assert variant.action_ids == frozenset({"Assembly_LinkSelectLinked"})
         assert variant.transaction_behavior == "none"
-        assert registry.implementation(ASSEMBLY_INSPECT_CAPABILITY_NAME) is not None
+        assert (
+            registry.implementation(ASSEMBLY_LINKED_ASSEMBLY_CAPABILITY_NAME)
+            is not None
+        )
         production = resolve_native_provider_surface(surface, registry)
-        assert ASSEMBLY_INSPECT_CAPABILITY_NAME not in (
+        assert ASSEMBLY_LINKED_ASSEMBLY_CAPABILITY_NAME not in (
             production.missing_definition_names
         )
-        assert ASSEMBLY_INSPECT_CAPABILITY_NAME not in (
+        assert ASSEMBLY_LINKED_ASSEMBLY_CAPABILITY_NAME not in (
             production.missing_implementation_names
         )
-        assert ASSEMBLY_INSPECT_CAPABILITY_NAME not in (
+        assert ASSEMBLY_LINKED_ASSEMBLY_CAPABILITY_NAME not in (
             production.incomplete_definition_names
         )
 
@@ -253,7 +256,7 @@ def _run() -> None:
         task_before = Gui.Control.activeTaskDialog()
 
         result = dispatcher.call(
-            ASSEMBLY_INSPECT_CAPABILITY_NAME,
+            ASSEMBLY_LINKED_ASSEMBLY_CAPABILITY_NAME,
             json.dumps(
                 {
                     "operation": "linked_source",
@@ -297,12 +300,14 @@ def _run() -> None:
 
         Gui.Selection.clearSelection()
         empty = dispatcher.call(
-            ASSEMBLY_INSPECT_CAPABILITY_NAME,
+            ASSEMBLY_LINKED_ASSEMBLY_CAPABILITY_NAME,
             '{"operation":"linked_source","link":{"object_name":"%s"}}' % link.Name,
             "assembly-linked-source-empty-selection",
         )
-        assert empty["ok"] is False, empty
-        assert empty["error_code"] == "NATIVE_ASSEMBLY_INSPECT_FAILED"
+        assert empty["ok"] is True, empty
+        assert empty["assembly_link"]["object_name"] == link.Name
+        assert empty["selected_subelements"] == []
+        assert empty["selection_unchanged"] is True
         assert tuple(target.Objects) == objects_before
         assert tuple(source_document.Objects) == source_objects_before
         assert int(target.UndoCount) == target_undo_before
@@ -310,12 +315,14 @@ def _run() -> None:
         Gui.Selection.addSelection(link)
         Gui.Selection.addSelection(target_assembly)
         multiple = dispatcher.call(
-            ASSEMBLY_INSPECT_CAPABILITY_NAME,
+            ASSEMBLY_LINKED_ASSEMBLY_CAPABILITY_NAME,
             '{"operation":"linked_source","link":{"object_name":"%s"}}' % link.Name,
             "assembly-linked-source-multiple-selection",
         )
-        assert multiple["ok"] is False, multiple
-        assert multiple["error_code"] == "NATIVE_ASSEMBLY_INSPECT_FAILED"
+        assert multiple["ok"] is True, multiple
+        assert multiple["assembly_link"]["object_name"] == link.Name
+        assert multiple["selected_subelements"] == []
+        assert multiple["selection_unchanged"] is True
         assert tuple(target.Objects) == objects_before
         assert tuple(source_document.Objects) == source_objects_before
         assert int(target.UndoCount) == target_undo_before
@@ -323,7 +330,7 @@ def _run() -> None:
         print(
             "VIBECAD_NATIVE_ASSEMBLY_LINKED_SOURCE_GUI_OK "
             f"human_navigation={str(human_navigation).lower()} "
-            "external=true read_only=true exact_selection=true stale_noop=true "
+            "external=true read_only=true explicit_reference=true stale_noop=true "
             "reopen=true selection_unchanged=true active_document_unchanged=true",
             flush=True,
         )

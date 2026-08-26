@@ -232,6 +232,56 @@ like suitable inputs for the pictured blade field. The next comparison removes
 those attractors only from the benchmark provider surface; no production capability
 is removed until repeated live evidence supports that boundary.
 
+### Native Assembly surface
+
+Assembly acceptance used the same outcome-only rule. Prompts stated the desired
+mechanism or deliverable and its engineering values; they did not name tools,
+fields, call order, prerequisite reads, or recovery steps. Rejected calls counted
+even when a model later recovered.
+
+The screw and rack-pinion contracts originally described their participants as
+`first` and `second`. Qwen selected the correct screw capability but reversed the
+Slider and Revolute roles on its first call. The provider contracts now name the
+mechanical roles directly while deterministically adapting them to the established
+joint runtime:
+
+- screw: Slider joint/component, Revolute joint/component, and lead;
+- rack-pinion: rack Slider/component, pinion Revolute/component, and pitch radius.
+
+The unchanged plain requests then passed on the first mutation call with both
+Qwen and GPT-5.6 Terra/high:
+
+> Make LeadScrew move Carriage 4 mm per revolution. Save the assembly.
+
+> Make Pinion drive Rack with a 20 mm pitch radius. Save the assembly.
+
+The retained artifacts are under
+`assembly/{qwen,terra-high}-native-{screw,rack-pinion}-plain-description-4/`.
+Every run had zero rejected calls, produced the correct coupling ratio, saved and
+reopened, and passed neutral STEP validation.
+
+The final multi-part check started from a verified fixture containing seven source
+parts and no Assembly, joints, Robot, simulation, or BOM. Qwen and Terra received
+the identical request:
+
+> Create a proper assembly from these parts and save it.
+
+Qwen made 24 accepted calls with no rejection: it created the Assembly, inserted
+all seven parts, grounded the base, discovered connectors, created five joints,
+solved, saved, and reopened. Terra made 33 accepted calls with no rejection and
+created six joints after broader connector inspection. Both results contain seven
+occurrences, one grounded base, a valid joint graph, a clean solve, and valid FCStd
+and STEP artifacts. Terra's result retained five degrees of freedom versus Qwen's
+eleven; that design-quality difference came from model reasoning under an
+intentionally minimal request, not tool-call ambiguity or failure. The artifacts
+are retained under `assembly/{qwen,terra-high}-native-proper-assembly-minimal-1/`.
+
+Focused live runs also cover relations, gears, belts, component interfaces,
+fasteners, linked-subassembly rigidity, exploded views, Robot configuration and
+paths, motion studies, playback, expandable BOM creation, and ASMT export. Each
+family has a zero-rejection Qwen result and a Terra/high confirmation saved in the
+same Assembly benchmark directory.
+
 ## Deterministic evidence
 
 The release build completes after the command and DesignModel changes.
@@ -249,6 +299,19 @@ VIBECAD_NATIVE_MODEL_PROFILES_GUI_OK
 VIBECAD_NATIVE_MODEL_BRACKET_WORKFLOW_GUI_OK
 VIBECAD_NATIVE_CODEX_CROSS_RIBBON_GUI_OK
 ```
+
+Assembly, Robot, shared Native context, dispatch, registry, session, and surface
+guardrails:
+
+```text
+516 passed
+VIBECAD_NATIVE_RIBBON_SURFACE_GUI_OK
+```
+
+The live ribbon gate resolves the exact provider surface for every human ribbon.
+Its final counts are Model 30, Assemble 38, Mesh 19, Analyze 31, Manufacturing 26,
+Drawing 41, Parameters 11, Aero 9, Sketch setup 11, and Sketch edit 39 tools.
+It also verifies surface-specific view operations and inter-turn workspace switching.
 
 The profile gate exercises all five canonical feature kinds, advanced
 termination and orientation modes, global and subelement axes, join/cut/intersect,

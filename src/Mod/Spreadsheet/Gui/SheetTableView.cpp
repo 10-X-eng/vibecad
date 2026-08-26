@@ -212,6 +212,10 @@ SheetTableView::SheetTableView(QWidget* parent)
     verticalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
 
     verticalHeader()->setDefaultAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+    verticalHeader()->setDefaultSectionSize(28);
+    horizontalHeader()->setMinimumHeight(32);
+    setAlternatingRowColors(true);
+    setWordWrap(false);
 
     horizontalHeader()->addAction(actionBind);
     verticalHeader()->addAction(actionBind);

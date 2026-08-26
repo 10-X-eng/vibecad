@@ -296,6 +296,26 @@ def test_dispatcher_auto_apply_refuses_stale_preview() -> None:
     assert result["stale"] is True
 
 
+def _mutation_definition() -> NativeCapabilityDefinition:
+    return NativeCapabilityDefinition(
+        name="test.execute",
+        description="Execute one exact bounded test mutation.",
+        primary_classification="mutation",
+        variants=(
+            NativeCapabilityVariant(
+                operation="read",
+                description="Execute one exact bounded test mutation.",
+                action_ids=frozenset({"VibeCAD_Test"}),
+                surface_ids=frozenset({"model"}),
+                exact_target_type=None,
+                transaction_behavior="document",
+                background_required=False,
+                parameters=_parameters(),
+            ),
+        ),
+    )
+
+
 def test_dispatch_resolves_one_hidden_frozen_operation() -> None:
     observed = []
     dispatcher, _state, _debug = _dispatcher(
@@ -331,6 +351,158 @@ def test_dispatch_injects_one_host_ticket_and_returns_concise_success() -> None:
     assert len(calls) == 1
     assert calls[0].ticket.capability_name == "test.execute"
     assert len(calls[0].ticket.idempotency_token) == 32
+
+
+def test_dispatch_refuses_a_document_change_outside_the_frozen_turn() -> None:
+    calls = []
+    dispatcher, state, _debug = _dispatcher(
+        lambda call: calls.append(call) or {"value": call.arguments["value"]}
+    )
+    state.note_structural_change(_Document.Uid)
+
+    result = dispatcher.call(
+        "test.execute", _arguments(12), "provider-call-1"
+    )
+
+    assert result == {
+        "ok": False,
+        "error_code": "NATIVE_REVISION_CONFLICT",
+        "error": (
+            "The document changed outside this Native turn. Start a new turn "
+            "from its current state."
+        ),
+        "current_revision": 1,
+        "repair": {"next_turn_required": True},
+    }
+    assert calls == []
+
+
+def test_background_job_status_survives_its_owned_document_commit() -> None:
+    definition = NativeCapabilityDefinition(
+        name="native.job",
+        description="Read one exact background job.",
+        primary_classification="read",
+        variants=(
+            NativeCapabilityVariant(
+                operation="status",
+                description="Read one exact background job.",
+                action_ids=frozenset({"VibeCAD_NativeBackgroundJob"}),
+                surface_ids=frozenset({"analyze"}),
+                exact_target_type="NativeBackgroundJobId",
+                transaction_behavior="none",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "job_id": {
+                            "type": "string",
+                            "minLength": 32,
+                            "maxLength": 32,
+                        },
+                    },
+                    "required": ["job_id"],
+                    "additionalProperties": False,
+                },
+            ),
+        ),
+    )
+    calls = []
+    dispatcher, state, _debug = _dispatcher(
+        lambda call: calls.append(call) or {"phase": "completed"},
+        definition=definition,
+    )
+    state.note_structural_change(_Document.Uid)
+
+    result = dispatcher.call(
+        "native.job",
+        json.dumps({"operation": "status", "job_id": "a" * 32}),
+        "background-status-call",
+    )
+
+    assert result == {"ok": True, "phase": "completed"}
+    assert len(calls) == 1
+
+
+def test_dispatch_advances_with_its_own_successful_mutations() -> None:
+    holder = {}
+    tickets = []
+
+    def handler(call):
+        tickets.append(call.ticket.expected_revision)
+        holder["state"].note_structural_change(call.ticket.document_uid)
+        return {"value": call.arguments["value"]}
+
+    dispatcher, state, _debug = _dispatcher(
+        handler,
+        definition=_mutation_definition(),
+    )
+    holder["state"] = state
+
+    first = dispatcher.call(
+        "test.execute", _arguments(1), "provider-call-1"
+    )
+    second = dispatcher.call(
+        "test.execute", _arguments(2), "provider-call-2"
+    )
+
+    assert first == {"ok": True, "value": 1}
+    assert second == {"ok": True, "value": 2}
+    assert tickets == [0, 1]
+
+
+def test_dispatch_adopts_its_own_completed_background_mutation() -> None:
+    calls = []
+
+    def handler(call):
+        calls.append(call)
+        return {"value": call.arguments["value"]}
+
+    dispatcher, state, _debug = _dispatcher(
+        handler,
+        definition=_mutation_definition(),
+    )
+    first = dispatcher.call("test.execute", _arguments(1), "provider-call-1")
+    ticket = calls[0].ticket
+    state.authorize_mutation(ticket)
+    state.begin_mutation_observation(ticket)
+    state.note_structural_change(ticket.document_uid)
+    prepared = state.prepare_mutation_completion(ticket, {"value": 1})
+    state.commit_mutation_observation(ticket)
+    state.complete_prepared_mutation(prepared)
+
+    second = dispatcher.call("test.execute", _arguments(2), "provider-call-2")
+
+    assert first == {"ok": True, "value": 1}
+    assert second == {"ok": True, "value": 2}
+    assert calls[1].ticket.expected_revision == 1
+
+
+def test_dispatch_still_refuses_change_after_its_background_receipt() -> None:
+    calls = []
+
+    def handler(call):
+        calls.append(call)
+        return {"value": call.arguments["value"]}
+
+    dispatcher, state, _debug = _dispatcher(
+        handler,
+        definition=_mutation_definition(),
+    )
+    dispatcher.call("test.execute", _arguments(1), "provider-call-1")
+    ticket = calls[0].ticket
+    state.authorize_mutation(ticket)
+    state.begin_mutation_observation(ticket)
+    state.note_structural_change(ticket.document_uid)
+    prepared = state.prepare_mutation_completion(ticket, {"value": 1})
+    state.commit_mutation_observation(ticket)
+    state.complete_prepared_mutation(prepared)
+    state.note_structural_change(ticket.document_uid)
+
+    result = dispatcher.call("test.execute", _arguments(2), "provider-call-2")
+
+    assert result["error_code"] == "NATIVE_REVISION_CONFLICT"
+    assert result["current_revision"] == 2
+    assert len(calls) == 1
 
 
 def test_single_purpose_tool_infers_its_frozen_operation() -> None:

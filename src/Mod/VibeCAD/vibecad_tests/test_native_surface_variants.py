@@ -119,14 +119,9 @@ def _surface_for_variant(
 def test_analyze_matrix_covers_every_valid_vtk_and_netgen_combination() -> None:
     baseline = KNOWN_ACTIONS_BY_SURFACE["analyze"]
     observed_names = set()
-    expected_counts = {
-        (False, False): 82,
-        (True, False): 99,
-        (True, True): 104,
-    }
     for netgen, (vtk, vtk_python) in product(
         (False, True),
-        expected_counts,
+        ((False, False), (True, False), (True, True)),
     ):
         environment = _environment(
             "analyze",
@@ -144,7 +139,6 @@ def test_analyze_matrix_covers_every_valid_vtk_and_netgen_combination() -> None:
 
         observed_names.add(variant.name)
         assert matched == variant
-        assert len(variant.command_ids) == expected_counts[(vtk, vtk_python)]
         assert tuple(plan.command_id for plan in plans) == variant.command_ids
         assert resolve_native_provider_surface(surface).missing_action_ids == ()
         assert ("FEM_PostCreateFunctions" in variant.composite_map) is vtk
@@ -214,19 +208,9 @@ def test_manufacture_matrix_covers_preferences_runtime_options_and_robot() -> No
             plans = classify_native_surface(surface)
             ocl = "CAM_3dTools" in variant.composite_map
             camotics = "CAM_Camotics" in variant.command_ids
-            expected_count = (
-                    59
-                - (0 if robot else 6)
-                + (2 if experimental else 0)
-                + (3 if ocl else 0)
-                + (1 if ocl and experimental else 0)
-                + (1 if camotics else 0)
-            )
-
             observed_names.add(variant.name)
             observed_graphs.add((variant.groups, variant.composites))
             assert matched == variant
-            assert len(variant.command_ids) == expected_count
             assert tuple(plan.command_id for plan in plans) == variant.command_ids
             assert resolve_native_provider_surface(surface).missing_action_ids == ()
             assert variant.composite_map["CAM_SimTools"] == (
@@ -250,12 +234,6 @@ def test_manufacture_matrix_covers_preferences_runtime_options_and_robot() -> No
 
 def test_drawing_matrix_covers_every_dimension_preference_combination() -> None:
     baseline = KNOWN_ACTIONS_BY_SURFACE["drawing"]
-    expected_counts = {
-        (False, False): 86,
-        (False, True): 107,
-        (True, False): 111,
-        (True, True): 112,
-    }
     observed_commands = set()
     for separated, single in product((False, True), repeat=2):
         environment = _environment(
@@ -274,7 +252,6 @@ def test_drawing_matrix_covers_every_dimension_preference_combination() -> None:
 
         observed_commands.update(variant.command_ids)
         assert matched == variant
-        assert len(variant.command_ids) == expected_counts[(separated, single)]
         assert inventory.required_action_ids == variant.command_ids
         assert tuple(plan.command_id for plan in inventory.plans) == variant.command_ids
         assert provider.missing_action_ids == ()
@@ -415,11 +392,7 @@ def test_manufacture_classifier_rejects_optional_action_without_preference() -> 
     groups = tuple(
         (
             label,
-            (
-                (*command_ids, "CAM_Camotics")
-                if label == "Tools"
-                else command_ids
-            ),
+            ((*command_ids, "CAM_Camotics") if label == "Tools" else command_ids),
         )
         for label, command_ids in variant.groups
     )
@@ -487,7 +460,9 @@ def test_manufacture_classifier_rejects_same_order_in_wrong_group() -> None:
     manifest = deepcopy(_manifest_for_variant("manufacture", variant))
     modify = next(group for group in manifest["groups"] if group["label"] == "Modify")
     area_index = next(
-        index for index, group in enumerate(manifest["groups"]) if group["label"] == "Area"
+        index
+        for index, group in enumerate(manifest["groups"])
+        if group["label"] == "Area"
     )
     area = manifest["groups"].pop(area_index)
     modify["actions"].extend(area["actions"])

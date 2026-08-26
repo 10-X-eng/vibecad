@@ -36,6 +36,7 @@ from VibeCADModelingSurface import (
     infer_engine_from_names,
     is_model_assembly_workbench,
     modeling_surface_from_native_provider,
+    provider_engine_from_service,
     resolve_service_surface,
     share_authoring_surface,
     validate_surface_names,
@@ -62,30 +63,8 @@ PROVIDER_SAFE_LEVELS = {
     SafetyLevel.VIEW,
     SafetyLevel.SAFE_WRITE,
 }
-PLAN_PROVIDER_SAFE_LEVELS = {
-    SafetyLevel.READ,
-    SafetyLevel.VIEW,
-}
-INTERACTION_MODES = frozenset({"build", "plan"})
 
 CORE_PROVIDER_TOOLS = set(CORE_CONVERSATION_VIEW_TOOLS) | set(SHARED_CONTEXT_TOOLS)
-
-
-def normalize_interaction_mode(value: str | None) -> str:
-    clean = str(value or "build").strip().lower()
-    if clean not in INTERACTION_MODES:
-        raise ValueError(
-            f"Unknown VibeCAD interaction mode {clean!r}; expected build or plan."
-        )
-    return clean
-
-
-def _provider_safety_levels(interaction_mode: str) -> set[SafetyLevel]:
-    return (
-        PLAN_PROVIDER_SAFE_LEVELS
-        if normalize_interaction_mode(interaction_mode) == "plan"
-        else PROVIDER_SAFE_LEVELS
-    )
 
 
 VIBESCRIPT_PROVIDER_TOOLS = {
@@ -119,6 +98,8 @@ MAX_VIBESCRIPT_TOOL_SCHEMAS_JSON_BYTES = 32 * 1024
 VIBESCRIPT_READ_OPERATION_TOOL = "vibescript.read_operation"
 VIBESCRIPT_BACKGROUND_SOURCE_TOOLS = frozenset(
     {
+        "vibescript.create_assembly",
+        "vibescript.create_part",
         "vibescript.create_program",
         "vibescript.build_program",
         "vibescript.edit_source",
@@ -710,15 +691,13 @@ def _provider_safe_tool_names(
     service: VibeCADService,
     workbench: str | None,
     edit_mode: str,
-    interaction_mode: str = "build",
 ) -> list[str]:
     """Return live-callable names without serializing provider schemas."""
 
-    allowed_safety = _provider_safety_levels(interaction_mode)
     result: list[str] = []
     for name in sorted(_surface_tool_names(service, workbench)):
         tool = service.registry.get(name)
-        if tool.safety not in allowed_safety:
+        if tool.safety not in PROVIDER_SAFE_LEVELS:
             continue
         # A sketch task is transient, not a different Model/Assembly API.  The
         # runner returns EDIT_STATE_MISMATCH if a call cannot execute until the
@@ -735,36 +714,38 @@ def is_provider_safe_tool(
     service: VibeCADService,
     tool_name: str,
     workbench: str | None = None,
-    *,
-    interaction_mode: str = "build",
 ) -> bool:
-    modeling_engine = getattr(service, "modeling_engine", None)
-    if (
-        callable(modeling_engine)
-        and str(modeling_engine() or "").strip().lower() == "native"
-    ):
-        from VibeCADNativeProviderContext import resolve_production_native_surface
+    try:
+        provider_engine = provider_engine_from_service(service)
+    except Exception:
+        return False
+    if provider_engine == "native":
+        from VibeCADNativeProviderContext import (
+            provider_authorized_native_surface,
+            resolve_production_native_surface,
+        )
 
         try:
             registry, surface = resolve_production_native_surface()
         except Exception:
             return False
+        state_reader = getattr(service, "native_active_snapshot", None)
+        if getattr(surface, "snapshot", None) is not None:
+            surface = provider_authorized_native_surface(
+                surface,
+                state_reader() if callable(state_reader) else None,
+                registry=registry,
+            )
         clean_name = str(tool_name)
         if not surface.available or clean_name not in surface.tool_names:
             return False
-        if normalize_interaction_mode(interaction_mode) == "build":
-            return True
-        definition = registry.definition(clean_name)
-        return bool(
-            definition is not None
-            and definition.primary_classification in {"read", "view"}
-        )
+        return True
     try:
         tool = service.registry.get(tool_name)
     except KeyError:
         return False
     active = workbench or service.active_workbench_name()
-    if tool.safety not in _provider_safety_levels(interaction_mode):
+    if tool.safety not in PROVIDER_SAFE_LEVELS:
         return False
     if tool_name not in _surface_tool_names(service, active):
         return False
@@ -778,16 +759,16 @@ def provider_tool_schemas(
     workbench: str | None,
     *,
     runtime_state: dict[str, Any] | None = None,
-    interaction_mode: str = "build",
 ) -> list[dict[str, Any]]:
-    modeling_engine = getattr(service, "modeling_engine", None)
-    if (
-        callable(modeling_engine)
-        and str(modeling_engine() or "").strip().lower() == "native"
-    ):
+    if provider_engine_from_service(service) == "native":
         from VibeCADNativeProviderContext import native_provider_tool_schemas
 
-        return native_provider_tool_schemas(interaction_mode=interaction_mode)
+        state_reader = getattr(service, "native_active_snapshot", None)
+        return (
+            native_provider_tool_schemas(state_reader())
+            if callable(state_reader)
+            else native_provider_tool_schemas()
+        )
     state = (
         runtime_state if runtime_state is not None else _minimal_runtime_state(service)
     )
@@ -795,7 +776,6 @@ def provider_tool_schemas(
         service,
         workbench,
         _edit_mode_from_runtime_state(state),
-        interaction_mode,
     )
     return [
         _provider_schema_copy(
@@ -807,12 +787,30 @@ def provider_tool_schemas(
 
 def _live_provider_surface_state(
     service: VibeCADService,
-    interaction_mode: str = "build",
 ) -> dict[str, Any]:
     """Capture one coherent authorization snapshot on the document thread."""
 
     workbench = service.active_workbench_name()
-    resolution = resolve_service_surface(service, workbench)
+    provider_engine = provider_engine_from_service(service)
+    if provider_engine == "native":
+        from VibeCADNativeProviderContext import (
+            native_active_state,
+            provider_authorized_native_surface,
+            resolve_production_native_surface,
+        )
+
+        registry, provider_surface = resolve_production_native_surface()
+        provider_surface = provider_authorized_native_surface(
+            provider_surface,
+            native_active_state(service) if provider_surface.available else None,
+            registry=registry,
+        )
+        resolution = modeling_surface_from_native_provider(
+            workbench,
+            provider_surface,
+        )
+    else:
+        resolution = resolve_service_surface(service, workbench)
     runtime_state = _minimal_runtime_state(service)
     return {
         "workbench": workbench,
@@ -822,11 +820,14 @@ def _live_provider_surface_state(
         "available": resolution.available,
         "unavailable_reason": resolution.unavailable_reason,
         "runtime_state": runtime_state,
-        "tool_names": _provider_safe_tool_names(
-            service,
-            workbench,
-            _edit_mode_from_runtime_state(runtime_state),
-            interaction_mode,
+        "tool_names": (
+            list(provider_surface.tool_names)
+            if provider_engine == "native" and provider_surface.available
+            else _provider_safe_tool_names(
+                service,
+                workbench,
+                _edit_mode_from_runtime_state(runtime_state),
+            )
         ),
     }
 
@@ -1122,10 +1123,9 @@ def _rebase_unified_source_index(
 def _capture_context_for_provider(
     service: VibeCADService,
     session_trigger: dict[str, Any] | None = None,
-    interaction_mode: str = "build",
     prepared_component_catalog: Mapping[str, Any] | None = None,
+    prepared_native_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    clean_interaction_mode = normalize_interaction_mode(interaction_mode)
     raw_context = service.provider_context_summary()
     allowed_turn_facts = (
         "document",
@@ -1140,15 +1140,36 @@ def _capture_context_for_provider(
     }
     workbench = service.active_workbench_name()
     native_provider_surface = None
-    native_engine = str(service.modeling_engine() or "").strip().lower() == "native"
+    captured_native_state = None
+    native_engine = provider_engine_from_service(service) == "native"
     if native_engine:
-        from VibeCADNativeProviderContext import resolve_production_native_surface
+        from VibeCADNativeProviderContext import (
+            native_active_state,
+            provider_authorized_native_surface,
+            provider_visible_native_state,
+            resolve_production_native_surface,
+        )
 
-        _native_registry, native_provider_surface = resolve_production_native_surface()
+        native_registry, native_provider_surface = resolve_production_native_surface()
         resolution = modeling_surface_from_native_provider(
             workbench,
             native_provider_surface,
         )
+        if resolution.available:
+            captured_native_state = (
+                dict(prepared_native_state)
+                if prepared_native_state is not None
+                else native_active_state(service)
+            )
+            native_provider_surface = provider_authorized_native_surface(
+                native_provider_surface,
+                captured_native_state,
+                registry=native_registry,
+            )
+            resolution = modeling_surface_from_native_provider(
+                workbench,
+                native_provider_surface,
+            )
     else:
         resolution = resolve_service_surface(service, workbench)
     context["workbench"] = workbench
@@ -1174,12 +1195,12 @@ def _capture_context_for_provider(
         ),
     }
     if resolution.engine == "native":
-        from VibeCADNativeProviderContext import native_active_state
-
         context.pop("document", None)
         context.pop("selection", None)
         if resolution.available:
-            context["native_state"] = native_active_state(service)
+            context["native_state"] = provider_visible_native_state(
+                captured_native_state
+            )
     if resolution.engine == "vibescript" and resolution.available and resolution.domain:
         context["editable_sources"] = _capture_editable_sources_for_workbench(
             service,
@@ -1207,49 +1228,36 @@ def _capture_context_for_provider(
         from VibeCADNativeProviderContext import (
             schemas_for_native_provider_surface,
         )
+        from VibeCADNativeCapabilityRegistry import _provider_schema_operations
 
-        schemas = schemas_for_native_provider_surface(
-            native_provider_surface,
-            interaction_mode=clean_interaction_mode,
-            registry=_native_registry,
-        )
-        codex_thread_schemas = schemas_for_native_provider_surface(
-            native_provider_surface,
-            interaction_mode="build",
-            registry=_native_registry,
-        )
+        exact_native_schemas = [
+            dict(schema) for schema in native_provider_surface.schemas
+        ]
+        native_turn_authorization = {
+            "schema_sha256": provider_tool_schema_digest(exact_native_schemas),
+            "operations_by_tool": {
+                str(schema.get("name") or ""): list(operations)
+                for schema in exact_native_schemas
+                if (operations := _provider_schema_operations(schema))
+            },
+        }
+        schemas = schemas_for_native_provider_surface(native_provider_surface)
     elif not native_engine:
         schemas = provider_tool_schemas(
             service,
             workbench,
             runtime_state=runtime_state,
-            interaction_mode=clean_interaction_mode,
-        )
-        codex_thread_schemas = provider_tool_schemas(
-            service,
-            workbench,
-            runtime_state=runtime_state,
-            interaction_mode="build",
         )
     else:
         schemas = []
-        codex_thread_schemas = []
     context["provider_tool_schemas"] = schemas
-    context["_vibecad_interaction_mode"] = clean_interaction_mode
     context["provider_tool_surface"] = _turn_start_tool_surface(
         workbench,
         schemas,
         resolution=resolution,
     )
-    if codex_thread_schemas:
-        context["_vibecad_codex_thread_surface"] = {
-            "provider_tool_schemas": codex_thread_schemas,
-            "provider_tool_surface": _turn_start_tool_surface(
-                workbench,
-                codex_thread_schemas,
-                resolution=resolution,
-            ),
-        }
+    if native_provider_surface is not None:
+        context["_native_turn_authorization"] = native_turn_authorization
     if session_trigger:
         context["session_trigger"] = dict(session_trigger)
     return context
@@ -1342,7 +1350,6 @@ def _complete_context_for_provider(context: Mapping[str, Any]) -> dict[str, Any]
 def _context_for_provider(
     service: VibeCADService,
     session_trigger: dict[str, Any] | None = None,
-    interaction_mode: str = "build",
 ) -> dict[str, Any]:
     """Return completed provider context for synchronous compatibility callers."""
 
@@ -1350,7 +1357,6 @@ def _context_for_provider(
         _capture_context_for_provider(
             service,
             session_trigger,
-            interaction_mode,
         )
     )
 
@@ -1358,20 +1364,176 @@ def _context_for_provider(
 def _build_context_for_provider(
     service: VibeCADService,
     session_trigger: dict[str, Any] | None,
-    interaction_mode: str,
     document_thread_dispatch: DocumentThreadDispatch | None,
     prepared_component_catalog: Mapping[str, Any] | None = None,
+    cancellation_check: CancellationCheck | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    prepared_native_state = _build_responsive_analyze_native_state(
+        service,
+        document_thread_dispatch,
+        cancellation_check=cancellation_check,
+        progress_callback=progress_callback,
+    )
     captured = _on_document_thread(
         document_thread_dispatch,
         lambda: _capture_context_for_provider(
             service,
             session_trigger,
-            interaction_mode,
             prepared_component_catalog,
+            prepared_native_state,
         ),
     )
     return _complete_context_for_provider(captured)
+
+
+def _build_responsive_analyze_native_state(
+    service: VibeCADService,
+    document_thread_dispatch: DocumentThreadDispatch | None,
+    *,
+    cancellation_check: CancellationCheck | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any] | None:
+    """Build Analyze state in bounded UI dispatches from a provider worker."""
+
+    from VibeCADNativeAnalyzeContext import (
+        AnalyzeContextStale,
+        capture_responsive_analyze_snapshot,
+    )
+    from VibeCADNativeAnalyzeSnapshot import (
+        discard_analyze_snapshot_capture,
+        finish_analyze_snapshot_capture,
+        validate_analyze_snapshot_geometry,
+    )
+    from VibeCADNativeSnapshot import complete_active_snapshot
+
+    begin = getattr(service, "begin_native_analyze_context_request", None)
+    coordinator_reader = getattr(service, "native_analyze_context_coordinator", None)
+    capture_batch = getattr(service, "capture_native_analyze_context_batch", None)
+    capture_clipping = getattr(
+        service,
+        "capture_native_analyze_context_clipping",
+        None,
+    )
+    if not all(
+        callable(callback)
+        for callback in (begin, coordinator_reader, capture_batch, capture_clipping)
+    ):
+        return None
+
+    def emit_progress(percent: int, message: str) -> None:
+        _emit(
+            progress_callback,
+            {
+                "event": "analyze_context_progress",
+                "percent": int(percent),
+                "message": str(message or ""),
+            },
+        )
+
+    for attempt in range(2):
+        request = _on_document_thread(document_thread_dispatch, begin)
+        if request is None:
+            return None
+        if not isinstance(request, Mapping):
+            raise RuntimeError("Analyze context request returned no object.")
+        uid = str(request.get("document_uid") or "")
+        revision = int(request.get("structural_revision", 0) or 0)
+        cache_variant = str(request.get("active_analysis_name") or "")
+        coordinator = coordinator_reader()
+
+        def build(cancelled, report):
+            try:
+                return capture_responsive_analyze_snapshot(
+                    request,
+                    dispatch_to_document_thread=lambda operation: _on_document_thread(
+                        document_thread_dispatch,
+                        operation,
+                    ),
+                    capture_batch=capture_batch,
+                    capture_clipping=capture_clipping,
+                    finalize=finish_analyze_snapshot_capture,
+                    cancellation_check=cancelled,
+                    progress_callback=report,
+                    postprocess_parts=validate_analyze_snapshot_geometry,
+                )
+            finally:
+                discard_analyze_snapshot_capture(request)
+
+        try:
+            if request.get("cacheable") is False:
+                domain = build(
+                    lambda: bool(
+                        cancellation_check is not None and cancellation_check()
+                    ),
+                    emit_progress,
+                )
+                _emit(
+                    progress_callback,
+                    {
+                        "event": "analyze_context_ready",
+                        "structural_revision": revision,
+                    },
+                )
+                return complete_active_snapshot(request["base_snapshot"], domain)
+            cache_hit = coordinator.has_cached(
+                uid,
+                revision,
+                variant=cache_variant,
+            )
+            domain = coordinator.get_or_build(
+                uid,
+                revision,
+                build,
+                variant=cache_variant,
+                cancellation_check=cancellation_check,
+                progress_callback=emit_progress,
+            )
+            if cache_hit:
+                current_clipping = _on_document_thread(
+                    document_thread_dispatch,
+                    lambda: capture_clipping(request),
+                )
+                domain = dict(domain)
+                domain["clipping"] = dict(current_clipping)
+                _emit(
+                    progress_callback,
+                    {
+                        "event": "analyze_context_cache_hit",
+                        "structural_revision": revision,
+                    },
+                )
+            else:
+                _emit(
+                    progress_callback,
+                    {
+                        "event": "analyze_context_ready",
+                        "structural_revision": revision,
+                    },
+                )
+            return complete_active_snapshot(request["base_snapshot"], domain)
+        except AnalyzeContextStale:
+            if attempt == 0 and not (
+                cancellation_check is not None and cancellation_check()
+            ):
+                continue
+            raise
+    raise RuntimeError("Analyze context changed repeatedly during capture.")
+
+
+def prewarm_analyze_context(
+    service: VibeCADService,
+    document_thread_dispatch: DocumentThreadDispatch | None,
+    *,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any] | None:
+    """Populate the read-only Analyze cache before the human presses Send."""
+
+    return _build_responsive_analyze_native_state(
+        service,
+        document_thread_dispatch,
+        progress_callback=progress_callback,
+    )
 
 
 def _consume_context_view_attachment(
@@ -1473,6 +1635,12 @@ _PROVIDER_REDUNDANT_SOURCE_FIELDS = frozenset(
 def _provider_editable_sources_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     """Remove tool-schema duplication from the model-visible source index."""
 
+    if int(value.get("source_count") or 0) == 0:
+        return {
+            key: value[key]
+            for key in ("schema", "domain", "source_count")
+            if key in value
+        }
     result = {
         key: item
         for key, item in value.items()
@@ -1504,7 +1672,61 @@ def _provider_component_inventory_payload(
     """Keep empty component discovery truthful without its unused instructions."""
 
     if int(value.get("component_count") or 0) != 0:
-        return dict(value)
+        result = dict(value)
+        result.pop("usage", None)
+        components = []
+        for raw_component in list(value.get("components") or []):
+            if not isinstance(raw_component, Mapping):
+                continue
+            component = {
+                key: raw_component[key]
+                for key in ("catalog_key", "label")
+                if key in raw_component
+            }
+            interfaces = []
+            for raw_interface in list(raw_component.get("interfaces") or []):
+                if not isinstance(raw_interface, Mapping):
+                    continue
+                interface = {
+                    key: raw_interface[key]
+                    for key in ("name", "description")
+                    if key in raw_interface and raw_interface[key] not in (None, "")
+                }
+                raw_connector = raw_interface.get("connector")
+                if isinstance(raw_connector, Mapping):
+                    connector = {
+                        key: raw_connector[key]
+                        for key in (
+                            "kind",
+                            "allowed_joints",
+                            "compatibility",
+                            "pitch_radius_mm",
+                            "thread_pitch_mm",
+                        )
+                        if key in raw_connector
+                        and raw_connector[key] not in (None, "", [], {})
+                    }
+                    allowed = connector.get("allowed_joints")
+                    if isinstance(allowed, list):
+                        connector["allowed_joints"] = [
+                            "gear" if kind == "gears" else kind
+                            for kind in allowed
+                        ]
+                    compatibility = connector.get("compatibility")
+                    if isinstance(compatibility, Mapping):
+                        connector["compatibility"] = {
+                            "gear" if kind == "gears" else str(kind): token
+                            for kind, token in compatibility.items()
+                        }
+                    interface["connector"] = connector
+                interfaces.append(interface)
+            if interfaces:
+                component["interfaces"] = interfaces
+            if raw_component.get("interfaces_truncated") is True:
+                component["interfaces_truncated"] = True
+            components.append(component)
+        result["components"] = components
+        return result
     return {
         key: value[key]
         for key in (
@@ -1517,7 +1739,64 @@ def _provider_component_inventory_payload(
     }
 
 
+class _ComponentCatalogInputError(ValueError):
+    def __init__(self, catalog_key: str, available_keys: list[str]) -> None:
+        self.catalog_key = catalog_key
+        self.available_keys = available_keys
+        super().__init__(f"Unknown component catalog key: {catalog_key}")
+
+
+def _resolve_component_catalog_inputs(
+    arguments: Mapping[str, Any],
+    component_catalog: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Resolve turn-local component keys to frozen durable references."""
+
+    resolved = dict(arguments)
+    inputs = arguments.get("inputs")
+    if not isinstance(inputs, Mapping):
+        return resolved
+    if not any(
+        isinstance(value, Mapping) and set(value) == {"catalog_key"}
+        for value in inputs.values()
+    ):
+        return resolved
+
+    catalog = dict(component_catalog or {})
+    if catalog.get("schema") == "vibecad-component-catalog-snapshot-v1":
+        from VibeCADComponentCatalog import component_catalog_reference_map
+
+        references = component_catalog_reference_map(catalog)
+    else:
+        components = [
+            dict(value)
+            for value in list(catalog.get("components") or [])
+            if isinstance(value, Mapping)
+        ]
+        references = {
+            str(component.get("catalog_key") or ""): dict(component["reference"])
+            for component in components
+            if str(component.get("catalog_key") or "")
+            and isinstance(component.get("reference"), Mapping)
+        }
+    available_keys = sorted(references)
+    resolved_inputs = dict(inputs)
+    for name, value in inputs.items():
+        if not isinstance(value, Mapping) or set(value) != {"catalog_key"}:
+            continue
+        catalog_key = str(value.get("catalog_key") or "").strip()
+        if catalog_key not in references:
+            raise _ComponentCatalogInputError(catalog_key, available_keys)
+        resolved_inputs[name] = dict(references[catalog_key])
+    resolved["inputs"] = resolved_inputs
+    return resolved
+
+
 def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
+    aero = context.get("aero")
+    include_aero = aero not in (None, "", [], {}) and not (
+        isinstance(aero, Mapping) and aero.get("available") is False
+    )
     modeling_surface = context.get("modeling_surface")
     if (
         isinstance(modeling_surface, Mapping)
@@ -1526,8 +1805,7 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
         result = _model_visible_context(context)
         result.pop("view_screenshot", None)
         result.pop("reference_images", None)
-        aero = context.get("aero")
-        if aero not in (None, "", [], {}):
+        if include_aero:
             result["aero"] = aero
         if "intent" in context:
             result["intent"] = (
@@ -1559,6 +1837,8 @@ def _provider_state_payload(context: dict[str, Any]) -> dict[str, Any]:
             continue
         if value not in (None, "", [], {}):
             result[key] = value
+    if not include_aero:
+        result.pop("aero", None)
     editable_sources = result.get("editable_sources")
     if isinstance(editable_sources, Mapping):
         result["editable_sources"] = _provider_editable_sources_payload(
@@ -2645,6 +2925,7 @@ def _filtered_api_payload(
 ) -> dict[str, Any]:
     """Return either the complete API or a small exact callable selection."""
 
+    names = [name[4:] if name.startswith("api.") else name for name in names]
     result = dict(description)
     exports = [
         dict(item)
@@ -2713,10 +2994,12 @@ def _filtered_api_payload(
     if not names and not groups:
         result["_vibecad_complete_api_result"] = True
         return result
-    selected = set(names)
+    requested_order = list(names)
     for group in groups:
-        selected.update(api_groups[group])
-    ordered_names = [name for name in by_name if name in selected]
+        requested_order.extend(api_groups[group])
+    if str(result.get("domain") or "") == "assembly":
+        requested_order.extend(("assembly", "solve"))
+    ordered_names = list(dict.fromkeys(requested_order))
     focused = {
         key: result[key]
         for key in (
@@ -2993,6 +3276,21 @@ def _resolve_vibescript_program_target(
 ) -> _VibeScriptSourceTarget:
     """Resolve one readable program reference to its internal persistent id."""
 
+    requested_program = str(program or "").strip()
+    if "/" not in requested_program:
+        active_document = service._active_document()
+        document_name = str(getattr(active_document, "Name", "") or "").strip()
+        if not document_name:
+            raise _SourceTargetError(
+                "PROGRAM_REFERENCE_INVALID",
+                "A local program name requires an active document.",
+                observed={"program": requested_program},
+            )
+        program = _program_reference(
+            document_name=document_name,
+            domain=str(active_pack.domain),
+            program_name=requested_program,
+        )
     document_name, domain, program_name = _program_reference_key(program)
     if not document_name or not domain or not program_name:
         raise _SourceTargetError(
@@ -3324,6 +3622,7 @@ def _run_universal_vibescript_tool(
     cancellation_check: CancellationCheck | None,
     progress_callback: ProgressCallback | None,
 ) -> dict[str, Any]:
+    args = dict(args)
     active_pack = vibescript_domains.get_vibescript_pack(active_workbench)
     if active_pack is None:
         return tool_failure(
@@ -3335,6 +3634,19 @@ def _run_universal_vibescript_tool(
         )
     target: _VibeScriptSourceTarget | None = None
     pack = active_pack
+    replacement: dict[str, Any] | None = None
+    if tool_name == "vibescript.create_assembly" and "replace" in args:
+        raw_replacement = args.pop("replace")
+        if not isinstance(raw_replacement, Mapping):
+            return tool_failure(
+                tool_name,
+                "ASSEMBLY_REPLACEMENT_INVALID",
+                "schema",
+                "replace must contain program and expected_revision.",
+                requested=args,
+            )
+        replacement = dict(raw_replacement)
+        args["program"] = replacement.get("program")
     program = args.get("program")
     requested_domain = str(args.get("domain") or "").strip().lower()
     if program is not None and not isinstance(program, str):
@@ -3367,6 +3679,16 @@ def _run_universal_vibescript_tool(
                 ),
             )
         except _SourceTargetError as exc:
+            if (
+                tool_name == "vibescript.read_source"
+                and exc.code == "PROGRAM_NOT_FOUND"
+                and "/" not in program
+            ):
+                return {
+                    "ok": True,
+                    "found": False,
+                    "program_name": program.strip(),
+                }
             return tool_failure(
                 tool_name,
                 exc.code,
@@ -3406,6 +3728,129 @@ def _run_universal_vibescript_tool(
                 requested=args,
             )
         pack = requested_pack
+    try:
+        if tool_name == "vibescript.create_part":
+            requested_domain = "partdesign"
+            component_pack = vibescript_domains.get_vibescript_pack_for_domain(
+                requested_domain
+            )
+            if component_pack is None:
+                return tool_failure(
+                    tool_name,
+                    "DOMAIN_UNAVAILABLE",
+                    "surface",
+                    "The Part Design VibeScript domain is unavailable.",
+                    requested=args,
+                )
+            pack = component_pack
+        if tool_name == "vibescript.create_assembly":
+            from VibeCADAssemblyGraphProgram import (
+                AssemblyGraphProgramError,
+                compile_assembly_program,
+            )
+
+            try:
+                requested_domain = "assembly"
+                assembly_pack = vibescript_domains.get_vibescript_pack_for_domain(
+                    requested_domain
+                )
+                if assembly_pack is None:
+                    raise AssemblyGraphProgramError(
+                        "The Assembly VibeScript domain is unavailable"
+                    )
+                pack = assembly_pack
+                compiled = compile_assembly_program(
+                    args,
+                    component_catalog=component_catalog,
+                )
+                if target is None:
+                    document = service._active_document()
+                    existing_program = _program_reference(
+                        document_name=str(getattr(document, "Name", "") or ""),
+                        domain="assembly",
+                        program_name=str(compiled["program_name"]),
+                    )
+                    try:
+                        existing = _editable_program_record(
+                            editable_sources,
+                            existing_program,
+                        )
+                    except _SourceTargetError as exc:
+                        return tool_failure(
+                            tool_name,
+                            exc.code,
+                            "precondition",
+                            str(exc),
+                            requested=args,
+                            observed=exc.observed,
+                        )
+                    existing_revision = str(
+                        (existing or {}).get("current_revision") or ""
+                    )
+                    if existing is not None and existing_revision:
+                        replace = {
+                            "program": existing_program,
+                            "expected_revision": existing_revision,
+                        }
+                        return tool_failure(
+                            tool_name,
+                            "ASSEMBLY_REPLACEMENT_REQUIRED",
+                            "precondition",
+                            "An assembly source with this name already exists.",
+                            requested=args,
+                            observed={
+                                "program": existing_program,
+                                "current_revision": existing_revision,
+                            },
+                            required_changes=[{"replace": replace}],
+                            next_actions=[
+                                {
+                                    "tool": tool_name,
+                                    "target_arguments": {"replace": replace},
+                                }
+                            ],
+                        )
+                if target is not None and replacement is not None:
+                    compiled["expected_revision"] = replacement.get(
+                        "expected_revision"
+                    )
+                args = {
+                    "domain": "assembly",
+                    **compiled,
+                }
+            except AssemblyGraphProgramError as exc:
+                return tool_failure(
+                    tool_name,
+                    "ASSEMBLY_GRAPH_INVALID",
+                    "schema",
+                    str(exc),
+                    requested=args,
+                    observed={"path": exc.path, **exc.observed},
+                    allowed_values=exc.allowed_values,
+                    required_changes=(
+                        exc.required_changes
+                        or (
+                            [
+                                {
+                                    "path": exc.path,
+                                    "allowed_values": exc.allowed_values,
+                                }
+                            ]
+                            if exc.path and exc.allowed_values
+                            else []
+                        )
+                    ),
+                )
+        args = _resolve_component_catalog_inputs(args, component_catalog)
+    except _ComponentCatalogInputError as exc:
+        return tool_failure(
+            tool_name,
+            "COMPONENT_CATALOG_KEY_INVALID",
+            "schema",
+            str(exc),
+            requested=args,
+            observed={"available_catalog_keys": exc.available_keys},
+        )
     if target is not None:
         domain_service: Any = _SourceBoundService(service, target)
     elif requested_domain:
@@ -3423,16 +3868,19 @@ def _run_universal_vibescript_tool(
         )
         if not persisted_source:
             if (
-                tool_name == "vibescript.create_program"
+                tool_name in {
+                    "vibescript.create_program",
+                    "vibescript.create_assembly",
+                    "vibescript.create_part",
+                }
                 and result.get("ok") is not True
             ):
                 result["error"] = (
                     str(result.get("error") or "VibeScript program creation failed.")
                     + " No editable source was saved. Correct the reported request "
-                    + "field(s), then retry vibescript.create_program with a valid "
-                    + "program label and complete source; "
-                    + "do not call vibescript.read_source."
+                    + f"field(s), then retry {tool_name}."
                 )
+                result["next_actions"] = [{"tool": tool_name}]
                 retry = result.get("retry")
                 if not isinstance(retry, dict):
                     retry = {}
@@ -3466,6 +3914,20 @@ def _run_universal_vibescript_tool(
             target_payload["current_revision"] = str(result["working_revision"])
         result["program"] = str(target_payload["program"])
         result["source_target"] = target_payload
+        if tool_name == "vibescript.create_assembly" and result.get("ok") is not True:
+            revision = str(target_payload.get("current_revision") or "")
+            if revision:
+                result["next_actions"] = [
+                    {
+                        "tool": tool_name,
+                        "target_arguments": {
+                            "replace": {
+                                "program": str(target_payload["program"]),
+                                "expected_revision": revision,
+                            }
+                        },
+                    }
+                ]
         active_document = service._active_document()
         target_document = target.document if target is not None else document
         if result.get("ok") is True and active_document is not target_document:
@@ -3746,12 +4208,16 @@ def _run_universal_vibescript_tool(
                 observed={"exception_type": exc.__class__.__name__},
             )
     universal_domain_operations = {
+        "vibescript.create_assembly": "create_program",
+        "vibescript.create_part": "create_program",
         "vibescript.create_program": "create_program",
         "vibescript.set_inputs": "set_inputs",
         "vibescript.reconfigure_program": "reconfigure_program",
         "vibescript.delete_program": "delete_program",
     }
     operation = universal_domain_operations.get(tool_name)
+    if tool_name == "vibescript.create_assembly" and target is not None:
+        operation = "reconfigure_program"
     if operation is not None:
         if operation != "create_program" and target is None:
             return tool_failure(
@@ -3764,6 +4230,8 @@ def _run_universal_vibescript_tool(
         domain_args = dict(args)
         domain_args.pop("domain", None)
         domain_args.pop("program", None)
+        if operation == "reconfigure_program":
+            domain_args.pop("program_name", None)
         if target is not None:
             domain_args["program_id"] = target.source_id
         qualified_name = f"vibescript.{pack.domain}.{operation}"
@@ -4172,13 +4640,12 @@ def make_provider_tool_runner(
     document_thread_dispatch: DocumentThreadDispatch | None = None,
     turn_surface: dict[str, Any] | None = None,
     turn_schemas: list[dict[str, Any]] | None = None,
+    turn_authorization: Mapping[str, Any] | None = None,
     turn_modeling_surface: dict[str, Any] | None = None,
     turn_component_catalog: Mapping[str, Any] | None = None,
     turn_editable_sources: Mapping[str, Any] | None = None,
-    interaction_mode: str = "build",
     provider_calls_allowed: bool = True,
 ):
-    clean_interaction_mode = normalize_interaction_mode(interaction_mode)
     if (
         isinstance(turn_surface, Mapping)
         and str(turn_surface.get("engine") or "") == "native"
@@ -4186,10 +4653,6 @@ def make_provider_tool_runner(
         from VibeCADNativeProviderRunner import NativeProviderToolRunner
         from VibeCADNativeSessionFactory import create_native_session_execution
 
-        if clean_interaction_mode != "build":
-            raise RuntimeError(
-                "Native Plan mode is unavailable until its read-only turn contract is complete."
-            )
         debug_config = service.provider_debug_config()
         debug_events: list[dict[str, Any]] | None = (
             [] if debug_config.get("enabled") else None
@@ -4200,6 +4663,11 @@ def make_provider_tool_runner(
                 service=service,
                 expected_surface=dict(turn_surface),
                 expected_schemas=[dict(value) for value in (turn_schemas or [])],
+                expected_authorization=(
+                    dict(turn_authorization)
+                    if isinstance(turn_authorization, Mapping)
+                    else None
+                ),
                 output_authorizer=output_authorization_callback,
                 input_authorizer=input_authorization_callback,
                 document_thread_dispatch=document_thread_dispatch,
@@ -4215,7 +4683,6 @@ def make_provider_tool_runner(
             refresh_context=lambda: _build_context_for_provider(
                 service,
                 session_trigger,
-                clean_interaction_mode,
                 document_thread_dispatch,
             ),
             frozen_surface=dict(turn_surface),
@@ -4265,6 +4732,8 @@ def make_provider_tool_runner(
     }
     source_lifecycle_tools = frozenset(
         {
+            "vibescript.create_assembly",
+            "vibescript.create_part",
             "vibescript.create_program",
             "vibescript.build_program",
             "vibescript.edit_source",
@@ -4604,7 +5073,7 @@ def make_provider_tool_runner(
                 return finalize(payload)
         live_surface = _on_document_thread(
             document_thread_dispatch,
-            lambda: _live_provider_surface_state(service, clean_interaction_mode),
+            lambda: _live_provider_surface_state(service),
         )
         active_workbench = live_surface["workbench"]
         runtime_state = live_surface["runtime_state"]
@@ -4790,7 +5259,6 @@ def make_provider_tool_runner(
             review_context = _build_context_for_provider(
                 service,
                 session_trigger,
-                clean_interaction_mode,
                 document_thread_dispatch,
             )
             _emit(
@@ -4913,6 +5381,8 @@ def make_provider_tool_runner(
             edit_block["requested"] = args
             return finalize(edit_block)
         if tool_name in {
+            "vibescript.create_assembly",
+            "vibescript.create_part",
             "vibescript.read_source",
             "vibescript.read_api",
             "vibescript.read_geometry",
@@ -5044,7 +5514,6 @@ def make_provider_tool_runner(
         refreshed = _build_context_for_provider(
             service,
             session_trigger,
-            clean_interaction_mode,
             document_thread_dispatch,
             (
                 None
@@ -5078,6 +5547,10 @@ def make_provider_tool_runner(
         )
         completed["provider_tool_surface"] = dict(turn_surface)
         completed["provider_tool_schemas"] = json.loads(json.dumps(frozen_schemas))
+        if isinstance(turn_authorization, Mapping):
+            completed["_native_turn_authorization"] = json.loads(
+                json.dumps(dict(turn_authorization))
+            )
         completed["workbench"] = str(turn_surface.get("workbench") or "") or None
         if frozen_modeling_surface:
             completed["modeling_surface"] = json.loads(
@@ -5153,7 +5626,6 @@ def _run_session_turn(
     persist_input_as_user: bool,
     prompt_section: str,
     document_thread_dispatch: DocumentThreadDispatch | None,
-    interaction_mode: str,
 ) -> VibeCADResponse:
     from VibeCADMCP import require_internal_agent
 
@@ -5161,7 +5633,6 @@ def _run_session_turn(
     clean_prompt = str(prompt or "").strip()
     if not clean_prompt:
         raise ValueError("Prompt cannot be empty.")
-    clean_interaction_mode = normalize_interaction_mode(interaction_mode)
     active_service = service or _on_document_thread(
         document_thread_dispatch,
         get_service,
@@ -5214,8 +5685,9 @@ def _run_session_turn(
     context = _build_context_for_provider(
         active_service,
         session_trigger,
-        clean_interaction_mode,
         document_thread_dispatch,
+        cancellation_check=cancellation_check,
+        progress_callback=progress_callback,
     )
     if turn_conversation_id:
         context["_vibecad_codex_session"] = {
@@ -5239,15 +5711,8 @@ def _run_session_turn(
             prefer_online=prefer_online,
         ),
     )
-    if clean_interaction_mode == "plan" and not isinstance(
-        active_provider, CodexProvider
-    ):
-        raise ProviderUnavailable(
-            "Plan mode requires a Codex-backed provider (ChatGPT, OpenAI, or Grok)."
-        )
     provider_name = active_provider.__class__.__name__
     provider_runtime = provider_execution_identity(active_provider)
-    provider_runtime["interaction_mode"] = clean_interaction_mode
     tool_runner = make_provider_tool_runner(
         active_service,
         tool_trace=tool_trace,
@@ -5270,6 +5735,11 @@ def _run_session_turn(
             for schema in list(context.get("provider_tool_schemas") or [])
             if isinstance(schema, dict)
         ],
+        turn_authorization=(
+            dict(context["_native_turn_authorization"])
+            if isinstance(context.get("_native_turn_authorization"), Mapping)
+            else None
+        ),
         turn_modeling_surface=(
             dict(context["modeling_surface"])
             if isinstance(context.get("modeling_surface"), dict)
@@ -5285,7 +5755,6 @@ def _run_session_turn(
             if isinstance(context.get("editable_sources"), Mapping)
             else None
         ),
-        interaction_mode=clean_interaction_mode,
     )
     _emit(
         progress_callback,
@@ -5340,7 +5809,6 @@ def _run_session_turn(
         final_context = _build_context_for_provider(
             active_service,
             session_trigger,
-            clean_interaction_mode,
             document_thread_dispatch,
         )
         _emit(
@@ -5376,7 +5844,6 @@ def _run_session_turn(
         failed_context = _build_context_for_provider(
             active_service,
             session_trigger,
-            clean_interaction_mode,
             document_thread_dispatch,
         )
         return VibeCADResponse(
@@ -5404,7 +5871,6 @@ def run_prompt(
     output_authorization_callback: NativeOutputAuthorizer | None = None,
     input_authorization_callback: NativeInputAuthorizer | None = None,
     document_thread_dispatch: DocumentThreadDispatch | None = None,
-    interaction_mode: str = "build",
 ) -> VibeCADResponse:
     return _run_session_turn(
         prompt,
@@ -5421,7 +5887,6 @@ def run_prompt(
         persist_input_as_user=True,
         prompt_section="CURRENT_USER_MESSAGE",
         document_thread_dispatch=document_thread_dispatch,
-        interaction_mode=interaction_mode,
     )
 
 
@@ -5582,7 +6047,6 @@ def run_sketch_close_continuation(
         persist_input_as_user=False,
         prompt_section="CURRENT_SESSION_EVENT",
         document_thread_dispatch=document_thread_dispatch,
-        interaction_mode="build",
     )
 
 
@@ -5617,10 +6081,14 @@ def run_native_surface_continuation(
             + ", ".join(sorted(expected_fields))
             + "."
         )
-    if event_type not in {"cad_workspace_changed", "cad_edit_started"}:
+    if event_type not in {
+        "cad_workspace_changed",
+        "cad_edit_started",
+        "cad_provider_surface_changed",
+    }:
         raise ValueError(
-            "CAD continuation event type must be cad_workspace_changed or "
-            "cad_edit_started."
+            "CAD continuation event type must be cad_workspace_changed, "
+            "cad_edit_started, or cad_provider_surface_changed."
         )
     clean_event = {
         "type": event_type,
@@ -5644,7 +6112,10 @@ def run_native_surface_continuation(
         raise ValueError("A CAD edit-start continuation requires sketch.edit.")
     workspace = clean_event["workspace"].replace("_", " ").capitalize()
     prompt = (
-        f"{workspace} work is now available. Continue the current design from its "
+        f"{workspace} tools now match the current study state. Continue the existing "
+        "engineering task without repeating completed work."
+        if event_type == "cad_provider_surface_changed"
+        else f"{workspace} work is now available. Continue the current design from its "
         "existing document state. Do not repeat completed operations."
     )
     return _run_session_turn(
@@ -5662,7 +6133,6 @@ def run_native_surface_continuation(
         persist_input_as_user=False,
         prompt_section="CURRENT_SESSION_EVENT",
         document_thread_dispatch=document_thread_dispatch,
-        interaction_mode="build",
     )
 
 

@@ -516,6 +516,44 @@ def _verify_joint_properties(
     return result
 
 
+def _verify_joint_identity(
+    spec: RegularJointSpec,
+    joint: Any,
+    *,
+    expected_label: str,
+    proxy_checker: Callable[[Any], bool],
+    view_checker: Callable[[Any], bool],
+) -> None:
+    if str(getattr(joint, "JointType", "") or "") != spec.joint_type:
+        raise NativeAssemblyRegularJointError(
+            f"The native joint changed type from {spec.joint_type}."
+        )
+    if str(getattr(joint, "Label", "") or "") != expected_label:
+        raise NativeAssemblyRegularJointError(
+            f"The native {spec.joint_type} joint changed its label."
+        )
+    if bool(getattr(joint, "Suppressed", False)):
+        raise NativeAssemblyRegularJointError(
+            f"The new {spec.joint_type} joint was suppressed during the native solve."
+        )
+    if not timeline_active(joint):
+        raise NativeAssemblyRegularJointError(
+            f"The new {spec.joint_type} joint is outside active History."
+        )
+    if str(getattr(joint, "VibeCADTimelineRole", "") or "") != "operation":
+        raise NativeAssemblyRegularJointError(
+            f"The new {spec.joint_type} joint is not a History operation."
+        )
+    if not proxy_checker(joint):
+        raise NativeAssemblyRegularJointError(
+            f"The new {spec.joint_type} joint has the wrong native proxy."
+        )
+    if not view_checker(joint):
+        raise NativeAssemblyRegularJointError(
+            f"The new {spec.joint_type} joint has the wrong view provider."
+        )
+
+
 def apply_regular_joint(
     document: Any,
     spec: RegularJointSpec,
@@ -539,6 +577,7 @@ def apply_regular_joint(
         raise NativeAssemblyRegularJointError(
             f"The native {spec.joint_type}-joint factory returned the wrong object graph."
         )
+    assigned_label = str(getattr(joint, "Label", "") or "")
     joint.Offset1 = _copy_placement(spec.first.offset)
     joint.Offset2 = _copy_placement(spec.second.offset)
     _set_joint_properties(joint, spec)
@@ -582,6 +621,7 @@ def apply_regular_joint(
             "assembly": prepared.assembly,
             "joint_group": prepared.joint_group,
             "joint": joint,
+            "assigned_label": assigned_label,
             "active_before": prepared.active_before,
             "selection_before": prepared.selection_before,
             "regular_joints_before": prepared.regular_joints_before,
@@ -685,18 +725,13 @@ def verify_regular_joint(
         raise NativeAssemblyRegularJointError(
             f"{spec.joint_type}-joint creation added objects outside the exact native joint graph."
         )
-    if (
-        str(getattr(joint, "JointType", "") or "") != spec.joint_type
-        or str(getattr(joint, "Label", "") or "") != spec.label
-        or bool(getattr(joint, "Suppressed", False))
-        or not timeline_active(joint)
-        or str(getattr(joint, "VibeCADTimelineRole", "") or "") != "operation"
-        or not proxy_checker(joint)
-        or not view_checker(joint)
-    ):
-        raise NativeAssemblyRegularJointError(
-            f"The created object is not one active native {spec.joint_type}-joint operation."
-        )
+    _verify_joint_identity(
+        spec,
+        joint,
+        expected_label=str(value["assigned_label"]),
+        proxy_checker=proxy_checker,
+        view_checker=view_checker,
+    )
     first = connector_summary(joint.Reference1, joint.Offset1)
     second = connector_summary(joint.Reference2, joint.Offset2)
     actual = {

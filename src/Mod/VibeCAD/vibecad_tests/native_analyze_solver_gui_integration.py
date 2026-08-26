@@ -36,6 +36,7 @@ from VibeCADRibbonSurface import read_active_ribbon_surface
 SOLVER_OPERATIONS = (
     "create_calculix",
     "create_elmer",
+    "create_openfoam",
     "create_mystran",
     "create_z88",
 )
@@ -59,6 +60,7 @@ def _surface(main_window):
     assert {
         "FEM_SolverCalculiX",
         "FEM_SolverElmer",
+        "FEM_SolverOpenFOAM",
         "FEM_SolverMystran",
         "FEM_SolverZ88",
     } <= set(surface.command_ids)
@@ -72,6 +74,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     expected = {
         "FEM_SolverCalculiX": "create_calculix",
         "FEM_SolverElmer": "create_elmer",
+        "FEM_SolverOpenFOAM": "create_openfoam",
         "FEM_SolverMystran": "create_mystran",
         "FEM_SolverZ88": "create_z88",
     }
@@ -219,6 +222,7 @@ def _run() -> None:
         labels = {
             "create_calculix": "Structural CalculiX",
             "create_elmer": "Multiphysics Elmer",
+            "create_openfoam": "Steady CFD OpenFOAM",
             "create_mystran": "Structural Mystran",
             "create_z88": "Structural Z88",
         }
@@ -234,6 +238,7 @@ def _run() -> None:
             created = result["created_solver"]
             expected_states[operation] = created
             current_analysis = result["analysis"]
+            assert result["analysis_target"] == _analysis_target(current_analysis)
             assert created["solver_kind"] == operation.removeprefix("create_")
             assert created["analysis"] == analysis.Name
             assert created["timeline_role"] == "operation"
@@ -243,6 +248,15 @@ def _run() -> None:
         assert expected_states["create_calculix"]["settings"]["AnalysisType"] == "thermomech"
         assert expected_states["create_elmer"]["settings"]["BinaryOutput"] is True
         assert expected_states["create_elmer"]["settings"]["SaveGeometryIndex"] is True
+        assert expected_states["create_openfoam"]["settings"] == {
+            "FlowRegime": "steady",
+            "MaxIterations": 1000,
+            "PressureTolerance": 1.0e-6,
+            "TurbulenceModel": "laminar",
+            "TurbulenceTolerance": 1.0e-3,
+            "VelocityTolerance": 1.0e-5,
+            "WriteEveryIterations": 100,
+        }
         assert expected_states["create_z88"]["settings"]["SolverType"] == "siccg"
         assert expected_states["create_z88"]["settings"]["MatrixMaximum"] == 345678
         assert expected_states["create_z88"]["settings"]["VectorMaximum"] == 123456
@@ -274,11 +288,11 @@ def _run() -> None:
         z88_hash = expected_states["create_z88"]["state_sha256"]
         document.undo()
         assert document.getObject(z88_name) is None
-        assert analysis_state(analysis)["member_count"] == 3
+        assert analysis_state(analysis)["member_count"] == 4
         document.redo()
         restored_z88 = document.getObject(z88_name)
         assert solver_state(restored_z88)["state_sha256"] == z88_hash
-        assert analysis_state(analysis)["member_count"] == 4
+        assert analysis_state(analysis)["member_count"] == 5
 
         document.recompute()
         document.save()
@@ -287,14 +301,14 @@ def _run() -> None:
         document = App.openDocument(str(path))
         _events(20)
         reopened_analysis = document.getObject(analysis_name)
-        assert analysis_state(reopened_analysis)["member_count"] == 4
+        assert analysis_state(reopened_analysis)["member_count"] == 5
         for expected in expected_states.values():
             reopened = document.getObject(expected["object_name"])
             assert solver_state(reopened)["state_sha256"] == expected["state_sha256"]
 
         print(
             "VIBECAD_NATIVE_ANALYZE_SOLVER_GUI_OK "
-            "actions=4 variants=4 human_factories=true preferences=true exact_analysis=true "
+            "actions=5 variants=5 human_factories=true preferences=true exact_analysis=true "
             "stale_rejection=true inspect=true read_revision_stable=true history=true "
             "undo_redo=true reopen=true",
             flush=True,

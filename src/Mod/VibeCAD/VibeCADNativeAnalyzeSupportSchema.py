@@ -245,16 +245,16 @@ def _variant(operation: str, description: str, action_id: str, parameters: dict)
 def analyze_support_capability_definition() -> NativeCapabilityDefinition:
     descriptions = {
         "fixed": "fully fixed support",
-        "rigid_body": "rigid-body coupling with prescribed or loaded axes",
-        "displacement": "displacement/rotation boundary condition",
-        "spring": "surface spring support",
+        "rigid_body": "rigid coupling through a reference node",
+        "displacement": "displacement support",
+        "spring": "spring support",
     }
     variants = []
     for kind, action_id in _CREATE_ACTIONS.items():
         variants.append(
             _variant(
                 f"create_{kind}",
-                f"Create one {descriptions[kind]} in an exact FEM analysis.",
+                f"Create {descriptions[kind]}.",
                 action_id,
                 _create(kind),
             )
@@ -263,7 +263,7 @@ def analyze_support_capability_definition() -> NativeCapabilityDefinition:
         variants.append(
             _variant(
                 f"update_{kind}",
-                f"Edit one exact {descriptions[kind]} without creating a replacement.",
+                f"Edit {descriptions[kind]}.",
                 action_id,
                 _update(kind),
             )
@@ -271,8 +271,8 @@ def analyze_support_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ANALYZE_SUPPORT_CAPABILITY_NAME,
         description=(
-            "Create or precisely edit fixed, rigid-body, displacement, and spring "
-            "support conditions with explicit engineering modes and SI-derived units."
+            "Create rigid couplings, prescribed displacements, and springs; "
+            "edit existing support conditions."
         ),
         primary_classification="mutation",
         variants=tuple(variants),

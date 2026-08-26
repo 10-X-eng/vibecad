@@ -17,6 +17,7 @@ import Part
 from PySide import QtCore, QtWidgets
 
 import VibeCADGrid
+import VibeCADSectionView
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
@@ -224,6 +225,15 @@ def _run() -> None:
             "view.control",
             {"operation": "set_grid", "visible": grid_was_visible},
         )["grid_visible"] is grid_was_visible
+        section_was_visible = VibeCADSectionView.is_section_view_active()
+        assert native_call(
+            "view.control",
+            {"operation": "set_section_view", "visible": not section_was_visible},
+        )["section_view"] is not section_was_visible
+        assert native_call(
+            "view.control",
+            {"operation": "set_section_view", "visible": section_was_visible},
+        )["section_view"] is section_was_visible
         screenshot = native_call(
             "view.control",
             {
@@ -322,6 +332,10 @@ def _run() -> None:
     finally:
         try:
             set_grid_visible(document, grid_was_visible) if document is not None else None
+        except Exception:
+            pass
+        try:
+            VibeCADSectionView.set_section_view(False, document=document)
         except Exception:
             pass
         if document is not None and document.Name in App.listDocuments():

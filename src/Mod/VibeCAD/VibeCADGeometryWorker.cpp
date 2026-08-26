@@ -1522,14 +1522,15 @@ Json validateBrep(const Json& request)
     const TopoDS_Shape shape = readBrep(request.at("shape").at("path").get<std::string>());
     BRepCheck_Analyzer brepAnalyzer(shape);
     const bool brepValid = brepAnalyzer.IsValid();
+    const bool includeBop = request.value("include_bop", true);
     Json brep = {
         {"valid", brepValid},
         {"defects", brepValid ? Json::array() : brepDefects(shape, brepAnalyzer)},
     };
 
     Json bop;
-    bool valid = false;
-    if (brepValid) {
+    bool valid = brepValid;
+    if (brepValid && includeBop) {
         Json defects = bopDefects(shape);
         valid = defects.empty();
         bop = {
@@ -1538,12 +1539,20 @@ Json validateBrep(const Json& request)
             {"defects", std::move(defects)},
         };
     }
-    else {
+    else if (!brepValid) {
         bop = {
             {"performed", false},
             {"valid", nullptr},
             {"defects", Json::array()},
             {"reason", "BOP analysis skipped because BRepCheck rejected the shape."},
+        };
+    }
+    else {
+        bop = {
+            {"performed", false},
+            {"valid", nullptr},
+            {"defects", Json::array()},
+            {"reason", "BOP analysis was not requested for this BREP validity check."},
         };
     }
     return {
