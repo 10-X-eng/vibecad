@@ -316,6 +316,11 @@ disable the in-app Assistant and it is not MCP.
 
 Release packaging details are documented in [docs/vibecad-release-packaging.md](docs/vibecad-release-packaging.md).
 
+The current Aero workbench is documented in [docs/vibecad-aero.md](docs/vibecad-aero.md).
+Its complete high-fidelity development program, live implementation status,
+FluidX3D first-use contract, and dependency-ordered release gates are maintained
+in the [VibeCADAero canonical roadmap](docs/vibecadaero-roadmap.md).
+
 The single-workbench Part and Part Design model, compatibility boundary, and
 Body/tree behavior are documented in
 [docs/part-design-consolidation.md](docs/part-design-consolidation.md).

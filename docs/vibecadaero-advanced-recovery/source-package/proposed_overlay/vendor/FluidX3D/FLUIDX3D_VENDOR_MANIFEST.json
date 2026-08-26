@@ -1,0 +1,25 @@
+{
+  "commit": "8986874e626e0aebd317ab16c420b39e30dfa273",
+  "first_use_notice": {
+    "checkbox_text": "I understand.",
+    "controls_solver_eligibility": false,
+    "informational_only": true,
+    "preference_key": "ThirdPartyNoticesAcknowledged",
+    "repeat_after_updates": false,
+    "telemetry": false,
+    "versioned": false
+  },
+  "integration": {
+    "commercial_product_profile": false,
+    "external_bridge_override_supported": true,
+    "purpose_classification": false,
+    "runtime_download": false,
+    "vendored_default": true
+  },
+  "license_sha256": "1c00d80544659d334c5880ba62ebe9f04307c1cfae856864c1433b63f55403e7",
+  "license_source_path": "LICENSE.md",
+  "note": "Recorded integration/documentation metadata; not an entitlement or compliance control.",
+  "repository": "ProjectPhysX/FluidX3D",
+  "schema_version": "vibecad.fluidx3d.vendor/3",
+  "target_vendor_path": "src/Mod/VibeCADAero/vendor/FluidX3D"
+}

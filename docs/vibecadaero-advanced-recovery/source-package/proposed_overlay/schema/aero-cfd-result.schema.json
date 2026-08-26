@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vibecad.aero.cfd.result.v1",
+  "title": "VibeCADAero CFD Result",
+  "type": "object",
+  "required": ["schema_version", "case_id", "solver_backend", "compute_provider", "state", "method"],
+  "properties": {
+    "schema_version": {"const": "vibecad.aero.cfd/1"},
+    "case_id": {"type": "string", "minLength": 1},
+    "solver_backend": {"type": "string", "minLength": 1},
+    "solver_version": {"type": ["string", "null"]},
+    "compute_provider": {"type": "string", "minLength": 1},
+    "state": {"enum": ["prepared", "running", "succeeded", "failed", "cancelled"]},
+    "method": {"type": "string", "minLength": 1},
+    "evidence_state": {"type": "string"},
+    "claim_ceiling": {"type": "string"},
+    "error": {"type": ["string", "null"]},
+    "force_moment": {
+      "type": ["object", "null"],
+      "properties": {
+        "force_body_n": {"$ref": "#/$defs/vector3"},
+        "moment_body_nm": {"$ref": "#/$defs/vector3"},
+        "sample_count": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "coefficients": {
+      "type": ["object", "null"],
+      "properties": {
+        "cd": {"type": "number"},
+        "cl": {"type": "number"},
+        "cs": {"type": "number"},
+        "cm_pitch": {"type": ["number", "null"]},
+        "cl_roll": {"type": ["number", "null"]},
+        "cn_yaw": {"type": ["number", "null"]}
+      },
+      "required": ["cd", "cl", "cs"]
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "sha256", "media_type", "size_bytes", "role"],
+        "properties": {
+          "path": {"type": "string"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "media_type": {"type": "string"},
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "role": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "vector3": {
+      "type": "object",
+      "required": ["x", "y", "z"],
+      "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "z": {"type": "number"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

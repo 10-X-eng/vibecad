@@ -4,6 +4,11 @@ The **Aero** workbench (internal name `VibeCADAero`) runs the Voider-validated
 solver stack inside VibeCAD. It does not clone anything onto a user machine
 and it does not vendor NeuralFoil / AeroSandbox / JSBSim wheels.
 
+The repository's active high-fidelity program is the
+[VibeCADAero canonical roadmap](vibecadaero-roadmap.md). Its complete recovered
+source package, FluidX3D first-use contract, and no-loss preservation record are
+stored in [VibeCADAero advanced-plan recovery](vibecadaero-advanced-recovery/README.md).
+
 ## Use the Aero tab by hand
 
 Aero is a first-class tab on the main VibeCAD ribbon, sitting after
