@@ -529,6 +529,37 @@ class TechDrawGuiBehaviorSourceContractTest(unittest.TestCase):
             compact,
         )
 
+    def test_dimension_redraw_uses_durable_view_visibility(self):
+        source = (self.gui / "QGIViewDimension.cpp").read_text(encoding="utf-8")
+        draw = _function_body(source, "void QGIViewDimension::draw()")
+        before_reference_geometry = draw[: draw.index("if (!refObj->hasGeometry())")]
+
+        self.assertNotIn("if (!isVisible())", before_reference_geometry)
+        self.assertIn("viewProvider->isShow()", before_reference_geometry)
+
+    def test_view_repaint_redraws_dimensions_after_reference_geometry(self):
+        source = (self.gui / "ViewProviderDrawingView.cpp").read_text(
+            encoding="utf-8"
+        )
+        redraw = _function_body(
+            source,
+            "void redrawViewAndDependentDimensions(QGIView* view)",
+        )
+        self.assertIn("view->updateView(true)", redraw)
+        self.assertIn("getActiveDimensions()", redraw)
+        self.assertIn("dimensionView->updateView(true)", redraw)
+
+        single_parent = _function_body(
+            source,
+            "void ViewProviderDrawingView::singleParentPaint",
+        )
+        multi_parent = _function_body(
+            source,
+            "void ViewProviderDrawingView::multiParentPaint",
+        )
+        self.assertIn("redrawViewAndDependentDimensions(qgiv)", single_parent)
+        self.assertIn("redrawViewAndDependentDimensions(qView)", multi_parent)
+
     def test_exact_drawing_toolbar_inventory(self):
         workbench = (self.gui / "Workbench.cpp").read_text(encoding="utf-8")
         toolbar = workbench[
@@ -2125,6 +2156,73 @@ class TechDrawGuiBehaviorRuntimeContractTest(unittest.TestCase):
                 1,
             )
             self.assertFalse(rendered_svg_items[0].boundingRect().isEmpty())
+
+    def test_visible_dimension_redraws_after_referenced_view_restores(self):
+        import TechDrawGui
+
+        from .TechDrawTestUtilities import createPageWithSVGTemplate
+
+        box = self.document.addObject("Part::Box", "DimensionSource")
+        box.Length = 20
+        box.Width = 10
+        box.Height = 5
+        page = createPageWithSVGTemplate(self.document)
+        view = self.document.addObject("TechDraw::DrawViewPart", "DimensionView")
+        view.Source = [box]
+        page.addView(view)
+        self.document.recompute()
+
+        dimension = self.document.addObject(
+            "TechDraw::DrawViewDimension",
+            "RestoredDimension",
+        )
+        dimension.Type = "Distance"
+        dimension.References2D = [(view, "Edge1")]
+        page.addView(dimension)
+        hidden_dimension = self.document.addObject(
+            "TechDraw::DrawViewDimension",
+            "HiddenRestoredDimension",
+        )
+        hidden_dimension.Type = "Distance"
+        hidden_dimension.References2D = [(view, "Edge2")]
+        page.addView(hidden_dimension)
+        self.document.recompute()
+        page.ViewObject.Visibility = True
+        view.ViewObject.Visibility = True
+        dimension.ViewObject.Visibility = True
+        hidden_dimension.ViewObject.Visibility = False
+        page_name = page.Name
+        view_name = view.Name
+        dimension_name = dimension.Name
+        hidden_dimension_name = hidden_dimension.Name
+
+        with tempfile.TemporaryDirectory() as directory:
+            filename = os.path.join(directory, "drawing-dimension-reopen.FCStd")
+            self.document.saveAs(filename)
+            App.closeDocument(self.document.Name)
+
+            self.document = App.openDocument(filename)
+            restored_page = self.document.getObject(page_name)
+            restored_dimension = self.document.getObject(dimension_name)
+            restored_hidden_dimension = self.document.getObject(
+                hidden_dimension_name
+            )
+            self.assertTrue(restored_dimension.ViewObject.Visibility)
+            self.assertFalse(restored_hidden_dimension.ViewObject.Visibility)
+            Gui.Selection.clearSelection()
+            TechDrawGui.showDrawingPage(restored_page)
+
+            def rendered_drawing_objects():
+                layout = TechDrawGui.inspectPageLayout(restored_page)
+                rendered = {
+                    item["object_name"] for item in layout.get("items", [])
+                }
+                return rendered if view_name in rendered else None
+
+            rendered = _wait_until(rendered_drawing_objects)
+            self.assertIsNotNone(rendered)
+            self.assertIn(dimension_name, rendered)
+            self.assertNotIn(hidden_dimension_name, rendered)
 
     def test_projection_group_resources_do_not_become_visible_history_steps(self):
         from .TechDrawTestUtilities import createPageWithSVGTemplate

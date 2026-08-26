@@ -124,6 +124,17 @@ def _snapshot_labels(snapshot):
     )
 
 
+def _icon_png(icon, size=16):
+    data = QtCore.QByteArray()
+    buffer = QtCore.QBuffer(data)
+    if not buffer.open(QtCore.QIODevice.WriteOnly):
+        raise RuntimeError("Could not open the icon comparison buffer")
+    if not icon.pixmap(size, size).save(buffer, "PNG"):
+        raise RuntimeError("Could not serialize the icon for comparison")
+    buffer.close()
+    return bytes(data)
+
+
 def _event_step(milliseconds=10):
     Gui.updateGui()
     loop = QtCore.QEventLoop()
@@ -827,6 +838,35 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertIsNotNone(observed, self._snapshot())
         document_item, drawings, page_item, view_item = observed
         self.assertFalse(drawings.icon(0).isNull())
+
+        previous_visibility_icon = self.tree_parameters.GetBool(
+            "VisibilityIcon",
+            True,
+        )
+        try:
+            self.tree_parameters.SetBool("VisibilityIcon", False)
+            _event_step()
+            _tree, current_document_item = self._tree_and_document_item()
+            current_drawings = _child(
+                current_document_item,
+                "Drawings",
+                BROWSER_FOLDER_TYPE,
+            )
+            self.assertIsNotNone(current_drawings)
+            expected_icon = Gui.getIcon("preferences-techdraw")
+            self.assertIsNotNone(expected_icon)
+            self.assertFalse(expected_icon.isNull())
+            self.assertEqual(
+                _icon_png(current_drawings.icon(0)),
+                _icon_png(expected_icon),
+            )
+        finally:
+            self.tree_parameters.SetBool(
+                "VisibilityIcon",
+                previous_visibility_icon,
+            )
+            _event_step()
+
         self.assertIsNotNone(_child(page_item, template.Label))
         self.assertIsNotNone(_child(page_item, annotation.Label))
         self.assertIsNotNone(_child(view_item, dimension.Label))

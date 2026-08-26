@@ -6271,7 +6271,7 @@ void DocumentItem::rebuildModelBrowser()
             contextKey(contextObject),
             "drawings",
             TreeWidget::tr("Drawings"),
-            "TechDrawWorkbench"
+            "preferences-techdraw"
         );
         for (const auto* page : pages) {
             renderDrawingObject(
