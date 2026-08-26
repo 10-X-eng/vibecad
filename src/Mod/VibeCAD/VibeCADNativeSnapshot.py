@@ -13,6 +13,7 @@ from VibeCADRibbonSurface import SURFACE_IDS
 
 MAX_NATIVE_SNAPSHOT_BYTES = 64 * 1024
 MAX_WORKING_OBJECTS = 12
+MAX_DEFERRED_SECTION_SUMMARIES = 64
 
 
 class NativeSnapshotError(RuntimeError):
@@ -275,12 +276,139 @@ def complete_active_snapshot(
                 "The active Sketch did not provide an exact provider revision."
             )
         result["revision"] = revision
-    encoded = json.dumps(
-        result,
+    encoded = _encode_snapshot(result)
+    if len(encoded.encode("utf-8")) > MAX_NATIVE_SNAPSHOT_BYTES:
+        result = _compact_oversized_snapshot(result, len(encoded.encode("utf-8")))
+        encoded = _encode_snapshot(result)
+    return json.loads(encoded)
+
+
+def _encode_snapshot(snapshot: Mapping[str, Any]) -> str:
+    return json.dumps(
+        snapshot,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
     )
-    if len(encoded.encode("utf-8")) > MAX_NATIVE_SNAPSHOT_BYTES:
-        raise NativeSnapshotError("The active Native state snapshot exceeds its bound.")
-    return json.loads(encoded)
+
+
+def _section_summary(name: str, value: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "name": str(name),
+        "kind": (
+            "array"
+            if isinstance(value, list)
+            else "object"
+            if isinstance(value, Mapping)
+            else type(value).__name__
+        ),
+    }
+    if isinstance(value, (list, Mapping)):
+        result["item_count"] = len(value)
+    return result
+
+
+def _deferred_domain_manifest(
+    domain: Mapping[str, Any],
+    original_bytes: int,
+) -> dict[str, Any]:
+    sections = [
+        _section_summary(str(name), value) for name, value in domain.items()
+    ]
+    result: dict[str, Any] = {
+        "kind": str(domain.get("kind") or "unknown"),
+        "snapshot_truncated": True,
+        "detail_deferred": True,
+        "original_snapshot_bytes": int(original_bytes),
+        "section_count": len(sections),
+        "sections": sections[:MAX_DEFERRED_SECTION_SUMMARIES],
+    }
+    if len(sections) > MAX_DEFERRED_SECTION_SUMMARIES:
+        result["sections_truncated"] = True
+    return result
+
+
+def _bounded_selection(selection: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep a useful exact selection even if the bounded base itself is excessive."""
+
+    items = []
+    raw_items = list(selection.get("items") or [])
+    for raw_item in raw_items[:8]:
+        if not isinstance(raw_item, Mapping):
+            continue
+        item = dict(raw_item)
+        subelements = list(item.get("subelements") or [])
+        if len(subelements) > 16:
+            item["subelements"] = subelements[:16]
+            item["subelements_truncated"] = True
+        items.append(item)
+    result = {
+        str(name): value
+        for name, value in selection.items()
+        if name != "items"
+    }
+    result["items"] = items
+    if len(raw_items) > len(items):
+        result["truncated"] = True
+    return result
+
+
+def _compact_oversized_snapshot(
+    snapshot: Mapping[str, Any],
+    original_bytes: int,
+) -> dict[str, Any]:
+    """Return bounded provider context instead of rejecting the conversation."""
+
+    result = dict(snapshot)
+    domain = result.get("domain")
+    if not isinstance(domain, Mapping):
+        domain = {}
+
+    if result.get("surface_id") == "drawing":
+        from VibeCADNativeDrawingSnapshot import compact_drawing_snapshot_for_bound
+
+        result["domain"] = compact_drawing_snapshot_for_bound(domain)
+        if len(_encode_snapshot(result).encode("utf-8")) <= MAX_NATIVE_SNAPSHOT_BYTES:
+            return result
+
+    result["domain"] = _deferred_domain_manifest(domain, original_bytes)
+    if len(_encode_snapshot(result).encode("utf-8")) <= MAX_NATIVE_SNAPSHOT_BYTES:
+        return result
+
+    # Domain detail is already deferred at this point. Remove duplicated working-set
+    # context before touching the user's exact selection.
+    if result.get("working_set"):
+        result["working_set"] = []
+        result["working_set_truncated"] = True
+    if len(_encode_snapshot(result).encode("utf-8")) <= MAX_NATIVE_SNAPSHOT_BYTES:
+        return result
+
+    selection = result.get("selection")
+    if isinstance(selection, Mapping):
+        result["selection"] = _bounded_selection(selection)
+        result["selection_truncated_for_snapshot"] = True
+    if len(_encode_snapshot(result).encode("utf-8")) <= MAX_NATIVE_SNAPSHOT_BYTES:
+        return result
+
+    # The production budget is large enough for this identity-only form. Keeping this
+    # final form deterministic makes a pathological extension safe without weakening
+    # the normal 64 KiB contract.
+    minimal = {
+        name: result[name]
+        for name in (
+            "surface_id",
+            "document",
+            "structural_revision",
+            "revision",
+        )
+        if name in result
+    }
+    minimal["domain"] = {
+        "kind": str(domain.get("kind") or "unknown"),
+        "snapshot_truncated": True,
+        "detail_deferred": True,
+        "original_snapshot_bytes": int(original_bytes),
+        "section_count": len(domain),
+        "sections": [],
+    }
+    return minimal

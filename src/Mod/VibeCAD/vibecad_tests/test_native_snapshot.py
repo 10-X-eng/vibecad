@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,7 @@ from VibeCADNativeSnapshot import (
     NativeSnapshotError,
     build_active_snapshot,
     concise_object,
+    complete_active_snapshot,
 )
 
 
@@ -611,7 +613,7 @@ def test_manufacture_active_job_is_human_selected_or_unambiguous() -> None:
     ) == (None, "ambiguous_selection")
 
 
-def test_snapshot_refuses_wrong_document_or_unbounded_output(monkeypatch) -> None:
+def test_snapshot_refuses_state_from_another_document() -> None:
     document = _document()
     with pytest.raises(NativeSnapshotError, match="another document"):
         build_active_snapshot(
@@ -621,11 +623,97 @@ def test_snapshot_refuses_wrong_document_or_unbounded_output(monkeypatch) -> Non
             selection={"document_uid": "document-a", "items": []},
         )
 
-    monkeypatch.setattr(snapshot_module, "MAX_NATIVE_SNAPSHOT_BYTES", 10)
-    with pytest.raises(NativeSnapshotError, match="exceeds"):
-        build_active_snapshot(
-            document,
-            "model",
-            _state(),
-            selection={"document_uid": "document-a", "items": []},
-        )
+
+def test_oversized_drawing_snapshot_defers_repeated_page_view_details(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(snapshot_module, "MAX_NATIVE_SNAPSHOT_BYTES", 8 * 1024)
+    base = {
+        "surface_id": "drawing",
+        "document": {
+            "document_uid": "document-a",
+            "document_name": "DocumentA",
+        },
+        "structural_revision": 7,
+        "working_set": [],
+    }
+    views = [
+        {
+            "document_uid": "document-a",
+            "object_name": f"View{index}",
+            "type_id": "TechDraw::DrawViewPart",
+            "label": f"Projected View {index}",
+            "state_sha256": str(index).zfill(64),
+            "placement": {
+                "position_on_page_mm": [float(index), 25.0],
+                "locked": False,
+            },
+            "line_attributes": {"detail": "x" * 1024},
+        }
+        for index in range(20)
+    ]
+    selected_dimensions = [{"object_name": "Dimension", "detail": "exact"}]
+    domain = {
+        "kind": "drawing",
+        "page_count": 1,
+        "pages": [
+            {
+                "object_name": "Page",
+                "label": "Page",
+                "type_id": "TechDraw::DrawPage",
+                "state_sha256": "a" * 64,
+                "view_count": len(views),
+                "views": views,
+            }
+        ],
+        "active_page": {"object_name": "Page", "state_sha256": "a" * 64},
+        "selected_dimensions": selected_dimensions,
+    }
+
+    result = complete_active_snapshot(base, domain)
+
+    assert len(json.dumps(result, separators=(",", ":")).encode()) <= 8 * 1024
+    assert result["domain"]["snapshot_compacted"] is True
+    assert result["domain"]["deferred_details"] == ["pages.views"]
+    assert result["domain"]["selected_dimensions"] == selected_dimensions
+    page = result["domain"]["pages"][0]
+    assert page["views_detail_deferred"] is True
+    assert [view["object_name"] for view in page["views"]] == [
+        f"View{index}" for index in range(20)
+    ]
+    assert all("line_attributes" not in view for view in page["views"])
+
+
+def test_oversized_unknown_domain_returns_a_bounded_deferred_manifest(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(snapshot_module, "MAX_NATIVE_SNAPSHOT_BYTES", 4 * 1024)
+    base = {
+        "surface_id": "model",
+        "document": {
+            "document_uid": "document-a",
+            "document_name": "DocumentA",
+        },
+        "structural_revision": 7,
+        "working_set": [],
+    }
+    domain = {
+        "kind": "model",
+        "counts": {"bodies": 200},
+        "bodies": [
+            {"object_name": f"Body{index}", "detail": "x" * 512}
+            for index in range(200)
+        ],
+    }
+
+    result = complete_active_snapshot(base, domain)
+
+    assert len(json.dumps(result, separators=(",", ":")).encode()) <= 4 * 1024
+    assert result["domain"]["kind"] == "model"
+    assert result["domain"]["snapshot_truncated"] is True
+    assert result["domain"]["detail_deferred"] is True
+    assert result["domain"]["section_count"] == 3
+    assert any(
+        section["name"] == "bodies" and section["item_count"] == 200
+        for section in result["domain"]["sections"]
+    )

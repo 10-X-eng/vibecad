@@ -21,6 +21,12 @@ try:
 except ImportError:
     Fem = None
 
+try:
+    import TechDraw  # noqa: F401 - registers optional TechDraw document types
+    import TechDrawGui  # noqa: F401 - registers TechDraw view providers
+except ImportError:
+    TechDraw = None
+
 
 BROWSER_FOLDER_TYPE = 1002
 BROWSER_DETAIL_TYPE = 1003
@@ -767,6 +773,72 @@ class TestModelTreeBrowser(unittest.TestCase):
             constraint.Label,
             solver.Label,
             loose_solver.Label,
+        ):
+            self.assertFalse(_snapshot_has_label(_snapshot(operations), label))
+            self.assertFalse(_snapshot_has_label(_snapshot(other), label))
+
+    @unittest.skipIf(TechDraw is None, "Requires TechDraw")
+    def test_drawings_folder_preserves_page_view_ownership_without_duplicates(self):
+        page = self.document.addObject("TechDraw::DrawPage", "DrawingPage")
+        page.Label = "Manufacturing Drawing"
+        _tag_timeline_role(page, "operation")
+
+        template = self.document.addObject(
+            "TechDraw::DrawSVGTemplate",
+            "DrawingTemplate",
+        )
+        template.Label = "A3 Template"
+        _tag_timeline_role(template, "resource")
+        page.Template = template
+
+        view = self.document.addObject("TechDraw::DrawViewPart", "DrawingView")
+        view.Label = "Base Front"
+        view.Source = [self.root_operation]
+        _tag_timeline_role(view, "operation")
+        page.addView(view)
+
+        dimension = self.document.addObject(
+            "TechDraw::DrawViewDimension",
+            "DrawingDimension",
+        )
+        dimension.Label = "Overall Width"
+        dimension.Type = "Distance"
+        dimension.References2D = [(view, "Edge1")]
+        _tag_timeline_role(dimension, "operation")
+        page.addView(dimension)
+
+        annotation = self.document.addObject(
+            "TechDraw::DrawRichAnno",
+            "DrawingAnnotation",
+        )
+        annotation.Label = "General Notes"
+        page.addView(annotation)
+        self.document.recompute()
+
+        def drawing_items():
+            _tree, document_item = self._tree_and_document_item()
+            drawings = _child(document_item, "Drawings", BROWSER_FOLDER_TYPE)
+            page_item = _child(drawings, page.Label)
+            view_item = _child(page_item, view.Label)
+            values = (document_item, drawings, page_item, view_item)
+            return values if all(value is not None for value in values) else None
+
+        observed = _wait_until(drawing_items)
+        self.assertIsNotNone(observed, self._snapshot())
+        document_item, drawings, page_item, view_item = observed
+        self.assertFalse(drawings.icon(0).isNull())
+        self.assertIsNotNone(_child(page_item, template.Label))
+        self.assertIsNotNone(_child(page_item, annotation.Label))
+        self.assertIsNotNone(_child(view_item, dimension.Label))
+
+        operations = _child(document_item, "Operations", BROWSER_FOLDER_TYPE)
+        other = _child(document_item, "Other", BROWSER_FOLDER_TYPE)
+        for label in (
+            page.Label,
+            template.Label,
+            view.Label,
+            dimension.Label,
+            annotation.Label,
         ):
             self.assertFalse(_snapshot_has_label(_snapshot(operations), label))
             self.assertFalse(_snapshot_has_label(_snapshot(other), label))

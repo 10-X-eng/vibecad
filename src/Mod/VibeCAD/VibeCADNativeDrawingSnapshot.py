@@ -830,6 +830,135 @@ def _active_page_state(page: Any) -> dict[str, Any]:
     return state
 
 
+_COMPACT_VIEW_KEYS = (
+    "document_uid",
+    "object_name",
+    "type_id",
+    "label",
+    "state",
+    "state_sha256",
+    "placement",
+    "x",
+    "y",
+    "scale",
+)
+_COMPACT_PRIMARY_VIEW_DETAILS = (
+    "projection_group",
+    "surface_finish_symbol",
+    "weld_symbol",
+    "rich_annotation",
+    "leader",
+    "measurement_annotation",
+    "balloon",
+    "dimension",
+    "dimension_repair",
+    "clip_group",
+    "active_view_image",
+    # These owner/readiness states are fallbacks for drawing objects without
+    # their own primary revision block.
+    "annotation_owner",
+    "leader_owner",
+    "stack",
+    "clip_member",
+    "hatches",
+    "section_position",
+    "view_lock",
+    "hidden_edge_visibility",
+    "line_attributes",
+    "line_lengths",
+)
+_COMPACT_DETAIL_SCALARS = frozenset(
+    {
+        "kind",
+        "dimension_type",
+        "measure_type",
+        "source_view_name",
+        "page_name",
+        "object_name",
+        "view_count",
+        "member_count",
+        "line_count",
+        "hatch_count",
+        "measured_value",
+        "formatted_text",
+        "timeline_usable",
+        "valid",
+        "available",
+        "locked",
+        "repairable",
+        "error",
+    }
+)
+
+
+def _compact_view_detail(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep revision and readiness facts while deferring repeated view detail."""
+
+    result = {}
+    for name, value in detail.items():
+        if name.endswith("sha256") or name in _COMPACT_DETAIL_SCALARS:
+            result[str(name)] = value
+    return result
+
+
+def compact_drawing_snapshot_for_bound(
+    domain: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compact repeated page-view detail after an active snapshot exceeds its budget.
+
+    The complete detail remains in selected target blocks and in explicit Drawing
+    read tools. Small snapshots never call this function and retain their established
+    shape verbatim.
+    """
+
+    result = dict(domain)
+    pages = []
+    compacted = False
+    for raw_page in list(domain.get("pages") or []):
+        if not isinstance(raw_page, Mapping):
+            pages.append(raw_page)
+            continue
+        page = dict(raw_page)
+        views = []
+        page_compacted = False
+        for raw_view in list(raw_page.get("views") or []):
+            if not isinstance(raw_view, Mapping):
+                views.append(raw_view)
+                continue
+            view = {
+                name: raw_view[name]
+                for name in _COMPACT_VIEW_KEYS
+                if name in raw_view
+            }
+            # Projected views already carry their authoritative state hash at
+            # the top level. Other objects (dimensions, annotations, symbols)
+            # keep one primary revision/readiness block. Repeating every
+            # secondary inventory hash is what made one ordinary page consume
+            # almost the entire active-snapshot allowance.
+            if "state_sha256" not in view:
+                for name in _COMPACT_PRIMARY_VIEW_DETAILS:
+                    detail = raw_view.get(name)
+                    if not isinstance(detail, Mapping):
+                        continue
+                    compact_detail = _compact_view_detail(detail)
+                    if compact_detail:
+                        view[name] = compact_detail
+                        break
+            views.append(view)
+            view_compacted = view != dict(raw_view)
+            page_compacted = page_compacted or view_compacted
+            compacted = compacted or view_compacted
+        page["views"] = views
+        if views and page_compacted:
+            page["views_detail_deferred"] = True
+        pages.append(page)
+    result["pages"] = pages
+    if compacted:
+        result["snapshot_compacted"] = True
+        result["deferred_details"] = ["pages.views"]
+    return result
+
+
 def _line_inventory(
     view: Any,
     cache: dict[str, dict[str, Any] | None],
