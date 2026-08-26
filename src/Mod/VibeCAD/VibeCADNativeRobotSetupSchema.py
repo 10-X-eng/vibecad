@@ -19,29 +19,17 @@ from VibeCADNativeRobotDefaultsState import MAX_ROBOT_MOTION_VALUE
 
 
 ROBOT_SETUP_CAPABILITY_NAME = "robot.setup"
-_STATE_SHA256 = {
-    "type": "string",
-    "minLength": 64,
-    "maxLength": 64,
-    "pattern": r"^[0-9a-f]{64}$",
-}
 
 
 def robot_setup_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ROBOT_SETUP_CAPABILITY_NAME,
-        description=(
-            "Create and configure exact Robot objects and waypoint defaults; "
-            "definition-file paths remain under human control."
-        ),
+        description="Create and configure a Robot.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="create",
-                description=(
-                    "Create one durable six-axis Robot from VRML and kinematic "
-                    "CSV files selected in host-owned human dialogs."
-                ),
+                description="Create a six-axis Robot from selected visual and kinematic files.",
                 action_ids=frozenset({"Robot_Create"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type=(
@@ -52,26 +40,13 @@ def robot_setup_capability_definition() -> NativeCapabilityDefinition:
                 parameters=parameters_schema(
                     {
                         "label": LABEL_SCHEMA,
-                        "expected_state_sha256": _STATE_SHA256,
-                        "expected_robot_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 128,
-                        },
                     },
-                    (
-                        "label",
-                        "expected_state_sha256",
-                        "expected_robot_count",
-                    ),
+                    ("label",),
                 ),
             ),
             NativeCapabilityVariant(
                 operation="add_tool_shape",
-                description=(
-                    "Attach one exact Part feature or VRML object to one exact "
-                    "Robot without changing either object identity."
-                ),
+                description="Attach a Part or VRML object as a Robot tool shape.",
                 action_ids=frozenset({"Robot_AddToolShape"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="ActiveDocumentRobotAndToolShape",
@@ -81,25 +56,13 @@ def robot_setup_capability_definition() -> NativeCapabilityDefinition:
                     {
                         "robot": object_reference_schema(),
                         "tool_shape": object_reference_schema(),
-                        "expected_setup_state_sha256": _STATE_SHA256,
-                        "expected_robot_state_sha256": _STATE_SHA256,
-                        "expected_tool_shape_state_sha256": _STATE_SHA256,
                     },
-                    (
-                        "robot",
-                        "tool_shape",
-                        "expected_setup_state_sha256",
-                        "expected_robot_state_sha256",
-                        "expected_tool_shape_state_sha256",
-                    ),
+                    ("robot", "tool_shape"),
                 ),
             ),
             NativeCapabilityVariant(
                 operation="set_default_orientation",
-                description=(
-                    "Set the exact orientation and displacement used by later "
-                    "waypoint creation in this application session."
-                ),
+                description="Set the orientation and displacement for new waypoints.",
                 action_ids=frozenset({"Robot_SetDefaultOrientation"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="RobotWaypointSessionOrientation",
@@ -107,18 +70,14 @@ def robot_setup_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=parameters_schema(
                     {
-                        "expected_defaults_state_sha256": _STATE_SHA256,
                         "placement": placement_schema(),
                     },
-                    ("expected_defaults_state_sha256", "placement"),
+                    ("placement",),
                 ),
             ),
             NativeCapabilityVariant(
                 operation="set_default_values",
-                description=(
-                    "Set exact speed, acceleration, and continuity defaults for "
-                    "later waypoint creation in this application session."
-                ),
+                description="Set speed, acceleration, and continuity for new waypoints.",
                 action_ids=frozenset({"Robot_SetDefaultValues"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="RobotWaypointSessionMotionDefaults",
@@ -126,7 +85,6 @@ def robot_setup_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=parameters_schema(
                     {
-                        "expected_defaults_state_sha256": _STATE_SHA256,
                         "speed_mm_per_s": {
                             "type": "number",
                             "exclusiveMinimum": 0.0,
@@ -140,7 +98,6 @@ def robot_setup_capability_definition() -> NativeCapabilityDefinition:
                         },
                     },
                     (
-                        "expected_defaults_state_sha256",
                         "speed_mm_per_s",
                         "continuous",
                         "acceleration_mm_per_s2",

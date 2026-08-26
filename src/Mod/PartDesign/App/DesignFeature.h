@@ -986,11 +986,18 @@ public:
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
     void setupObject() override;
+    void onDocumentRestored() override;
 
     const char* getViewProviderName() const override
     {
         return "Gui::ViewProviderDocumentObject";
     }
+
+private:
+    App::DocumentObject* restoredOperation = nullptr;
+    int restoredOutputIndex = -1;
+    bool restoredPresent = false;
+    bool preserveRestoredShape = false;
 };
 
 /**
@@ -1016,11 +1023,16 @@ public:
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
     void setupObject() override;
+    void onDocumentRestored() override;
 
     const char* getViewProviderName() const override
     {
         return "PartDesignGui::ViewProvider";
     }
+
+private:
+    Part::Feature* restoredPublishedFeature = nullptr;
+    bool preserveRestoredShape = false;
 };
 
 /**

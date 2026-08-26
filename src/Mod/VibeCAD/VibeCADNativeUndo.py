@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import threading
 from typing import Any, Callable
 
 from VibeCADNativeState import (
@@ -127,15 +129,31 @@ class NativeAssistantUndoLedger:
     def __init__(self) -> None:
         self._run_id: str | None = None
         self._documents: dict[str, list[_GuardedUndoEntry]] = {}
+        self._run_lock = threading.RLock()
 
     def begin_run(self, run_id: str) -> None:
         clean = _required_text(run_id, "run_id")
-        self._run_id = clean
+        with self._run_lock:
+            self._run_id = clean
 
     def end_run(self, run_id: str) -> None:
         clean = _required_text(run_id, "run_id")
-        if clean == self._run_id:
-            self._run_id = None
+        with self._run_lock:
+            if clean == self._run_id:
+                self._run_id = None
+
+    @contextmanager
+    def run_scope(self, run_id: str):
+        """Temporarily restore one transport run for its background commit."""
+
+        clean = _required_text(run_id, "run_id")
+        with self._run_lock:
+            previous = self._run_id
+            self._run_id = clean
+            try:
+                yield
+            finally:
+                self._run_id = previous
 
     def close_document(self, document_uid: str) -> None:
         uid = _required_text(document_uid, "document UID")

@@ -20,6 +20,7 @@ _KINDS = {
     "Fem::SolverCalculiX": "calculix",
     "Fem::SolverCcxTools": "calculix",
     "Fem::SolverElmer": "elmer",
+    "Fem::SolverOpenFOAM": "openfoam",
     "Fem::SolverMystran": "mystran",
     "Fem::SolverZ88": "z88",
 }

@@ -13,6 +13,7 @@ from VibeCADNativeMutation import NativeMutationDraft, NativeMutationError
 from VibeCADNativeRobotState import (
     NativeRobotStateError,
     RobotSetupState,
+    _finite,
     capture_robot_setup_state,
     same_robot_setup_state,
 )
@@ -128,6 +129,10 @@ def _number(value: Any, field: str) -> float:
 
 def _float32(value: float) -> float:
     return struct.unpack("f", struct.pack("f", float(value)))[0]
+
+
+def _canonical_home_value(value: float) -> float:
+    return _finite(_float32(value), "Home")
 
 
 def prepare_robot_home_spec(
@@ -332,7 +337,9 @@ def preflight_robot_home(
     )
     record = setup.records[index]
     if spec.operation == "set_home_pos":
-        expected_home = tuple(_float32(value) for value in record.data["axes_degrees"])
+        expected_home = tuple(
+            _canonical_home_value(value) for value in record.data["axes_degrees"]
+        )
     else:
         expected_home = tuple(record.data["home_degrees"])
         if len(expected_home) != 6:

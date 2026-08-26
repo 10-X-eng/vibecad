@@ -82,6 +82,7 @@ def _aero_manifest() -> dict[str, object]:
                     action("Std_ViewFitAll", "Fit all"),
                     action("Std_ViewIsometric", "Isometric"),
                     action("VibeCAD_ToggleGrid", "Grid"),
+                    action("VibeCAD_SectionView", "Section View"),
                 ],
             },
             {

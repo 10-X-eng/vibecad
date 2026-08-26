@@ -1,17 +1,18 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Provider contract for exact Assembly joint mutations."""
+"""Small provider contract for Assembly grounding and joints."""
 
 from __future__ import annotations
 
-from VibeCADNativeAssemblyDistanceJoint import DISTANCE_MODES
+from copy import deepcopy
+from typing import Any
+
 from VibeCADNativeAssemblyGrounding import MAX_GROUNDING_TARGETS
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityDefinition,
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
 )
-from VibeCADNativeDesignSchema import placement_schema
 
 
 _OBJECT_NAME = {
@@ -19,865 +20,735 @@ _OBJECT_NAME = {
     "maxLength": 128,
     "pattern": r"^[A-Za-z_][A-Za-z0-9_]*$",
 }
-_OBJECT_REF = {
+_OBJECT_REFERENCE = {
     "type": "object",
     "properties": {"object_name": _OBJECT_NAME},
     "required": ["object_name"],
     "additionalProperties": False,
 }
-_COUNT = {"type": "integer", "minimum": 0, "maximum": 100_000}
-_CONNECTOR_PATH = {
+_LABEL = {"type": "string", "minLength": 1, "maxLength": 160}
+_SIGNED_MM = {
+    "type": "number",
+    "minimum": -1_000_000.0,
+    "maximum": 1_000_000.0,
+}
+_POSITIVE_MM = {
+    "type": "number",
+    "minimum": 1.0e-7,
+    "maximum": 1_000_000.0,
+}
+_SIGNED_NONZERO_MM = {
+    "type": "number",
+    "minimum": -1_000_000.0,
+    "maximum": 1_000_000.0,
+}
+_ANGLE = {"type": "number", "minimum": -180.0, "maximum": 180.0}
+_ELEMENT_REFERENCE = {
     "type": "string",
+    "minLength": 1,
     "maxLength": 512,
+    "description": "Geometry endpoint from assembly.connectors.",
     "pattern": (
-        r"^(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)*"
-        r"(?:(?:Face|Edge|Vertex)[1-9][0-9]*)?$"
+        r"^(?:[Oo]rigin|(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)*"
+        r"(?:Face|Edge|Vertex)[1-9][0-9]*)$"
     ),
 }
-_GROUNDING_TARGET = {
-    "type": "object",
-    "properties": {
-        "component": _OBJECT_REF,
-        "expected_grounded": {"type": "boolean"},
-    },
-    "required": ["component", "expected_grounded"],
-    "additionalProperties": False,
+_INTERFACE_REFERENCE = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 64,
+    "pattern": r"^[A-Za-z][A-Za-z0-9_]*$",
+    "description": "Named endpoint from assembly.connectors.",
 }
-_JOINT_CONNECTOR = {
+
+
+def _vector3(minimum: float, maximum: float) -> dict[str, Any]:
+    return {
+        "type": "array",
+        "items": {"type": "number", "minimum": minimum, "maximum": maximum},
+        "minItems": 3,
+        "maxItems": 3,
+    }
+
+
+_OFFSET = {
     "type": "object",
     "properties": {
-        "component": _OBJECT_REF,
-        "element_path": _CONNECTOR_PATH,
-        "anchor_path": _CONNECTOR_PATH,
-        "offset": placement_schema(),
-        "expected_component_placement": placement_schema(),
-    },
-    "required": [
-        "component",
-        "element_path",
-        "anchor_path",
-        "offset",
-        "expected_component_placement",
-    ],
-    "additionalProperties": False,
-}
-_ANGLE_LIMIT = {
-    "type": "object",
-    "properties": {
-        "enabled": {"type": "boolean"},
-        "degrees": {
+        "translation_mm": _vector3(-1_000_000.0, 1_000_000.0),
+        "rotation_axis": _vector3(-1.0, 1.0),
+        "rotation_degrees": {
             "type": "number",
-            "minimum": -180.0,
-            "maximum": 180.0,
+            "minimum": -360.0,
+            "maximum": 360.0,
         },
     },
-    "required": ["enabled", "degrees"],
+    "required": ["translation_mm", "rotation_axis", "rotation_degrees"],
     "additionalProperties": False,
 }
-_LENGTH_LIMIT = {
+_LEGACY_CONNECTOR = {
     "type": "object",
     "properties": {
-        "enabled": {"type": "boolean"},
-        "mm": {
-            "type": "number",
-            "minimum": -1_000_000.0,
-            "maximum": 1_000_000.0,
-        },
+        "component": _OBJECT_NAME,
+        "element": _ELEMENT_REFERENCE,
+        "interface": _INTERFACE_REFERENCE,
+        "offset": _OFFSET,
     },
-    "required": ["enabled", "mm"],
+    "required": ["component"],
+    "additionalProperties": False,
+}
+_CONNECTOR_VALUE = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 512,
+    "description": "Endpoint from assembly.connectors.",
+    "pattern": (
+        r"^(?:[Oo]rigin|(?:(?:[A-Za-z_][A-Za-z0-9_]*)\.)*"
+        r"(?:Face|Edge|Vertex)[1-9][0-9]*|[A-Za-z][A-Za-z0-9_]{0,63})$"
+    ),
+}
+_CONNECTOR = {
+    "type": "object",
+    "properties": {
+        "component": _OBJECT_NAME,
+        "connector_type": {
+            "type": "string",
+            "enum": ["element", "interface"],
+        },
+        "connector": _CONNECTOR_VALUE,
+        "offset": _OFFSET,
+    },
+    "required": ["component", "connector_type", "connector"],
     "additionalProperties": False,
 }
 _LINEAR_LIMITS = {
     "type": "object",
     "properties": {
-        "minimum": _LENGTH_LIMIT,
-        "maximum": _LENGTH_LIMIT,
+        "minimum_mm": _SIGNED_MM,
+        "maximum_mm": _SIGNED_MM,
     },
-    "required": ["minimum", "maximum"],
+    "required": [],
     "additionalProperties": False,
 }
-_REVOLUTE_LIMITS = {
+_ANGULAR_LIMITS = {
     "type": "object",
     "properties": {
-        "minimum": _ANGLE_LIMIT,
-        "maximum": _ANGLE_LIMIT,
+        "minimum_degrees": _ANGLE,
+        "maximum_degrees": _ANGLE,
     },
-    "required": ["minimum", "maximum"],
+    "required": [],
     "additionalProperties": False,
 }
 _CYLINDRICAL_LIMITS = {
     "type": "object",
     "properties": {
-        "length": _LINEAR_LIMITS,
-        "angle": _REVOLUTE_LIMITS,
+        "minimum_mm": _SIGNED_MM,
+        "maximum_mm": _SIGNED_MM,
+        "minimum_degrees": _ANGLE,
+        "maximum_degrees": _ANGLE,
     },
-    "required": ["length", "angle"],
+    "required": [],
     "additionalProperties": False,
 }
+
+
+def _parameters(
+    properties: dict[str, Any],
+    required: tuple[str, ...],
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": deepcopy(properties),
+        "required": list(required),
+        "additionalProperties": False,
+    }
+
+
+def _joint_parameters(
+    *,
+    properties: dict[str, Any] | None = None,
+    required: tuple[str, ...] = (),
+    connector: dict[str, Any] = _LEGACY_CONNECTOR,
+) -> dict[str, Any]:
+    return _parameters(
+        {
+            "first": connector,
+            "second": connector,
+            "label": _LABEL,
+            **dict(properties or {}),
+        },
+        ("first", "second", *required),
+    )
+
+
+def _variant(
+    operation: str,
+    description: str,
+    action_id: str,
+    parameters: dict[str, Any],
+    *,
+    provider_supplemental: bool = False,
+) -> NativeCapabilityVariant:
+    return NativeCapabilityVariant(
+        operation=operation,
+        description=description,
+        action_ids=frozenset({action_id}),
+        surface_ids=frozenset({"assemble"}),
+        exact_target_type="ActiveAssemblyJointIntent",
+        transaction_behavior="document",
+        background_required=False,
+        parameters=parameters,
+        provider_supplemental=provider_supplemental,
+    )
+
+
+def _focused_variant(
+    description: str,
+    action_ids: tuple[str, ...],
+    parameters: dict[str, Any],
+) -> NativeCapabilityVariant:
+    return NativeCapabilityVariant(
+        operation="create",
+        description=description,
+        action_ids=frozenset(action_ids),
+        surface_ids=frozenset({"assemble"}),
+        exact_target_type="ActiveAssemblyJointIntent",
+        transaction_behavior="document",
+        background_required=False,
+        parameters=parameters,
+    )
+
+
+def _legacy_joint_capability_definition() -> NativeCapabilityDefinition:
+    return NativeCapabilityDefinition(
+        name="assembly.joint",
+        description="Join component origins or copy an assembly.connectors pair.",
+        primary_classification="mutation",
+        variants=(
+            _variant(
+                "create_fixed",
+                "Lock two endpoints together.",
+                "Assembly_CreateJointFixed",
+                _joint_parameters(
+                    properties={"reverse": {"type": "boolean"}},
+                ),
+            ),
+            _variant(
+                "create_revolute",
+                "Join two coaxial endpoints with one rotational degree of freedom.",
+                "Assembly_CreateJointRevolute",
+                _joint_parameters(
+                    properties={
+                        "reverse": {"type": "boolean"},
+                        "limits": _ANGULAR_LIMITS,
+                    },
+                ),
+            ),
+            _variant(
+                "create_cylindrical",
+                "Join two coaxial endpoints with rotation and axial sliding.",
+                "Assembly_CreateJointCylindrical",
+                _joint_parameters(
+                    properties={
+                        "reverse": {"type": "boolean"},
+                        "limits": _CYLINDRICAL_LIMITS,
+                    },
+                ),
+            ),
+            _variant(
+                "create_slider",
+                "Join two aligned endpoints with one axial translation.",
+                "Assembly_CreateJointSlider",
+                _joint_parameters(
+                    properties={
+                        "reverse": {"type": "boolean"},
+                        "limits": _LINEAR_LIMITS,
+                    },
+                ),
+            ),
+            _variant(
+                "create_ball",
+                "Join two endpoint centers with free rotation.",
+                "Assembly_CreateJointBall",
+                _joint_parameters(),
+            ),
+            _variant(
+                "create_distance",
+                "Maintain a signed separation between two geometry endpoints.",
+                "Assembly_CreateJointDistance",
+                _joint_parameters(
+                    properties={
+                        "distance_mm": _SIGNED_MM,
+                        "reverse": {"type": "boolean"},
+                    },
+                    required=("distance_mm",),
+                ),
+            ),
+            _variant(
+                "create_parallel",
+                "Keep two endpoint axes parallel.",
+                "Assembly_CreateJointParallel",
+                _joint_parameters(
+                    properties={"reverse": {"type": "boolean"}},
+                ),
+            ),
+            _variant(
+                "create_perpendicular",
+                "Keep two endpoint axes perpendicular.",
+                "Assembly_CreateJointPerpendicular",
+                _joint_parameters(),
+            ),
+            _variant(
+                "create_angle",
+                "Maintain an angle between two endpoint axes.",
+                "Assembly_CreateJointAngle",
+                _joint_parameters(
+                    properties={"angle_degrees": _ANGLE},
+                    required=("angle_degrees",),
+                ),
+            ),
+            _variant(
+                "create_rack_pinion",
+                "Couple a rack Slider joint to a pinion Revolute joint.",
+                "Assembly_CreateJointRackPinion",
+                _joint_parameters(
+                    properties={
+                        "rack_slider_joint": _OBJECT_NAME,
+                        "pinion_revolute_joint": _OBJECT_NAME,
+                        "pitch_radius_mm": _SIGNED_NONZERO_MM,
+                    },
+                    required=(
+                        "rack_slider_joint",
+                        "pinion_revolute_joint",
+                        "pitch_radius_mm",
+                    ),
+                ),
+            ),
+            _variant(
+                "create_screw",
+                "Couple a Slider joint to a coaxial Revolute joint by thread pitch.",
+                "Assembly_CreateJointScrew",
+                _joint_parameters(
+                    properties={
+                        "slider_joint": _OBJECT_NAME,
+                        "screw_revolute_joint": _OBJECT_NAME,
+                        "thread_pitch_mm": _SIGNED_NONZERO_MM,
+                    },
+                    required=(
+                        "slider_joint",
+                        "screw_revolute_joint",
+                        "thread_pitch_mm",
+                    ),
+                ),
+            ),
+            _variant(
+                "create_belt",
+                "Couple two Revolute pulley joints in the same rotation direction.",
+                "Assembly_CreateJointBelt",
+                _joint_parameters(
+                    properties={
+                        "first_revolute_joint": _OBJECT_NAME,
+                        "second_revolute_joint": _OBJECT_NAME,
+                        "radius1_mm": _POSITIVE_MM,
+                        "radius2_mm": _POSITIVE_MM,
+                    },
+                    required=(
+                        "first_revolute_joint",
+                        "second_revolute_joint",
+                        "radius1_mm",
+                        "radius2_mm",
+                    ),
+                ),
+            ),
+            _variant(
+                "create_gears",
+                "Couple two Revolute gear joints in opposite rotation directions.",
+                "Assembly_CreateJointGears",
+                _joint_parameters(
+                    properties={
+                        "first_revolute_joint": _OBJECT_NAME,
+                        "second_revolute_joint": _OBJECT_NAME,
+                        "radius1_mm": _POSITIVE_MM,
+                        "radius2_mm": _POSITIVE_MM,
+                    },
+                    required=(
+                        "first_revolute_joint",
+                        "second_revolute_joint",
+                        "radius1_mm",
+                        "radius2_mm",
+                    ),
+                ),
+            ),
+        ),
+    )
 
 
 def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="assembly.joint",
+        description="Create a component joint.",
+        primary_classification="mutation",
+        variants=(
+            _focused_variant(
+                "Create a fixed, revolute, cylindrical, slider, or ball joint.",
+                (
+                    "Assembly_CreateJointFixed",
+                    "Assembly_CreateJointRevolute",
+                    "Assembly_CreateJointCylindrical",
+                    "Assembly_CreateJointSlider",
+                    "Assembly_CreateJointBall",
+                ),
+                _joint_parameters(
+                    properties={
+                        "joint_type": {
+                            "type": "string",
+                            "enum": [
+                                "fixed",
+                                "revolute",
+                                "cylindrical",
+                                "slider",
+                                "ball",
+                            ],
+                        },
+                        "reverse": {"type": "boolean"},
+                        "limits": {
+                            "type": "object",
+                            "properties": {
+                                "minimum_mm": _SIGNED_MM,
+                                "maximum_mm": _SIGNED_MM,
+                                "minimum_degrees": _ANGLE,
+                                "maximum_degrees": _ANGLE,
+                            },
+                            "required": [],
+                            "additionalProperties": False,
+                        },
+                    },
+                    required=("joint_type",),
+                    connector=_CONNECTOR,
+                ),
+            ),
+        ),
+        preserve_operation_branches=False,
+    )
+
+
+def assembly_relation_capability_definition() -> NativeCapabilityDefinition:
+    return NativeCapabilityDefinition(
+        name="assembly.relation",
         description=(
-            "Create and change exact joints in the human-selected Assemble ribbon."
+            "Create a distance, parallel, perpendicular, or angle relation "
+            "between endpoints."
         ),
         primary_classification="mutation",
         variants=(
-            NativeCapabilityVariant(
-                operation="set_grounded",
-                description="Set exact active Assembly components' grounded state atomically.",
-                action_ids=frozenset({"Assembly_ToggleGrounded"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type="HumanActiveAssemblyExactComponentsAndExpectedState",
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "targets": {
+            _focused_variant(
+                "Create a distance, parallel, perpendicular, or angle relation.",
+                (
+                    "Assembly_CreateJointDistance",
+                    "Assembly_CreateJointParallel",
+                    "Assembly_CreateJointPerpendicular",
+                    "Assembly_CreateJointAngle",
+                ),
+                _joint_parameters(
+                    properties={
+                        "relation": {
+                            "type": "string",
+                            "enum": [
+                                "distance",
+                                "parallel",
+                                "perpendicular",
+                                "angle",
+                            ],
+                        },
+                        "distance_mm": {
+                            **_SIGNED_MM,
+                            "description": "Signed distance for a distance relation.",
+                        },
+                        "angle_degrees": {
+                            **_ANGLE,
+                            "description": "Angle for an angle relation.",
+                        },
+                        "reverse": {"type": "boolean"},
+                    },
+                    required=("relation",),
+                    connector=_CONNECTOR,
+                ),
+            ),
+        ),
+        preserve_operation_branches=False,
+    )
+
+
+def assembly_coupling_capability_definition() -> NativeCapabilityDefinition:
+    return NativeCapabilityDefinition(
+        name="assembly.coupling",
+        description=(
+            "Create rack-pinion, screw, belt, or gear motion coupling from existing "
+            "Slider or Revolute joints. Read joint and component names with "
+            "assembly.component_joints."
+        ),
+        primary_classification="mutation",
+        variants=(
+            _variant(
+                "rack_pinion",
+                "Couple a rack Slider joint to a pinion Revolute joint.",
+                "Assembly_CreateJointRackPinion",
+                _parameters(
+                    {
+                        "first_joint": _OBJECT_NAME,
+                        "first_component": _OBJECT_NAME,
+                        "second_joint": _OBJECT_NAME,
+                        "second_component": _OBJECT_NAME,
+                        "pitch_radius_mm": _SIGNED_NONZERO_MM,
+                        "label": _LABEL,
+                    },
+                    (
+                        "first_joint",
+                        "first_component",
+                        "second_joint",
+                        "second_component",
+                        "pitch_radius_mm",
+                    ),
+                ),
+            ),
+            _variant(
+                "screw",
+                "Couple a Slider joint to a coaxial Revolute joint.",
+                "Assembly_CreateJointScrew",
+                _parameters(
+                    {
+                        "first_joint": _OBJECT_NAME,
+                        "first_component": _OBJECT_NAME,
+                        "second_joint": _OBJECT_NAME,
+                        "second_component": _OBJECT_NAME,
+                        "thread_pitch_mm": _SIGNED_NONZERO_MM,
+                        "label": _LABEL,
+                    },
+                    (
+                        "first_joint",
+                        "first_component",
+                        "second_joint",
+                        "second_component",
+                        "thread_pitch_mm",
+                    ),
+                ),
+            ),
+            _variant(
+                "belt",
+                "Couple two Revolute pulley joints in the same direction.",
+                "Assembly_CreateJointBelt",
+                _parameters(
+                    {
+                        "first_joint": _OBJECT_NAME,
+                        "first_component": _OBJECT_NAME,
+                        "second_joint": _OBJECT_NAME,
+                        "second_component": _OBJECT_NAME,
+                        "radius1_mm": _POSITIVE_MM,
+                        "radius2_mm": _POSITIVE_MM,
+                        "label": _LABEL,
+                    },
+                    (
+                        "first_joint",
+                        "first_component",
+                        "second_joint",
+                        "second_component",
+                        "radius1_mm",
+                        "radius2_mm",
+                    ),
+                ),
+            ),
+            _variant(
+                "gears",
+                "Couple two Revolute gear joints in opposite directions.",
+                "Assembly_CreateJointGears",
+                _parameters(
+                    {
+                        "first_joint": _OBJECT_NAME,
+                        "first_component": _OBJECT_NAME,
+                        "second_joint": _OBJECT_NAME,
+                        "second_component": _OBJECT_NAME,
+                        "radius1_mm": _POSITIVE_MM,
+                        "radius2_mm": _POSITIVE_MM,
+                        "label": _LABEL,
+                    },
+                    (
+                        "first_joint",
+                        "first_component",
+                        "second_joint",
+                        "second_component",
+                        "radius1_mm",
+                        "radius2_mm",
+                    ),
+                ),
+            ),
+        ),
+        preserve_operation_branches=True,
+    )
+
+
+def _dedicated_coupling_definition(
+    *,
+    name: str,
+    operation: str,
+    description: str,
+    action_id: str,
+    values: dict[str, Any],
+    sides: dict[str, str] | None = None,
+) -> NativeCapabilityDefinition:
+    side_descriptions = sides or {
+        "first_joint": "Prerequisite joint for first_component.",
+        "first_component": "Moving side of first_joint.",
+        "second_joint": "Prerequisite joint for second_component.",
+        "second_component": "Moving side of second_joint.",
+    }
+    properties = {
+        **{
+            field: {**_OBJECT_REFERENCE, "description": field_description}
+            for field, field_description in side_descriptions.items()
+        },
+        **values,
+        "label": _LABEL,
+    }
+    return NativeCapabilityDefinition(
+        name=name,
+        description=description,
+        primary_classification="mutation",
+        variants=(
+            _variant(
+                operation,
+                description,
+                action_id,
+                _parameters(
+                    properties,
+                    (*side_descriptions, *values),
+                ),
+            ),
+        ),
+    )
+
+
+def assembly_rack_pinion_capability_definition() -> NativeCapabilityDefinition:
+    return _dedicated_coupling_definition(
+        name="assembly.rack_pinion",
+        operation="rack_pinion",
+        description=(
+            "Couple a rack Slider and perpendicular pinion Revolute "
+            "joint by pitch radius."
+        ),
+        action_id="Assembly_CreateJointRackPinion",
+        sides={
+            "slider_joint": "Rack Slider joint.",
+            "rack_component": "Moving rack component.",
+            "revolute_joint": "Pinion Revolute joint.",
+            "pinion_component": "Moving pinion component.",
+        },
+        values={
+            "pinion_pitch_radius_mm": {
+                **_SIGNED_NONZERO_MM,
+                "description": "Pinion pitch radius.",
+            }
+        },
+    )
+
+
+def assembly_screw_capability_definition() -> NativeCapabilityDefinition:
+    return _dedicated_coupling_definition(
+        name="assembly.screw",
+        operation="screw",
+        description="Couple a Slider and coaxial Revolute joint by screw lead.",
+        action_id="Assembly_CreateJointScrew",
+        sides={
+            "slider_joint": "Slider joint.",
+            "slider_component": "Moving component of slider_joint.",
+            "revolute_joint": "Coaxial Revolute joint.",
+            "revolute_component": "Moving component of revolute_joint.",
+        },
+        values={
+            "lead_mm": {
+                **_SIGNED_NONZERO_MM,
+                "description": "Axial travel per revolution.",
+            }
+        },
+    )
+
+
+def assembly_belt_capability_definition() -> NativeCapabilityDefinition:
+    return _dedicated_coupling_definition(
+        name="assembly.belt",
+        operation="belt",
+        description="Couple two pulley rotations in the same direction.",
+        action_id="Assembly_CreateJointBelt",
+        values={
+            "first_pulley_radius_mm": {
+                **_POSITIVE_MM,
+                "description": "First pulley radius.",
+            },
+            "second_pulley_radius_mm": {
+                **_POSITIVE_MM,
+                "description": "Second pulley radius.",
+            },
+        },
+    )
+
+
+def assembly_gears_capability_definition() -> NativeCapabilityDefinition:
+    return _dedicated_coupling_definition(
+        name="assembly.gears",
+        operation="gears",
+        description="Couple two gear rotations in opposite directions.",
+        action_id="Assembly_CreateJointGears",
+        values={
+            "first_pitch_radius_mm": {
+                **_POSITIVE_MM,
+                "description": "First gear pitch radius.",
+            },
+            "second_pitch_radius_mm": {
+                **_POSITIVE_MM,
+                "description": "Second gear pitch radius.",
+            },
+        },
+    )
+
+
+def assembly_ground_capability_definition() -> NativeCapabilityDefinition:
+    return NativeCapabilityDefinition(
+        name="assembly.ground",
+        description="Ground or unground Assembly components.",
+        primary_classification="mutation",
+        variants=(
+            _variant(
+                "set_grounded",
+                "Ground components.",
+                "Assembly_ToggleGrounded",
+                _parameters(
+                    {
+                        "components": {
                             "type": "array",
-                            "items": _GROUNDING_TARGET,
+                            "items": _OBJECT_NAME,
                             "minItems": 1,
                             "maxItems": MAX_GROUNDING_TARGETS,
                             "uniqueItems": True,
                         },
-                        "grounded": {"type": "boolean"},
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
                     },
-                    "required": [
-                        "assembly",
-                        "targets",
-                        "grounded",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                    ],
-                    "additionalProperties": False,
-                },
+                    ("components",),
+                ),
             ),
-            NativeCapabilityVariant(
-                operation="create_fixed",
-                description=(
-                    "Create one native Fixed joint between exact component-rooted "
-                    "connectors, full attachment offsets, and expected live state "
-                    "without opening the human task dialog or changing selection."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointFixed"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactFixedJointConnectorPairAndExpectedState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first": _JOINT_CONNECTOR,
-                        "second": _JOINT_CONNECTOR,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
+            _variant(
+                "set_movable",
+                "Unground components.",
+                "Assembly_ToggleGrounded",
+                _parameters(
+                    {
+                        "components": {
+                            "type": "array",
+                            "items": _OBJECT_NAME,
+                            "minItems": 1,
+                            "maxItems": MAX_GROUNDING_TARGETS,
+                            "uniqueItems": True,
                         },
-                        "reverse": {"type": "boolean"},
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
                     },
-                    "required": [
-                        "assembly",
-                        "first",
-                        "second",
-                        "label",
-                        "reverse",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_revolute",
-                description=(
-                    "Create one native Revolute joint from exact component-rooted "
-                    "connectors, full offsets, reverse state, angular limits, and "
-                    "expected live Assembly state without changing selection."
+                    ("components",),
                 ),
-                action_ids=frozenset({"Assembly_CreateJointRevolute"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactRevoluteJointConnectorPairAndExpectedState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first": _JOINT_CONNECTOR,
-                        "second": _JOINT_CONNECTOR,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "reverse": {"type": "boolean"},
-                        "limits": _REVOLUTE_LIMITS,
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "first",
-                        "second",
-                        "label",
-                        "reverse",
-                        "limits",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_cylindrical",
-                description=(
-                    "Create one native Cylindrical joint from exact component-rooted "
-                    "connectors, full offsets, reverse state, independent linear and "
-                    "angular limits, and expected live Assembly state without "
-                    "changing selection."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointCylindrical"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactCylindricalJointConnectorPairAndExpectedState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first": _JOINT_CONNECTOR,
-                        "second": _JOINT_CONNECTOR,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "reverse": {"type": "boolean"},
-                        "limits": _CYLINDRICAL_LIMITS,
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "first",
-                        "second",
-                        "label",
-                        "reverse",
-                        "limits",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_slider",
-                description=(
-                    "Create one native Slider joint from exact component-rooted "
-                    "connectors, full offsets, reverse state, independent linear "
-                    "limits, and expected live Assembly state without changing "
-                    "selection."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointSlider"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactSliderJointConnectorPairAndExpectedState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first": _JOINT_CONNECTOR,
-                        "second": _JOINT_CONNECTOR,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "reverse": {"type": "boolean"},
-                        "limits": _LINEAR_LIMITS,
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "first",
-                        "second",
-                        "label",
-                        "reverse",
-                        "limits",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_ball",
-                description=(
-                    "Create one native Ball joint from exact component-rooted "
-                    "connectors, full attachment offsets, and expected live "
-                    "Assembly state without exposing inapplicable reverse, "
-                    "rotation, distance, or limit controls."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointBall"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactBallJointConnectorPairAndExpectedState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first": _JOINT_CONNECTOR,
-                        "second": _JOINT_CONNECTOR,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "first",
-                        "second",
-                        "label",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_distance",
-                description=(
-                    "Create one native geometry-aware Distance joint from exact "
-                    "component-rooted connectors, full attachment offsets, a "
-                    "signed distance, reverse state, the expected derived geometry "
-                    "mode, and expected live Assembly state."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointDistance"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactDistanceJointConnectorPairGeometryModeAndExpectedState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first": _JOINT_CONNECTOR,
-                        "second": _JOINT_CONNECTOR,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "reverse": {"type": "boolean"},
-                        "distance_mm": {
-                            "type": "number",
-                            "minimum": -1_000_000.0,
-                            "maximum": 1_000_000.0,
-                        },
-                        "expected_distance_mode": {
-                            "type": "string",
-                            "enum": sorted(DISTANCE_MODES),
-                        },
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "first",
-                        "second",
-                        "label",
-                        "reverse",
-                        "distance_mm",
-                        "expected_distance_mode",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_parallel",
-                description=(
-                    "Create one native Parallel joint from exact component-rooted "
-                    "connectors, full attachment offsets, reverse state, and "
-                    "expected live Assembly state."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointParallel"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactParallelJointConnectorPairAndExpectedState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first": _JOINT_CONNECTOR,
-                        "second": _JOINT_CONNECTOR,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "reverse": {"type": "boolean"},
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "first",
-                        "second",
-                        "label",
-                        "reverse",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_perpendicular",
-                description=(
-                    "Create one native Perpendicular joint from exact "
-                    "component-rooted connectors, full attachment offsets, and "
-                    "expected live Assembly state without exposing inapplicable "
-                    "reverse, angle, rotation, distance, or limit controls."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointPerpendicular"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactPerpendicularJointConnectorPairAndExpectedState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first": _JOINT_CONNECTOR,
-                        "second": _JOINT_CONNECTOR,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "first",
-                        "second",
-                        "label",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_angle",
-                description=(
-                    "Create one native Angle joint from exact component-rooted "
-                    "connectors, full offsets, one canonical 0-to-180 degree axis "
-                    "angle, and expected live state. Zero uses the human command's "
-                    "unsigned Parallel relation."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointAngle"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactAngleJointConnectorPairAndExpectedState"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first": _JOINT_CONNECTOR,
-                        "second": _JOINT_CONNECTOR,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "angle_degrees": {
-                            "type": "number",
-                            "minimum": 0.0,
-                            "maximum": 180.0,
-                        },
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "first",
-                        "second",
-                        "label",
-                        "angle_degrees",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_rack_pinion",
-                description=(
-                    "Couple an exact Slider rack connector to an exact Revolute "
-                    "pinion connector with a finite signed pitch radius and "
-                    "expected live Assembly state."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointRackPinion"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactRackSliderAndPinionRevoluteCoupling"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "rack_connector": _JOINT_CONNECTOR,
-                        "pinion_connector": _JOINT_CONNECTOR,
-                        "rack_slider_joint": _OBJECT_REF,
-                        "pinion_revolute_joint": _OBJECT_REF,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "pitch_radius_mm": {
-                            "oneOf": [
-                                {
-                                    "type": "number",
-                                    "minimum": -1_000_000.0,
-                                    "maximum": -1.0e-7,
-                                },
-                                {
-                                    "type": "number",
-                                    "minimum": 1.0e-7,
-                                    "maximum": 1_000_000.0,
-                                },
-                            ]
-                        },
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "rack_connector",
-                        "pinion_connector",
-                        "rack_slider_joint",
-                        "pinion_revolute_joint",
-                        "label",
-                        "pitch_radius_mm",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_screw",
-                description=(
-                    "Couple an exact Slider connector to an exact Revolute screw "
-                    "connector on one directed collinear axis with a finite signed "
-                    "thread pitch and expected live Assembly state."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointScrew"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactSliderAndScrewRevoluteCoupling"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "slider_connector": _JOINT_CONNECTOR,
-                        "screw_connector": _JOINT_CONNECTOR,
-                        "slider_joint": _OBJECT_REF,
-                        "screw_revolute_joint": _OBJECT_REF,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "thread_pitch_mm": {
-                            "oneOf": [
-                                {
-                                    "type": "number",
-                                    "minimum": -1_000_000.0,
-                                    "maximum": -1.0e-7,
-                                },
-                                {
-                                    "type": "number",
-                                    "minimum": 1.0e-7,
-                                    "maximum": 1_000_000.0,
-                                },
-                            ]
-                        },
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "slider_connector",
-                        "screw_connector",
-                        "slider_joint",
-                        "screw_revolute_joint",
-                        "label",
-                        "thread_pitch_mm",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_belt",
-                description=(
-                    "Couple two exact Revolute pulley connectors at the same "
-                    "rotation ratio defined by two finite positive radii and expected "
-                    "live Assembly state."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointBelt"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactTwoRevolutePulleyCoupling"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first_pulley_connector": _JOINT_CONNECTOR,
-                        "second_pulley_connector": _JOINT_CONNECTOR,
-                        "first_revolute_joint": _OBJECT_REF,
-                        "second_revolute_joint": _OBJECT_REF,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "radius1_mm": {
-                            "type": "number",
-                            "minimum": 1.0e-7,
-                            "maximum": 1_000_000.0,
-                        },
-                        "radius2_mm": {
-                            "type": "number",
-                            "minimum": 1.0e-7,
-                            "maximum": 1_000_000.0,
-                        },
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "first_pulley_connector",
-                        "second_pulley_connector",
-                        "first_revolute_joint",
-                        "second_revolute_joint",
-                        "label",
-                        "radius1_mm",
-                        "radius2_mm",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
-            ),
-            NativeCapabilityVariant(
-                operation="create_gears",
-                description=(
-                    "Couple two exact Revolute gear connectors at the opposite "
-                    "rotation ratio defined by two finite positive radii and expected "
-                    "live Assembly state."
-                ),
-                action_ids=frozenset({"Assembly_CreateJointGears"}),
-                surface_ids=frozenset({"assemble"}),
-                exact_target_type=(
-                    "HumanActiveAssemblyExactTwoRevoluteGearCoupling"
-                ),
-                transaction_behavior="document",
-                background_required=False,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "assembly": _OBJECT_REF,
-                        "first_gear_connector": _JOINT_CONNECTOR,
-                        "second_gear_connector": _JOINT_CONNECTOR,
-                        "first_revolute_joint": _OBJECT_REF,
-                        "second_revolute_joint": _OBJECT_REF,
-                        "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 160,
-                        },
-                        "radius1_mm": {
-                            "type": "number",
-                            "minimum": 1.0e-7,
-                            "maximum": 1_000_000.0,
-                        },
-                        "radius2_mm": {
-                            "type": "number",
-                            "minimum": 1.0e-7,
-                            "maximum": 1_000_000.0,
-                        },
-                        "expected_component_count": _COUNT,
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 256,
-                        },
-                        "expected_solve_on_creation": {"type": "boolean"},
-                    },
-                    "required": [
-                        "assembly",
-                        "first_gear_connector",
-                        "second_gear_connector",
-                        "first_revolute_joint",
-                        "second_revolute_joint",
-                        "label",
-                        "radius1_mm",
-                        "radius2_mm",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                        "expected_solve_on_creation",
-                    ],
-                    "additionalProperties": False,
-                },
+                provider_supplemental=True,
             ),
         ),
     )
@@ -888,4 +759,11 @@ def register_assembly_joint_capability_definition(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
+    registry.register_definition(assembly_ground_capability_definition())
     registry.register_definition(assembly_joint_capability_definition())
+    registry.register_definition(assembly_relation_capability_definition())
+    registry.register_definition(assembly_coupling_capability_definition())
+    registry.register_definition(assembly_rack_pinion_capability_definition())
+    registry.register_definition(assembly_screw_capability_definition())
+    registry.register_definition(assembly_belt_capability_definition())
+    registry.register_definition(assembly_gears_capability_definition())

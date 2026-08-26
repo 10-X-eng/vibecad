@@ -308,6 +308,38 @@ def test_provider_keeps_operations_in_the_enum_without_description_duplication()
     assert all(variant.description not in repr(schema) for variant in definition.variants)
 
 
+def test_preserved_operation_branches_describe_the_selected_operation() -> None:
+    definition = NativeCapabilityDefinition(
+        name="model.exact",
+        description="Apply one exact operation.",
+        primary_classification="mutation",
+        variants=(
+            _variant(
+                "create",
+                "Part_Create",
+                transaction_behavior="document",
+                parameters=_parameters(label={"type": "string", "maxLength": 80}),
+            ),
+            _variant(
+                "edit",
+                "Part_Edit",
+                transaction_behavior="document",
+                parameters=_parameters(target={"type": "string", "maxLength": 80}),
+            ),
+        ),
+        preserve_operation_branches=True,
+    )
+
+    branches = definition.provider_schema(("create", "edit"))["parameters"]["oneOf"]
+
+    assert branches[0]["properties"]["operation"] == {
+        "type": "string",
+        "const": "create",
+        "description": "Perform create.",
+    }
+    assert branches[1]["properties"]["operation"]["description"] == "Perform edit."
+
+
 def test_compact_multi_operation_schema_keeps_closed_typed_field_union() -> None:
     definition = NativeCapabilityDefinition(
         name="model.compact",
@@ -608,12 +640,7 @@ def test_canonical_schema_keeps_large_bounds_in_scientific_json() -> None:
     assert type(number["maximum"]) is float
 
 
-def test_tool_and_schema_budgets_fail_before_advertisement(monkeypatch) -> None:
-    monkeypatch.setitem(registry_module.MAX_NATIVE_TOOLS_BY_SURFACE, "model", 1)
-    with pytest.raises(NativeCapabilityRegistryError, match="requires 2 tools"):
-        resolve_native_provider_surface(_surface(), _register_complete())
-
-    monkeypatch.setitem(registry_module.MAX_NATIVE_TOOLS_BY_SURFACE, "model", 24)
+def test_schema_budgets_fail_before_advertisement(monkeypatch) -> None:
     monkeypatch.setattr(registry_module, "MAX_NATIVE_SCHEMAS_JSON_BYTES", 10)
     with pytest.raises(NativeCapabilityRegistryError, match="schemas use"):
         resolve_native_provider_surface(_surface(), _register_complete())

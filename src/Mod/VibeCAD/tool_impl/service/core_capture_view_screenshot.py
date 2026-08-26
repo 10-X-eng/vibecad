@@ -810,6 +810,7 @@ def _document_visual_fingerprint(document: Any) -> dict[str, Any]:
             if (
                 not is_reference_geometry
                 and shape is not None
+                and callable(getattr(shape, "isNull", None))
                 and not bool(shape.isNull())
             ):
                 shape_hash = int(shape.hashCode())

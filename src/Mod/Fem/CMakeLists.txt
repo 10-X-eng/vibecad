@@ -234,6 +234,7 @@ SET(FemObjects_SRCS
     femobjects/solver_calculix.py
     femobjects/solver_ccxtools.py
     femobjects/solver_elmer.py
+    femobjects/solver_openfoam.py
     femobjects/solver_z88.py
 )
 
@@ -262,6 +263,7 @@ SET(FemSolver_SRCS
     femsolver/report.py
     femsolver/reportdialog.py
     femsolver/run.py
+    femsolver/runtime.py
     femsolver/settings.py
     femsolver/signal.py
     femsolver/solver_taskpanel.py
@@ -359,6 +361,13 @@ SET(FemSolverMystran_SRCS
     femsolver/mystran/writer.py
 )
 
+SET(FemSolverOpenFOAM_SRCS
+    femsolver/openfoam/__init__.py
+    femsolver/openfoam/case.py
+    femsolver/openfoam/openfoamtools.py
+    femsolver/openfoam/results.py
+)
+
 SET(FemSolverZ88_SRCS
     femsolver/z88/__init__.py
     femsolver/z88/write_constraint_displacement.py
@@ -393,6 +402,7 @@ SET(FemTestsApp_SRCS
     femtest/app/test_open.py
     femtest/app/test_result.py
     femtest/app/test_solver_elmer.py
+    femtest/app/test_solver_openfoam.py
     femtest/app/test_solver_mystran.py
     femtest/app/test_solver_z88.py
     femtest/app/test_gmsh.py
@@ -615,6 +625,7 @@ SET(FemAllScripts
     ${FemSolverElmerEquations_SRCS}
     ${FemSolverFenics_SRCS}
     ${FemSolverMystran_SRCS}
+    ${FemSolverOpenFOAM_SRCS}
     ${FemSolverZ88_SRCS}
     ${FemTests_SRCS}
     ${FemTestsApp_SRCS}
@@ -655,6 +666,7 @@ INSTALL(FILES ${FemSolverElmer_SRCS} DESTINATION Mod/Fem/femsolver/elmer)
 INSTALL(FILES ${FemSolverElmerEquations_SRCS} DESTINATION Mod/Fem/femsolver/elmer/equations)
 INSTALL(FILES ${FemSolverFenics_SRCS} DESTINATION Mod/Fem/femsolver/fenics)
 INSTALL(FILES ${FemSolverMystran_SRCS} DESTINATION Mod/Fem/femsolver/mystran)
+INSTALL(FILES ${FemSolverOpenFOAM_SRCS} DESTINATION Mod/Fem/femsolver/openfoam)
 INSTALL(FILES ${FemSolverZ88_SRCS} DESTINATION Mod/Fem/femsolver/z88)
 INSTALL(FILES ${FemTests_SRCS} DESTINATION Mod/Fem/femtest)
 INSTALL(FILES ${FemTestsApp_SRCS} DESTINATION Mod/Fem/femtest/app)
@@ -809,6 +821,7 @@ SET(FemGuiViewProvider_SRCS
     femviewprovider/view_solver_calculix.py
     femviewprovider/view_solver_ccxtools.py
     femviewprovider/view_solver_elmer.py
+    femviewprovider/view_solver_openfoam.py
     femviewprovider/view_solver_z88.py
 )
 

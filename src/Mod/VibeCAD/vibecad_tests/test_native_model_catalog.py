@@ -77,6 +77,50 @@ def test_fastener_catalog_is_shared_with_assemble_without_leaking_hole_catalog()
     assert variants["hole_threads"].surface_ids == frozenset({"model"})
 
 
+def test_fastener_catalog_filters_are_optional_on_the_assemble_surface() -> None:
+    schema = model_catalog_capability_definition().provider_schema(("fasteners",))
+    parameters = schema["parameters"]["oneOf"][0]
+
+    assert parameters["required"] == []
+    assert parameters["additionalProperties"] is False
+    assert parameters["properties"]["length_mm"]["type"] == "number"
+
+
+def test_fastener_catalog_runtime_defaults_omitted_filters(monkeypatch) -> None:
+    observed = {}
+
+    monkeypatch.setattr(
+        runtime_module,
+        "search_catalog",
+        lambda query, **filters: observed.update({"query": query, **filters})
+        or {
+            "catalog": "freecad-fasteners",
+            "requested": {},
+            "total_matches": 0,
+            "returned": 0,
+            "truncated": False,
+            "results": [],
+        },
+    )
+
+    _runtime().read_catalog(
+        {
+            "operation": "fasteners",
+            "standard": "DIN508",
+            "nominal_thread": "M6",
+        }
+    )
+
+    assert observed == {
+        "query": "",
+        "family": None,
+        "standard": "DIN508",
+        "nominal_thread": "M6",
+        "length_mm": None,
+        "limit": 5,
+    }
+
+
 def test_fastener_catalog_returns_only_constructor_relevant_bounded_fields(
     monkeypatch,
 ) -> None:
@@ -111,6 +155,7 @@ def test_fastener_catalog_returns_only_constructor_relevant_bounded_fields(
                     "supports_left_handed": True,
                     "option_names": [],
                     "default_options": {},
+                    "available_options": {},
                     "valid_lengths_mm": [8.0, 10.0, 12.0],
                     "requested_match": True,
                     "constructor": {
@@ -119,7 +164,7 @@ def test_fastener_catalog_returns_only_constructor_relevant_bounded_fields(
                         "length_mm": 10.0,
                         "model_thread": False,
                         "left_handed": False,
-                        "options": {},
+                        "catalog_option_overrides": {},
                     },
                     "canonical_key": "freecad-fasteners:123",
                 }
@@ -141,6 +186,8 @@ def test_fastener_catalog_returns_only_constructor_relevant_bounded_fields(
     assert "excluded_upstream_standards" not in result
     assert "nominal_threads" not in result["results"][0]
     assert result["results"][0]["constructor"]["standard"] == "ISO4762"
+    assert result["results"][0]["constructor"]["catalog_option_overrides"] == {}
+    assert result["results"][0]["available_options"] == {}
     assert result["results"][0]["valid_lengths_mm"] == [8.0, 10.0, 12.0]
 
 

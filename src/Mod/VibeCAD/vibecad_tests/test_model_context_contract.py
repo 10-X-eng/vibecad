@@ -461,6 +461,11 @@ def test_session_capture_keeps_intent_with_reference_images_and_aero(
         "_capture_editable_sources_for_workbench",
         lambda *_args, **_kwargs: {"sources": []},
     )
+    monkeypatch.setattr(
+        session,
+        "provider_engine_from_service",
+        lambda _service: "vibescript",
+    )
 
     context = session._capture_context_for_provider(_Service())
     assert context["intent"] == dispositions
@@ -598,7 +603,7 @@ def test_turn_start_native_state_includes_last_receipt_ceiling() -> None:
     assert receipt["capability"] == "model.pad"
     assert "native_state" not in state
     assert state["intent"] == dispositions
-    assert state["aero"] == aero
+    assert "aero" not in state
     assert "intent_memory" not in state
 
     payload, _conversation, remainder = _prompt_payload("Continue.", context)
@@ -606,7 +611,7 @@ def test_turn_start_native_state_includes_last_receipt_ceiling() -> None:
     assert active["state"]["last_receipt"]["claim_ceiling"] == "geometry_applied"
     assert active["state"]["last_receipt"]["evidence_state"] == "pass"
     assert active["intent"] == dispositions
-    assert active["aero"] == aero
+    assert "aero" not in active
     serialized = json.dumps(payload)
     assert "must not leak" not in serialized
     assert remainder == "CURRENT_USER_MESSAGE\nContinue."
@@ -717,6 +722,22 @@ def test_session_payload_keeps_native_last_receipt_with_intent() -> None:
         "claim_ceiling"
     ] == "geometry_applied"
     assert payload["active_state"]["intent"] == dispositions
+
+
+def test_first_prompt_omits_unavailable_aero_state() -> None:
+    context = {
+        **_active_state(),
+        "aero": {
+            "available": False,
+            "evidence_state": "evidence_waiting",
+            "claim_ceiling": "not_airworthy",
+            "not_airworthy": True,
+        },
+    }
+
+    state = session._provider_state_payload(context)
+
+    assert "aero" not in state
 
 
 def test_turn_history_is_supplied_separately_from_model_state_packet() -> None:
@@ -1111,6 +1132,27 @@ def test_conversation_history_read_is_scoped_to_the_selected_thread(
         "turn_count": 1,
     }
 
+    uncached_service = object.__new__(VibeCADService)
+    uncached_service._conversation_cache = []
+    uncached_service._conversation_cache_key = None
+    uncached_service._conversation_cache_document_uid = None
+    uncached_service.project_scope_snapshot = lambda: {"root": str(tmp_path)}
+    uncached_service._active_document_uid = lambda: "document-uid"
+
+    uncached_read = uncached_service.prepare_conversation_history_read()
+    uncached_history = uncached_service.complete_conversation_history_read(
+        uncached_read
+    )
+    uncached_service._set_conversation_cache(uncached_history)
+
+    assert uncached_service.accept_conversation_history_read(
+        uncached_read, uncached_history
+    ) == {
+        "accepted": True,
+        "conversation_id": first_id,
+        "turn_count": 1,
+    }
+
     stale_read = service.prepare_conversation_history_read()
     service._set_conversation_cache(store.activate_conversation(second_id))
     stale_history = service.complete_conversation_history_read(stale_read)
@@ -1203,7 +1245,7 @@ def test_unsaved_run_prompt_reaches_provider_and_includes_active_thread_once(
     monkeypatch.setattr(
         session,
         "_build_context_for_provider",
-        lambda active_service, trigger, interaction_mode, dispatch: dict(context),
+        lambda active_service, trigger, dispatch, **_kwargs: dict(context),
     )
     monkeypatch.setattr(
         session,
@@ -1240,7 +1282,6 @@ def test_unsaved_run_prompt_reaches_provider_and_includes_active_thread_once(
                 "model_selection": "explicit",
                 "reasoning_effort": "xhigh",
                 "model_fallback_allowed": False,
-                "interaction_mode": "build",
             }
         },
     }

@@ -16,7 +16,8 @@ from VibeCADNativeAnalyzeHistory import (
     require_boundary,
 )
 from VibeCADNativeAnalyzeLoadCreate import (
-    PreparedDirectionReference,
+    PreparedDirectionVector,
+    PreparedForceDirection,
     direction_still_exact,
     direction_value,
     expected_load_definition,
@@ -53,7 +54,7 @@ class PreparedLoadUpdate:
     analysis: Any
     analysis_state_sha256: str
     references: tuple[PreparedGeometryReference, ...]
-    direction: PreparedDirectionReference | None
+    direction: PreparedForceDirection
     axis: PreparedGeometryReference | None
     scope_kind: str | None
     kind: str
@@ -118,6 +119,14 @@ def _reference_payload(value: Any) -> list[dict[str, Any]]:
 
 
 def _direction_payload(load: Any) -> dict[str, Any]:
+    if bool(getattr(load, "UseCustomDirection", False)):
+        vector = load.DirectionVector
+        return {
+            "kind": "vector",
+            "x": float(vector.x),
+            "y": float(vector.y),
+            "z": float(vector.z),
+        }
     value = load.Direction
     if value is None:
         return {"kind": "normal", "reversed": bool(load.Reversed)}
@@ -156,7 +165,7 @@ def _current_load_values(kind: str, state: Mapping[str, Any]) -> dict[str, Any]:
     if kind == "force":
         return {
             "force_n": definition["force_n"],
-            "reversed": definition["direction"]["reversed"],
+            "reversed": definition["direction"].get("reversed", False),
         }
     if kind == "centrifugal":
         return {"rotation_frequency_hz": definition["rotation_frequency_hz"]}
@@ -195,13 +204,15 @@ def prepare_load_update(
     raw_direction = None
     if kind == "force":
         raw_direction = changes.get("direction", _direction_payload(load))
-        if not isinstance(raw_direction, Mapping) or "reversed" not in raw_direction:
+        if not isinstance(raw_direction, Mapping) or (
+            raw_direction.get("kind") != "vector" and "reversed" not in raw_direction
+        ):
             raise NativeAnalyzeError(
-                "changes.direction must include kind and reversed."
+                "changes.direction must be a vector or include kind and reversed."
             )
         values_raw = {
             "force_n": changes.get("force_n", current_values["force_n"]),
-            "reversed": raw_direction["reversed"],
+            "reversed": raw_direction.get("reversed", False),
         }
         values_changed = "force_n" in changes or "direction" in changes
     elif kind == "pressure":
@@ -344,7 +355,19 @@ def update_load(document: Any, prepared: PreparedLoadUpdate) -> NativeMutationDr
         apply_load_values(load, prepared.values)
     load.References = reference_value(prepared.references)
     if prepared.kind == "force":
-        load.Direction = direction_value(prepared.direction)
+        if isinstance(prepared.direction, PreparedDirectionVector):
+            import FreeCAD
+
+            load.Direction = None
+            load.CustomDirection = FreeCAD.Vector(
+                prepared.direction.x,
+                prepared.direction.y,
+                prepared.direction.z,
+            )
+            load.UseCustomDirection = True
+        else:
+            load.UseCustomDirection = False
+            load.Direction = direction_value(prepared.direction)
     elif prepared.kind == "centrifugal":
         assert prepared.axis is not None
         load.RotationAxis = reference_value((prepared.axis,))

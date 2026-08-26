@@ -13,7 +13,24 @@ from VibeCADNativeCapabilityRegistry import (
 )
 
 
+ASSEMBLY_GROUND_CAPABILITY_NAME = "assembly.ground"
 ASSEMBLY_JOINT_CAPABILITY_NAME = "assembly.joint"
+ASSEMBLY_RELATION_CAPABILITY_NAME = "assembly.relation"
+ASSEMBLY_COUPLING_CAPABILITY_NAME = "assembly.coupling"
+ASSEMBLY_RACK_PINION_CAPABILITY_NAME = "assembly.rack_pinion"
+ASSEMBLY_SCREW_CAPABILITY_NAME = "assembly.screw"
+ASSEMBLY_BELT_CAPABILITY_NAME = "assembly.belt"
+ASSEMBLY_GEARS_CAPABILITY_NAME = "assembly.gears"
+ASSEMBLY_JOINT_CAPABILITY_NAMES = (
+    ASSEMBLY_GROUND_CAPABILITY_NAME,
+    ASSEMBLY_JOINT_CAPABILITY_NAME,
+    ASSEMBLY_RELATION_CAPABILITY_NAME,
+    ASSEMBLY_COUPLING_CAPABILITY_NAME,
+    ASSEMBLY_RACK_PINION_CAPABILITY_NAME,
+    ASSEMBLY_SCREW_CAPABILITY_NAME,
+    ASSEMBLY_BELT_CAPABILITY_NAME,
+    ASSEMBLY_GEARS_CAPABILITY_NAME,
+)
 
 
 def _runtime(call: Any) -> NativeAssemblyJointRuntime:
@@ -42,12 +59,13 @@ def register_assembly_joint_capability_implementation(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_implementation(
-        NativeCapabilityImplementation(
-            ASSEMBLY_JOINT_CAPABILITY_NAME,
-            _joint,
+    for name in ASSEMBLY_JOINT_CAPABILITY_NAMES:
+        registry.register_implementation(
+            NativeCapabilityImplementation(
+                name,
+                _joint,
+            )
         )
-    )
 
 
 def assembly_joint_runtime_bindings(
@@ -55,4 +73,4 @@ def assembly_joint_runtime_bindings(
 ) -> dict[str, Any]:
     if not isinstance(runtime, NativeAssemblyJointRuntime):
         raise TypeError("runtime must be a NativeAssemblyJointRuntime")
-    return {ASSEMBLY_JOINT_CAPABILITY_NAME: runtime}
+    return {name: runtime for name in ASSEMBLY_JOINT_CAPABILITY_NAMES}

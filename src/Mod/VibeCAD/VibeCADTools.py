@@ -316,6 +316,34 @@ class ToolSpec:
         )
         if not errors:
             return
+        discriminant = _schema_discriminant_mismatch(errors)
+        if discriminant is not None:
+            path, received, allowed = discriminant
+            dotted_path = ".".join(str(item) for item in path)
+            raise ToolArgumentValidationError(
+                tool_failure(
+                    self.name,
+                    "SCHEMA_VALIDATION_FAILED",
+                    "schema",
+                    f"Invalid arguments for {self.name} at {dotted_path}: "
+                    f"{received!r} is not an allowed value",
+                    requested=dict(arguments),
+                    observed={
+                        "path": path,
+                        "validator": "enum",
+                        "expected": allowed,
+                        "received": received,
+                    },
+                    allowed_values=allowed,
+                    required_changes=[
+                        {
+                            "path": path,
+                            "validator": "enum",
+                            "expected": allowed,
+                        }
+                    ],
+                )
+            )
         error = _most_specific_schema_error(errors[0])
         path = list(error.absolute_path)
         dotted_path = ".".join(str(item) for item in path)
@@ -476,6 +504,61 @@ def _most_specific_schema_error(error: Any) -> Any:
             -len(str(getattr(item, "message", ""))),
         ),
     )
+
+
+def _schema_discriminant_mismatch(
+    errors: list[Any],
+) -> tuple[list[Any], Any, list[Any]] | None:
+    """Find an invalid const discriminator before choosing a union branch error."""
+
+    pending = list(errors)
+    while pending:
+        error = pending.pop(0)
+        children = list(getattr(error, "context", []) or [])
+        pending.extend(children)
+        if str(getattr(error, "validator", "")) not in {"oneOf", "anyOf"}:
+            continue
+        instance = getattr(error, "instance", None)
+        branches = getattr(error, "validator_value", None)
+        if not isinstance(instance, Mapping) or not isinstance(branches, list):
+            continue
+        branch_constants: list[dict[str, Any]] = []
+        for branch in branches:
+            if not isinstance(branch, Mapping):
+                branch_constants = []
+                break
+            properties = branch.get("properties")
+            if not isinstance(properties, Mapping):
+                branch_constants = []
+                break
+            branch_constants.append(
+                {
+                    str(name): definition["const"]
+                    for name, definition in properties.items()
+                    if isinstance(definition, Mapping) and "const" in definition
+                }
+            )
+        if not branch_constants:
+            continue
+        shared = set(branch_constants[0])
+        for constants in branch_constants[1:]:
+            shared.intersection_update(constants)
+        for name in sorted(shared):
+            if name not in instance:
+                continue
+            allowed: list[Any] = []
+            for constants in branch_constants:
+                value = constants[name]
+                if value not in allowed:
+                    allowed.append(value)
+            received = instance[name]
+            if received not in allowed:
+                return (
+                    [*list(getattr(error, "absolute_path", []) or []), name],
+                    received,
+                    allowed,
+                )
+    return None
 
 
 def _relevant_schema_error_children(error: Any) -> list[Any]:

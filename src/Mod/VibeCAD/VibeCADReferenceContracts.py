@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
-from typing import Any
+from typing import Any, Mapping
 
 import VibeCADScriptedPublication as publication
 
@@ -419,6 +419,125 @@ def published_interface_descriptors(
     return descriptors
 
 
+def component_interface_descriptors(
+    source: Any,
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Read the explicit connector interfaces carried by one component."""
+
+    published = published_object(source)
+    if published is not None:
+        try:
+            root = publication.model_root_for(published)
+            table = json.loads(
+                str(getattr(root, publication.PROP_INTERFACES, "{}") or "{}")
+            )
+        except (publication.PublicationError, ValueError) as exc:
+            raise ReferenceContractError(
+                f"Component {getattr(source, 'Name', '')!r} has invalid interfaces.",
+                details={"native_error": str(exc)},
+            ) from exc
+        output_key = str(
+            getattr(published, publication.PROP_OUTPUT_KEY, "") or ""
+        )
+        return True, published_interface_descriptors(table, output_key)
+
+    native = native_interface_definitions(source)
+    descriptors: list[dict[str, Any]] = []
+    for name, definition in sorted(native.items()):
+        resolved = dict(definition.get("resolved") or {})
+        selection = dict(definition.get("selection") or {})
+        geometry = list(resolved.get("geometry") or [])
+        descriptor: dict[str, Any] = {
+            "name": str(name),
+            "selection_type": str(selection.get("type") or "frame"),
+            "connector_eligible": True,
+            "connector": dict(definition.get("connector") or {}),
+        }
+        if geometry and isinstance(geometry[0], Mapping):
+            descriptor["geometry_type"] = str(
+                geometry[0].get("geometry_type") or ""
+            )
+        frame = resolved.get("connector_frame")
+        if isinstance(frame, Mapping):
+            descriptor["frame"] = dict(frame)
+        descriptors.append(descriptor)
+    return bool(native), descriptors
+
+
+def connector_interface_record(
+    descriptor: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Normalize one published interface for Assembly connector ranking."""
+
+    if not descriptor.get("connector_eligible"):
+        return None
+    name = str(descriptor.get("name") or "")
+    if not name:
+        return None
+    connector = dict(descriptor.get("connector") or {})
+    kind = str(connector.get("kind") or "")
+    geometry = str(descriptor.get("geometry_type") or "").lower()
+    if not geometry or geometry in {"component_frame", "component_origin"}:
+        geometry = {
+            "axis": "cylinder",
+            "plane": "plane",
+            "point": "vertex",
+            "frame": "component_origin",
+        }.get(kind, "component_origin")
+    frame = descriptor.get("frame")
+    origin = [0.0, 0.0, 0.0]
+    axis = [0.0, 0.0, 1.0]
+    if isinstance(frame, Mapping):
+        raw_origin = frame.get("origin_mm")
+        raw_axis = frame.get("axis_direction")
+        if isinstance(raw_origin, list) and len(raw_origin) == 3:
+            origin = [float(value) for value in raw_origin]
+        if isinstance(raw_axis, list) and len(raw_axis) == 3:
+            axis = [float(value) for value in raw_axis]
+    return {
+        "selection": {
+            "type": "published_interface",
+            "interface_name": name,
+        },
+        "contract": connector or None,
+        "element": name,
+        "geometry": geometry,
+        "origin_mm": origin,
+        "axis": axis,
+    }
+
+
+def resolve_component_interface(source: Any, interface_name: str) -> dict[str, Any]:
+    """Resolve a published or native semantic connector on one component."""
+
+    if published_object(source) is not None:
+        return resolve_interface(None, source, interface_name)
+    definitions = native_interface_definitions(source)
+    definition = definitions.get(str(interface_name or ""))
+    if not isinstance(definition, dict):
+        raise ReferenceContractError(
+            f"Component interface {interface_name!r} does not exist.",
+            details={"available_interfaces": sorted(definitions)},
+        )
+    selection = dict(definition.get("selection") or {})
+    resolved = dict(definition.get("resolved") or {})
+    frame = resolved.get("connector_frame")
+    if selection.get("type") == "frame":
+        connector_frame_placement(frame)
+    return {
+        "ok": True,
+        "model_id": "",
+        "publication_name": "",
+        "output_key": "",
+        "interface_name": str(interface_name),
+        "selection": selection,
+        "subelements": list(resolved.get("subelements") or []),
+        "geometry": list(resolved.get("geometry") or []),
+        "connector_frame": frame,
+        "connector": dict(definition.get("connector") or {}),
+    }
+
+
 def interface_selection_schema() -> dict[str, Any]:
     return {
         "type": "object",
@@ -475,6 +594,22 @@ def read_contract(obj: Any) -> dict[str, Any] | None:
     return contract
 
 
+def _publication_for_target(target: Any) -> Any | None:
+    """Resolve a managed output target to its canonical publication."""
+
+    if publication.role_of(target) != publication.ROLE_PUBLICATION_TARGET:
+        return None
+    model_id = str(getattr(target, publication.PROP_MODEL_ID, "") or "")
+    output_key = str(getattr(target, publication.PROP_OUTPUT_KEY, "") or "")
+    if not model_id or not output_key:
+        return None
+    try:
+        root = publication.model_root_for(target)
+        return publication.model_publications(root).get(output_key)
+    except publication.PublicationError:
+        return None
+
+
 def published_object(value: Any) -> Any | None:
     # App::Link forwards properties from LinkedObject, including the scripted
     # role tag. Resolve the native link target before inspecting the occurrence
@@ -482,6 +617,9 @@ def published_object(value: Any) -> Any | None:
     linked = getattr(value, "LinkedObject", None)
     if publication.is_publication(linked):
         return linked
+    linked_publication = _publication_for_target(linked)
+    if linked_publication is not None:
+        return linked_publication
     # A reusable Part Design/Robot component occurrence is itself the stable
     # output carrier.  It intentionally links the vendor/native definition
     # rather than a scripted publication, while its owning program root stores
@@ -499,6 +637,9 @@ def published_object(value: Any) -> Any | None:
         return value
     if publication.is_publication(value):
         return value
+    target_publication = _publication_for_target(value)
+    if target_publication is not None:
+        return target_publication
     objects = list(getattr(value, "Objects", []) or [])
     if len(objects) == 1 and publication.is_publication(objects[0]):
         return objects[0]

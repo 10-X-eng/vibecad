@@ -53,10 +53,17 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
         if definition.name != "document.save"
         for variant in definition.variants
         if variant.operation
-        not in {"drawing_projected_geometry", "set_object_visibility"}
+        not in {
+            "drawing_projected_geometry",
+            "set_object_visibility",
+            "capture_active_sketch",
+        }
     )
     assert variants[("view.control", "set_object_visibility")].surface_ids == frozenset(
         {"model"}
+    )
+    assert variants[("view.control", "capture_active_sketch")].surface_ids == frozenset(
+        {"sketch.edit"}
     )
     drawing_projection = variants[("inspect.query", "drawing_projected_geometry")]
     assert drawing_projection.surface_ids == frozenset({"drawing"})
@@ -73,16 +80,32 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
     assert [variant.operation for variant in definitions[1].variants] == [
         "fit_all",
         "isometric",
+        "set_isometric",
+        "set_front",
+        "set_rear",
+        "set_left",
+        "set_right",
+        "set_top",
+        "set_bottom",
         "set_grid",
+        "set_section_view",
         "set_object_visibility",
         "capture_all",
         "capture_selection",
         "capture_objects",
         "capture_active_sketch",
     ]
-    assert [
-        variant.transaction_behavior for variant in definitions[1].variants[:3]
-    ] == ["presentation", "presentation", "presentation"]
+    assert all(
+        variant.transaction_behavior == "presentation"
+        for variant in definitions[1].variants[:11]
+    )
+    set_grid = next(
+        variant
+        for variant in definitions[1].variants
+        if variant.operation == "set_grid"
+    )
+    assert set_grid.parameters["required"] == []
+    assert set_grid.parameters["properties"]["visible"]["default"] is True
     assert [variant.operation for variant in definitions[2].variants] == [
         "distance",
         "angle",
@@ -93,6 +116,20 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
         "drawing_projected_geometry",
         "validity",
     ]
+    assert definitions[2].preserve_operation_branches is False
+
+
+def test_active_sketch_capture_is_only_advertised_during_sketch_edit() -> None:
+    definitions = {
+        definition.name: definition for definition in common_capability_definitions()
+    }
+    capture = next(
+        variant
+        for variant in definitions["view.control"].variants
+        if variant.operation == "capture_active_sketch"
+    )
+
+    assert capture.surface_ids == frozenset({"sketch.edit"})
 
 
 def test_exact_targets_and_arrays_are_bounded_in_final_common_schemas() -> None:
@@ -123,6 +160,16 @@ def test_exact_targets_and_arrays_are_bounded_in_final_common_schemas() -> None:
     )
     assert mass_targets["items"]["required"] == ["object_name"]
     assert set(mass_targets["items"]["properties"]) == {"object_name"}
+
+    combined = definitions["inspect.query"].provider_schema(
+        ("mass_properties", "element")
+    )["parameters"]
+    assert "oneOf" not in combined
+    assert combined["properties"]["targets"]["type"] == "array"
+    combined_target = combined["properties"]["targets"]["items"]
+    assert combined_target["additionalProperties"] is False
+    assert set(combined_target["properties"]) == {"object_name", "subelement"}
+    assert combined_target["required"] == ["object_name"]
     capture_branches = {
         "capture_objects": definitions["view.control"].provider_schema(
             ("capture_objects",)

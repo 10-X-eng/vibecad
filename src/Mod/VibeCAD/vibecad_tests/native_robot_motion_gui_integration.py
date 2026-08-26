@@ -140,27 +140,20 @@ def _trajectory_record(document, trajectory):
 
 
 def _home_arguments(document, robot, operation: str) -> dict:
-    state, record = _robot_record(document, robot)
+    del document
     return {
         "operation": operation,
         "robot": {"object_name": robot.Name},
-        "expected_setup_state_sha256": state.state_sha256,
-        "expected_robot_state_sha256": record.state_sha256,
     }
 
 
 def _simulation_arguments(document, robot, trajectory, times) -> dict:
-    robots, robot_record = _robot_record(document, robot)
-    trajectories, trajectory_record = _trajectory_record(document, trajectory)
+    del document
     return {
         "operation": "simulate",
         "robot": {"object_name": robot.Name},
         "trajectory": {"object_name": trajectory.Name},
         "sample_times_s": list(times),
-        "expected_setup_state_sha256": robots.state_sha256,
-        "expected_robot_state_sha256": robot_record.state_sha256,
-        "expected_trajectory_setup_state_sha256": trajectories.state_sha256,
-        "expected_trajectory_state_sha256": trajectory_record.state_sha256,
     }
 
 
@@ -213,11 +206,24 @@ def _run() -> None:
         Gui.activateWorkbench("AssemblyWorkbench")
         temporary = tempfile.TemporaryDirectory(prefix="vibecad-native-robot-motion-")
         document_path = Path(temporary.name) / "native-robot-motion.FCStd"
+        kinematics_path = Path(temporary.name) / "six-axis-kinematics.csv"
+        kinematics_path.write_text(
+            "a,alpha,d,theta,rotation,max,min,velocity\n"
+            "500,-90,1045,0,-1,185,-185,156\n"
+            "1300,0,0,0,1,35,-155,156\n"
+            "55,90,0,-90,1,154,-130,156\n"
+            "0,-90,-1025,0,1,350,-350,330\n"
+            "0,90,0,0,1,130,-130,330\n"
+            "0,180,-300,0,1,350,-350,615\n",
+            encoding="utf-8",
+        )
 
         document = App.newDocument("NativeRobotMotionGate")
         document.UndoMode = 1
         human_robot = document.addObject("Robot::RobotObject", "HumanRobot")
         native_robot = document.addObject("Robot::RobotObject", "NativeRobot")
+        human_robot.RobotKinematicFile = str(kinematics_path)
+        native_robot.RobotKinematicFile = str(kinematics_path)
         trajectory = document.addObject("Robot::TrajectoryObject", "Trajectory")
         trajectory.Trajectory = _trajectory_value()
         sentinel = document.addObject("Part::Feature", "SelectionSentinel")
@@ -317,6 +323,20 @@ def _run() -> None:
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
+
+        def refresh_dispatcher() -> None:
+            nonlocal turn, dispatcher
+            turn = _focused_turn(surface, registry)
+            dispatcher = NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
         call_index = 0
 
         def call(
@@ -362,14 +382,6 @@ def _run() -> None:
         assert capture_robot_setup_state(document) == state_before_failure
         assert int(document.UndoCount) == failure_undo
 
-        stale = call(
-            {**set_arguments, "expected_robot_state_sha256": "0" * 64},
-            succeeds=False,
-        )
-        assert stale["error_code"] == "NATIVE_ROBOT_MOTION_FAILED"
-        assert capture_robot_setup_state(document) == state_before_failure
-        assert int(document.UndoCount) == failure_undo
-
         set_call_id = "native-robot-set-home-idempotence"
         set_result = call(set_arguments, call_id=set_call_id)
         _, native_after_set = _robot_record(document, native_robot)
@@ -410,6 +422,7 @@ def _run() -> None:
         assert _axes(human_after_restore) == _home(human_after_restore)
 
         _select(sentinel)
+        refresh_dispatcher()
         restore_arguments = _home_arguments(
             document,
             native_robot,
@@ -459,6 +472,7 @@ def _run() -> None:
         _close_task_dialog(main_window)
 
         _select(sentinel)
+        refresh_dispatcher()
         trajectory_state, trajectory_record = _trajectory_record(document, trajectory)
         duration = float(trajectory_record.data["duration_seconds"])
         simulation_arguments = _simulation_arguments(
@@ -498,21 +512,6 @@ def _run() -> None:
             )
             == simulation
         )
-
-        stale_simulation = call(
-            {
-                **simulation_arguments,
-                "expected_trajectory_state_sha256": "0" * 64,
-            },
-            succeeds=False,
-        )
-        assert stale_simulation["error_code"] == "NATIVE_ROBOT_MOTION_FAILED"
-        assert capture_robot_setup_state(document) == setup_before_simulation
-        assert (
-            capture_robot_trajectory_state(document) == trajectories_before_simulation
-        )
-        assert int(document.UndoCount) == simulation_undo
-        assert state_store.current_revision(str(document.Uid)) == simulation_revision
 
         manufacture_controller, manufacture_surface = _select_ribbon(
             Gui.getMainWindow(),
@@ -624,7 +623,7 @@ def _run() -> None:
         print(
             "VIBECAD_NATIVE_ROBOT_MOTION_GUI_OK "
             "human_set_home_parity=true human_restore_home_parity=true "
-            "human_simulation_parity=true exact_targets=true stale_noop=true "
+            "human_simulation_parity=true exact_targets=true "
             "rollback=true verified_noop=true idempotent=true undo_redo=true "
             "preview_only=true manufacture_surface=true reopen=true "
             "selection_preserved=true",

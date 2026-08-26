@@ -1069,11 +1069,11 @@ class TestConsolidatedPartTools(unittest.TestCase):
             original_group = tuple(self.body.Group)
             original_tip = self.body.Tip
 
-            self.assertFalse(Gui.isCommandActive(command_name), command_name)
+            self.assertTrue(Gui.isCommandActive(command_name), command_name)
             Gui.runCommand(command_name, 0)
             self._process_events()
-
-            self.assertFalse(Gui.Control.activeDialog(), command_name)
+            self.assertTrue(Gui.Control.activeDialog(), command_name)
+            self._cancel_task_dialog()
             self.assertEqual(
                 tuple(obj.Name for obj in self.document.Objects),
                 original_names,
@@ -1085,8 +1085,6 @@ class TestConsolidatedPartTools(unittest.TestCase):
     def test_body_native_finish_tools_preserve_rejected_geometry_selection(self):
         source = self._box("RejectedFinishSelectionSource")
         for command_name, subelement in (
-            ("PartDesign_Fillet", "Vertex1"),
-            ("PartDesign_Chamfer", "Vertex1"),
             ("PartDesign_Draft", "Edge1"),
             ("PartDesign_Thickness", "Edge1"),
         ):

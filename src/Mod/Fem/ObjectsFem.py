@@ -1089,6 +1089,19 @@ def makeSolverElmer(doc, name="SolverElmer"):
     return obj
 
 
+def makeSolverOpenFOAM(doc, name="SolverOpenFOAM"):
+    """Create an OpenFOAM solver object."""
+    obj = doc.addObject("Fem::FemSolverObjectPython", name)
+    from femobjects import solver_openfoam
+
+    solver_openfoam.SolverOpenFOAM(obj)
+    if FreeCAD.GuiUp:
+        from femviewprovider import view_solver_openfoam
+
+        view_solver_openfoam.VPSolverOpenFOAM(obj.ViewObject)
+    return obj
+
+
 def makeSolverMystran(doc, name="SolverMystran"):
     """makeSolverMystran(document, [name]):
     makes a Mystran solver object"""

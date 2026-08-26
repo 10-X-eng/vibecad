@@ -24,6 +24,16 @@ def _frozen_copy(value: Any) -> Any:
     return json.loads(json.dumps(value))
 
 
+def _completed_document_change(name: str, result: Mapping[str, Any]) -> bool:
+    job = result.get("job")
+    return bool(
+        name == "native.job"
+        and isinstance(job, Mapping)
+        and job.get("terminal") is True
+        and job.get("document_changed") is True
+    )
+
+
 class NativeProviderToolRunner:
     """Expose a dispatcher to providers without exposing host bookkeeping."""
 
@@ -61,6 +71,7 @@ class NativeProviderToolRunner:
         self._steering = steering_check
         self._closed = False
         self._turn_transition_requested = False
+        self._pending_context: dict[str, Any] | None = None
 
     def __call__(
         self,
@@ -115,6 +126,47 @@ class NativeProviderToolRunner:
                 "error_code": "NATIVE_RESULT_INVALID",
                 "error": "Native dispatch returned no result object.",
             }
+        if result.get("ok") is True and result.get("next_turn_required") is not True:
+            try:
+                refreshed = dict(self._refresh_context())
+            except Exception:
+                refreshed = {}
+            if refreshed:
+                self._pending_context = refreshed
+                live_surface = refreshed.get("provider_tool_surface")
+                live = dict(live_surface) if isinstance(live_surface, Mapping) else {}
+                frozen_authority = tuple(
+                    self._frozen_surface.get(name)
+                    for name in ("engine", "domain", "surface_id")
+                )
+                live_authority = tuple(
+                    live.get(name) for name in ("engine", "domain", "surface_id")
+                )
+                if (
+                    live_authority == frozen_authority
+                    and live.get("schema_sha256")
+                    and live.get("schema_sha256")
+                    != self._frozen_surface.get("schema_sha256")
+                ):
+                    result = {
+                        **result,
+                        "provider_surface_changed": True,
+                        "next_turn_required": True,
+                        "next_surface": str(live.get("domain") or ""),
+                    }
+                    self._turn_transition_requested = True
+        if (
+            result.get("ok") is True
+            and result.get("next_turn_required") is not True
+            and _completed_document_change(name, result)
+        ):
+            result = {
+                **result,
+                "provider_surface_changed": True,
+                "next_turn_required": True,
+                "next_surface": str(self._frozen_surface.get("domain") or ""),
+            }
+            self._turn_transition_requested = True
         steering = []
         if self._steering is not None:
             try:
@@ -148,7 +200,7 @@ class NativeProviderToolRunner:
                 "elapsed_seconds": elapsed,
             },
         )
-        return result
+        return {**result, "_vibecad_native_result": True}
 
     def turn_transition_requested(self) -> bool:
         """Return whether an exact CAD transition ended this frozen turn."""
@@ -156,10 +208,14 @@ class NativeProviderToolRunner:
         return self._turn_transition_requested
 
     def provider_update(self) -> dict[str, Any]:
-        try:
-            context = dict(self._refresh_context())
-        except Exception:
-            context = {}
+        if self._pending_context is not None:
+            context = self._pending_context
+            self._pending_context = None
+        else:
+            try:
+                context = dict(self._refresh_context())
+            except Exception:
+                context = {}
         live_surface = context.get("provider_tool_surface")
         live = dict(live_surface) if isinstance(live_surface, Mapping) else {}
         frozen_identity = (

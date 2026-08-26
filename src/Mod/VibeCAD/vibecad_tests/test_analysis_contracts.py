@@ -115,6 +115,30 @@ def _legacy_request(root: Path):
     )
 
 
+def test_fem_adapter_adopts_authenticated_isolated_worker_result(
+    tmp_path: Path,
+) -> None:
+    request = _legacy_request(tmp_path / "isolated-fem-job")
+    prepared = legacy.PreparedSolverExecution(
+        request=request,
+        stages=({"stage": 1, "program": "ccx", "exit_code": 0},),
+    )
+
+    completed = installed_adapter.adopt_isolated_solver_execution(
+        prepared,
+        document_uid="doc-isolated",
+    )
+
+    assert completed.legacy_prepared is prepared
+    assert completed.analysis.source_document_uid == "doc-isolated"
+    assert completed.analysis.input_manifest.sha256 == request.input_sha256
+    assert completed.analysis.input_manifest.file_count == request.input_file_count
+    assert completed.analysis.execution_spec.provider_id == "local-process"
+    assert completed.analysis.provenance.to_value()[
+        "authenticated_isolated_worker"
+    ] is True
+
+
 def test_fem_adapter_preserves_preparation_identity_and_migrated_execution_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -314,7 +314,12 @@ def _run() -> None:
                 "label": "Normal Face Force",
                 "references": _references(box, "Face1"),
                 "force_n": 100.0,
-                "direction": {"kind": "normal", "reversed": False},
+                "direction": {
+                    "kind": "vector",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "z": -1.0,
+                },
             },
         )
         force = document.getObject(force_result["created_load"]["object_name"])
@@ -326,7 +331,7 @@ def _run() -> None:
                 "analysis": _analysis_target(current_analysis),
                 "label": "Face Pressure",
                 "references": _references(box, "Face2", "Face3"),
-                "pressure_pa": 500000.0,
+                "pressure_pa": 13888888.88888889,
                 "reversed": False,
             },
         )
@@ -374,8 +379,17 @@ def _run() -> None:
 
         assert math.isclose(force.Force.getValueAs("N").Value, 100.0)
         assert force.Direction is None
-        assert force.DirectionVector.Length > 0.99
-        assert math.isclose(pressure.Pressure.getValueAs("Pa").Value, 500000.0)
+        assert tuple(force.DirectionVector) == (0.0, 0.0, -1.0)
+        assert force_result["created_load"]["definition"]["direction"] == {
+            "kind": "vector",
+            "x": 0.0,
+            "y": 0.0,
+            "z": -1.0,
+        }
+        assert math.isclose(
+            pressure.Pressure.getValueAs("Pa").Value,
+            13888888.88888889,
+        )
         assert math.isclose(
             centrifugal.RotationFrequency.getValueAs("1/s").Value,
             25.0,
@@ -470,6 +484,27 @@ def _run() -> None:
         assert stale["error_code"] == "NATIVE_ANALYZE_STATE_STALE"
         assert math.isclose(force.Force.getValueAs("N").Value, 240.0)
 
+        vector_update = call(
+            ANALYZE_LOAD_CAPABILITY_NAME,
+            {
+                "operation": "update_force",
+                "target": _load_target(load_state(force)),
+                "direction": {
+                    "kind": "vector",
+                    "x": 0.0,
+                    "y": -1.0,
+                    "z": 0.0,
+                },
+            },
+        )
+        assert vector_update["updated_load"]["definition"]["direction"] == {
+            "kind": "vector",
+            "x": 0.0,
+            "y": -1.0,
+            "z": 0.0,
+        }
+        assert tuple(force.DirectionVector) == (0.0, -1.0, 0.0)
+
         loads = (force, pressure, centrifugal, gravity)
         read_revision = state.current_revision(str(document.Uid))
         for load in loads:
@@ -495,11 +530,25 @@ def _run() -> None:
         )
 
         document.undo()
+        assert load_state(force)["definition"]["direction"] == force_update[
+            "updated_load"
+        ]["definition"]["direction"]
+        assert load_state(gravity)["definition"] == gravity_update["updated_load"][
+            "definition"
+        ]
+        document.undo()
         assert load_state(gravity)["state_sha256"] == gravity_before["state_sha256"]
         document.redo()
         assert load_state(gravity)["definition"] == gravity_update["updated_load"][
             "definition"
         ]
+        document.redo()
+        assert load_state(force)["definition"]["direction"] == {
+            "kind": "vector",
+            "x": 0.0,
+            "y": -1.0,
+            "z": 0.0,
+        }
 
         expected = {obj.Name: load_state(obj) for obj in loads}
         analysis_name = analysis.Name

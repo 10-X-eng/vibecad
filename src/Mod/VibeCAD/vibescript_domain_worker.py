@@ -259,6 +259,8 @@ def _execute_source(
                     namespace,
                     namespace,
                 )
+                if "result" not in namespace and callable(namespace.get("main")):
+                    namespace["result"] = namespace["main"]()
         except BaseException as exc:
             # Source-authored diagnostics are useful precisely when execution
             # fails. Carry the same bounded text to the outer worker failure

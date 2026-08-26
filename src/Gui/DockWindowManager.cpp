@@ -169,10 +169,11 @@ void presentPermanentModelBrowser(QDockWidget* dock)
     toggle->setEnabled(false);
     toggle->setVisible(false);
 
-    host->show();
     dock->show();
     dock->raise();
-    host->raise();
+    if (host->isVisible()) {
+        host->raise();
+    }
 }
 
 }  // namespace

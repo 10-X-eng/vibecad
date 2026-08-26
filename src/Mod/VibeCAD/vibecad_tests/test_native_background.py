@@ -12,6 +12,7 @@ from VibeCADNativeBackground import (
     NativeBackgroundError,
     NativeBackgroundManager,
 )
+from VibeCADNativeBackgroundRuntime import _summary
 
 
 def _callbacks(*, prepare, validate=lambda: None, commit=lambda value: value):
@@ -56,6 +57,55 @@ def test_submit_returns_while_detached_preparation_is_running() -> None:
     completed = manager.wait(submitted.job_id, 2.0)
     assert completed.phase == "completed"
     assert completed.result == {"mesh": "ready"}
+
+
+def test_running_job_summary_tells_provider_to_wait_without_inferring_a_hang() -> None:
+    manager = NativeBackgroundManager()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def prepare(_cancelled, progress):
+        progress(20, "Generating CalculiX input deck")
+        entered.set()
+        release.wait(1.0)
+        return {"deck": "ready"}
+
+    submitted = manager.submit(**_callbacks(prepare=prepare))
+    assert entered.wait(1.0)
+    summary = _summary(manager.snapshot(submitted.job_id))
+    release.set()
+    manager.wait(submitted.job_id, 2.0)
+
+    assert summary["worker_state"] == "active"
+    assert summary["recommended_poll_seconds"] >= 10
+    assert summary["elapsed_seconds"] >= 0
+    assert summary["seconds_since_progress"] >= 0
+    assert summary["guidance"] == (
+        "Continue waiting. Do not cancel an active job solely because its percent "
+        "is unchanged."
+    )
+
+
+def test_completed_mutating_job_reports_its_document_change() -> None:
+    manager = NativeBackgroundManager()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def prepare(_cancelled, _progress):
+        entered.set()
+        release.wait(1.0)
+        return {"mesh": "ready"}
+
+    submitted = manager.submit(
+        **_callbacks(prepare=prepare),
+        changes_document=True,
+    )
+    assert entered.wait(1.0)
+    assert submitted.document_changed is False
+    release.set()
+    completed = manager.wait(submitted.job_id, 2.0)
+
+    assert completed.document_changed is True
 
 
 def test_cooperative_cancel_never_dispatches_a_commit() -> None:
@@ -144,6 +194,35 @@ def test_surface_or_document_validation_failure_prevents_commit() -> None:
         "repair": {"resume_next_turn": True},
     }
     assert commits == []
+
+
+def test_long_background_failure_keeps_the_actionable_tail() -> None:
+    class SolverFailed(RuntimeError):
+        def failure(self):
+            return {
+                "error_code": "NATIVE_ANALYZE_SOLVER_BACKEND_FAILED",
+                "message": (
+                    "Openfoam stage 1 exited with code 1: "
+                    + "banner " * 80
+                    + "FATAL: patch Face2 is missing from the mesh"
+                ),
+            }
+
+    manager = NativeBackgroundManager()
+    submitted = manager.submit(
+        **_callbacks(
+            prepare=lambda _cancelled, _progress: (_ for _ in ()).throw(
+                SolverFailed()
+            )
+        )
+    )
+    failed = manager.wait(submitted.job_id, 2.0)
+
+    assert len(failed.error["message"]) <= 320
+    assert failed.error["message"].startswith("Openfoam stage 1 exited")
+    assert failed.error["message"].endswith(
+        "FATAL: patch Face2 is missing from the mesh"
+    )
 
 
 def test_cleanup_receives_prepared_value_even_when_commit_validation_fails() -> None:

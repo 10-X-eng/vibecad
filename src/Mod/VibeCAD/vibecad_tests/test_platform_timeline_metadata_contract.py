@@ -663,6 +663,9 @@ def test_measurements_only_read_the_current_history_state():
     assert "isTimelineSelectionActive(object)" in measure
     assert "isTimelineSelectionActive(subObject)" in measure
     assert "isTimelineSelectionActive(pickedObject)" in mass
+    assert "isPresentedForMassProperties" in mass
+    assert "viewProvider->isShow()" in mass
+    assert "viewProvider && !viewProvider->Visibility.getValue()" not in mass
     assert (
         "isTimelineSelectionActive(\n                occurrence.materialOwner" in mass
     )

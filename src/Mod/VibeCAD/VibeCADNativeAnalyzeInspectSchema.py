@@ -24,12 +24,36 @@ from VibeCADNativeAnalyzeMeshOutputSchema import FEM_MESH_OBJECT_TARGET
 from VibeCADNativeAnalyzeSolverSchema import SOLVER_TARGET
 from VibeCADNativeAnalyzeEquationSchema import EQUATION_TARGET
 from VibeCADNativeAnalyzeResultState import RESULT_TARGET
+from VibeCADNativeAnalyzeAssignments import ASSIGNMENT_CATEGORIES
 
 
 ANALYZE_INSPECT_CAPABILITY_NAME = "analyze.inspect"
+ANALYZE_MATERIAL_CATALOG = "analyze.material_catalog"
+
+_MATERIAL_CATALOG_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string", "maxLength": 160},
+        "category": {
+            "type": "string",
+            "enum": ["solid", "fluid", "any"],
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 25,
+            "default": 25,
+        },
+    },
+    "required": ["query", "category"],
+    "additionalProperties": False,
+}
 
 _EXACT_TARGET_BY_OPERATION = {
+    "study": "ExactFemStudyState",
     "analysis": "ExactFemAnalysisState",
+    "assignments": "BoundedExactFemAssignmentPage",
+    "validate_assignments": "ExactFemAssignmentValidation",
     "material": "ExactFemMaterialState",
     "material_catalog": "BoundedMaterialCatalogQuery",
     "element_definition": "ExactFemElementDefinitionState",
@@ -50,7 +74,12 @@ _EXACT_TARGET_BY_OPERATION = {
 
 
 def _variant(
-    operation: str, description: str, action_id: str, parameters: dict
+    operation: str,
+    description: str,
+    action_id: str,
+    parameters: dict,
+    *,
+    provider_supplemental: bool = False,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
@@ -64,6 +93,7 @@ def _variant(
         transaction_behavior="none",
         background_required=False,
         parameters=parameters,
+        provider_supplemental=provider_supplemental,
     )
 
 
@@ -78,9 +108,55 @@ def analyze_inspect_capability_definition() -> NativeCapabilityDefinition:
         primary_classification="read",
         variants=(
             _variant(
+                "study",
+                "Read intent, completeness, runtimes, and next requirements for one study.",
+                "VibeCAD_AnalyzeReadStudy",
+                {
+                    "type": "object",
+                    "properties": {"target": _ANALYSIS_TARGET},
+                    "required": ["target"],
+                    "additionalProperties": False,
+                },
+                provider_supplemental=True,
+            ),
+            _variant(
                 "analysis",
                 "Read exact membership and readiness counts for one current FEM analysis.",
                 "VibeCAD_AnalyzeReadAnalysis",
+                {
+                    "type": "object",
+                    "properties": {"target": _ANALYSIS_TARGET},
+                    "required": ["target"],
+                    "additionalProperties": False,
+                },
+            ),
+            _variant(
+                "assignments",
+                "List exact physical values and geometry targets for current study assignments.",
+                "VibeCAD_AnalyzeReadAssignments",
+                {
+                    "type": "object",
+                    "properties": {
+                        "target": _ANALYSIS_TARGET,
+                        "category": {
+                            "type": "string",
+                            "enum": ["all", *ASSIGNMENT_CATEGORIES],
+                        },
+                        "offset": {"type": "integer", "minimum": 0},
+                        "page_size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 64,
+                        },
+                    },
+                    "required": ["target", "category", "offset", "page_size"],
+                    "additionalProperties": False,
+                },
+            ),
+            _variant(
+                "validate_assignments",
+                "Validate every current assignment object and referenced geometry target.",
+                "VibeCAD_AnalyzeValidateAssignments",
                 {
                     "type": "object",
                     "properties": {"target": _ANALYSIS_TARGET},
@@ -103,19 +179,7 @@ def analyze_inspect_capability_definition() -> NativeCapabilityDefinition:
                 "material_catalog",
                 "Search installed material cards by words and category; returns at most 25 exact UUIDs.",
                 "VibeCAD_AnalyzeSearchMaterialCatalog",
-                {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "maxLength": 160},
-                        "category": {
-                            "type": "string",
-                            "enum": ["any", "solid", "fluid"],
-                        },
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 25},
-                    },
-                    "required": ["query", "category", "limit"],
-                    "additionalProperties": False,
-                },
+                _MATERIAL_CATALOG_PARAMETERS,
             ),
             _variant(
                 "element_definition",
@@ -239,10 +303,15 @@ def analyze_inspect_capability_definition() -> NativeCapabilityDefinition:
                             "type": "string",
                             "enum": ["primary", "volume", "face", "edge", "zero_d", "ball"],
                         },
-                        "offset": {"type": "integer", "minimum": 0},
-                        "page_size": {"type": "integer", "minimum": 1, "maximum": 64},
+                        "offset": {"type": "integer", "minimum": 0, "default": 0},
+                        "page_size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 64,
+                            "default": 64,
+                        },
                     },
-                    "required": ["target", "element_kind", "offset", "page_size"],
+                    "required": ["target", "element_kind"],
                     "additionalProperties": False,
                 },
             ),
@@ -300,9 +369,34 @@ def analyze_inspect_capability_definition() -> NativeCapabilityDefinition:
     )
 
 
+def analyze_material_catalog_capability_definition() -> NativeCapabilityDefinition:
+    description = "Find material_name values and properties."
+    return NativeCapabilityDefinition(
+        name=ANALYZE_MATERIAL_CATALOG,
+        description=description,
+        primary_classification="read",
+        variants=(
+            NativeCapabilityVariant(
+                operation="search",
+                description=description,
+                action_ids=frozenset(
+                    {"VibeCAD_AnalyzeSearchMaterialCatalogFocused"}
+                ),
+                surface_ids=frozenset({"analyze"}),
+                exact_target_type="BoundedMaterialCatalogQuery",
+                transaction_behavior="none",
+                background_required=False,
+                parameters=_MATERIAL_CATALOG_PARAMETERS,
+                provider_supplemental=True,
+            ),
+        ),
+    )
+
+
 def register_analyze_inspect_capability_definition(
     registry: NativeCapabilityRegistry,
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
     registry.register_definition(analyze_inspect_capability_definition())
+    registry.register_definition(analyze_material_catalog_capability_definition())

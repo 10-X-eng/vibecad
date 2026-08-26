@@ -18,8 +18,8 @@ import UtilsAssembly
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeAssemblyComponents import assembly_components
-from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
-from VibeCADNativeAssemblyJointSchema import assembly_joint_capability_definition
+from VibeCADNativeAssemblyJointBindings import ASSEMBLY_GROUND_CAPABILITY_NAME
+from VibeCADNativeAssemblyJointSchema import assembly_ground_capability_definition
 from VibeCADNativeAssemblySnapshot import build_assembly_snapshot
 from VibeCADNativeCapabilityRegistry import (
     NativeProviderSurface,
@@ -64,15 +64,15 @@ def _select_assemble_ribbon(main_window) -> None:
 def _focused_turn(surface, registry) -> NativeTurnSnapshot:
     state_definition = registry.definition("state.read")
     assert state_definition is not None
-    joint_definition = assembly_joint_capability_definition()
+    ground_definition = assembly_ground_capability_definition()
     provider_surface = NativeProviderSurface(
         snapshot=NativeSurfaceSnapshot.from_surface(surface),
         available=True,
         unavailable_reason="",
-        tool_names=("state.read", ASSEMBLY_JOINT_CAPABILITY_NAME),
+        tool_names=("state.read", ASSEMBLY_GROUND_CAPABILITY_NAME),
         schemas=(
             state_definition.provider_schema(("active", "selection")),
-            joint_definition.provider_schema(("set_grounded",)),
+            ground_definition.provider_schema(("set_grounded", "set_movable")),
         ),
         human_only_action_ids=("Assembly_ActivateAssembly",),
         missing_definition_names=(),
@@ -114,20 +114,10 @@ def _placement_locked(component) -> bool:
     )
 
 
-def _ground_arguments(assembly, components, *, grounded, grounded_count):
+def _ground_arguments(assembly, components, *, grounded):
     return {
-        "operation": "set_grounded",
-        "assembly": {"object_name": assembly.Name},
-        "targets": [
-            {
-                "component": {"object_name": component.Name},
-                "expected_grounded": not grounded,
-            }
-            for component in components
-        ],
-        "grounded": grounded,
-        "expected_component_count": 2,
-        "expected_grounded_count": grounded_count,
+        "operation": "set_grounded" if grounded else "set_movable",
+        "components": [component.Name for component in components],
     }
 
 
@@ -250,26 +240,24 @@ def _run() -> None:
         }
         assert all(
             component["grounded"] is False
-            and component["grounded_joint"] is None
             for component in active_summary["components"]
         )
         assert int(document.UndoCount) == 0
 
         before_invalid = tuple(document.Objects)
         invalid = native_call(
-            ASSEMBLY_JOINT_CAPABILITY_NAME,
+            ASSEMBLY_GROUND_CAPABILITY_NAME,
             {
                 **_ground_arguments(
                     assembly,
                     [component_a],
                     grounded=True,
-                    grounded_count=1,
                 ),
                 "expected_component_count": 2,
             },
             succeeds=False,
         )
-        assert invalid["error_code"] == "NATIVE_ASSEMBLY_GROUNDING_FAILED"
+        assert invalid["error_code"] == "NATIVE_ARGUMENTS_INVALID"
         assert tuple(document.Objects) == before_invalid
         assert int(document.UndoCount) == 0
 
@@ -277,9 +265,8 @@ def _run() -> None:
             assembly,
             [component_a, component_b],
             grounded=True,
-            grounded_count=0,
         )
-        ground = native_call(ASSEMBLY_JOINT_CAPABILITY_NAME, ground_arguments)
+        ground = native_call(ASSEMBLY_GROUND_CAPABILITY_NAME, ground_arguments)
         ground_call_id = f"assembly-grounding-call-{call_number}"
         ground_joint_names = tuple(
             target["grounded_joint"]["object_name"]
@@ -297,7 +284,7 @@ def _run() -> None:
         )
 
         replay = dispatcher.call(
-            ASSEMBLY_JOINT_CAPABILITY_NAME,
+            ASSEMBLY_GROUND_CAPABILITY_NAME,
             json.dumps(ground_arguments, separators=(",", ":")),
             ground_call_id,
         )
@@ -325,13 +312,21 @@ def _run() -> None:
         assert _placement_locked(component_b)
         assert Gui.activeDocument().getInEdit() is assembly.ViewObject
 
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state,
+            registry=registry,
+            turn=_focused_turn(surface, registry),
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         unground = native_call(
-            ASSEMBLY_JOINT_CAPABILITY_NAME,
+            ASSEMBLY_GROUND_CAPABILITY_NAME,
             _ground_arguments(
                 assembly,
                 [component_a],
                 grounded=False,
-                grounded_count=2,
             ),
         )
         assert unground["grounded"] is False

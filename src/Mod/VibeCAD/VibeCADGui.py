@@ -34,7 +34,7 @@ from VibeCADPromptStarters import (
 )
 from VibeCADSession import (
     _format_document_delta,
-    normalize_interaction_mode,
+    prewarm_analyze_context,
     rebuild_intent_memory,
     run_native_surface_continuation,
     run_prompt,
@@ -73,6 +73,8 @@ _conversation_persist_lock = threading.RLock()
 _assistant_document_refresh_scheduled = False
 _legacy_architecture_warning_documents: set[str] = set()
 _pending_document_render_refreshes: set[str] = set()
+_analyze_context_prewarm_thread: threading.Thread | None = None
+_analyze_context_prewarm_lock = threading.RLock()
 
 _IDLE_STATUS_TEXT = "Ready. Tell VibeCAD what to make or change."
 _PANEL_SPLITTER_PARAMETER = "PanelSplitterState"
@@ -1855,6 +1857,34 @@ def _set_status_line(text: str, *, dock: Any | None = None) -> None:
     label.setVisible(bool(clean) and clean != _IDLE_STATUS_TEXT)
 
 
+_ANALYZE_CONTEXT_STATUS_EVENTS = frozenset(
+    {
+        "analyze_context_cache_hit",
+        "analyze_context_progress",
+        "analyze_context_ready",
+    }
+)
+
+
+def _show_analyze_context_application_status(
+    event: dict[str, Any],
+    text: str,
+) -> None:
+    """Mirror Analyze preparation progress into FreeCAD's bottom status bar."""
+
+    event_name = str(event.get("event") or "")
+    if event_name not in _ANALYZE_CONTEXT_STATUS_EVENTS:
+        return
+    try:
+        status_bar = Gui.getMainWindow().statusBar()
+        timeout = 5000 if event_name != "analyze_context_progress" else 0
+        status_bar.showMessage(str(text or "").strip(), timeout)
+    except Exception:
+        # The assistant status line remains the fallback for headless tests and
+        # early startup, where FreeCAD may not have created its status bar yet.
+        return
+
+
 #: Failure stages where the tool call was rejected before touching the document.
 _PRE_EXECUTION_FAILURE_STAGES = frozenset(
     {"schema", "surface", "edit_state", "precondition"}
@@ -1888,6 +1918,12 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         return "Looking at the current VibeCAD document..."
     if name == "context_build_completed":
         return "I have the document context."
+    if name == "analyze_context_progress":
+        message = str(event.get("message") or "").strip()
+        return message or "Analyzing objects..."
+    if name in {"analyze_context_cache_hit", "analyze_context_ready"}:
+        revision = int(event.get("structural_revision", 0) or 0)
+        return f"Analyze context is ready for document revision {revision}."
     if name == "provider_subprocess_started":
         return f"{event.get('provider', 'Provider')} process started" + (
             f" | pid {event.get('pid')}" if event.get("pid") else ""
@@ -2099,6 +2135,11 @@ _PROGRESS_THINKING_EVENTS = {
 }
 
 _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
+    "analyze_context_cache_hit",
+    "analyze_context_progress",
+    "analyze_context_ready",
+    "context_build_completed",
+    "context_build_started",
     "document_recompute_waiting",
     "geometry_worker_started",
     "intent_memory_update_started",
@@ -2160,6 +2201,7 @@ def _handle_progress_event(
         return
     if _progress_event_should_update_status(event):
         _set_status_line(text, dock=dock)
+        _show_analyze_context_application_status(event, text)
     if _progress_event_should_append_thinking(event):
         _append_thinking(text)
 
@@ -2832,7 +2874,6 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     conversation_selector = _find_child("QComboBox", "VibeConversationSelector", dock)
     new_conversation = _find_child("QToolButton", "VibeNewConversation", dock)
     prompt_starters = _find_child("QToolButton", "VibePromptStarters", dock)
-    interaction_mode = _find_child("QComboBox", "VibeInteractionMode", dock)
     authoring_mode = _find_child("QComboBox", "VibeAuthoringMode", dock)
     composer_buttons = _find_child("QWidget", "VibeComposerButtons", dock)
 
@@ -2860,28 +2901,6 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         new_conversation.setEnabled(internal_available and document_ready and not busy)
     if prompt_starters is not None:
         prompt_starters.setEnabled(internal_available and document_ready and not busy)
-    if interaction_mode is not None:
-        try:
-            supports_plan = get_service().provider_name() in {
-                "openai",
-                "chatgpt",
-                "grok",
-            }
-        except Exception:
-            supports_plan = False
-        if not supports_plan and interaction_mode.currentData() == "plan":
-            interaction_mode.setCurrentIndex(0)
-        interaction_mode.setEnabled(
-            internal_available and document_ready and not busy and supports_plan
-        )
-        interaction_mode.setToolTip(
-            (
-                "Build can change the active document; Plan inspects it without "
-                "making changes"
-            )
-            if supports_plan
-            else "Plan mode requires ChatGPT, OpenAI, or Grok running through Codex"
-        )
     if authoring_mode is not None:
         _refresh_authoring_mode_selector(dock)
     if composer_buttons is not None:
@@ -3029,7 +3048,6 @@ def start_assistant_turn(prompt: str, *, source: str = "prompt") -> bool:
         dock,
         service,
         prompt=clean,
-        interaction_mode="build",
     )
     return True
 
@@ -3048,19 +3066,18 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
         return None
     for trace in reversed(list(getattr(response, "tool_trace", ()) or ())):
         tool_name = trace.get("tool_name") if isinstance(trace, dict) else None
-        if tool_name not in {
-            "workspace.switch",
-            "sketch.open",
-            "sketch.control",
-            "sketch.finish",
-        }:
-            continue
         result = trace.get("result")
         if not isinstance(result, dict) or result.get("ok") is not True:
             continue
         if result.get("next_turn_required") is not True:
             continue
-        if tool_name in {
+        provider_surface_changed = result.get("provider_surface_changed") is True
+        if provider_surface_changed:
+            next_surface = str(result.get("next_surface") or "").strip()
+            from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
+
+            workspace = str(NATIVE_WORKSPACE_BY_SURFACE.get(next_surface) or "")
+        elif tool_name in {
             "sketch.open",
             "sketch.control",
             "sketch.finish",
@@ -3069,11 +3086,13 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
             from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
 
             workspace = str(NATIVE_WORKSPACE_BY_SURFACE.get(next_surface) or "")
-        else:
+        elif tool_name == "workspace.switch":
             workspace = str(result.get("workspace") or "").strip()
             from VibeCADNativeWorkspaceSchema import NATIVE_SURFACE_BY_WORKSPACE
 
             next_surface = str(NATIVE_SURFACE_BY_WORKSPACE.get(workspace) or "")
+        else:
+            continue
         if not workspace or not next_surface:
             return None
         try:
@@ -3084,7 +3103,11 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
         except Exception:
             return None
         event = {
-            "type": "cad_workspace_changed",
+            "type": (
+                "cad_provider_surface_changed"
+                if provider_surface_changed
+                else "cad_workspace_changed"
+            ),
             "document_uid": str(getattr(document, "Uid", "") or "").strip(),
             "document_name": str(getattr(document, "Name", "") or "").strip(),
             "surface_id": next_surface,
@@ -3111,7 +3134,6 @@ def _execute_assistant_run(
     *,
     prompt: str | None = None,
     continuation_event: dict[str, Any] | None = None,
-    interaction_mode: str = "build",
 ) -> None:
     global _assistant_run_thread
     if not _internal_agent_allowed():
@@ -3126,11 +3148,6 @@ def _execute_assistant_run(
         )
         return
     clean_prompt = str(prompt or "").strip()
-    clean_interaction_mode = (
-        "build"
-        if continuation_event is not None
-        else normalize_interaction_mode(interaction_mode)
-    )
     if bool(clean_prompt) == bool(continuation_event):
         raise ValueError(
             "A VibeCAD run requires exactly one user prompt or continuation event."
@@ -3316,7 +3333,6 @@ def _execute_assistant_run(
             else:
                 response = run_prompt(
                     clean_prompt,
-                    interaction_mode=clean_interaction_mode,
                     **common_arguments,
                 )
         except BaseException as exc:
@@ -3535,17 +3551,12 @@ def _run_prompt_from_panel() -> None:
 
     # The background session persists the prompt after capturing only the
     # active document identity on the GUI thread.
-    interaction_mode = _find_child("QComboBox", "VibeInteractionMode", dock)
-    selected_mode = (
-        interaction_mode.currentData() if interaction_mode is not None else "build"
-    )
     _append_conversation("User", prompt)
     prompt_box.clear()
     _execute_assistant_run(
         dock,
         service,
         prompt=prompt,
-        interaction_mode=normalize_interaction_mode(selected_mode),
     )
 
 
@@ -3968,6 +3979,7 @@ def _schedule_assistant_document_refresh() -> None:
                 return
             _assistant_document_refresh_scheduled = False
             _refresh_assistant_for_document_change()
+            _schedule_analyze_context_prewarm()
 
         QtCore.QTimer.singleShot(0, refresh_when_restored)
     except Exception:
@@ -4633,16 +4645,6 @@ def _build_panel_widget():
     )
     prompt_starters.setMenu(prompt_starter_menu)
 
-    interaction_mode = QtWidgets.QComboBox(composer_buttons)
-    interaction_mode.setObjectName("VibeInteractionMode")
-    interaction_mode.addItem("Build", "build")
-    interaction_mode.addItem("Plan", "plan")
-    interaction_mode.setToolTip(
-        "Build can change the active document; Plan inspects it without making changes"
-    )
-    interaction_mode.setAccessibleName("Interaction mode")
-    interaction_mode.setEnabled(False)
-
     send_button = QtWidgets.QPushButton("Send", composer_buttons)
     send_button.setObjectName("VibeSend")
     send_button.setIcon(QtGui.QIcon(_icon_path(ICON_SEND)))
@@ -4664,7 +4666,6 @@ def _build_panel_widget():
     buttons_layout.addWidget(attach_button)
     buttons_layout.addWidget(attach_image_button)
     buttons_layout.addStretch(1)
-    buttons_layout.addWidget(interaction_mode)
     buttons_layout.addWidget(send_button)
     buttons_layout.addWidget(stop_button)
     _install_composer_width_filter(composer_buttons)
@@ -4777,6 +4778,56 @@ def show_assistant_for_active_workbench() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _schedule_analyze_context_prewarm() -> None:
+    """Warm Analyze provider state without occupying Qt or Native CAD jobs."""
+
+    global _analyze_context_prewarm_thread
+    with _analyze_context_prewarm_lock:
+        if (
+            _analyze_context_prewarm_thread is not None
+            and _analyze_context_prewarm_thread.is_alive()
+        ):
+            return
+
+        def progress(event: dict[str, Any]) -> None:
+            if not _progress_event_should_update_status(event):
+                return
+            text = _format_progress_event(event)
+            try:
+                _dispatch_to_document_thread(
+                    lambda: (
+                        _set_status_line(text, dock=_find_dock()),
+                        _show_analyze_context_application_status(event, text),
+                    )
+                )
+            except RuntimeError:
+                if not _application_shutting_down.is_set():
+                    raise
+
+        def run() -> None:
+            try:
+                prewarm_analyze_context(
+                    get_service(),
+                    _dispatch_to_document_thread,
+                    progress_callback=progress,
+                )
+            except Exception as exc:
+                from VibeCADNativeAnalyzeContext import (
+                    AnalyzeContextCancelled,
+                    AnalyzeContextStale,
+                )
+
+                if not isinstance(exc, (AnalyzeContextCancelled, AnalyzeContextStale)):
+                    _warn(f"VibeCAD Analyze context prewarm failed: {exc}")
+
+        _analyze_context_prewarm_thread = threading.Thread(
+            target=run,
+            name="VibeCAD-Analyze-context-prewarm",
+            daemon=True,
+        )
+        _analyze_context_prewarm_thread.start()
+
+
 def _on_workbench_activated(workbench_name: str) -> None:
     try:
         from VibeCADMCP import get_control_mode_controller
@@ -4818,6 +4869,7 @@ def _on_workbench_activated(workbench_name: str) -> None:
         _show_panel()
 
     QtCore.QTimer.singleShot(0, refresh_or_open)
+    QtCore.QTimer.singleShot(0, _schedule_analyze_context_prewarm)
 
 
 def _connect_workbench_activation() -> None:

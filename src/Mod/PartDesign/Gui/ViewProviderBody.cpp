@@ -34,6 +34,7 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/GeoFeatureGroupExtension.h>
 #include <App/Origin.h>
 #include <App/Part.h>
 #include <App/VarSet.h>
@@ -48,6 +49,7 @@
 #include <Gui/ViewProviderDatum.h>
 #include <Gui/ViewProviderDocumentObject.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/Component.h>
 #include <Mod/PartDesign/App/DesignFeature.h>
 #include <Mod/PartDesign/App/FeatureSketchBased.h>
 #include <Mod/PartDesign/App/FeatureBase.h>
@@ -68,7 +70,27 @@ struct BodyPresentationState
     fastsignals::scoped_connection documentStableConnection;
     fastsignals::scoped_connection documentRestoredConnection;
     bool adjustingResultVisibility {false};
+    bool adjustingComponentVisibility {false};
 };
+
+
+PartDesign::Component* enclosingComponent(const PartDesign::Body* body)
+{
+    if (!body || !body->isAttachedToDocument()) {
+        return nullptr;
+    }
+    auto* group = App::GeoFeatureGroupExtension::getGroupOfObject(
+        const_cast<PartDesign::Body*>(body)
+    );
+    return freecad_cast<PartDesign::Component*>(group);
+}
+
+bool enclosingComponentIsVisible(const PartDesign::Body* body)
+{
+    auto* component = enclosingComponent(body);
+    return !component || component->Visibility.getValue();
+}
+
 
 std::map<const ViewProviderBody*, BodyPresentationState>&
 bodyPresentationStates()
@@ -174,6 +196,23 @@ void ViewProviderBody::onChangedObject(const Gui::ViewProvider& vp, const App::P
     if (!body || !body->isAttachedToDocument()) {
         return;
     }
+
+    auto& presentationState = bodyPresentationStates()[this];
+    auto* component = enclosingComponent(body);
+    if (component && changedObj == component
+        && !presentationState.adjustingComponentVisibility) {
+        const bool visible = component->Visibility.getValue();
+        Base::FlagToggler<> guard(presentationState.adjustingComponentVisibility);
+        if (body->Visibility.getValue() != visible) {
+            visible ? show() : hide();
+        }
+        else {
+            setResultVisibility(visible && Visibility.getValue());
+        }
+        refreshOverlays();
+        return;
+    }
+
     const auto& features = body->Group.getValues();
     const bool isRelevantChange = (changedObj == body)
         || (std::ranges::find(features, changedObj) != features.end());
@@ -185,8 +224,18 @@ void ViewProviderBody::onChangedObject(const Gui::ViewProvider& vp, const App::P
         // controls exactly the current Tip.
         const bool isResult = changedObj != body
             && PartDesign::Body::isResultFeature(changedObj);
-        if (isResult
-            && !bodyPresentationStates()[this].adjustingResultVisibility
+        if (changedObj == body
+            && !presentationState.adjustingResultVisibility) {
+            // The Body eye must still hide or show the current Tip while a
+            // native feature task has a pending transaction. Full
+            // normalization waits for that task; the result solid must not.
+            setResultVisibility(Visibility.getValue());
+            if (!presentationState.adjustingComponentVisibility) {
+                syncEnclosingComponentVisibility(Visibility.getValue());
+            }
+        }
+        else if (isResult
+            && !presentationState.adjustingResultVisibility
             && body->getDocument()) {
             normalizeResultPresentation(*body->getDocument(), false);
         }
@@ -818,20 +867,25 @@ void ViewProviderBody::show()
     // The Body's scene container owns sketches, datums, and result features.
     // Keep it mounted, then expose exactly the current Tip as the one solid
     // represented by the Body row.
+    auto* body = getObject<PartDesign::Body>();
+    syncEnclosingComponentVisibility(true);
     useChildSceneMode();
     PartGui::ViewProviderPart::show();
 
+    const bool componentVisible = enclosingComponentIsVisible(body);
+
     // The regular show path may reject a child whose enclosing component is
-    // hidden. The physical container must nevertheless remain mounted so an
-    // independently visible sketch or datum can still draw. Normalize the
-    // result only at the same stable boundary used by undo/redo and native
-    // task completion; show() is also reached synchronously while those
-    // owners replay Visibility properties.
-    if (!Visibility.getValue()) {
+    // hidden. Remount the container only when that component is visible so a
+    // hidden McMaster-style Component cannot leave its Body drawn.
+    if (!Visibility.getValue() && componentVisible) {
         Gui::ViewProvider::show();
     }
-    if (auto* body = getObject<PartDesign::Body>();
-        body && body->getDocument()) {
+    // Honor the Body eye even while a native feature task holds a pending
+    // transaction. Full presentation restore still waits for that owner so
+    // TempoVis can keep a consumed sketch hidden, but selected bodies must
+    // still show or hide their current result.
+    setResultVisibility(Visibility.getValue());
+    if (body && body->getDocument()) {
         normalizeResultPresentation(*body->getDocument(), false);
     }
 }
@@ -840,15 +894,15 @@ void ViewProviderBody::hide()
 {
     // Let the regular implementation synchronize the persisted Visibility
     // property, then remount only the scene container. Its result children
-    // remain independently addressable. Stable-state normalization hides the
-    // result Tip; if this call is part of task teardown or transaction replay,
-    // it deliberately waits for that owner to finish before changing any
-    // child Visibility property.
+    // remain independently addressable while the enclosing Component is shown.
     PartGui::ViewProviderPart::hide();
     useChildSceneMode();
-    Gui::ViewProvider::show();
-    if (auto* body = getObject<PartDesign::Body>();
-        body && body->getDocument()) {
+    auto* body = getObject<PartDesign::Body>();
+    if (enclosingComponentIsVisible(body)) {
+        Gui::ViewProvider::show();
+    }
+    setResultVisibility(Visibility.getValue());
+    if (body && body->getDocument()) {
         normalizeResultPresentation(*body->getDocument(), false);
     }
 }
@@ -858,6 +912,52 @@ bool ViewProviderBody::isShow() const
     // The physical scene container may be mounted while the solid is hidden.
     // Report the logical state used by the Body eye and visibility commands.
     return Visibility.getValue();
+}
+
+void ViewProviderBody::syncEnclosingComponentVisibility(bool visible)
+{
+    auto* body = getObject<PartDesign::Body>();
+    auto* component = enclosingComponent(body);
+    auto& presentationState = bodyPresentationStates()[this];
+    if (!component || !component->isAttachedToDocument()
+        || presentationState.adjustingComponentVisibility) {
+        return;
+    }
+
+    if (visible) {
+        if (component->Visibility.getValue()) {
+            return;
+        }
+        Base::FlagToggler<> guard(presentationState.adjustingComponentVisibility);
+        if (auto* viewProvider = Gui::Application::Instance
+                ? Gui::Application::Instance->getViewProvider(component)
+                : nullptr) {
+            viewProvider->show();
+        }
+        else {
+            component->Visibility.setValue(true);
+        }
+        return;
+    }
+
+    for (auto* child : component->Group.getValues()) {
+        auto* other = freecad_cast<PartDesign::Body*>(child);
+        if (other && other != body && other->Visibility.getValue()) {
+            return;
+        }
+    }
+    if (!component->Visibility.getValue()) {
+        return;
+    }
+    Base::FlagToggler<> guard(presentationState.adjustingComponentVisibility);
+    if (auto* viewProvider = Gui::Application::Instance
+            ? Gui::Application::Instance->getViewProvider(component)
+            : nullptr) {
+        viewProvider->hide();
+    }
+    else {
+        component->Visibility.setValue(false);
+    }
 }
 
 void ViewProviderBody::setResultVisibility(bool visible)
@@ -875,12 +975,13 @@ void ViewProviderBody::setResultVisibility(bool visible)
         return;
     }
 
+    const bool showResult = visible && enclosingComponentIsVisible(body);
     App::DocumentObject* tip = body->Tip.getValue();
     for (auto* feature : body->Group.getValues()) {
         if (!feature || !PartDesign::Body::isResultFeature(feature)) {
             continue;
         }
-        const bool shouldShow = visible && feature == tip;
+        const bool shouldShow = showResult && feature == tip;
         auto* viewProvider = Gui::Application::Instance
             ? Gui::Application::Instance->getViewProvider(feature)
             : nullptr;

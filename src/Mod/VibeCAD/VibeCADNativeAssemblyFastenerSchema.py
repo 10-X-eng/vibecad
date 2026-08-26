@@ -18,30 +18,18 @@ from VibeCADNativeModelFastenerSchema import standard_fastener_definition_schema
 
 
 ASSEMBLY_FASTENER_CAPABILITY_NAME = "assembly.fastener"
-_COUNT = {"type": "integer", "minimum": 0, "maximum": 256}
-_STATE_SHA256 = {
-    "type": "string",
-    "minLength": 64,
-    "maxLength": 64,
-    "pattern": r"^[0-9a-f]{64}$",
-}
+ASSEMBLY_FASTENER_EDIT_CAPABILITY_NAME = "assembly.fastener_edit"
 
 
 def assembly_fastener_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ASSEMBLY_FASTENER_CAPABILITY_NAME,
-        description=(
-            "Create and modify exact standard-fastener occurrences in the "
-            "human-active Assembly."
-        ),
+        description="Insert a standard fastener into the active Assembly.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="insert_standard_fastener",
-                description=(
-                    "Insert one catalog-resolved hidden definition and one visible "
-                    "occurrence into the unchanged human-active Assembly."
-                ),
+                description="Insert one standard-fastener occurrence.",
                 action_ids=frozenset({"VibeCAD_InsertStandardFastener"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="HumanActiveAssemblyAndExactCatalogFastener",
@@ -49,35 +37,25 @@ def assembly_fastener_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=parameters_schema(
                     {
-                        "assembly": object_reference_schema(),
                         "label": LABEL_SCHEMA,
                         "definition": standard_fastener_definition_schema(),
-                        "expected_state_sha256": _STATE_SHA256,
-                        "expected_component_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 100_000,
-                        },
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": _COUNT,
                     },
-                    (
-                        "assembly",
-                        "label",
-                        "definition",
-                        "expected_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    ),
+                    ("label", "definition"),
                 ),
             ),
+        ),
+    )
+
+
+def assembly_fastener_edit_capability_definition() -> NativeCapabilityDefinition:
+    return NativeCapabilityDefinition(
+        name=ASSEMBLY_FASTENER_EDIT_CAPABILITY_NAME,
+        description="Edit an existing standard fastener occurrence.",
+        primary_classification="mutation",
+        variants=(
             NativeCapabilityVariant(
                 operation="edit_standard_fastener",
-                description=(
-                    "Edit the exact selected direct Assembly fastener definition "
-                    "in place without replacing its visible occurrence."
-                ),
+                description="Edit one standard-fastener occurrence in place.",
                 action_ids=frozenset({"VibeCAD_EditStandardFastener"}),
                 surface_ids=frozenset({"assemble"}),
                 exact_target_type="SelectedAssemblyFastenerOccurrenceAndDefinition",
@@ -85,33 +63,11 @@ def assembly_fastener_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=parameters_schema(
                     {
-                        "assembly": object_reference_schema(),
                         "occurrence": object_reference_schema(),
-                        "definition_source": object_reference_schema(),
                         "label": LABEL_SCHEMA,
                         "definition": standard_fastener_definition_schema(),
-                        "expected_fastener_state_sha256": _STATE_SHA256,
-                        "expected_state_sha256": _STATE_SHA256,
-                        "expected_component_count": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 100_000,
-                        },
-                        "expected_grounded_count": _COUNT,
-                        "expected_joint_count": _COUNT,
                     },
-                    (
-                        "assembly",
-                        "occurrence",
-                        "definition_source",
-                        "label",
-                        "definition",
-                        "expected_fastener_state_sha256",
-                        "expected_state_sha256",
-                        "expected_component_count",
-                        "expected_grounded_count",
-                        "expected_joint_count",
-                    ),
+                    ("occurrence", "label", "definition"),
                 ),
             ),
         ),
@@ -124,3 +80,4 @@ def register_assembly_fastener_capability_definition(
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
     registry.register_definition(assembly_fastener_capability_definition())
+    registry.register_definition(assembly_fastener_edit_capability_definition())

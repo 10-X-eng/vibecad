@@ -9,7 +9,26 @@ from typing import Any
 from VibeCADNativeAeroBindings import aero_solve_runtime_bindings
 from VibeCADNativeAeroRuntime import NativeAeroRuntime
 from VibeCADNativeAnalyzeInspectBindings import analyze_inspect_runtime_bindings
+from VibeCADNativeAnalyzeFaceBindings import analyze_face_runtime_bindings
+from VibeCADNativeAnalyzeFlowResultBindings import (
+    analyze_flow_presentation_runtime_bindings,
+    analyze_flow_result_runtime_bindings,
+)
+from VibeCADNativeAnalyzeMechanicalResultBindings import (
+    analyze_mechanical_presentation_runtime_bindings,
+    analyze_mechanical_result_runtime_bindings,
+)
+from VibeCADNativeAnalyzeThermalResultBindings import (
+    analyze_thermal_presentation_runtime_bindings,
+    analyze_thermal_result_runtime_bindings,
+)
 from VibeCADNativeAnalyzeInspectRuntime import NativeAnalyzeInspectRuntime
+from VibeCADNativeAnalyzeAssignmentViewBindings import (
+    analyze_assignment_view_runtime_bindings,
+)
+from VibeCADNativeAnalyzeAssignmentViewRuntime import (
+    NativeAnalyzeAssignmentViewRuntime,
+)
 from VibeCADNativeAnalyzeGeometryBindings import analyze_geometry_runtime_bindings
 from VibeCADNativeAnalyzeGeometryRuntime import NativeAnalyzeGeometryRuntime
 from VibeCADNativeAnalyzeElectromagneticBindings import (
@@ -19,12 +38,21 @@ from VibeCADNativeAnalyzeElectromagneticRuntime import (
     NativeAnalyzeElectromagneticRuntime,
 )
 from VibeCADNativeAnalyzeFluidBindings import analyze_fluid_runtime_bindings
+from VibeCADNativeAnalyzeFluidCreateBindings import (
+    analyze_fluid_create_runtime_bindings,
+)
+from VibeCADNativeAnalyzeCfdLifecycleBindings import (
+    analyze_cfd_lifecycle_runtime_bindings,
+)
 from VibeCADNativeAnalyzeFluidRuntime import NativeAnalyzeFluidRuntime
 from VibeCADNativeAnalyzeGeometricalBindings import (
     analyze_geometrical_runtime_bindings,
 )
 from VibeCADNativeAnalyzeGeometricalRuntime import NativeAnalyzeGeometricalRuntime
 from VibeCADNativeAnalyzeSupportBindings import analyze_support_runtime_bindings
+from VibeCADNativeAnalyzeStructuralLifecycleBindings import (
+    analyze_structural_lifecycle_runtime_bindings,
+)
 from VibeCADNativeAnalyzeSupportRuntime import NativeAnalyzeSupportRuntime
 from VibeCADNativeAnalyzeConnectionBindings import analyze_connection_runtime_bindings
 from VibeCADNativeAnalyzeConnectionRuntime import NativeAnalyzeConnectionRuntime
@@ -33,6 +61,9 @@ from VibeCADNativeAnalyzeLoadRuntime import NativeAnalyzeLoadRuntime
 from VibeCADNativeAnalyzeThermalBindings import analyze_thermal_runtime_bindings
 from VibeCADNativeAnalyzeThermalRuntime import NativeAnalyzeThermalRuntime
 from VibeCADNativeAnalyzeMeshBindings import analyze_mesh_runtime_bindings
+from VibeCADNativeAnalyzeMeshLifecycleBindings import (
+    analyze_mesh_lifecycle_runtime_bindings,
+)
 from VibeCADNativeAnalyzeMeshRuntime import NativeAnalyzeMeshRuntime
 from VibeCADNativeAnalyzeMeshFieldBindings import analyze_mesh_field_runtime_bindings
 from VibeCADNativeAnalyzeMeshFieldRuntime import NativeAnalyzeMeshFieldRuntime
@@ -40,6 +71,9 @@ from VibeCADNativeAnalyzeMeshOutputBindings import analyze_mesh_output_runtime_b
 from VibeCADNativeAnalyzeMeshOutputRuntime import NativeAnalyzeMeshOutputRuntime
 from VibeCADNativeAnalyzeMeshRefinementBindings import (
     analyze_mesh_refinement_runtime_bindings,
+)
+from VibeCADNativeAnalyzeLocalMeshBindings import (
+    analyze_local_mesh_runtime_bindings,
 )
 from VibeCADNativeAnalyzeMeshRefinementRuntime import (
     NativeAnalyzeMeshRefinementRuntime,
@@ -64,6 +98,7 @@ from VibeCADNativeAnalyzeSolverExecutionBindings import (
 from VibeCADNativeAnalyzeSolverExecutionRuntime import (
     NativeAnalyzeSolverExecutionRuntime,
 )
+from VibeCADNativeAnalyzeRunBindings import analyze_run_solver_runtime_bindings
 from VibeCADNativeAnalyzeEquationBindings import analyze_equation_runtime_bindings
 from VibeCADNativeAnalyzeEquationRuntime import NativeAnalyzeEquationRuntime
 from VibeCADNativeAnalyzeResultsBindings import analyze_results_runtime_bindings
@@ -88,10 +123,15 @@ from VibeCADNativeAnalyzeVisualizationRuntime import (
 )
 from VibeCADNativeAnalyzeModelBindings import analyze_model_runtime_bindings
 from VibeCADNativeAnalyzeModelRuntime import NativeAnalyzeModelRuntime
+from VibeCADNativeAnalyzeSolidDomainBindings import (
+    analyze_solid_domain_runtime_bindings,
+)
 from VibeCADNativeAssemblyDiagnosisBindings import (
     assembly_diagnosis_runtime_bindings,
 )
 from VibeCADNativeAssemblyDiagnosisRuntime import NativeAssemblyDiagnosisRuntime
+from VibeCADNativeAssemblyBomBindings import assembly_bom_runtime_bindings
+from VibeCADNativeAssemblyBomRuntime import NativeAssemblyBomRuntime
 from VibeCADNativeAssemblyFastenerBindings import assembly_fastener_runtime_bindings
 from VibeCADNativeAssemblyFastenerRuntime import NativeAssemblyFastenerRuntime
 from VibeCADNativeAssemblyExportBindings import assembly_export_runtime_bindings
@@ -408,6 +448,7 @@ def build_native_runtime_bindings(
         raise TypeError("context must be a NativeRuntimeContext")
     analyze_model = NativeAnalyzeModelRuntime(context)
     analyze_inspect = NativeAnalyzeInspectRuntime(context)
+    analyze_assignment_view = NativeAnalyzeAssignmentViewRuntime(context)
     analyze_geometry = NativeAnalyzeGeometryRuntime(context)
     analyze_electromagnetic = NativeAnalyzeElectromagneticRuntime(context)
     analyze_fluid = NativeAnalyzeFluidRuntime(context)
@@ -446,6 +487,7 @@ def build_native_runtime_bindings(
     mesh_rebuild = NativeReverseRuntime(context, "mesh.rebuild")
     mesh_approximate = NativeReverseRuntime(context, "mesh.approximate")
     assembly_diagnosis = NativeAssemblyDiagnosisRuntime(context)
+    assembly_bom = NativeAssemblyBomRuntime(context)
     assembly_fastener = NativeAssemblyFastenerRuntime(context)
     assembly_export = NativeAssemblyExportRuntime(context)
     assembly_inspect = NativeAssemblyInspectRuntime(context)
@@ -529,26 +571,45 @@ def build_native_runtime_bindings(
     aero_solve = NativeAeroRuntime(context)
     available = {
         **analyze_model_runtime_bindings(analyze_model),
+        **analyze_solid_domain_runtime_bindings(analyze_model),
         **analyze_inspect_runtime_bindings(analyze_inspect),
+        **analyze_face_runtime_bindings(analyze_inspect),
+        **analyze_flow_result_runtime_bindings(analyze_inspect),
+        **analyze_mechanical_result_runtime_bindings(analyze_inspect),
+        **analyze_thermal_result_runtime_bindings(analyze_inspect),
+        **analyze_assignment_view_runtime_bindings(analyze_assignment_view),
         **analyze_geometry_runtime_bindings(analyze_geometry),
         **analyze_electromagnetic_runtime_bindings(analyze_electromagnetic),
         **analyze_fluid_runtime_bindings(analyze_fluid),
+        **analyze_fluid_create_runtime_bindings(analyze_fluid),
+        **analyze_cfd_lifecycle_runtime_bindings(analyze_model, analyze_solver),
         **analyze_geometrical_runtime_bindings(analyze_geometrical),
         **analyze_support_runtime_bindings(analyze_support),
+        **analyze_structural_lifecycle_runtime_bindings(
+            analyze_model,
+            analyze_support,
+            analyze_load,
+        ),
         **analyze_connection_runtime_bindings(analyze_connection),
         **analyze_load_runtime_bindings(analyze_load),
         **analyze_thermal_runtime_bindings(analyze_thermal),
         **analyze_mesh_runtime_bindings(analyze_mesh),
+        **analyze_mesh_lifecycle_runtime_bindings(analyze_mesh),
         **analyze_mesh_field_runtime_bindings(analyze_mesh_field),
         **analyze_mesh_output_runtime_bindings(analyze_mesh_output),
         **analyze_mesh_refinement_runtime_bindings(analyze_mesh_refinement),
+        **analyze_local_mesh_runtime_bindings(analyze_mesh_refinement),
         **analyze_structured_mesh_runtime_bindings(analyze_structured_mesh),
         **analyze_solver_runtime_bindings(analyze_solver),
         **analyze_solver_control_runtime_bindings(analyze_solver_control),
         **analyze_solver_execution_runtime_bindings(analyze_solver_execution),
+        **analyze_run_solver_runtime_bindings(analyze_solver_execution),
         **analyze_equation_runtime_bindings(analyze_equation),
         **analyze_results_runtime_bindings(analyze_results),
         **analyze_presentation_runtime_bindings(analyze_presentation),
+        **analyze_flow_presentation_runtime_bindings(analyze_presentation),
+        **analyze_mechanical_presentation_runtime_bindings(analyze_presentation),
+        **analyze_thermal_presentation_runtime_bindings(analyze_presentation),
         **analyze_post_runtime_bindings(analyze_post),
         **analyze_post_function_runtime_bindings(analyze_post_function),
         **analyze_visualization_runtime_bindings(analyze_visualization),
@@ -568,6 +629,7 @@ def build_native_runtime_bindings(
         **mesh_points_runtime_bindings(mesh_points),
         **reverse_runtime_bindings(mesh_rebuild, mesh_approximate),
         **assembly_diagnosis_runtime_bindings(assembly_diagnosis),
+        **assembly_bom_runtime_bindings(assembly_bom),
         **assembly_fastener_runtime_bindings(assembly_fastener),
         **assembly_export_runtime_bindings(assembly_export),
         **assembly_inspect_runtime_bindings(assembly_inspect),

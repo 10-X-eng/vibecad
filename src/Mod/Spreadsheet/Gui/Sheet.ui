@@ -14,12 +14,46 @@
    <string notr="true">Form</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="leftMargin">
+    <number>12</number>
+   </property>
+   <property name="topMargin">
+    <number>12</number>
+   </property>
+   <property name="rightMargin">
+    <number>12</number>
+   </property>
+   <property name="bottomMargin">
+    <number>10</number>
+   </property>
+   <property name="spacing">
+    <number>10</number>
+   </property>
    <item>
-    <layout class="QGridLayout" name="gridLayout" columnstretch="0,3,0,1">
+    <widget class="QFrame" name="spreadsheetFormulaBar">
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <layout class="QGridLayout" name="gridLayout" columnstretch="0,3,0,1">
+      <property name="leftMargin">
+       <number>10</number>
+      </property>
+      <property name="topMargin">
+       <number>8</number>
+      </property>
+      <property name="rightMargin">
+       <number>10</number>
+      </property>
+      <property name="bottomMargin">
+       <number>8</number>
+      </property>
+      <property name="horizontalSpacing">
+       <number>8</number>
+      </property>
      <item row="0" column="0">
       <widget class="QLabel" name="label">
        <property name="text">
-        <string>&amp;Content</string>
+        <string>&amp;Value</string>
        </property>
        <property name="buddy">
         <cstring>cellContent</cstring>
@@ -54,7 +88,8 @@ Spreadsheet.my_alias_name instead of Spreadsheet.B1</string>
        </property>
       </widget>
      </item>
-    </layout>
+     </layout>
+    </widget>
    </item>
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout_2">
@@ -83,7 +118,23 @@ Spreadsheet.my_alias_name instead of Spreadsheet.B1</string>
     </layout>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="horizontalLayout">
+    <widget class="QFrame" name="spreadsheetFooter">
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <layout class="QHBoxLayout" name="horizontalLayout">
+      <property name="leftMargin">
+       <number>8</number>
+      </property>
+      <property name="topMargin">
+       <number>4</number>
+      </property>
+      <property name="rightMargin">
+       <number>8</number>
+      </property>
+      <property name="bottomMargin">
+       <number>4</number>
+      </property>
      <item>
       <widget class="QScrollBar" name="realSB_h">
        <property name="sizePolicy">
@@ -204,7 +255,8 @@ Spreadsheet.my_alias_name instead of Spreadsheet.B1</string>
        </property>
       </widget>
      </item>
-    </layout>
+     </layout>
+    </widget>
    </item>
   </layout>
  </widget>

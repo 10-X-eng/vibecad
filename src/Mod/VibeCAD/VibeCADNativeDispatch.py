@@ -302,6 +302,7 @@ class NativeTurnDispatcher:
         self._active_document = active_document
         self._debug_sink = debug_sink
         self._calls: OrderedDict[str, _CallRecord] = OrderedDict()
+        self._expected_revision = state.current_revision(self._document_uid)
         self._lock = threading.RLock()
         self._auto_apply_previews = False
         self._auto_applying = False
@@ -325,6 +326,32 @@ class NativeTurnDispatcher:
     def _guard(self) -> None:
         self._reauthorize_turn()
         self._guard_document()
+
+    def _guard_revision(self) -> None:
+        current = self._state.current_revision(self._document_uid)
+        if current != self._expected_revision:
+            for record in self._calls.values():
+                ticket = record.ticket
+                if ticket is None:
+                    continue
+                receipt = self._state.completed_mutation_receipt(ticket)
+                if (
+                    receipt is not None
+                    and receipt.revision_before == self._expected_revision
+                ):
+                    self._expected_revision = receipt.revision_after
+                    if self._expected_revision == current:
+                        break
+        if current != self._expected_revision:
+            raise NativeDispatchError(
+                "NATIVE_REVISION_CONFLICT",
+                "The document changed outside this Native turn. Start a new "
+                "turn from its current state.",
+                details={
+                    "current_revision": current,
+                    "repair": {"next_turn_required": True},
+                },
+            )
 
     def _guard_after_call(self, variant: Any, payload: Mapping[str, Any]) -> None:
         if getattr(variant, "transaction_behavior", "") not in {
@@ -621,6 +648,8 @@ class NativeTurnDispatcher:
                     )
 
                 self._guard()
+                if name != "native.job":
+                    self._guard_revision()
                 ticket = self._state.begin_call(self._document_uid, name)
                 record = _CallRecord(name, canonical, ticket=ticket)
                 self._calls[call_id] = record
@@ -670,6 +699,10 @@ class NativeTurnDispatcher:
                     label="result",
                     byte_limit=MAX_NATIVE_RESULT_JSON_BYTES,
                 )
+                if name != "native.job":
+                    self._expected_revision = self._state.current_revision(
+                        self._document_uid
+                    )
                 return json.loads(record.result_json)
             except Exception as exc:
                 self._debug(name, exc)

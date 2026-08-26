@@ -18,6 +18,7 @@ import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeAnalyzeFluidSchema import ANALYZE_FLUID_CAPABILITY_NAME
+from VibeCADNativeAnalyzeFluidCreateSchema import ANALYZE_EDIT_FLUID_BOUNDARY
 from VibeCADNativeAnalyzeFluidState import fluid_constraint_state
 from VibeCADNativeAnalyzeInspectSchema import ANALYZE_INSPECT_CAPABILITY_NAME
 from VibeCADNativeAnalyzeModelSchema import ANALYZE_MODEL_CAPABILITY_NAME
@@ -39,11 +40,13 @@ CREATE_OPERATIONS = (
     "create_initial_flow_velocity",
     "create_initial_pressure",
     "create_flow_velocity",
+    "create_fluid_boundary",
 )
 UPDATE_OPERATIONS = (
     "update_initial_flow_velocity",
     "update_initial_pressure",
     "update_flow_velocity",
+    "update_fluid_boundary",
 )
 
 
@@ -70,6 +73,7 @@ def _select_analyze_ribbon(main_window):
         "FEM_ConstraintInitialFlowVelocity",
         "FEM_ConstraintInitialPressure",
         "FEM_ConstraintFlowVelocity",
+        "FEM_ConstraintFluidBoundary",
     } <= set(surface.command_ids)
     return controller, surface
 
@@ -77,12 +81,19 @@ def _select_analyze_ribbon(main_window):
 def _turn(surface, registry) -> NativeTurnSnapshot:
     model = registry.definition(ANALYZE_MODEL_CAPABILITY_NAME)
     fluid = registry.definition(ANALYZE_FLUID_CAPABILITY_NAME)
+    edit_boundary = registry.definition(ANALYZE_EDIT_FLUID_BOUNDARY)
     inspect = registry.definition(ANALYZE_INSPECT_CAPABILITY_NAME)
-    assert model is not None and fluid is not None and inspect is not None
+    assert (
+        model is not None
+        and fluid is not None
+        and edit_boundary is not None
+        and inspect is not None
+    )
     expected_actions = {
         "FEM_ConstraintInitialFlowVelocity": "create_initial_flow_velocity",
         "FEM_ConstraintInitialPressure": "create_initial_pressure",
         "FEM_ConstraintFlowVelocity": "create_flow_velocity",
+        "FEM_ConstraintFluidBoundary": "create_fluid_boundary",
     }
     plans = {
         plan.command_id: plan
@@ -120,6 +131,10 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             ANALYZE_FLUID_CAPABILITY_NAME,
             "update_flow_velocity",
         ),
+        "VibeCAD_AnalyzeUpdateFluidBoundary": (
+            ANALYZE_EDIT_FLUID_BOUNDARY,
+            "edit",
+        ),
     }
     for action_id, expected in expected_contexts.items():
         action = contexts[action_id]
@@ -137,11 +152,13 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             tool_names=(
                 ANALYZE_MODEL_CAPABILITY_NAME,
                 ANALYZE_FLUID_CAPABILITY_NAME,
+                ANALYZE_EDIT_FLUID_BOUNDARY,
                 ANALYZE_INSPECT_CAPABILITY_NAME,
             ),
             schemas=(
                 model.provider_schema(("create_analysis",)),
                 fluid.provider_schema((*CREATE_OPERATIONS, *UPDATE_OPERATIONS)),
+                edit_boundary.provider_schema(("edit",)),
                 inspect.provider_schema(("fluid_constraint",)),
             ),
             human_only_action_ids=(),
@@ -335,6 +352,104 @@ def _run() -> None:
             },
         )
         flow = document.getObject(flow_result["created_constraint"]["object_name"])
+        current_analysis = flow_result["analysis_target"]
+
+        boundary_result = call(
+            ANALYZE_FLUID_CAPABILITY_NAME,
+            {
+                "operation": "create_fluid_boundary",
+                "analysis": _analysis_target(current_analysis),
+                "label": "Cooling Inlet",
+                "references": [_reference(source, "Face3")],
+                "constraint": {
+                    "condition": {
+                        "kind": "inlet_velocity",
+                        "velocity_m_s": 12.5,
+                    },
+                    "turbulence": {
+                        "kind": "intensity_length_scale",
+                        "intensity_ratio": 0.05,
+                        "length_scale_m": 0.02,
+                    },
+                    "thermal": {
+                        "kind": "fixed_temperature",
+                        "temperature_k": 300.0,
+                    },
+                },
+            },
+        )
+        boundary = document.getObject(
+            boundary_result["created_constraint"]["object_name"]
+        )
+        current_analysis = boundary_result["analysis_target"]
+        assert boundary_result["created_constraint"]["definition"] == {
+            "condition": {"kind": "inlet_velocity", "velocity_m_s": 12.5},
+            "turbulence": {
+                "kind": "intensity_length_scale",
+                "intensity_ratio": 0.05,
+                "length_scale_m": 0.02,
+            },
+            "thermal": {"kind": "fixed_temperature", "temperature_k": 300.0},
+        }
+        assert boundary.Reversed
+
+        first_wall_result = call(
+            ANALYZE_FLUID_CAPABILITY_NAME,
+            {
+                "operation": "create_fluid_boundary",
+                "analysis": _analysis_target(current_analysis),
+                "label": "No-Slip Wall",
+                "references": [_reference(source, "Face5")],
+                "constraint": {
+                    "condition": {"kind": "wall_no_slip"},
+                    "turbulence": {"kind": "none"},
+                    "thermal": {"kind": "adiabatic"},
+                },
+            },
+        )
+        first_wall = document.getObject(
+            first_wall_result["created_constraint"]["object_name"]
+        )
+        current_analysis = first_wall_result["analysis_target"]
+        second_wall_result = call(
+            ANALYZE_FLUID_CAPABILITY_NAME,
+            {
+                "operation": "create_fluid_boundary",
+                "analysis": _analysis_target(current_analysis),
+                "label": "No-Slip Wall",
+                "references": [_reference(source, "Face6")],
+                "constraint": {
+                    "condition": {"kind": "wall_no_slip"},
+                    "turbulence": {"kind": "none"},
+                    "thermal": {"kind": "adiabatic"},
+                },
+            },
+        )
+        second_wall = document.getObject(
+            second_wall_result["created_constraint"]["object_name"]
+        )
+        current_analysis = second_wall_result["analysis_target"]
+
+        duplicate_boundary = call(
+            ANALYZE_FLUID_CAPABILITY_NAME,
+            {
+                "operation": "create_fluid_boundary",
+                "analysis": _analysis_target(current_analysis),
+                "label": "Duplicate Inlet",
+                "references": [_reference(source, "Face3")],
+                "constraint": {
+                    "condition": {
+                        "kind": "inlet_velocity",
+                        "velocity_m_s": 8.0,
+                    },
+                    "turbulence": {"kind": "none"},
+                    "thermal": {"kind": "adiabatic"},
+                },
+            },
+            succeeds=False,
+        )
+        assert "Face3" in duplicate_boundary["error"]
+        assert "Cooling Inlet" in duplicate_boundary["error"]
 
         flow_before_invalid = fluid_constraint_state(flow)
         invalid_formula = call(
@@ -380,6 +495,37 @@ def _run() -> None:
                 "constraint": {"pressure_pa": 95000.0},
             },
         )
+        boundary_update = call(
+            ANALYZE_EDIT_FLUID_BOUNDARY,
+            {
+                "operation": "edit",
+                "boundary_name": boundary.Name,
+                "changes": {
+                    "label": "Pressure Outlet",
+                    "geometry": {
+                        "source_name": source.Name,
+                        "face_names": ["Face4"],
+                    },
+                    "condition": {
+                        "kind": "outlet_static_pressure",
+                        "pressure_pa": 101325.0,
+                    },
+                },
+            },
+        )
+        assert boundary_update["updated_constraint"]["definition"] == {
+            "condition": {
+                "kind": "outlet_static_pressure",
+                "pressure_pa": 101325.0,
+            },
+            "turbulence": {
+                "kind": "intensity_length_scale",
+                "intensity_ratio": 0.05,
+                "length_scale_m": 0.02,
+            },
+            "thermal": {"kind": "fixed_temperature", "temperature_k": 300.0},
+        }
+        assert not boundary.Reversed
         flow_before_update = fluid_constraint_state(flow)
         flow_update = call(
             ANALYZE_FLUID_CAPABILITY_NAME,
@@ -424,7 +570,14 @@ def _run() -> None:
         assert stale["error_code"] == "NATIVE_ANALYZE_STATE_STALE"
         assert str(flow.Label) == "Profiled Inlet Velocity"
 
-        constraints = (initial_velocity, initial_pressure, flow)
+        constraints = (
+            initial_velocity,
+            initial_pressure,
+            flow,
+            boundary,
+            first_wall,
+            second_wall,
+        )
         read_revision = state.current_revision(str(document.Uid))
         for constraint in constraints:
             current = fluid_constraint_state(constraint)
@@ -439,12 +592,13 @@ def _run() -> None:
         assert state.current_revision(str(document.Uid)) == read_revision
 
         snapshot = build_analyze_snapshot(document)
-        assert snapshot["fluid_constraint_count"] == 3
+        assert snapshot["fluid_constraint_count"] == 6
         assert not snapshot["fluid_constraints_truncated"]
         assert {item["constraint_kind"] for item in snapshot["fluid_constraints"]} == {
             "initial_flow_velocity",
             "initial_pressure",
             "flow_velocity",
+            "fluid_boundary",
         }
         assert tuple(analysis.Group) == constraints
         operation_names = tuple(obj.Name for obj in document.VibeCADTimeline.Operations)
@@ -487,7 +641,8 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_ANALYZE_FLUID_GUI_OK "
-            "actions=3 edits=3 reads=1 exact_references=true typed_velocity=true "
+            "actions=4 edits=4 reads=1 exact_references=true typed_boundaries=true "
+            "duplicate_labels=true "
             "history=true undo_redo=true reopen=true read_revision_stable=true",
             flush=True,
         )

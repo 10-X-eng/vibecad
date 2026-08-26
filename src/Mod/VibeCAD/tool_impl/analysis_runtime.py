@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import json
 import secrets
 import threading
+import time
 from typing import Any, Callable, Mapping
 
 
@@ -37,10 +38,18 @@ class AnalysisRuntimeSnapshot:
     result: dict[str, Any] | None
     error: dict[str, Any] | None
     cancel_requested: bool
+    changes_document: bool = False
+    elapsed_seconds: int = 0
+    seconds_since_progress: int = 0
+    worker_active: bool = False
 
     @property
     def terminal(self) -> bool:
         return self.phase in _TERMINAL_PHASES
+
+    @property
+    def document_changed(self) -> bool:
+        return self.phase == "completed" and self.changes_document
 
 
 @dataclass(slots=True)
@@ -53,8 +62,11 @@ class _AnalysisJob:
     progress_message: str = "Queued"
     result_json: str | None = None
     error: dict[str, Any] | None = None
+    changes_document: bool = False
     cancellation: threading.Event = field(default_factory=threading.Event)
     completed: threading.Event = field(default_factory=threading.Event)
+    submitted_at: float = field(default_factory=time.monotonic)
+    progress_at: float = field(default_factory=time.monotonic)
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +164,7 @@ class AnalysisRuntimeManager:
         dispatch_to_document_thread: DocumentThreadDispatcher,
         finalize_message: str | None = None,
         cleanup: CleanupHandler | None = None,
+        changes_document: bool = False,
     ) -> AnalysisRuntimeSnapshot:
         uid = str(document_uid or "").strip()
         capability = str(capability_name or "").strip()
@@ -169,6 +182,8 @@ class AnalysisRuntimeManager:
             raise TypeError(self._messages.callbacks_required)
         if cleanup is not None and not callable(cleanup):
             raise TypeError(self._messages.cleanup_required)
+        if type(changes_document) is not bool:
+            raise TypeError("changes_document must be a boolean")
         clean_finalize_message = str(finalize_message or "").strip()
         if len(clean_finalize_message) > self._maximum_progress_message_chars:
             raise self._error_class(self._messages.finalization_message_too_long)
@@ -195,7 +210,12 @@ class AnalysisRuntimeManager:
             if len(self._jobs) >= self._maximum_jobs:
                 raise self._error_class(self._messages.queue_full)
 
-            job = _AnalysisJob(secrets.token_hex(16), uid, capability)
+            job = _AnalysisJob(
+                secrets.token_hex(16),
+                uid,
+                capability,
+                changes_document=changes_document,
+            )
             self._jobs[job.job_id] = job
             self._active_documents[uid] = job.job_id
             self._trim_jobs_locked()
@@ -362,6 +382,7 @@ class AnalysisRuntimeManager:
             job.phase = phase
             job.progress_percent = int(percent)
             job.progress_message = clean_message
+            job.progress_at = time.monotonic()
 
     def _set_progress(
         self,
@@ -377,6 +398,7 @@ class AnalysisRuntimeManager:
             job.phase = phase
             job.progress_percent = int(percent)
             job.progress_message = clean_message
+            job.progress_at = time.monotonic()
 
     def cancel(self, job_id: str) -> bool:
         with self._lock:
@@ -426,6 +448,7 @@ class AnalysisRuntimeManager:
             return self._snapshot_locked(job) if job is not None else None
 
     def _snapshot_locked(self, job: _AnalysisJob) -> AnalysisRuntimeSnapshot:
+        now = time.monotonic()
         result = json.loads(job.result_json) if job.result_json is not None else None
         return AnalysisRuntimeSnapshot(
             job_id=job.job_id,
@@ -437,6 +460,10 @@ class AnalysisRuntimeManager:
             result=result,
             error=dict(job.error) if job.error is not None else None,
             cancel_requested=job.cancellation.is_set(),
+            changes_document=job.changes_document,
+            elapsed_seconds=max(0, int(now - job.submitted_at)),
+            seconds_since_progress=max(0, int(now - job.progress_at)),
+            worker_active=not job.completed.is_set(),
         )
 
     def wait(

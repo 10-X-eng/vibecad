@@ -8,6 +8,9 @@ from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeInspect import (
     inspect_analysis,
+    inspect_assignments,
+    inspect_assignment_validation,
+    inspect_study,
     inspect_electromagnetic_constraint,
     inspect_fluid_constraint,
     inspect_geometrical_feature,
@@ -26,12 +29,17 @@ from VibeCADNativeAnalyzeInspect import (
     inspect_material_catalog,
 )
 from VibeCADNativeAnalyzePostSampling import linearized_stress_summary
-from VibeCADNativeArguments import strict_variant_arguments
+from VibeCADNativeAnalyzeGeometryRead import inspect_geometry_source
+from VibeCADNativeArguments import NativeArgumentError, strict_variant_arguments
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 
 
 _VARIANTS = {
+    "study": frozenset({"target"}),
     "analysis": frozenset({"target"}),
+    "geometry_source": frozenset({"target", "offset", "page_size"}),
+    "assignments": frozenset({"target", "category", "offset", "page_size"}),
+    "validate_assignments": frozenset({"target"}),
     "material": frozenset({"target"}),
     "material_catalog": frozenset({"query", "category", "limit"}),
     "element_definition": frozenset({"target"}),
@@ -59,11 +67,55 @@ class NativeAnalyzeInspectRuntime:
         self._context = context
 
     def inspect(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _VARIANTS)
+        if isinstance(arguments, Mapping) and arguments.get("operation") == "material_catalog":
+            values = dict(arguments)
+            operation = str(values.pop("operation"))
+            if not {"query", "category"} <= set(values) <= {
+                "query",
+                "category",
+                "limit",
+            }:
+                raise NativeArgumentError(
+                    "Material catalog arguments require query and category."
+                )
+            values.setdefault("limit", 25)
+        elif isinstance(arguments, Mapping) and arguments.get("operation") == "fem_mesh_elements":
+            normalized = dict(arguments)
+            normalized.setdefault("offset", 0)
+            normalized.setdefault("page_size", 64)
+            operation, values = strict_variant_arguments(normalized, _VARIANTS)
+        else:
+            operation, values = strict_variant_arguments(arguments, _VARIANTS)
         context = self._context
         context.guard()
-        if operation == "analysis":
+        if operation == "study":
+            result = inspect_study(
+                context.document,
+                context.document_uid,
+                values["target"],
+            )
+        elif operation == "analysis":
             result = inspect_analysis(
+                context.document,
+                context.document_uid,
+                values["target"],
+            )
+        elif operation == "geometry_source":
+            result = inspect_geometry_source(
+                context.document,
+                context.document_uid,
+                values.pop("target"),
+                **values,
+            )
+        elif operation == "assignments":
+            result = inspect_assignments(
+                context.document,
+                context.document_uid,
+                values.pop("target"),
+                **values,
+            )
+        elif operation == "validate_assignments":
+            result = inspect_assignment_validation(
                 context.document,
                 context.document_uid,
                 values["target"],

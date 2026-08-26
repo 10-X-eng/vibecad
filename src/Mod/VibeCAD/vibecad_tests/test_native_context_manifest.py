@@ -23,8 +23,16 @@ EXPECTED_CONTEXT_ACTION_IDS = {
     "VibeCAD_NativeSketchState",
     "SketchEditDeleteGeometry",
     "VibeCAD_AnalyzeReadAnalysis",
+    "VibeCAD_AnalyzeReadGeometrySource",
+    "VibeCAD_AnalyzeCreateSolidDomain",
+    "VibeCAD_AnalyzeReadAssignments",
+    "VibeCAD_AnalyzeValidateAssignments",
+    "VibeCAD_AnalyzeHighlightAssignment",
+    "VibeCAD_AnalyzeIsolateAssignment",
+    "VibeCAD_AnalyzeRestoreAssignmentView",
     "VibeCAD_AnalyzeReadMaterial",
     "VibeCAD_AnalyzeSearchMaterialCatalog",
+    "VibeCAD_AnalyzeSearchMaterialCatalogFocused",
     "VibeCAD_AnalyzeReadElementDefinition",
     "VibeCAD_AnalyzeUpdateBeamSection",
     "VibeCAD_AnalyzeUpdateBeamRotation",
@@ -36,9 +44,36 @@ EXPECTED_CONTEXT_ACTION_IDS = {
     "VibeCAD_AnalyzeUpdateMagnetization",
     "VibeCAD_AnalyzeUpdateElectricChargeDensity",
     "VibeCAD_AnalyzeReadFluidConstraint",
+    "VibeCAD_AnalyzeCreateInitialVelocity",
+    "VibeCAD_AnalyzeCreateInitialPressure",
+    "VibeCAD_AnalyzeCreateBoundaryVelocity",
+    "VibeCAD_AnalyzeCreateFluidBoundary",
+    "VibeCAD_AnalyzeCreateFluidMaterial",
+    "VibeCAD_AnalyzeCreateSolidMaterial",
+    "VibeCAD_AnalyzeCreateSolidRegionMaterial",
+    "VibeCAD_AnalyzeCreateCatalogMaterial",
+    "VibeCAD_AnalyzeCreateCustomMaterial",
+    "VibeCAD_AnalyzeCreateFixedSupport",
+    "VibeCAD_AnalyzeEditFixedSupportFocused",
+    "VibeCAD_AnalyzeCreateRigidCouplingFocused",
+    "VibeCAD_AnalyzeEditRigidCouplingFocused",
+    "VibeCAD_AnalyzeCreateDisplacementSupportFocused",
+    "VibeCAD_AnalyzeEditDisplacementSupportFocused",
+    "VibeCAD_AnalyzeCreateSpringSupportFocused",
+    "VibeCAD_AnalyzeEditSpringSupportFocused",
+    "VibeCAD_AnalyzeCreateForce",
+    "VibeCAD_AnalyzeUpdateForceFocused",
+    "VibeCAD_AnalyzeCreatePressureFocused",
+    "VibeCAD_AnalyzeUpdatePressureFocused",
+    "VibeCAD_AnalyzeCreateGravityFocused",
+    "VibeCAD_AnalyzeUpdateGravityFocused",
+    "VibeCAD_AnalyzeCreateCentrifugalFocused",
+    "VibeCAD_AnalyzeUpdateCentrifugalFocused",
+    "VibeCAD_AnalyzeCreateOpenFOAMSolver",
     "VibeCAD_AnalyzeUpdateInitialFlowVelocity",
     "VibeCAD_AnalyzeUpdateInitialPressure",
     "VibeCAD_AnalyzeUpdateFlowVelocity",
+    "VibeCAD_AnalyzeUpdateFluidBoundary",
     "VibeCAD_AnalyzeReadGeometricalFeature",
     "VibeCAD_AnalyzeUpdatePlaneRotation",
     "VibeCAD_AnalyzeUpdateSectionPrint",
@@ -70,11 +105,18 @@ EXPECTED_CONTEXT_ACTION_IDS = {
     "VibeCAD_AnalyzeUpdateMassHeatGeneration",
     "VibeCAD_AnalyzeUpdateTotalBodyPower",
     "VibeCAD_AnalyzeReadMeshDefinition",
+    "VibeCAD_AnalyzeCreateGmshMesh",
+    "VibeCAD_AnalyzeCreateSolidMeshFocused",
+    "VibeCAD_AnalyzeCreateFlowMeshFocused",
+    "VibeCAD_AnalyzeUpdateGmshMeshFocused",
+    "VibeCAD_AnalyzeGenerateCurrentGmshMesh",
     "VibeCAD_AnalyzeUpdateGmshMesh",
     "VibeCAD_AnalyzeUpdateNetgenMesh",
     "VibeCAD_AnalyzeGenerateGmshMesh",
     "VibeCAD_AnalyzeGenerateNetgenMesh",
     "VibeCAD_AnalyzeReadMeshRefinement",
+    "VibeCAD_AnalyzeCreateLocalMeshSizeFocused",
+    "VibeCAD_AnalyzeEditLocalMeshSizeFocused",
     "VibeCAD_AnalyzeUpdateMeshRegion",
     "VibeCAD_AnalyzeUpdateMeshGroup",
     "VibeCAD_AnalyzeUpdateMeshDistance",
@@ -109,11 +151,21 @@ EXPECTED_CONTEXT_ACTION_IDS = {
     "VibeCAD_AnalyzeConvertFemMeshSurface",
     "VibeCAD_AnalyzeConvertDeformedFemMeshSurface",
     "VibeCAD_AnalyzeReadSolver",
+    "VibeCAD_AnalyzeRunCurrentSolver",
     "VibeCAD_AnalyzeUpdateCalculiXSolver",
     "VibeCAD_AnalyzeUpdateElmerSolver",
+    "VibeCAD_AnalyzeUpdateOpenFOAMSolver",
     "VibeCAD_AnalyzeUpdateZ88Solver",
     "VibeCAD_AnalyzeReadEquation",
     "VibeCAD_AnalyzeReadResult",
+    "VibeCAD_AnalyzeReadOpenFOAMFlow",
+    "VibeCAD_AnalyzeMeasureOpenFOAMFlow",
+    "VibeCAD_AnalyzeCompareOpenFOAMFlow",
+    "VibeCAD_AnalyzeShowOpenFOAMFlow",
+    "VibeCAD_AnalyzeReadMechanicalResult",
+    "VibeCAD_AnalyzeShowMechanicalResult",
+    "VibeCAD_AnalyzeReadTemperatureResult",
+    "VibeCAD_AnalyzeShowTemperatureResult",
     "AssemblyContextToggleActive",
     "AssemblyContextMakeFlexible",
     "AssemblyContextMakeRigid",
@@ -182,8 +234,9 @@ def test_context_inventory_is_complete_unique_and_small() -> None:
     assert {action.action_id for action in NATIVE_CONTEXT_ACTIONS} == (
         EXPECTED_CONTEXT_ACTION_IDS
     )
-    assert len(NATIVE_CONTEXT_ACTIONS) == 127
-    assert len({action.action_id for action in NATIVE_CONTEXT_ACTIONS}) == 127
+    assert len({action.action_id for action in NATIVE_CONTEXT_ACTIONS}) == len(
+        NATIVE_CONTEXT_ACTIONS
+    )
     assert (
         sum(action.classification.human_only for action in NATIVE_CONTEXT_ACTIONS) == 5
     )
@@ -202,8 +255,16 @@ def test_surface_filtering_never_leaks_context_actions() -> None:
     analyze = context_actions_for_surface("analyze")
     assert tuple(action.action_id for action in analyze) == (
         "VibeCAD_AnalyzeReadAnalysis",
+        "VibeCAD_AnalyzeReadGeometrySource",
+        "VibeCAD_AnalyzeCreateSolidDomain",
+        "VibeCAD_AnalyzeReadAssignments",
+        "VibeCAD_AnalyzeValidateAssignments",
+        "VibeCAD_AnalyzeHighlightAssignment",
+        "VibeCAD_AnalyzeIsolateAssignment",
+        "VibeCAD_AnalyzeRestoreAssignmentView",
         "VibeCAD_AnalyzeReadMaterial",
         "VibeCAD_AnalyzeSearchMaterialCatalog",
+        "VibeCAD_AnalyzeSearchMaterialCatalogFocused",
         "VibeCAD_AnalyzeReadElementDefinition",
         "VibeCAD_AnalyzeUpdateBeamSection",
         "VibeCAD_AnalyzeUpdateBeamRotation",
@@ -215,9 +276,36 @@ def test_surface_filtering_never_leaks_context_actions() -> None:
         "VibeCAD_AnalyzeUpdateMagnetization",
         "VibeCAD_AnalyzeUpdateElectricChargeDensity",
         "VibeCAD_AnalyzeReadFluidConstraint",
+        "VibeCAD_AnalyzeCreateInitialVelocity",
+        "VibeCAD_AnalyzeCreateInitialPressure",
+        "VibeCAD_AnalyzeCreateBoundaryVelocity",
+        "VibeCAD_AnalyzeCreateFluidBoundary",
+        "VibeCAD_AnalyzeCreateFluidMaterial",
+        "VibeCAD_AnalyzeCreateSolidMaterial",
+        "VibeCAD_AnalyzeCreateSolidRegionMaterial",
+        "VibeCAD_AnalyzeCreateCatalogMaterial",
+        "VibeCAD_AnalyzeCreateCustomMaterial",
+        "VibeCAD_AnalyzeCreateFixedSupport",
+        "VibeCAD_AnalyzeEditFixedSupportFocused",
+        "VibeCAD_AnalyzeCreateRigidCouplingFocused",
+        "VibeCAD_AnalyzeEditRigidCouplingFocused",
+        "VibeCAD_AnalyzeCreateDisplacementSupportFocused",
+        "VibeCAD_AnalyzeEditDisplacementSupportFocused",
+        "VibeCAD_AnalyzeCreateSpringSupportFocused",
+        "VibeCAD_AnalyzeEditSpringSupportFocused",
+        "VibeCAD_AnalyzeCreateForce",
+        "VibeCAD_AnalyzeUpdateForceFocused",
+        "VibeCAD_AnalyzeCreatePressureFocused",
+        "VibeCAD_AnalyzeUpdatePressureFocused",
+        "VibeCAD_AnalyzeCreateGravityFocused",
+        "VibeCAD_AnalyzeUpdateGravityFocused",
+        "VibeCAD_AnalyzeCreateCentrifugalFocused",
+        "VibeCAD_AnalyzeUpdateCentrifugalFocused",
+        "VibeCAD_AnalyzeCreateOpenFOAMSolver",
         "VibeCAD_AnalyzeUpdateInitialFlowVelocity",
         "VibeCAD_AnalyzeUpdateInitialPressure",
         "VibeCAD_AnalyzeUpdateFlowVelocity",
+        "VibeCAD_AnalyzeUpdateFluidBoundary",
         "VibeCAD_AnalyzeReadGeometricalFeature",
         "VibeCAD_AnalyzeUpdatePlaneRotation",
         "VibeCAD_AnalyzeUpdateSectionPrint",
@@ -249,11 +337,18 @@ def test_surface_filtering_never_leaks_context_actions() -> None:
         "VibeCAD_AnalyzeUpdateMassHeatGeneration",
         "VibeCAD_AnalyzeUpdateTotalBodyPower",
         "VibeCAD_AnalyzeReadMeshDefinition",
+        "VibeCAD_AnalyzeCreateGmshMesh",
+        "VibeCAD_AnalyzeCreateSolidMeshFocused",
+        "VibeCAD_AnalyzeCreateFlowMeshFocused",
+        "VibeCAD_AnalyzeUpdateGmshMeshFocused",
+        "VibeCAD_AnalyzeGenerateCurrentGmshMesh",
         "VibeCAD_AnalyzeUpdateGmshMesh",
         "VibeCAD_AnalyzeUpdateNetgenMesh",
         "VibeCAD_AnalyzeGenerateGmshMesh",
         "VibeCAD_AnalyzeGenerateNetgenMesh",
         "VibeCAD_AnalyzeReadMeshRefinement",
+        "VibeCAD_AnalyzeCreateLocalMeshSizeFocused",
+        "VibeCAD_AnalyzeEditLocalMeshSizeFocused",
         "VibeCAD_AnalyzeUpdateMeshRegion",
         "VibeCAD_AnalyzeUpdateMeshGroup",
         "VibeCAD_AnalyzeUpdateMeshDistance",
@@ -288,11 +383,21 @@ def test_surface_filtering_never_leaks_context_actions() -> None:
         "VibeCAD_AnalyzeConvertFemMeshSurface",
         "VibeCAD_AnalyzeConvertDeformedFemMeshSurface",
         "VibeCAD_AnalyzeReadSolver",
+        "VibeCAD_AnalyzeRunCurrentSolver",
         "VibeCAD_AnalyzeUpdateCalculiXSolver",
         "VibeCAD_AnalyzeUpdateElmerSolver",
+        "VibeCAD_AnalyzeUpdateOpenFOAMSolver",
         "VibeCAD_AnalyzeUpdateZ88Solver",
         "VibeCAD_AnalyzeReadEquation",
         "VibeCAD_AnalyzeReadResult",
+        "VibeCAD_AnalyzeReadOpenFOAMFlow",
+        "VibeCAD_AnalyzeMeasureOpenFOAMFlow",
+        "VibeCAD_AnalyzeCompareOpenFOAMFlow",
+        "VibeCAD_AnalyzeShowOpenFOAMFlow",
+        "VibeCAD_AnalyzeReadMechanicalResult",
+        "VibeCAD_AnalyzeShowMechanicalResult",
+        "VibeCAD_AnalyzeReadTemperatureResult",
+        "VibeCAD_AnalyzeShowTemperatureResult",
         "InspectionContextAnnotation",
         "InspectionContextLeaveInfoMode",
     )
@@ -330,12 +435,24 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
     assert provider_actions["AssemblyContextMakeFlexible"].operation_variant == (
         "make_flexible"
     )
+    assert provider_actions["AssemblyContextMakeFlexible"].capability_family == (
+        "assembly.rigidity"
+    )
     assert (
         provider_actions["AssemblyContextMakeRigid"].operation_variant == "make_rigid"
+    )
+    assert provider_actions["AssemblyContextMakeRigid"].capability_family == (
+        "assembly.rigidity"
     )
     assert provider_actions["VibeCAD_AnalyzeReadAnalysis"].operation_variant == (
         "analysis"
     )
+    assert provider_actions["VibeCAD_AnalyzeReadAssignments"].operation_variant == (
+        "assignments"
+    )
+    assert provider_actions[
+        "VibeCAD_AnalyzeValidateAssignments"
+    ].operation_variant == "validate_assignments"
     assert provider_actions["VibeCAD_AnalyzeReadMaterial"].operation_variant == (
         "material"
     )
@@ -353,10 +470,21 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
         and provider_actions[action_id].transaction_behavior == "none"
         for action_id in {
             "VibeCAD_AnalyzeReadAnalysis",
+            "VibeCAD_AnalyzeReadAssignments",
+            "VibeCAD_AnalyzeValidateAssignments",
             "VibeCAD_AnalyzeReadMaterial",
             "VibeCAD_AnalyzeSearchMaterialCatalog",
             "VibeCAD_AnalyzeReadElementDefinition",
             "VibeCAD_AnalyzeReadResult",
+        }
+    )
+    assert all(
+        provider_actions[action_id].classification.view
+        and provider_actions[action_id].transaction_behavior == "presentation"
+        for action_id in {
+            "VibeCAD_AnalyzeHighlightAssignment",
+            "VibeCAD_AnalyzeIsolateAssignment",
+            "VibeCAD_AnalyzeRestoreAssignmentView",
         }
     )
     assert {
@@ -398,7 +526,7 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
         "Assembly_ExportASMT"
     )
     assert provider_actions["AssemblyContextPlaySimulation"].operation_variant == (
-        "open"
+        "show"
     )
     assert provider_actions["AssemblyContextPlaySimulation"].source_command_id == (
         "Assembly_EditHistoryOperation"

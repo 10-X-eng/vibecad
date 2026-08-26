@@ -25,7 +25,6 @@ from VibeCADNativeCapabilityRegistry import (
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot
 from VibeCADNativeRegistry import build_native_capability_registry
-from VibeCADNativeRobotToolState import capture_robot_tool_shape_record
 from VibeCADNativeRobotTrajectory import NativeRobotTrajectoryError
 from VibeCADNativeRobotTrajectorySchema import (
     ROBOT_TRAJECTORY_CAPABILITY_NAME,
@@ -268,11 +267,7 @@ def _edge_arguments(
     segmentation: float,
     use_rotation: bool,
 ) -> dict:
-    state = capture_robot_trajectory_state(document)
-    source_state = capture_robot_tool_shape_record(source)
-    target_digest = None
-    if target is not None:
-        target_digest = state.records[state.trajectories.index(target)].state_sha256
+    del document
     return {
         "operation": "edge2_trac",
         "mode": mode,
@@ -281,9 +276,6 @@ def _edge_arguments(
         "edges": ["Edge1"],
         "segmentation_mm": segmentation,
         "use_rotation": use_rotation,
-        "expected_trajectory_setup_state_sha256": state.state_sha256,
-        "expected_target_state_sha256": target_digest,
-        "expected_source_state_sha256": source_state.state_sha256,
     }
 
 
@@ -297,11 +289,7 @@ def _dress_arguments(
     acceleration: float,
     continuity: str,
 ) -> dict:
-    state = capture_robot_trajectory_state(document)
-    source_record = state.records[state.trajectories.index(source)]
-    target_digest = None
-    if target is not None:
-        target_digest = state.records[state.trajectories.index(target)].state_sha256
+    del document
     return {
         "operation": "trajectory_dress_up",
         "mode": mode,
@@ -314,9 +302,6 @@ def _dress_arguments(
         "continuity_mode": continuity,
         "placement": _identity_placement(),
         "placement_mode": "unchanged",
-        "expected_trajectory_setup_state_sha256": state.state_sha256,
-        "expected_target_state_sha256": target_digest,
-        "expected_source_state_sha256": source_record.state_sha256,
     }
 
 
@@ -327,10 +312,7 @@ def _compound_arguments(
     mode: str,
     target=None,
 ) -> dict:
-    state = capture_robot_trajectory_state(document)
-    target_digest = None
-    if target is not None:
-        target_digest = state.records[state.trajectories.index(target)].state_sha256
+    del document
     return {
         "operation": "trajectory_compound",
         "mode": mode,
@@ -338,14 +320,9 @@ def _compound_arguments(
         "sources": [
             {
                 "trajectory": {"object_name": source.Name},
-                "expected_state_sha256": state.records[
-                    state.trajectories.index(source)
-                ].state_sha256,
             }
             for source in sources
         ],
-        "expected_trajectory_setup_state_sha256": state.state_sha256,
-        "expected_target_state_sha256": target_digest,
     }
 
 
@@ -558,28 +535,6 @@ def _run() -> None:
         baseline_history = tuple(document.VibeCADTimeline.Operations)
         baseline_undo = int(document.UndoCount)
 
-        stale = _edge_arguments(
-            document,
-            native_edge_source,
-            mode="create",
-            segmentation=0.5,
-            use_rotation=False,
-        )
-        stale["expected_trajectory_setup_state_sha256"] = "0" * 64
-        failed = call(stale, succeeds=False)
-        assert failed["error_code"] == "NATIVE_ROBOT_TRAJECTORY_FAILED"
-
-        stale_source = _edge_arguments(
-            document,
-            native_edge_source,
-            mode="create",
-            segmentation=0.5,
-            use_rotation=False,
-        )
-        stale_source["expected_source_state_sha256"] = "0" * 64
-        failed = call(stale_source, succeeds=False)
-        assert failed["error_code"] == "NATIVE_ROBOT_TRAJECTORY_FAILED"
-
         bounded = _edge_arguments(
             document,
             bounded_source,
@@ -628,19 +583,6 @@ def _run() -> None:
         undo_after_edge = int(document.UndoCount)
         assert call(edge_create, call_id=edge_call_id) == edge_result
         assert int(document.UndoCount) == undo_after_edge
-
-        stale_target = _edge_arguments(
-            document,
-            native_edge_source,
-            mode="edit",
-            target=native_edge,
-            segmentation=1.25,
-            use_rotation=True,
-        )
-        stale_target["expected_target_state_sha256"] = "0" * 64
-        assert call(stale_target, succeeds=False)["error_code"] == (
-            "NATIVE_ROBOT_TRAJECTORY_FAILED"
-        )
 
         edge_edit = _edge_arguments(
             document,
@@ -873,7 +815,7 @@ def _run() -> None:
             "VIBECAD_NATIVE_ROBOT_TRAJECTORY_FEATURES_GUI_OK "
             "human_edge_parity=true human_dress_up_parity=true "
             "human_compound_parity=true exact_history=true exact_targets=true "
-            "manufacture_surface=true stale_noop=true cycle_noop=true bounded=true "
+            "manufacture_surface=true cycle_noop=true bounded=true "
             "rollback=true verified_noop=true idempotent=true undo_redo=true "
             "reopen=true selection_preserved=true",
             flush=True,

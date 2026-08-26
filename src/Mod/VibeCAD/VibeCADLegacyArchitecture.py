@@ -7,6 +7,8 @@ from __future__ import annotations
 from typing import Any
 
 
+# Proxy.Type values from the removed BIM/Arch toolset. Draft WorkingPlaneProxy
+# remains supported and must stay off this list.
 _LEGACY_PROXY_TYPES = frozenset(
     {
         "ArchSectionView",
@@ -34,7 +36,6 @@ _LEGACY_PROXY_TYPES = frozenset(
         "Structure",
         "Wall",
         "Window",
-        "WorkingPlaneProxy",
     }
 )
 

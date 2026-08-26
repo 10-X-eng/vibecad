@@ -652,6 +652,20 @@ def verify_created_assembly_simulation(
             "The simulation document graph changed after native creation."
         )
     try:
+        generation_status = int(assembly.generateSimulation(simulation))
+        frame_count = int(assembly.numberOfFrames())
+    except Exception as exc:
+        raise NativeAssemblySimulationError(
+            "The native solver could not evaluate the simulation motions."
+        ) from exc
+    if generation_status != 0 or frame_count < 2:
+        detail = str(getattr(assembly, "LastSolverMessage", "") or "").strip()
+        suffix = f": {detail}" if detail else ""
+        raise NativeAssemblySimulationError(
+            "The native solver could not evaluate the simulation motions"
+            f" (status {generation_status}){suffix}."
+        )
+    try:
         current = capture_assembly_simulation_state(assembly)
         current_solver = capture_assembly_solver_state(assembly)
     except Exception as exc:
@@ -685,6 +699,7 @@ def verify_created_assembly_simulation(
     linear_count = len(prepared.motions) - angular_count
     return {
         "operation": "create_simulation",
+        "verified": True,
         "assembly": object_reference(assembly),
         "simulation_group": object_reference(group),
         "simulation": object_reference(simulation),
@@ -710,9 +725,5 @@ def verify_created_assembly_simulation(
             }
             for requested, motion in zip(prepared.motions, motions, strict=True)
         ],
-        "simulation_state_sha256": current.state_sha256,
-        "kinematics_generated": False,
-        "active_assembly_unchanged": True,
-        "selection_unchanged": True,
-        "assembly_placements_unchanged": True,
+        "frame_count": frame_count,
     }

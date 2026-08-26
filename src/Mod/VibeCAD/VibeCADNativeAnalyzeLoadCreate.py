@@ -46,12 +46,22 @@ class PreparedDirectionReference:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedDirectionVector:
+    x: float
+    y: float
+    z: float
+
+
+PreparedForceDirection = PreparedDirectionReference | PreparedDirectionVector | None
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedLoadCreate:
     boundary: AnalyzeCreationBoundary
     analysis: PreparedAnalysisTarget
     members_before: tuple[Any, ...]
     references: tuple[PreparedGeometryReference, ...]
-    direction: PreparedDirectionReference | None
+    direction: PreparedForceDirection
     axis: PreparedGeometryReference | None
     scope_kind: str | None
     kind: str
@@ -91,13 +101,32 @@ def prepare_force_direction(
     document: Any,
     document_uid: str,
     value: Any,
-) -> PreparedDirectionReference | None:
+) -> PreparedForceDirection:
     if not isinstance(value, Mapping):
         raise NativeAnalyzeError("direction must be one typed force-direction object.")
     raw = dict(value)
     kind = str(raw.get("kind", "") or "")
     if kind == "normal" and set(raw) == {"kind"}:
         return None
+    if kind == "vector" and set(raw) == {"kind", "x", "y", "z"}:
+        components = []
+        for axis in ("x", "y", "z"):
+            try:
+                component = float(raw[axis])
+            except (TypeError, ValueError) as exc:
+                raise NativeAnalyzeError(
+                    f"direction.{axis} must be a finite number."
+                ) from exc
+            if not math.isfinite(component):
+                raise NativeAnalyzeError(f"direction.{axis} must be finite.")
+            components.append(component)
+        length = math.sqrt(sum(component * component for component in components))
+        if length <= 1.0e-15:
+            raise NativeAnalyzeError("direction must have non-zero length.")
+        normalized = [
+            float(format(component / length, ".15g")) for component in components
+        ]
+        return PreparedDirectionVector(*normalized)
     required = {"kind", "object_name", "expected_state_sha256", "subelement"}
     if kind != "reference" or set(raw) != required:
         raise NativeAnalyzeError(
@@ -154,8 +183,8 @@ def prepare_force_direction(
     return PreparedDirectionReference(source, expected_sha, subelement)
 
 
-def direction_still_exact(reference: PreparedDirectionReference | None) -> bool:
-    if reference is None:
+def direction_still_exact(reference: PreparedForceDirection) -> bool:
+    if reference is None or isinstance(reference, PreparedDirectionVector):
         return True
     try:
         _active_source(reference.source)
@@ -327,8 +356,8 @@ def _factory(document: Any, kind: str) -> Any:
     return factory(document, document.getUniqueObjectName(stem))
 
 
-def direction_value(reference: PreparedDirectionReference | None) -> Any:
-    if reference is None:
+def direction_value(reference: PreparedForceDirection) -> Any:
+    if reference is None or isinstance(reference, PreparedDirectionVector):
         return None
     names = (reference.subelement,) if reference.subelement else ()
     return reference.source, names
@@ -344,15 +373,21 @@ def _visible_reference(reference: PreparedDirectionReference) -> dict[str, str]:
 def expected_load_definition(prepared: PreparedLoadCreate) -> dict[str, Any]:
     values = prepared.values.normalized()
     if prepared.kind == "force":
-        direction = (
-            {"kind": "normal", "reversed": values["reversed"]}
-            if prepared.direction is None
-            else {
+        if prepared.direction is None:
+            direction = {"kind": "normal", "reversed": values["reversed"]}
+        elif isinstance(prepared.direction, PreparedDirectionVector):
+            direction = {
+                "kind": "vector",
+                "x": prepared.direction.x,
+                "y": prepared.direction.y,
+                "z": prepared.direction.z,
+            }
+        else:
+            direction = {
                 "kind": "reference",
                 **_visible_reference(prepared.direction),
                 "reversed": values["reversed"],
             }
-        )
         return {"force_n": values["force_n"], "direction": direction}
     if prepared.kind == "centrifugal":
         assert prepared.axis is not None
@@ -416,6 +451,17 @@ def create_load(document: Any, prepared: PreparedLoadCreate) -> NativeMutationDr
     load.References = reference_value(prepared.references)
     if prepared.kind == "force":
         load.Direction = direction_value(prepared.direction)
+        if isinstance(prepared.direction, PreparedDirectionVector):
+            import FreeCAD
+
+            load.CustomDirection = FreeCAD.Vector(
+                prepared.direction.x,
+                prepared.direction.y,
+                prepared.direction.z,
+            )
+            load.UseCustomDirection = True
+        else:
+            load.UseCustomDirection = False
     elif prepared.kind == "centrifugal":
         assert prepared.axis is not None
         load.RotationAxis = reference_value((prepared.axis,))

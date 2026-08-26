@@ -28,7 +28,7 @@ The in-app Assistant already has a first-class **Grok (X / xAI)** provider:
 2. Enable **Use online provider** and select **Grok (X / xAI)**.
 3. Click **Sign in with X / Grok** (or **Use device code**).
 4. Click **Fetch models**, pick a Grok model, Apply.
-5. Build / Plan / Steer against the open document as with ChatGPT.
+5. Ask, plan, build, or steer against the open document as with ChatGPT.
 
 xAI publishes real OAuth at `https://auth.x.ai`. xAI does not publish a
 VibeCAD-specific OAuth app; VibeCAD reuses the official Grok CLI public

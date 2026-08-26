@@ -971,7 +971,7 @@ environments:
       - conda: https://prefix.dev/conda-forge/osx-64/zlib-1.3.2-hbb4bfdb_2.conda
       - conda: https://prefix.dev/conda-forge/osx-64/zlib-ng-2.3.2-h8bce59a_1.conda
       - conda: https://prefix.dev/conda-forge/osx-64/zstd-1.5.7-h3eecb57_6.conda
-      - conda_source: vibecad[e1a9344c] @ .
+      - conda_source: vibecad[dcd689d9] @ .
       osx-arm64:
       - conda: https://prefix.dev/conda-forge/noarch/adwaita-icon-theme-49.0-unix_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/aiohappyeyeballs-2.6.1-pyhd8ed1ab_0.conda
@@ -31669,7 +31669,7 @@ packages:
   - conda: https://prefix.dev/conda-forge/osx-arm64/zlib-1.3.2-h8088a28_2.conda
   - conda: https://prefix.dev/conda-forge/osx-arm64/zlib-ng-2.3.3-hed4e4f5_1.conda
   - conda: https://prefix.dev/conda-forge/osx-arm64/zstd-1.5.7-hbf9d68e_6.conda
-- conda_source: vibecad[e1a9344c] @ .
+- conda_source: vibecad[dcd689d9] @ .
   variants:
     build_platform: osx-64
     target_platform: osx-64

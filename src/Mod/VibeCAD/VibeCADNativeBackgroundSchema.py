@@ -39,13 +39,25 @@ def native_background_capability_definition() -> NativeCapabilityDefinition:
             },
         )
         for operation, description in (
-            ("status", "Read bounded progress or the verified terminal result."),
-            ("cancel", "Request cancellation before document commit begins."),
+            (
+                "status",
+                "Read bounded progress, liveness, polling guidance, or the verified "
+                "terminal result. Unchanged percent alone is not evidence of a hang.",
+            ),
+            (
+                "cancel",
+                "Request cancellation before document commit begins only when the user "
+                "asked to cancel or the job reported failure; never cancel merely because "
+                "progress is slow or unchanged.",
+            ),
         )
     )
     return NativeCapabilityDefinition(
         name=NATIVE_BACKGROUND_CAPABILITY_NAME,
-        description="Inspect or cancel one exact long-running document job.",
+        description=(
+            "Inspect one exact long-running document job and follow its polling guidance; "
+            "cancel only on explicit user intent or reported failure."
+        ),
         primary_classification="read",
         variants=variants,
     )

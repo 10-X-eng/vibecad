@@ -22,7 +22,7 @@ from VibeCADNativeTargets import (
 )
 
 
-MAX_ASSEMBLY_DIAGNOSIS_PAGE = 32
+MAX_ASSEMBLY_DIAGNOSIS_PAGE = 100
 _CATEGORY_ATTRIBUTES = {
     "conflicting": "conflicting_names",
     "redundant": "redundant_names",
@@ -161,7 +161,7 @@ def preflight_assembly_diagnosis_page(
     offset = _exact_count(offset, "offset", MAX_ASSEMBLY_JOINTS - 1)
     if type(limit) is not int or not 1 <= limit <= MAX_ASSEMBLY_DIAGNOSIS_PAGE:
         raise NativeAssemblyDiagnosisError(
-            "Assembly diagnosis limit must be an integer from 1 through 32."
+            "Assembly diagnosis limit must be an integer from 1 through 100."
         )
 
     selection_before = selection_reader(context.document)

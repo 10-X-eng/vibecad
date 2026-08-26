@@ -22,6 +22,7 @@ WORKBENCH_BY_NATIVE_WORKSPACE = {
     "manufacturing": "CAMWorkbench",
     "drawing": "TechDrawWorkbench",
     "parameters": "SpreadsheetWorkbench",
+    "aerodynamics": "VibeCADAeroWorkbench",
 }
 
 

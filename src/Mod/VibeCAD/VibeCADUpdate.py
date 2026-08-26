@@ -16,6 +16,10 @@ import json
 import os
 import platform
 import re
+import shlex
+import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -148,11 +152,20 @@ class UpdateRelease:
 
     def asset_for(self, system: str | None = None, machine: str | None = None) -> UpdateAsset | None:
         system_name = (system or platform.system()).casefold()
-        platform_name = {"windows": "windows", "linux": "linux"}.get(system_name)
+        platform_name = {
+            "windows": "windows",
+            "linux": "linux",
+            "darwin": "macos",
+            "macos": "macos",
+        }.get(system_name)
         if platform_name is None:
             return None
         architecture = normalize_architecture(machine or platform.machine())
-        preferred_kind = "installer" if platform_name == "windows" else "appimage"
+        preferred_kind = {
+            "windows": "installer",
+            "linux": "appimage",
+            "macos": "dmg",
+        }[platform_name]
         return next(
             (
                 asset
@@ -209,6 +222,302 @@ class InstallPlan:
     command: tuple[str, ...]
     current_appimage: Path | None = None
     current_install_root: Path | None = None
+
+
+MACOS_INSTALL_HELPER_SCRIPT = r"""#!/bin/sh
+set -eu
+pid="$1"
+package="$2"
+app="$3"
+backup="$4"
+receipt="$5"
+pending="$6"
+
+log="$(dirname "$receipt")/install-helper.log"
+started="$(dirname "$receipt")/install-helper.started"
+health_wait="${VIBECAD_UPDATE_HEALTH_WAIT:-120}"
+open_bin="${VIBECAD_UPDATE_OPEN:-open}"
+log_msg() {
+    printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >> "$log"
+}
+printf '%s\n' "$$" > "$started"
+log_msg "helper started pid=$$ waiting for $pid package=$package app=$app"
+
+bundle_executable() {
+    candidate="$1/Contents/MacOS/FreeCAD"
+    if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    candidate="$1/Contents/MacOS/VibeCAD"
+    if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    find "$1/Contents/MacOS" -type f \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -n 1
+}
+
+find_new_pid() {
+    ps -axo pid=,command= | awk -v prefix="$app/" 'index($0, prefix) { print $1; exit }'
+}
+
+while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+done
+if [ -e "$backup" ]; then
+    log_msg "backup already exists at $backup"
+    exit 20
+fi
+
+mount=$(mktemp -d "${TMPDIR:-/tmp}/vibecad-dmg.XXXXXX")
+attached=0
+new_pid=""
+detach_mount() {
+    if [ "$attached" -eq 1 ]; then
+        hdiutil detach "$mount" -quiet >/dev/null 2>&1 || true
+        attached=0
+    fi
+    rmdir "$mount" >/dev/null 2>&1 || true
+}
+terminate_new_app() {
+    if [ -z "${new_pid:-}" ]; then
+        new_pid=$(find_new_pid || true)
+    fi
+    if [ -z "$new_pid" ] || ! kill -0 "$new_pid" 2>/dev/null; then
+        return
+    fi
+    kill "$new_pid" 2>/dev/null || true
+    stop_attempt=0
+    while kill -0 "$new_pid" 2>/dev/null && [ "$stop_attempt" -lt 10 ]; do
+        sleep 1
+        stop_attempt=$((stop_attempt + 1))
+    done
+    kill -9 "$new_pid" 2>/dev/null || true
+    wait "$new_pid" 2>/dev/null || true
+}
+rollback_install() {
+    log_msg "rolling back macOS install"
+    terminate_new_app
+    if [ -e "$backup" ]; then
+        rm -rf "$app"
+        mv "$backup" "$app"
+        printf '%s\n' '{"status":"rolled-back","platform":"macos-dmg"}' > "$receipt"
+        executable=$(bundle_executable "$app" || true)
+        if [ -n "$executable" ]; then
+            "$executable" >/dev/null 2>&1 &
+        else
+            "$open_bin" "$app" >/dev/null 2>&1 || true
+        fi
+    fi
+}
+trap detach_mount EXIT
+
+if ! hdiutil attach "$package" -nobrowse -readonly -noverify -mountpoint "$mount" >/dev/null 2>&1; then
+    if ! printf 'Y\n' | hdiutil attach "$package" -nobrowse -readonly -mountpoint "$mount" >/dev/null 2>&1; then
+        log_msg "hdiutil attach failed for $package"
+        exit 23
+    fi
+fi
+attached=1
+
+new_app=""
+if [ -d "$mount/VibeCAD.app" ]; then
+    new_app="$mount/VibeCAD.app"
+else
+    new_app=$(find "$mount" -maxdepth 2 -name '*.app' -type d 2>/dev/null | head -n 1)
+fi
+if [ -z "$new_app" ] || [ ! -d "$new_app" ]; then
+    log_msg "disk image does not contain VibeCAD.app"
+    exit 24
+fi
+
+if [ -e "$app" ]; then
+    if ! mv "$app" "$backup"; then
+        log_msg "could not move $app aside"
+        exit 21
+    fi
+fi
+if ! ditto "$new_app" "$app"; then
+    rollback_install
+    exit 21
+fi
+xattr -dr com.apple.quarantine "$app" >/dev/null 2>&1 || true
+detach_mount
+
+printf '%s\n' '{"status":"installed","platform":"macos-dmg"}' > "$receipt"
+executable=$(bundle_executable "$app" || true)
+if [ -x "$executable" ]; then
+    "$executable" >/dev/null 2>&1 &
+    new_pid=$!
+else
+    if ! "$open_bin" -n "$app"; then
+        rollback_install
+        exit 25
+    fi
+    attempt=0
+    while [ "$attempt" -lt 60 ]; do
+        new_pid=$(find_new_pid || true)
+        if [ -n "$new_pid" ]; then
+            break
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+fi
+if [ -z "${new_pid:-}" ] || ! kill -0 "$new_pid" 2>/dev/null; then
+    log_msg "updated application did not start"
+    rollback_install
+    exit 25
+fi
+
+healthy=0
+attempt=0
+while [ "$attempt" -lt "$health_wait" ]; do
+    if [ ! -f "$pending" ]; then
+        healthy=1
+        break
+    fi
+    if ! kill -0 "$new_pid" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+done
+if [ "$healthy" -eq 1 ]; then
+    cleanup_attempt=0
+    while [ -e "$backup" ] && [ "$cleanup_attempt" -lt 10 ]; do
+        sleep 1
+        cleanup_attempt=$((cleanup_attempt + 1))
+    done
+    rm -rf "$backup"
+    exit 0
+fi
+if kill -0 "$new_pid" 2>/dev/null; then
+    log_msg "keeping live updated application; health receipt still pending"
+    exit 0
+fi
+log_msg "updated application exited before health receipt"
+rollback_install
+exit 25
+"""
+
+
+def write_macos_install_helper(helper_path: Path) -> Path:
+    """Write the detached macOS install helper used after VibeCAD exits."""
+
+    helper_path.parent.mkdir(parents=True, exist_ok=True)
+    helper_path.write_bytes(MACOS_INSTALL_HELPER_SCRIPT.encode("utf-8"))
+    helper_path.chmod(0o700)
+    return helper_path
+
+
+def macos_install_helper_command(
+    helper: Path,
+    plan: InstallPlan,
+    *,
+    process_id: int,
+    update_directory: Path | None = None,
+) -> list[str]:
+    """Return the argv used to apply a staged macOS .dmg after this process exits."""
+
+    application = plan.current_install_root
+    if application is None:
+        raise UpdateError("The staged macOS plan has no application bundle.")
+    root = (update_directory or default_update_directory()).resolve()
+    return [
+        "/bin/sh",
+        str(helper),
+        str(process_id),
+        str(plan.package),
+        str(application),
+        f"{application}.vibecad-rollback",
+        str(root / "install-receipt.json"),
+        str(root / "pending-install.json"),
+    ]
+
+
+def macos_install_helper_started_path(update_directory: Path | None = None) -> Path:
+    """Return the handshake file written as soon as the macOS helper is alive."""
+
+    root = (update_directory or default_update_directory()).resolve()
+    return root / "install-helper.started"
+
+
+def spawn_detached_install_helper(
+    command: Sequence[str],
+    *,
+    log_path: Path,
+) -> None:
+    """Start an install helper that outlives this GUI process.
+
+    Stdio is redirected so Qt teardown cannot block on inherited pipes.  On
+    macOS the helper is backgrounded with ``nohup`` in a new session so
+    RunningBoard does not treat it as part of VibeCAD.app and kill it when
+    the application exits.
+    """
+
+    argv = [str(part) for part in command]
+    if not argv:
+        raise UpdateError("The install helper command is empty.")
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "darwin":
+        inner = " ".join(shlex.quote(part) for part in argv)
+        log = shlex.quote(str(log_path))
+        shell = (
+            "trap '' HUP INT TERM\n"
+            f"/usr/bin/nohup {inner} </dev/null >>{log} 2>&1 &\n"
+            "exit 0\n"
+        )
+        process = subprocess.Popen(
+            ["/bin/sh", "-c", shell],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
+        process.wait(timeout=5)
+        if process.returncode not in (0, None):
+            raise UpdateError(
+                f"The install helper launcher exited with status {process.returncode}."
+            )
+        return
+
+    log_handle = open(log_path, "ab")
+    try:
+        kwargs: dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": log_handle,
+            "stderr": subprocess.STDOUT,
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+            )
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen(argv, **kwargs)
+    finally:
+        log_handle.close()
+
+
+def wait_for_install_helper_start(
+    started_path: Path,
+    *,
+    timeout: float = 5.0,
+) -> bool:
+    """Return True once the helper has written its startup handshake file."""
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if started_path.is_file():
+            return True
+        time.sleep(0.05)
+    return started_path.is_file()
 
 
 def normalize_architecture(value: str) -> str:
@@ -1119,7 +1428,54 @@ def create_install_plan(
         if not os.access(current.parent, os.W_OK):
             raise UpdateError(f"The AppImage directory is not writable: {current.parent}")
         return InstallPlan("appimage", package, (), current_appimage=current)
+    if asset.platform == "macos" and asset.kind == "dmg":
+        if package.suffix.casefold() != ".dmg":
+            raise UpdateError("The macOS update package is not a disk image.")
+        application = _macos_application_bundle(install_root)
+        if not os.access(application.parent, os.W_OK):
+            raise UpdateError(
+                f"The macOS application directory is not writable: {application.parent}"
+            )
+        return InstallPlan(
+            "macos-dmg",
+            package,
+            (),
+            current_install_root=application,
+        )
     raise UpdateError("This package type cannot be installed automatically.")
+
+
+def _macos_application_bundle(install_root: Path | None = None) -> Path:
+    if install_root is not None:
+        resolved = install_root.expanduser().resolve()
+        if resolved.suffix.casefold() != ".app" or not resolved.is_dir():
+            raise UpdateError("The macOS install location is not an application bundle.")
+        return resolved
+
+    starts: list[Path] = []
+    try:
+        import FreeCAD as App
+
+        starts.append(Path(str(App.getHomePath())).expanduser())
+    except Exception:
+        pass
+    executable = Path(sys.executable).expanduser()
+    if executable.parts:
+        starts.append(executable)
+
+    seen: set[Path] = set()
+    for start in starts:
+        current = start
+        for _ in range(8):
+            if current in seen:
+                break
+            seen.add(current)
+            if current.suffix.casefold() == ".app" and current.is_dir():
+                return current.resolve(strict=True)
+            if current.parent == current:
+                break
+            current = current.parent
+    raise UpdateError("VibeCAD's macOS application bundle is unavailable.")
 
 
 def record_pending_install(
@@ -1159,9 +1515,9 @@ def record_pending_install(
         )
         payload["current_appimage"] = str(appimage)
         payload["backup"] = str(backup)
-    elif plan.kind == "windows-installer":
+    elif plan.kind in {"windows-installer", "macos-dmg"}:
         if plan.current_install_root is None:
-            raise UpdateError("The Windows install plan has no current install directory.")
+            raise UpdateError("The install plan has no current install directory.")
         install_root = plan.current_install_root.resolve(strict=True)
         payload["current_install_root"] = str(install_root)
         payload["backup"] = f"{install_root}.vibecad-rollback"
@@ -1207,6 +1563,7 @@ def complete_pending_install_health(
     else:
         return "pending"
 
+    backup_to_remove: Path | None = None
     backup_value = str(payload.get("backup") or "")
     if status == "healthy" and backup_value:
         backup = Path(backup_value).resolve()
@@ -1229,6 +1586,15 @@ def complete_pending_install_health(
                 raise UpdateError("Unexpected Windows rollback path in the health receipt.")
             # Retain one last-known-good Windows tree. The next elevated
             # installer removes it before creating a fresh rollback snapshot.
+        elif payload.get("kind") == "macos-dmg":
+            install_value = str(payload.get("current_install_root") or "")
+            if not install_value:
+                raise UpdateError("Pending macOS receipt has no application bundle.")
+            install_root = Path(install_value).resolve()
+            expected_backup = Path(f"{install_root}.vibecad-rollback").resolve()
+            if backup != expected_backup:
+                raise UpdateError("Unexpected macOS rollback path in the health receipt.")
+            backup_to_remove = backup
 
     package_value = str(payload.get("package") or "")
     if package_value:
@@ -1251,6 +1617,16 @@ def complete_pending_install_health(
     _atomic_json_write(root / "health-receipt.json", receipt)
     pending.unlink(missing_ok=True)
     (root / "install-receipt.json").unlink(missing_ok=True)
+    if backup_to_remove is not None:
+        try:
+            if backup_to_remove.is_dir():
+                shutil.rmtree(backup_to_remove)
+            else:
+                backup_to_remove.unlink(missing_ok=True)
+        except FileNotFoundError:
+            # The detached install helper also removes a committed rollback
+            # bundle if this process exits between the commit and cleanup.
+            pass
     return status
 
 

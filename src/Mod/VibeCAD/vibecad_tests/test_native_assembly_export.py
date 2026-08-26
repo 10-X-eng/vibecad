@@ -100,10 +100,6 @@ def _context(document: _Document, *, authorizer=None) -> NativeRuntimeContext:
 def _spec(document: _Document, assembly: _Assembly) -> AssemblyAsmtExportSpec:
     return AssemblyAsmtExportSpec(
         assembly_ref=NativeObjectRef(document.Uid, assembly.Name),
-        expected_state_sha256="a" * 64,
-        expected_component_count=1,
-        expected_grounded_count=1,
-        expected_joint_count=1,
     )
 
 
@@ -140,14 +136,10 @@ def test_schema_exposes_no_provider_controlled_path() -> None:
     assert variant.surface_ids == frozenset({"assemble"})
     assert variant.transaction_behavior == "output"
     assert variant.background_required is False
-    assert set(schema["required"]) == {
-        "operation",
-        "assembly",
-        "expected_state_sha256",
-        "expected_component_count",
-        "expected_grounded_count",
-        "expected_joint_count",
-    }
+    assert definition.description == "Export the active Assembly as ASMT."
+    assert variant.description == "Export the active Assembly as ASMT."
+    assert schema["required"] == []
+    assert set(schema["properties"]) == {"operation"}
     assert not (
         {"path", "file_path", "directory", "destination"} & set(schema["properties"])
     )
@@ -266,6 +258,7 @@ def test_runtime_requests_human_authorization_and_passes_no_path_from_provider(
     authorization = object()
     authorized = []
     context = SimpleNamespace(
+        document=object(),
         document_uid="document-uid",
         authorize_output=lambda value: authorized.append(value) or authorization,
     )
@@ -283,6 +276,11 @@ def test_runtime_requests_human_authorization_and_passes_no_path_from_provider(
         "preflight_assembly_asmt_export",
         lambda _context, _spec: prepared,
     )
+    monkeypatch.setattr(
+        runtime_module,
+        "read_active_assembly",
+        lambda _document: SimpleNamespace(Name="Assembly"),
+    )
     calls = []
     monkeypatch.setattr(
         runtime_module,
@@ -290,14 +288,7 @@ def test_runtime_requests_human_authorization_and_passes_no_path_from_provider(
         lambda *args: calls.append(args) or {"operation": "asmt"},
     )
 
-    arguments = {
-        "operation": "asmt",
-        "assembly": {"object_name": "Assembly"},
-        "expected_state_sha256": "a" * 64,
-        "expected_component_count": 1,
-        "expected_grounded_count": 1,
-        "expected_joint_count": 1,
-    }
+    arguments = {"operation": "asmt"}
     assert runtime.export(arguments, ticket) == {"operation": "asmt"}
     assert authorized == [request]
     assert calls == [(context, prepared, authorization, ticket)]
@@ -306,6 +297,7 @@ def test_runtime_requests_human_authorization_and_passes_no_path_from_provider(
 
 def test_runtime_cancelled_authorization_is_a_noop(monkeypatch) -> None:
     context = SimpleNamespace(
+        document=object(),
         document_uid="document-uid",
         authorize_output=lambda _request: None,
     )
@@ -325,20 +317,18 @@ def test_runtime_cancelled_authorization_is_a_noop(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         runtime_module,
+        "read_active_assembly",
+        lambda _document: SimpleNamespace(Name="Assembly"),
+    )
+    monkeypatch.setattr(
+        runtime_module,
         "export_assembly_asmt",
         lambda *_args: pytest.fail("cancelled authorization must not export"),
     )
 
     with pytest.raises(NativeAssemblyExportError, match="cancelled"):
         runtime.export(
-            {
-                "operation": "asmt",
-                "assembly": {"object_name": "Assembly"},
-                "expected_state_sha256": "a" * 64,
-                "expected_component_count": 1,
-                "expected_grounded_count": 1,
-                "expected_joint_count": 1,
-            },
+            {"operation": "asmt"},
             ticket,
         )
 

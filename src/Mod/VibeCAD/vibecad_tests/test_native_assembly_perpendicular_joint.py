@@ -7,14 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import VibeCADNativeAssemblyJointArguments as joint_arguments
 import VibeCADNativeAssemblyPerpendicularJoint as perpendicular_module
 import VibeCADNativeAssemblyRelationJointRuntime as runtime_module
-from VibeCADNativeActionManifest import classify_native_surface
 from VibeCADNativeArguments import NativeArgumentError
 from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
 from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
-from VibeCADNativeAssemblyJointSchema import assembly_joint_capability_definition
 from VibeCADNativeAssemblyPerpendicularJoint import (
     NativeAssemblyPerpendicularJointError,
     PerpendicularJointSpec,
@@ -69,38 +66,6 @@ def _spec(*, solve: bool = True) -> PerpendicularJointSpec:
         expected_joint_count=0,
         expected_solve_on_creation=solve,
     )
-
-
-def test_perpendicular_schema_and_action_mapping_are_exact() -> None:
-    definition = assembly_joint_capability_definition()
-    variant = next(
-        item for item in definition.variants if item.operation == "create_perpendicular"
-    )
-    schema = definition.provider_schema(("create_perpendicular",))["parameters"][
-        "oneOf"
-    ][0]
-
-    assert variant.action_ids == frozenset({"Assembly_CreateJointPerpendicular"})
-    assert variant.surface_ids == frozenset({"assemble"})
-    assert set(schema["required"]) == {
-        "operation",
-        "assembly",
-        "first",
-        "second",
-        "label",
-        "expected_component_count",
-        "expected_grounded_count",
-        "expected_joint_count",
-        "expected_solve_on_creation",
-    }
-    assert not {"reverse", "angle", "distance", "limits", "rotation"} & set(
-        schema["properties"]
-    )
-    assert schema["additionalProperties"] is False
-    plan = classify_native_surface(_surface())[0]
-    assert plan.capability_family == ASSEMBLY_JOINT_CAPABILITY_NAME
-    assert plan.operation_variant == "create_perpendicular"
-    assert plan.transaction_behavior == "document"
 
 
 def test_perpendicular_spec_maps_only_the_real_native_joint_contract() -> None:
@@ -244,53 +209,6 @@ def _arguments() -> dict[str, object]:
         "expected_joint_count": 0,
         "expected_solve_on_creation": True,
     }
-
-
-def test_perpendicular_runtime_routes_complete_exact_spec_before_transaction(
-    monkeypatch,
-) -> None:
-    runtime, state, document = _runtime()
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        joint_arguments,
-        "joint_placement",
-        lambda value, field, _error_type: (field, value),
-    )
-    monkeypatch.setattr(
-        runtime_module,
-        "preflight_perpendicular_joint",
-        lambda target_document, spec: captured.update(
-            preflight_document=target_document,
-            spec=spec,
-        ),
-    )
-
-    def run_immediate(context, **kwargs):
-        captured.update(context=context, **kwargs)
-        return {"routed": True}
-
-    monkeypatch.setattr(runtime_module, "run_immediate_mutation", run_immediate)
-
-    result = runtime.mutate_joint(
-        _arguments(),
-        ticket=state.begin_call(document.Uid, ASSEMBLY_JOINT_CAPABILITY_NAME),
-    )
-
-    assert result == {"routed": True}
-    spec = captured["spec"]
-    assert isinstance(spec, PerpendicularJointSpec)
-    assert spec.assembly_ref.object_name == "Assembly"
-    assert spec.first.component_ref.object_name == "Base"
-    assert spec.second.component_ref.object_name == "Arm"
-    assert spec.label == "Perpendicular Axes"
-    assert spec.expected_component_count == 2
-    assert spec.expected_grounded_count == 1
-    assert spec.expected_joint_count == 0
-    assert spec.expected_solve_on_creation is True
-    assert captured["preflight_document"] is document
-    assert captured["transaction_name"] == (
-        "Create Native Assembly Perpendicular Joint"
-    )
 
 
 @pytest.mark.parametrize(

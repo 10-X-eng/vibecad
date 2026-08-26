@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" standalone="no" ?>
+<package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
+  <name>McMasterInsert</name>
+  <description>McMaster-Carr catalog workbench for VibeCAD. Browse mcmaster.com and import 3-D STEP as a component.</description>
+  <version>1.2.0</version>
+  <date>2026-08-20</date>
+  <maintainer email="bludwick@users.noreply.github.com">bludwick</maintainer>
+  <license file="README.md">LGPL-2.1-or-later</license>
+  <url type="repository" branch="main">https://github.com/10-X-eng/vibecad</url>
+  <content>
+    <workbench>
+      <classname>McMasterWorkbench</classname>
+      <subdirectory>./</subdirectory>
+      <icon>icons/mcmaster-workbench.svg</icon>
+    </workbench>
+  </content>
+</package>
