@@ -27,9 +27,10 @@ def test_windows_dev_launcher_is_repo_local_and_rebuilds_current_checkout():
     assert r"Library\bin\freecad.exe" in script
     assert "Refusing to launch an executable outside this checkout's Pixi environment." in script
 
-    prelaunch = script.lower().split("start-process", 1)[0]
-    assert "program files" not in prelaunch
-    assert "start menu" not in prelaunch
+    assert r"C:\Program Files" not in script
+    assert "$env:ProgramFiles" not in script
+    assert "$env:ProgramFiles(x86)" not in script
+    assert "Get-StartApps" not in script
 
 
 def test_windows_dev_launcher_sets_visible_identity_environment():
