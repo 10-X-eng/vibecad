@@ -742,8 +742,10 @@ class VibeCADService:
             uid,
             property_name,
         )
-        if revision != previous_revision:
+        revision_changed = revision != previous_revision
+        if str(property_name or "") == "Visibility" or revision_changed:
             self._invalidate_native_read_contexts(uid)
+        if revision_changed:
             self._sync_native_authority_metadata_if_active(uid)
         return revision
 

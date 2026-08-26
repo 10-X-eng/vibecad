@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 
 def _is_body(obj: Any) -> bool:
@@ -35,6 +35,154 @@ def _is_body_member(obj: Any) -> bool:
 def _is_internal_resource(obj: Any) -> bool:
     role = str(getattr(obj, "VibeCADTimelineRole", "") or "").strip()
     return role in {"internal", "resource"} and not _is_body(obj)
+
+
+def _visibility_parent(obj: Any) -> Any | None:
+    for method_name in ("getParentGroup", "getParentGeoFeatureGroup"):
+        reader = getattr(obj, method_name, None)
+        if not callable(reader):
+            continue
+        try:
+            parent = reader()
+        except (AttributeError, ReferenceError, RuntimeError):
+            continue
+        if parent is not None:
+            return parent
+    return None
+
+
+def is_drawing_object_effectively_visible(obj: Any) -> bool:
+    """Return whether one object and every visual container are shown."""
+
+    visited: set[int] = set()
+    current = obj
+    while current is not None:
+        identity = id(current)
+        if identity in visited:
+            return False
+        visited.add(identity)
+        view = getattr(current, "ViewObject", None)
+        try:
+            if view is None or not bool(view.Visibility):
+                return False
+        except (AttributeError, ReferenceError, RuntimeError):
+            return False
+        current = _visibility_parent(current)
+    return True
+
+
+def _direct_analysis_artifact(obj: Any) -> bool:
+    type_id = str(getattr(obj, "TypeId", "") or "")
+    if type_id.startswith("Fem::"):
+        return True
+    try:
+        if bool(getattr(obj, "VibeCADAnalysisDomain", False)):
+            return True
+    except (AttributeError, ReferenceError, RuntimeError):
+        return True
+    properties = set(str(name) for name in tuple(getattr(obj, "PropertiesList", ()) or ()))
+    return bool(properties.intersection({"FemMesh", "FemSource", "FemResult"}))
+
+
+def drawing_analysis_artifact_names(document: Any) -> frozenset[str]:
+    """Return every FEM/Analyze artifact excluded from the Drawing surface."""
+
+    objects = tuple(getattr(document, "Objects", ()) or ())
+    names = {
+        str(getattr(obj, "Name", "") or "")
+        for obj in objects
+        if _direct_analysis_artifact(obj)
+    }
+    pending = [
+        member
+        for analysis in objects
+        if str(getattr(analysis, "TypeId", "") or "") == "Fem::FemAnalysis"
+        for member in tuple(getattr(analysis, "Group", ()) or ())
+    ]
+    visited: set[int] = set()
+    while pending:
+        member = pending.pop()
+        identity = id(member)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        name = str(getattr(member, "Name", "") or "")
+        if name:
+            names.add(name)
+        pending.extend(tuple(getattr(member, "Group", ()) or ()))
+    names.discard("")
+    return frozenset(names)
+
+
+def drawing_source_exclusion_reason(
+    document: Any,
+    obj: Any,
+    *,
+    analysis_artifact_names: frozenset[str] | None = None,
+) -> str | None:
+    """Return the Drawing-only reason an object must not enter provider context."""
+
+    if obj is None:
+        return "hidden"
+    artifact_names = (
+        drawing_analysis_artifact_names(document)
+        if analysis_artifact_names is None
+        else analysis_artifact_names
+    )
+    name = str(getattr(obj, "Name", "") or "")
+    if _direct_analysis_artifact(obj) or (name and name in artifact_names):
+        return "analysis_artifact"
+    if not is_drawing_object_effectively_visible(obj):
+        return "hidden"
+    return None
+
+
+def filter_drawing_selection(
+    document: Any,
+    selection: Mapping[str, Any],
+    *,
+    analysis_artifact_names: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Remove hidden and Analyze/FEM objects from one Drawing selection."""
+
+    artifact_names = (
+        drawing_analysis_artifact_names(document)
+        if analysis_artifact_names is None
+        else analysis_artifact_names
+    )
+    filtered = dict(selection)
+    items = []
+    get_object = getattr(document, "getObject", None)
+    object_by_name = {
+        str(getattr(obj, "Name", "") or ""): obj
+        for obj in tuple(getattr(document, "Objects", ()) or ())
+    }
+    for item in list(filtered.get("items") or ()):
+        reference = item.get("object") if isinstance(item, Mapping) else None
+        name = (
+            str(reference.get("object_name") or "")
+            if isinstance(reference, Mapping)
+            else ""
+        )
+        obj = (
+            get_object(name)
+            if name and callable(get_object)
+            else object_by_name.get(name)
+        )
+        if obj is None:
+            continue
+        if (
+            drawing_source_exclusion_reason(
+                document,
+                obj,
+                analysis_artifact_names=artifact_names,
+            )
+            is None
+        ):
+            items.append(item)
+    filtered["items"] = items
+    filtered["selected_count"] = len(items)
+    return filtered
 
 
 def _is_active_public_geometry_source(
@@ -93,17 +241,24 @@ def is_active_design_geometry_source(
 ) -> bool:
     """Return whether one active public object is design, not analysis, geometry."""
 
+    if drawing_source_exclusion_reason(document, obj) is not None:
+        return False
     return is_active_public_geometry_source(
         document,
         obj,
         validate_brep=validate_brep,
-    ) and not bool(getattr(obj, "VibeCADAnalysisDomain", False))
+    )
 
 
 def is_potential_design_geometry_source(document: Any, obj: Any) -> bool:
     """Identify a Drawing candidate without reading its potentially huge Shape."""
 
-    if obj is None or _is_body_member(obj) or _is_internal_resource(obj):
+    if (
+        obj is None
+        or _is_body_member(obj)
+        or _is_internal_resource(obj)
+        or drawing_source_exclusion_reason(document, obj) is not None
+    ):
         return False
     try:
         import PartGui
@@ -169,20 +324,48 @@ def active_design_geometry_sources(
 ) -> tuple[Any, ...]:
     """Return design geometry without downstream analysis-domain artifacts."""
 
-    return tuple(
-        obj
-        for obj in active_public_geometry_sources(
+    if type(validate_brep) is not bool:
+        raise TypeError("validate_brep must be a boolean")
+    try:
+        import PartGui
+    except ImportError:
+        return ()
+    artifact_names = drawing_analysis_artifact_names(document)
+    result = []
+    seen: set[tuple[str, int]] = set()
+    for obj in tuple(getattr(document, "Objects", ()) or ()):
+        if drawing_source_exclusion_reason(
             document,
+            obj,
+            analysis_artifact_names=artifact_names,
+        ) is not None:
+            continue
+        if not _is_active_public_geometry_source(
+            document,
+            obj,
+            part_gui=PartGui,
             validate_brep=validate_brep,
-        )
-        if not bool(getattr(obj, "VibeCADAnalysisDomain", False))
-    )
+        ):
+            continue
+        try:
+            identity = (str(document.Uid), int(obj.ID))
+        except Exception:
+            continue
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(obj)
+    return tuple(result)
 
 
 __all__ = [
     "active_design_geometry_sources",
     "active_public_geometry_sources",
+    "drawing_analysis_artifact_names",
+    "drawing_source_exclusion_reason",
+    "filter_drawing_selection",
     "is_active_design_geometry_source",
     "is_active_public_geometry_source",
+    "is_drawing_object_effectively_visible",
     "is_potential_design_geometry_source",
 ]

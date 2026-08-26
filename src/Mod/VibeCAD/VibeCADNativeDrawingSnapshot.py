@@ -125,6 +125,7 @@ from VibeCADNativeDrawingViewState import (
     is_drawing_view,
     is_part_drawing_view,
 )
+from VibeCADNativeGeometrySources import is_potential_design_geometry_source
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
@@ -1038,7 +1039,10 @@ def _selected_sources(
     result = []
     for name in _selection_names(selection):
         selected = document.getObject(name)
-        if selected is None:
+        if selected is None or not is_potential_design_geometry_source(
+            document,
+            selected,
+        ):
             continue
         try:
             result.append(drawing_source_catalog_identity_state(selected))
@@ -1070,7 +1074,10 @@ def _selected_break_definitions(
     result = []
     for name in _selection_names(selection)[:MAX_DRAWING_BREAKS]:
         selected = document.getObject(name)
-        if selected is None:
+        if selected is None or not is_potential_design_geometry_source(
+            document,
+            selected,
+        ):
             continue
         try:
             state = drawing_source_catalog_identity_state(selected)
@@ -1088,7 +1095,10 @@ def _selected_draft_sources(
     result = []
     for name in _selection_names(selection)[:MAX_DRAWING_VIEW_SOURCES]:
         selected = document.getObject(name)
-        if selected is None:
+        if selected is None or not is_potential_design_geometry_source(
+            document,
+            selected,
+        ):
             continue
         try:
             state = drawing_source_catalog_identity_state(selected)

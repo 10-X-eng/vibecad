@@ -14,6 +14,7 @@ from VibeCADNativeDrawingSourceCatalog import drawing_source_catalog_page
 from VibeCADNativeDrawingViewState import drawing_source_catalog_identity_state
 from VibeCADNativeGeometrySources import (
     active_design_geometry_sources,
+    drawing_source_exclusion_reason,
     is_potential_design_geometry_source,
 )
 
@@ -35,12 +36,21 @@ class _Shape:
 class _Source:
     def __init__(self, object_id: int, *, analysis_domain: bool = False) -> None:
         self.ID = object_id
+        self.Name = f"Source{object_id}"
+        self.Label = self.Name
+        self.TypeId = "Part::Feature"
+        self.PropertiesList = ["Shape"]
         self.Shape = _Shape()
+        self.ViewObject = SimpleNamespace(Visibility=True)
         self.VibeCADAnalysisDomain = analysis_domain
         self.AnalysisSources = ()
 
     @staticmethod
     def getParentGeoFeatureGroup():
+        return None
+
+    @staticmethod
+    def getParentGroup():
         return None
 
     @staticmethod
@@ -93,6 +103,7 @@ def test_responsive_drawing_identity_capture_never_reads_live_shape(
         PropertiesList = ["Shape"]
         VibeCADAnalysisDomain = False
         VibeCADTimelineRole = ""
+        ViewObject = SimpleNamespace(Visibility=True)
 
         @property
         def Shape(self):
@@ -100,6 +111,10 @@ def test_responsive_drawing_identity_capture_never_reads_live_shape(
 
         @staticmethod
         def getParentGeoFeatureGroup():
+            return None
+
+        @staticmethod
+        def getParentGroup():
             return None
 
     source = _IdentityOnlySource()
@@ -135,6 +150,7 @@ def test_responsive_drawing_keeps_container_geometry_without_shape_property(
         ID = 43
         PropertiesList = []
         VibeCADAnalysisDomain = False
+        ViewObject = SimpleNamespace(Visibility=True)
 
         @property
         def Shape(self):
@@ -142,6 +158,10 @@ def test_responsive_drawing_keeps_container_geometry_without_shape_property(
 
         @staticmethod
         def getParentGeoFeatureGroup():
+            return None
+
+        @staticmethod
+        def getParentGroup():
             return None
 
     source = _ContainerSource()
@@ -168,6 +188,7 @@ def test_responsive_drawing_rejects_origin_geometry_without_reading_shape(
         ID = 44
         PropertiesList = []
         VibeCADAnalysisDomain = False
+        ViewObject = SimpleNamespace(Visibility=True)
 
         @property
         def Shape(self):
@@ -175,6 +196,10 @@ def test_responsive_drawing_rejects_origin_geometry_without_reading_shape(
 
         @staticmethod
         def getParentGeoFeatureGroup():
+            return None
+
+        @staticmethod
+        def getParentGroup():
             return None
 
     source = _Origin()
@@ -201,6 +226,100 @@ def test_drawing_keeps_design_sources_while_analyze_uses_their_domain(monkeypatc
 
     assert active_design_geometry_sources(document) == (source,)
     assert active_analyze_geometry_sources(document) == (domain,)
+
+
+def test_drawing_sources_respect_effective_visibility_and_exclude_fem(
+    monkeypatch,
+) -> None:
+    visible = _Source(1)
+    hidden = _Source(2)
+    hidden.ViewObject.Visibility = False
+
+    hidden_parent = SimpleNamespace(
+        Name="HiddenAssembly",
+        ViewObject=SimpleNamespace(Visibility=False),
+        getParentGroup=lambda: None,
+        getParentGeoFeatureGroup=lambda: None,
+    )
+    nested = _Source(3)
+    nested.getParentGroup = lambda: hidden_parent
+
+    fem_mesh = _Source(4)
+    fem_mesh.TypeId = "Fem::FemMeshShapeBaseObjectPython"
+    fem_mesh.PropertiesList = ["Shape", "FemMesh"]
+
+    analysis_domain = _Source(5, analysis_domain=True)
+    analysis_member = _Source(6)
+    analysis = SimpleNamespace(
+        Name="Analysis",
+        TypeId="Fem::FemAnalysis",
+        Group=(analysis_member,),
+        ViewObject=SimpleNamespace(Visibility=False),
+    )
+    document = SimpleNamespace(
+        Uid="document-a",
+        Objects=(
+            visible,
+            hidden,
+            hidden_parent,
+            nested,
+            fem_mesh,
+            analysis_domain,
+            analysis_member,
+            analysis,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "PartGui",
+        SimpleNamespace(isModelingObjectActive=lambda _obj: True),
+    )
+
+    assert active_design_geometry_sources(document) == (visible,)
+    assert drawing_source_exclusion_reason(document, visible) is None
+    assert drawing_source_exclusion_reason(document, hidden) == "hidden"
+    assert drawing_source_exclusion_reason(document, nested) == "hidden"
+    assert drawing_source_exclusion_reason(document, fem_mesh) == "analysis_artifact"
+    assert (
+        drawing_source_exclusion_reason(document, analysis_domain)
+        == "analysis_artifact"
+    )
+    assert (
+        drawing_source_exclusion_reason(document, analysis_member)
+        == "analysis_artifact"
+    )
+
+
+def test_hidden_responsive_source_is_rejected_before_shape_access(monkeypatch) -> None:
+    class _HiddenSource:
+        Name = "HiddenBody"
+        TypeId = "PartDesign::Body"
+        ID = 7
+        PropertiesList = ["Shape"]
+        VibeCADAnalysisDomain = False
+        ViewObject = SimpleNamespace(Visibility=False)
+
+        @property
+        def Shape(self):
+            raise AssertionError("hidden Drawing sources must not read Shape")
+
+        @staticmethod
+        def getParentGeoFeatureGroup():
+            return None
+
+        @staticmethod
+        def getParentGroup():
+            return None
+
+    source = _HiddenSource()
+    document = SimpleNamespace(Uid="document-a", Objects=(source,))
+    monkeypatch.setitem(
+        sys.modules,
+        "PartGui",
+        SimpleNamespace(isModelingObjectActive=lambda _obj: True),
+    )
+
+    assert is_potential_design_geometry_source(document, source) is False
 
 
 def test_drawing_source_catalog_pages_one_hundred_bodies_without_guessing(
@@ -297,7 +416,14 @@ def test_drawing_provider_context_uses_identity_only_for_selected_sources(
 ) -> None:
     source = _CatalogSource(1)
     document = SimpleNamespace(
+        Uid="document-a",
+        Objects=(source,),
         getObject=lambda name: source if name == source.Name else None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "PartGui",
+        SimpleNamespace(isModelingObjectActive=lambda _obj: True),
     )
     state = {
         "object_name": "Body",

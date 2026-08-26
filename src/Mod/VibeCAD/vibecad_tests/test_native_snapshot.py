@@ -18,6 +18,7 @@ from VibeCADNativeManufactureReadiness import resolve_active_job
 from VibeCADNativeSnapshot import (
     NativeSnapshotError,
     build_active_snapshot,
+    capture_active_snapshot_base,
     concise_object,
     complete_active_snapshot,
 )
@@ -126,6 +127,63 @@ def _document() -> _Document:
     sheet.getAlias = lambda cell: "width" if cell == "A1" else ""
     feature.ExpressionEngine = [("Length", "Parameters.width")]
     return document
+
+
+def test_drawing_base_context_omits_hidden_and_fem_working_objects() -> None:
+    document = _Document()
+    visible = document.add("VisibleBody", "PartDesign::Body")
+    hidden = document.add("HiddenBody", "PartDesign::Body")
+    fem = document.add("FEMMeshGmsh", "Fem::FemMeshShapeBaseObjectPython")
+    for obj, shown in ((visible, True), (hidden, False), (fem, True)):
+        obj.ViewObject = SimpleNamespace(Visibility=shown)
+        obj.getParentGroup = lambda: None
+        obj.getParentGeoFeatureGroup = lambda: None
+    selection = {
+        "document_uid": document.Uid,
+        "selected_count": 3,
+        "items": [
+            {
+                "object": {
+                    "document_uid": document.Uid,
+                    "object_name": obj.Name,
+                    "type_id": obj.TypeId,
+                },
+                "subelements": [],
+            }
+            for obj in (visible, hidden, fem)
+        ],
+    }
+    native_state = {
+        "document_uid": document.Uid,
+        "structural_revision": 7,
+        "recent_receipts": [
+            {
+                "created": [
+                    {
+                        "document_uid": document.Uid,
+                        "object_name": obj.Name,
+                        "type_id": obj.TypeId,
+                    }
+                    for obj in (visible, hidden, fem)
+                ]
+            }
+        ],
+    }
+
+    result = capture_active_snapshot_base(
+        document,
+        "drawing",
+        native_state,
+        selection=selection,
+    )
+
+    assert [item["object"]["object_name"] for item in result["selection"]["items"]] == [
+        "VisibleBody"
+    ]
+    assert result["selection"]["selected_count"] == 1
+    assert [item["object_name"] for item in result["working_set"]] == [
+        "VisibleBody"
+    ]
 
 
 def _state() -> dict:

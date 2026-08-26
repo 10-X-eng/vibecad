@@ -18,6 +18,7 @@ from VibeCADNativeDrawingDraftState import (
 from VibeCADNativeDrawingErrors import NativeDrawingError
 from VibeCADNativeDrawingState import drawing_page_state, is_drawing_page
 from VibeCADNativeDrawingViewState import DRAWING_VIEW_ORIENTATIONS
+from VibeCADNativeGeometrySources import drawing_source_exclusion_reason
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity, read_current_selection, resolve_object
 
@@ -264,6 +265,21 @@ def prepare_draft_view_create(
         document,
         {"document_uid": str(document.Uid), "object_name": source_target["object_name"]},
     )
+    exclusion = drawing_source_exclusion_reason(document, source)
+    if exclusion is not None:
+        _error(
+            (
+                "An Analyze/FEM artifact cannot be used as a Draft Drawing source."
+                if exclusion == "analysis_artifact"
+                else "The exact Draft Drawing source is hidden."
+            ),
+            "NATIVE_DRAWING_DRAFT_SOURCE_INVALID",
+            repair=(
+                {}
+                if exclusion == "analysis_artifact"
+                else {"object_name": str(source.Name), "unhide_before_retry": True}
+            ),
+        )
     try:
         fingerprint = draft_source_fingerprint(source)
     except ValueError as exc:
@@ -308,6 +324,11 @@ def validate_prepared_draft_view(document: Any, prepared: PreparedDraftView) -> 
         _error(
             "The exact Drawing graph changed while the Draft view was rendered.",
             "NATIVE_DRAWING_DRAFT_STALE",
+        )
+    if drawing_source_exclusion_reason(document, source) is not None:
+        _error(
+            "The exact Draft Drawing source left the visible Drawing scope.",
+            "NATIVE_DRAWING_DRAFT_SOURCE_STALE",
         )
     page_state = drawing_page_state(page)
     if page_state["state_sha256"] != prepared.page_state_before["state_sha256"]:

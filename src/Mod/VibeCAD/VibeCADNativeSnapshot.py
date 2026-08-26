@@ -113,6 +113,8 @@ def live_working_set(
     document: Any,
     selection: Mapping[str, Any],
     native_state: Mapping[str, Any],
+    *,
+    include_object: Callable[[Any], bool] | None = None,
 ) -> list[dict[str, Any]]:
     get_object = getattr(document, "getObject", None)
     if not callable(get_object):
@@ -129,6 +131,8 @@ def live_working_set(
         seen.add(name)
         obj = get_object(name)
         if obj is None or getattr(obj, "Document", None) is not document:
+            continue
+        if include_object is not None and not include_object(obj):
             continue
         result.append(concise_object(obj))
         if len(result) >= MAX_WORKING_OBJECTS:
@@ -240,6 +244,38 @@ def capture_active_snapshot_base(
     selected = dict(selection) if selection is not None else read_current_selection(document)
     if str(selected.get("document_uid") or "") != uid:
         raise NativeSnapshotError("Native selection belongs to another document.")
+    include_working_object = None
+    if surface_id == "drawing":
+        from VibeCADNativeGeometrySources import (
+            drawing_analysis_artifact_names,
+            drawing_source_exclusion_reason,
+            filter_drawing_selection,
+        )
+
+        analysis_artifacts = drawing_analysis_artifact_names(document)
+
+        def include_drawing_object(obj: Any) -> bool:
+            return (
+                drawing_source_exclusion_reason(
+                    document,
+                    obj,
+                    analysis_artifact_names=analysis_artifacts,
+                )
+                is None
+            )
+
+        selected = filter_drawing_selection(
+            document,
+            selected,
+            analysis_artifact_names=analysis_artifacts,
+        )
+        include_working_object = include_drawing_object
+    working_set = live_working_set(
+        document,
+        selected,
+        native_state,
+        include_object=include_working_object,
+    )
     result: dict[str, Any] = {
         "surface_id": surface_id,
         "document": {
@@ -247,7 +283,7 @@ def capture_active_snapshot_base(
             "document_name": str(getattr(document, "Name", "") or ""),
         },
         "structural_revision": int(native_state.get("structural_revision") or 0),
-        "working_set": live_working_set(document, selected, native_state),
+        "working_set": working_set,
         "_selection": selected,
     }
     if selected.get("items"):

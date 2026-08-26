@@ -448,6 +448,30 @@ def test_document_observer_filters_presentation_before_revision(
     assert store.current_revision("document-a") == 1
 
 
+def test_gui_document_observer_forwards_visibility_changes(monkeypatch) -> None:
+    import VibeCADGui as gui
+
+    changed = []
+    service = SimpleNamespace(
+        note_native_object_property_change=(
+            lambda obj, property_name: changed.append((obj, property_name))
+        ),
+    )
+    monkeypatch.setattr(gui, "get_service", lambda: service)
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    obj = SimpleNamespace(
+        Document=SimpleNamespace(Uid="document-a", Restoring=False),
+    )
+    view_provider = SimpleNamespace(Object=obj)
+
+    gui._VibeCADGuiDocumentObserver().slotChangedObject(
+        view_provider,
+        "Visibility",
+    )
+
+    assert changed == [(obj, "Visibility")]
+
+
 def test_document_observer_counts_create_and_delete(monkeypatch) -> None:
     import VibeCADGui as gui
 

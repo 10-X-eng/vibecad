@@ -4505,6 +4505,25 @@ def _schedule_native_surface_continuation(event: dict[str, Any]) -> None:
 
 
 class _VibeCADGuiDocumentObserver:
+    def slotChangedObject(self, view_provider, property_name) -> None:
+        if str(property_name or "") != "Visibility":
+            return
+        is_restoring = getattr(App, "isRestoring", None)
+        if callable(is_restoring) and bool(is_restoring()):
+            return
+        try:
+            obj = getattr(view_provider, "Object", None)
+            document = getattr(obj, "Document", None)
+            if document is not None and bool(getattr(document, "Restoring", False)):
+                return
+            if str(getattr(document, "Uid", "") or "").strip():
+                get_service().note_native_object_property_change(
+                    obj,
+                    "Visibility",
+                )
+        except Exception as exc:
+            _warn(f"VibeCAD visibility observer failed: {exc}")
+
     def slotResetEdit(self, view_provider) -> None:
         try:
             event = _sketch_close_continuation_controller.consume_reset_edit(

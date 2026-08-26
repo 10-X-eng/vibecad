@@ -29,7 +29,14 @@ class _Document:
 
 
 def _object(name: str, type_id: str) -> SimpleNamespace:
-    return SimpleNamespace(Name=name, TypeId=type_id)
+    return SimpleNamespace(
+        Name=name,
+        TypeId=type_id,
+        ViewObject=SimpleNamespace(Visibility=True),
+        PropertiesList=["Shape"],
+        getParentGroup=lambda: None,
+        getParentGeoFeatureGroup=lambda: None,
+    )
 
 
 def _install_part_gui(
@@ -144,3 +151,63 @@ def test_standard_view_keeps_the_selected_body_as_its_techdraw_source(
     )
 
     assert prepared.sources == (body,)
+
+
+def test_standard_view_rejects_a_source_hidden_after_provider_inspection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = SimpleNamespace(
+        Name="Page",
+        TypeId="TechDraw::DrawPage",
+        Views=(),
+    )
+    body = _object("Body042", "PartDesign::Body")
+    body.ViewObject.Visibility = False
+    active_state = _object("Body042_State", "PartDesign::DesignBodyState")
+    document = _Document((page, body, active_state), (page, active_state))
+    document.Uid = "drawing-hidden-source-test"
+    _install_part_gui(monkeypatch, {id(body): active_state})
+    monkeypatch.setattr(
+        drawing_view,
+        "resolve_object",
+        lambda current, target, **_kwargs: current.getObject(target["object_name"]),
+    )
+    monkeypatch.setattr(
+        drawing_view,
+        "drawing_page_state",
+        lambda _page: {"state_sha256": "page-state"},
+    )
+    monkeypatch.setattr(
+        drawing_view,
+        "drawing_source_state",
+        lambda source: {
+            "object_name": source.Name,
+            "state_sha256": "body-state",
+        },
+    )
+    monkeypatch.setattr(drawing_view, "_current_selection", lambda _document: {})
+
+    with pytest.raises(drawing_view.NativeDrawingError) as failure:
+        drawing_view.prepare_standard_view_create(
+            document,
+            values={
+                "label": "Front",
+                "page": {
+                    "object_name": page.Name,
+                    "expected_state_sha256": "page-state",
+                },
+                "sources": [
+                    {
+                        "object_name": body.Name,
+                        "expected_state_sha256": "body-state",
+                    }
+                ],
+                "orientation": "front",
+                "position": {"x_mm": 100.0, "y_mm": 100.0},
+                "scale": "page",
+                "line_style": "visible",
+            },
+            validate_position=False,
+        )
+
+    assert failure.value.error_code == "NATIVE_DRAWING_VIEW_SOURCE_HIDDEN"

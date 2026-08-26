@@ -13,6 +13,11 @@ import tempfile
 from typing import Any, Mapping
 
 from VibeCADNativeDrawingErrors import NativeDrawingError
+from VibeCADNativeGeometrySources import (
+    drawing_analysis_artifact_names,
+    drawing_source_exclusion_reason,
+    filter_drawing_selection,
+)
 from VibeCADNativeDrawingState import drawing_page_state, is_drawing_page
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity, read_current_selection, resolve_object
@@ -234,8 +239,10 @@ def _placement(obj: Any) -> list[float] | None:
 def _geometry_record(obj: Any) -> tuple[dict[str, Any], bool]:
     shape_hash = None
     shape = getattr(obj, "Shape", None)
-    if shape is not None and not bool(shape.isNull()):
-        shape_hash = int(shape.hashCode())
+    is_null = getattr(shape, "isNull", None)
+    hash_code = getattr(shape, "hashCode", None)
+    if callable(is_null) and callable(hash_code) and not bool(is_null()):
+        shape_hash = int(hash_code())
     mesh = getattr(obj, "Mesh", None)
     mesh_record = None
     if mesh is not None:
@@ -303,7 +310,14 @@ def drawing_active_viewport_state(
         )
     records = []
     visible_geometry_count = 0
+    analysis_artifacts = drawing_analysis_artifact_names(document)
     for obj in tuple(document.Objects):
+        if drawing_source_exclusion_reason(
+            document,
+            obj,
+            analysis_artifact_names=analysis_artifacts,
+        ) is not None:
+            continue
         try:
             record, visible_geometry = _geometry_record(obj)
         except Exception as exc:
@@ -326,7 +340,11 @@ def drawing_active_viewport_state(
         "up_direction": up,
         "viewport_size_px": [width, height],
         "resolution_pixels_per_mm": resolution,
-        "selection": _current_selection(document),
+        "selection": filter_drawing_selection(
+            document,
+            _current_selection(document),
+            analysis_artifact_names=analysis_artifacts,
+        ),
         "objects": records,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))

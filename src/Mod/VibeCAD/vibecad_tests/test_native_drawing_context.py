@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -95,6 +96,25 @@ def test_responsive_drawing_catalog_checks_cancellation_between_batches() -> Non
         )
 
     assert completed_batches == 1
+
+
+def test_visibility_change_invalidates_drawing_cache_without_structural_revision() -> None:
+    from VibeCADCore import VibeCADService
+
+    invalidated = []
+    service = VibeCADService.__new__(VibeCADService)
+    service._object_document_uid = lambda _obj: "document-a"
+    service._native_document_states = SimpleNamespace(
+        current_revision=lambda _uid: 7,
+        note_object_property_change=lambda _uid, _property: 7,
+    )
+    service._invalidate_native_read_contexts = invalidated.append
+    service._sync_native_authority_metadata_if_active = lambda _uid: None
+
+    revision = service.note_native_object_property_change(object(), "Visibility")
+
+    assert revision == 7
+    assert invalidated == ["document-a"]
 
 
 def test_drawing_catalog_coordinator_coalesces_concurrent_preparation() -> None:
