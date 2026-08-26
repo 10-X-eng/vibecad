@@ -9,14 +9,13 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
 )
-from VibeCADNativeDrawingViewLockState import (
-    MAX_DRAWING_VIEW_LOCK_PAGE_SIZE,
-    MAX_DRAWING_VIEW_LOCKS,
+from VibeCADNativeDrawingViewLockState import MAX_DRAWING_VIEW_LOCKS
+
+
+DRAWING_VIEW_LOCK_CAPABILITY_NAMES = (
+    "drawing.view_locks",
+    "drawing.set_view_locks",
 )
-
-
-DRAWING_VIEW_LOCK_CAPABILITY_NAME = "drawing.view_lock"
-DRAWING_VIEW_LOCK_OPERATIONS = ("set", "read_page")
 _ACTIONS = frozenset({"TechDraw_ExtensionLockUnlockView"})
 _OBJECT_NAME = {
     "type": "string",
@@ -44,16 +43,28 @@ _PAGE = _closed(
     {"object_name": _OBJECT_NAME, "expected_state_sha256": _SHA256},
     ("object_name", "expected_state_sha256"),
 )
-_COMMON = {
+_SET_COMMON = {
     "page": _PAGE,
     "expected_inventory_state_sha256": {
         **_SHA256,
         "description": (
-            "Exact view-lock inventory hash published in Drawing context or "
-            "returned by read_page."
+            "View-lock inventory hash from Drawing context or drawing.view_locks."
         ),
     },
 }
+_READ_PAGE = _closed(
+    {
+        "object_name": _OBJECT_NAME,
+        "expected_inventory_state_sha256": {
+            "default": "",
+            "anyOf": [
+                {"type": "string", "const": ""},
+                _SHA256,
+            ],
+        },
+    },
+    ("object_name",),
+)
 _CHANGE = _closed(
     {
         "object_name": _OBJECT_NAME,
@@ -67,21 +78,47 @@ _CHANGE = _closed(
 )
 
 
-def drawing_view_lock_capability_definition() -> NativeCapabilityDefinition:
-    return NativeCapabilityDefinition(
-        name=DRAWING_VIEW_LOCK_CAPABILITY_NAME,
-        description=(
-            "Read exact Drawing position-lock state or set 1 through 32 "
-            "hash-pinned views to explicit final lock states."
+def drawing_view_lock_capability_definitions() -> tuple[
+    NativeCapabilityDefinition, ...
+]:
+    return (
+        NativeCapabilityDefinition(
+            name="drawing.view_locks",
+            description="Read Drawing view position locks.",
+            primary_classification="read",
+            variants=(
+            NativeCapabilityVariant(
+                operation="read",
+                description="Read Drawing view position locks.",
+                action_ids=_ACTIONS,
+                surface_ids=frozenset({"drawing"}),
+                exact_target_type="ExactDrawingViewLockInventoryPage",
+                transaction_behavior="none",
+                background_required=False,
+                parameters=_closed(
+                    {
+                        "page": _READ_PAGE,
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": MAX_DRAWING_VIEW_LOCKS,
+                            "default": 0,
+                        },
+                    },
+                    ("page",),
+                ),
+                provider_supplemental=True,
+            ),
+            ),
         ),
-        primary_classification="mutation",
-        variants=(
+        NativeCapabilityDefinition(
+            name="drawing.set_view_locks",
+            description="Set Drawing view position locks.",
+            primary_classification="mutation",
+            variants=(
             NativeCapabilityVariant(
                 operation="set",
-                description=(
-                    "Set explicit final lock states for exact views on one page. "
-                    "Mixed lock and unlock requests are applied atomically."
-                ),
+                description="Set Drawing view position locks.",
                 action_ids=_ACTIONS,
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type="ExactDrawingPageAndExplicitViewLockStates",
@@ -89,7 +126,7 @@ def drawing_view_lock_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=_closed(
                     {
-                        **_COMMON,
+                        **_SET_COMMON,
                         "views": {
                             "type": "array",
                             "items": _CHANGE,
@@ -100,39 +137,6 @@ def drawing_view_lock_capability_definition() -> NativeCapabilityDefinition:
                     ("page", "expected_inventory_state_sha256", "views"),
                 ),
             ),
-            NativeCapabilityVariant(
-                operation="read_page",
-                description=(
-                    "Read 1 through 48 exact position-lock targets from one "
-                    "hash-pinned Drawing page inventory."
-                ),
-                action_ids=_ACTIONS,
-                surface_ids=frozenset({"drawing"}),
-                exact_target_type="ExactDrawingViewLockInventoryPage",
-                transaction_behavior="none",
-                background_required=False,
-                parameters=_closed(
-                    {
-                        **_COMMON,
-                        "offset": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": MAX_DRAWING_VIEW_LOCKS,
-                        },
-                        "page_size": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": MAX_DRAWING_VIEW_LOCK_PAGE_SIZE,
-                        },
-                    },
-                    (
-                        "page",
-                        "expected_inventory_state_sha256",
-                        "offset",
-                        "page_size",
-                    ),
-                ),
-                provider_supplemental=True,
             ),
         ),
     )
@@ -143,4 +147,5 @@ def register_drawing_view_lock_capability_definition(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_definition(drawing_view_lock_capability_definition())
+    for definition in drawing_view_lock_capability_definitions():
+        registry.register_definition(definition)

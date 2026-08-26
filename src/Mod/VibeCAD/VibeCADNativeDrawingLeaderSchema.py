@@ -14,8 +14,7 @@ from VibeCADNativeCapabilityRegistry import (
 from VibeCADNativeDrawingLeaderState import MAX_DRAWING_LEADER_POINTS
 
 
-DRAWING_ANNOTATION_CAPABILITY_NAME = "drawing.annotation"
-DRAWING_LEADER_OPERATIONS = ("leader_line", "read_leader_defaults")
+DRAWING_LEADER_CAPABILITY_NAME = "drawing.leader_line"
 _ACTIONS = frozenset({"TechDraw_LeaderLine"})
 _OBJECT_NAME = {
     "type": "string",
@@ -80,7 +79,7 @@ _SYMBOLS = _closed(
         "start": {"type": "string", "enum": _ARROWS},
         "end": {"type": "string", "enum": _ARROWS},
     },
-    ("start", "end"),
+    (),
 )
 _BEHAVIOR = _closed(
     {
@@ -100,7 +99,7 @@ _BEHAVIOR = _closed(
             "description": "Rotate all leader segments when the owner view rotates.",
         },
     },
-    ("scalable", "auto_horizontal", "rotates_with_owner"),
+    (),
 )
 _COLOR = _closed(
     {
@@ -120,7 +119,7 @@ _LINE = _closed(
         "line_style": {"type": "string", "enum": _LINE_STYLES},
         "color_rgb": _COLOR,
     },
-    ("line_width_mm", "line_style", "color_rgb"),
+    (),
 )
 
 
@@ -134,16 +133,12 @@ def _create_parameters() -> dict:
                 "minItems": 2,
                 "maxItems": MAX_DRAWING_LEADER_POINTS,
                 "items": deepcopy(_POINT),
-                "description": "Ordered distinct paper-space points from arrow tip to tail.",
+                "description": "Paper-space points from arrow tip to tail.",
             },
             "label": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 160,
-                "description": (
-                    "Preferred document label without padding. FreeCAD may append a "
-                    "numeric suffix; the result reports the exact assigned label."
-                ),
             },
             "symbols": deepcopy(_SYMBOLS),
             "behavior": deepcopy(_BEHAVIOR),
@@ -154,29 +149,19 @@ def _create_parameters() -> dict:
             "owner",
             "points_on_page_mm",
             "label",
-            "symbols",
-            "behavior",
-            "line",
         ),
     )
 
 
 def drawing_leader_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
-        name=DRAWING_ANNOTATION_CAPABILITY_NAME,
-        description=(
-            "Create one exact owner-linked Drawing Leader Line from ordered absolute "
-            "page points with explicit symbols, behavior, and complete line style."
-        ),
+        name=DRAWING_LEADER_CAPABILITY_NAME,
+        description="Add a leader line to a Drawing view.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
-                operation="leader_line",
-                description=(
-                    "Create a Leader Line on one exact page and owner view. The result "
-                    "reports the actual rendered points after scale, rotation, and "
-                    "automatic-horizontal behavior."
-                ),
+                operation="create",
+                description="Add a leader line to a Drawing view.",
                 action_ids=_ACTIONS,
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type=(
@@ -185,20 +170,6 @@ def drawing_leader_capability_definition() -> NativeCapabilityDefinition:
                 transaction_behavior="document",
                 background_required=False,
                 parameters=_create_parameters(),
-            ),
-            NativeCapabilityVariant(
-                operation="read_leader_defaults",
-                description=(
-                    "Read the human Leader Line command's symbols, behavior, color, "
-                    "width, and line-style defaults."
-                ),
-                action_ids=_ACTIONS,
-                surface_ids=frozenset({"drawing"}),
-                exact_target_type="DrawingLeaderDefaults",
-                transaction_behavior="none",
-                background_required=False,
-                parameters=_closed({}, ()),
-                provider_supplemental=True,
             ),
         ),
     )

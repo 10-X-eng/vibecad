@@ -71,7 +71,7 @@ def _source_targets(values: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
     for item in result:
         exact = exact_drawing_mapping(
             item,
-            frozenset({"subelement", "expected_element_state_sha256"}),
+            frozenset({"subelement"}),
             "circle centerline source",
             family="circle centerline",
             error_code=(
@@ -126,7 +126,7 @@ def _validate_host(
             repair={
                 "accepted_references": "1 to 32 projected circular EdgeN targets",
                 "requested_subelements": list(source_names),
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if len(pairs) != len(source_elements):
@@ -267,15 +267,19 @@ def _persistent_line_boundary(line: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _persistent_line_identity(line: Mapping[str, Any]) -> tuple[str, str]:
+    return str(line["kind"]), str(line.get("tag", line["subelement"]))
+
+
 def _require_old_lines_preserved(
     before: Mapping[str, Any],
     after: Mapping[str, Any],
 ) -> None:
     after_by_identity = {
-        (line["kind"], line["tag"]): line for line in after["lines"]
+        _persistent_line_identity(line): line for line in after["lines"]
     }
     for old in before["lines"]:
-        current = after_by_identity.get((old["kind"], old["tag"]))
+        current = after_by_identity.get(_persistent_line_identity(old))
         if (
             current is None
             or _persistent_line_boundary(current)

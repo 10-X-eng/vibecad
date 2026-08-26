@@ -610,6 +610,12 @@ from VibeCADNativeDrawingViewLockBindings import (
 from VibeCADNativeDrawingViewLockSchema import (
     register_drawing_view_lock_capability_definition,
 )
+from VibeCADNativeDrawingPlacementBindings import (
+    register_drawing_placement_capability_implementations,
+)
+from VibeCADNativeDrawingPlacementSchema import (
+    register_drawing_placement_capability_definitions,
+)
 from VibeCADNativeDrawingSectionPositionBindings import (
     register_drawing_section_position_capability_implementation,
 )
@@ -967,6 +973,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_drawing_line_length_capability_implementation(registry)
     register_drawing_view_lock_capability_definition(registry)
     register_drawing_view_lock_capability_implementation(registry)
+    register_drawing_placement_capability_definitions(registry)
+    register_drawing_placement_capability_implementations(registry)
     register_drawing_section_position_capability_definition(registry)
     register_drawing_section_position_capability_implementation(registry)
     register_drawing_format_capability_definition(registry)

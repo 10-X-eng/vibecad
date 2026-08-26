@@ -9,7 +9,12 @@
    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
    xmlns:cc="http://creativecommons.org/ns#"
    xmlns:dc="http://purl.org/dc/elements/1.1/"
-   xmlns:freecad="http://www.freecad.org/wiki/index.php?title=Svg_Namespace">
+   xmlns:freecad="https://www.freecad.org/wiki/index.php?title=Svg_Namespace"
+   freecad:drawable-x-mm="21"
+   freecad:drawable-y-mm="20"
+   freecad:drawable-width-mm="822"
+   freecad:drawable-height-mm="470.20312"
+   freecad:drawable-clearance-mm="7">
   <defs
      id="defs1" />
   <!-- Working space 21 20 843 539 -->
@@ -908,7 +913,7 @@
        stroke-width=".10643">CHECK DATE</tspan></text>
   <text
      id="text3331-5-9"
-     x="692.15143"
+     x="689.8"
      y="532.6123"
      fill="#000000"
      font-family="sans"
@@ -920,7 +925,7 @@
      freecad:editable="scale"
      freecad:autofill="scale"><tspan
        id="tspan3333-6-6"
-       x="692.15143"
+       x="689.8"
        y="532.6123"
        stroke-width=".10643">SCALE</tspan></text>
   <text
@@ -1392,4 +1397,5 @@
     </g>
   </g>
   <!-- DrawingContent -->
+ <text id="unit_system_data_field" x="699" y="532.6123" fill="#000000" font-family="sans" font-size="3.2749px" text-anchor="middle" freecad:editable="unit_system" freecad:autofill="units"><tspan>in</tspan></text>
 </svg>

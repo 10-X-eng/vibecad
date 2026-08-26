@@ -73,6 +73,7 @@ public:
 
     PrecomputedDetailState getPrecomputedDetail() const;
     void setPrecomputedDetail(const TopoDS_Shape& detailShape);
+    bool restorePrecomputedState() override;
     void requestPrecomputedDetailPaint();
     PyObject* getPyObject() override;
 

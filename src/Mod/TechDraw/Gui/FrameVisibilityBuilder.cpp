@@ -52,22 +52,6 @@ TechDrawGui::ViewProviderPage* requireActivePageProvider(
     return pageProvider;
 }
 
-TechDrawGui::ViewProviderPage* activePageProviderForView(
-    TechDraw::DrawViewPart* view)
-{
-    auto* page = view ? view->findParentPage() : nullptr;
-    auto* window = dynamic_cast<TechDrawGui::MDIViewPage*>(
-        Gui::getMainWindow()->activeWindow());
-    auto* pageProvider = window ? window->getViewProviderPage() : nullptr;
-    if (!view || !view->getDocument() || !page || !pageProvider
-        || pageProvider->getDrawPage() != page
-        || page->getDocument() != view->getDocument()) {
-        throw Base::ValueError(
-            "Hidden-edge presentation requires a view on the human-active Drawing page");
-    }
-    return pageProvider;
-}
-
 TechDrawGui::ViewProviderViewPart* viewProviderFor(
     TechDraw::DrawViewPart* view)
 {
@@ -208,7 +192,7 @@ TechDrawGui::validateDrawingHiddenEdgeVisibility(
     bool visible)
 {
     auto plan = inspectDrawingHiddenEdgeVisibility(view);
-    activePageProviderForView(view);
+    viewProviderFor(view);
     plan.visible = visible;
     plan.changed = plan.previousVisible != visible;
     return plan;

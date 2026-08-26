@@ -17,10 +17,10 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 
 
 _FIELDS = {
-    "show": frozenset({"page"}),
-    "set_frame_visibility": frozenset({"page", "visible"}),
-    "set_grid_visibility": frozenset({"page", "visible"}),
-    "set_hidden_edges_visible": frozenset({"view", "visible"}),
+    "show_page": {"show": frozenset({"page"})},
+    "page_frames": {"set_visibility": frozenset({"page", "visible"})},
+    "page_grid": {"set_visibility": frozenset({"page", "visible"})},
+    "hidden_edges": {"set_visibility": frozenset({"view", "visible"})},
 }
 
 
@@ -30,16 +30,24 @@ class NativeDrawingPresentationRuntime:
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
 
-    def execute(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _FIELDS)
-        if operation == "show":
-            return show_exact_drawing(self._context, values)
-        if operation == "set_frame_visibility":
-            return set_drawing_frame_visibility(self._context, values)
-        if operation == "set_grid_visibility":
-            return set_drawing_grid_visibility(self._context, values)
-        if operation == "set_hidden_edges_visible":
-            return set_drawing_hidden_edge_visibility(self._context, values)
-        raise RuntimeError(
-            f"Drawing presentation operation is unavailable: {operation}."
+    def execute(
+        self,
+        arguments: Mapping[str, Any],
+        *,
+        presentation_kind: str,
+    ) -> dict[str, Any]:
+        if presentation_kind not in _FIELDS:
+            raise ValueError("presentation_kind is not supported")
+        _operation, values = strict_variant_arguments(
+            arguments,
+            _FIELDS[presentation_kind],
         )
+        if presentation_kind == "show_page":
+            return show_exact_drawing(self._context, values)
+        if presentation_kind == "page_frames":
+            return set_drawing_frame_visibility(self._context, values)
+        if presentation_kind == "page_grid":
+            return set_drawing_grid_visibility(self._context, values)
+        if presentation_kind == "hidden_edges":
+            return set_drawing_hidden_edge_visibility(self._context, values)
+        raise AssertionError("unreachable Drawing presentation kind")

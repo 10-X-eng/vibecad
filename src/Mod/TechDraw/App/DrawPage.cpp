@@ -120,11 +120,24 @@ void DrawPage::onSettingDocument()
                 return;
             }
             for (auto* view : getAllActiveViews()) {
+                auto* partView = freecad_cast<DrawViewPart*>(view);
+                if (partView && partView->geometryMatchesActiveSources()) {
+                    continue;
+                }
                 view->touch();
             }
             touch();
         }
     );
+
+    connectFinishRestoreDocument =
+        App::GetApplication().signalFinishRestoreDocument.connect(
+            [this](const App::Document& restoredDocument) {
+                if (&restoredDocument == getDocument()) {
+                    updateAllViewsAfterRestore();
+                }
+            }
+        );
 }
 
 void DrawPage::onBeforeChange(const App::Property* prop)
@@ -365,13 +378,8 @@ void DrawPage::requestPaint(void)
     }
 }
 
-// this doesn't work right because there is no guaranteed of the restoration order
 void DrawPage::onDocumentRestored()
 {
-    if (canUpdate()) {
-        updateAllViews();
-    }
-
     App::DocumentObject::onDocumentRestored();
 }
 
@@ -385,6 +393,49 @@ void DrawPage::redrawCommand()
 
 void DrawPage::updateAllViews()
 {
+    updateAllViewsImpl(false);
+}
+
+void DrawPage::updateAllViewsAfterRestore()
+{
+    const auto views = getAllActiveViews();
+    bool hasPartView = false;
+    bool allPartGeometryCurrent = true;
+    bool allDimensionsRestored = true;
+    for (auto* view : views) {
+        auto* part = freecad_cast<DrawViewPart*>(view);
+        if (part) {
+            hasPartView = true;
+            if (part->geometryMatchesActiveSources()) {
+                part->purgeTouched();
+            }
+            else {
+                allPartGeometryCurrent = false;
+            }
+            continue;
+        }
+        auto* dimension = freecad_cast<DrawViewDimension*>(view);
+        if (dimension) {
+            if (dimension->PrecomputedDimensionVectors.getValues().empty()) {
+                allDimensionsRestored = false;
+            }
+            else {
+                dimension->purgeTouched();
+            }
+        }
+    }
+    if (hasPartView && allPartGeometryCurrent && allDimensionsRestored) {
+        for (auto* view : views) {
+            view->purgeTouched();
+        }
+        purgeTouched();
+        requestPaint();
+        return;
+    }
+}
+
+void DrawPage::updateAllViewsImpl(bool reuseMatchingPartGeometry)
+{
     //    Base::Console().message("DP::updateAllViews()\n");
     // unordered list of views within page
     std::vector<App::DocumentObject*> featViews = getAllActiveViews();
@@ -397,6 +448,9 @@ void DrawPage::updateAllViews()
         auto* part = freecad_cast<DrawViewPart*>(v);
         if (part) {
             // view, section, detail, dpgi
+            if (reuseMatchingPartGeometry && part->geometryMatchesActiveSources()) {
+                continue;
+            }
             part->recomputeFeature();
         }
     }

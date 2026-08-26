@@ -52,6 +52,18 @@ def is_drawing_hatch(obj: Any) -> bool:
     )
 
 
+def drawing_hatch_view_belongs_to_page(view: Any, page: Any) -> bool:
+    """Accept direct views and projection-group children on their exact page."""
+
+    finder = getattr(view, "findParentPage", None)
+    if callable(finder):
+        try:
+            return finder() is page
+        except Exception:
+            pass
+    return view in tuple(getattr(page, "Views", ()) or ())
+
+
 def _finite(value: Any, noun: str, *, minimum: float, maximum: float) -> float:
     try:
         result = float(value)
@@ -178,7 +190,7 @@ def drawing_hatch_state(hatch: Any) -> dict[str, Any]:
     if (
         not page_name
         or page.Document is not document
-        or view not in tuple(page.Views or ())
+        or not drawing_hatch_view_belongs_to_page(view, page)
     ):
         raise NativeDrawingHatchStateError(
             "Drawing hatch source view is not attached to a live page."

@@ -17,7 +17,10 @@ from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
-from VibeCADNativeCapabilityRegistry import NativeProviderSurface
+from VibeCADNativeCapabilityRegistry import (
+    NativeProviderSurface,
+    resolve_native_provider_surface,
+)
 from VibeCADNativeCommonRuntime import NativeCommonRuntime
 from VibeCADNativeCommonSchema import common_capability_definitions
 from VibeCADNativeDispatch import NativeTurnDispatcher
@@ -29,6 +32,7 @@ from VibeCADNativeSnapshot import build_active_snapshot
 from VibeCADNativeSurface import NativeSurfaceSnapshot
 from VibeCADNativeTargets import read_current_selection
 from VibeCADNativeTurn import NativeTurnSnapshot
+from VibeCADRibbonSurface import read_active_ribbon_surface
 
 
 def _events(rounds: int = 16) -> None:
@@ -77,20 +81,23 @@ def _turn() -> NativeTurnSnapshot:
     definition = next(
         item
         for item in common_capability_definitions()
-        if item.name == "inspect.query"
+        if item.name == "drawing.projected_geometry"
     )
-    schema = definition.provider_schema(("drawing_projected_geometry",))
+    schema = definition.provider_schema(("read",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     branch = schema["parameters"]["oneOf"][0]
     assert branch["required"] == [
-        "operation",
         "view",
-        "offset",
-        "page_size",
-        "expected_projection_state_sha256",
     ]
-    assert branch["properties"]["page_size"]["maximum"] == 48
+    assert branch["properties"]["offset"]["default"] == 0
+    assert "page_size" not in branch["properties"]
+    assert branch["properties"]["view"]["required"] == ["object_name"]
+    assert branch["properties"]["view"]["properties"][
+        "expected_projection_state_sha256"
+    ][
+        "default"
+    ] == ""
     assert branch["properties"]["offset"]["maximum"] == 4096
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
@@ -104,7 +111,7 @@ def _turn() -> NativeTurnSnapshot:
             ),
             available=True,
             unavailable_reason="",
-            tool_names=("inspect.query",),
+            tool_names=("drawing.projected_geometry",),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -115,10 +122,8 @@ def _turn() -> NativeTurnSnapshot:
 
 
 def _target(view) -> dict[str, str]:
-    state = drawing_view_state(view)
     return {
-        "object_name": state["object_name"],
-        "expected_state_sha256": state["state_sha256"],
+        "object_name": view.Name,
     }
 
 
@@ -126,15 +131,15 @@ def _arguments(
     view,
     *,
     offset: int,
-    page_size: int,
     projection_hash: str,
 ) -> dict:
+    target = _target(view)
+    if projection_hash:
+        target["expected_projection_state_sha256"] = projection_hash
     return {
-        "operation": "drawing_projected_geometry",
-        "view": _target(view),
+        "operation": "read",
+        "view": target,
         "offset": offset,
-        "page_size": page_size,
-        "expected_projection_state_sha256": projection_hash,
     }
 
 
@@ -146,6 +151,23 @@ def _run() -> None:
     try:
         Gui.activateWorkbench("TechDrawWorkbench")
         _events(20)
+        provider = resolve_native_provider_surface(
+            read_active_ribbon_surface(),
+            build_native_capability_registry(),
+        )
+        assert provider.available, provider
+        assert "drawing.page" not in provider.tool_names
+        assert "drawing.view" not in provider.tool_names
+        assert {
+            "drawing.sources",
+            "drawing.projected_geometry",
+            "drawing.create_page",
+            "drawing.template_fields",
+            "drawing.redraw_page",
+            "drawing.standard_view",
+            "drawing.projection_group",
+            "drawing.broken_view",
+        } <= set(provider.tool_names)
         temporary = tempfile.TemporaryDirectory(
             prefix="vibecad-native-drawing-projected-geometry-"
         )
@@ -211,7 +233,7 @@ def _run() -> None:
             state=state_store,
             registry=build_native_capability_registry(),
             turn=turn,
-            runtimes={"inspect.query": runtime},
+            runtimes={"drawing.projected_geometry": runtime},
             reauthorize_turn=lambda: None,
             active_document=lambda: App.ActiveDocument,
         )
@@ -221,7 +243,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                "inspect.query",
+                "drawing.projected_geometry",
                 json.dumps(arguments, separators=(",", ":")),
                 f"native-drawing-projected-geometry-{call_index}",
             )
@@ -233,13 +255,34 @@ def _run() -> None:
         undo_before = int(document.UndoCount)
         history_before = tuple(document.VibeCADTimeline.Operations)
         first = call(
-            _arguments(view, offset=0, page_size=2, projection_hash="")
+            _arguments(view, offset=0, projection_hash="")
         )
-        assert first["returned_count"] == 2
+        assert first["returned_count"] == first["counts"]["total"]
         assert first["offset"] == 0
-        assert first["next_offset"] == 2
-        assert len(first["projection_state_sha256"]) == 64
-        projection_hash = first["projection_state_sha256"]
+        assert first["next_offset"] is None
+        assert len(first["view"]["projection_state_sha256"]) == 64
+        projected_edges = {
+            item["name"]: item
+            for item in first["elements"]
+            if item["kind"] == "line"
+        }
+        assert projected_edges
+        for item in projected_edges.values():
+            expected = ["aligned", item["orientation"]]
+            if item["orientation"] == "diagonal":
+                expected = ["aligned", "horizontal", "vertical"]
+            assert item["valid_dimensions"] == expected, item
+        projected_faces = [
+            item for item in first["elements"] if item["kind"] == "face"
+        ]
+        assert projected_faces
+        assert all(item["valid_dimensions"] == ["area"] for item in projected_faces)
+        assert all(
+            "valid_dimensions" not in item
+            for item in first["elements"]
+            if item["kind"] == "point"
+        )
+        projection_hash = first["view"]["projection_state_sha256"]
         names = [item["name"] for item in first["elements"]]
         next_offset = first["next_offset"]
         while next_offset is not None:
@@ -247,11 +290,10 @@ def _run() -> None:
                 _arguments(
                     view,
                     offset=next_offset,
-                    page_size=2,
                     projection_hash=projection_hash,
                 )
             )
-            assert page_result["projection_state_sha256"] == projection_hash
+            assert page_result["view"]["projection_state_sha256"] == projection_hash
             names.extend(item["name"] for item in page_result["elements"])
             next_offset = page_result["next_offset"]
         assert len(names) == first["counts"]["total"]
@@ -279,20 +321,26 @@ def _run() -> None:
         assert len(selected[0]["selected_elements"][0]["element_state_sha256"]) == 64
         assert state_store.current_revision(uid) == revision_before
 
-        old_target = _target(view)
         view.Scale = 1.25
         assert document.recompute([view, page], True, True) is not False
         _events(12)
-        stale_view = _arguments(view, offset=0, page_size=2, projection_hash="")
-        stale_view["view"] = old_target
-        assert call(stale_view, succeeds=False)["error_code"] == (
-            "NATIVE_DRAWING_GEOMETRY_STATE_INVALID"
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=build_native_capability_registry(),
+            turn=turn,
+            runtimes={"drawing.projected_geometry": runtime},
+            reauthorize_turn=lambda: None,
+            active_document=lambda: App.ActiveDocument,
         )
+        fresh_after_change = call(
+            _arguments(view, offset=0, projection_hash="")
+        )
+        assert fresh_after_change["view"]["projection_state_sha256"] != projection_hash
         stale_page = call(
             _arguments(
                 view,
-                offset=2,
-                page_size=2,
+                offset=1,
                 projection_hash=projection_hash,
             ),
             succeeds=False,
@@ -321,8 +369,8 @@ def _run() -> None:
             "coordinate_system=true conventional_y_up=true legacy_compatible=true "
             "schema_limits=true pagination=true "
             "projection_hash=true element_hash=true selection_snapshot=true "
-            "read_only_revision=true read_only_history=true stale_view=true "
-            "stale_page=true reopen=true low_noise=true",
+            "read_only_revision=true read_only_history=true fresh_view=true "
+            "stale_page=true reopen=true host_dimension_applicability=true low_noise=true",
             flush=True,
         )
         exit_code = 0

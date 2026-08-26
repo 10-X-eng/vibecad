@@ -102,6 +102,8 @@ App::DocumentObjectExecReturn *DrawViewDimExtent::execute(void)
         Type.isValue("DistanceX") ||
         Type.isValue("DistanceY") )  {
         setLinearPoints(getPointsExtent(references));
+        setDescriptiveGeometryAvailable(true);
+        persistCurrentDimensionGeometry();
     }
 
     overrideKeepUpdated(false);

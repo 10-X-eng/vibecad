@@ -671,7 +671,7 @@ def _hidden_edge_host_plan(
             "NATIVE_DRAWING_PRESENTATION_FAILED"
             if apply
             else "NATIVE_DRAWING_PRESENTATION_UNAVAILABLE",
-            repair={"requirement": "Open the Drawing page containing the exact view."},
+            repair={"requirement": "The exact view needs a live graphical provider."},
         )
 
 

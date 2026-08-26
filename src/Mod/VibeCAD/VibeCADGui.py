@@ -3060,11 +3060,16 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
     for trace in reversed(list(getattr(response, "tool_trace", ()) or ())):
         tool_name = trace.get("tool_name") if isinstance(trace, dict) else None
         result = trace.get("result")
-        if not isinstance(result, dict) or result.get("ok") is not True:
+        if not isinstance(result, dict):
             continue
         if result.get("next_turn_required") is not True:
             continue
         provider_surface_changed = result.get("provider_surface_changed") is True
+        if result.get("ok") is not True and not (
+            provider_surface_changed
+            and result.get("error_code") == "NATIVE_SURFACE_CHANGED"
+        ):
+            continue
         if provider_surface_changed:
             next_surface = str(result.get("next_surface") or "").strip()
             from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
@@ -3842,6 +3847,83 @@ def _recompute_pending_document_geometry(document: Any) -> bool:
     return not unresolved
 
 
+def _recompute_pending_document_geometry_slice(
+    document: Any,
+) -> tuple[bool, bool]:
+    """Recompute one restored object and report whether more work remains."""
+
+    if _document_recompute_active(document):
+        return False, True
+    pending = _pending_document_objects(document)
+    if not pending:
+        unresolved = _document_geometry_problems(document, [])
+        if unresolved:
+            _warn(
+                "VibeCAD restored document contains invalid geometry: "
+                + ", ".join(unresolved)
+            )
+        return False, False
+
+    target = pending[0]
+    try:
+        document.recompute([target], True, True)
+    except Exception as exc:
+        _warn(
+            "VibeCAD restored-document recompute failed for "
+            f"{str(getattr(target, 'Name', '')) or 'pending geometry'}: {exc}"
+        )
+        return False, False
+
+    unresolved = _document_geometry_problems(document, [target])
+    if unresolved:
+        _warn(
+            "VibeCAD restored-document recompute left invalid geometry: "
+            + ", ".join(unresolved)
+        )
+        return False, False
+    return True, bool(_pending_document_objects(document))
+
+
+def _restore_precomputed_projection_slice(
+    document: Any,
+    attempted: set[str],
+) -> tuple[bool, bool]:
+    """Hydrate one persisted TechDraw projection after document open."""
+
+    candidates = []
+    for obj in list(getattr(document, "Objects", []) or []):
+        object_name = str(getattr(obj, "Name", "") or "")
+        restore = getattr(obj, "restorePrecomputedState", None)
+        source_state = str(
+            getattr(obj, "PrecomputedProjectionSourceState", "") or ""
+        )
+        if (
+            object_name
+            and object_name not in attempted
+            and callable(restore)
+            and source_state
+        ):
+            candidates.append((object_name, obj, restore))
+    if not candidates:
+        return False, False
+
+    object_name, obj, restore = candidates[0]
+    attempted.add(object_name)
+    try:
+        restored = bool(restore())
+        if restored:
+            purge_touched = getattr(obj, "purgeTouched", None)
+            if callable(purge_touched):
+                purge_touched()
+    except Exception as exc:
+        _warn(
+            "VibeCAD restored projection could not be prepared for "
+            f"{object_name}: {exc}"
+        )
+        restored = False
+    return restored, len(candidates) > 1
+
+
 def _restore_partdesign_history_rendering(document: Any) -> bool:
     """Restore independent Body-output and history visibility after open."""
 
@@ -4008,6 +4090,8 @@ def _schedule_document_render_after_restore(document: Any) -> None:
         presentation_changed = False
         resource_migration_complete = False
         modified_state_captured = False
+        geometry_recomputed_any = False
+        restored_projection_names: set[str] = set()
         was_modified = None
 
         def finish_refresh() -> None:
@@ -4059,6 +4143,7 @@ def _schedule_document_render_after_restore(document: Any) -> None:
         def render_when_stable() -> None:
             nonlocal presentation_complete, presentation_changed
             nonlocal resource_migration_complete
+            nonlocal geometry_recomputed_any
             live_document = _live_document_for_storage_key(
                 document_key,
                 document_name,
@@ -4102,14 +4187,36 @@ def _schedule_document_render_after_restore(document: Any) -> None:
                 defer_until_stable(render_when_stable)
                 return
 
-            geometry_recomputed = _recompute_pending_document_geometry(live_document)
-            if not geometry_recomputed and _document_recompute_active(live_document):
+            projection_restored, projections_remaining = (
+                _restore_precomputed_projection_slice(
+                    live_document,
+                    restored_projection_names,
+                )
+            )
+            geometry_recomputed_any = (
+                geometry_recomputed_any or projection_restored
+            )
+            restore_modified_state(live_document)
+            if projections_remaining:
+                QtCore.QTimer.singleShot(0, render_when_stable)
+                return
+
+            geometry_recomputed, geometry_remaining = (
+                _recompute_pending_document_geometry_slice(live_document)
+            )
+            geometry_recomputed_any = geometry_recomputed_any or geometry_recomputed
+            if _document_recompute_active(live_document):
                 defer_until_stable(render_when_stable)
                 return
-            if presentation_changed and not geometry_recomputed:
-                _redraw_document_view(live_document)
             restore_modified_state(live_document)
-            if presentation_changed or geometry_recomputed:
+            if geometry_remaining:
+                QtCore.QTimer.singleShot(0, render_when_stable)
+                return
+            if presentation_changed and not geometry_recomputed_any:
+                _redraw_document_view(live_document)
+            elif geometry_recomputed_any:
+                _redraw_document_view(live_document)
+            if presentation_changed or geometry_recomputed_any:
                 QtCore.QTimer.singleShot(0, redraw_when_stable)
                 return
             finish_refresh()
@@ -4190,6 +4297,14 @@ def _move_saved_document_conversation(doc: Any, filepath: str) -> None:
     document_key = _document_storage_key(doc)
     snapshot = _document_save_conversations.pop(document_key, None) or {}
     reference_snapshot = _document_save_references.pop(document_key, None) or {}
+    current_file = str(getattr(doc, "FileName", "") or "").strip()
+    target_file = str(filepath or "").strip()
+    if not current_file or not target_file:
+        return
+    if Path(current_file).expanduser().resolve() != Path(
+        target_file
+    ).expanduser().resolve():
+        return
     conversation_store_path = str(snapshot.get("store_path") or "").strip()
     temporary_project_root = str(
         snapshot.get("temporary_project_root") or ""

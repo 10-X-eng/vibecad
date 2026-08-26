@@ -9,7 +9,6 @@ from typing import Any, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeDrawingLeader import (
-    drawing_leader_defaults_state,
     mutate_drawing_leader,
     prepare_drawing_leader,
     verify_drawing_leader,
@@ -20,7 +19,7 @@ from VibeCADNativeState import NativeCallTicket
 
 
 _FIELDS = {
-    "leader_line": frozenset(
+    "create": frozenset(
         {
             "page",
             "owner",
@@ -31,7 +30,6 @@ _FIELDS = {
             "line",
         }
     ),
-    "read_leader_defaults": frozenset(),
 }
 
 
@@ -47,11 +45,12 @@ class NativeDrawingLeaderRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _FIELDS)
+        normalized = dict(arguments)
+        for optional in ("symbols", "behavior", "line"):
+            normalized.setdefault(optional, None)
+        operation, values = strict_variant_arguments(normalized, _FIELDS)
         context = self._context
         context.guard()
-        if operation == "read_leader_defaults":
-            return drawing_leader_defaults_state()
         prepared = prepare_drawing_leader(
             context.document,
             operation=operation,

@@ -16,6 +16,7 @@ from VibeCADNativeDrawingHatchSchema import (
 )
 from VibeCADNativeDrawingHatchState import (
     NativeDrawingHatchStateError,
+    drawing_hatch_view_belongs_to_page,
     normalize_drawing_hatch_plan,
 )
 from VibeCADNativeLabel import matches_preferred_document_label
@@ -48,10 +49,9 @@ def _plan(kind: str) -> dict:
 def test_hatch_schema_has_five_closed_path_free_branches() -> None:
     definition = drawing_hatch_capability_definition()
     schema = definition.provider_schema(DRAWING_HATCH_OPERATIONS)
-    branches = schema["parameters"]["oneOf"]
     by_operation = {
-        branch["properties"]["operation"]["const"]: branch
-        for branch in branches
+        variant.operation: variant.provider_parameters(require_operation=True)
+        for variant in definition.variants
     }
 
     assert definition.name == DRAWING_HATCH_CAPABILITY_NAME
@@ -111,6 +111,16 @@ def test_hatch_labels_follow_the_shared_freecad_unique_label_contract() -> None:
     assert matches_preferred_document_label("Hatch001", "Hatch")
     assert matches_preferred_document_label("Hatch125", "Hatch009")
     assert not matches_preferred_document_label("Other001", "Hatch")
+
+
+def test_projected_child_hatches_belong_to_their_parent_page() -> None:
+    page = object()
+
+    class _ProjectedChild:
+        def findParentPage(self):
+            return page
+
+    assert drawing_hatch_view_belongs_to_page(_ProjectedChild(), page)
 
 
 def test_human_and_native_hatch_paths_share_one_compiled_builder() -> None:

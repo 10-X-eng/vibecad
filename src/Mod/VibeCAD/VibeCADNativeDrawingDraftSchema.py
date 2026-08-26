@@ -119,17 +119,13 @@ _STYLE = {
 def drawing_draft_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=DRAWING_DRAFT_CAPABILITY_NAME,
-        description=(
-            "Create one native TechDraw Draft view from an exact model object and "
-            "its persisted Draft presentation. SVG generation remains host-owned."
-        ),
+        description="Create one Drawing view from one Draft Workbench object.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="create_draft_source_view",
                 description=(
-                    "Render one exact Draft source into one exact Drawing page "
-                    "without accepting raw SVG or filesystem paths."
+                    "Render one Draft Workbench object on one exact Drawing page."
                 ),
                 action_ids=frozenset({"TechDraw_DraftView"}),
                 surface_ids=frozenset({"drawing"}),

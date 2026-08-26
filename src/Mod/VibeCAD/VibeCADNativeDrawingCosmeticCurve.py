@@ -35,7 +35,7 @@ from VibeCADNativeTargets import object_identity
 
 
 _OPERATIONS = frozenset(f"create_{kind}" for kind in DRAWING_COSMETIC_CURVE_KINDS)
-_TARGET_FIELDS = frozenset({"subelement", "expected_element_state_sha256"})
+_TARGET_FIELDS = frozenset({"subelement"})
 _TARGET_ROLES = {
     "one_point_circle": ("center_vertex",),
     "two_point_circle": ("center_vertex", "radius_vertex"),
@@ -167,7 +167,7 @@ def _validate_host(
                 "construction": spec.kind,
                 "required_roles_in_order": list(_TARGET_ROLES[spec.kind]),
                 "requested_subelements": list(spec.source_names),
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if (

@@ -47,6 +47,14 @@ class PreparedDrawingPageExport:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedDrawingDocumentPdfExport:
+    pages: tuple[Any, ...]
+    page_states: tuple[dict[str, Any], ...]
+    boundary: DrawingOutputBoundary
+    output_request: NativeOutputRequest
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedDrawingPrintAll:
     pages: tuple[Any, ...]
     page_states: tuple[dict[str, Any], ...]
@@ -170,6 +178,16 @@ def _safe_file_name(page: Any, suffix: str) -> str:
     return f"{stem}{suffix}"
 
 
+def _safe_document_file_name(document: Any, suffix: str) -> str:
+    label = str(
+        getattr(document, "Label", "")
+        or getattr(document, "Name", "")
+        or "Drawing"
+    )
+    stem = _UNSAFE_FILE_NAME.sub("_", label).strip(" ._")[:180] or "Drawing"
+    return f"{stem}{suffix}"
+
+
 def prepare_drawing_page_export(
     context: NativeRuntimeContext,
     *,
@@ -214,21 +232,65 @@ def _current_pages(document: Any) -> tuple[Any, ...]:
     return tuple(pages)
 
 
+def _require_current_pages(
+    context: NativeRuntimeContext,
+    *,
+    no_pages_message: str,
+    no_pages_code: str,
+    limit_message: str,
+    limit_code: str,
+) -> tuple[Any, ...]:
+    pages = _current_pages(context.document)
+    if not pages:
+        _error(no_pages_message, no_pages_code)
+    if len(pages) > MAX_PRINTABLE_DRAWING_PAGES:
+        _error(limit_message, limit_code)
+    return pages
+
+
+def prepare_drawing_document_pdf_export(
+    context: NativeRuntimeContext,
+) -> PreparedDrawingDocumentPdfExport:
+    _require_ready(context)
+    pages = _require_current_pages(
+        context,
+        no_pages_message="The current History position has no Drawing pages to export.",
+        no_pages_code="NATIVE_DRAWING_OUTPUT_NO_PAGES",
+        limit_message=(
+            f"Document PDF export supports at most {MAX_PRINTABLE_DRAWING_PAGES} "
+            "current-History pages."
+        ),
+        limit_code="NATIVE_DRAWING_OUTPUT_PAGE_LIMIT",
+    )
+    return PreparedDrawingDocumentPdfExport(
+        pages=pages,
+        page_states=tuple(drawing_page_state(page) for page in pages),
+        boundary=_capture_boundary(context.document),
+        output_request=NativeOutputRequest(
+            purpose="drawing_document_pdf_export",
+            title="Export Drawing Document as PDF",
+            suggested_file_name=_safe_document_file_name(context.document, ".pdf"),
+            allowed_suffixes=(".pdf",),
+            name_filter="PDF drawing (*.pdf)",
+            maximum_bytes=MAX_DRAWING_OUTPUT_BYTES,
+        ),
+    )
+
+
 def prepare_drawing_print_all(
     context: NativeRuntimeContext,
 ) -> PreparedDrawingPrintAll:
     _require_ready(context)
-    pages = _current_pages(context.document)
-    if not pages:
-        _error(
-            "The current History position has no Drawing pages to print.",
-            "NATIVE_DRAWING_PRINT_NO_PAGES",
-        )
-    if len(pages) > MAX_PRINTABLE_DRAWING_PAGES:
-        _error(
-            f"Print All supports at most {MAX_PRINTABLE_DRAWING_PAGES} current-History pages.",
-            "NATIVE_DRAWING_PRINT_PAGE_LIMIT",
-        )
+    pages = _require_current_pages(
+        context,
+        no_pages_message="The current History position has no Drawing pages to print.",
+        no_pages_code="NATIVE_DRAWING_PRINT_NO_PAGES",
+        limit_message=(
+            f"Print All supports at most {MAX_PRINTABLE_DRAWING_PAGES} "
+            "current-History pages."
+        ),
+        limit_code="NATIVE_DRAWING_PRINT_PAGE_LIMIT",
+    )
     return PreparedDrawingPrintAll(
         pages=pages,
         page_states=tuple(drawing_page_state(page) for page in pages),
@@ -290,6 +352,22 @@ def verify_drawing_print_all_source(
     _verify_boundary(context, prepared.boundary)
 
 
+def verify_drawing_document_pdf_source(
+    context: NativeRuntimeContext,
+    prepared: PreparedDrawingDocumentPdfExport,
+) -> None:
+    context.guard()
+    pages = _current_pages(context.document)
+    if pages != prepared.pages or tuple(
+        drawing_page_state(page) for page in pages
+    ) != prepared.page_states:
+        _error(
+            "The exact set of current-History Drawing pages changed before PDF export.",
+            "NATIVE_DRAWING_OUTPUT_SOURCE_STALE",
+        )
+    _verify_boundary(context, prepared.boundary)
+
+
 def write_drawing_page(prepared: PreparedDrawingPageExport, path: str) -> None:
     try:
         import TechDrawGui
@@ -298,6 +376,24 @@ def write_drawing_page(prepared: PreparedDrawingPageExport, path: str) -> None:
     except Exception as exc:
         raise NativeDrawingError(
             f"The TechDraw {prepared.format_name.upper()} writer failed.",
+            error_code="NATIVE_DRAWING_OUTPUT_WRITE_FAILED",
+        ) from exc
+
+
+def write_drawing_document_pdf(
+    prepared: PreparedDrawingDocumentPdfExport,
+    path: str,
+) -> None:
+    try:
+        import TechDrawGui
+
+        TechDrawGui.exportAllDrawingPagesAsPdf(
+            prepared.pages[0].Document,
+            path,
+        )
+    except Exception as exc:
+        raise NativeDrawingError(
+            "The TechDraw document PDF writer failed.",
             error_code="NATIVE_DRAWING_OUTPUT_WRITE_FAILED",
         ) from exc
 
@@ -351,6 +447,22 @@ def drawing_output_source_summary(
         "page": {"object_name": prepared.page_ref.object_name},
         "state_sha256": prepared.page_state["state_sha256"],
         "format": prepared.format_name,
+    }
+
+
+def drawing_document_pdf_source_summary(
+    prepared: PreparedDrawingDocumentPdfExport,
+) -> dict[str, Any]:
+    return {
+        "page_count": len(prepared.pages),
+        "pages": [
+            {
+                "object_name": str(page.Name),
+                "state_sha256": state["state_sha256"],
+            }
+            for page, state in zip(prepared.pages, prepared.page_states, strict=True)
+        ],
+        "format": "pdf",
     }
 
 

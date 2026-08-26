@@ -95,11 +95,18 @@ def _host(*, history_limit: int | None = None):
     return state, document, ledger
 
 
-def _record_create(state, document, ledger, object_name: str):
+def _record_create(
+    state,
+    document,
+    ledger,
+    object_name: str,
+    *,
+    capability_name: str = "model.feature",
+):
     transaction_name = f"Create {object_name}"
     checkpoint = ledger.checkpoint(document)
     before = document.snapshot()
-    ticket = state.begin_call(document.Uid, "model.feature")
+    ticket = state.begin_call(document.Uid, capability_name)
     state.authorize_mutation(ticket)
     state.begin_mutation_observation(ticket)
     obj = _Object(document, object_name)
@@ -117,7 +124,7 @@ def _record_create(state, document, ledger, object_name: str):
     return receipt
 
 
-def _undo(state, document, ledger, ticket=None):
+def _undo(state, document, ledger, ticket=None, *, capability_prefix=None):
     call_ticket = ticket or state.begin_call(document.Uid, "document.undo")
     execution = ledger.undo_latest(
         ticket=call_ticket,
@@ -125,6 +132,7 @@ def _undo(state, document, ledger, ticket=None):
         state=state,
         reauthorize_turn=lambda: None,
         active_document=lambda: document,
+        capability_prefix=capability_prefix,
     )
     return call_ticket, execution
 
@@ -215,6 +223,38 @@ def test_new_run_preserves_safe_document_undo_ownership_across_turns() -> None:
 
     with pytest.raises(NativeUndoError, match="No assistant run"):
         ledger.checkpoint(document)
+
+
+def test_scoped_undo_only_reverts_an_operation_from_its_surface() -> None:
+    state, document, ledger = _host()
+    _record_create(state, document, ledger, "ModelBox")
+
+    with pytest.raises(NativeUndoError) as caught:
+        _undo(state, document, ledger, capability_prefix="drawing")
+
+    assert caught.value.failure() == {
+        "error_code": NATIVE_UNDO_UNAVAILABLE,
+        "message": "The latest assistant operation belongs to another ribbon.",
+    }
+    assert document.getObject("ModelBox") is not None
+
+    state, document, ledger = _host()
+    _record_create(
+        state,
+        document,
+        ledger,
+        "DrawingPage",
+        capability_name="drawing.create_page",
+    )
+
+    _ticket, execution = _undo(
+        state,
+        document,
+        ledger,
+        capability_prefix="drawing",
+    )
+    assert execution.result["undone"]["capability"] == "drawing.create_page"
+    assert document.getObject("DrawingPage") is None
 
 
 def test_background_commit_can_reenter_its_closed_transport_run() -> None:

@@ -30,7 +30,7 @@ from VibeCADNativeDrawingDraftState import (
     drawing_draft_source_state,
     drawing_draft_view_state,
 )
-from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAME
+from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAMES
 from VibeCADNativeDrawingState import drawing_page_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -94,7 +94,7 @@ def _create_source(document):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAME)
+    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAMES[0])
     draft_definition = registry.definition(DRAWING_DRAFT_CAPABILITY_NAME)
     job_definition = registry.definition(NATIVE_BACKGROUND_CAPABILITY_NAME)
     assert all(
@@ -124,7 +124,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             available=True,
             unavailable_reason="",
             tool_names=(
-                DRAWING_PAGE_CAPABILITY_NAME,
+                DRAWING_PAGE_CAPABILITY_NAMES[0],
                 DRAWING_DRAFT_CAPABILITY_NAME,
                 NATIVE_BACKGROUND_CAPABILITY_NAME,
             ),
@@ -226,15 +226,21 @@ def _run() -> None:
             background_manager=service.native_background_manager(),
             document_thread_dispatch=VibeGui._dispatch_to_document_thread,
         )
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state_store,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def refresh_dispatcher() -> NativeTurnDispatcher:
+            nonlocal turn, frozen
+            turn = _turn(surface, registry)
+            frozen = turn.surface
+            return NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = refresh_dispatcher()
         call_index = 0
 
         def call(tool_name: str, arguments: dict, *, succeeds: bool = True) -> dict:
@@ -261,7 +267,7 @@ def _run() -> None:
                 time.sleep(0.01)
             raise AssertionError(f"Background Draft-view job {job_id} did not finish")
 
-        page_result = call(DRAWING_PAGE_CAPABILITY_NAME, {"operation": "page_default"})
+        page_result = call(DRAWING_PAGE_CAPABILITY_NAMES[0], {"operation": "page_default"})
         _events(12)
         page = document.getObject(page_result["page"]["object_name"])
         assert page is not None
@@ -292,6 +298,7 @@ def _run() -> None:
         assert page is not None and source is not None
         assert document.getObject(human_name) is None
         assert tuple(page.Views) == ()
+        dispatcher = refresh_dispatcher()
 
         source.ViewObject.Visibility = True
         Gui.Selection.clearSelection()

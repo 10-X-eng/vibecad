@@ -10,9 +10,8 @@ from pathlib import Path
 import pytest
 
 from VibeCADNativeDrawingPresentationSchema import (
-    DRAWING_PRESENTATION_CAPABILITY_NAME,
-    DRAWING_PRESENTATION_OPERATIONS,
-    drawing_presentation_capability_definition,
+    DRAWING_PRESENTATION_CAPABILITY_NAMES,
+    drawing_presentation_capability_definitions,
 )
 from VibeCADNativeDrawingPresentationState import (
     NativeDrawingPresentationStateError,
@@ -36,40 +35,52 @@ def _plan(previous: bool, visible: bool, count: int = 3) -> dict:
 
 
 def test_drawing_presentation_schema_is_closed_explicit_and_transient() -> None:
-    definition = drawing_presentation_capability_definition()
-    schema = definition.provider_schema(DRAWING_PRESENTATION_OPERATIONS)
-    branches = schema["parameters"]["oneOf"]
-
-    assert definition.name == DRAWING_PRESENTATION_CAPABILITY_NAME
-    assert DRAWING_PRESENTATION_OPERATIONS == (
-        "set_frame_visibility",
-        "set_grid_visibility",
-        "set_hidden_edges_visible",
+    definitions = drawing_presentation_capability_definitions()
+    assert tuple(definition.name for definition in definitions) == (
+        "drawing.show_page",
+        "drawing.page_frames",
+        "drawing.page_grid",
+        "drawing.hidden_edges",
     )
-    assert [branch["properties"]["operation"]["const"] for branch in branches] == list(
-        DRAWING_PRESENTATION_OPERATIONS
+    assert DRAWING_PRESENTATION_CAPABILITY_NAMES == tuple(
+        definition.name for definition in definitions
     )
+    operations = ("show", "set_visibility", "set_visibility", "set_visibility")
+    schemas = [
+        definition.provider_schema((operation,))
+        for definition, operation in zip(definitions, operations, strict=True)
+    ]
+    branches = [schema["parameters"]["oneOf"][0] for schema in schemas]
+    assert [branch["properties"]["operation"]["const"] for branch in branches] == list(operations)
     assert all(branch["additionalProperties"] is False for branch in branches)
-    assert all(branch["properties"]["visible"]["type"] == "boolean" for branch in branches)
-    assert set(branches[0]["properties"]["page"]["properties"]) == {
+    assert "visible" not in branches[0]["properties"]
+    assert all(
+        branch["properties"]["visible"]["type"] == "boolean"
+        for branch in branches[1:]
+    )
+    assert set(branches[1]["properties"]["page"]["properties"]) == {
         "object_name",
         "expected_state_sha256",
         "expected_frame_visibility_state_sha256",
     }
-    assert set(branches[1]["properties"]["page"]["properties"]) == {
+    assert set(branches[2]["properties"]["page"]["properties"]) == {
         "object_name",
         "expected_state_sha256",
         "expected_grid_visibility_state_sha256",
     }
-    assert set(branches[2]["properties"]["view"]["properties"]) == {
+    assert set(branches[3]["properties"]["view"]["properties"]) == {
         "object_name",
         "expected_state_sha256",
         "expected_hidden_edge_visibility_state_sha256",
     }
-    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    encoded = "".join(
+        json.dumps(schema, sort_keys=True, separators=(",", ":"))
+        for schema in schemas
+    )
     assert "toggle_frame" not in encoded.casefold()
     assert "unknown" not in encoded.casefold()
     assert "selection" not in encoded.casefold()
+    assert "drawing.presentation" not in encoded
     assert len(encoded.encode("utf-8")) < 5 * 1024
 
 

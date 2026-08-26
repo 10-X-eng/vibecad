@@ -23,8 +23,8 @@ from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeDrawingDimensionSchema import (
-    DRAWING_DIMENSION_CAPABILITY_NAME,
-    DRAWING_GENERAL_DIMENSION_OPERATIONS,
+    DRAWING_DIMENSION_CAPABILITY_BY_OPERATION,
+    DRAWING_DIMENSION_CAPABILITY_NAMES,
 )
 from VibeCADNativeDrawingDimensionEditState import drawing_dimension_edit_state
 from VibeCADNativeDrawingDimensionState import (
@@ -36,8 +36,6 @@ from VibeCADNativeDrawingDimensionState import (
     is_drawing_extent,
 )
 from VibeCADNativeDrawingGeometryState import drawing_projected_geometry_state
-from VibeCADNativeDrawingState import drawing_page_state
-from VibeCADNativeDrawingViewState import drawing_view_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
@@ -50,50 +48,95 @@ from VibeCADRibbonSurface import read_active_ribbon_surface
 
 _ACTION_CONTRACTS = {
     "TechDraw_LengthDimension": (
-        "create_length",
-        "ExactDrawingAlignedDimensionReferences",
+        "drawing.linear_dimension",
+        "create_linear",
+        "ExactDrawingLinearDimensionReferencesAndDirection",
     ),
     "TechDraw_HorizontalDimension": (
-        "create_horizontal",
-        "ExactDrawingHorizontalDimensionReferences",
+        "drawing.linear_dimension",
+        "create_linear",
+        "ExactDrawingLinearDimensionReferencesAndDirection",
     ),
     "TechDraw_VerticalDimension": (
-        "create_vertical",
-        "ExactDrawingVerticalDimensionReferences",
+        "drawing.linear_dimension",
+        "create_linear",
+        "ExactDrawingLinearDimensionReferencesAndDirection",
     ),
     "TechDraw_RadiusDimension": (
-        "create_radius",
-        "ExactDrawingRadialEdge",
+        "drawing.radial_dimension",
+        "create_radial",
+        "ExactDrawingRadialEdgeAndKind",
     ),
     "TechDraw_DiameterDimension": (
-        "create_diameter",
-        "ExactDrawingRadialEdge",
+        "drawing.radial_dimension",
+        "create_radial",
+        "ExactDrawingRadialEdgeAndKind",
     ),
     "TechDraw_AngleDimension": (
+        "drawing.angle_dimension",
         "create_angle",
         "ExactDrawingTwoEdgeAngle",
     ),
     "TechDraw_3PtAngleDimension": (
+        "drawing.three_point_angle",
         "create_three_point_angle",
         "ExactDrawingOrderedThreePointAngle",
     ),
     "TechDraw_AreaDimension": (
+        "drawing.area_dimension",
         "create_area",
         "ExactDrawingProjectedFace",
     ),
     "TechDraw_HorizontalExtentDimension": (
-        "create_horizontal_extent",
-        "ExactDrawingHorizontalExtentTarget",
+        "drawing.view_extent_dimension",
+        "create_view_extent",
+        "ExactDrawingViewExtentAndDirection",
     ),
     "TechDraw_VerticalExtentDimension": (
-        "create_vertical_extent",
-        "ExactDrawingVerticalExtentTarget",
+        "drawing.view_extent_dimension",
+        "create_view_extent",
+        "ExactDrawingViewExtentAndDirection",
     ),
     "TechDraw_AxoLengthDimension": (
+        "drawing.axonometric_dimension",
         "create_axonometric_length",
         "ExactDrawingAxonometricMeasurementDirectionsAndValueMode",
     ),
 }
+
+_DIMENSION_CASES = (
+    ("drawing.linear_dimension", "create_linear", "aligned", "create_length"),
+    ("drawing.linear_dimension", "create_linear", "horizontal", "create_horizontal"),
+    ("drawing.linear_dimension", "create_linear", "vertical", "create_vertical"),
+    ("drawing.radial_dimension", "create_radial", "radius", "create_radius"),
+    ("drawing.radial_dimension", "create_radial", "diameter", "create_diameter"),
+    ("drawing.angle_dimension", "create_angle", None, "create_angle"),
+    (
+        "drawing.three_point_angle",
+        "create_three_point_angle",
+        None,
+        "create_three_point_angle",
+    ),
+    ("drawing.area_dimension", "create_area", None, "create_area"),
+    (
+        "drawing.view_extent_dimension",
+        "create_view_extent",
+        "horizontal",
+        "create_horizontal_extent",
+    ),
+    (
+        "drawing.edge_extent_dimension",
+        "create_edge_extent",
+        "vertical",
+        "create_vertical_extent",
+    ),
+    (
+        "drawing.axonometric_dimension",
+        "create_axonometric_length",
+        None,
+        "create_axonometric_length",
+    ),
+)
 
 
 def _events(rounds: int = 16) -> None:
@@ -184,43 +227,54 @@ def _create_fixture(document):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(DRAWING_DIMENSION_CAPABILITY_NAME)
-    assert definition is not None
-    exposed_operations = (*DRAWING_GENERAL_DIMENSION_OPERATIONS, "edit")
-    schema = definition.provider_schema(exposed_operations)
-    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    schemas = []
+    for name in DRAWING_DIMENSION_CAPABILITY_NAMES:
+        definition = registry.definition(name)
+        assert definition is not None
+        schemas.append(
+            definition.provider_schema(
+                tuple(variant.operation for variant in definition.variants)
+            )
+        )
+    encoded = json.dumps(schemas, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert "path" not in encoded.casefold()
-    assert len(encoded.encode()) < 36 * 1024
-    branches = schema["parameters"]["oneOf"]
-    assert len(branches) == len(exposed_operations)
-    required_by_operation = {
-        branch["properties"]["operation"]["const"]: set(branch["required"])
-        for branch in branches
+    assert len(encoded.encode()) < 48 * 1024
+    branches = {
+        schema["name"]: schema["parameters"]["oneOf"][0]
+        for schema in schemas
     }
-    assert required_by_operation["create_radius"] >= {
+    assert set(branches) == set(DRAWING_DIMENSION_CAPABILITY_NAMES)
+    assert set(branches["drawing.radial_dimension"]["required"]) >= {
         "edge",
-        "allow_approximate",
+        "kind",
     }
-    assert required_by_operation["create_angle"] >= {
+    assert branches["drawing.radial_dimension"]["properties"][
+        "allow_approximate"
+    ]["default"] is False
+    assert set(branches["drawing.angle_dimension"]["required"]) >= {
         "first_edge",
         "second_edge",
     }
-    assert required_by_operation["create_three_point_angle"] >= {
+    assert set(branches["drawing.three_point_angle"]["required"]) >= {
         "first_arm_point",
         "apex_point",
         "second_arm_point",
     }
-    assert required_by_operation["create_area"] >= {"face"}
-    assert required_by_operation["create_horizontal_extent"] >= {"extent"}
-    assert required_by_operation["create_vertical_extent"] >= {"extent"}
-    assert required_by_operation["create_axonometric_length"] >= {
+    assert set(branches["drawing.area_dimension"]["required"]) >= {"face"}
+    assert set(branches["drawing.view_extent_dimension"]["required"]) >= {
+        "direction"
+    }
+    assert set(branches["drawing.edge_extent_dimension"]["required"]) >= {
+        "edges",
+        "direction",
+    }
+    assert set(branches["drawing.axonometric_dimension"]["required"]) >= {
         "measurement",
         "extension_direction_edge",
         "expected_value_mode",
     }
-    assert required_by_operation["edit"] == {
-        "operation",
+    assert set(branches["drawing.edit_dimension"]["required"]) == {
         "dimension",
         "display",
         "tolerance",
@@ -232,8 +286,8 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(DRAWING_DIMENSION_CAPABILITY_NAME,),
-            schemas=(schema,),
+            tool_names=DRAWING_DIMENSION_CAPABILITY_NAMES,
+            schemas=tuple(schemas),
             human_only_action_ids=(),
             missing_definition_names=(),
             missing_implementation_names=(),
@@ -243,29 +297,19 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
 
 
 def _element_target(element: dict) -> dict[str, str]:
-    return {
-        "subelement": element["name"],
-        "expected_element_state_sha256": element["element_state_sha256"],
-    }
+    return {"subelement": element["name"]}
 
 
 def _base_arguments(operation: str, page, view, label: str, x: float, y: float):
-    page_state = drawing_page_state(page)
-    view_state = drawing_view_state(view)
-    projection = drawing_projected_geometry_state(view)
     return {
         "operation": operation,
         "label": label,
-        "page": {
-            "object_name": page_state["object_name"],
-            "expected_state_sha256": page_state["state_sha256"],
+        "page": {"object_name": str(page.Name)},
+        "view": {"object_name": str(view.Name)},
+        "label_position_on_page_mm": {
+            "x_mm": float(view.X) + x,
+            "y_mm": float(view.Y) + y,
         },
-        "view": {
-            "object_name": view_state["object_name"],
-            "expected_state_sha256": view_state["state_sha256"],
-            "expected_projection_state_sha256": projection["projection_state_sha256"],
-        },
-        "label_position_in_view_mm": {"x_mm": x, "y_mm": y},
     }
 
 
@@ -359,22 +403,40 @@ def _reference_geometry(view) -> dict[str, object]:
     }
 
 
-def _operation_arguments(operation: str, page, view, geometry: dict, index: int):
+def _operation_arguments(
+    operation: str,
+    page,
+    view,
+    geometry: dict,
+    index: int,
+    option: str | None = None,
+):
     arguments = _base_arguments(
         operation,
         page,
         view,
-        operation.replace("create_", "").replace("_", " ").title(),
+        " ".join(
+            value
+            for value in (
+                operation.replace("create_", "").replace("_", " ").title(),
+                str(option or "").title(),
+            )
+            if value
+        ),
         -40.0 + index * 10.0,
         28.0 - index * 3.0,
     )
-    if operation in {"create_length", "create_horizontal"}:
-        arguments["references"] = [_element_target(geometry["horizontal"])]
-    elif operation == "create_vertical":
-        arguments["references"] = [_element_target(geometry["vertical"])]
-    elif operation in {"create_radius", "create_diameter"}:
+    if operation == "create_linear":
+        arguments["direction"] = option
+        arguments["references"] = [
+            _element_target(
+                geometry["vertical"] if option == "vertical" else geometry["horizontal"]
+            )
+        ]
+    elif operation == "create_radial":
         arguments["edge"] = _element_target(geometry["circle"])
         arguments["allow_approximate"] = False
+        arguments["kind"] = option
     elif operation == "create_angle":
         arguments["first_edge"] = _element_target(geometry["horizontal"])
         arguments["second_edge"] = _element_target(geometry["vertical"])
@@ -385,13 +447,11 @@ def _operation_arguments(operation: str, page, view, geometry: dict, index: int)
         arguments["second_arm_point"] = _element_target(second)
     elif operation == "create_area":
         arguments["face"] = _element_target(geometry["face"])
-    elif operation == "create_horizontal_extent":
-        arguments["extent"] = {"scope": "whole_view"}
-    elif operation == "create_vertical_extent":
-        arguments["extent"] = {
-            "scope": "edges",
-            "edges": [_element_target(geometry["vertical"])],
-        }
+    elif operation == "create_view_extent":
+        arguments["direction"] = option
+    elif operation == "create_edge_extent":
+        arguments["direction"] = option
+        arguments["edges"] = [_element_target(geometry["vertical"])]
     elif operation == "create_axonometric_length":
         arguments["measurement"] = {
             "kind": "edge",
@@ -437,7 +497,7 @@ def _run() -> None:
             plan.command_id: plan
             for plan in resolve_native_action_inventory(surface).plans
         }
-        for command_id, (operation, target_type) in _ACTION_CONTRACTS.items():
+        for command_id, (capability, operation, target_type) in _ACTION_CONTRACTS.items():
             plan = plans[command_id]
             assert (
                 plan.capability_family,
@@ -446,7 +506,7 @@ def _run() -> None:
                 plan.transaction_behavior,
                 plan.background_required,
             ) == (
-                DRAWING_DIMENSION_CAPABILITY_NAME,
+                capability,
                 operation,
                 target_type,
                 "document",
@@ -563,8 +623,11 @@ def _run() -> None:
         def call(arguments: dict, *, succeeds: bool = True) -> dict:
             nonlocal call_index
             call_index += 1
+            tool_name = DRAWING_DIMENSION_CAPABILITY_BY_OPERATION[
+                str(arguments["operation"])
+            ]
             response = dispatcher.call(
-                DRAWING_DIMENSION_CAPABILITY_NAME,
+                tool_name,
                 json.dumps(arguments, separators=(",", ":")),
                 f"native-drawing-dimension-{call_index}",
             )
@@ -586,11 +649,22 @@ def _run() -> None:
         revision_before = state_store.current_revision(str(document.Uid))
 
         created_names = []
-        for index, operation in enumerate(DRAWING_GENERAL_DIMENSION_OPERATIONS):
-            result = call(_operation_arguments(operation, page, view, geometry, index))
+        for index, (_tool, operation, option, expected_operation) in enumerate(
+            _DIMENSION_CASES
+        ):
+            result = call(
+                _operation_arguments(
+                    operation,
+                    page,
+                    view,
+                    geometry,
+                    index,
+                    option,
+                )
+            )
             state = result["dimension"]
             created_names.append(state["object_name"])
-            assert result["operation"] == operation
+            assert result["operation"] == expected_operation
             assert result["approximate"] is False
             assert state["valid"] and state["timeline_usable"]
             assert state["measured_value"]["value"] > 0.0
@@ -599,7 +673,7 @@ def _run() -> None:
             assert "elements" not in result
             assert not Gui.Control.activeDialog()
         assert state_store.current_revision(str(document.Uid)) == (
-            revision_before + len(DRAWING_GENERAL_DIMENSION_OPERATIONS)
+            revision_before + len(_DIMENSION_CASES)
         )
         assert _selection() == selection_before
         assert (
@@ -652,77 +726,61 @@ def _run() -> None:
         stale_inference = _operation_arguments(
             "create_axonometric_length", page, view, geometry, 19
         )
+        stale_inference["label_position_on_page_mm"] = {
+            "x_mm": 100.0,
+            "y_mm": 60.0,
+        }
         stale_inference["expected_value_mode"] = "projected"
         rejected = call(stale_inference, succeeds=False)
         assert rejected["error_code"] == ("NATIVE_DRAWING_DIMENSION_INFERENCE_STALE")
         assert rejected["repair"]["current_value_mode"] == "x_axis_true_length"
 
         invalid_extent = _base_arguments(
-            "create_vertical_extent", page, view, "Invalid Mixed Extent", 0.0, 0.0
+            "create_edge_extent", page, view, "Invalid Mixed Extent", 0.0, 0.0
         )
-        invalid_extent["extent"] = {
-            "scope": "edges",
-            "edges": [
-                _element_target(geometry["horizontal"]),
-                _element_target(geometry["vertical"]),
-            ],
-        }
+        invalid_extent["direction"] = "vertical"
+        invalid_extent["edges"] = [
+            _element_target(geometry["horizontal"]),
+            _element_target(geometry["vertical"]),
+        ]
         rejected = call(invalid_extent, succeeds=False)
         assert rejected["error_code"] == ("NATIVE_DRAWING_DIMENSION_REFERENCES_INVALID")
         assert rejected["repair"]["accepted_references"]
 
         invalid_radial = _base_arguments(
-            "create_radius", page, view, "Invalid Radius", 0.0, 0.0
+            "create_radial", page, view, "Invalid Radius", 0.0, 0.0
         )
         invalid_radial["edge"] = _element_target(geometry["horizontal"])
         invalid_radial["allow_approximate"] = False
+        invalid_radial["kind"] = "radius"
         rejected = call(invalid_radial, succeeds=False)
         assert rejected["error_code"] == ("NATIVE_DRAWING_DIMENSION_REFERENCES_INVALID")
         assert rejected["repair"]["accepted_references"]
 
         approximate = _base_arguments(
-            "create_radius", page, view, "Approximate Ellipse Radius", 42.0, 18.0
+            "create_radial", page, view, "Approximate Ellipse Radius", 42.0, 18.0
         )
         approximate["edge"] = _element_target(geometry["ellipse"])
         approximate["allow_approximate"] = False
+        approximate["kind"] = "radius"
         rejected = call(approximate, succeeds=False)
         assert rejected["error_code"] == ("NATIVE_DRAWING_DIMENSION_REFERENCES_INVALID")
         approximate["allow_approximate"] = True
         approximate["page"] = _base_arguments(
-            "create_radius", page, view, "unused", 0.0, 0.0
+            "create_radial", page, view, "unused", 0.0, 0.0
         )["page"]
         accepted = call(approximate)
         assert accepted["approximate"] is True
         assert accepted["geometry_configuration"] == "ellipse"
         created_names.append(accepted["dimension"]["object_name"])
 
-        stale_page = _operation_arguments("create_length", page, view, geometry, 20)
-        page.KeepUpdated = not bool(page.KeepUpdated)
-        rejected = call(stale_page, succeeds=False)
-        assert rejected["error_code"] == "NATIVE_DRAWING_PAGE_STALE"
-        page.KeepUpdated = not bool(page.KeepUpdated)
-
-        stale_view = _operation_arguments("create_length", page, view, geometry, 21)
-        view.X = float(view.X) + 1.0
-        rejected = call(stale_view, succeeds=False)
-        assert rejected["error_code"] == "NATIVE_DRAWING_DIMENSION_VIEW_STALE"
-        view.X = float(view.X) - 1.0
-
-        stale_projection = _operation_arguments(
-            "create_length", page, view, geometry, 22
-        )
-        stale_projection["view"]["expected_projection_state_sha256"] = "0" * 64
-        rejected = call(stale_projection, succeeds=False)
-        assert rejected["error_code"] == ("NATIVE_DRAWING_DIMENSION_PROJECTION_STALE")
-
-        stale_element = _operation_arguments("create_length", page, view, geometry, 23)
-        stale_element["references"][0]["expected_element_state_sha256"] = "0" * 64
-        rejected = call(stale_element, succeeds=False)
-        assert rejected["error_code"] == ("NATIVE_DRAWING_DIMENSION_REFERENCE_STALE")
-
         rollback_arguments = _operation_arguments(
-            "create_length", page, view, geometry, 24
+            "create_linear", page, view, geometry, 24, "aligned"
         )
+        rollback_arguments["label_position_on_page_mm"] = {
+            "x_mm": 140.0,
+            "y_mm": 40.0,
+        }
         rollback_objects = tuple(document.Objects)
         rollback_views = tuple(page.Views)
         rollback_history = tuple(document.VibeCADTimeline.Operations)
@@ -751,9 +809,14 @@ def _run() -> None:
         assert int(document.UndoCount) == rollback_undo
         assert _selection() == selection_before
 
-        undo_result = call(
-            _operation_arguments("create_length", page, view, geometry, 25)
+        undo_arguments = _operation_arguments(
+            "create_linear", page, view, geometry, 25, "aligned"
         )
+        undo_arguments["label_position_on_page_mm"] = {
+            "x_mm": 150.0,
+            "y_mm": 40.0,
+        }
+        undo_result = call(undo_arguments)
         undo_name = undo_result["dimension"]["object_name"]
         undo_state = undo_result["dimension"]
         document.undo()
@@ -770,12 +833,22 @@ def _run() -> None:
         )
         created_names.append(undo_name)
 
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         edit_before = drawing_dimension_edit_state(redone)
         edit_arguments = {
             "operation": "edit",
             "dimension": {
                 "object_name": undo_name,
-                "expected_edit_state_sha256": edit_before["edit_state_sha256"],
             },
             **{
                 name: copy.deepcopy(edit_before[name])
@@ -814,7 +887,7 @@ def _run() -> None:
         assert not Gui.Control.activeDialog()
 
         rejected = call(edit_arguments, succeeds=False)
-        assert rejected["error_code"] == "NATIVE_DRAWING_DIMENSION_EDIT_STALE"
+        assert rejected["error_code"] == "NATIVE_DRAWING_NO_CHANGE", rejected
         document.undo()
         _events(12)
         redone = document.getObject(undo_name)
@@ -908,7 +981,7 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_DRAWING_DIMENSION_GUI_OK "
-            "operations=" + ",".join(DRAWING_GENERAL_DIMENSION_OPERATIONS) + " "
+            "operations=" + ",".join(case[1] for case in _DIMENSION_CASES) + " "
             "human_oracle=true human_extent_oracle=true human_axonometric_oracle=true "
             "shared_host_builder=true axonometric_value_mode=true "
             "exact_edit=true complete_edit_state=true human_edit_remains_human=true "

@@ -238,6 +238,9 @@ QColor PreferencesGui::pageQColor()
 
 QColor PreferencesGui::getAccessibleQColor(QColor orig)
 {
+    if (orig.rgb() == pageQColor().rgb()) {
+        orig = reverseColor(orig);
+    }
     if (Preferences::lightOnDark() && Preferences::monochrome()) {
         return lightTextQColor();
     }
@@ -315,4 +318,3 @@ ViewFrameMode PreferencesGui::getViewFrameMode()
     int temp = Preferences::getPreferenceGroup("View")->GetInt("ViewFrameMode", 0);
     return static_cast<ViewFrameMode>(temp);
 }
-

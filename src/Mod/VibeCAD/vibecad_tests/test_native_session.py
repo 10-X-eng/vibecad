@@ -12,6 +12,7 @@ import VibeCADNativeSessionFactory as factory_module
 from VibeCADNativeCapabilityRegistry import (
     NativeProviderSurface,
     _provider_schema_operations,
+    provider_visible_native_schema,
 )
 from VibeCADNativeCommonSchema import common_capability_definitions
 from VibeCADNativeProviderRunner import NativeProviderToolRunner
@@ -70,9 +71,10 @@ def _common_turn(surface_id="model"):
     frozen = {
         "kind": "turn_start_snapshot",
         "frozen": True,
-        "workbench": (
-            "FemWorkbench" if surface_id == "analyze" else "PartDesignWorkbench"
-        ),
+        "workbench": {
+            "analyze": "FemWorkbench",
+            "drawing": "TechDrawWorkbench",
+        }.get(surface_id, "PartDesignWorkbench"),
         "engine": "native",
         "domain": surface_id,
         "surface_id": turn.surface.modeling_surface_id,
@@ -195,7 +197,17 @@ def test_session_factory_passes_internal_operation_authorization_to_turn_freeze(
         lambda expected, *_args: expected,
     )
     authorization = {
-        "schema_sha256": turn.schema_sha256,
+        "schema_sha256": hashlib.sha256(
+            json.dumps(
+                [
+                    provider_visible_native_schema(schema)
+                    for schema in turn.provider_schemas
+                ],
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
         "operations_by_tool": {
             schema["name"]: list(_provider_schema_operations(schema))
             for schema in turn.provider_schemas
@@ -287,6 +299,46 @@ def test_analyze_session_scopes_native_calls_under_vibescript_authority(
     assert service.state.snapshot(service.document.Uid)["recent_receipts"] == []
 
 
+def test_drawing_session_scopes_only_drawing_calls_under_vibescript_authority(
+    monkeypatch,
+) -> None:
+    turn, schemas, frozen = _common_turn("drawing")
+    monkeypatch.setattr(
+        factory_module,
+        "freeze_native_turn",
+        lambda *_args, **_kwargs: turn,
+    )
+    monkeypatch.setattr(
+        factory_module,
+        "require_frozen_native_turn",
+        lambda expected, *_args: expected,
+    )
+    service = _Service("vibescript")
+
+    execution = create_native_session_execution(
+        service=service,
+        expected_surface=frozen,
+        expected_schemas=schemas,
+        registry=build_native_capability_registry(),
+    )
+
+    assert service.modeling_engine() == "vibescript"
+    drawing_ticket = service.state.begin_call(service.document.Uid, "drawing.page")
+    assert service.state.authorize_mutation(drawing_ticket).duplicate is False
+    undo_ticket = service.state.begin_call(service.document.Uid, "document.undo")
+    assert service.state.authorize_mutation(undo_ticket).duplicate is False
+    for capability in ("model.feature", "analyze.model"):
+        with pytest.raises(Exception, match="not active"):
+            service.state.authorize_mutation(
+                service.state.begin_call(service.document.Uid, capability)
+            )
+
+    service.state.cancel_mutation(undo_ticket)
+    execution.close()
+    service.state.complete_mutation(drawing_ticket, {"page": "Page"})
+    assert service.state.snapshot(service.document.Uid)["recent_receipts"] == []
+
+
 class _Dispatcher:
     def __init__(self, result=None) -> None:
         self.calls = []
@@ -305,11 +357,59 @@ class _Ledger:
         self.ended.append(run_id)
 
 
-def _provider_runner(*, changed=False, scope_changed=False, cancelled=False, result=None):
+class _BackgroundJobs:
+    def __init__(self) -> None:
+        self.waited = []
+        self.cancelled = []
+        self.snapshot = SimpleNamespace(
+            job_id="background-a",
+            document_uid="document-a",
+            capability_name="drawing.redraw_page",
+            phase="preparing",
+            terminal=False,
+            error=None,
+        )
+
+    def latest_document_snapshot(self, document_uid):
+        assert document_uid == "document-a"
+        return self.snapshot
+
+    def wait(self, job_id, timeout=None):
+        self.waited.append((job_id, timeout))
+        self.snapshot = SimpleNamespace(
+            job_id=job_id,
+            document_uid="document-a",
+            capability_name="drawing.redraw_page",
+            phase="completed",
+            terminal=True,
+            error=None,
+        )
+        return self.snapshot
+
+    def cancel(self, job_id):
+        self.cancelled.append(job_id)
+        return True
+
+
+def _provider_runner(
+    *,
+    changed=False,
+    scope_changed=False,
+    cancelled=False,
+    result=None,
+    background_jobs=None,
+):
     _turn, schemas, frozen = _common_turn()
     dispatcher = _Dispatcher(result)
     ledger = _Ledger()
-    execution = NativeSessionExecution(dispatcher, SimpleNamespace(), ledger, "run-a")
+    execution = NativeSessionExecution(
+        dispatcher,
+        SimpleNamespace(),
+        ledger,
+        "run-a",
+        background_manager=background_jobs,
+        document_uid="document-a" if background_jobs is not None else "",
+    )
     live = dict(frozen)
     if changed:
         live["surface_id"] = "vibecad/surface/native/mesh/10/bbbbbbbbbbbb"
@@ -358,6 +458,49 @@ def test_provider_runner_dispatches_call_id_and_records_concise_trace() -> None:
     ]
 
 
+def test_provider_runner_waits_off_document_thread_before_a_dependent_call() -> None:
+    jobs = _BackgroundJobs()
+    runner, dispatcher, _ledger, _traces, events = _provider_runner(
+        background_jobs=jobs,
+    )
+
+    result = runner("state.read", '{"operation":"active"}', "after-redraw")
+
+    assert result["ok"] is True
+    assert jobs.waited == [("background-a", 0.1)]
+    assert dispatcher.calls == [
+        ("state.read", '{"operation":"active"}', "after-redraw")
+    ]
+    assert [event["event"] for event in events] == [
+        "native_tool_started",
+        "native_background_waiting",
+        "native_tool_completed",
+    ]
+
+
+def test_provider_runner_leaves_explicit_background_status_nonblocking() -> None:
+    jobs = _BackgroundJobs()
+    runner, dispatcher, _ledger, _traces, _events = _provider_runner(
+        background_jobs=jobs,
+    )
+
+    result = runner(
+        "native.job",
+        '{"operation":"status","job_id":"background-a"}',
+        "status",
+    )
+
+    assert result["ok"] is True
+    assert jobs.waited == []
+    assert dispatcher.calls == [
+        (
+            "native.job",
+            '{"operation":"status","job_id":"background-a"}',
+            "status",
+        )
+    ]
+
+
 def test_provider_runner_reports_only_a_successful_exact_turn_transition() -> None:
     ordinary, *_rest = _provider_runner()
     assert ordinary.turn_transition_requested() is False
@@ -369,6 +512,26 @@ def test_provider_runner_reports_only_a_successful_exact_turn_transition() -> No
     )
     transition("sketch.open", "{}", "provider-call-2")
     assert transition.turn_transition_requested() is True
+
+
+def test_provider_runner_starts_a_fresh_turn_after_human_ribbon_change() -> None:
+    runner, _dispatcher, _ledger, traces, _events = _provider_runner(
+        result={
+            "ok": False,
+            "error_code": "NATIVE_SURFACE_CHANGED",
+            "error": "The available CAD tools changed after this turn started.",
+            "current_surface": "drawing",
+            "repair": {"resume_next_turn": True},
+        }
+    )
+
+    result = runner("state.read", '{"operation":"active"}', "read")
+
+    assert result["provider_surface_changed"] is True
+    assert result["next_turn_required"] is True
+    assert result["next_surface"] == "drawing"
+    assert traces[-1]["result"]["next_turn_required"] is True
+    assert runner.turn_transition_requested() is True
 
 
 def test_provider_runner_starts_a_new_loop_when_same_ribbon_scope_changes() -> None:

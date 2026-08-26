@@ -10,11 +10,17 @@ from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeAssemblyProviderState import provider_assembly_state
 from VibeCADNativeDocument import guarded_save
 from VibeCADNativeDrawingGeometryState import (
-    NativeDrawingGeometryStateError,
+    MAX_DRAWING_PROJECTED_PAGE_SIZE,
     drawing_projected_geometry_page,
+    provider_projected_geometry_page,
 )
 from VibeCADNativeDrawingViewState import drawing_view_state
+from VibeCADNativeDrawingSourceCatalog import (
+    MAX_DRAWING_SOURCE_PAGE_SIZE,
+    drawing_source_catalog_page,
+)
 from VibeCADNativeInspect import (
+    MAX_INSPECTION_ELEMENTS,
     geometry_validity,
     inspect_element,
     visual_inspection_result,
@@ -26,6 +32,7 @@ from VibeCADNativeMeasure import (
     measure_distance,
     measure_radius,
 )
+from VibeCADNativeProviderContext import provider_visible_native_state
 from VibeCADNativeSnapshot import build_active_snapshot
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
@@ -71,6 +78,7 @@ class NativeCommonRuntime:
         self._active_document = context.active_document
         self._active_surface_id = context.active_surface_id
         self._edit_or_task_active = context.edit_or_task_active
+        self._scoped_capability_prefix = context.scoped_capability_prefix
 
     def _guard(self, *, allow_owned_playback: bool = False) -> None:
         self._context.guard(allow_owned_playback=allow_owned_playback)
@@ -102,17 +110,23 @@ class NativeCommonRuntime:
             snapshot.get("domain"), Mapping
         ):
             snapshot["domain"] = provider_assembly_state(snapshot["domain"])
-        return snapshot
+        return provider_visible_native_state(snapshot)
 
     def _drawing_projected_geometry(
         self,
         values: Mapping[str, Any],
     ) -> dict[str, Any]:
         target = values["view"]
-        if not isinstance(target, Mapping) or set(target) != {
-            "object_name",
-            "expected_state_sha256",
-        }:
+        if (
+            not isinstance(target, Mapping)
+            or "object_name" not in target
+            or not set(target)
+            <= {
+                "object_name",
+                "expected_state_sha256",
+                "expected_projection_state_sha256",
+            }
+        ):
             raise NativeCommonRuntimeError(
                 "An exact Drawing view target is invalid."
             )
@@ -121,18 +135,26 @@ class NativeCommonRuntime:
             NativeObjectRef(self._document_uid, str(target["object_name"])),
             expected_types=("TechDraw::DrawViewPart",),
         )
-        current = drawing_view_state(view)
-        if str(target["expected_state_sha256"]) != current["state_sha256"]:
-            raise NativeDrawingGeometryStateError(
+        expected_view_state = str(target.get("expected_state_sha256") or "")
+        if (
+            expected_view_state
+            and drawing_view_state(view)["state_sha256"] != expected_view_state
+        ):
+            raise NativeCommonRuntimeError(
                 "The exact Drawing view changed after it was inspected."
             )
-        return drawing_projected_geometry_page(
-            view,
-            offset=int(values["offset"]),
-            page_size=int(values["page_size"]),
-            expected_projection_state_sha256=str(
-                values["expected_projection_state_sha256"]
-            ),
+        page_arguments = {
+            "offset": int(values["offset"]),
+            "page_size": MAX_DRAWING_PROJECTED_PAGE_SIZE,
+        }
+        expected_projection = str(
+            target.get("expected_projection_state_sha256") or ""
+        )
+        if expected_projection:
+            page_arguments["expected_projection_state_sha256"] = expected_projection
+        return provider_projected_geometry_page(
+            drawing_projected_geometry_page(view, **page_arguments),
+            view=view,
         )
 
     def read_state(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -230,14 +252,6 @@ class NativeCommonRuntime:
                 "mass_properties": frozenset({"targets"}),
                 "inspection_result": frozenset({"targets"}),
                 "element": frozenset({"targets"}),
-                "drawing_projected_geometry": frozenset(
-                    {
-                        "view",
-                        "offset",
-                        "page_size",
-                        "expected_projection_state_sha256",
-                    }
-                ),
                 "validity": frozenset({"targets"}),
             },
         )
@@ -274,16 +288,57 @@ class NativeCommonRuntime:
                 tuple(self._object(value) for value in targets),
             )
         if operation == "element":
-            return inspect_element(
-                self._document,
-                self._element(targets[0]),
-            )
-        if operation == "drawing_projected_geometry":
-            return self._drawing_projected_geometry(values)
+            if not 1 <= len(targets) <= MAX_INSPECTION_ELEMENTS:
+                raise NativeCommonRuntimeError(
+                    "Element inspection requires 1 to "
+                    f"{MAX_INSPECTION_ELEMENTS} exact elements."
+                )
+            elements = [
+                inspect_element(self._document, self._element(target))
+                for target in targets
+            ]
+            return elements[0] if len(elements) == 1 else {"elements": elements}
         target = self._object(targets[0])
         if operation == "inspection_result":
             return visual_inspection_result(self._document, target)
         return geometry_validity(self._document, target)
+
+    def read_drawing_sources(
+        self,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(arguments)
+        normalized.setdefault("offset", 0)
+        _operation, values = strict_variant_arguments(
+            normalized,
+            {"list": frozenset({"offset"})},
+        )
+        self._guard(allow_owned_playback=True)
+        return drawing_source_catalog_page(
+            self._document,
+            offset=int(values["offset"]),
+            page_size=MAX_DRAWING_SOURCE_PAGE_SIZE,
+        )
+
+    def read_projected_geometry(
+        self,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(arguments)
+        normalized.setdefault("offset", 0)
+        _operation, values = strict_variant_arguments(
+            normalized,
+            {
+                "read": frozenset(
+                    {
+                        "view",
+                        "offset",
+                    }
+                )
+            },
+        )
+        self._guard(allow_owned_playback=True)
+        return self._drawing_projected_geometry(values)
 
     def save_document(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         _operation, _values = strict_variant_arguments(
@@ -314,5 +369,13 @@ class NativeCommonRuntime:
             state=self._state,
             reauthorize_turn=self._reauthorize_turn,
             active_document=self._active_document,
+            capability_prefix=self._scoped_capability_prefix,
         )
-        return {"result": execution.result, "state": self._snapshot()}
+        result = {"result": execution.result}
+        try:
+            result["state"] = self._snapshot()
+        except Exception:
+            # The undo is already committed and independently verified. The
+            # provider runner refreshes live context after this successful call.
+            pass
+        return result

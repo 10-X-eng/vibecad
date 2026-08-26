@@ -67,9 +67,8 @@ _VIEW = _closed(
 _EDGE = _closed(
     {
         "subelement": _EDGE_NAME,
-        "expected_element_state_sha256": _SHA256,
     },
-    ("subelement", "expected_element_state_sha256"),
+    ("subelement",),
 )
 
 
