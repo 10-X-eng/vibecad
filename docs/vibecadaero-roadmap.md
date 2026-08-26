@@ -133,7 +133,7 @@ The audit of `main@31ea810db` found the following real implementation. These are
 
 | Live capability | Current evidence | Honest boundary |
 | --- | --- | --- |
-| Domain-neutral in-memory Analysis Runtime beneath NativeBackground | `tool_impl/analysis_runtime.py`, `VibeCADAnalysisRuntime.py`, merged PR #67, `test_analysis_runtime.py` | In-memory only; no restart recovery. |
+| Domain-neutral in-memory Analysis Runtime beneath NativeBackground | `tool_impl/analysis_runtime.py`, the `VibeCADAnalysis*.py` source facades, merged PR #67, `test_analysis_runtime.py` | In-memory only; no restart recovery. At this historical baseline, the five public facades were not registered in `VibeCAD_Scripts`, and no isolated build-tree/installed-tree facade-import test existed. |
 | One active background job per document, monotonic terminal state, status/cancel | Runtime manager and `native.job` surface | No durable job identity across application restart. |
 | Atomic cancellation-versus-commit ordering | `VibeCADNativeBackground.py`, merged PR #63, race tests in `test_native_background_commit_gate.py` | Proven for the current in-memory path; durable replay/publication ownership is still missing. |
 | Shared shell-free bounded local process sequence | `VibeCADScriptedProcess.py`, merged PR #61, process tests | POSIX process groups exist; Windows descendant-process ownership is not proven complete. |
@@ -146,6 +146,10 @@ The audit of `main@31ea810db` found the following real implementation. These are
 | Human-authorized JSBSim output | Native Aero output authorization, hash guard, archive validation | This is output authorization, not the durable CFD publication coordinator. |
 
 No current integrated implementation was found for Aero FluidX3D, Aero CfdOF/OpenFOAM, Kaggle compute, common CFD field visualization, benchmark qualification registry, high-Re FluidX3D, moving geometry, propulsion-interaction CFD, complete unsteady 6DOF, aeroelasticity/FSI, or advanced refinement orchestration.
+
+### Post-baseline Step 2 packaging reconciliation
+
+The table above is historical evidence from `main@31ea810db`; it is not rewritten to attribute later work to that revision. In the current tree, after that audit, all five public `VibeCADAnalysis*.py` facades are registered in `VibeCAD_Scripts`, the existing default `Unspecified` install-component behavior is retained, and `test_analysis_facade_packaging.py` proves isolated imports from both the real CMake build tree and a module-scoped `Unspecified` component-installed tree. This post-baseline evidence is the basis for the current Step 2 status below.
 
 ## 6. Dependency graph
 
@@ -177,7 +181,7 @@ Remote execution may be prototyped against inert test fixtures, but it may not b
 | --- | --- | --- |
 | 0 — live reconciliation | **Verified complete for this baseline** | Repeat on a newer `main` before implementation and record drift. |
 | 1 — characterization | **Partial** | Complete normalized lifecycle and FEM legacy/host A/B oracles across Windows/POSIX. |
-| 2 — host contracts/facades | **Verified complete for the in-memory foundation** | Future versions remain additive and domain-neutral. |
+| 2 — host contracts/facades | **Verified complete for the domain-neutral packaging/compatibility foundation** | Persistence, remote providers, and domain qualification remain later milestones and are not implied by this closure. |
 | 3 — local process mechanics | **Partial** | Prove complete descendant-process ownership and cleanup on Windows and POSIX. |
 | 4 — input/artifact sealing | **Partial** | Finish safe immutable manifests, storage, archive/path defenses, and evidence-aware cleanup. |
 | 5 — host orchestration | **Verified complete for the in-memory compatibility slice** | Persistence/recovery remain explicitly outside this step. |
@@ -227,9 +231,18 @@ Remaining exit criteria:
 
 ### Step 2 — introduce host Analysis contracts and facades
 
-**Status: Verified complete for the current in-memory foundation.**
+**Status: Verified complete for the domain-neutral packaging/compatibility foundation.**
 
-Domain-neutral contracts, provider interfaces, artifact helpers, installed facades, and Native compatibility surfaces exist. This status does not include persistence, remote providers, or domain qualification.
+Domain-neutral contracts, provider interfaces, artifact helpers, public facades, and Native compatibility surfaces exist. This status does not include persistence, remote providers, or domain qualification.
+
+Closure evidence:
+
+- `VibeCADAnalysisRuntime.py`, `VibeCADAnalysisContracts.py`, `VibeCADAnalysisArtifacts.py`, `VibeCADAnalysisProviders.py`, and `VibeCADAnalysisLocalProvider.py` are explicitly registered in `VibeCAD_Scripts`;
+- the CMake build target copies those facades and their existing `tool_impl`/compatibility dependencies into `build/release/Mod/VibeCAD`;
+- the pre-existing default CMake install rules remain associated with `Unspecified`, preserving downstream `cmake --install ... --component Unspecified` behavior for public scripts, Python resources, update-trust scripts, and `tool_impl/*.py`;
+- `test_analysis_facade_packaging.py` statically checks both facade membership and retention of the default component, invokes `cmake --install` on VibeCAD's generated binary subdirectory with `--component Unspecified`, then imports every facade from the real CMake build tree and that isolated installed tree under `python -I -S`, after removing `PYTHONPATH` and `PYTHONHOME`;
+- each imported module must resolve beneath the deployment tree, which prevents a source-tree import from satisfying the packaging test;
+- the existing source/runtime tests continue to cover the additive, domain-neutral contracts and compatibility behavior.
 
 Guardrails:
 
@@ -610,6 +623,7 @@ Every implementation pull request must identify the affected rows and provide pr
 | Area | Minimum automated evidence | Integration evidence |
 | --- | --- | --- |
 | Contracts/serialization | schema validation, canonical serialization/hash, forbidden-live-object rejection, version compatibility | save/restart/reload fixture where durable |
+| Packaging/import compatibility | static CMake membership check for every public facade and source-directory exclusion in import smoke | import every public `VibeCADAnalysis*` facade from the CMake build tree and an installed `Mod/VibeCAD` tree |
 | Lifecycle | all legal/illegal transitions, monotonic terminal state, cancel/publication race, replay | threaded stress and restart fault injection |
 | Local processes | exact argv/env/cwd, timeout, cancel, output bound, redaction, tree kill | real child-spawning fixture on Windows and POSIX |
 | Artifacts | manifest/hash, traversal/symlink/archive rejection, size bounds, cleanup | corrupt/missing/duplicate artifact recovery |
@@ -669,7 +683,7 @@ Stop the affected implementation slice and resolve explicitly if:
 
 The next work should be small, reversible, and dependency-ordered:
 
-1. **Close Steps 1 and 7:** produce the complete host/FEM characterization and A/B parity matrix, including Windows/POSIX process-tree tests and a stabilization report.
+1. **Close Steps 1 and 7:** produce the complete host/FEM characterization and A/B parity matrix; complete Windows/POSIX process-tree tests and a stabilization report. Keep the verified Step 2 packaging/compatibility foundation covered as later host capabilities are added.
 2. **Close Step 4:** finish immutable workspace/artifact sealing and safety tests without changing persistence or scheduling.
 3. **Implement Step 8:** add versioned transactional metadata/artifact persistence with restart fault injection, but no new publication semantics.
 4. **Implement Step 8A:** add fresh durable publication authority and replay-idempotent receipts independently, preserving current FEM publication behavior.

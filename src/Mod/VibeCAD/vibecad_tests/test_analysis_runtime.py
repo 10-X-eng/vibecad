@@ -8,6 +8,13 @@ import VibeCADAnalysisRuntime as analysis_runtime
 from VibeCADAnalysisRuntime import AnalysisRuntimeManager
 import VibeCADNativeBackground as native_background
 from VibeCADNativeBackground import NativeBackgroundManager
+from vibecad_tests.test_analysis_facade_packaging import (
+    assert_ci_packaged_facade_deployments,
+)
+
+
+def test_public_analysis_facades_ship_in_build_and_installed_trees() -> None:
+    assert_ci_packaged_facade_deployments()
 
 
 def test_generic_analysis_runtime_executes_prepare_validate_commit_lifecycle() -> None:

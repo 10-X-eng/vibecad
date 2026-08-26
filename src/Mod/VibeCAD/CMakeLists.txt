@@ -5,6 +5,11 @@ set(VibeCAD_Scripts
     InitGui.py
     VibeCADAgentCli.py
     VibeCADAgentControl.py
+    VibeCADAnalysisArtifacts.py
+    VibeCADAnalysisContracts.py
+    VibeCADAnalysisLocalProvider.py
+    VibeCADAnalysisProviders.py
+    VibeCADAnalysisRuntime.py
     VibeCADAeroContext.py
     VibeCADAeroRibbon.py
     VibeCADNativePreviewRibbon.py
