@@ -321,6 +321,13 @@ Its complete high-fidelity development program, live implementation status,
 FluidX3D first-use contract, and dependency-ordered release gates are maintained
 in the [VibeCADAero canonical roadmap](docs/vibecadaero-roadmap.md).
 
+The cross-domain expansion of governed jobs, results, findings, provenance,
+preview evidence, workflows, optimization, manufacturing, assembly, service,
+and robot projection is maintained in the
+[VibeCAD governed engineering roadmap](docs/vibecad-governed-engineering-roadmap.md).
+The source-bound assessment of the proposal behind that roadmap is the
+[Governed Engineering Architecture whitepaper evaluation](docs/vibecad-governed-engineering-whitepaper-evaluation.md).
+
 The single-workbench Part and Part Design model, compatibility boundary, and
 Body/tree behavior are documented in
 [docs/part-design-consolidation.md](docs/part-design-consolidation.md).

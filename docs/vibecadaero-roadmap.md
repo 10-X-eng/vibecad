@@ -16,9 +16,15 @@ Use these sources in this order:
 
 1. **Current code, tests, and merged history** determine what is implemented now.
 2. **This roadmap** determines the active sequence, status, acceptance criteria, and product boundary.
-3. The [no-loss preservation supplement](vibecadaero-advanced-recovery/VIBECADAERO_SECOND_PASS_PRESERVATION_SUPPLEMENT.md) preserves the complete contracts, hazards, release gates, and source index.
-4. The [recovered roadmap](vibecadaero-advanced-recovery/RECOVERED_ADVANCED_VIBECAD_ROADMAP.md) preserves the research-derived program and source anchors.
-5. The [expanded 110-file source package](vibecadaero-advanced-recovery/source-package/) and its byte-for-byte ZIP are design evidence and reference material. They are not a drop-in patch and do not supersede newer host code.
+3. The [VibeCAD governed engineering roadmap](vibecad-governed-engineering-roadmap.md)
+   owns cross-domain host extensions shared by Analysis, Native, Manufacture,
+   Assembly, Robot, and future engineering domains. This Aero roadmap retains
+   Aero physics, solver, qualification, evidence, and original host-runtime
+   acceptance obligations. A change to shared Analysis persistence,
+   publication, or provenance status must update both owner documents.
+4. The [no-loss preservation supplement](vibecadaero-advanced-recovery/VIBECADAERO_SECOND_PASS_PRESERVATION_SUPPLEMENT.md) preserves the complete contracts, hazards, release gates, and source index.
+5. The [recovered roadmap](vibecadaero-advanced-recovery/RECOVERED_ADVANCED_VIBECAD_ROADMAP.md) preserves the research-derived program and source anchors.
+6. The [expanded 110-file source package](vibecadaero-advanced-recovery/source-package/) and its byte-for-byte ZIP are design evidence and reference material. They are not a drop-in patch and do not supersede newer host code.
 
 If this roadmap and current implementation disagree about current status, the implementation wins and this roadmap must be corrected in the same pull request that discovers the drift. If a proposed change conflicts with a preserved architecture lock, stop and resolve the conflict explicitly; do not silently narrow or discard the requirement.
 
