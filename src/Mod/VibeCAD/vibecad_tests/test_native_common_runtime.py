@@ -210,8 +210,8 @@ def test_view_runtime_uses_fixed_operations_and_exact_injected_document(
     )
     captured = []
 
-    def capture(service, target, *, frame, targets):
-        captured.append((service.name, target.Name, frame, targets))
+    def capture(service, target, *, frame, targets, page_name=None):
+        captured.append((service.name, target.Name, frame, targets, page_name))
         return {"captured": True}
 
     monkeypatch.setattr(runtime_module, "capture_screenshot", capture)
@@ -258,6 +258,13 @@ def test_view_runtime_uses_fixed_operations_and_exact_injected_document(
     ) == {"captured": True}
     target = captured[0][3][0]
     assert (target.document_uid, target.object_name) == (document.Uid, "Box")
+    assert runtime.control_view(
+        {
+            "operation": "capture_drawing_page",
+            "page": {"object_name": "Page002"},
+        }
+    ) == {"captured": True}
+    assert captured[1][2:] == ("all", (), "Page002")
 
 
 def test_inspect_runtime_maps_object_and_subelement_targets_without_labels(

@@ -72,6 +72,7 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
         not in {
             "drawing_projected_geometry",
             "set_object_visibility",
+            "capture_drawing_page",
             "capture_active_sketch",
         }
     )
@@ -80,6 +81,9 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
     )
     assert variants[("view.control", "capture_active_sketch")].surface_ids == frozenset(
         {"sketch.edit"}
+    )
+    assert variants[("view.control", "capture_drawing_page")].surface_ids == frozenset(
+        {"drawing"}
     )
     drawing_sources = variants[("drawing.sources", "list")]
     assert drawing_sources.surface_ids == frozenset({"drawing"})
@@ -114,6 +118,7 @@ def test_common_variants_use_explicit_eligible_surfaces() -> None:
         "capture_all",
         "capture_selection",
         "capture_objects",
+        "capture_drawing_page",
         "capture_active_sketch",
     ]
     assert all(
@@ -205,11 +210,18 @@ def test_exact_targets_and_arrays_are_bounded_in_final_common_schemas() -> None:
     capture_branches = {
         "capture_objects": definitions["view.control"].provider_schema(
             ("capture_objects",)
-        )["parameters"]["oneOf"][0]
+        )["parameters"]["oneOf"][0],
+        "capture_drawing_page": definitions["view.control"].provider_schema(
+            ("capture_drawing_page",)
+        )["parameters"]["oneOf"][0],
     }
     assert capture_branches["capture_objects"]["properties"]["targets"][
         "maxItems"
     ] == 16
+    page = capture_branches["capture_drawing_page"]["properties"]["page"]
+    assert capture_branches["capture_drawing_page"]["required"] == ["page"]
+    assert page["required"] == ["object_name"]
+    assert set(page["properties"]) == {"object_name"}
 
 
 def test_first_projected_geometry_page_needs_no_prior_projection_hash() -> None:

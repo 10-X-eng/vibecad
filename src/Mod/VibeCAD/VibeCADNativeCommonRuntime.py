@@ -189,6 +189,7 @@ class NativeCommonRuntime:
                 "capture_all": frozenset(),
                 "capture_selection": frozenset(),
                 "capture_objects": frozenset({"targets"}),
+                "capture_drawing_page": frozenset({"page"}),
                 "capture_active_sketch": frozenset(),
             },
         )
@@ -226,6 +227,7 @@ class NativeCommonRuntime:
             "capture_all": "all",
             "capture_selection": "selection",
             "capture_objects": "objects",
+            "capture_drawing_page": "all",
             "capture_active_sketch": "active_sketch",
         }
         targets = tuple(
@@ -235,11 +237,16 @@ class NativeCommonRuntime:
             raise NativeCommonRuntimeError(
                 "Object-framed capture requires 1 to 16 exact targets."
             )
+        capture_arguments: dict[str, Any] = {
+            "frame": frames[operation],
+            "targets": targets,
+        }
+        if operation == "capture_drawing_page":
+            capture_arguments["page_name"] = str(values["page"]["object_name"])
         return capture_screenshot(
             self._service,
             self._document,
-            frame=frames[operation],
-            targets=targets,
+            **capture_arguments,
         )
 
     def inspect(self, arguments: Mapping[str, Any]) -> dict[str, Any]:

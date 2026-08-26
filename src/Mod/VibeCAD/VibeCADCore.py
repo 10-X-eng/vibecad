@@ -1858,6 +1858,7 @@ class VibeCADService:
         frame: str = "auto",
         object_names: list[str] | None = None,
         sketch_annotations: str = "clean",
+        page_name: str | None = None,
     ) -> dict[str, Any]:
         arguments: dict[str, Any] = {
             "camera": {"mode": "auto"} if camera is None else camera,
@@ -1866,6 +1867,8 @@ class VibeCADService:
         }
         if object_names is not None:
             arguments["object_names"] = object_names
+        if page_name is not None:
+            arguments["page_name"] = page_name
         return self._registry.call("core.capture_view_screenshot", **arguments)
 
     def set_view(

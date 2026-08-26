@@ -1353,6 +1353,7 @@ if(BUILD_TEST AND BUILD_GUI)
 	    vibecad_tests/native_drawing_special_dimension_gui_integration.py
 	    vibecad_tests/native_drawing_balloon_gui_integration.py
 	    vibecad_tests/native_drawing_active_view_gui_integration.py
+	    vibecad_tests/native_drawing_page_capture_gui_integration.py
     vibecad_tests/test_native_drawing_page.py
     vibecad_tests/test_native_drawing_active_view.py
     vibecad_tests/test_native_drawing_dimension.py
@@ -1381,6 +1382,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/test_native_drawing_internal_targets.py
     vibecad_tests/test_native_drawing_provider_state.py
     vibecad_tests/test_native_geometry_sources.py
+    vibecad_tests/test_view_drawing_page_capture.py
     vibecad_tests/native_parameters_gui_integration.py
     vibecad_tests/native_mesh_io_gui_integration.py
     vibecad_tests/native_mesh_convert_gui_integration.py
