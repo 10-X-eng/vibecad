@@ -74,6 +74,7 @@ jobs:
             src/Mod/VibeCAD/vibecad_tests/test_native_background.py \
             src/Mod/VibeCAD/vibecad_tests/test_native_background_commit_gate.py \
             src/Mod/VibeCAD/vibecad_tests/test_native_analyze_solver_execution.py \
+            src/Mod/VibeCAD/vibecad_tests/test_native_aero_analysis_runtime.py \
             src/Mod/VibeCAD/vibecad_tests/test_fem_analysis_install_activation.py \
             src/Mod/VibeCAD/vibecad_tests/test_calculix_analysis_local_provider.py \
             src/Mod/VibeCAD/vibecad_tests/test_elmer_analysis_local_provider.py \

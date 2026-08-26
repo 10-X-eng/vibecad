@@ -22,6 +22,18 @@ _EMPTY = {
     "additionalProperties": False,
 }
 
+_OPTIONAL_BACKGROUND = {
+    "type": "object",
+    "properties": {
+        "background": {
+            "type": "boolean",
+            "default": False,
+        },
+    },
+    "required": [],
+    "additionalProperties": False,
+}
+
 
 def _variant(
     operation: str,
@@ -29,6 +41,7 @@ def _variant(
     action_id: str,
     *,
     transaction_behavior: str,
+    parameters: dict[str, object] = _EMPTY,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
@@ -38,7 +51,7 @@ def _variant(
         exact_target_type=None,
         transaction_behavior=transaction_behavior,
         background_required=False,
-        parameters=_EMPTY,
+        parameters=parameters,
     )
 
 
@@ -57,18 +70,21 @@ def aero_solve_capability_definition() -> NativeCapabilityDefinition:
                 "Solve section+3D+hover and write AeroReport. Does not repair CAD.",
                 "VibeCADAero_Analyze",
                 transaction_behavior="document",
+                parameters=_OPTIONAL_BACKGROUND,
             ),
             _variant(
                 "section",
                 "NeuralFoil 2D section only.",
                 "VibeCADAero_Section",
                 transaction_behavior="document",
+                parameters=_OPTIONAL_BACKGROUND,
             ),
             _variant(
                 "vlm",
                 "AeroSandbox VLM + AeroBuildup only.",
                 "VibeCADAero_VLM",
                 transaction_behavior="document",
+                parameters=_OPTIONAL_BACKGROUND,
             ),
             _variant(
                 "report",
