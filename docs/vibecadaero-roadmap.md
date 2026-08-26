@@ -133,7 +133,7 @@ The audit of `main@31ea810db` found the following real implementation. These are
 
 | Live capability | Current evidence | Honest boundary |
 | --- | --- | --- |
-| Domain-neutral in-memory Analysis Runtime beneath NativeBackground | `tool_impl/analysis_runtime.py`, the `VibeCADAnalysis*.py` source facades, merged PR #67, `test_analysis_runtime.py` | In-memory only; no restart recovery. Source-tree imports work, but `VibeCADAnalysisRuntime.py`, `VibeCADAnalysisContracts.py`, `VibeCADAnalysisArtifacts.py`, `VibeCADAnalysisProviders.py`, and `VibeCADAnalysisLocalProvider.py` are absent from `VibeCAD_Scripts` in `src/Mod/VibeCAD/CMakeLists.txt`, so build-tree/installed downstream imports are not yet a supported, tested compatibility surface. |
+| Domain-neutral in-memory Analysis Runtime beneath NativeBackground | `tool_impl/analysis_runtime.py`, all five public `VibeCADAnalysis*.py` facades registered in `VibeCAD_Scripts`, merged PR #67, `test_analysis_runtime.py`, `test_analysis_facade_packaging.py` | In-memory only; no restart recovery. The source, CMake build-tree, and component-installed compatibility surfaces are covered; the deployment probes remove source-path assistance and require every facade to resolve inside the tested deployment tree. |
 | One active background job per document, monotonic terminal state, status/cancel | Runtime manager and `native.job` surface | No durable job identity across application restart. |
 | Atomic cancellation-versus-commit ordering | `VibeCADNativeBackground.py`, merged PR #63, race tests in `test_native_background_commit_gate.py` | Proven for the current in-memory path; durable replay/publication ownership is still missing. |
 | Shared shell-free bounded local process sequence | `VibeCADScriptedProcess.py`, merged PR #61, process tests | POSIX process groups exist; Windows descendant-process ownership is not proven complete. |
@@ -177,7 +177,7 @@ Remote execution may be prototyped against inert test fixtures, but it may not b
 | --- | --- | --- |
 | 0 — live reconciliation | **Verified complete for this baseline** | Repeat on a newer `main` before implementation and record drift. |
 | 1 — characterization | **Partial** | Complete normalized lifecycle and FEM legacy/host A/B oracles across Windows/POSIX. |
-| 2 — host contracts/facades | **Partial** | Register all five public `VibeCADAnalysis*` facade modules in CMake and prove imports from build and installed trees without the source module directory on `sys.path`; retain domain neutrality and additive compatibility. |
+| 2 — host contracts/facades | **Verified complete for the domain-neutral packaging/compatibility foundation** | Persistence, remote providers, and domain qualification remain later milestones and are not implied by this closure. |
 | 3 — local process mechanics | **Partial** | Prove complete descendant-process ownership and cleanup on Windows and POSIX. |
 | 4 — input/artifact sealing | **Partial** | Finish safe immutable manifests, storage, archive/path defenses, and evidence-aware cleanup. |
 | 5 — host orchestration | **Verified complete for the in-memory compatibility slice** | Persistence/recovery remain explicitly outside this step. |
@@ -227,26 +227,18 @@ Remaining exit criteria:
 
 ### Step 2 — introduce host Analysis contracts and facades
 
-**Status: Partial.**
+**Status: Verified complete for the domain-neutral packaging/compatibility foundation.**
 
-Domain-neutral contracts, provider interfaces, artifact helpers, source-tree facades, and Native compatibility surfaces exist. This status does not include persistence, remote providers, or domain qualification.
+Domain-neutral contracts, provider interfaces, artifact helpers, public facades, and Native compatibility surfaces exist. This status does not include persistence, remote providers, or domain qualification.
 
-The compatibility surface is not complete in build-tree or installed deployments. `src/Mod/VibeCAD/CMakeLists.txt` copies and installs the explicit `VibeCAD_Scripts` list plus `tool_impl/*.py`, but the following public source facades are not registered in `VibeCAD_Scripts`:
+Closure evidence:
 
-- `VibeCADAnalysisRuntime.py`;
-- `VibeCADAnalysisContracts.py`;
-- `VibeCADAnalysisArtifacts.py`;
-- `VibeCADAnalysisProviders.py`;
-- `VibeCADAnalysisLocalProvider.py`.
-
-Source-tree tests can import these modules because the source module directory is on `sys.path`; that does not prove downstream callers can import them from a build-tree or installed VibeCAD module.
-
-Before Step 2 can be marked verified complete:
-
-- register all five facades in `VibeCAD_Scripts` so the existing build-tree copy and install rules include them;
-- add an installed-tree import test that imports every public facade with only the deployed `Mod/VibeCAD` location available, explicitly excluding the source module directory from `sys.path`;
-- exercise the same import smoke against the CMake build-tree copy;
-- retain the existing source-tree tests and prove the installed facades remain domain-neutral, additive, and free of import-time Aero/FluidX3D/OpenFOAM/Kaggle dependencies.
+- `VibeCADAnalysisRuntime.py`, `VibeCADAnalysisContracts.py`, `VibeCADAnalysisArtifacts.py`, `VibeCADAnalysisProviders.py`, and `VibeCADAnalysisLocalProvider.py` are explicitly registered in `VibeCAD_Scripts`;
+- the CMake build target copies those facades and their existing `tool_impl`/compatibility dependencies into `build/release/Mod/VibeCAD`;
+- the `VibeCADPython` install component installs the public scripts, Python resources, update-trust scripts, and `tool_impl/*.py` into an isolated `Mod/VibeCAD` tree;
+- `test_analysis_facade_packaging.py` statically checks CMake membership and imports every facade from both the real CMake build tree and component-installed tree under `python -I -S`, after removing `PYTHONPATH` and `PYTHONHOME`;
+- each imported module must resolve beneath the deployment tree, which prevents a source-tree import from satisfying the packaging test;
+- the existing source/runtime tests continue to cover the additive, domain-neutral contracts and compatibility behavior.
 
 Guardrails:
 
@@ -687,7 +679,7 @@ Stop the affected implementation slice and resolve explicitly if:
 
 The next work should be small, reversible, and dependency-ordered:
 
-1. **Close Steps 1, 2, and 7:** produce the complete host/FEM characterization and A/B parity matrix; register all five public Analysis facades in CMake; prove build-tree and installed-tree imports without source-tree path leakage; complete Windows/POSIX process-tree tests and a stabilization report.
+1. **Close Steps 1 and 7:** produce the complete host/FEM characterization and A/B parity matrix; complete Windows/POSIX process-tree tests and a stabilization report. Keep the verified Step 2 packaging/compatibility foundation covered as later host capabilities are added.
 2. **Close Step 4:** finish immutable workspace/artifact sealing and safety tests without changing persistence or scheduling.
 3. **Implement Step 8:** add versioned transactional metadata/artifact persistence with restart fault injection, but no new publication semantics.
 4. **Implement Step 8A:** add fresh durable publication authority and replay-idempotent receipts independently, preserving current FEM publication behavior.
