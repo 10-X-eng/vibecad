@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 import VibeCADNativeSnapshot as snapshot_module
 import VibeCADNativeAssemblySnapshot as assembly_snapshot_module
 import VibeCADNativeAnalyzeSnapshot as analyze_snapshot_module
+import VibeCADNativeDrawingSnapshot as drawing_snapshot_module
 import VibeCADNativeModelSnapshot as model_snapshot_module
 import VibeCADNativeManufactureSnapshot as manufacture_snapshot_module
 import VibeCADNativeSketchSnapshot as sketch_snapshot_module
@@ -16,7 +18,9 @@ from VibeCADNativeManufactureReadiness import resolve_active_job
 from VibeCADNativeSnapshot import (
     NativeSnapshotError,
     build_active_snapshot,
+    capture_active_snapshot_base,
     concise_object,
+    complete_active_snapshot,
 )
 
 
@@ -27,6 +31,9 @@ class _Object:
         self.Label = name
         self.TypeId = type_id
         self.State = []
+        self.ViewObject = SimpleNamespace(Visibility=True)
+        self.getParentGroup = lambda: None
+        self.getParentGeoFeatureGroup = lambda: None
 
     def isDerivedFrom(self, expected: str) -> bool:
         return self.TypeId == expected
@@ -123,6 +130,144 @@ def _document() -> _Document:
     sheet.getAlias = lambda cell: "width" if cell == "A1" else ""
     feature.ExpressionEngine = [("Length", "Parameters.width")]
     return document
+
+
+def test_drawing_base_context_omits_hidden_and_fem_working_objects() -> None:
+    document = _Document()
+    visible = document.add("VisibleBody", "PartDesign::Body")
+    hidden = document.add("HiddenBody", "PartDesign::Body")
+    fem = document.add("FEMMeshGmsh", "Fem::FemMeshShapeBaseObjectPython")
+    for obj, shown in ((visible, True), (hidden, False), (fem, True)):
+        obj.ViewObject = SimpleNamespace(Visibility=shown)
+        obj.getParentGroup = lambda: None
+        obj.getParentGeoFeatureGroup = lambda: None
+    selection = {
+        "document_uid": document.Uid,
+        "selected_count": 3,
+        "items": [
+            {
+                "object": {
+                    "document_uid": document.Uid,
+                    "object_name": obj.Name,
+                    "type_id": obj.TypeId,
+                },
+                "subelements": [],
+            }
+            for obj in (visible, hidden, fem)
+        ],
+    }
+    native_state = {
+        "document_uid": document.Uid,
+        "structural_revision": 7,
+        "recent_receipts": [
+            {
+                "created": [
+                    {
+                        "document_uid": document.Uid,
+                        "object_name": obj.Name,
+                        "type_id": obj.TypeId,
+                    }
+                    for obj in (visible, hidden, fem)
+                ]
+            }
+        ],
+    }
+
+    result = capture_active_snapshot_base(
+        document,
+        "drawing",
+        native_state,
+        selection=selection,
+    )
+
+    assert [item["object"]["object_name"] for item in result["selection"]["items"]] == [
+        "VisibleBody"
+    ]
+    assert result["selection"]["selected_count"] == 1
+    assert [item["object_name"] for item in result["working_set"]] == [
+        "VisibleBody"
+    ]
+
+
+def test_analyze_base_context_keeps_fem_graph_but_omits_hidden_geometry() -> None:
+    document = _Document()
+    visible = document.add("VisibleBody", "PartDesign::Body")
+    hidden = document.add("HiddenBody", "PartDesign::Body")
+    suppressed = document.add("SuppressedBody", "PartDesign::Body")
+    solver = document.add("Solver", "Fem::FemSolverObjectPython")
+    for obj, shown in (
+        (visible, True),
+        (hidden, False),
+        (suppressed, True),
+        (solver, False),
+    ):
+        obj.ViewObject = SimpleNamespace(Visibility=shown)
+        obj.getParentGroup = lambda: None
+        obj.getParentGeoFeatureGroup = lambda: None
+    suppressed.Suppressed = True
+    document.isObjectUsableAtCurrentTimelinePosition = lambda obj: obj is not suppressed
+    selection = {
+        "document_uid": document.Uid,
+        "selected_count": 4,
+        "items": [
+            {
+                "object": {
+                    "document_uid": document.Uid,
+                    "object_name": obj.Name,
+                    "type_id": obj.TypeId,
+                },
+                "subelements": [],
+            }
+            for obj in (visible, hidden, suppressed, solver)
+        ],
+    }
+    native_state = {
+        "document_uid": document.Uid,
+        "structural_revision": 7,
+        "recent_receipts": [
+            {
+                "created": [
+                    {
+                        "document_uid": document.Uid,
+                        "object_name": obj.Name,
+                        "type_id": obj.TypeId,
+                    }
+                    for obj in (visible, hidden, suppressed, solver)
+                ]
+            }
+        ],
+    }
+
+    result = capture_active_snapshot_base(
+        document,
+        "analyze",
+        native_state,
+        selection=selection,
+    )
+
+    assert [item["object"]["object_name"] for item in result["selection"]["items"]] == [
+        "VisibleBody",
+        "Solver",
+    ]
+    assert [item["object_name"] for item in result["working_set"]] == [
+        "VisibleBody",
+        "Solver",
+    ]
+
+
+def test_detached_drawing_sources_preserve_the_snapshot_bound() -> None:
+    sources = [
+        {"object_name": f"Body{index}", "type_id": "PartDesign::Body"}
+        for index in range(drawing_snapshot_module.MAX_DRAWING_SOURCES + 2)
+    ]
+
+    count, bounded = drawing_snapshot_module._drawing_sources(
+        None,
+        detached_sources=sources,
+    )
+
+    assert count == len(sources)
+    assert len(bounded) == drawing_snapshot_module.MAX_DRAWING_SOURCES
 
 
 def _state() -> dict:
@@ -276,6 +421,32 @@ def test_each_surface_builds_only_its_live_domain(
         "Mesh",
     ]
     assert result["selection"] == selection
+
+
+def test_drawing_snapshot_builder_receives_the_structural_revision(monkeypatch) -> None:
+    captured = []
+    monkeypatch.setattr(
+        drawing_snapshot_module,
+        "build_drawing_snapshot",
+        lambda document, **options: captured.append((document, options))
+        or {"kind": "drawing"},
+    )
+    document = object()
+    selection = {"document_uid": "document-a", "items": []}
+
+    result = snapshot_module._domain_builder(
+        "drawing",
+        selection=selection,
+        structural_revision=12,
+    )(document)
+
+    assert result == {"kind": "drawing"}
+    assert captured == [
+        (
+            document,
+            {"selection": selection, "structural_revision": 12},
+        )
+    ]
 
 
 def test_working_set_rebuild_ignores_deleted_receipt_targets() -> None:
@@ -584,7 +755,7 @@ def test_manufacture_active_job_is_human_selected_or_unambiguous() -> None:
     ) == (None, "ambiguous_selection")
 
 
-def test_snapshot_refuses_wrong_document_or_unbounded_output(monkeypatch) -> None:
+def test_snapshot_refuses_state_from_another_document() -> None:
     document = _document()
     with pytest.raises(NativeSnapshotError, match="another document"):
         build_active_snapshot(
@@ -594,11 +765,97 @@ def test_snapshot_refuses_wrong_document_or_unbounded_output(monkeypatch) -> Non
             selection={"document_uid": "document-a", "items": []},
         )
 
-    monkeypatch.setattr(snapshot_module, "MAX_NATIVE_SNAPSHOT_BYTES", 10)
-    with pytest.raises(NativeSnapshotError, match="exceeds"):
-        build_active_snapshot(
-            document,
-            "model",
-            _state(),
-            selection={"document_uid": "document-a", "items": []},
-        )
+
+def test_oversized_drawing_snapshot_defers_repeated_page_view_details(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(snapshot_module, "MAX_NATIVE_SNAPSHOT_BYTES", 8 * 1024)
+    base = {
+        "surface_id": "drawing",
+        "document": {
+            "document_uid": "document-a",
+            "document_name": "DocumentA",
+        },
+        "structural_revision": 7,
+        "working_set": [],
+    }
+    views = [
+        {
+            "document_uid": "document-a",
+            "object_name": f"View{index}",
+            "type_id": "TechDraw::DrawViewPart",
+            "label": f"Projected View {index}",
+            "state_sha256": str(index).zfill(64),
+            "placement": {
+                "position_on_page_mm": [float(index), 25.0],
+                "locked": False,
+            },
+            "line_attributes": {"detail": "x" * 1024},
+        }
+        for index in range(20)
+    ]
+    selected_dimensions = [{"object_name": "Dimension", "detail": "exact"}]
+    domain = {
+        "kind": "drawing",
+        "page_count": 1,
+        "pages": [
+            {
+                "object_name": "Page",
+                "label": "Page",
+                "type_id": "TechDraw::DrawPage",
+                "state_sha256": "a" * 64,
+                "view_count": len(views),
+                "views": views,
+            }
+        ],
+        "active_page": {"object_name": "Page", "state_sha256": "a" * 64},
+        "selected_dimensions": selected_dimensions,
+    }
+
+    result = complete_active_snapshot(base, domain)
+
+    assert len(json.dumps(result, separators=(",", ":")).encode()) <= 8 * 1024
+    assert result["domain"]["snapshot_compacted"] is True
+    assert result["domain"]["deferred_details"] == ["pages.views"]
+    assert result["domain"]["selected_dimensions"] == selected_dimensions
+    page = result["domain"]["pages"][0]
+    assert page["views_detail_deferred"] is True
+    assert [view["object_name"] for view in page["views"]] == [
+        f"View{index}" for index in range(20)
+    ]
+    assert all("line_attributes" not in view for view in page["views"])
+
+
+def test_oversized_unknown_domain_returns_a_bounded_deferred_manifest(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(snapshot_module, "MAX_NATIVE_SNAPSHOT_BYTES", 4 * 1024)
+    base = {
+        "surface_id": "model",
+        "document": {
+            "document_uid": "document-a",
+            "document_name": "DocumentA",
+        },
+        "structural_revision": 7,
+        "working_set": [],
+    }
+    domain = {
+        "kind": "model",
+        "counts": {"bodies": 200},
+        "bodies": [
+            {"object_name": f"Body{index}", "detail": "x" * 512}
+            for index in range(200)
+        ],
+    }
+
+    result = complete_active_snapshot(base, domain)
+
+    assert len(json.dumps(result, separators=(",", ":")).encode()) <= 4 * 1024
+    assert result["domain"]["kind"] == "model"
+    assert result["domain"]["snapshot_truncated"] is True
+    assert result["domain"]["detail_deferred"] is True
+    assert result["domain"]["section_count"] == 3
+    assert any(
+        section["name"] == "bodies" and section["item_count"] == 200
+        for section in result["domain"]["sections"]
+    )

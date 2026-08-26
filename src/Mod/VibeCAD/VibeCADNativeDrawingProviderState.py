@@ -68,6 +68,8 @@ def compact_drawing_source(
         result["placement"] = dict(placement)
     if name in (selected_names or set()):
         result["selected"] = True
+    if source.get("geometry_details_deferred") is True:
+        result["geometry_details_deferred"] = True
     return result
 
 

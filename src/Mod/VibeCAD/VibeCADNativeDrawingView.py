@@ -9,6 +9,7 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeDrawingErrors import NativeDrawingError
+from VibeCADNativeDrawingHistory import require_drawing_source_history_usable
 from VibeCADNativeDrawingDimensionSupport import drawing_position_within_page_bounds
 from VibeCADNativeDrawingState import drawing_page_state, is_drawing_page
 from VibeCADNativeDrawingViewState import (
@@ -17,6 +18,7 @@ from VibeCADNativeDrawingViewState import (
     drawing_view_state,
     is_part_drawing_view,
 )
+from VibeCADNativeGeometrySources import drawing_source_exclusion_reason
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity, read_current_selection, resolve_object
 
@@ -189,6 +191,22 @@ def _require_usable(document: Any, obj: Any, noun: str) -> None:
         )
 
 
+def _require_source_in_drawing_scope(document: Any, source: Any) -> None:
+    reason = drawing_source_exclusion_reason(document, source)
+    if reason is None:
+        return
+    if reason == "analysis_artifact":
+        raise NativeDrawingError(
+            f"Analysis artifact {source.Name!r} cannot be used as Drawing geometry.",
+            error_code="NATIVE_DRAWING_VIEW_SOURCE_ANALYSIS_ARTIFACT",
+        )
+    raise NativeDrawingError(
+        f"Drawing source {source.Name!r} is hidden from the Drawing workspace.",
+        error_code="NATIVE_DRAWING_VIEW_SOURCE_HIDDEN",
+        repair={"object_name": str(source.Name), "unhide_before_retry": True},
+    )
+
+
 def prepare_standard_view_create(
     document: Any,
     *,
@@ -237,7 +255,8 @@ def prepare_standard_view_create(
                 "object_name": target["object_name"],
             },
         )
-        _require_usable(document, source, "Drawing source")
+        _require_source_in_drawing_scope(document, source)
+        require_drawing_source_history_usable(document, source)
         try:
             state = drawing_source_state(source)
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
@@ -309,6 +328,7 @@ def validate_prepared_standard_view(
                 f"Drawing source {expected['object_name']!r} is no longer available.",
                 error_code="NATIVE_DRAWING_VIEW_SOURCE_STALE",
             )
+        _require_source_in_drawing_scope(document, current_source)
         current = drawing_source_state(current_source)
         if current["state_sha256"] != expected["state_sha256"]:
             raise NativeDrawingError(

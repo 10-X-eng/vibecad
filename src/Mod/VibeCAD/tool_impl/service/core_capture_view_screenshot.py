@@ -24,9 +24,11 @@ DUPLICATE_VISUAL_DIFFERENCE_THRESHOLD = 0.005
 
 TOOL_SPEC = {
     "description": (
-        "Capture the active Drawing page or 3D view for visual verification. auto "
-        "frames an open sketch or the full model; clean temporarily hides sketch "
-        "overlays. Omit camera for automatic orientation or pass camera='isometric'."
+        "Capture a named Drawing page, the active Drawing page, or a 3D view for "
+        "visual verification. Call again with another page_name to inspect multiple "
+        "pages in one turn. auto frames an open sketch or the full model; clean "
+        "temporarily hides sketch overlays. Omit camera for automatic orientation "
+        "or pass camera='isometric'."
     ),
     "name": "core.capture_view_screenshot",
     "parameters": {
@@ -50,6 +52,15 @@ TOOL_SPEC = {
                     "frame='objects'."
                 ),
             },
+            "page_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": (
+                    "Drawing page internal Name or unique Label. When supplied, "
+                    "that page is captured even when another page is active."
+                ),
+            },
             "sketch_annotations": {
                 "type": "string",
                 "enum": list(CAPTURE_ANNOTATION_MODES),
@@ -71,12 +82,14 @@ def run(
     frame: str = "auto",
     object_names: list[str] | None = None,
     sketch_annotations: str = "clean",
+    page_name: str | None = None,
 ) -> dict[str, Any]:
     requested = {
         "camera": camera,
         "frame": frame,
         "object_names": list(object_names or []),
         "sketch_annotations": sketch_annotations,
+        "page_name": page_name,
     }
     frame_mode = str(frame or "auto").strip().lower()
     annotation_mode = str(sketch_annotations or "clean").strip().lower()
@@ -120,26 +133,21 @@ def run(
             "No active document.",
             requested=requested,
         )
-    drawing_page = _active_drawing_page(document)
+    drawing_page = None
+    if page_name is not None:
+        drawing_page, page_error = _resolve_drawing_page(document, page_name)
+        if drawing_page is None:
+            return _remember_failure(
+                service,
+                "DRAWING_PAGE_TARGET_INVALID",
+                "precondition",
+                page_error,
+                requested=requested,
+                candidates=_drawing_page_candidates(document),
+            )
+    else:
+        drawing_page = _active_drawing_page(document)
     if drawing_page is not None:
-        if frame_mode not in {"auto", "all"}:
-            return _remember_failure(
-                service,
-                "DRAWING_PAGE_FRAME_UNSUPPORTED",
-                "precondition",
-                "An active Drawing page supports only an all-page capture.",
-                requested=requested,
-                allowed_values=["all"],
-            )
-        if not _automatic_camera(camera):
-            return _remember_failure(
-                service,
-                "DRAWING_PAGE_CAMERA_UNSUPPORTED",
-                "precondition",
-                "Drawing page capture has no 3D camera.",
-                requested=requested,
-                allowed_values=["auto"],
-            )
         return _capture_drawing_page(
             service,
             document,
@@ -664,6 +672,50 @@ def _active_drawing_page(document: Any) -> Any | None:
     return active[0] if len(active) == 1 else None
 
 
+def _drawing_pages(document: Any) -> list[Any]:
+    pages: list[Any] = []
+    for obj in tuple(getattr(document, "Objects", ()) or ()):
+        checker = getattr(obj, "isDerivedFrom", None)
+        try:
+            is_page = (
+                bool(checker("TechDraw::DrawPage")) if callable(checker) else False
+            )
+        except Exception:
+            is_page = False
+        if is_page or getattr(obj, "TypeId", "") == "TechDraw::DrawPage":
+            pages.append(obj)
+    return pages
+
+
+def _drawing_page_candidates(document: Any) -> list[dict[str, str]]:
+    return [
+        {
+            "object_name": str(getattr(page, "Name", "")),
+            "label": str(getattr(page, "Label", getattr(page, "Name", ""))),
+        }
+        for page in _drawing_pages(document)[:32]
+    ]
+
+
+def _resolve_drawing_page(
+    document: Any,
+    requested_name: Any,
+) -> tuple[Any | None, str]:
+    name = str(requested_name or "").strip()
+    if not name:
+        return None, "Drawing page_name must not be empty."
+    pages = _drawing_pages(document)
+    exact = [page for page in pages if str(getattr(page, "Name", "")) == name]
+    if len(exact) == 1:
+        return exact[0], ""
+    labels = [page for page in pages if str(getattr(page, "Label", "")) == name]
+    if len(labels) == 1:
+        return labels[0], ""
+    if len(labels) > 1:
+        return None, f"Drawing page label {name!r} is not unique; use object_name."
+    return None, f"No Drawing page named {name!r} exists in the active document."
+
+
 def _capture_drawing_page(
     service: Any,
     document: Any,
@@ -681,7 +733,7 @@ def _capture_drawing_page(
         width_mm = float(getattr(template, "Width", 0.0))
         height_mm = float(getattr(template, "Height", 0.0))
         if width_mm <= 0.0 or height_mm <= 0.0:
-            raise RuntimeError("The active Drawing page has no physical sheet size.")
+            raise RuntimeError("The selected Drawing page has no physical sheet size.")
         width_px = max(1, int(round(width_mm * 10.0)))
         height_px = max(1, int(round(height_mm * 10.0)))
         screenshot_dir = _screenshot_artifact_dir(service)
@@ -692,7 +744,7 @@ def _capture_drawing_page(
         )
         scene = TechDrawGui.getSceneForPage(page)
         if scene is None:
-            raise RuntimeError("The active Drawing page has no graphical scene.")
+            raise RuntimeError("The selected Drawing page has no graphical scene.")
         Gui.updateGui()
         image = QtGui.QImage(
             width_px,

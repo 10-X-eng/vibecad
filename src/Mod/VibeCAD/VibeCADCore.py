@@ -35,6 +35,7 @@ from VibeCADIntentMemory import (
 from VibeCADModelingSurface import resolve_modeling_surface
 from VibeCADNativeBackground import NativeBackgroundManager
 from VibeCADNativeAnalyzeContext import AnalyzeContextCoordinator
+from VibeCADNativeDrawingContext import DrawingSourceCatalogCoordinator
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADNativeStatePersistence import (
@@ -226,6 +227,7 @@ class VibeCADService:
         self._native_assistant_undo = NativeAssistantUndoLedger()
         self._native_background_jobs = NativeBackgroundManager()
         self._native_analyze_contexts = AnalyzeContextCoordinator()
+        self._native_drawing_source_contexts = DrawingSourceCatalogCoordinator()
         self._native_state_restores: set[tuple[str, str]] = set()
         self._native_state_restore_errors: dict[str, str] = {}
         self._new_document_authoring_pending: set[str] = set()
@@ -700,7 +702,7 @@ class VibeCADService:
             self._native_document_states.note_structural_change(uid) if uid else None
         )
         if uid:
-            self._native_analyze_contexts.invalidate_document(uid)
+            self._invalidate_native_read_contexts(uid)
         self._sync_native_authority_metadata_if_active(uid)
         return revision
 
@@ -710,7 +712,7 @@ class VibeCADService:
             self._native_document_states.note_structural_change(uid) if uid else None
         )
         if uid:
-            self._native_analyze_contexts.invalidate_document(uid)
+            self._invalidate_native_read_contexts(uid)
         self._sync_native_authority_metadata_if_active(uid)
         return revision
 
@@ -740,10 +742,26 @@ class VibeCADService:
             uid,
             property_name,
         )
-        if revision != previous_revision:
-            self._native_analyze_contexts.invalidate_document(uid)
+        revision_changed = revision != previous_revision
+        if str(property_name or "") == "Visibility" or revision_changed:
+            self._invalidate_native_read_contexts(uid)
+        if revision_changed:
             self._sync_native_authority_metadata_if_active(uid)
         return revision
+
+    def _invalidate_native_read_contexts(self, document_uid: str) -> None:
+        """Invalidate revision-scoped detached read state for one document."""
+
+        uid = str(document_uid or "").strip()
+        if not uid:
+            return
+        self._native_analyze_contexts.invalidate_document(uid)
+        self._native_drawing_source_contexts.invalidate_document(uid)
+        from VibeCADNativeDrawingSourceCatalog import (
+            invalidate_drawing_source_catalog_cache,
+        )
+
+        invalidate_drawing_source_catalog_cache(uid)
 
     def native_document_state(self) -> dict[str, Any]:
         uid = str(self._active_document_uid() or "")
@@ -792,13 +810,18 @@ class VibeCADService:
         )
 
     def begin_native_analyze_context_request(self) -> dict[str, Any] | None:
-        """Capture detached identity for one bounded Analyze context read."""
+        """Capture one detached, visibility-scoped Analyze context request."""
 
         document = self._active_document()
         if document is None:
             return None
         from VibeCADModelingSurface import provider_engine_for_ribbon
-        from VibeCADNativeAnalyzeSnapshot import begin_analyze_snapshot_capture
+        from VibeCADNativeAnalyzeSnapshot import (
+            begin_analyze_snapshot_capture,
+            capture_analyze_clipping,
+            capture_analyze_snapshot_batch,
+        )
+        from VibeCADNativeGeometrySources import drawing_analysis_artifact_names
         from VibeCADNativeSnapshot import capture_active_snapshot_base
         from VibeCADRibbonSurface import read_active_ribbon_surface
 
@@ -813,26 +836,48 @@ class VibeCADService:
             str(document.Uid),
             capability_prefix="analyze.",
         )
+        analysis_artifacts = drawing_analysis_artifact_names(document)
         base = capture_active_snapshot_base(
             document,
             "analyze",
             native_state,
+            analysis_artifact_names=analysis_artifacts,
         )
         details = begin_analyze_snapshot_capture(
             document,
             background_job=background_job,
             validate_brep=False,
+            analysis_artifact_names=analysis_artifacts,
         )
-        return {
+        revision = int(native_state.get("structural_revision", 0) or 0)
+        cacheable = bool(
+            background_job is None or bool(getattr(background_job, "terminal", False))
+        )
+        cache_hit = bool(
+            cacheable
+            and self._native_analyze_contexts.has_cached(
+                str(document.Uid),
+                revision,
+                variant=str(details.get("active_analysis_name") or ""),
+            )
+        )
+        detached_clipping = capture_analyze_clipping(document, details)
+        request = {
             **details,
-            "structural_revision": int(
-                native_state.get("structural_revision", 0) or 0
-            ),
+            "detached_clipping": detached_clipping,
+            "structural_revision": revision,
             "base_snapshot": base,
-            "cacheable": bool(
-                background_job is None or bool(getattr(background_job, "terminal", False))
-            ),
+            "cacheable": cacheable,
         }
+        if not cache_hit:
+            request["detached_parts"] = [
+                capture_analyze_snapshot_batch(
+                    document,
+                    details,
+                    list(details["object_names"]),
+                )
+            ]
+        return request
 
     def _validate_native_analyze_context_request(
         self,
@@ -890,10 +935,162 @@ class VibeCADService:
 
         return self._native_analyze_contexts
 
+    def begin_native_drawing_context_request(self) -> dict[str, Any] | None:
+        """Capture one detached, visibility-scoped Drawing context request."""
+
+        document = self._active_document()
+        if document is None:
+            return None
+        from VibeCADModelingSurface import provider_engine_for_ribbon
+        from VibeCADNativeDrawingSnapshot import build_drawing_snapshot
+        from VibeCADNativeDrawingSourceCatalog import (
+            cached_drawing_source_catalog_state,
+            capture_drawing_source_catalog_inventory,
+        )
+        from VibeCADNativeGeometrySources import drawing_analysis_artifact_names
+        from VibeCADNativeSnapshot import (
+            capture_active_snapshot_base,
+            complete_active_snapshot,
+        )
+        from VibeCADRibbonSurface import read_active_ribbon_surface
+
+        surface = read_active_ribbon_surface()
+        if surface.surface_id != "drawing" or provider_engine_for_ribbon(
+            self.modeling_engine(),
+            surface.surface_id,
+        ) != "native":
+            return None
+        native_state = self.native_document_state()
+        revision = int(native_state.get("structural_revision", 0) or 0)
+        sources = cached_drawing_source_catalog_state(
+            str(document.Uid),
+            revision,
+        )
+        if sources is None:
+            inventory = capture_drawing_source_catalog_inventory(document)
+            sources = [dict(source) for source in inventory["sources"]]
+            object_names = list(inventory["object_names"])
+            analysis_artifacts = frozenset(inventory["analysis_artifact_names"])
+        else:
+            object_names = [str(source["object_name"]) for source in sources]
+            analysis_artifacts = drawing_analysis_artifact_names(document)
+        base = capture_active_snapshot_base(
+            document,
+            "drawing",
+            native_state,
+            analysis_artifact_names=analysis_artifacts,
+        )
+        selection = base.get("_selection")
+        domain = build_drawing_snapshot(
+            document,
+            selection=selection if isinstance(selection, Mapping) else None,
+            structural_revision=revision,
+            detached_sources=sources,
+        )
+        return {
+            "document_uid": str(document.Uid),
+            "structural_revision": revision,
+            "object_names": object_names,
+            "detached_sources": sources,
+            "base_snapshot": base,
+            "completed_snapshot": complete_active_snapshot(base, domain),
+        }
+
+    def _validate_native_drawing_context_request(
+        self,
+        request: Mapping[str, Any],
+    ) -> Any:
+        from VibeCADModelingSurface import provider_engine_for_ribbon
+        from VibeCADNativeDrawingContext import DrawingContextStale
+        from VibeCADRibbonSurface import read_active_ribbon_surface
+
+        document = self._active_document()
+        uid = str(request.get("document_uid") or "")
+        revision = int(request.get("structural_revision", -1) or 0)
+        current_uid = str(getattr(document, "Uid", "") or "")
+        current_revision = int(
+            self.native_document_state().get("structural_revision", 0) or 0
+        )
+        surface = read_active_ribbon_surface()
+        if (
+            document is None
+            or current_uid != uid
+            or current_revision != revision
+            or surface.surface_id != "drawing"
+            or provider_engine_for_ribbon(
+                self.modeling_engine(),
+                surface.surface_id,
+            )
+            != "native"
+        ):
+            raise DrawingContextStale(
+                "The active Drawing document changed during source capture."
+            )
+        return document
+
+    def capture_native_drawing_context_batch(
+        self,
+        request: Mapping[str, Any],
+        object_names: Sequence[str],
+    ) -> dict[str, Any]:
+        """Capture one small, live Drawing source batch on the document thread."""
+
+        from VibeCADNativeDrawingViewState import drawing_source_catalog_identity_state
+        from VibeCADNativeGeometrySources import is_potential_design_geometry_source
+
+        document = self._validate_native_drawing_context_request(request)
+        sources = []
+        for value in object_names:
+            name = str(value or "")
+            if not name:
+                raise ValueError("Drawing context batch contains an invalid object name.")
+            obj = document.getObject(name)
+            if obj is None or not is_potential_design_geometry_source(document, obj):
+                continue
+            try:
+                sources.append(drawing_source_catalog_identity_state(obj))
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+                continue
+        return {"sources": sources}
+
+    def finish_native_drawing_context_request(
+        self,
+        request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Build the bounded Drawing snapshot after its source cache is ready."""
+
+        from VibeCADNativeDrawingSnapshot import build_drawing_snapshot
+        from VibeCADNativeSnapshot import complete_active_snapshot
+
+        document = self._validate_native_drawing_context_request(request)
+        base = request.get("base_snapshot")
+        if not isinstance(base, Mapping):
+            raise ValueError("Drawing context request has no base snapshot.")
+        selection = base.get("_selection")
+        domain = build_drawing_snapshot(
+            document,
+            selection=selection if isinstance(selection, Mapping) else None,
+            structural_revision=int(request["structural_revision"]),
+        )
+        return complete_active_snapshot(base, domain)
+
+    def native_drawing_context_coordinator(
+        self,
+    ) -> DrawingSourceCatalogCoordinator:
+        """Return the read-only Drawing source lane; never a provider tool."""
+
+        return self._native_drawing_source_contexts
+
     def close_native_document_state(self, document_uid: str) -> None:
         uid = str(document_uid or "").strip()
         self._native_background_jobs.cancel_document(uid)
         self._native_analyze_contexts.close_document(uid)
+        self._native_drawing_source_contexts.close_document(uid)
+        from VibeCADNativeDrawingSourceCatalog import (
+            invalidate_drawing_source_catalog_cache,
+        )
+
+        invalidate_drawing_source_catalog_cache(uid)
         if uid:
             self._native_assistant_undo.close_document(uid)
         self._native_document_states.close_document(uid)
@@ -1714,6 +1911,7 @@ class VibeCADService:
         frame: str = "auto",
         object_names: list[str] | None = None,
         sketch_annotations: str = "clean",
+        page_name: str | None = None,
     ) -> dict[str, Any]:
         arguments: dict[str, Any] = {
             "camera": {"mode": "auto"} if camera is None else camera,
@@ -1722,6 +1920,8 @@ class VibeCADService:
         }
         if object_names is not None:
             arguments["object_names"] = object_names
+        if page_name is not None:
+            arguments["page_name"] = page_name
         return self._registry.call("core.capture_view_screenshot", **arguments)
 
     def set_view(

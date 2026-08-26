@@ -266,6 +266,7 @@ def capture_screenshot(
     *,
     frame: str = "all",
     targets: tuple[NativeObjectRef, ...] = (),
+    page_name: str | None = None,
 ) -> dict[str, Any]:
     uid = document_uid(document)
     if str(getattr(service._active_document(), "Uid", "") or "") != uid:
@@ -282,13 +283,15 @@ def capture_screenshot(
         names = [resolve_object(document, target).Name for target in targets]
     from tool_impl.service import core_capture_view_screenshot
 
-    raw = core_capture_view_screenshot.run(
-        service,
-        camera={"mode": "auto"},
-        frame=frame_mode,
-        object_names=names,
-        sketch_annotations="clean",
-    )
+    capture_arguments: dict[str, Any] = {
+        "camera": {"mode": "auto"},
+        "frame": frame_mode,
+        "object_names": names,
+        "sketch_annotations": "clean",
+    }
+    if page_name is not None:
+        capture_arguments["page_name"] = str(page_name)
+    raw = core_capture_view_screenshot.run(service, **capture_arguments)
     if not isinstance(raw, Mapping):
         raise NativeViewError("Viewport screenshot capture failed.")
     if raw.get("ok") is not True:

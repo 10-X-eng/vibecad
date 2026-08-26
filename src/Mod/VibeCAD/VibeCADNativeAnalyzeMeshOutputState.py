@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeMeshState import (
+    fem_mesh_object_context_state,
     fem_mesh_object_state,
     fem_mesh_object_still_exact,
 )
@@ -111,9 +112,9 @@ def prepare_fem_mesh_object_target(
         document,
         NativeObjectRef(document_uid, str(value["object_name"])),
     )
-    state = fem_mesh_object_state(mesh)
+    state = fem_mesh_object_context_state(mesh)
     expected_sha = str(value["expected_state_sha256"] or "")
-    if state["state_sha256"] != expected_sha:
+    if not fem_mesh_object_still_exact(mesh, expected_sha):
         raise NativeAnalyzeError(
             "The exact FEM mesh changed after the provider read it.",
             error_code="NATIVE_ANALYZE_STATE_STALE",

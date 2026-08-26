@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -15,6 +18,23 @@ from VibeCADNativeSnapshot import concise_object
 
 MAX_MESH_STATE_SOURCES = 16
 MAX_MESH_STATE_RESOURCES = 32
+
+
+_MESH_OBJECT_STATE_CACHE: ContextVar[dict[int, dict[str, Any]] | None] = ContextVar(
+    "vibecad_mesh_object_state_cache",
+    default=None,
+)
+
+
+@contextmanager
+def mesh_object_state_cache():
+    """Reuse detached mesh/object state during one immutable capture pass."""
+
+    token = _MESH_OBJECT_STATE_CACHE.set({})
+    try:
+        yield
+    finally:
+        _MESH_OBJECT_STATE_CACHE.reset(token)
 
 
 def _finite(value: Any) -> float | None:
@@ -141,6 +161,11 @@ def mesh_object_state(obj: Any) -> dict[str, Any]:
     multi-million-facet mesh.
     """
 
+    cache = _MESH_OBJECT_STATE_CACHE.get()
+    cache_key = id(obj)
+    if cache is not None and cache_key in cache:
+        return deepcopy(cache[cache_key])
+
     result = concise_object(obj)
     mesh = getattr(obj, "Mesh", None)
     points = getattr(obj, "Points", None)
@@ -210,6 +235,8 @@ def mesh_object_state(obj: Any) -> dict[str, Any]:
         if name not in {"label", "state"}
     }
     result["state_sha256"] = _state_digest(digest_source)
+    if cache is not None:
+        cache[cache_key] = deepcopy(result)
     return result
 
 

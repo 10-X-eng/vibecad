@@ -2,6 +2,39 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from VibeCADNativeAnalyzeAssignments import _reference_issue
+
+
+def test_assignment_reference_validation_enumerates_each_shape_kind_once() -> None:
+    class Shape:
+        def __init__(self) -> None:
+            self.face_reads = 0
+
+        @property
+        def Faces(self):
+            self.face_reads += 1
+            return [object(), object(), object()]
+
+    shape = Shape()
+    source = SimpleNamespace(Shape=shape)
+    document = SimpleNamespace(
+        getObject=lambda name: source if name == "Body" else None
+    )
+
+    issue = _reference_issue(
+        document,
+        "Constraint",
+        {
+            "object_name": "Body",
+            "subelements": ["Face1", "Face2", "Face3"],
+        },
+    )
+
+    assert issue is None
+    assert shape.face_reads == 1
+
 import pytest
 from types import SimpleNamespace
 

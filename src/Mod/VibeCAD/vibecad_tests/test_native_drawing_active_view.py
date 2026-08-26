@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from VibeCADNativeDrawingActiveView import (
     DEFAULT_CAPTURE_HEIGHT_PX,
     DEFAULT_CAPTURE_WIDTH_PX,
     MAX_CAPTURE_DIMENSION_PX,
     MAX_CAPTURE_PIXELS,
+    drawing_active_viewport_state,
 )
 from VibeCADNativeDrawingActiveViewSchema import (
     drawing_active_view_capability_definition,
@@ -87,3 +89,100 @@ def test_active_view_publishes_all_capture_choices_and_runtime_bounds() -> None:
     assert DEFAULT_CAPTURE_HEIGHT_PX == 1024
     assert MAX_CAPTURE_DIMENSION_PX == 4096
     assert MAX_CAPTURE_PIXELS == 16 * 1024 * 1024
+
+
+def test_active_view_state_ignores_hidden_objects_and_fem_artifacts(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeDrawingActiveView as active_view
+
+    class _Shape:
+        @staticmethod
+        def isNull() -> bool:
+            return False
+
+        @staticmethod
+        def hashCode() -> int:
+            return 42
+
+    class _Object:
+        def __init__(self, name: str, type_id: str, *, visible: bool) -> None:
+            self.ID = 1
+            self.Name = name
+            self.TypeId = type_id
+            self.ViewObject = SimpleNamespace(Visibility=visible)
+            self.Placement = None
+            self.Points = None
+
+        @staticmethod
+        def getParentGroup():
+            return None
+
+        @staticmethod
+        def getParentGeoFeatureGroup():
+            return None
+
+    class _ExcludedObject(_Object):
+        @property
+        def Shape(self):
+            raise AssertionError("excluded objects must not read Shape")
+
+    visible = _Object("VisibleBody", "PartDesign::Body", visible=True)
+    visible.Shape = _Shape()
+    hidden = _ExcludedObject("HiddenBody", "PartDesign::Body", visible=False)
+    fem = _ExcludedObject(
+        "FEMMeshGmsh",
+        "Fem::FemMeshShapeBaseObjectPython",
+        visible=True,
+    )
+    analysis = SimpleNamespace(
+        Name="Analysis",
+        TypeId="Fem::FemAnalysis",
+        Group=(fem,),
+        ViewObject=SimpleNamespace(Visibility=False),
+    )
+
+    document = SimpleNamespace(
+        Uid="document-a",
+        Objects=(visible,),
+    )
+    view = SimpleNamespace(
+        getSize=lambda: (1280, 1024),
+        getCamera=lambda: "camera",
+        getCameraType=lambda: "Perspective",
+        getViewDirection=lambda: SimpleNamespace(x=0.0, y=0.0, z=-1.0),
+        getUpDirection=lambda: SimpleNamespace(x=0.0, y=1.0, z=0.0),
+    )
+    monkeypatch.setattr(
+        active_view,
+        "_active_gui_view",
+        lambda _document, _gui=None: view,
+    )
+    monkeypatch.setattr(active_view, "_resolution_pixels_per_mm", lambda: 10.0)
+    monkeypatch.setattr(
+        active_view,
+        "_current_selection",
+        lambda current_document: (
+            {
+                "document_uid": "document-a",
+                "selected_count": 0,
+                "items": [],
+            }
+            if len(current_document.Objects) == 1
+            else {
+                "document_uid": "document-a",
+                "selected_count": 2,
+                "items": [
+                    {"object": {"object_name": hidden.Name}},
+                    {"object": {"object_name": fem.Name}},
+                ],
+            }
+        ),
+    )
+
+    baseline = drawing_active_viewport_state(document)
+    document.Objects = (visible, hidden, fem, analysis)
+    filtered = drawing_active_viewport_state(document)
+
+    assert baseline["visible_geometry_count"] == 1
+    assert filtered == baseline

@@ -21,7 +21,11 @@ from VibeCADNativeAnalyzeSupportState import support_condition_state
 from VibeCADNativeAnalyzeConnectionState import connection_state
 from VibeCADNativeAnalyzeLoadState import load_state
 from VibeCADNativeAnalyzeThermalState import thermal_condition_state
-from VibeCADNativeAnalyzeMeshState import fem_mesh_definition_state, fem_mesh_object_state
+from VibeCADNativeAnalyzeMeshState import (
+    fem_mesh_definition_context_state,
+    fem_mesh_object_context_state,
+    is_fem_mesh_definition,
+)
 from VibeCADNativeAnalyzeMeshOutputState import mesh_filter_state
 from VibeCADNativeAnalyzeMeshRefinementState import mesh_refinement_state
 from VibeCADNativeAnalyzeSolverState import solver_state
@@ -35,7 +39,7 @@ from VibeCADNativeAnalyzeClipping import (
     clipping_state,
 )
 from VibeCADNativeAnalyzeGeometrySources import active_analyze_geometry_sources
-from VibeCADNativeMeshState import mesh_object_state
+from VibeCADNativeMeshState import mesh_object_state, mesh_object_state_cache
 from VibeCADNativeSnapshot import objects_of_type
 
 
@@ -527,7 +531,7 @@ def _mesh_definitions(
     count = 0
     for obj in list(getattr(document, "Objects", ()) or ()):
         try:
-            state = fem_mesh_definition_state(obj)
+            state = fem_mesh_definition_context_state(obj)
         except Exception:
             continue
         count += 1
@@ -555,15 +559,11 @@ def _fem_mesh_outputs(document: Any) -> tuple[int, list[dict[str, Any]]]:
     result = []
     count = 0
     for obj in list(getattr(document, "Objects", ()) or ()):
-        try:
-            state = fem_mesh_object_state(obj)
-        except Exception:
+        if is_fem_mesh_definition(obj):
             continue
         try:
-            fem_mesh_definition_state(obj)
+            state = fem_mesh_object_context_state(obj)
         except Exception:
-            pass
-        else:
             continue
         count += 1
         if len(result) < MAX_FEM_MESH_OUTPUTS:
@@ -703,6 +703,7 @@ def begin_analyze_snapshot_capture(
     background_job: Any | None = None,
     defer_brep_validation: bool = False,
     validate_brep: bool = True,
+    analysis_artifact_names: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Capture only detached identity needed to schedule bounded reads."""
 
@@ -717,7 +718,25 @@ def begin_analyze_snapshot_capture(
     document_uid = str(getattr(document, "Uid", "") or "").strip()
     if not document_uid:
         raise RuntimeError("Analyze context requires an exact document UID.")
-    objects = tuple(getattr(document, "Objects", ()) or ())
+    from VibeCADNativeGeometrySources import (
+        drawing_analysis_artifact_names,
+        is_analyze_context_object,
+    )
+
+    analysis_artifacts = (
+        drawing_analysis_artifact_names(document)
+        if analysis_artifact_names is None
+        else analysis_artifact_names
+    )
+    objects = tuple(
+        obj
+        for obj in tuple(getattr(document, "Objects", ()) or ())
+        if is_analyze_context_object(
+            document,
+            obj,
+            analysis_artifact_names=analysis_artifacts,
+        )
+    )
     object_names = [str(getattr(obj, "Name", "") or "") for obj in objects]
     if any(not name for name in object_names) or len(object_names) != len(
         set(object_names)
@@ -771,7 +790,10 @@ def _analysis_capture_record(
                 "graph_sha256",
             )
         }
-        state = study_state(analysis)
+        state = study_state(
+            analysis,
+            mesh_state_reader=fem_mesh_definition_context_state,
+        )
         member_names = [
             str(member.Name)
             for member in tuple(getattr(analysis, "Group", ()) or ())
@@ -780,7 +802,10 @@ def _analysis_capture_record(
         summary = None
         state = {
             "intent": study_intent_state(analysis),
-            "inventory": study_inventory(analysis),
+            "inventory": study_inventory(
+                analysis,
+                mesh_state_reader=fem_mesh_definition_context_state,
+            ),
         }
         member_names = []
     return {
@@ -792,6 +817,17 @@ def _analysis_capture_record(
 
 
 def capture_analyze_snapshot_batch(
+    document: Any,
+    request: Mapping[str, Any],
+    object_names: Sequence[str],
+) -> dict[str, Any]:
+    """Read one bounded batch while reusing immutable source topology state."""
+
+    with mesh_object_state_cache():
+        return _capture_analyze_snapshot_batch(document, request, object_names)
+
+
+def _capture_analyze_snapshot_batch(
     document: Any,
     request: Mapping[str, Any],
     object_names: Sequence[str],

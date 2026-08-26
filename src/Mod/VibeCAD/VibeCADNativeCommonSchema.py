@@ -261,6 +261,17 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                 exact_target_type="DocumentObject[]",
             ),
             _variant(
+                "capture_drawing_page",
+                "Capture one exact Drawing page by its internal object name.",
+                ("VibeCAD_NativeCaptureView",),
+                parameters=_parameters(
+                    {"page": _object_ref()},
+                    ("page",),
+                ),
+                exact_target_type="TechDraw::DrawPage",
+                surface_ids=frozenset({"drawing"}),
+            ),
+            _variant(
                 "capture_active_sketch",
                 "Capture a bounded image framed around the active Sketch.",
                 ("VibeCAD_NativeCaptureView",),
