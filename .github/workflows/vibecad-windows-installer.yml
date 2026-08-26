@@ -1,12 +1,12 @@
-name: VibeCAD Windows Build Validation
+name: "▶ Build VibeCAD DEV (Windows)"
 
 on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: "Branch, tag, or commit to validate."
+        description: "Branch, tag, or commit to build for hands-on VibeCAD testing."
         required: true
-        default: "dev"
+        default: "main"
         type: string
 
 permissions:
