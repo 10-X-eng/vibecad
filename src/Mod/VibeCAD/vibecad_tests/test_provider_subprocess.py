@@ -1365,6 +1365,11 @@ def _context_schema(name: str) -> dict[str, object]:
 def test_vibescript_model_context_includes_only_the_editable_source_index(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        session,
+        "provider_engine_from_service",
+        lambda service: service.modeling_engine(),
+    )
     schemas = [
         _context_schema("vibescript.read_source"),
         _context_schema("vibescript.read_api"),
@@ -1445,7 +1450,7 @@ def test_native_context_replaces_legacy_document_and_selection_summaries(
         available=True,
         unavailable_reason="",
     )
-    native_surface = object()
+    native_surface = SimpleNamespace(schemas=(schema,))
     monkeypatch.setitem(
         sys.modules,
         "VibeCADNativeProviderContext",
@@ -1499,6 +1504,11 @@ def test_native_context_replaces_legacy_document_and_selection_summaries(
 def test_editable_source_manifests_complete_after_document_thread_capture(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        session,
+        "provider_engine_from_service",
+        lambda service: service.modeling_engine(),
+    )
     schemas = [
         _context_schema("vibescript.read_source"),
         _context_schema("vibescript.read_api"),
@@ -1559,11 +1569,17 @@ def test_editable_source_manifests_complete_after_document_thread_capture(
 def test_assembly_turn_injects_copy_ready_available_components(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        session,
+        "provider_engine_from_service",
+        lambda service: service.modeling_engine(),
+    )
     import VibeCADComponentCatalog as component_catalog
 
     schemas = [
         _context_schema("vibescript.read_source"),
-        _context_schema("vibescript.create_program"),
+        _context_schema("vibescript.create_part"),
+        _context_schema("vibescript.create_assembly"),
         _context_schema("component_catalog.search"),
     ]
     monkeypatch.setattr(
@@ -1628,6 +1644,11 @@ def test_vibescript_context_is_absent_when_the_workbench_has_no_surface(
 ) -> None:
     monkeypatch.setattr(
         session,
+        "provider_engine_from_service",
+        lambda service: service.modeling_engine(),
+    )
+    monkeypatch.setattr(
+        session,
         "provider_tool_schemas",
         lambda _service, _wb, **_kwargs: [_context_schema("core.set_view")],
     )
@@ -1644,13 +1665,18 @@ def test_vibescript_context_is_absent_when_the_workbench_has_no_surface(
 def test_partdesign_does_not_inject_a_model_manifest_at_turn_start(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        session,
+        "provider_engine_from_service",
+        lambda service: service.modeling_engine(),
+    )
     models = [{"model_id": "b" * 32, "name": "Rotor"}]
     monkeypatch.setattr(
         session,
         "provider_tool_schemas",
         lambda _service, _wb, **_kwargs: [
-            _context_schema("vibescript.read_source"),
-            _context_schema("vibescript.create_program"),
+                _context_schema("vibescript.read_source"),
+                _context_schema("vibescript.create_part"),
         ],
     )
     service = _ProviderContextService(
