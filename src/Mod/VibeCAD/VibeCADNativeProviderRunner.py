@@ -214,6 +214,14 @@ class NativeProviderToolRunner:
                 "error_code": "NATIVE_RESULT_INVALID",
                 "error": "Native dispatch returned no result object.",
             }
+        if result.get("error_code") == "NATIVE_SURFACE_CHANGED":
+            result = {
+                **result,
+                "provider_surface_changed": True,
+                "next_turn_required": True,
+                "next_surface": str(result.get("current_surface") or ""),
+            }
+            self._turn_transition_requested = True
         if result.get("ok") is True and result.get("next_turn_required") is not True:
             try:
                 refreshed = dict(self._refresh_context())

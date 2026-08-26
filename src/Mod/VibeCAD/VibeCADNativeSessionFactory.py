@@ -137,7 +137,7 @@ def _validate_expected_turn(
     if expected_authorization is not None:
         if (
             str(expected_authorization.get("schema_sha256") or "")
-            != turn.schema_sha256
+            != visible_turn_digest
         ):
             changed.append("operation authorization digest")
         expected_operations = expected_authorization.get("operations_by_tool")

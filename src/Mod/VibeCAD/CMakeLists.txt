@@ -1311,6 +1311,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_manufacture_simple_copy_gui_integration.py
     vibecad_tests/native_manufacture_tool_gui_integration.py
 	    vibecad_tests/native_drawing_page_gui_integration.py
+	    vibecad_tests/native_drawing_session_gui_integration.py
 	    vibecad_tests/native_drawing_redraw_gui_integration.py
 	    vibecad_tests/native_drawing_standard_view_gui_integration.py
 	    vibecad_tests/native_drawing_projection_group_gui_integration.py

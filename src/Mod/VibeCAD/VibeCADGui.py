@@ -3060,11 +3060,16 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
     for trace in reversed(list(getattr(response, "tool_trace", ()) or ())):
         tool_name = trace.get("tool_name") if isinstance(trace, dict) else None
         result = trace.get("result")
-        if not isinstance(result, dict) or result.get("ok") is not True:
+        if not isinstance(result, dict):
             continue
         if result.get("next_turn_required") is not True:
             continue
         provider_surface_changed = result.get("provider_surface_changed") is True
+        if result.get("ok") is not True and not (
+            provider_surface_changed
+            and result.get("error_code") == "NATIVE_SURFACE_CHANGED"
+        ):
+            continue
         if provider_surface_changed:
             next_surface = str(result.get("next_surface") or "").strip()
             from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE

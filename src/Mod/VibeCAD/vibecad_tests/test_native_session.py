@@ -12,6 +12,7 @@ import VibeCADNativeSessionFactory as factory_module
 from VibeCADNativeCapabilityRegistry import (
     NativeProviderSurface,
     _provider_schema_operations,
+    provider_visible_native_schema,
 )
 from VibeCADNativeCommonSchema import common_capability_definitions
 from VibeCADNativeProviderRunner import NativeProviderToolRunner
@@ -196,7 +197,17 @@ def test_session_factory_passes_internal_operation_authorization_to_turn_freeze(
         lambda expected, *_args: expected,
     )
     authorization = {
-        "schema_sha256": turn.schema_sha256,
+        "schema_sha256": hashlib.sha256(
+            json.dumps(
+                [
+                    provider_visible_native_schema(schema)
+                    for schema in turn.provider_schemas
+                ],
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
         "operations_by_tool": {
             schema["name"]: list(_provider_schema_operations(schema))
             for schema in turn.provider_schemas
@@ -501,6 +512,26 @@ def test_provider_runner_reports_only_a_successful_exact_turn_transition() -> No
     )
     transition("sketch.open", "{}", "provider-call-2")
     assert transition.turn_transition_requested() is True
+
+
+def test_provider_runner_starts_a_fresh_turn_after_human_ribbon_change() -> None:
+    runner, _dispatcher, _ledger, traces, _events = _provider_runner(
+        result={
+            "ok": False,
+            "error_code": "NATIVE_SURFACE_CHANGED",
+            "error": "The available CAD tools changed after this turn started.",
+            "current_surface": "drawing",
+            "repair": {"resume_next_turn": True},
+        }
+    )
+
+    result = runner("state.read", '{"operation":"active"}', "read")
+
+    assert result["provider_surface_changed"] is True
+    assert result["next_turn_required"] is True
+    assert result["next_surface"] == "drawing"
+    assert traces[-1]["result"]["next_turn_required"] is True
+    assert runner.turn_transition_requested() is True
 
 
 def test_provider_runner_starts_a_new_loop_when_same_ribbon_scope_changes() -> None:
