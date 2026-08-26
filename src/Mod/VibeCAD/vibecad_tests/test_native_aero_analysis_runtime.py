@@ -6,8 +6,9 @@ from dataclasses import dataclass
 
 import pytest
 
-import VibeCADAeroAnalysisRuntime as aero_analysis
 import VibeCADNativeAeroRuntime as native_aero
+from VibeCADNativeBackground import NativeBackgroundCancelled
+from VibeCADNativeAeroSchema import aero_solve_capability_definition
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
 
@@ -95,11 +96,11 @@ def test_aero_geometry_revision_is_rechecked_before_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     document = _Document()
-    monkeypatch.setattr(aero_analysis.AeroConfig, "resolve_geometry", lambda _doc: {"airfoil": "NACA0012"})
-    monkeypatch.setattr(aero_analysis.AeroPreview, "geometry_revision", lambda _doc, _cfg: "geometry-r2")
+    monkeypatch.setattr(native_aero.AeroConfig, "resolve_geometry", lambda _doc: {"airfoil": "NACA0012"})
+    monkeypatch.setattr(native_aero.AeroPreview, "geometry_revision", lambda _doc, _cfg: "geometry-r2")
 
-    with pytest.raises(aero_analysis.AeroAnalysisRuntimeError) as caught:
-        aero_analysis.validate_document_input(document, "geometry-r1")
+    with pytest.raises(native_aero.AeroAnalysisRuntimeError) as caught:
+        native_aero.validate_document_input(document, "geometry-r1")
 
     assert caught.value.error_code == "AERO_ANALYSIS_STALE"
     assert caught.value.current_revision == "geometry-r2"
@@ -107,4 +108,36 @@ def test_aero_geometry_revision_is_rechecked_before_publication(
 
 def test_aero_publication_rejects_wrong_detached_result_type() -> None:
     with pytest.raises(TypeError, match="CompletedAeroAnalysis"):
-        aero_analysis.publish_document_result(_Document(), object())
+        native_aero.publish_document_result(_Document(), object())
+
+
+def test_aero_background_flag_is_exposed_only_for_detachable_solve_variants() -> None:
+    variants = {
+        variant.operation: variant
+        for variant in aero_solve_capability_definition().variants
+    }
+
+    for operation in ("analyze", "section", "vlm"):
+        assert variants[operation].parameters == {
+            "type": "object",
+            "properties": {"background": {"type": "boolean", "default": False}},
+            "required": [],
+            "additionalProperties": False,
+        }
+    for operation in ("report", "propose_repairs", "apply_repairs"):
+        assert variants[operation].parameters["properties"] == {}
+
+
+def test_detached_aero_cancellation_uses_native_background_terminal_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        native_aero.AeroDetachedAnalysis,
+        "execute",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            native_aero.AeroDetachedAnalysis.AeroDetachedCancelled()
+        ),
+    )
+
+    with pytest.raises(NativeBackgroundCancelled):
+        native_aero.run_detached(object())

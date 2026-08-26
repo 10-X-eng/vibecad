@@ -27,7 +27,7 @@ import AeroResults
 import AeroStamp
 import VibeCADAero
 
-from VibeCADNativeBackground import NativeBackgroundError
+from VibeCADNativeBackground import NativeBackgroundCancelled, NativeBackgroundError
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeOutput import (
@@ -127,11 +127,14 @@ def run_detached(
 ) -> AeroDetachedAnalysis.CompletedAeroAnalysis:
     """Run only the document-free Aero computation."""
 
-    return AeroDetachedAnalysis.execute(
-        prepared,
-        cancelled=cancelled,
-        progress=progress,
-    )
+    try:
+        return AeroDetachedAnalysis.execute(
+            prepared,
+            cancelled=cancelled,
+            progress=progress,
+        )
+    except AeroDetachedAnalysis.AeroDetachedCancelled as exc:
+        raise NativeBackgroundCancelled() from exc
 
 
 def validate_document_input(document: Any, expected_revision: str) -> None:
