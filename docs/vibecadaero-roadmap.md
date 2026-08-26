@@ -149,7 +149,7 @@ No current integrated implementation was found for Aero FluidX3D, Aero CfdOF/Ope
 
 ### Post-baseline Step 2 packaging reconciliation
 
-The table above is historical evidence from `main@31ea810db`; it is not rewritten to attribute later work to that revision. In the current tree, after that audit, all five public `VibeCADAnalysis*.py` facades are registered in `VibeCAD_Scripts`, the existing default `Unspecified` install-component behavior is retained, and `test_analysis_facade_packaging.py` proves isolated imports from both the real CMake build tree and an `Unspecified` component-installed tree. This post-baseline evidence is the basis for the current Step 2 status below.
+The table above is historical evidence from `main@31ea810db`; it is not rewritten to attribute later work to that revision. In the current tree, after that audit, all five public `VibeCADAnalysis*.py` facades are registered in `VibeCAD_Scripts`, the existing default `Unspecified` install-component behavior is retained, and `test_analysis_facade_packaging.py` proves isolated imports from both the real CMake build tree and a module-scoped `Unspecified` component-installed tree. This post-baseline evidence is the basis for the current Step 2 status below.
 
 ## 6. Dependency graph
 
@@ -240,7 +240,7 @@ Closure evidence:
 - `VibeCADAnalysisRuntime.py`, `VibeCADAnalysisContracts.py`, `VibeCADAnalysisArtifacts.py`, `VibeCADAnalysisProviders.py`, and `VibeCADAnalysisLocalProvider.py` are explicitly registered in `VibeCAD_Scripts`;
 - the CMake build target copies those facades and their existing `tool_impl`/compatibility dependencies into `build/release/Mod/VibeCAD`;
 - the pre-existing default CMake install rules remain associated with `Unspecified`, preserving downstream `cmake --install ... --component Unspecified` behavior for public scripts, Python resources, update-trust scripts, and `tool_impl/*.py`;
-- `test_analysis_facade_packaging.py` statically checks both facade membership and retention of the default component, then imports every facade from the real CMake build tree and an `Unspecified` component-installed tree under `python -I -S`, after removing `PYTHONPATH` and `PYTHONHOME`;
+- `test_analysis_facade_packaging.py` statically checks both facade membership and retention of the default component, invokes `cmake --install` on VibeCAD's generated binary subdirectory with `--component Unspecified`, then imports every facade from the real CMake build tree and that isolated installed tree under `python -I -S`, after removing `PYTHONPATH` and `PYTHONHOME`;
 - each imported module must resolve beneath the deployment tree, which prevents a source-tree import from satisfying the packaging test;
 - the existing source/runtime tests continue to cover the additive, domain-neutral contracts and compatibility behavior.
 

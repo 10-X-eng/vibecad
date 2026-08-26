@@ -36,6 +36,7 @@ def assert_ci_packaged_facade_deployments() -> None:
     workspace_dir = Path(workspace).resolve()
     build_dir = workspace_dir / "build" / "release"
     build_module_dir = build_dir / "Mod" / "VibeCAD"
+    vibecad_binary_dir = build_dir / "src" / "Mod" / "VibeCAD"
     install_prefix = workspace_dir / "build" / "install-smoke"
     install_module_dir = install_prefix / "Mod" / "VibeCAD"
 
@@ -43,7 +44,7 @@ def assert_ci_packaged_facade_deployments() -> None:
         [
             "cmake",
             "--install",
-            str(build_dir),
+            str(vibecad_binary_dir),
             "--prefix",
             str(install_prefix),
             "--component",
