@@ -82,6 +82,7 @@ jobs:
             src/Mod/VibeCAD/vibecad_tests/test_mystran_analysis_local_provider.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_architecture_boundaries.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_error_mapping.py \
+            src/Mod/VibeCAD/vibecad_tests/test_dev_launcher_contract.py \
             src/Mod/VibeCADAero/tests/test_detached_analysis.py \
             2>&1 | tee build/test-results/host-analysis-fem-pytest.log
           status=${PIPESTATUS[0]}
