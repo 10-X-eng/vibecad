@@ -1,0 +1,137 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Drive the File > Open handlers for Fusion .f3d/.f3z and Siemens .jt."""
+
+from __future__ import annotations
+
+import os
+import sys
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+IMPORT_DIR = REPO / "src" / "Mod" / "Import"
+FIXTURE_DIR = Path(__file__).resolve().parent / "data" / "cad_import"
+
+if str(IMPORT_DIR) not in sys.path:
+    sys.path.insert(0, str(IMPORT_DIR))
+
+import cad_geometry  # noqa: E402
+import importFusion  # noqa: E402
+import importJT  # noqa: E402
+
+
+def _ensure_fixtures() -> dict:
+    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    cube = cad_geometry.cube_triangles(10.0)
+    f3d = FIXTURE_DIR / "cube.f3d"
+    f3z = FIXTURE_DIR / "cube.f3z"
+    jt = FIXTURE_DIR / "cube.jt"
+    if not f3d.exists():
+        importFusion.write_f3d(str(f3d), cube)
+    if not f3z.exists():
+        importFusion.write_f3z(str(f3z), [cube])
+    if not jt.exists():
+        importJT.write_jt_tessellation(str(jt), cube)
+    return {"f3d": f3d, "f3z": f3z, "jt": jt, "cube": cube}
+
+
+class ParseFixturesTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = _ensure_fixtures()
+
+    def test_filters_list_native_extensions(self):
+        self.assertIn("*.f3d", importFusion.IMPORT_TYPE)
+        self.assertIn("*.f3z", importFusion.IMPORT_TYPE)
+        self.assertIn("*.jt", importJT.IMPORT_TYPE)
+        init = (IMPORT_DIR / "Init.py").read_text(encoding="utf-8")
+        self.assertIn("importFusion", init)
+        self.assertIn("*.f3d", init)
+        self.assertIn("*.f3z", init)
+        self.assertIn("importJT", init)
+        self.assertIn("*.jt", init)
+
+    def test_f3d_mesh_roundtrip(self):
+        groups = importFusion.read_fusion_meshes(str(self.fx["f3d"]))
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0]), 12)
+        self._assert_cube_bounds(groups[0])
+
+    def test_f3z_contains_part_mesh(self):
+        groups = importFusion.read_fusion_meshes(str(self.fx["f3z"]))
+        self.assertGreaterEqual(len(groups), 1)
+        self.assertEqual(len(groups[0]), 12)
+
+    def test_jt_toc_triangles(self):
+        tris = importJT.read_jt_triangles(str(self.fx["jt"]))
+        self.assertEqual(len(tris), 12)
+        self._assert_cube_bounds(tris)
+
+    def _assert_cube_bounds(self, tris):
+        xs = [v[0] for t in tris for v in t]
+        ys = [v[1] for t in tris for v in t]
+        zs = [v[2] for t in tris for v in t]
+        self.assertAlmostEqual(min(xs), 0.0, places=5)
+        self.assertAlmostEqual(max(xs), 10.0, places=5)
+        self.assertAlmostEqual(min(ys), 0.0, places=5)
+        self.assertAlmostEqual(max(ys), 10.0, places=5)
+        self.assertAlmostEqual(min(zs), 0.0, places=5)
+        self.assertAlmostEqual(max(zs), 10.0, places=5)
+
+
+class OpenHandlersTest(unittest.TestCase):
+    """Calls the same open()/insert() File > Open uses. Needs FreeCAD."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import FreeCAD  # noqa: F401
+            import Mesh  # noqa: F401
+            import Part  # noqa: F401
+        except ImportError as exc:
+            raise unittest.SkipTest(f"FreeCAD not importable: {exc}") from exc
+        cls.fx = _ensure_fixtures()
+
+    def test_f3d_open_places_shape(self):
+        self._assert_open(importFusion.open, self.fx["f3d"], expect_faces=12)
+
+    def test_f3z_insert_places_shape(self):
+        import FreeCAD
+
+        doc = FreeCAD.newDocument("F3ZInsert")
+        importFusion.insert(str(self.fx["f3z"]), doc.Name)
+        self._assert_geometry(doc, expect_faces=12)
+
+    def test_jt_open_places_mesh_or_shape(self):
+        self._assert_open(importJT.open, self.fx["jt"], expect_faces=12)
+
+    def _assert_open(self, opener, path, expect_faces):
+        doc = opener(str(path))
+        self.assertIsNotNone(doc)
+        self._assert_geometry(doc, expect_faces=expect_faces)
+
+    def _assert_geometry(self, doc, expect_faces):
+        parts = [
+            o
+            for o in doc.Objects
+            if hasattr(o, "Shape") and o.Shape and not o.Shape.isNull()
+        ]
+        meshes = [
+            o
+            for o in doc.Objects
+            if hasattr(o, "Mesh") and o.Mesh and o.Mesh.CountFacets > 0
+        ]
+        self.assertTrue(parts or meshes, "open/insert produced no Shape or Mesh")
+        if parts:
+            faces = sum(len(o.Shape.Faces) for o in parts)
+            solids = sum(len(o.Shape.Solids) for o in parts)
+            self.assertGreaterEqual(faces + solids, 1)
+            if faces:
+                self.assertEqual(faces, expect_faces)
+        if meshes:
+            facets = sum(o.Mesh.CountFacets for o in meshes)
+            self.assertEqual(facets, expect_faces)
+
+
+if __name__ == "__main__":
+    unittest.main()
