@@ -35,6 +35,7 @@ from VibeCADPromptStarters import (
 from VibeCADSession import (
     _format_document_delta,
     prewarm_analyze_context,
+    prewarm_drawing_context,
     rebuild_intent_memory,
     run_native_surface_continuation,
     run_prompt,
@@ -1862,6 +1863,9 @@ _ANALYZE_CONTEXT_STATUS_EVENTS = frozenset(
         "analyze_context_cache_hit",
         "analyze_context_progress",
         "analyze_context_ready",
+        "drawing_context_cache_hit",
+        "drawing_context_progress",
+        "drawing_context_ready",
     }
 )
 
@@ -1877,7 +1881,11 @@ def _show_analyze_context_application_status(
         return
     try:
         status_bar = Gui.getMainWindow().statusBar()
-        timeout = 5000 if event_name != "analyze_context_progress" else 0
+        timeout = (
+            0
+            if event_name in {"analyze_context_progress", "drawing_context_progress"}
+            else 5000
+        )
         status_bar.showMessage(str(text or "").strip(), timeout)
     except Exception:
         # The assistant status line remains the fallback for headless tests and
@@ -1924,6 +1932,12 @@ def _format_progress_event(event: dict[str, Any]) -> str:
     if name in {"analyze_context_cache_hit", "analyze_context_ready"}:
         revision = int(event.get("structural_revision", 0) or 0)
         return f"Analyze context is ready for document revision {revision}."
+    if name == "drawing_context_progress":
+        message = str(event.get("message") or "").strip()
+        return message or "Reading Drawing sources..."
+    if name in {"drawing_context_cache_hit", "drawing_context_ready"}:
+        revision = int(event.get("structural_revision", 0) or 0)
+        return f"Drawing context is ready for document revision {revision}."
     if name == "provider_subprocess_started":
         return f"{event.get('provider', 'Provider')} process started" + (
             f" | pid {event.get('pid')}" if event.get("pid") else ""
@@ -2138,6 +2152,9 @@ _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
     "analyze_context_cache_hit",
     "analyze_context_progress",
     "analyze_context_ready",
+    "drawing_context_cache_hit",
+    "drawing_context_progress",
+    "drawing_context_ready",
     "context_build_completed",
     "context_build_started",
     "document_recompute_waiting",
@@ -4887,7 +4904,7 @@ def show_assistant_for_active_workbench() -> None:
 
 
 def _schedule_analyze_context_prewarm() -> None:
-    """Warm Analyze provider state without occupying Qt or Native CAD jobs."""
+    """Warm responsive Native provider state without occupying Qt."""
 
     global _analyze_context_prewarm_thread
     with _analyze_context_prewarm_lock:
@@ -4919,18 +4936,35 @@ def _schedule_analyze_context_prewarm() -> None:
                     _dispatch_to_document_thread,
                     progress_callback=progress,
                 )
+                prewarm_drawing_context(
+                    get_service(),
+                    _dispatch_to_document_thread,
+                    progress_callback=progress,
+                )
             except Exception as exc:
                 from VibeCADNativeAnalyzeContext import (
                     AnalyzeContextCancelled,
                     AnalyzeContextStale,
                 )
+                from VibeCADNativeDrawingContext import (
+                    DrawingContextCancelled,
+                    DrawingContextStale,
+                )
 
-                if not isinstance(exc, (AnalyzeContextCancelled, AnalyzeContextStale)):
-                    _warn(f"VibeCAD Analyze context prewarm failed: {exc}")
+                if not isinstance(
+                    exc,
+                    (
+                        AnalyzeContextCancelled,
+                        AnalyzeContextStale,
+                        DrawingContextCancelled,
+                        DrawingContextStale,
+                    ),
+                ):
+                    _warn(f"VibeCAD Native context prewarm failed: {exc}")
 
         _analyze_context_prewarm_thread = threading.Thread(
             target=run,
-            name="VibeCAD-Analyze-context-prewarm",
+            name="VibeCAD-Native-context-prewarm",
             daemon=True,
         )
         _analyze_context_prewarm_thread.start()

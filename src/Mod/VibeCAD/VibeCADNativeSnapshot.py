@@ -139,6 +139,7 @@ def _domain_builder(
     surface_id: str,
     background_job: Any | None = None,
     selection: Mapping[str, Any] | None = None,
+    structural_revision: int | None = None,
 ) -> Callable[[Any], Mapping[str, Any]]:
     if surface_id == "model":
         from VibeCADNativeModelSnapshot import build_model_snapshot
@@ -180,6 +181,7 @@ def _domain_builder(
         return lambda document: build_drawing_snapshot(
             document,
             selection=selection,
+            structural_revision=structural_revision,
         )
     if surface_id == "parameters":
         from VibeCADNativeParametersSnapshot import build_parameters_snapshot
@@ -212,6 +214,7 @@ def build_active_snapshot(
             surface_id,
             background_job,
             selected,
+            int(base.get("structural_revision", 0) or 0),
         )(document)
     )
     return complete_active_snapshot(base, domain)

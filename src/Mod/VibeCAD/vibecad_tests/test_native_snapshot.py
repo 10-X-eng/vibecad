@@ -9,6 +9,7 @@ import pytest
 import VibeCADNativeSnapshot as snapshot_module
 import VibeCADNativeAssemblySnapshot as assembly_snapshot_module
 import VibeCADNativeAnalyzeSnapshot as analyze_snapshot_module
+import VibeCADNativeDrawingSnapshot as drawing_snapshot_module
 import VibeCADNativeModelSnapshot as model_snapshot_module
 import VibeCADNativeManufactureSnapshot as manufacture_snapshot_module
 import VibeCADNativeSketchSnapshot as sketch_snapshot_module
@@ -276,6 +277,32 @@ def test_each_surface_builds_only_its_live_domain(
         "Mesh",
     ]
     assert result["selection"] == selection
+
+
+def test_drawing_snapshot_builder_receives_the_structural_revision(monkeypatch) -> None:
+    captured = []
+    monkeypatch.setattr(
+        drawing_snapshot_module,
+        "build_drawing_snapshot",
+        lambda document, **options: captured.append((document, options))
+        or {"kind": "drawing"},
+    )
+    document = object()
+    selection = {"document_uid": "document-a", "items": []}
+
+    result = snapshot_module._domain_builder(
+        "drawing",
+        selection=selection,
+        structural_revision=12,
+    )(document)
+
+    assert result == {"kind": "drawing"}
+    assert captured == [
+        (
+            document,
+            {"selection": selection, "structural_revision": 12},
+        )
+    ]
 
 
 def test_working_set_rebuild_ignores_deleted_receipt_targets() -> None:

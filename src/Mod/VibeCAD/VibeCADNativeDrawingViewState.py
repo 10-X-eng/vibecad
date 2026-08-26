@@ -151,6 +151,57 @@ def drawing_source_state(obj: Any) -> dict[str, Any]:
     return result
 
 
+def drawing_source_catalog_state(obj: Any) -> dict[str, Any]:
+    """Return lightweight source information without exact BREP validation."""
+
+    if obj is None or is_drawing_page(obj) or is_drawing_view(obj):
+        raise ValueError("A Drawing view source must be a non-Drawing shape object.")
+    shape = getattr(obj, "Shape", None)
+    if shape is None or bool(shape.isNull()):
+        raise ValueError("A Drawing view source must have one non-empty shape.")
+    topology = {
+        "solids": len(tuple(getattr(shape, "Solids", ()) or ())),
+        "faces": len(tuple(getattr(shape, "Faces", ()) or ())),
+        "edges": len(tuple(getattr(shape, "Edges", ()) or ())),
+    }
+    if not any(topology.values()):
+        raise ValueError("A Drawing view source must have usable topology.")
+    bounds = getattr(shape, "BoundBox", None)
+    return {
+        "object_name": str(getattr(obj, "Name", "") or ""),
+        "label": str(getattr(obj, "Label", "") or ""),
+        "type_id": str(getattr(obj, "TypeId", "") or ""),
+        "shape_type": str(getattr(shape, "ShapeType", "") or ""),
+        "placement": _placement_state(obj),
+        "topology": topology,
+        "bounds_size_mm": (
+            [
+                round(float(getattr(bounds, name)), 9)
+                for name in ("XLength", "YLength", "ZLength")
+            ]
+            if bounds is not None
+            else None
+        ),
+    }
+
+
+def drawing_source_catalog_identity_state(obj: Any) -> dict[str, Any]:
+    """Return source identity without touching live BREP or placement data."""
+
+    if obj is None or is_drawing_page(obj) or is_drawing_view(obj):
+        raise ValueError("A Drawing view source must be a non-Drawing shape object.")
+    return {
+        "object_name": str(getattr(obj, "Name", "") or ""),
+        "label": str(getattr(obj, "Label", "") or ""),
+        "type_id": str(getattr(obj, "TypeId", "") or ""),
+        "shape_type": "",
+        "placement": None,
+        "topology": {},
+        "bounds_size_mm": None,
+        "geometry_details_deferred": True,
+    }
+
+
 def _straight_edge_direction(edge: Any) -> tuple[float, float, float]:
     vertices = tuple(getattr(edge, "Vertexes", ()) or ())
     if len(vertices) != 2:

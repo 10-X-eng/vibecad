@@ -428,6 +428,7 @@ set(VibeCAD_Scripts
     VibeCADNativeDrawingPresentationState.py
     VibeCADNativeDrawingInternalTargets.py
     VibeCADNativeDrawingProviderState.py
+    VibeCADNativeDrawingContext.py
     VibeCADNativeDrawingSourceCatalog.py
     VibeCADNativeDrawingHatch.py
     VibeCADNativeDrawingHatchBindings.py

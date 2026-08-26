@@ -37,8 +37,105 @@ def _is_internal_resource(obj: Any) -> bool:
     return role in {"internal", "resource"} and not _is_body(obj)
 
 
-def active_public_geometry_sources(document: Any) -> tuple[Any, ...]:
-    """Return each active usable shape once at its public Body boundary."""
+def _is_active_public_geometry_source(
+    document: Any,
+    obj: Any,
+    *,
+    part_gui: Any,
+    validate_brep: bool,
+) -> bool:
+    shape = getattr(obj, "Shape", None)
+    if shape is None or _is_body_member(obj) or _is_internal_resource(obj):
+        return False
+    try:
+        str(document.Uid)
+        int(obj.ID)
+        return not (
+            shape.isNull()
+            or (validate_brep and not shape.isValid())
+            or not part_gui.isModelingObjectActive(obj)
+            or (
+                validate_brep
+                and not any((len(shape.Solids), len(shape.Faces), len(shape.Edges)))
+            )
+        )
+    except Exception:
+        return False
+
+
+def is_active_public_geometry_source(
+    document: Any,
+    obj: Any,
+    *,
+    validate_brep: bool = True,
+) -> bool:
+    """Return whether one object is an active public geometry boundary."""
+
+    if type(validate_brep) is not bool:
+        raise TypeError("validate_brep must be a boolean")
+    try:
+        import PartGui
+    except ImportError:
+        return False
+    return _is_active_public_geometry_source(
+        document,
+        obj,
+        part_gui=PartGui,
+        validate_brep=validate_brep,
+    )
+
+
+def is_active_design_geometry_source(
+    document: Any,
+    obj: Any,
+    *,
+    validate_brep: bool = True,
+) -> bool:
+    """Return whether one active public object is design, not analysis, geometry."""
+
+    return is_active_public_geometry_source(
+        document,
+        obj,
+        validate_brep=validate_brep,
+    ) and not bool(getattr(obj, "VibeCADAnalysisDomain", False))
+
+
+def is_potential_design_geometry_source(document: Any, obj: Any) -> bool:
+    """Identify a Drawing candidate without reading its potentially huge Shape."""
+
+    if obj is None or _is_body_member(obj) or _is_internal_resource(obj):
+        return False
+    try:
+        import PartGui
+    except ImportError:
+        return False
+    try:
+        str(document.Uid)
+        int(obj.ID)
+        properties = tuple(getattr(obj, "PropertiesList", ()) or ())
+        type_id = str(getattr(obj, "TypeId", "") or "")
+        return (
+            ("Shape" in properties or type_id in {"App::Part", "App::Link"})
+            and bool(PartGui.isModelingObjectActive(obj))
+            and not bool(getattr(obj, "VibeCADAnalysisDomain", False))
+        )
+    except Exception:
+        return False
+
+
+def active_public_geometry_sources(
+    document: Any,
+    *,
+    validate_brep: bool = True,
+) -> tuple[Any, ...]:
+    """Return each active usable shape once at its public Body boundary.
+
+    Exact callers retain BREP validation by default.  Responsive source
+    catalogs may defer that unbounded check until an exact source is used.
+    """
+
+    if type(validate_brep) is not bool:
+        raise TypeError("validate_brep must be a boolean")
 
     try:
         import PartGui
@@ -47,17 +144,14 @@ def active_public_geometry_sources(document: Any) -> tuple[Any, ...]:
     result = []
     seen: set[tuple[str, int]] = set()
     for obj in tuple(getattr(document, "Objects", ()) or ()):
-        shape = getattr(obj, "Shape", None)
-        if shape is None or _is_body_member(obj) or _is_internal_resource(obj):
+        if not _is_active_public_geometry_source(
+            document,
+            obj,
+            part_gui=PartGui,
+            validate_brep=validate_brep,
+        ):
             continue
         try:
-            if (
-                shape.isNull()
-                or not shape.isValid()
-                or not PartGui.isModelingObjectActive(obj)
-                or not any((len(shape.Solids), len(shape.Faces), len(shape.Edges)))
-            ):
-                continue
             identity = (str(document.Uid), int(obj.ID))
         except Exception:
             continue
@@ -68,14 +162,27 @@ def active_public_geometry_sources(document: Any) -> tuple[Any, ...]:
     return tuple(result)
 
 
-def active_design_geometry_sources(document: Any) -> tuple[Any, ...]:
+def active_design_geometry_sources(
+    document: Any,
+    *,
+    validate_brep: bool = True,
+) -> tuple[Any, ...]:
     """Return design geometry without downstream analysis-domain artifacts."""
 
     return tuple(
         obj
-        for obj in active_public_geometry_sources(document)
+        for obj in active_public_geometry_sources(
+            document,
+            validate_brep=validate_brep,
+        )
         if not bool(getattr(obj, "VibeCADAnalysisDomain", False))
     )
 
 
-__all__ = ["active_design_geometry_sources", "active_public_geometry_sources"]
+__all__ = [
+    "active_design_geometry_sources",
+    "active_public_geometry_sources",
+    "is_active_design_geometry_source",
+    "is_active_public_geometry_source",
+    "is_potential_design_geometry_source",
+]

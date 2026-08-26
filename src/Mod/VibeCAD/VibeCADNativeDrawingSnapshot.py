@@ -50,7 +50,6 @@ from VibeCADNativeDrawingLeaderState import (
     is_drawing_leader,
 )
 from VibeCADNativeDrawingDraftState import (
-    drawing_draft_source_state,
     drawing_draft_view_state,
     is_draft_drawing_view,
 )
@@ -117,16 +116,15 @@ from VibeCADNativeDrawingMeasurementAnnotationState import (
     is_drawing_measurement_annotation,
 )
 from VibeCADNativeDrawingFormatState import drawing_format_state
+from VibeCADNativeDrawingSourceCatalog import drawing_source_catalog_state_page
 from VibeCADNativeDrawingViewState import (
     MAX_DRAWING_BREAKS,
     MAX_DRAWING_VIEW_SOURCES,
-    drawing_break_state,
-    drawing_source_state,
+    drawing_source_catalog_identity_state,
     drawing_view_state,
     is_drawing_view,
     is_part_drawing_view,
 )
-from VibeCADNativeGeometrySources import active_design_geometry_sources
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
@@ -914,23 +912,26 @@ def _selected_sources(
         if selected is None:
             continue
         try:
-            result.append(drawing_source_state(selected))
+            result.append(drawing_source_catalog_identity_state(selected))
         except (AttributeError, RuntimeError, TypeError, ValueError):
             continue
     return result
 
 
-def _drawing_sources(document: Any) -> tuple[int, list[dict[str, Any]]]:
+def _drawing_sources(
+    document: Any,
+    *,
+    structural_revision: int | None = None,
+) -> tuple[int, list[dict[str, Any]]]:
     """Return each active design shape once at its public Body boundary."""
 
-    result = []
-    sources = active_design_geometry_sources(document)
-    for source in sources[:MAX_DRAWING_SOURCES]:
-        try:
-            result.append(drawing_source_state(source))
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            continue
-    return len(sources), result
+    page = drawing_source_catalog_state_page(
+        document,
+        offset=0,
+        page_size=MAX_DRAWING_SOURCES,
+        structural_revision=structural_revision,
+    )
+    return int(page["source_count"]), [dict(source) for source in page["sources"]]
 
 
 def _selected_break_definitions(
@@ -943,7 +944,9 @@ def _selected_break_definitions(
         if selected is None:
             continue
         try:
-            result.append(drawing_break_state(selected))
+            state = drawing_source_catalog_identity_state(selected)
+            state["break_details_deferred"] = True
+            result.append(state)
         except (AttributeError, RuntimeError, TypeError, ValueError):
             continue
     return result
@@ -959,7 +962,9 @@ def _selected_draft_sources(
         if selected is None:
             continue
         try:
-            result.append(drawing_draft_source_state(selected))
+            state = drawing_source_catalog_identity_state(selected)
+            state["draft_details_deferred"] = True
+            result.append(state)
         except (AttributeError, RuntimeError, TypeError, ValueError):
             continue
     return result
@@ -1374,9 +1379,13 @@ def build_drawing_snapshot(
     document: Any,
     *,
     selection: Mapping[str, Any] | None = None,
+    structural_revision: int | None = None,
 ) -> dict[str, Any]:
     pages = objects_of_type(document, "TechDraw::DrawPage")
-    source_count, sources = _drawing_sources(document)
+    source_count, sources = _drawing_sources(
+        document,
+        structural_revision=structural_revision,
+    )
     selected = _selected_pages(document, pages, selection)
     if len(selected) == 1:
         active = selected[0]

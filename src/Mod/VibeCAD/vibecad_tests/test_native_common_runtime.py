@@ -41,6 +41,7 @@ def _runtime(**overrides):
         active_surface_id=overrides.get("active_surface_id", lambda: "model"),
         edit_or_task_active=overrides.get("edit_or_task_active", lambda: False),
         scoped_capability_prefix=overrides.get("scoped_capability_prefix"),
+        document_thread_dispatch=overrides.get("document_thread_dispatch"),
     )
     runtime = NativeCommonRuntime(context=context)
     return runtime, state, document
@@ -555,7 +556,41 @@ def test_drawing_source_catalog_defaults_to_the_first_bounded_page(
 
     assert result["source_count"] == 100
     assert result["next_offset"] == 48
-    assert observed == [(document, {"offset": 0, "page_size": 48})]
+    assert observed == [
+        (
+            document,
+            {
+                "offset": 0,
+                "page_size": 48,
+                "structural_revision": 0,
+                "require_cached": False,
+            },
+        )
+    ]
+
+
+def test_gui_drawing_source_read_requires_the_responsive_cache(monkeypatch) -> None:
+    runtime, _state, _document = _runtime(
+        active_surface_id=lambda: "drawing",
+        document_thread_dispatch=lambda operation: operation(),
+    )
+    options = []
+    monkeypatch.setattr(
+        runtime_module,
+        "drawing_source_catalog_page",
+        lambda _document, **values: options.append(values) or {"sources": []},
+    )
+
+    runtime.read_drawing_sources({"operation": "list"})
+
+    assert options == [
+        {
+            "offset": 0,
+            "page_size": 48,
+            "structural_revision": 0,
+            "require_cached": True,
+        }
+    ]
 
 
 def test_save_runtime_uses_guarded_existing_path_only(monkeypatch) -> None:

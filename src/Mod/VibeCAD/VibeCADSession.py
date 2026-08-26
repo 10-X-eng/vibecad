@@ -1374,6 +1374,13 @@ def _build_context_for_provider(
         cancellation_check=cancellation_check,
         progress_callback=progress_callback,
     )
+    if prepared_native_state is None:
+        prepared_native_state = _build_responsive_drawing_native_state(
+            service,
+            document_thread_dispatch,
+            cancellation_check=cancellation_check,
+            progress_callback=progress_callback,
+        )
     captured = _on_document_thread(
         document_thread_dispatch,
         lambda: _capture_context_for_provider(
@@ -1529,6 +1536,162 @@ def prewarm_analyze_context(
     """Populate the read-only Analyze cache before the human presses Send."""
 
     return _build_responsive_analyze_native_state(
+        service,
+        document_thread_dispatch,
+        progress_callback=progress_callback,
+    )
+
+
+def _prepare_responsive_drawing_source_catalog(
+    service: VibeCADService,
+    document_thread_dispatch: DocumentThreadDispatch | None,
+    *,
+    cancellation_check: CancellationCheck | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any] | None:
+    """Prepare one complete Drawing source catalog in bounded Qt batches."""
+
+    from VibeCADNativeDrawingContext import (
+        DrawingContextStale,
+        capture_responsive_drawing_source_catalog,
+    )
+    from VibeCADNativeDrawingSourceCatalog import (
+        cache_drawing_source_catalog_state,
+        drawing_source_catalog_is_cached,
+    )
+
+    begin = getattr(service, "begin_native_drawing_context_request", None)
+    coordinator_reader = getattr(service, "native_drawing_context_coordinator", None)
+    capture_batch = getattr(service, "capture_native_drawing_context_batch", None)
+    if not all(
+        callable(callback)
+        for callback in (begin, coordinator_reader, capture_batch)
+    ):
+        return None
+
+    def emit_progress(percent: int, message: str) -> None:
+        _emit(
+            progress_callback,
+            {
+                "event": "drawing_context_progress",
+                "percent": int(percent),
+                "message": str(message or ""),
+            },
+        )
+
+    for attempt in range(2):
+        request = _on_document_thread(document_thread_dispatch, begin)
+        if request is None:
+            return None
+        if not isinstance(request, Mapping):
+            raise RuntimeError("Drawing context request returned no object.")
+        uid = str(request.get("document_uid") or "")
+        revision = int(request.get("structural_revision", 0) or 0)
+        if drawing_source_catalog_is_cached(uid, revision):
+            _emit(
+                progress_callback,
+                {
+                    "event": "drawing_context_cache_hit",
+                    "structural_revision": revision,
+                },
+            )
+            return dict(request)
+        coordinator = coordinator_reader()
+
+        def build(cancelled, report):
+            if drawing_source_catalog_is_cached(uid, revision):
+                return {"structural_revision": revision, "cache_hit": True}
+            return capture_responsive_drawing_source_catalog(
+                request,
+                dispatch_to_document_thread=lambda operation: _on_document_thread(
+                    document_thread_dispatch,
+                    operation,
+                ),
+                capture_batch=capture_batch,
+                finalize=lambda current, sources: cache_drawing_source_catalog_state(
+                    str(current["document_uid"]),
+                    int(current["structural_revision"]),
+                    list(sources),
+                ),
+                cancellation_check=cancelled,
+                progress_callback=report,
+            )
+
+        try:
+            coordinator.get_or_build(
+                uid,
+                revision,
+                build,
+                cancellation_check=cancellation_check,
+                progress_callback=emit_progress,
+            )
+            if not drawing_source_catalog_is_cached(uid, revision):
+                raise RuntimeError(
+                    "Drawing source preparation completed without a cached catalog."
+                )
+            _emit(
+                progress_callback,
+                {
+                    "event": "drawing_context_ready",
+                    "structural_revision": revision,
+                },
+            )
+            return dict(request)
+        except DrawingContextStale:
+            if attempt == 0 and not (
+                cancellation_check is not None and cancellation_check()
+            ):
+                continue
+            raise
+    raise RuntimeError("Drawing context changed repeatedly during source capture.")
+
+
+def _build_responsive_drawing_native_state(
+    service: VibeCADService,
+    document_thread_dispatch: DocumentThreadDispatch | None,
+    *,
+    cancellation_check: CancellationCheck | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any] | None:
+    """Build Drawing state after responsive source preparation."""
+
+    from VibeCADNativeDrawingContext import DrawingContextStale
+
+    finish = getattr(service, "finish_native_drawing_context_request", None)
+    if not callable(finish):
+        return None
+    for attempt in range(2):
+        request = _prepare_responsive_drawing_source_catalog(
+            service,
+            document_thread_dispatch,
+            cancellation_check=cancellation_check,
+            progress_callback=progress_callback,
+        )
+        if request is None:
+            return None
+        try:
+            return _on_document_thread(
+                document_thread_dispatch,
+                lambda: finish(request),
+            )
+        except DrawingContextStale:
+            if attempt == 0 and not (
+                cancellation_check is not None and cancellation_check()
+            ):
+                continue
+            raise
+    raise RuntimeError("Drawing context changed repeatedly during finalization.")
+
+
+def prewarm_drawing_context(
+    service: VibeCADService,
+    document_thread_dispatch: DocumentThreadDispatch | None,
+    *,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any] | None:
+    """Populate the Drawing source cache before the human presses Send."""
+
+    return _build_responsive_drawing_native_state(
         service,
         document_thread_dispatch,
         progress_callback=progress_callback,
@@ -5442,6 +5605,13 @@ def make_provider_tool_runner(
                     cancellation_check=cancellation_check,
                     progress_callback=progress_callback,
                 )
+            )
+        if tool_name == "drawing.sources":
+            _prepare_responsive_drawing_source_catalog(
+                service,
+                document_thread_dispatch,
+                cancellation_check=cancellation_check,
+                progress_callback=progress_callback,
             )
         _emit(
             progress_callback,

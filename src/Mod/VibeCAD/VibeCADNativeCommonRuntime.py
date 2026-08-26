@@ -314,10 +314,16 @@ class NativeCommonRuntime:
             {"list": frozenset({"offset"})},
         )
         self._guard(allow_owned_playback=True)
+        structural_revision = int(
+            self._state.snapshot(self._document_uid).get("structural_revision", 0)
+            or 0
+        )
         return drawing_source_catalog_page(
             self._document,
             offset=int(values["offset"]),
             page_size=MAX_DRAWING_SOURCE_PAGE_SIZE,
+            structural_revision=structural_revision,
+            require_cached=self._context.document_thread_dispatch is not None,
         )
 
     def read_projected_geometry(
