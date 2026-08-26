@@ -1615,8 +1615,6 @@ install(
         ${VibeCAD_Resources}
     DESTINATION
         Mod/VibeCAD
-    COMPONENT
-        VibeCADPython
 )
 
 if(VibeCAD_UpdateTrustFiles)
@@ -1625,8 +1623,6 @@ if(VibeCAD_UpdateTrustFiles)
             ${VibeCAD_UpdateTrustFiles}
         DESTINATION
             Mod/VibeCAD/update-trust
-        COMPONENT
-            VibeCADPython
     )
 endif()
 
@@ -1635,8 +1631,6 @@ install(
         tool_impl
     DESTINATION
         Mod/VibeCAD
-    COMPONENT
-        VibeCADPython
     FILES_MATCHING
         PATTERN "*.py"
 )

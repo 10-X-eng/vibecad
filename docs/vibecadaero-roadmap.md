@@ -133,7 +133,7 @@ The audit of `main@31ea810db` found the following real implementation. These are
 
 | Live capability | Current evidence | Honest boundary |
 | --- | --- | --- |
-| Domain-neutral in-memory Analysis Runtime beneath NativeBackground | `tool_impl/analysis_runtime.py`, all five public `VibeCADAnalysis*.py` facades registered in `VibeCAD_Scripts`, merged PR #67, `test_analysis_runtime.py`, `test_analysis_facade_packaging.py` | In-memory only; no restart recovery. The source, CMake build-tree, and component-installed compatibility surfaces are covered; the deployment probes remove source-path assistance and require every facade to resolve inside the tested deployment tree. |
+| Domain-neutral in-memory Analysis Runtime beneath NativeBackground | `tool_impl/analysis_runtime.py`, the `VibeCADAnalysis*.py` source facades, merged PR #67, `test_analysis_runtime.py` | In-memory only; no restart recovery. At this historical baseline, the five public facades were not registered in `VibeCAD_Scripts`, and no isolated build-tree/installed-tree facade-import test existed. |
 | One active background job per document, monotonic terminal state, status/cancel | Runtime manager and `native.job` surface | No durable job identity across application restart. |
 | Atomic cancellation-versus-commit ordering | `VibeCADNativeBackground.py`, merged PR #63, race tests in `test_native_background_commit_gate.py` | Proven for the current in-memory path; durable replay/publication ownership is still missing. |
 | Shared shell-free bounded local process sequence | `VibeCADScriptedProcess.py`, merged PR #61, process tests | POSIX process groups exist; Windows descendant-process ownership is not proven complete. |
@@ -146,6 +146,10 @@ The audit of `main@31ea810db` found the following real implementation. These are
 | Human-authorized JSBSim output | Native Aero output authorization, hash guard, archive validation | This is output authorization, not the durable CFD publication coordinator. |
 
 No current integrated implementation was found for Aero FluidX3D, Aero CfdOF/OpenFOAM, Kaggle compute, common CFD field visualization, benchmark qualification registry, high-Re FluidX3D, moving geometry, propulsion-interaction CFD, complete unsteady 6DOF, aeroelasticity/FSI, or advanced refinement orchestration.
+
+### Post-baseline Step 2 packaging reconciliation
+
+The table above is historical evidence from `main@31ea810db`; it is not rewritten to attribute later work to that revision. In the current tree, after that audit, all five public `VibeCADAnalysis*.py` facades are registered in `VibeCAD_Scripts`, the existing default `Unspecified` install-component behavior is retained, and `test_analysis_facade_packaging.py` proves isolated imports from both the real CMake build tree and an `Unspecified` component-installed tree. This post-baseline evidence is the basis for the current Step 2 status below.
 
 ## 6. Dependency graph
 
@@ -235,8 +239,8 @@ Closure evidence:
 
 - `VibeCADAnalysisRuntime.py`, `VibeCADAnalysisContracts.py`, `VibeCADAnalysisArtifacts.py`, `VibeCADAnalysisProviders.py`, and `VibeCADAnalysisLocalProvider.py` are explicitly registered in `VibeCAD_Scripts`;
 - the CMake build target copies those facades and their existing `tool_impl`/compatibility dependencies into `build/release/Mod/VibeCAD`;
-- the `VibeCADPython` install component installs the public scripts, Python resources, update-trust scripts, and `tool_impl/*.py` into an isolated `Mod/VibeCAD` tree;
-- `test_analysis_facade_packaging.py` statically checks CMake membership and imports every facade from both the real CMake build tree and component-installed tree under `python -I -S`, after removing `PYTHONPATH` and `PYTHONHOME`;
+- the pre-existing default CMake install rules remain associated with `Unspecified`, preserving downstream `cmake --install ... --component Unspecified` behavior for public scripts, Python resources, update-trust scripts, and `tool_impl/*.py`;
+- `test_analysis_facade_packaging.py` statically checks both facade membership and retention of the default component, then imports every facade from the real CMake build tree and an `Unspecified` component-installed tree under `python -I -S`, after removing `PYTHONPATH` and `PYTHONHOME`;
 - each imported module must resolve beneath the deployment tree, which prevents a source-tree import from satisfying the packaging test;
 - the existing source/runtime tests continue to cover the additive, domain-neutral contracts and compatibility behavior.
 

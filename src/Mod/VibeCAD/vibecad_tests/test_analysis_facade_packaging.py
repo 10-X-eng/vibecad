@@ -47,7 +47,7 @@ def assert_ci_packaged_facade_deployments() -> None:
             "--prefix",
             str(install_prefix),
             "--component",
-            "VibeCADPython",
+            "Unspecified",
         ],
         cwd=workspace_dir,
         capture_output=True,
@@ -55,7 +55,7 @@ def assert_ci_packaged_facade_deployments() -> None:
         check=False,
     )
     assert completed.returncode == 0, (
-        "Could not create the isolated VibeCAD component install tree.\n"
+        "Could not create the isolated VibeCAD default-component install tree.\n"
         f"stdout:\n{completed.stdout}\n"
         f"stderr:\n{completed.stderr}"
     )
@@ -76,6 +76,16 @@ def _registered_vibecad_scripts() -> set[str]:
             match.group("body"),
         )
     )
+
+
+def _install_rule_containing(needle: str) -> str:
+    text = CMAKE_LISTS.read_text(encoding="utf-8")
+    rules = re.findall(r"(?ms)^\s*install\(\s*$.*?^\s*\)\s*$", text)
+    matches = [rule for rule in rules if needle in rule]
+    assert len(matches) == 1, (
+        f"Expected one VibeCAD install rule containing {needle!r}, found {len(matches)}."
+    )
+    return matches[0]
 
 
 def _assert_isolated_facade_imports(module_dir: Path, deployment: str) -> None:
@@ -148,6 +158,19 @@ def test_public_analysis_facades_are_registered_for_copy_and_install() -> None:
         "Public Analysis facades must be registered in VibeCAD_Scripts so CMake "
         f"copies and installs them; missing: {missing}"
     )
+
+
+def test_vibecad_python_install_rules_retain_the_default_component() -> None:
+    for needle in (
+        "${VibeCAD_Scripts}",
+        "${VibeCAD_UpdateTrustFiles}",
+        "DIRECTORY\n        tool_impl",
+    ):
+        rule = _install_rule_containing(needle)
+        assert not re.search(r"(?m)^\s*COMPONENT(?:\s+\S+|\s*$)", rule), (
+            "Existing downstream packaging uses --component Unspecified, so the "
+            f"install rule containing {needle!r} must remain in CMake's default component."
+        )
 
 
 @pytest.mark.parametrize(("environment_name", "deployment"), PACKAGED_TREE_ENVIRONMENT)
