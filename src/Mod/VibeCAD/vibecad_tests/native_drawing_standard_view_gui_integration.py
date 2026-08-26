@@ -24,7 +24,11 @@ from VibeCADNativeBackgroundSchema import NATIVE_BACKGROUND_CAPABILITY_NAME
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeDrawingState import drawing_page_state
-from VibeCADNativeDrawingViewState import drawing_source_state, drawing_view_state
+from VibeCADNativeDrawingViewState import (
+    drawing_source_catalog_identity_state,
+    drawing_source_state,
+    drawing_view_state,
+)
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
@@ -272,7 +276,9 @@ def _run() -> None:
         )
         assert active["domain"]["active_page_resolution"] == "only_page"
         assert active["domain"]["active_page"]["state_sha256"] == page_state["state_sha256"]
-        assert active["domain"]["selected_sources"] == [source_state]
+        assert active["domain"]["selected_sources"] == [
+            drawing_source_catalog_identity_state(source)
+        ]
         assert len(json.dumps(active, separators=(",", ":")).encode()) < 64 * 1024
 
         invalid = _arguments(page_state, source_state)

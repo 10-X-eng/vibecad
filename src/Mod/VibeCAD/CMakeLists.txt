@@ -429,6 +429,7 @@ set(VibeCAD_Scripts
     VibeCADNativeDrawingInternalTargets.py
     VibeCADNativeDrawingProviderState.py
     VibeCADNativeDrawingContext.py
+    VibeCADNativeDrawingHistory.py
     VibeCADNativeDrawingSourceCatalog.py
     VibeCADNativeDrawingHatch.py
     VibeCADNativeDrawingHatchBindings.py
@@ -1375,6 +1376,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/test_native_drawing_cosmetic_line.py
     vibecad_tests/test_native_drawing_special_dimension.py
     vibecad_tests/test_native_drawing_balloon.py
+    vibecad_tests/test_native_drawing_history.py
     vibecad_tests/test_native_drawing_view.py
     vibecad_tests/test_native_drawing_internal_targets.py
     vibecad_tests/test_native_drawing_provider_state.py
