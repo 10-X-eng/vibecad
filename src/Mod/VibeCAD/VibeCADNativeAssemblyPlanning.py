@@ -16,7 +16,7 @@ from VibeCADNativeAssemblyIdentity import (
     NativeAssemblyIdentityError,
     read_persistent_identity,
 )
-from VibeCADNativeAssemblyJointBindings import (
+from VibeCADNativeAssemblyJointSchema import (
     ASSEMBLY_JOINT_CAPABILITY_NAME,
     ASSEMBLY_RELATION_CAPABILITY_NAME,
     ASSEMBLY_COUPLING_CAPABILITY_NAME,

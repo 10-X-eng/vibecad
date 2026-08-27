@@ -15,6 +15,26 @@ from VibeCADNativeCapabilityRegistry import (
 )
 
 
+ASSEMBLY_GROUND_CAPABILITY_NAME = "assembly.ground"
+ASSEMBLY_JOINT_CAPABILITY_NAME = "assembly.joint"
+ASSEMBLY_RELATION_CAPABILITY_NAME = "assembly.relation"
+ASSEMBLY_COUPLING_CAPABILITY_NAME = "assembly.coupling"
+ASSEMBLY_RACK_PINION_CAPABILITY_NAME = "assembly.rack_pinion"
+ASSEMBLY_SCREW_CAPABILITY_NAME = "assembly.screw"
+ASSEMBLY_BELT_CAPABILITY_NAME = "assembly.belt"
+ASSEMBLY_GEARS_CAPABILITY_NAME = "assembly.gears"
+ASSEMBLY_JOINT_CAPABILITY_NAMES = (
+    ASSEMBLY_GROUND_CAPABILITY_NAME,
+    ASSEMBLY_JOINT_CAPABILITY_NAME,
+    ASSEMBLY_RELATION_CAPABILITY_NAME,
+    ASSEMBLY_COUPLING_CAPABILITY_NAME,
+    ASSEMBLY_RACK_PINION_CAPABILITY_NAME,
+    ASSEMBLY_SCREW_CAPABILITY_NAME,
+    ASSEMBLY_BELT_CAPABILITY_NAME,
+    ASSEMBLY_GEARS_CAPABILITY_NAME,
+)
+
+
 _OBJECT_NAME = {
     "type": "string",
     "maxLength": 128,
@@ -220,7 +240,7 @@ def _focused_variant(
 
 def _legacy_joint_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
-        name="assembly.joint",
+        name=ASSEMBLY_JOINT_CAPABILITY_NAME,
         description="Join component origins or copy an assembly.connectors pair.",
         primary_classification="mutation",
         variants=(
@@ -384,7 +404,7 @@ def _legacy_joint_capability_definition() -> NativeCapabilityDefinition:
 
 def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
-        name="assembly.joint",
+        name=ASSEMBLY_JOINT_CAPABILITY_NAME,
         description="Create a component joint.",
         primary_classification="mutation",
         variants=(
@@ -433,7 +453,7 @@ def assembly_joint_capability_definition() -> NativeCapabilityDefinition:
 
 def assembly_relation_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
-        name="assembly.relation",
+        name=ASSEMBLY_RELATION_CAPABILITY_NAME,
         description=(
             "Create a distance, parallel, perpendicular, or angle relation "
             "between endpoints."
@@ -480,7 +500,7 @@ def assembly_relation_capability_definition() -> NativeCapabilityDefinition:
 
 def assembly_coupling_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
-        name="assembly.coupling",
+        name=ASSEMBLY_COUPLING_CAPABILITY_NAME,
         description=(
             "Create rack-pinion, screw, belt, or gear motion coupling from existing "
             "Slider or Revolute joints. Read joint and component names with "
@@ -628,7 +648,7 @@ def _dedicated_coupling_definition(
 
 def assembly_rack_pinion_capability_definition() -> NativeCapabilityDefinition:
     return _dedicated_coupling_definition(
-        name="assembly.rack_pinion",
+        name=ASSEMBLY_RACK_PINION_CAPABILITY_NAME,
         operation="rack_pinion",
         description=(
             "Couple a rack Slider and perpendicular pinion Revolute "
@@ -652,7 +672,7 @@ def assembly_rack_pinion_capability_definition() -> NativeCapabilityDefinition:
 
 def assembly_screw_capability_definition() -> NativeCapabilityDefinition:
     return _dedicated_coupling_definition(
-        name="assembly.screw",
+        name=ASSEMBLY_SCREW_CAPABILITY_NAME,
         operation="screw",
         description="Couple a Slider and coaxial Revolute joint by screw lead.",
         action_id="Assembly_CreateJointScrew",
@@ -673,7 +693,7 @@ def assembly_screw_capability_definition() -> NativeCapabilityDefinition:
 
 def assembly_belt_capability_definition() -> NativeCapabilityDefinition:
     return _dedicated_coupling_definition(
-        name="assembly.belt",
+        name=ASSEMBLY_BELT_CAPABILITY_NAME,
         operation="belt",
         description="Couple two pulley rotations in the same direction.",
         action_id="Assembly_CreateJointBelt",
@@ -692,7 +712,7 @@ def assembly_belt_capability_definition() -> NativeCapabilityDefinition:
 
 def assembly_gears_capability_definition() -> NativeCapabilityDefinition:
     return _dedicated_coupling_definition(
-        name="assembly.gears",
+        name=ASSEMBLY_GEARS_CAPABILITY_NAME,
         operation="gears",
         description="Couple two gear rotations in opposite directions.",
         action_id="Assembly_CreateJointGears",
@@ -711,7 +731,7 @@ def assembly_gears_capability_definition() -> NativeCapabilityDefinition:
 
 def assembly_ground_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
-        name="assembly.ground",
+        name=ASSEMBLY_GROUND_CAPABILITY_NAME,
         description="Ground or unground Assembly components.",
         primary_classification="mutation",
         variants=(
