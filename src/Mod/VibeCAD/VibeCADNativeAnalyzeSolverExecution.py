@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import os
 from pathlib import Path
@@ -25,7 +25,7 @@ from VibeCADNativeAnalyzeSolverState import (
 )
 from VibeCADNativeAnalyzeState import is_live
 from VibeCADNativeMutation import NativeMutationDraft
-from VibeCADNativeTargets import object_identity
+from VibeCADNativeTargets import document_uid as current_document_uid, object_identity
 
 MAX_INPUT_FILES = 4096
 MAX_INPUT_BYTES = 4 * 1024 * 1024 * 1024
@@ -69,6 +69,15 @@ class SolverExecutionRequest:
     keep_results: bool
     importer_state: Mapping[str, Any]
     runtime_preferences: tuple[tuple[str, str, str, Any], ...] = ()
+    history_identity: tuple[tuple[str, int, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.history_identity:
+            object.__setattr__(
+                self,
+                "history_identity",
+                _history_identity(self.history_operations),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,12 +89,165 @@ class CapturedSolverExecutionRequest:
     timeout_seconds: int
     keep_results: bool
     runtime_preferences: tuple[tuple[str, str, str, Any], ...]
+    history_identity: tuple[tuple[str, int, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.history_identity:
+            object.__setattr__(
+                self,
+                "history_identity",
+                _history_identity(self.history_operations),
+            )
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedSolverExecution:
     request: SolverExecutionRequest
     stages: tuple[dict[str, Any], ...]
+
+
+def _history_identity(operations: tuple[Any, ...]) -> tuple[tuple[str, int, str], ...]:
+    """Return the durable History identity that survives an FCStd reopen."""
+
+    return tuple(
+        (
+            str(getattr(value, "Name", "") or ""),
+            int(getattr(value, "ID", 0) or 0),
+            str(getattr(value, "TypeId", "") or ""),
+        )
+        for value in operations
+    )
+
+
+def _rebind_solver_execution_guards(
+    document: Any,
+    source_document_uid: str,
+    *,
+    target: PreparedSolverTarget,
+    history_operations: tuple[Any, ...],
+    history_identity: tuple[tuple[str, int, str], ...],
+    keep_results: bool,
+    runtime_preferences: tuple[tuple[str, str, str, Any], ...],
+) -> tuple[PreparedSolverTarget, tuple[Any, ...]]:
+    """Resolve live objects only after every durable source guard still matches."""
+
+    try:
+        active_uid = current_document_uid(document)
+    except Exception as exc:
+        raise NativeAnalyzeError(
+            "The exact source document is unavailable; FEM results were not applied.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        ) from exc
+    if active_uid != str(source_document_uid):
+        raise NativeAnalyzeError(
+            "The exact source document changed; FEM results were not applied.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        )
+    solver_name = str(
+        getattr(target, "object_name", "")
+        or getattr(target.solver, "Name", "")
+        or ""
+    )
+    try:
+        rebound_target = prepare_solver_target(
+            document,
+            source_document_uid,
+            {
+                "object_name": solver_name,
+                "expected_state_sha256": target.expected_state_sha256,
+            },
+        )
+    except Exception as exc:
+        if (
+            isinstance(exc, NativeAnalyzeError)
+            and exc.error_code == "NATIVE_ANALYZE_STATE_STALE"
+        ):
+            raise
+        raise NativeAnalyzeError(
+            "The exact FEM solver changed while the source document was reopened; "
+            "results were not applied.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        ) from exc
+    current_history = _require_history_root(document, rebound_target.solver)
+    expected_history_identity = history_identity or _history_identity(
+        history_operations
+    )
+    if _history_identity(current_history) != expected_history_identity:
+        raise NativeAnalyzeError(
+            "Document History changed while the source document was reopened; "
+            "FEM results were not applied.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        )
+    current_preferences = _current_solver_runtime_preferences(rebound_target.kind)
+    if _keep_results_from_runtime_preferences(current_preferences) is not keep_results:
+        raise NativeAnalyzeError(
+            "The FEM result-retention preference changed while the source document "
+            "was reopened.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        )
+    if current_preferences != runtime_preferences:
+        raise NativeAnalyzeError(
+            "The FEM solver runtime preferences changed while the source document "
+            "was reopened.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        )
+    return rebound_target, current_history
+
+
+def rebind_captured_solver_execution(
+    document: Any,
+    source_document_uid: str,
+    captured: CapturedSolverExecutionRequest,
+) -> CapturedSolverExecutionRequest:
+    """Rebind exact live guards after the same saved document is reopened."""
+
+    if not isinstance(captured, CapturedSolverExecutionRequest):
+        raise TypeError("captured must be CapturedSolverExecutionRequest")
+    target, history = _rebind_solver_execution_guards(
+        document,
+        source_document_uid,
+        target=captured.target,
+        history_operations=captured.history_operations,
+        history_identity=captured.history_identity,
+        keep_results=captured.keep_results,
+        runtime_preferences=captured.runtime_preferences,
+    )
+    return replace(
+        captured,
+        target=target,
+        history_operations=history,
+        history_identity=_history_identity(history),
+    )
+
+
+def rebind_prepared_solver_execution(
+    document: Any,
+    source_document_uid: str,
+    prepared: PreparedSolverExecution,
+) -> PreparedSolverExecution:
+    """Rebind transient importer objects without changing authenticated artifacts."""
+
+    if not isinstance(prepared, PreparedSolverExecution):
+        raise TypeError("prepared must be PreparedSolverExecution")
+    request = prepared.request
+    target, history = _rebind_solver_execution_guards(
+        document,
+        source_document_uid,
+        target=request.target,
+        history_operations=request.history_operations,
+        history_identity=request.history_identity,
+        keep_results=request.keep_results,
+        runtime_preferences=request.runtime_preferences,
+    )
+    return replace(
+        prepared,
+        request=replace(
+            request,
+            target=target,
+            history_operations=history,
+            history_identity=_history_identity(history),
+        ),
+    )
 
 
 def _timeout(value: Any) -> int:

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Mapping
 
 from analysis_fem_execution_route import (
@@ -15,11 +16,13 @@ import VibeCADNativeAnalyzeSolverExecution as legacy_solver_execution
 from tool_impl.analysis_fem_adapter import (
     adopt_isolated_solver_execution,
     commit_solver_execution,
+    rebind_completed_solver_execution,
     verify_solver_execution,
 )
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeSolverExecution import (
     capture_solver_execution_request,
+    rebind_captured_solver_execution,
     validate_captured_solver_execution,
 )
 from VibeCADNativeAnalyzeSolverExecutionInput import (
@@ -33,8 +36,35 @@ from VibeCADNativeAnalyzeSolverExecutionWorker import (
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeBackground import NativeBackgroundError
 from VibeCADNativeImmediate import run_immediate_mutation
-from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADNativeRuntimeContext import NativeRuntimeContext, NativeRuntimeContextError
 from VibeCADNativeState import NativeCallTicket
+from VibeCADNativeTargets import document_uid
+
+
+def _rebound_runtime_context(
+    context: NativeRuntimeContext,
+    document: Any,
+) -> NativeRuntimeContext:
+    """Retarget one callback while preserving its already-owned dispatcher scope."""
+
+    dispatcher = context.document_thread_dispatch
+    rebound = replace(
+        context,
+        document=document,
+        document_thread_dispatch=None,
+    )
+    object.__setattr__(rebound, "document_thread_dispatch", dispatcher)
+    return rebound
+
+
+def _exact_reopened_document(context: NativeRuntimeContext) -> Any | None:
+    active = context.active_document()
+    if active is None:
+        return None
+    try:
+        return active if document_uid(active) == context.document_uid else None
+    except Exception:
+        return None
 
 
 class NativeAnalyzeSolverExecutionRuntime:
@@ -65,6 +95,8 @@ class NativeAnalyzeSolverExecutionRuntime:
         execution_route = current_fem_execution_route()
         workspace = None
         request = None
+        commit_context = context
+        rebound_for_commit = False
 
         if execution_route == LEGACY_FEM_EXECUTION:
             request = legacy_solver_execution.prepare_solver_execution_request(
@@ -122,8 +154,28 @@ class NativeAnalyzeSolverExecutionRuntime:
                 )
 
             def validate() -> None:
-                context.guard()
-                validate_captured_solver_execution(context.document, captured)
+                nonlocal captured, commit_context, rebound_for_commit
+                try:
+                    context.guard()
+                    validate_captured_solver_execution(context.document, captured)
+                    commit_context = context
+                    rebound_for_commit = False
+                    return
+                except NativeRuntimeContextError:
+                    reopened = _exact_reopened_document(context)
+                    if reopened is None:
+                        raise
+                rebound_captured = rebind_captured_solver_execution(
+                    reopened,
+                    context.document_uid,
+                    captured,
+                )
+                rebound_context = _rebound_runtime_context(context, reopened)
+                rebound_context.guard()
+                validate_captured_solver_execution(reopened, rebound_captured)
+                captured = rebound_captured
+                commit_context = rebound_context
+                rebound_for_commit = True
 
             mutate = lambda document, prepared: commit_solver_execution(
                 document, prepared
@@ -141,11 +193,18 @@ class NativeAnalyzeSolverExecutionRuntime:
             )
 
         def commit(prepared: Any) -> Mapping[str, Any]:
+            active_prepared = prepared
+            if execution_route == ANALYSIS_RUNTIME_FEM and rebound_for_commit:
+                commit_context.guard()
+                active_prepared = rebind_completed_solver_execution(
+                    commit_context.document,
+                    prepared,
+                )
             return run_immediate_mutation(
-                context,
+                commit_context,
                 ticket=ticket,
                 transaction_name=(f"Import {target_kind.title()} FEM Results"),
-                mutate=lambda document: mutate(document, prepared),
+                mutate=lambda document: mutate(document, active_prepared),
                 verify=verify,
             )
 

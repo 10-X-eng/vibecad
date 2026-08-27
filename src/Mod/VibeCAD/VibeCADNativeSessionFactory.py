@@ -291,7 +291,12 @@ def create_native_session_execution(
                 "NATIVE_AUTHORITY_CHANGED",
                 "The document authoring authority changed during this turn.",
             )
-        if service._active_document() is not document:
+        active = service._active_document()
+        try:
+            active_uid = document_uid(active) if active is not None else ""
+        except Exception:
+            active_uid = ""
+        if active_uid != uid:
             raise NativeDispatchError(
                 "NATIVE_DOCUMENT_CHANGED",
                 "The exact Native document is no longer active.",

@@ -57,6 +57,19 @@ Therefore:
 - Stage 4 has a concrete merged implementation and tests, but must still be checked against the original project-file acceptance criteria.
 - Stages 3 and 5-10 remain the main roadmap body unless later evidence proves otherwise.
 
+### Current Step 7 checkpoint: installed FEM document lifecycle
+
+The current daily checkpoint adds a deliberately narrow Step 7 stabilization repair for the installed FEM execution route:
+
+- a running FEM job may publish after the exact source document is saved, closed, and reopened only when the active live document retains the captured `Document.Uid`;
+- publication still uses the original Native mutation ticket and global structural revision checks;
+- closed sources, switched documents, same-name replacement documents with a different UID, changed solver state, changed `History`, and changed runtime publication preferences all fail closed as stale;
+- the live solver target and result importer are rebound only after those currentness checks pass;
+- the behavior is covered in the Native route, the human GUI route, unit/integration tests, and an installed Windows command-line host;
+- the installed proof uses deterministic synthetic solver result fields to exercise lifecycle and publication behavior. It does **not** claim physical solver/backend correctness or qualification.
+
+This checkpoint does not close Step 7, Step 8, or Step 8A. Installed POSIX evidence, physical solver/backend execution, durable restart/orphan recovery, fresh publication authorization, replay-idempotent durable receipts, and the remaining lifecycle/leak burn-in are still required.
+
 ## What remains, in practical execution order
 
 ### A. Acceptance audit of already-landed foundation

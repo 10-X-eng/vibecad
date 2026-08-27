@@ -1311,6 +1311,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_analyze_solver_control_gui_integration.py
     vibecad_tests/native_analyze_solver_execution_gui_integration.py
     vibecad_tests/analysis_fem_installed_publication_integration.py
+    vibecad_tests/analysis_fem_installed_lifecycle_integration.py
     vibecad_tests/test_analysis_fem_execution_route.py
     vibecad_tests/test_analysis_fem_lifecycle_burnin.py
     vibecad_tests/native_analyze_openfoam_gui_integration.py

@@ -21,6 +21,8 @@ from VibeCADNativeSessionFactory import (
     NativeSessionExecution,
     create_native_session_execution,
 )
+from VibeCADNativeDispatch import NativeDispatchError
+from VibeCADNativeRuntimeContext import NativeRuntimeContextError
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeSurface import NativeSurfaceSnapshot
 from VibeCADNativeTurn import NativeTurnSnapshot
@@ -149,6 +151,48 @@ def test_session_factory_binds_only_the_exact_frozen_common_surface(monkeypatch)
     assert next_execution.undo_ledger is execution.undo_ledger
     assert next_execution.run_id != execution.run_id
     next_execution.close()
+
+
+def test_session_reauthorization_allows_uid_stable_reopen_but_context_stays_exact(
+    monkeypatch,
+) -> None:
+    turn, schemas, frozen = _common_turn()
+    monkeypatch.setattr(
+        factory_module,
+        "freeze_native_turn",
+        lambda *_args, **_kwargs: turn,
+    )
+    monkeypatch.setattr(
+        factory_module,
+        "require_frozen_native_turn",
+        lambda expected, *_args: expected,
+    )
+    contexts = []
+
+    def bindings(context, names):
+        contexts.append(context)
+        return {name: object() for name in names}
+
+    monkeypatch.setattr(factory_module, "build_native_runtime_bindings", bindings)
+    service = _Service()
+    execution = create_native_session_execution(
+        service=service,
+        expected_surface=frozen,
+        expected_schemas=schemas,
+        registry=build_native_capability_registry(),
+    )
+    context = contexts[0]
+    service.document = SimpleNamespace(Uid="document-a", Name="DocumentA")
+
+    assert context.reauthorize_turn() is turn
+    with pytest.raises(NativeRuntimeContextError, match="exact Native document"):
+        context.guard()
+
+    service.document = SimpleNamespace(Uid="document-b", Name="DocumentA")
+    with pytest.raises(NativeDispatchError) as raised:
+        context.reauthorize_turn()
+    assert raised.value.code == "NATIVE_DOCUMENT_CHANGED"
+    execution.close()
 
 
 def test_session_factory_uses_captured_analyze_schema_without_rereading_lifecycle(

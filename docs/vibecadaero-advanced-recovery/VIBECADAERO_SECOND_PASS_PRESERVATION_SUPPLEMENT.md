@@ -606,6 +606,10 @@ CalculiX first, then Elmer/Mystran/Z88 according to live support/coverage. Prove
 
 Run and merge the host runtime with FEM before Aero depends on it. Resolve lifecycle/threading defects without concurrently debugging CFD.
 
+Current checkpoint status: the installed FEM route now has an explicit, bounded exact-source reopen repair. A saved/closed/reopened document may resume publication only when the active live document has the captured `Document.Uid` and the captured solver state, `History` identity, keep-results setting, and runtime publication preferences are unchanged. The captured solver/result-importer references are then rebound to the live objects, but publication still passes through the original Native mutation ticket and global structural revision checks. Closed sources, switched documents, same-name replacements with a different UID, and every tested state drift reject as stale. The same behavior is exercised through the Native route, the human GUI route, and an installed Windows command-line integration gate.
+
+The installed lifecycle gate uses deterministic synthetic result fields and therefore proves lifecycle/currentness/publication behavior only. It does not prove physical solver/backend correctness, POSIX installation behavior, durable restart/orphan recovery, fresh publication authorization, replay-idempotent durable receipts, or complete leak/orphan burn-in. Step 7 remains partial, and Steps 8 and 8A remain separate required work.
+
 ### Step 8 — add durable host metadata/artifact persistence
 
 Versioned transactional local persistence and restart/orphan/reconnect semantics. Keep large artifacts outside FCStd. Do not change physics or concurrency here.
@@ -690,7 +694,9 @@ Prove direct argv execution without shell, environment/cwd preservation, bounded
 
 ### Gate 4 — document lifecycle tests
 
-Same exact document publishes; switched/closed/reopened same-name or changed source does not; stale output remains attributable history.
+Same exact live source publishes; switched, closed, same-name replacement, different-UID reopen, or changed source does not. Any separately approved exact-UID reopen path must revalidate all captured currentness inputs before publication, and stale output remains attributable history.
+
+Current checkpoint evidence covers exact-UID reopen plus refusal for a closed source, a switched document, a same-name/different-UID replacement, solver-state drift, `History` drift, and runtime-preference drift on installed Windows. Physical solver execution and installed POSIX coverage remain open, so Gate 4 is not yet closed.
 
 ### Gate 5 — FEM A/B parity
 

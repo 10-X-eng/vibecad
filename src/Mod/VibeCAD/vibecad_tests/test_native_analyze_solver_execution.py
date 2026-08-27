@@ -584,6 +584,237 @@ def test_solver_capture_validation_rejects_runtime_preference_changes(
         execution.validate_captured_solver_execution(document, captured)
 
 
+def _reopened_history_item(name: str, object_id: int, type_id: str):
+    return SimpleNamespace(Name=name, ID=object_id, TypeId=type_id)
+
+
+def test_solver_capture_rebinds_only_the_exact_reopened_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADNativeAnalyzeSolverExecution as execution
+
+    original_solver = _reopened_history_item("Solver", 19, "Fem::FemSolverObjectPython")
+    original_history = (
+        _reopened_history_item("Constraint", 17, "Fem::ConstraintFixed"),
+        original_solver,
+    )
+    reopened_document = SimpleNamespace(Uid="document-a")
+    reopened_solver = _reopened_history_item("Solver", 19, "Fem::FemSolverObjectPython")
+    reopened_solver.Document = reopened_document
+    reopened_history = (
+        _reopened_history_item("Constraint", 17, "Fem::ConstraintFixed"),
+        reopened_solver,
+    )
+    preferences = (
+        (
+            "User parameter:BaseApp/Preferences/Mod/Fem/General",
+            "KeepResultsOnReRun",
+            "bool",
+            False,
+        ),
+        ("preferences", "threads", "int", 6),
+    )
+    captured = execution.CapturedSolverExecutionRequest(
+        SimpleNamespace(
+            solver=original_solver,
+            kind="calculix",
+            expected_state_sha256="c" * 64,
+        ),
+        original_history,
+        3600,
+        False,
+        preferences,
+    )
+
+    def prepare(document, uid, target):
+        assert document is reopened_document
+        assert uid == "document-a"
+        assert target == {
+            "object_name": "Solver",
+            "expected_state_sha256": "c" * 64,
+        }
+        return SimpleNamespace(
+            solver=reopened_solver,
+            kind="calculix",
+            expected_state_sha256="c" * 64,
+        )
+
+    monkeypatch.setattr(execution, "prepare_solver_target", prepare)
+    monkeypatch.setattr(
+        execution,
+        "_require_history_root",
+        lambda document, solver: reopened_history,
+    )
+    monkeypatch.setattr(
+        execution,
+        "_current_solver_runtime_preferences",
+        lambda _kind: preferences,
+    )
+
+    rebound = execution.rebind_captured_solver_execution(
+        reopened_document,
+        "document-a",
+        captured,
+    )
+
+    assert rebound is not captured
+    assert rebound.target.solver is reopened_solver
+    assert rebound.history_operations == reopened_history
+    assert rebound.timeout_seconds == captured.timeout_seconds
+    assert rebound.runtime_preferences == captured.runtime_preferences
+
+
+@pytest.mark.parametrize(
+    ("current_uid", "history_id", "preferences_changed", "message"),
+    [
+        ("document-b", 17, False, "exact source document"),
+        ("document-a", 99, False, "History changed"),
+        ("document-a", 17, True, "runtime preferences changed"),
+    ],
+)
+def test_solver_capture_rebind_refuses_replacement_history_or_preference_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    current_uid: str,
+    history_id: int,
+    preferences_changed: bool,
+    message: str,
+) -> None:
+    import VibeCADNativeAnalyzeSolverExecution as execution
+
+    original_solver = _reopened_history_item("Solver", 19, "Fem::FemSolverObjectPython")
+    original_history = (
+        _reopened_history_item("Constraint", 17, "Fem::ConstraintFixed"),
+        original_solver,
+    )
+    preferences = (
+        (
+            "User parameter:BaseApp/Preferences/Mod/Fem/General",
+            "KeepResultsOnReRun",
+            "bool",
+            False,
+        ),
+    )
+    captured = execution.CapturedSolverExecutionRequest(
+        SimpleNamespace(
+            solver=original_solver,
+            kind="calculix",
+            expected_state_sha256="c" * 64,
+        ),
+        original_history,
+        3600,
+        False,
+        preferences,
+    )
+    document = SimpleNamespace(Uid=current_uid)
+    solver = _reopened_history_item("Solver", 19, "Fem::FemSolverObjectPython")
+    solver.Document = document
+    monkeypatch.setattr(
+        execution,
+        "prepare_solver_target",
+        lambda *_args: SimpleNamespace(
+            solver=solver,
+            kind="calculix",
+            expected_state_sha256="c" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        execution,
+        "_require_history_root",
+        lambda *_args: (
+            _reopened_history_item("Constraint", history_id, "Fem::ConstraintFixed"),
+            solver,
+        ),
+    )
+    monkeypatch.setattr(
+        execution,
+        "_current_solver_runtime_preferences",
+        lambda _kind: (
+            preferences
+            if not preferences_changed
+            else preferences + (("preferences", "threads", "int", 8),)
+        ),
+    )
+
+    with pytest.raises(NativeAnalyzeError, match=message) as raised:
+        execution.rebind_captured_solver_execution(
+            document,
+            "document-a",
+            captured,
+        )
+
+    assert raised.value.error_code == "NATIVE_ANALYZE_STATE_STALE"
+
+
+def test_prepared_solver_execution_rebinds_live_import_targets_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import VibeCADNativeAnalyzeSolverExecution as execution
+
+    original_solver = _reopened_history_item("Solver", 19, "Fem::FemSolverObjectPython")
+    original_history = (original_solver,)
+    document = SimpleNamespace(Uid="document-a")
+    reopened_solver = _reopened_history_item("Solver", 19, "Fem::FemSolverObjectPython")
+    reopened_solver.Document = document
+    preferences = (
+        (
+            "User parameter:BaseApp/Preferences/Mod/Fem/General",
+            "KeepResultsOnReRun",
+            "bool",
+            False,
+        ),
+    )
+    request = execution.SolverExecutionRequest(
+        SimpleNamespace(
+            solver=original_solver,
+            kind="calculix",
+            expected_state_sha256="c" * 64,
+        ),
+        "pipeline",
+        original_history,
+        str(tmp_path),
+        (),
+        {},
+        60,
+        "d" * 64,
+        1,
+        False,
+        {"input_deck": "model"},
+        preferences,
+    )
+    prepared = execution.PreparedSolverExecution(request, ({"stage": 1},))
+    monkeypatch.setattr(
+        execution,
+        "prepare_solver_target",
+        lambda *_args: SimpleNamespace(
+            solver=reopened_solver,
+            kind="calculix",
+            expected_state_sha256="c" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        execution,
+        "_require_history_root",
+        lambda *_args: (reopened_solver,),
+    )
+    monkeypatch.setattr(
+        execution,
+        "_current_solver_runtime_preferences",
+        lambda _kind: preferences,
+    )
+
+    rebound = execution.rebind_prepared_solver_execution(
+        document,
+        "document-a",
+        prepared,
+    )
+
+    assert rebound.request.target.solver is reopened_solver
+    assert rebound.request.history_operations == (reopened_solver,)
+    assert rebound.request.working_directory == str(tmp_path)
+    assert rebound.stages == prepared.stages
+
+
 def test_solver_runtime_preferences_are_scoped_to_selected_backend(
     monkeypatch,
 ) -> None:
@@ -728,6 +959,81 @@ def test_human_solver_progress_is_mirrored_to_the_status_bar(
     assert status_updates == [
         "CalculiX: Running CalculiX stage 1/1 (65s elapsed)"
     ]
+
+
+def test_human_solver_rebinds_exact_active_reopened_source_before_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    solver_gui,
+) -> None:
+    original = SimpleNamespace(Uid="document-a", Name="FemLifecycle")
+    reopened = SimpleNamespace(Uid="document-a", Name="FemLifecycle")
+    active = [original]
+    captured = SimpleNamespace(target=SimpleNamespace(kind="calculix"))
+    rebound_captured = SimpleNamespace(target=SimpleNamespace(kind="calculix"))
+    prepared = object()
+    rebound_prepared = object()
+    submission = {}
+
+    class Manager:
+        def submit(self, **kwargs):
+            submission.update(kwargs)
+            return SimpleNamespace(job_id="human-reopen-job")
+
+    runner = object.__new__(solver_gui._SolverRunUi)
+    runner.document = original
+    runner.captured = captured
+    runner.workspace = SimpleNamespace(cleanup=lambda: None)
+    runner.manager = Manager()
+    runner.backend = "CalculiX"
+    runner.job_id = ""
+    runner.dialog = SimpleNamespace(show=lambda: None)
+    runner.timer = SimpleNamespace(start=lambda: None)
+    monkeypatch.setattr(
+        solver_gui,
+        "_document_is_live",
+        lambda document: document is active[0],
+    )
+    monkeypatch.setattr(solver_gui.App, "ActiveDocument", original, raising=False)
+    monkeypatch.setattr(
+        solver_gui,
+        "rebind_captured_solver_execution",
+        lambda document, uid, value: (
+            rebound_captured
+            if document is reopened and uid == "document-a" and value is captured
+            else pytest.fail("unexpected human captured-request rebind")
+        ),
+    )
+    validated = []
+    monkeypatch.setattr(
+        solver_gui,
+        "validate_captured_solver_execution",
+        lambda document, value: validated.append((document, value)),
+    )
+    monkeypatch.setattr(
+        solver_gui,
+        "rebind_prepared_solver_execution",
+        lambda document, uid, value: (
+            rebound_prepared
+            if document is reopened and uid == "document-a" and value is prepared
+            else pytest.fail("unexpected human prepared-result rebind")
+        ),
+    )
+    committed = []
+    monkeypatch.setattr(
+        solver_gui,
+        "_commit_human_result",
+        lambda document, value: committed.append((document, value)) or {},
+    )
+
+    assert runner.start() == "human-reopen-job"
+    active[0] = reopened
+    solver_gui.App.ActiveDocument = reopened
+    submission["validate_before_commit"]()
+    submission["commit"](prepared)
+
+    assert submission["document_uid"] == "document-a"
+    assert validated == [(reopened, rebound_captured)]
+    assert committed == [(reopened, rebound_prepared)]
 
 
 def test_ai_solver_progress_is_mirrored_to_the_status_bar(

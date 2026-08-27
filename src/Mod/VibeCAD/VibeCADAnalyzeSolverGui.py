@@ -15,6 +15,8 @@ from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeSolverExecution import (
     capture_solver_execution_request,
     commit_solver_execution,
+    rebind_captured_solver_execution,
+    rebind_prepared_solver_execution,
     validate_captured_solver_execution,
     verify_solver_execution,
 )
@@ -45,8 +47,18 @@ _BACKEND_LABELS = {
 def _document_is_live(document: Any) -> bool:
     try:
         return App.getDocument(str(document.Name)) is document
-    except (NameError, ReferenceError, RuntimeError):
+    except (AttributeError, NameError, ReferenceError, RuntimeError):
         return False
+
+
+def _exact_active_reopened_document(source_document_uid: str) -> Any | None:
+    document = getattr(App, "ActiveDocument", None)
+    if not _document_is_live(document):
+        return None
+    try:
+        return document if str(document.Uid) == str(source_document_uid) else None
+    except (AttributeError, NameError, ReferenceError, RuntimeError):
+        return None
 
 
 def _commit_human_result(document: Any, prepared: Any) -> Mapping[str, Any]:
@@ -114,6 +126,8 @@ class _SolverRunUi:
         document = self.document
         captured = self.captured
         workspace = self.workspace
+        source_document_uid = str(document.Uid)
+        rebound_for_commit = False
 
         def prepare(cancelled: Any, progress: Any) -> Any:
             progress(3, "Capturing exact FEM document")
@@ -133,19 +147,41 @@ class _SolverRunUi:
             )
 
         def validate() -> None:
+            nonlocal document, captured, rebound_for_commit
             if not _document_is_live(document):
-                raise NativeAnalyzeError(
-                    "The FEM document closed while the solver was running.",
-                    error_code="NATIVE_ANALYZE_DOCUMENT_UNAVAILABLE",
+                reopened = _exact_active_reopened_document(source_document_uid)
+                if reopened is None:
+                    raise NativeAnalyzeError(
+                        "The FEM document closed while the solver was running.",
+                        error_code="NATIVE_ANALYZE_DOCUMENT_UNAVAILABLE",
+                    )
+                captured = rebind_captured_solver_execution(
+                    reopened,
+                    source_document_uid,
+                    captured,
                 )
+                document = reopened
+                rebound_for_commit = True
+            else:
+                rebound_for_commit = False
             validate_captured_solver_execution(document, captured)
 
+        def commit(prepared: Any) -> Mapping[str, Any]:
+            active_prepared = prepared
+            if rebound_for_commit:
+                active_prepared = rebind_prepared_solver_execution(
+                    document,
+                    source_document_uid,
+                    prepared,
+                )
+            return _commit_human_result(document, active_prepared)
+
         snapshot = self.manager.submit(
-            document_uid=str(document.Uid),
+            document_uid=source_document_uid,
             capability_name="analyze.solver_execution.run",
             prepare=prepare,
             validate_before_commit=validate,
-            commit=lambda prepared: _commit_human_result(document, prepared),
+            commit=commit,
             dispatch_to_document_thread=VibeCADGui._dispatch_to_document_thread,
             finalize_message=f"Importing verified {self.backend} results",
             cleanup=lambda _prepared: workspace.cleanup(),
