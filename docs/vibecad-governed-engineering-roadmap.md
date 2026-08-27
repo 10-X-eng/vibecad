@@ -237,6 +237,21 @@ The Engineering Experience pivot was incorporated after PR #100 reached a
 checked boundary; it does not retroactively alter the historical audit or claim
 that the north-star UI exists.
 
+Fork PRs #101 through #105 preserve the Engineering Experience source pivot,
+add the common projection facade, project durable Analysis/workflow/optimization
+records, bind the first Manufacture post-evidence seam to exact G2/G5 records,
+and project bounded Assembly simulation evidence without creating a second
+Assembly graph. These are partial foundations at X0-X8, not completion of the
+corresponding G milestones.
+
+The compatibility-repair tranche immediately after #105 preserves the public
+`manufacture.post` operation discriminator even when provider availability
+narrows to one of its variants, and removes raw workbench/edit activation from
+Native domain modules. Authorized GUI transitions retain their existing
+document-thread and post-state checks but are performed by one installed host
+surface authority owner. This closes those two discovered regressions only; it
+does not complete G7, G8, or the repository-wide acceptance gates.
+
 ## 6. Dependency graph
 
 ```mermaid

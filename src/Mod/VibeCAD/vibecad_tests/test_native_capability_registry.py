@@ -178,6 +178,24 @@ def test_single_purpose_provider_tool_does_not_repeat_its_operation_name() -> No
     assert parameters["required"] == ["target"]
 
 
+def test_public_multi_variant_contract_can_preserve_singleton_discriminator() -> None:
+    definition = NativeCapabilityDefinition(
+        name="model.focused",
+        description="Perform one focused operation.",
+        primary_classification="mutation",
+        preserve_operation_discriminator=True,
+        variants=(
+            _variant("first", "Focused_First", transaction_behavior="document"),
+            _variant("second", "Focused_Second", transaction_behavior="document"),
+        ),
+    )
+
+    parameters = definition.provider_schema(("first",))["parameters"]["oneOf"][0]
+
+    assert parameters["required"] == ["operation"]
+    assert parameters["properties"]["operation"]["const"] == "first"
+
+
 def test_operation_projection_accepts_an_exact_singleton_provider_schema() -> None:
     definition = NativeCapabilityDefinition(
         name="model.focused",

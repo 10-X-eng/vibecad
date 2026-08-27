@@ -713,6 +713,7 @@ class NativeCapabilityDefinition:
     primary_classification: str
     variants: tuple[NativeCapabilityVariant, ...]
     preserve_operation_branches: bool = False
+    preserve_operation_discriminator: bool = False
 
     def __post_init__(self) -> None:
         if not _CAPABILITY_NAME.fullmatch(self.name):
@@ -735,6 +736,10 @@ class NativeCapabilityDefinition:
             raise NativeCapabilityRegistryError(
                 f"Capability {self.name!r} has invalid branch-preservation state."
             )
+        if type(self.preserve_operation_discriminator) is not bool:
+            raise NativeCapabilityRegistryError(
+                f"Capability {self.name!r} has invalid discriminator-preservation state."
+            )
         operations = [variant.operation for variant in self.variants]
         if len(operations) != len(set(operations)):
             raise NativeCapabilityRegistryError(
@@ -754,7 +759,9 @@ class NativeCapabilityDefinition:
         ordered = tuple(dict.fromkeys(required_operations))
         branches = tuple(
             variants[operation].provider_parameters(
-                require_operation=len(ordered) != 1,
+                require_operation=(
+                    len(ordered) != 1 or self.preserve_operation_discriminator
+                ),
             )
             for operation in ordered
         )

@@ -450,7 +450,10 @@ class NativeAssemblyStructureRuntime:
 
         def activate() -> None:
             import FreeCADGui as Gui
-            from PySide import QtCore, QtWidgets
+            from VibeCADHostSurfaceAuthority import (
+                drain_authorized_gui_events,
+                enter_authorized_edit_mode,
+            )
 
             gui_document = Gui.getDocument(str(self._context.document.Name))
             if (
@@ -461,7 +464,9 @@ class NativeAssemblyStructureRuntime:
                     "The created root Assembly document is no longer active."
                 )
             active = read_active_assembly(self._context.document)
-            if active is None and not bool(gui_document.setEdit(str(assembly.Name))):
+            if active is None and not enter_authorized_edit_mode(
+                gui_document, str(assembly.Name)
+            ):
                 raise NativeAssemblyStructureError(
                     "The created root Assembly could not be activated."
                 )
@@ -469,12 +474,7 @@ class NativeAssemblyStructureRuntime:
                 raise NativeAssemblyStructureError(
                     "Another Assembly became active after root creation."
                 )
-            for _index in range(8):
-                Gui.updateGui()
-                QtWidgets.QApplication.processEvents(
-                    QtCore.QEventLoop.AllEvents,
-                    25,
-                )
+            drain_authorized_gui_events()
 
         if dispatch is None:
             from PySide import QtCore, QtWidgets

@@ -71,6 +71,14 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
   joint, sequence and service proposal collections are deliberately empty.
   Stable persisted interface/occurrence identity, flexible/closed-loop/contact
   evidence, Qt overlays and save/reopen/currentness acceptance remain.
+- **Compatibility boundary after X8 foundation:** the multi-variant
+  `manufacture.post` wire contract retains its explicit `operation`
+  discriminator for singleton provider projections, while single-purpose
+  capabilities remain compact. Native workspace, Sketch edit and root Assembly
+  activation now route through the installed host-surface authority owner;
+  Native domain modules retain authorization, document-thread dispatch and
+  exact post-state verification rather than directly invoking raw GUI surface
+  methods.
 
 ## First PR-sized implementation sequence
 
