@@ -148,7 +148,9 @@ public:
     App::PropertyBool UseTargetFacetCount;
     App::PropertyInteger TargetFacetCount;
     App::PropertyFloat Tolerance;
-    App::PropertyFloatConstraint Reduction;
+    App::PropertyPercent Reduction;
+    App::PropertyFloatConstraint PreciseReduction;
+    App::PropertyBool UsePreciseReduction;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;

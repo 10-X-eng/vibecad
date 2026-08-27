@@ -563,7 +563,7 @@ def _settings_postcondition(
                 or (
                     math.isclose(float(result.Tolerance), settings["tolerance_mm"], rel_tol=1e-6)
                     and math.isclose(
-                        float(result.Reduction),
+                        float(result.PreciseReduction),
                         settings["reduction_percent"],
                         rel_tol=1e-6,
                     )

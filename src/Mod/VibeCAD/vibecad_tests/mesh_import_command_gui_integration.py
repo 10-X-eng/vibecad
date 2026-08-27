@@ -49,6 +49,25 @@ def _large_grid(columns: int = 400, rows: int = 400):
     return Mesh.Mesh(facets)
 
 
+def _wait_for_stable_file(path: Path, *, timeout: float = 10.0) -> None:
+    """Wait until a freshly exported Windows fixture has finished publishing metadata."""
+
+    deadline = time.monotonic() + timeout
+    previous = None
+    stable_since = 0.0
+    while time.monotonic() < deadline:
+        value = path.stat()
+        identity = (value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        now = time.monotonic()
+        if identity != previous:
+            previous = identity
+            stable_since = now
+        elif now - stable_since >= 0.25:
+            return
+        time.sleep(0.025)
+    raise AssertionError(f"Mesh fixture did not stabilize: {path.name}")
+
+
 def _accept_files(paths: tuple[Path, ...]) -> None:
     attempts = {"remaining": 2000}
 
@@ -107,6 +126,7 @@ def _run() -> None:
 
         large_path = root / "cancel-large.stl"
         _large_grid().write(str(large_path))
+        _wait_for_stable_file(large_path)
         _accept_files((large_path,))
         started_at = time.monotonic()
         Gui.runCommand("Mesh_Import", 0)
@@ -123,6 +143,8 @@ def _run() -> None:
         second_path = root / "second.stl"
         _tetrahedron().write(str(first_path))
         _tetrahedron(20.0).write(str(second_path))
+        _wait_for_stable_file(first_path)
+        _wait_for_stable_file(second_path)
         undo_before = int(document.UndoCount)
         _accept_files((first_path, second_path))
         Gui.runCommand("Mesh_Import", 0)

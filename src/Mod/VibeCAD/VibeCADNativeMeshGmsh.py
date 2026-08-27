@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Mapping
@@ -27,6 +28,7 @@ from VibeCADNativeMeshTargets import (
 )
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity
+from VibeCADScriptedProcess import terminate_process_tree
 
 
 _ALGORITHMS = {
@@ -155,14 +157,7 @@ def _project_text(request: GmshRemeshRequest, input_path: Path) -> str:
 
 
 def _stop_process(process: subprocess.Popen[Any]) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=2.0)
+    terminate_process_tree(process)
 
 
 def run_gmsh_remesh(
@@ -224,6 +219,11 @@ def run_gmsh_remesh(
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     shell=False,
+                    creationflags=(
+                        int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        if sys.platform == "win32"
+                        else 0
+                    ),
                 )
                 last_progress = 20
                 while process.poll() is None:

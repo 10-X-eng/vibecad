@@ -16,6 +16,7 @@ import tempfile
 from typing import Any, Mapping
 
 from VibeCADIsolatedMeshWorker import freecadcmd_path, run_isolated_mesh_worker
+from VibeCADMeshCacheAtomic import atomic_cache_temporary_path
 from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADNativeMeshErrors import NativeMeshError
 from VibeCADNativeMeshState import mesh_geometry_sha256
@@ -299,8 +300,8 @@ def _publish(
     entries = []
     temporary_paths = []
     try:
-        for kind, source, artifact, output in zip(
-            request.output_kinds, sources, artifacts, outputs, strict=True
+        for index, (kind, source, artifact, output) in enumerate(
+            zip(request.output_kinds, sources, artifacts, outputs, strict=True)
         ):
             if not isinstance(output, Mapping):
                 raise NativeMeshError(
@@ -319,8 +320,8 @@ def _publish(
                     "An isolated Mesh cut artifact failed authentication.",
                     error_code="NATIVE_MESH_CUT_ARTIFACT_INVALID",
                 )
-            temporary = artifact.with_name(
-                f".{artifact.name}.{os.getpid()}.{token}.tmp"
+            temporary = atomic_cache_temporary_path(
+                artifact.parent, role=f"cut-{index}", token=token
             )
             temporary_paths.append(temporary)
             with source.open("rb") as input_stream, temporary.open("wb") as output_stream:
@@ -330,8 +331,8 @@ def _publish(
             os.replace(temporary, artifact)
             entries.append(dict(output))
         metadata = {"schema": CACHE_SCHEMA, "cache_key": key, "outputs": entries}
-        temporary_metadata = metadata_path.with_name(
-            f".{metadata_path.name}.{os.getpid()}.{token}.tmp"
+        temporary_metadata = atomic_cache_temporary_path(
+            metadata_path.parent, role="metadata", token=token
         )
         temporary_paths.append(temporary_metadata)
         with temporary_metadata.open("w", encoding="utf-8") as stream:

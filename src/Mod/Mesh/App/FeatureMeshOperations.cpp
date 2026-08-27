@@ -928,13 +928,28 @@ Decimation::Decimation()
         App::Prop_None,
         "Percentage of source facets to remove"
     );
-    Reduction.setConstraints(&reductionConstraints);
+    ADD_PROPERTY_TYPE(
+        PreciseReduction,
+        (50.0F),
+        "Internal",
+        App::Prop_Hidden,
+        "Precise percentage used by retained background decimation"
+    );
+    ADD_PROPERTY_TYPE(
+        UsePreciseReduction,
+        (false),
+        "Internal",
+        App::Prop_Hidden,
+        "Use PreciseReduction while preserving the legacy Reduction property"
+    );
+    PreciseReduction.setConstraints(&reductionConstraints);
 }
 
 short Decimation::mustExecute() const
 {
     if (UseTargetFacetCount.isTouched() || TargetFacetCount.isTouched() || Tolerance.isTouched()
-        || Reduction.isTouched()) {
+        || Reduction.isTouched() || PreciseReduction.isTouched()
+        || UsePreciseReduction.isTouched()) {
         return 1;
     }
     return FixDefects::mustExecute();
@@ -965,7 +980,10 @@ App::DocumentObjectExecReturn* Decimation::execute()
             mesh.decimate(target);
         }
         else {
-            const float reduction = static_cast<float>(Reduction.getValue() / 100.0);
+            const double reductionPercent = UsePreciseReduction.getValue()
+                ? PreciseReduction.getValue()
+                : static_cast<double>(Reduction.getValue());
+            const float reduction = static_cast<float>(reductionPercent / 100.0);
             if (!(reduction > 0.0F && reduction < 1.0F)) {
                 return new App::DocumentObjectExecReturn(
                     "Reduction must be greater than zero and less than 100 percent"

@@ -15,6 +15,7 @@ import tempfile
 from typing import Any, Mapping
 
 from VibeCADIsolatedMeshWorker import freecadcmd_path, run_isolated_mesh_worker
+from VibeCADMeshCacheAtomic import atomic_cache_temporary_path
 from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADNativeMeshErrors import NativeMeshError
 
@@ -273,10 +274,14 @@ def _publish(
     directory.mkdir(parents=True, exist_ok=True)
     artifact, segments_path = _artifact_paths(directory, digest, segment_digest)
     token = secrets.token_hex(8)
-    artifact_temp = artifact.with_name(f".{artifact.name}.{os.getpid()}.{token}.tmp")
-    segments_temp = segments_path.with_name(f".{segments_path.name}.{os.getpid()}.{token}.tmp")
-    metadata_temp = metadata_path.with_name(
-        f".{metadata_path.name}.{os.getpid()}.{token}.tmp"
+    artifact_temp = atomic_cache_temporary_path(
+        directory, role="mesh-artifact", token=token
+    )
+    segments_temp = atomic_cache_temporary_path(
+        directory, role="segments", token=token
+    )
+    metadata_temp = atomic_cache_temporary_path(
+        directory, role="metadata", token=token
     )
     metadata = {
         "schema": CACHE_SCHEMA,

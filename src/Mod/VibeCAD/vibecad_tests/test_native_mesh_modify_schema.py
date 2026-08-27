@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     provider_visible_native_schema,
@@ -17,6 +19,9 @@ from VibeCADNativeMeshModifySchema import (
     register_mesh_modify_capability_definition,
 )
 from VibeCADNativeMeshModifyRuntime import _focused_modify_arguments
+
+
+SOURCE_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _branch(registry: NativeCapabilityRegistry, name: str) -> dict:
@@ -151,3 +156,35 @@ def test_focused_fields_lower_to_the_shared_retained_operations() -> None:
         "targets": [target],
         "maximum_boundary_edges": 12,
     }
+
+
+def test_precise_decimation_preserves_the_legacy_document_property() -> None:
+    header = (
+        SOURCE_ROOT / "Mod" / "Mesh" / "App" / "FeatureMeshOperations.h"
+    ).read_text(encoding="utf-8")
+    source = (
+        SOURCE_ROOT / "Mod" / "Mesh" / "App" / "FeatureMeshOperations.cpp"
+    ).read_text(encoding="utf-8")
+    operation = (
+        SOURCE_ROOT / "Mod" / "VibeCAD" / "VibeCADMeshModificationOperation.py"
+    ).read_text(encoding="utf-8")
+    native_modify = (
+        SOURCE_ROOT / "Mod" / "VibeCAD" / "VibeCADNativeMeshModify.py"
+    ).read_text(encoding="utf-8")
+
+    decimation_header = header.split("class MeshExport Decimation", 1)[1].split(
+        "class MeshExport Scale", 1
+    )[0]
+    assert "App::PropertyPercent Reduction;" in decimation_header
+    assert "App::PropertyFloatConstraint PreciseReduction;" in decimation_header
+    assert "App::PropertyBool UsePreciseReduction;" in decimation_header
+
+    decimation_source = source.split("Decimation::Decimation()", 1)[1].split(
+        "PROPERTY_SOURCE(Mesh::Scale", 1
+    )[0]
+    assert "UsePreciseReduction.getValue()" in decimation_source
+    assert "PreciseReduction.getValue()" in decimation_source
+
+    assert "result.PreciseReduction = value" in operation
+    assert "result.UsePreciseReduction = True" in operation
+    assert "float(result.PreciseReduction)" in native_modify

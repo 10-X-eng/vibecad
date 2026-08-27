@@ -15,6 +15,7 @@ import tempfile
 from typing import Any, Mapping
 
 from VibeCADIsolatedMeshWorker import freecadcmd_path, run_isolated_mesh_worker
+from VibeCADMeshCacheAtomic import atomic_cache_temporary_path
 from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADNativeMeshErrors import NativeMeshError
 from VibeCADNativeMeshSegments import (
@@ -360,11 +361,11 @@ def _publish(
     analysis_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_directory.mkdir(parents=True, exist_ok=True)
     token = secrets.token_hex(8)
-    analysis_temp = analysis_path.with_name(
-        f".{analysis_path.name}.{os.getpid()}.{token}.tmp"
+    analysis_temp = atomic_cache_temporary_path(
+        analysis_path.parent, role="analysis", token=token
     )
-    metadata_temp = metadata_path.with_name(
-        f".{metadata_path.name}.{os.getpid()}.{token}.tmp"
+    metadata_temp = atomic_cache_temporary_path(
+        metadata_path.parent, role="metadata", token=token
     )
     metadata = {
         "schema": CACHE_SCHEMA,
@@ -382,10 +383,12 @@ def _publish(
             files_to_copy = [(artifact_source, str(item["name"]))]
             if segments_source is not None:
                 files_to_copy.append((segments_source, str(item["segments_name"])))
-            for source_path, name in files_to_copy:
+            for file_index, (source_path, name) in enumerate(files_to_copy):
                 artifact = artifact_directory / name
-                artifact_temp = artifact.with_name(
-                    f".{artifact.name}.{os.getpid()}.{token}.tmp"
+                artifact_temp = atomic_cache_temporary_path(
+                    artifact.parent,
+                    role=f"artifact-{file_index}",
+                    token=token,
                 )
                 try:
                     with source_path.open("rb") as input_stream, artifact_temp.open(

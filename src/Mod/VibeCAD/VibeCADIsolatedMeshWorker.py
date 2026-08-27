@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import time
@@ -15,6 +14,7 @@ from typing import Any
 
 from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADNativeMeshErrors import NativeMeshError
+from VibeCADScriptedProcess import terminate_process_tree
 
 
 MAX_RESULT_BYTES = 1024 * 1024
@@ -42,22 +42,7 @@ def freecadcmd_path() -> Path:
 
 
 def _stop(process: subprocess.Popen[Any]) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        if sys.platform == "win32":
-            process.terminate()
-        else:
-            os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=2.0)
-    except Exception:
-        try:
-            if sys.platform == "win32":
-                process.kill()
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
-        except Exception:
-            pass
+    terminate_process_tree(process)
 
 
 def _log_tail(path: Path) -> str:

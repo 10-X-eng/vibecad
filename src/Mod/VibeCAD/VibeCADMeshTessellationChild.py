@@ -211,6 +211,11 @@ def _tessellate(shape: Any, raw: Any, *, source_path: Path, root: Path) -> Any:
                     stderr=subprocess.STDOUT,
                     timeout=timeout,
                     check=False,
+                    creationflags=(
+                        int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        if sys.platform == "win32"
+                        else 0
+                    ),
                 )
         except subprocess.TimeoutExpired as exc:
             raise TessellationFailure(

@@ -15,6 +15,7 @@ import tempfile
 from typing import Any, Mapping
 
 from VibeCADIsolatedMeshWorker import freecadcmd_path, run_isolated_mesh_worker
+from VibeCADMeshCacheAtomic import atomic_cache_temporary_path
 from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADNativeMeshErrors import NativeMeshError
 from VibeCADNativeMeshState import mesh_geometry_sha256
@@ -229,11 +230,13 @@ def _publish(
     entries = []
     temporary_artifacts = []
     try:
-        for source, segment_source, artifact, segment_artifact in zip(
-            sources,
-            segment_sources,
-            artifacts,
-            segment_artifacts,
+        for index, (source, segment_source, artifact, segment_artifact) in enumerate(
+            zip(
+                sources,
+                segment_sources,
+                artifacts,
+                segment_artifacts,
+            )
         ):
             size = source.stat().st_size
             if not 1 <= size <= MAX_ARTIFACT_BYTES:
@@ -246,8 +249,8 @@ def _publish(
                     "An isolated Mesh segment artifact is empty or exceeds 16 GiB.",
                     error_code="NATIVE_MESH_MODIFICATION_ARTIFACT_INVALID",
                 )
-            temporary = artifact.with_name(
-                f".{artifact.name}.{os.getpid()}.{token}.tmp"
+            temporary = atomic_cache_temporary_path(
+                artifact.parent, role=f"mesh-{index}", token=token
             )
             temporary_artifacts.append(temporary)
             with source.open("rb") as source_stream, temporary.open("wb") as target_stream:
@@ -255,8 +258,8 @@ def _publish(
                 target_stream.flush()
                 os.fsync(target_stream.fileno())
             os.replace(temporary, artifact)
-            segment_temporary = segment_artifact.with_name(
-                f".{segment_artifact.name}.{os.getpid()}.{token}.tmp"
+            segment_temporary = atomic_cache_temporary_path(
+                segment_artifact.parent, role=f"segments-{index}", token=token
             )
             temporary_artifacts.append(segment_temporary)
             with segment_source.open("rb") as source_stream, segment_temporary.open(
@@ -295,8 +298,8 @@ def _publish(
                 error_code="NATIVE_MESH_MODIFICATION_ARTIFACT_INVALID",
             ) from exc
         metadata = {"schema": CACHE_SCHEMA, "cache_key": key, "outputs": entries}
-        metadata_temp = metadata_path.with_name(
-            f".{metadata_path.name}.{os.getpid()}.{token}.tmp"
+        metadata_temp = atomic_cache_temporary_path(
+            metadata_path.parent, role="metadata", token=token
         )
         try:
             with metadata_temp.open("w", encoding="utf-8") as stream:

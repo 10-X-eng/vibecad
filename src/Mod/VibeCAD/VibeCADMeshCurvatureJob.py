@@ -17,6 +17,7 @@ import tempfile
 from typing import Any, Mapping
 
 from VibeCADIsolatedMeshWorker import freecadcmd_path, run_isolated_mesh_worker
+from VibeCADMeshCacheAtomic import atomic_cache_temporary_path
 from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADNativeMeshErrors import NativeMeshError
 
@@ -170,11 +171,13 @@ def _publish(
     temporary_paths = []
     entries = []
     try:
-        for target, source, artifact, worker_entry in zip(
-            request.prepared.targets,
-            sources,
-            artifacts,
-            output_metadata,
+        for index, (target, source, artifact, worker_entry) in enumerate(
+            zip(
+                request.prepared.targets,
+                sources,
+                artifacts,
+                output_metadata,
+            )
         ):
             if not isinstance(worker_entry, Mapping):
                 raise NativeMeshError(
@@ -194,8 +197,8 @@ def _publish(
                     "An isolated curvature artifact failed authentication.",
                     error_code="NATIVE_MESH_CURVATURE_ARTIFACT_INVALID",
                 )
-            temporary = artifact.with_name(
-                f".{artifact.name}.{os.getpid()}.{token}.tmp"
+            temporary = atomic_cache_temporary_path(
+                artifact.parent, role=f"curvature-{index}", token=token
             )
             temporary_paths.append(temporary)
             with source.open("rb") as input_stream, temporary.open("wb") as output_stream:
@@ -211,8 +214,8 @@ def _publish(
             "cache_key": key,
             "outputs": entries,
         }
-        temporary_metadata = metadata_path.with_name(
-            f".{metadata_path.name}.{os.getpid()}.{token}.tmp"
+        temporary_metadata = atomic_cache_temporary_path(
+            metadata_path.parent, role="metadata", token=token
         )
         temporary_paths.append(temporary_metadata)
         with temporary_metadata.open("w", encoding="utf-8") as stream:

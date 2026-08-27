@@ -88,7 +88,10 @@ def configure_mesh_feature(
             result.TargetFacetCount = int(settings["target_facet_count"])
         else:
             result.Tolerance = float(settings["tolerance_mm"])
-            result.Reduction = float(settings["reduction_percent"])
+            value = float(settings["reduction_percent"])
+            result.Reduction = int(round(value))
+            result.PreciseReduction = value
+            result.UsePreciseReduction = True
     elif operation == "scale":
         result.Factor = float(settings["factor"])
     elif operation not in {"harmonize_normals", "flip_normals"}:
