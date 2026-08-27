@@ -184,7 +184,11 @@ workbench or authority layer. The implementation sequence is:
    their persisted definitions, asks the G6 owner for its ranking, and displays
    ranked/excluded candidates, variables, metrics, findings, constraint
    failures, workflow-attempt counts and selection/publication evidence without
-   ranking or accepting anything itself. Provenance branches, shared-mesh
+   ranking or accepting anything itself. Generic comparisons also expose the
+   exact recorded Analysis, post-pipeline and timeline owner branches plus
+   mesh-object identity where present. Current result owners do not expose a
+   topology digest or per-array content identities, so matching mesh names or
+   point/cell counts cannot authorize pointwise subtraction. Shared-mesh
    pointwise comparison, restart/staleness GUI acceptance and installed GUI
    acceptance remain.
 

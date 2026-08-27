@@ -109,6 +109,11 @@ def test_result_presentation_merges_vtk_and_flow_without_duplicate_semantics():
             "label": "Duct CFD",
             "result_kind": "pipeline",
             "state_sha256": "a" * 64,
+            "analysis_owners": ["Analysis"],
+            "post_pipeline_owners": ["Pipeline"],
+            "timeline_owner_chain": ["Pipeline", "Frame"],
+            "point_count": 100,
+            "cell_count": 80,
             "field_count": 2,
             "fields_truncated": False,
             "fields": [
@@ -135,6 +140,11 @@ def test_result_presentation_merges_vtk_and_flow_without_duplicate_semantics():
     }
     extension = presentation.extension.to_value()
     assert extension["source_state_sha256"] == "a" * 64
+    assert extension["analysis_owners"] == ["Analysis"]
+    assert extension["post_pipeline_owners"] == ["Pipeline"]
+    assert extension["timeline_owner_chain"] == ["Pipeline", "Frame"]
+    assert extension["point_count"] == 100
+    assert extension["cell_count"] == 80
     assert extension["large_arrays_copied"] is False
     assert extension["presentation_owner_unchanged"] is True
 

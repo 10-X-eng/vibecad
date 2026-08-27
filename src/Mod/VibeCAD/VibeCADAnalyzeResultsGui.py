@@ -779,6 +779,43 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         except Exception as exc:
             self.engineering_comparison_note.setText(str(exc))
             return
+        provenance = comparison["provenance"]
+        for key, label in (
+            ("analysis_owners", "Analysis Owners"),
+            ("post_pipeline_owners", "Post-pipeline Owners"),
+            ("timeline_owner_chain", "Timeline Owner Chain"),
+        ):
+            baseline_owners = provenance["baseline"][key]
+            candidate_owners = provenance["candidate"][key]
+            if baseline_owners or candidate_owners:
+                self.engineering_comparison_table.addTopLevelItem(
+                    QtWidgets.QTreeWidgetItem(
+                        (
+                            "Provenance",
+                            label,
+                            " → ".join(str(item) for item in baseline_owners) or "Unavailable",
+                            " → ".join(str(item) for item in candidate_owners) or "Unavailable",
+                            "Not Numeric",
+                            "—",
+                        )
+                    )
+                )
+        if (
+            provenance["baseline"]["mesh_object_name"]
+            or provenance["candidate"]["mesh_object_name"]
+        ):
+            self.engineering_comparison_table.addTopLevelItem(
+                QtWidgets.QTreeWidgetItem(
+                    (
+                        "Provenance",
+                        "Mesh Object",
+                        str(provenance["baseline"]["mesh_object_name"] or "Unavailable"),
+                        str(provenance["candidate"]["mesh_object_name"] or "Unavailable"),
+                        "Identity Only",
+                        "—",
+                    )
+                )
+            )
         for metric in comparison["metric_differences"]:
             self.engineering_comparison_table.addTopLevelItem(
                 QtWidgets.QTreeWidgetItem((
@@ -802,8 +839,9 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         count = comparison["comparison_count"]
         self.engineering_comparison_note.setText(
             f"{count} exact comparable quantity group{'s' if count != 1 else ''}. "
-            "Field differences are extrema-only; pointwise differences require "
-            "a shared mesh and array owner."
+            "Owner provenance is shown where recorded. Field differences are "
+            "extrema-only; pointwise differences require shared topology and "
+            "array content identities, which these owners do not currently expose."
         )
         for column in range(self.engineering_comparison_table.columnCount()):
             self.engineering_comparison_table.resizeColumnToContents(column)

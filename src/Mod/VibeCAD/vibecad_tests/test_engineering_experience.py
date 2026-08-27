@@ -151,7 +151,11 @@ def test_domain_comparison_requires_exact_identity_and_matching_semantics():
             "stress-a", "Stress", "stress.von_mises", "point", 1, "Pa",
             1.0, 8.0, "scalar", "turbo",
         ),),
-        CanonicalJson.from_value({"source_state_sha256": "a" * 64}),
+        CanonicalJson.from_value({
+            "source_state_sha256": "a" * 64,
+            "analysis_owners": ["AnalysisBaseline"],
+            "timeline_owner_chain": ["PipelineBaseline"],
+        }),
     )
     candidate = DomainPresentation(
         "Candidate",
@@ -160,7 +164,11 @@ def test_domain_comparison_requires_exact_identity_and_matching_semantics():
             "stress-b", "Stress", "stress.von_mises", "point", 1, "Pa",
             2.0, 11.0, "scalar", "turbo",
         ),),
-        CanonicalJson.from_value({"source_state_sha256": "b" * 64}),
+        CanonicalJson.from_value({
+            "source_state_sha256": "b" * 64,
+            "analysis_owners": ["AnalysisCandidate"],
+            "timeline_owner_chain": ["PipelineCandidate"],
+        }),
     )
 
     comparison = compare_domain_presentations(baseline, candidate)
@@ -169,6 +177,12 @@ def test_domain_comparison_requires_exact_identity_and_matching_semantics():
     assert comparison["field_extrema_differences"][0]["minimum_delta"] == 1.0
     assert comparison["field_extrema_differences"][0]["maximum_delta"] == 3.0
     assert comparison["pointwise_field_differences_available"] is False
+    assert comparison["provenance"]["baseline"]["analysis_owners"] == [
+        "AnalysisBaseline"
+    ]
+    assert comparison["provenance"]["candidate"]["timeline_owner_chain"] == [
+        "PipelineCandidate"
+    ]
     assert set(comparison["authority"].values()) == {False}
     unidentified = replace(
         candidate,

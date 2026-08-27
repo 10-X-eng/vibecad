@@ -1317,8 +1317,13 @@ installed GUI evidence remain.
    Analyze shell displays ranked and excluded candidates with variables,
    metrics, findings, constraint failures, workflow attempts and exact
    selection/publication evidence; it has no independent ranking, acceptance or
-   publication action. Provenance-branch, shared-mesh pointwise,
-   restart/staleness GUI and installed acceptance remain.
+   publication action. Result comparison provenance now carries the recorded
+   Analysis, post-pipeline and timeline
+   owner branches and mesh-object identity. The current result-state contract
+   has no topology digest or per-array content identities; mesh names and
+   point/cell counts are therefore explicitly insufficient for pointwise
+   subtraction. Shared-mesh pointwise comparison, restart/staleness GUI and
+   installed acceptance remain.
 6. **Continue G-track closure in dependency order:** complete G2/G5 acceptance,
    G7 stale/restart/installed behavior, and the current G8/G9 Assembly
    identity/interface/inference acceptance. Advance X3/X4 and X7-X12 only from

@@ -228,6 +228,12 @@ def presentation_from_result_state(
         {
             "source_result_kind": state.get("result_kind"),
             "source_state_sha256": state.get("state_sha256"),
+            "analysis_owners": state.get("analysis_owners") or [],
+            "post_pipeline_owners": state.get("post_pipeline_owners") or [],
+            "timeline_owner_chain": state.get("timeline_owner_chain") or [],
+            "mesh_object_name": state.get("mesh"),
+            "point_count": state.get("point_count"),
+            "cell_count": state.get("cell_count"),
             "reported_field_count": state.get("field_count", len(fields)),
             "fields_truncated": bool(state.get("fields_truncated", False)),
             "large_arrays_copied": False,
