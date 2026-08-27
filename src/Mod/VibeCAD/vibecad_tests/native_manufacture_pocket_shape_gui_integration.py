@@ -23,8 +23,8 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeManufactureOperationSchema import (
-    MANUFACTURE_OPERATION_CAPABILITY_NAME,
+from VibeCADNativeManufactureFocusedOperationSchema import (
+    MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES,
 )
 from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -34,6 +34,9 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CAPABILITY_NAME = MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES["pocket_shape"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -121,7 +124,7 @@ def _top_face_and_edge(model) -> tuple[str, str]:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_OPERATION_CAPABILITY_NAME)
+    definition = registry.definition(CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(("pocket_shape",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
@@ -139,7 +142,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_OPERATION_CAPABILITY_NAME,),
+            tool_names=(CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -157,7 +160,6 @@ def _arguments(model, job, face_name: str) -> dict:
     )
     model_target = _target(job_model)
     return {
-        "operation": "pocket_shape",
         "job": _target(state),
         "tool_controller": _target(controller),
         "geometry": [
@@ -239,7 +241,7 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            CAPABILITY_NAME,
             "pocket_shape",
             "ExactCamJobPocketGeometryAndController",
             True,
@@ -290,7 +292,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_OPERATION_CAPABILITY_NAME,
+                CAPABILITY_NAME,
                 json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-pocket-{call_index}",
             )

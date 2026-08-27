@@ -11,6 +11,10 @@ from VibeCADNativeManufactureJobSchema import manufacture_job_capability_definit
 from VibeCADNativeManufactureOperationSchema import (
     manufacture_operation_capability_definition,
 )
+from VibeCADNativeManufactureFocusedOperationSchema import (
+    manufacture_focused_operation_capability_definitions,
+)
+from VibeCADNativeCapabilityRegistry import provider_visible_native_schema
 from VibeCADNativeManufactureToolSchema import (
     manufacture_tool_catalog_capability_definition,
     manufacture_tool_capability_definition,
@@ -60,7 +64,8 @@ def test_catalog_and_setup_reads_default_to_the_first_bounded_page() -> None:
     setups = _branch(manufacture_inspect_capability_definition(), "list_setups")
     job = _branch(manufacture_inspect_capability_definition(), "read_job")
 
-    assert set(catalog["required"]) == {"expected_catalog_state_sha256"}
+    assert catalog["required"] == []
+    assert "expected_catalog_state_sha256" not in catalog["properties"]
     assert catalog["properties"]["offset"]["default"] == 0
     assert catalog["properties"]["page_size"]["default"] == 32
     assert setups["required"] == []
@@ -142,3 +147,32 @@ def test_common_milling_operations_inherit_setup_defaults() -> None:
         "geometry",
         "cut_side",
     }
+
+
+def test_common_milling_provider_tools_are_focused_single_operations() -> None:
+    definitions = {
+        definition.name: definition
+        for definition in manufacture_focused_operation_capability_definitions()
+    }
+    expected = {
+        "manufacture.face": {"job", "tool_controller"},
+        "manufacture.pocket": {"job", "tool_controller", "geometry"},
+        "manufacture.profile": {
+            "job",
+            "tool_controller",
+            "geometry",
+            "cut_side",
+        },
+        "manufacture.drill": {"job", "tool_controller", "geometry"},
+    }
+
+    assert set(definitions) == set(expected)
+    for name, fields in expected.items():
+        definition = definitions[name]
+        assert len(definition.variants) == 1
+        schema = provider_visible_native_schema(
+            definition.provider_schema((definition.variants[0].operation,))
+        )
+        branch = schema["parameters"]["oneOf"][0]
+        assert set(branch["properties"]) == fields
+        assert set(branch["required"]) == fields

@@ -133,6 +133,34 @@ def test_expensive_manufacture_workflows_require_background_execution() -> None:
     }
 
 
+def test_common_cam_operations_resolve_to_focused_provider_tools() -> None:
+    expected = {
+        "CAM_MillFacing": ("manufacture.face", "mill_facing"),
+        "CAM_Pocket_Shape": ("manufacture.pocket", "pocket_shape"),
+        "CAM_Profile": ("manufacture.profile", "profile"),
+        "CAM_Drilling": ("manufacture.drill", "drilling"),
+    }
+
+    plans = {
+        command_id: _plan(
+            "manufacture",
+            "Operations",
+            RibbonAction(
+                command_id=command_id,
+                label=command_id,
+                available=True,
+                kind="command",
+            ),
+        )
+        for command_id in expected
+    }
+
+    assert {
+        command_id: (plan.capability_family, plan.operation_variant)
+        for command_id, plan in plans.items()
+    } == expected
+
+
 def test_drawing_page_actions_resolve_to_four_exact_variants() -> None:
     expected = {
         "TechDraw_PageDefault": (

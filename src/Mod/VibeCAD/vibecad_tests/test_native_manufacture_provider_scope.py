@@ -22,6 +22,9 @@ from VibeCADNativeManufactureModifySchema import (
 from VibeCADNativeManufactureOperationSchema import (
     manufacture_operation_capability_definition,
 )
+from VibeCADNativeManufactureFocusedOperationSchema import (
+    manufacture_focused_operation_capability_definitions,
+)
 from VibeCADNativeManufactureProgramSchema import (
     manufacture_program_capability_definition,
 )
@@ -51,6 +54,10 @@ _AVAILABLE = (
     "manufacture.tool_catalog",
     "manufacture.tool",
     "manufacture.operation",
+    "manufacture.face",
+    "manufacture.pocket",
+    "manufacture.profile",
+    "manufacture.drill",
     "manufacture.program",
     "manufacture.modify",
     "manufacture.probe",
@@ -193,6 +200,10 @@ def test_selected_setup_exposes_only_lifecycle_supported_by_its_state() -> None:
     assert {
         "manufacture.tool",
         "manufacture.operation",
+        "manufacture.face",
+        "manufacture.pocket",
+        "manufacture.profile",
+        "manufacture.drill",
         "manufacture.program",
         "manufacture.probe",
         "manufacture.template",
@@ -345,6 +356,7 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
         manufacture_job_capability_definition(),
         manufacture_tool_capability_definition(),
         manufacture_operation_capability_definition(),
+        *manufacture_focused_operation_capability_definitions(),
         manufacture_program_capability_definition(),
         manufacture_modify_capability_definition(),
     )
@@ -393,6 +405,12 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
     }
 
     assert "manufacture.operation" in projected_with_tool.tool_names
+    assert {
+        "manufacture.face",
+        "manufacture.pocket",
+        "manufacture.profile",
+        "manufacture.drill",
+    } <= set(projected_with_tool.tool_names)
     with_tool_operations = {
         name: _schema_operations(schema)
         for name, schema in zip(

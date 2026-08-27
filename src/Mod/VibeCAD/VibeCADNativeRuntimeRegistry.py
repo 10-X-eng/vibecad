@@ -211,6 +211,9 @@ from VibeCADNativeManufacturePropertyBagRuntime import (
 from VibeCADNativeManufactureOperationBindings import (
     manufacture_operation_runtime_bindings,
 )
+from VibeCADNativeManufactureFocusedOperationBindings import (
+    manufacture_focused_operation_runtime_bindings,
+)
 from VibeCADNativeManufactureOperationRuntime import (
     NativeManufactureOperationRuntime,
 )
@@ -673,6 +676,7 @@ def build_native_runtime_bindings(
         **manufacture_probe_runtime_bindings(manufacture_probe),
         **manufacture_property_bag_runtime_bindings(manufacture_property_bag),
         **manufacture_operation_runtime_bindings(manufacture_operation),
+        **manufacture_focused_operation_runtime_bindings(manufacture_operation),
         **manufacture_camotics_runtime_bindings(manufacture_camotics),
         **manufacture_post_runtime_bindings(manufacture_post),
         **manufacture_template_runtime_bindings(manufacture_template),

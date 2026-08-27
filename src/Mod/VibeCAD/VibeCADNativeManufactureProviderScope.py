@@ -40,6 +40,14 @@ _SETUP_LIFECYCLE = frozenset(
         "manufacture.template",
     }
 )
+_COMMON_OPERATIONS = frozenset(
+    {
+        "manufacture.face",
+        "manufacture.pocket",
+        "manufacture.profile",
+        "manufacture.drill",
+    }
+)
 
 
 def _nonnegative_int(value: Any) -> int | None:
@@ -116,7 +124,9 @@ def manufacture_provider_tool_names(
         and int(setup["counts"]["tools"]) > 0
         for setup in setups
     ):
-        allowed.update({"manufacture.operation", "manufacture.probe"})
+        allowed.update(
+            _COMMON_OPERATIONS | {"manufacture.operation", "manufacture.probe"}
+        )
     if any(int(setup["counts"]["operations"]) > 0 for setup in setups):
         allowed.add("manufacture.modify")
     if any(_readiness_ready(setup, "simulation") for setup in setups):

@@ -478,6 +478,12 @@ from VibeCADNativeManufactureOperationBindings import (
 from VibeCADNativeManufactureOperationSchema import (
     register_manufacture_operation_capability_definition,
 )
+from VibeCADNativeManufactureFocusedOperationBindings import (
+    register_manufacture_focused_operation_capability_implementations,
+)
+from VibeCADNativeManufactureFocusedOperationSchema import (
+    register_manufacture_focused_operation_capability_definitions,
+)
 from VibeCADNativeManufactureCamoticsBindings import (
     register_manufacture_camotics_capability_implementation,
 )
@@ -941,6 +947,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_manufacture_property_bag_capability_implementation(registry)
     register_manufacture_operation_capability_definition(registry)
     register_manufacture_operation_capability_implementation(registry)
+    register_manufacture_focused_operation_capability_definitions(registry)
+    register_manufacture_focused_operation_capability_implementations(registry)
     register_manufacture_camotics_capability_definition(registry)
     register_manufacture_camotics_capability_implementation(registry)
     register_manufacture_post_capability_definition(registry)

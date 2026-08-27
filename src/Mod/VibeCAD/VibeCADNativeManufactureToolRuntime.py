@@ -36,9 +36,7 @@ from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
 
 _READ_VARIANTS = {
-    "list_tools": frozenset(
-        {"expected_catalog_state_sha256", "offset", "page_size"}
-    ),
+    "list_tools": frozenset({"offset", "page_size"}),
     "read_tool": frozenset({"catalog_tool"}),
 }
 _MUTATION_VARIANTS = {
@@ -72,6 +70,7 @@ class NativeManufactureToolCatalogRuntime:
         if not isinstance(context, NativeRuntimeContext):
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
+        self._catalog_state_sha256 = capture_tool_catalog().state_sha256
 
     def inspect(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         operation, values = strict_variant_arguments(
@@ -82,8 +81,7 @@ class NativeManufactureToolCatalogRuntime:
         self._context.guard()
         if operation == "list_tools":
             catalog = capture_tool_catalog()
-            expected = str(values["expected_catalog_state_sha256"] or "")
-            if catalog.state_sha256 != expected:
+            if catalog.state_sha256 != self._catalog_state_sha256:
                 raise NativeManufactureError(
                     "The CAM tool catalog changed after turn start.",
                     error_code="NATIVE_MANUFACTURE_TOOL_CATALOG_STALE",

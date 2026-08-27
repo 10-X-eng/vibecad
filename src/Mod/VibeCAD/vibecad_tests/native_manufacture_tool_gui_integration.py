@@ -309,26 +309,15 @@ def _run() -> None:
         catalog_snapshot = snapshot["tool_catalog"]
         revision_before_reads = state_store.current_revision(context.document_uid)
         undo_before_reads = int(document.UndoCount)
-        stale_page = call(
-            MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
-            {
-                "operation": "list_tools",
-                "expected_catalog_state_sha256": "0" * 64,
-                "offset": 0,
-                "page_size": 64,
-            },
-            succeeds=False,
-        )
-        assert stale_page["error_code"] == "NATIVE_MANUFACTURE_TOOL_CATALOG_STALE"
         listing = call(
             MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
             {
                 "operation": "list_tools",
-                "expected_catalog_state_sha256": catalog_snapshot["state_sha256"],
                 "offset": 0,
                 "page_size": 64,
             },
         )
+        assert listing["state_sha256"] == catalog_snapshot["state_sha256"]
         selected = next(
             (item for item in listing["items"] if item["shape_type"].lower() == "bullnose"),
             listing["items"][0],

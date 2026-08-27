@@ -167,7 +167,6 @@ def manufacture_tool_catalog_capability_definition() -> NativeCapabilityDefiniti
                 background_required=False,
                 parameters=_closed(
                     {
-                        "expected_catalog_state_sha256": _SHA256,
                         "offset": {
                             "type": "integer",
                             "minimum": 0,
@@ -181,7 +180,7 @@ def manufacture_tool_catalog_capability_definition() -> NativeCapabilityDefiniti
                             "default": 32,
                         },
                     },
-                    ("expected_catalog_state_sha256",),
+                    (),
                 ),
             ),
             NativeCapabilityVariant(
