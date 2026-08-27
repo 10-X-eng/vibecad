@@ -59,14 +59,18 @@ def test_windows_termination_targets_the_entire_worker_tree(monkeypatch) -> None
     assert calls[0][1]["shell"] is False
 
 
-def test_large_worker_output_cannot_fill_a_parent_pipe(tmp_path: Path) -> None:
+@pytest.mark.parametrize("attempt", range(4))
+def test_large_worker_output_cannot_fill_a_parent_pipe(
+    tmp_path: Path,
+    attempt: int,
+) -> None:
     command = [
         sys.executable,
         "-c",
         (
             "import sys;"
-            "sys.stdout.write('o' * 2_000_000 + 'STDOUT_END\\n');"
-            "sys.stderr.write('e' * 2_000_000 + 'STDERR_END\\n')"
+            f"sys.stdout.write('o' * 2_000_000 + 'STDOUT_END_{attempt}\\n');"
+            f"sys.stderr.write('e' * 2_000_000 + 'STDERR_END_{attempt}\\n')"
         ),
     ]
 
@@ -82,8 +86,8 @@ def test_large_worker_output_cannot_fill_a_parent_pipe(tmp_path: Path) -> None:
     assert result["started"] is True
     assert result["returncode"] == 0
     assert result["timed_out"] is False
-    assert result["stdout"].endswith(f"STDOUT_END{os.linesep}")
-    assert result["stderr"].endswith(f"STDERR_END{os.linesep}")
+    assert result["stdout"].endswith(f"STDOUT_END_{attempt}{os.linesep}")
+    assert result["stderr"].endswith(f"STDERR_END_{attempt}{os.linesep}")
     assert len(result["stdout"]) <= 16_000
     assert len(result["stderr"]) <= 16_000
     assert result["termination_reason"] == "process_exit"
