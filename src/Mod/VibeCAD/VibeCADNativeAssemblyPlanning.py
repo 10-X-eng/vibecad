@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from tool_impl.assembly_planning import (
     AssemblyPlanningError,
     accept_joint_proposal,
+    accept_coupling_proposal,
     normalize_scenario,
 )
 from VibeCADNativeAssemblyIdentity import (
@@ -18,6 +19,7 @@ from VibeCADNativeAssemblyIdentity import (
 from VibeCADNativeAssemblyJointBindings import (
     ASSEMBLY_JOINT_CAPABILITY_NAME,
     ASSEMBLY_RELATION_CAPABILITY_NAME,
+    ASSEMBLY_COUPLING_CAPABILITY_NAME,
 )
 from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
 from VibeCADNativeState import NativeCallTicket
@@ -180,4 +182,75 @@ def accept_joint_proposal_native(
         proposals,
         proposal_id,
         assembly_owner=_native_owner(runtime, ticket, scenario),
+    )
+
+
+def _native_coupling_owner(
+    runtime: NativeAssemblyJointRuntime,
+    ticket: NativeCallTicket,
+):
+    document = runtime._context.document
+    joints = _identity_objects(document, "joint")
+    occurrences = _identity_objects(document, "occurrence")
+
+    def reference(objects: Mapping[str, Any], persistent_id: str, noun: str):
+        obj = objects.get(persistent_id)
+        if obj is None:
+            raise AssemblyPlanningError(
+                f"The proposed {noun} identity {persistent_id!r} is absent from the live document."
+            )
+        return {"object_name": str(obj.Name)}
+
+    def owner(proposal: dict[str, Any]) -> Mapping[str, Any]:
+        kind = str(proposal.get("coupling_kind") or "")
+        joint_ids = list(proposal.get("joint_ids") or ())
+        component_ids = list(proposal.get("component_ids") or ())
+        if len(joint_ids) != 2 or len(component_ids) != 2:
+            raise AssemblyPlanningError("A planned coupling requires two joints and components.")
+        joint_refs = [reference(joints, value, "joint") for value in joint_ids]
+        component_refs = [
+            reference(occurrences, value, "occurrence") for value in component_ids
+        ]
+        arguments = {
+            "operation": kind,
+            **dict(proposal.get("parameters") or {}),
+            "label": f"VibeCAD {kind.replace('_', ' ').title()} Coupling",
+        }
+        if kind == "rack_pinion":
+            names = ("slider_joint", "rack_component", "revolute_joint", "pinion_component")
+        elif kind == "screw":
+            names = ("slider_joint", "slider_component", "revolute_joint", "revolute_component")
+        elif kind in {"belt", "gears"}:
+            names = ("first_joint", "first_component", "second_joint", "second_component")
+        else:
+            raise AssemblyPlanningError(f"Native coupling acceptance does not support {kind!r}.")
+        arguments.update(dict(zip(names, (joint_refs[0], component_refs[0], joint_refs[1], component_refs[1]))))
+        return runtime.mutate_joint(arguments, ticket=ticket)
+
+    return owner
+
+
+def accept_coupling_proposal_native(
+    scenario: Mapping[str, Any],
+    proposals: Mapping[str, Any],
+    proposal_id: str,
+    *,
+    runtime: NativeAssemblyJointRuntime,
+    ticket: NativeCallTicket,
+) -> dict[str, Any]:
+    """Revalidate and execute an existing-joint coupling through Native authority."""
+
+    if not isinstance(runtime, NativeAssemblyJointRuntime):
+        raise AssemblyPlanningError("A Native Assembly joint runtime is required.")
+    if not isinstance(ticket, NativeCallTicket):
+        raise AssemblyPlanningError("A Native Assembly call ticket is required.")
+    if ticket.capability_name != ASSEMBLY_COUPLING_CAPABILITY_NAME:
+        raise AssemblyPlanningError("The call ticket is not authorized for Assembly couplings.")
+    if ticket.document_uid != runtime._context.document_uid:
+        raise AssemblyPlanningError("The call ticket belongs to a different document.")
+    return accept_coupling_proposal(
+        scenario,
+        proposals,
+        proposal_id,
+        assembly_owner=_native_coupling_owner(runtime, ticket),
     )

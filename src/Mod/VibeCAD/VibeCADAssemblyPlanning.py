@@ -11,3 +11,11 @@ def accept_joint_proposal_native(*args, **kwargs):
     from VibeCADNativeAssemblyPlanning import accept_joint_proposal_native as accept
 
     return accept(*args, **kwargs)
+
+
+def accept_coupling_proposal_native(*args, **kwargs):
+    """Load the optional Native owner adapter only for live coupling acceptance."""
+
+    from VibeCADNativeAssemblyPlanning import accept_coupling_proposal_native as accept
+
+    return accept(*args, **kwargs)

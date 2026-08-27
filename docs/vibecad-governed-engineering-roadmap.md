@@ -312,7 +312,7 @@ behavior while it waits for host persistence/workflows.
 | G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
 | G7 — Manufacture runtime integration | J | **Partial runtime integration** | Post, CAMotics, live GL simulation and retained simulation now create exact durable G2 Analysis/G5 workflow records and bounded X7 evidence while preserving owner-specific claim ceilings; A/B, stale/restart and authoritative installed closure remain. |
 | G8 — Assembly consolidation | K, L, N | **Partial identity/interface/currentness/evidence foundation** | New Native-authored graph objects receive write-once persisted identities; component interfaces expose expanded semantic, fit, and versioned explicit relation-parameter contracts plus conservative LCS-support geometry bindings with current/stale/unbound/indeterminate evidence; and the existing simulation-state/solver projection remains. Legacy migration, real reopen/rename proof, stable graph revision, semantic-kind-specific geometry validation, topology-stable references beyond conservative whole-support invalidation, catalog fit evaluation, continuous motion, flexible/closed-loop/contact and Part Design gates remain. |
-| G9 — joint inference | M | **Partial live relation-decision foundation** | The installed mutation-free planning facade binds deterministic ranked proposals to the exact persisted-identity graph revision and reports ambiguous/no-candidate outcomes. Acceptance revalidates the proposal, resolves both live occurrence and interface identities, rechecks geometry currentness, and can delegate fixed/revolute/cylindrical/slider/ball creation or distance/parallel/perpendicular/angle relations exactly once through the appropriate ordinary Native Assembly runtime and receipt path. Distance and angle are proposed only from matching, versioned, explicit interface parameters; no numeric value is fabricated. Rejections can be recorded in a bounded, append-only, revision-bound Assembly document log through the ordinary Native transaction path; that log deliberately cannot claim acceptance without the joint mutation receipt. Bounded semantic-kind geometry extraction, coupling inference, provider/UI reachability and adversarial/installed runtime coverage remain. |
+| G9 — joint inference | M | **Partial live joint/relation/coupling-decision foundation** | The installed mutation-free planning facade binds deterministic ranked proposals to the exact persisted-identity graph revision and reports ambiguous/no-candidate outcomes. Acceptance revalidates proposals and can delegate fixed/revolute/cylindrical/slider/ball creation, distance/parallel/perpendicular/angle relations, or explicit-contract rack-pinion/screw/belt/gear couplings exactly once through the matching ordinary Native Assembly runtime and receipt path. Distance and angle require matching versioned interface values; couplings require compatible existing joint types, explicit moving-component identities, and complete positive parameters. No numeric value or moving component is fabricated. Rejections can be recorded in a bounded, append-only, revision-bound Assembly document log; that log deliberately cannot claim acceptance without the mutation receipt. Bounded semantic-kind geometry extraction, live coupling-evidence extraction, provider/UI reachability and broader adversarial/installed runtime coverage remain. |
 | G10 — assembly sequencing | O | **Partial contract foundation** | The installed bounded planner now validates exact graph currentness and precedence, deterministically enumerates explicit-evidence orders, and separates sampled, continuous, collision, inaccessible, unsupported and indeterminate verdicts; real insertion/access/fastener/fixture/contact extraction, native collision/continuous-motion evidence, durable records and runtime/GUI integration remain. |
 | G11 — service/disassembly | P | **Partial projection foundation; closure blocked by G10** | Current G10 alternatives can now be reversed for explicit targets under protected-component constraints, with a bounded-model-only ceiling and equal-optimum reporting; full removal constraints, fastener/tool/fixture/access and replacement policy, minimum-set search, failed reverse-step verification, durable evidence and runtime/GUI integration remain. |
 | G12 — Robot task projection | Q | **Partial foundation** | Versioned step-to-task contract, frames/units/tool/TCP/force/torque/tolerance, traceability, Robot-domain validation and downstream boundary. |
@@ -784,7 +784,7 @@ remain required before stable graph identity is claimed.
 
 ### G9 — propose-only joint inference
 
-**Status: Partial live relation-decision foundation.**
+**Status: Partial live joint/relation/coupling-decision foundation.**
 
 Joint inference reads G8 interfaces and geometry snapshots and returns ranked,
 bounded proposals. It never authors an accepted joint directly.
@@ -814,8 +814,20 @@ perpendicular, or angle relation creation to `NativeAssemblyJointRuntime`. The
 generic injected seam remains compatible. Distance and angle proposals require
 matching finite values from the versioned, explicitly published interface
 parameter contract; disagreement, absence, malformed data, and out-of-range
-values yield no candidate rather than invented intent. Coupling inference,
-provider/UI reachability for proposal rejection, real installed-host
+values yield no candidate rather than invented intent.
+
+The additive coupling planner operates over existing graph joints rather than
+misrepresenting couplings as two-interface joints. Rack-pinion and screw require
+an explicit Slider/Revolute pair; belt and gears require two explicit Revolute
+joints. Every proposal is bound to persistent joint and moving-occurrence
+identities and refuses missing, unknown, nonpositive, mismatched, or incomplete
+parameters. Acceptance recomputes the canonical proposal, resolves the exact
+live joint and occurrence identities, and invokes `assembly.coupling` once with
+its ordinary receipt. Extraction of these coupling declarations from the live
+Assembly graph remains work; the planner does not infer them from labels or
+geometry.
+
+Provider/UI reachability for proposal rejection, real installed-host
 acceptance, and broader adversarial fixtures remain runtime work.
 
 The document-owned rejection seam recomputes the exact proposal before writing,

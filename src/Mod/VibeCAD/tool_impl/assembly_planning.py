@@ -17,6 +17,8 @@ JOINT_PROPOSAL_SCHEMA = "vibecad-joint-proposals-v1"
 SEQUENCE_SCHEMA = "vibecad-assembly-sequence-v1"
 SERVICE_SCHEMA = "vibecad-service-plan-v1"
 JOINT_ACCEPTANCE_SCHEMA = "vibecad-joint-acceptance-v1"
+COUPLING_PROPOSAL_SCHEMA = "vibecad-coupling-proposals-v1"
+COUPLING_ACCEPTANCE_SCHEMA = "vibecad-coupling-acceptance-v1"
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}$")
 _VERDICTS = frozenset({
     "sampled-clear", "continuous-pass", "collision", "inaccessible",
@@ -250,6 +252,201 @@ def propose_joints(
         "mutation_performed": False,
         "candidates": bounded,
         "truncated": len(candidates) > len(bounded),
+    }
+
+
+def _positive_parameter(value: Any, field: str) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and 0.0 < number <= 1_000_000.0 else None
+
+
+def _coupling_candidate(
+    revision: str,
+    kind: str,
+    first: Mapping[str, Any],
+    second: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Build one explicit existing-joint coupling without geometric invention."""
+
+    joint_kinds = (str(first.get("joint_kind") or ""), str(second.get("joint_kind") or ""))
+    requirements = {
+        "rack_pinion": ("slider", "revolute"),
+        "screw": ("slider", "revolute"),
+        "belt": ("revolute", "revolute"),
+        "gears": ("revolute", "revolute"),
+    }
+    if joint_kinds != requirements[kind]:
+        return None
+    first_values = first.get("coupling_parameters")
+    second_values = second.get("coupling_parameters")
+    if not isinstance(first_values, Mapping) or not isinstance(second_values, Mapping):
+        return None
+    parameters: dict[str, float]
+    if kind == "screw":
+        left = _positive_parameter(first_values.get("lead_mm"), "lead_mm")
+        right = _positive_parameter(second_values.get("lead_mm"), "lead_mm")
+        if left is None or left != right:
+            return None
+        parameters = {"lead_mm": left}
+    elif kind == "rack_pinion":
+        radius = _positive_parameter(
+            second_values.get("pitch_radius_mm"), "pitch_radius_mm"
+        )
+        if radius is None:
+            return None
+        parameters = {"pinion_pitch_radius_mm": radius}
+    else:
+        first_radius = _positive_parameter(
+            first_values.get("pitch_radius_mm"), "pitch_radius_mm"
+        )
+        second_radius = _positive_parameter(
+            second_values.get("pitch_radius_mm"), "pitch_radius_mm"
+        )
+        if first_radius is None or second_radius is None:
+            return None
+        prefix = "pulley" if kind == "belt" else "pitch"
+        parameters = {
+            f"first_{prefix}_radius_mm": first_radius,
+            f"second_{prefix}_radius_mm": second_radius,
+        }
+    joint_ids = [str(first["persistent_id"]), str(second["persistent_id"])]
+    component_ids = [
+        str(first.get("moving_occurrence_id") or ""),
+        str(second.get("moving_occurrence_id") or ""),
+    ]
+    if any(_ID.fullmatch(value) is None for value in component_ids):
+        return None
+    return {
+        "proposal_id": _canonical_hash([revision, kind, joint_ids, component_ids, parameters])[:24],
+        "coupling_kind": kind,
+        "joint_ids": joint_ids,
+        "component_ids": component_ids,
+        "parameters": parameters,
+        "confidence": "explicit-contract",
+        "acceptance": "requires-currentness-check-and-assembly-coupling-owner",
+        "evidence": {
+            "existing_joint_types": list(joint_kinds),
+            "parameters_explicit": True,
+            "moving_components_explicit": True,
+        },
+    }
+
+
+def propose_couplings(
+    scenario: Mapping[str, Any],
+    *,
+    max_candidates: int = 32,
+) -> dict[str, Any]:
+    """Propose couplings between explicit existing motion joints, without mutation."""
+
+    normalized = normalize_scenario(scenario)
+    if (
+        isinstance(max_candidates, bool)
+        or not isinstance(max_candidates, int)
+        or not 1 <= max_candidates <= 512
+    ):
+        raise AssemblyPlanningError("max_candidates must be an integer from 1 through 512.")
+    candidates = []
+    joints = normalized["joints"]
+    occurrence_ids = {
+        item["persistent_id"] for item in normalized["occurrences"]
+    }
+    for left_index, raw_left in enumerate(joints):
+        for raw_right in joints[left_index + 1:]:
+            ordered_pairs = ((raw_left, raw_right), (raw_right, raw_left))
+            for kind in ("rack_pinion", "screw", "belt", "gears"):
+                if kind not in set(map(str, raw_left.get("allowed_couplings", ()))):
+                    continue
+                if kind not in set(map(str, raw_right.get("allowed_couplings", ()))):
+                    continue
+                candidate = None
+                for first, second in ordered_pairs:
+                    candidate = _coupling_candidate(
+                        normalized["graph_revision"], kind, first, second
+                    )
+                    if candidate is not None:
+                        break
+                if candidate is not None:
+                    if any(
+                        value not in occurrence_ids
+                        for value in candidate["component_ids"]
+                    ):
+                        continue
+                    candidates.append(candidate)
+    candidates.sort(
+        key=lambda item: (item["coupling_kind"], item["joint_ids"], item["proposal_id"])
+    )
+    bounded = candidates[:max_candidates]
+    return {
+        "schema": COUPLING_PROPOSAL_SCHEMA,
+        "scenario_id": normalized["scenario_id"],
+        "graph_revision": normalized["graph_revision"],
+        "status": "no-candidate" if not bounded else "proposed",
+        "mutation_performed": False,
+        "candidates": bounded,
+        "truncated": len(candidates) > len(bounded),
+    }
+
+
+def accept_coupling_proposal(
+    scenario: Mapping[str, Any],
+    proposals: Mapping[str, Any],
+    proposal_id: str,
+    *,
+    assembly_owner: Callable[[dict[str, Any]], Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Revalidate one existing-joint coupling and delegate exactly once."""
+
+    normalized = normalize_scenario(scenario)
+    selected_id = _identifier(proposal_id, "proposal_id")
+    if (
+        proposals.get("schema") != COUPLING_PROPOSAL_SCHEMA
+        or proposals.get("scenario_id") != normalized["scenario_id"]
+        or proposals.get("graph_revision") != normalized["graph_revision"]
+    ):
+        raise AssemblyPlanningError(
+            "Coupling proposal acceptance requires the current graph revision."
+        )
+    canonical = propose_couplings(normalized, max_candidates=512)
+    expected = {
+        item["proposal_id"]: item for item in canonical["candidates"]
+    }.get(selected_id)
+    supplied = {
+        str(item.get("proposal_id") or ""): item
+        for item in proposals.get("candidates", ())
+        if isinstance(item, Mapping)
+    }.get(selected_id)
+    if expected is None or supplied != expected:
+        raise AssemblyPlanningError(
+            "Selected coupling proposal is missing or has been altered."
+        )
+    if not callable(assembly_owner):
+        raise AssemblyPlanningError("An Assembly coupling mutation owner is required.")
+    owner_result = assembly_owner(dict(expected))
+    if not isinstance(owner_result, Mapping):
+        raise AssemblyPlanningError("Assembly coupling owner did not return a mutation result.")
+    receipt = owner_result.get("receipt")
+    if not isinstance(receipt, Mapping) or not receipt:
+        raise AssemblyPlanningError(
+            "Assembly coupling owner did not return an ordinary mutation receipt."
+        )
+    return {
+        "schema": COUPLING_ACCEPTANCE_SCHEMA,
+        "scenario_id": normalized["scenario_id"],
+        "source_graph_revision": normalized["graph_revision"],
+        "proposal_id": selected_id,
+        "coupling_kind": expected["coupling_kind"],
+        "joint_ids": list(expected["joint_ids"]),
+        "component_ids": list(expected["component_ids"]),
+        "mutation_owner": "native-assembly",
+        "receipt": dict(receipt),
+        "provenance": {
+            "source_proposal_schema": COUPLING_PROPOSAL_SCHEMA,
+            "source_proposal_id": selected_id,
+            "source_graph_revision": normalized["graph_revision"],
+        },
     }
 
 

@@ -10,6 +10,8 @@ from VibeCADAssemblyPlanning import (
     AssemblyPlanningError,
     SCENARIO_SCHEMA,
     accept_joint_proposal_native,
+    accept_coupling_proposal_native,
+    propose_couplings,
     propose_joints,
 )
 from VibeCADNativeAssemblyIdentity import (
@@ -21,6 +23,7 @@ from VibeCADNativeAssemblyIdentity import (
 from VibeCADNativeAssemblyJointBindings import (
     ASSEMBLY_JOINT_CAPABILITY_NAME,
     ASSEMBLY_RELATION_CAPABILITY_NAME,
+    ASSEMBLY_COUPLING_CAPABILITY_NAME,
 )
 from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
 from VibeCADNativeState import NativeCallTicket
@@ -237,3 +240,64 @@ def test_native_relation_acceptance_uses_relation_ticket_and_explicit_parameter(
     assert arguments["relation"] == "distance"
     assert arguments["distance_mm"] == 8.25
     assert "joint_type" not in arguments
+
+
+def test_native_coupling_acceptance_resolves_persisted_joint_and_component_ids(
+    monkeypatch,
+) -> None:
+    source = _scenario()
+    source["joints"] = [
+        {
+            "persistent_id": "55555555-5555-4555-8555-555555555555",
+            "interface_ids": [_INTERFACE_A, _INTERFACE_B],
+            "joint_kind": "revolute",
+            "moving_occurrence_id": _OCCURRENCE_A,
+            "allowed_couplings": ["gears"],
+            "coupling_parameters": {"pitch_radius_mm": 20.0},
+        },
+        {
+            "persistent_id": "66666666-6666-4666-8666-666666666666",
+            "interface_ids": [_INTERFACE_B, _INTERFACE_A],
+            "joint_kind": "revolute",
+            "moving_occurrence_id": _OCCURRENCE_B,
+            "allowed_couplings": ["gears"],
+            "coupling_parameters": {"pitch_radius_mm": 40.0},
+        },
+    ]
+    proposals = propose_couplings(source)
+    runtime, _ticket = _runtime()
+    runtime._context.document.Objects.extend([
+        _identity_object("FirstRevolute", source["joints"][0]["persistent_id"], "joint"),
+        _identity_object("SecondRevolute", source["joints"][1]["persistent_id"], "joint"),
+    ])
+    ticket = NativeCallTicket(
+        runtime._context.document_uid,
+        ASSEMBLY_COUPLING_CAPABILITY_NAME,
+        7,
+        "native-coupling-planning-ticket",
+    )
+    calls = []
+    monkeypatch.setattr(
+        NativeAssemblyJointRuntime,
+        "mutate_joint",
+        lambda self, arguments, *, ticket: calls.append((arguments, ticket)) or {
+            "receipt": {"capability": ASSEMBLY_COUPLING_CAPABILITY_NAME}
+        },
+    )
+
+    result = accept_coupling_proposal_native(
+        source,
+        proposals,
+        proposals["candidates"][0]["proposal_id"],
+        runtime=runtime,
+        ticket=ticket,
+    )
+
+    assert result["receipt"]["capability"] == ASSEMBLY_COUPLING_CAPABILITY_NAME
+    arguments, used_ticket = calls[0]
+    assert used_ticket is ticket
+    assert arguments["operation"] == "gears"
+    assert arguments["first_joint"] == {"object_name": "FirstRevolute"}
+    assert arguments["second_joint"] == {"object_name": "SecondRevolute"}
+    assert arguments["first_pitch_radius_mm"] == 20.0
+    assert arguments["second_pitch_radius_mm"] == 40.0

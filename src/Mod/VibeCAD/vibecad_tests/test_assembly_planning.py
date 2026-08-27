@@ -10,14 +10,18 @@ from VibeCADAssemblyPlanning import (
     AssemblyPlanningError,
     JOINT_ACCEPTANCE_SCHEMA,
     JOINT_PROPOSAL_SCHEMA,
+    COUPLING_PROPOSAL_SCHEMA,
+    COUPLING_ACCEPTANCE_SCHEMA,
     SCENARIO_SCHEMA,
     SEQUENCE_SCHEMA,
     SERVICE_SCHEMA,
     accept_joint_proposal,
+    accept_coupling_proposal,
     normalize_scenario,
     plan_sequence,
     plan_service,
     propose_joints,
+    propose_couplings,
 )
 
 
@@ -160,6 +164,94 @@ def test_unparameterized_relation_is_proposed_without_numeric_invention() -> Non
 
     assert candidate["joint_kind"] == "parallel"
     assert candidate["parameters"] == {}
+
+
+def _coupling_scenario(kind: str) -> dict:
+    source = scenario()
+    source["joints"] = [
+        {
+            "persistent_id": "joint.slider",
+            "interface_ids": ["if.base.hinge", "if.arm.hinge"],
+            "joint_kind": "slider" if kind in {"rack_pinion", "screw"} else "revolute",
+            "moving_occurrence_id": "occ.arm",
+            "allowed_couplings": [kind],
+            "coupling_parameters": (
+                {"lead_mm": 2.0} if kind == "screw" else {"pitch_radius_mm": 20.0}
+            ),
+        },
+        {
+            "persistent_id": "joint.revolute",
+            "interface_ids": ["if.base.hinge", "if.pin.axis"],
+            "joint_kind": "revolute",
+            "moving_occurrence_id": "occ.pin",
+            "allowed_couplings": [kind],
+            "coupling_parameters": (
+                {"lead_mm": 2.0} if kind == "screw" else {"pitch_radius_mm": 40.0}
+            ),
+        },
+    ]
+    return source
+
+
+@pytest.mark.parametrize("kind", ("rack_pinion", "screw", "belt", "gears"))
+def test_coupling_proposals_bind_existing_joints_components_and_parameters(kind) -> None:
+    result = propose_couplings(_coupling_scenario(kind))
+
+    assert result["schema"] == COUPLING_PROPOSAL_SCHEMA
+    assert result["mutation_performed"] is False
+    assert result["status"] == "proposed"
+    candidate = result["candidates"][0]
+    assert candidate["coupling_kind"] == kind
+    if kind in {"rack_pinion", "screw"}:
+        assert candidate["joint_ids"] == ["joint.slider", "joint.revolute"]
+        assert candidate["component_ids"] == ["occ.arm", "occ.pin"]
+    else:
+        assert set(candidate["joint_ids"]) == {"joint.slider", "joint.revolute"}
+        assert set(candidate["component_ids"]) == {"occ.arm", "occ.pin"}
+    assert candidate["parameters"]
+
+
+def test_coupling_proposals_refuse_missing_mismatched_or_invalid_evidence() -> None:
+    source = _coupling_scenario("screw")
+    source["joints"][1]["coupling_parameters"]["lead_mm"] = 3.0
+    assert propose_couplings(source)["status"] == "no-candidate"
+
+
+def test_coupling_acceptance_revalidates_and_requires_owner_receipt() -> None:
+    source = _coupling_scenario("gears")
+    proposals = propose_couplings(source)
+    calls = []
+
+    result = accept_coupling_proposal(
+        source,
+        proposals,
+        proposals["candidates"][0]["proposal_id"],
+        assembly_owner=lambda proposal: calls.append(proposal) or {
+            "receipt": {"revision_before": 4, "revision_after": 5}
+        },
+    )
+
+    assert result["schema"] == COUPLING_ACCEPTANCE_SCHEMA
+    assert result["receipt"]["revision_after"] == 5
+    assert len(calls) == 1
+    tampered = deepcopy(proposals)
+    tampered["candidates"][0]["parameters"]["first_pitch_radius_mm"] = 99.0
+    with pytest.raises(AssemblyPlanningError, match="altered"):
+        accept_coupling_proposal(
+            source,
+            tampered,
+            proposals["candidates"][0]["proposal_id"],
+            assembly_owner=lambda proposal: pytest.fail("tampered proposal reached owner"),
+        )
+    source = _coupling_scenario("gears")
+    source["joints"][0]["coupling_parameters"]["pitch_radius_mm"] = 0.0
+    assert propose_couplings(source)["status"] == "no-candidate"
+    source = _coupling_scenario("belt")
+    del source["joints"][1]["moving_occurrence_id"]
+    assert propose_couplings(source)["status"] == "no-candidate"
+    source = _coupling_scenario("gears")
+    source["joints"][1]["moving_occurrence_id"] = "occ.missing"
+    assert propose_couplings(source)["status"] == "no-candidate"
 
 
 def test_joint_proposals_reject_stale_geometry_but_preserve_unknown_ceiling() -> None:
