@@ -217,7 +217,7 @@ def test_manufacture_matrix_covers_preferences_runtime_options_and_robot() -> No
                 ("CAM_Simulator", "CAM_SimulatorGL")
                 if legacy
                 else ("CAM_SimulatorGL", "CAM_Simulator")
-            )
+            ) + ("CAM_RetainSimulationResult",)
             assert ("Area" in dict(variant.groups)) is experimental
             assert ("Robot" in dict(variant.groups)) is robot
             assert ("Export" in dict(variant.groups)) is robot

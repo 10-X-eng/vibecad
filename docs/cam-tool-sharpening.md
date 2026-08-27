@@ -303,6 +303,10 @@ comparison, not implementation instructions.
   prove both outcomes; result objects retain bounded collision evidence and name
   holder, fixture, rapid-clearance, machine-travel, and cycle-time checks as
   unavailable rather than passing them implicitly.
+- The Manufacture simulator menu exposes a human retained-result command backed
+  by the same preflight, background worker, commit, and verifier as Native mode.
+  With several Jobs it is inactive until selection identifies exactly one setup;
+  the compiled gate proves it does not fall back to a document-wide active Job.
 - On a two-operation bracket, Qwen selected retained-stock simulation, polled its
   background job, and created a follow-up setup with no failed calls. Terra/high
   independently retained the stock and created the follow-up setup with no failed

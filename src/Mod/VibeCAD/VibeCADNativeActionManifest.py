@@ -318,6 +318,7 @@ KNOWN_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "CAM_SimTools",
         "CAM_SimulatorGL",
         "CAM_Simulator",
+        "CAM_RetainSimulationResult",
         "CAM_Inspect",
         "CAM_SelectLoop",
         "CAM_OpActiveToggle",
@@ -826,6 +827,7 @@ _HUMAN_ONLY_COMMAND_IDS = frozenset(
     {
         "Assembly_ActivateAssembly",
         "VibeCAD_AnalyzeStudySetup",
+        "CAM_RetainSimulationResult",
         "FEM_Examples",
         "Sketcher_CancelSketch",
     }
@@ -956,6 +958,7 @@ _BACKGROUND_COMMAND_IDS = frozenset(
         "CAM_Camotics",
         "CAM_SimulatorGL",
         "CAM_Simulator",
+        "CAM_RetainSimulationResult",
         "CAM_DressupZCorrect",
         "CAM_Post",
         "CAM_PostSelected",
