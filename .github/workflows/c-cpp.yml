@@ -22,7 +22,7 @@ jobs:
     env:
       CC: /usr/bin/gcc
       CXX: /usr/bin/g++
-      PYTHONPATH: ${{ github.workspace }}/src/Mod/VibeCAD:${{ github.workspace }}/src/Mod/VibeCADAero
+      PYTHONPATH: ${{ github.workspace }}/src/Mod/VibeCAD:${{ github.workspace }}/src/Mod/VibeCADAero:${{ github.workspace }}/src/Mod/Fem
 
     steps:
       - name: Check out source
@@ -81,7 +81,12 @@ jobs:
             src/Mod/VibeCAD/vibecad_tests/test_z88_analysis_local_provider.py \
             src/Mod/VibeCAD/vibecad_tests/test_mystran_analysis_local_provider.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_architecture_boundaries.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_parity_oracle.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_error_mapping.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_process_tree.py \
+            src/Mod/VibeCAD/vibecad_tests/test_scripted_process.py \
+            src/Mod/VibeCAD/vibecad_tests/test_mesh_windows_process_contract.py \
+            src/Mod/VibeCAD/vibecad_tests/test_native_analyze_flow_result.py \
             src/Mod/VibeCAD/vibecad_tests/test_dev_launcher_contract.py \
             src/Mod/VibeCADAero/tests/test_detached_analysis.py \
             2>&1 | tee build/test-results/host-analysis-fem-pytest.log

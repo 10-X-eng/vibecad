@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import runpy
 import sys
@@ -27,6 +28,23 @@ from VibeCADNativeAnalyzeSolverExecutionSchema import (
 from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADNativeBackgroundSchema import native_background_capability_definition
 from VibeCADScriptedProcess import ExternalProcessError, run_process_sequence
+
+
+@pytest.fixture
+def solver_gui(monkeypatch: pytest.MonkeyPatch):
+    """Load the progress presenter without requiring a standalone Qt wheel."""
+
+    pyside = ModuleType("PySide")
+    pyside.QtCore = SimpleNamespace()
+    pyside.QtWidgets = SimpleNamespace()
+    monkeypatch.setitem(sys.modules, "PySide", pyside)
+    previous = sys.modules.pop("VibeCADAnalyzeSolverGui", None)
+    try:
+        yield importlib.import_module("VibeCADAnalyzeSolverGui")
+    finally:
+        sys.modules.pop("VibeCADAnalyzeSolverGui", None)
+        if previous is not None:
+            sys.modules["VibeCADAnalyzeSolverGui"] = previous
 
 
 def _program(path: Path, source: str) -> tuple[str, tuple[str, ...]]:
@@ -667,17 +685,9 @@ def test_human_and_ai_solver_entrypoints_do_not_call_synchronous_case_builder() 
         assert "execute_frozen_solver_execution" in source
 
 
-def test_human_solver_progress_is_mirrored_to_the_status_bar(monkeypatch) -> None:
-    import types
-
-    from PySide6 import QtCore, QtWidgets
-
-    pyside = types.ModuleType("PySide")
-    pyside.QtCore = QtCore
-    pyside.QtWidgets = QtWidgets
-    monkeypatch.setitem(sys.modules, "PySide", pyside)
-    import VibeCADAnalyzeSolverGui as solver_gui
-
+def test_human_solver_progress_is_mirrored_to_the_status_bar(
+    monkeypatch, solver_gui
+) -> None:
     dialog_updates: list[tuple[str, object]] = []
     status_updates: list[str] = []
     runner = object.__new__(solver_gui._SolverRunUi)
@@ -716,17 +726,9 @@ def test_human_solver_progress_is_mirrored_to_the_status_bar(monkeypatch) -> Non
     ]
 
 
-def test_ai_solver_progress_is_mirrored_to_the_status_bar(monkeypatch) -> None:
-    import types
-
-    from PySide6 import QtCore, QtWidgets
-
-    pyside = types.ModuleType("PySide")
-    pyside.QtCore = QtCore
-    pyside.QtWidgets = QtWidgets
-    monkeypatch.setitem(sys.modules, "PySide", pyside)
-    import VibeCADAnalyzeSolverGui as solver_gui
-
+def test_ai_solver_progress_is_mirrored_to_the_status_bar(
+    monkeypatch, solver_gui
+) -> None:
     status_updates: list[str] = []
     watcher = object.__new__(solver_gui._SolverJobStatusUi)
     watcher.job_id = "ai-solver-job"

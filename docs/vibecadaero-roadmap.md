@@ -198,7 +198,7 @@ Remote execution may be prototyped against inert test fixtures, but it may not b
 | 0 — live reconciliation | **Verified complete for this baseline** | Repeat on a newer `main` before implementation and record drift. |
 | 1 — characterization | **Partial** | Complete normalized lifecycle and FEM legacy/host A/B oracles across Windows/POSIX. |
 | 2 — host contracts/facades | **Verified complete for the domain-neutral packaging/compatibility foundation** | Persistence, remote providers, and domain qualification remain later milestones and are not implied by this closure. |
-| 3 — local process mechanics | **Partial** | Prove complete descendant-process ownership and cleanup on Windows and POSIX. |
+| 3 — local process mechanics | **Verified complete for the shared process primitive** | Keep the Windows/POSIX parity, timeout, cancellation, cleanup, output-bound, and redaction matrix required as later providers change; repeated lifecycle and leak burn-in remains Step 7. |
 | 4 — input/artifact sealing | **Partial** | Add quota enforcement, complete evidence-reference integrity, and prove installed/cross-platform integration around the implemented immutable manifests, storage, archive defenses, and cleanup. |
 | 5 — host orchestration | **Verified complete for the in-memory compatibility slice** | Persistence/recovery remain explicitly outside this step. |
 | 6 — current FEM migration | **Verified complete for CalculiX, Elmer, Z88, and Mystran** | Close the full A/B parity and rollback gates. |
@@ -268,17 +268,19 @@ Guardrails:
 
 ### Step 3 — extract local process mechanics
 
-**Status: Partial.**
+**Status: Verified complete for the shared process primitive.**
 
 The shared direct-argv, shell-free local process sequence is integrated and the current FEM solvers use `LocalProcessProvider`. Timeout, cancellation, bounded output, cwd/environment preservation, and error mapping have executable coverage.
 
-Remaining exit criteria:
+Closure evidence:
 
-- reproduce and test descendant-spawning workloads on Windows and POSIX;
-- ensure timeout/cancel owns and terminates the entire process tree, including wrappers, MPI ranks, and helpers;
-- prove no orphan survives cleanup;
-- prove redaction before any future durable log persistence;
-- keep any process-tree fix isolated from scheduler, persistence, and solver changes.
+- `test_analysis_process_tree.py` launches a real child-spawning workload and proves both timeout and cancellation reap the descendant before returning;
+- `vibecad-analysis-fem-stabilization.yml` runs that real workload and the FEM parity/process matrix on Windows and POSIX for every pull request and `main` update;
+- `test_scripted_process.py`, `test_mesh_windows_process_contract.py`, and the solver/provider suites preserve direct argv, no-shell execution, exact cwd/environment, bounded output, timeout/cancel error mapping, and cleanup behavior;
+- environment values are redacted before process failure details leave the shared primitive, while durable log persistence remains outside this primitive;
+- this closure changes no scheduler, persistence, solver adapter, publication, or CAD mutation semantics.
+
+Step 7 still owns repeated timeout/cancel/close/switch/reopen/output-bound stress, leak detection, rollback burn-in, and the complete parity/known-difference report.
 
 ### Step 4 — extract input and artifact sealing
 

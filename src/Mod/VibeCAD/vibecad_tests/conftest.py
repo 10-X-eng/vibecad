@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Test bootstrap: stub the FreeCAD runtime and put the module dir on sys.path.
+"""Test bootstrap: stub FreeCAD and expose its VibeCAD and FEM module roots.
 
 The guardrail tests validate tool contracts and pack wiring, none of which
 require a running FreeCAD. Tool modules defer their FreeCAD imports into
@@ -15,6 +15,7 @@ import sys
 import types
 
 VIBECAD_DIR = Path(__file__).resolve().parent.parent
+FEM_DIR = VIBECAD_DIR.parent / "Fem"
 
 
 def _install_freecad_stubs() -> None:
@@ -27,5 +28,6 @@ def _install_freecad_stubs() -> None:
 
 _install_freecad_stubs()
 
-if str(VIBECAD_DIR) not in sys.path:
-    sys.path.insert(0, str(VIBECAD_DIR))
+for module_directory in (VIBECAD_DIR, FEM_DIR):
+    if str(module_directory) not in sys.path:
+        sys.path.insert(0, str(module_directory))
