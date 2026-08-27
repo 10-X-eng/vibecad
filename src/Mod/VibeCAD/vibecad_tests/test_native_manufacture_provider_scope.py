@@ -31,6 +31,9 @@ from VibeCADNativeManufactureProgramSchema import (
 from VibeCADNativeManufactureToolSchema import (
     manufacture_tool_capability_definition,
 )
+from VibeCADNativeManufactureFocusedToolSchema import (
+    manufacture_focused_tool_capability_definitions,
+)
 from VibeCADNativeManufactureProviderScope import (
     manufacture_provider_tool_names,
     scope_manufacture_provider_surface,
@@ -53,6 +56,9 @@ _AVAILABLE = (
     "manufacture.inspect",
     "manufacture.tool_catalog",
     "manufacture.tool",
+    "manufacture.add_tool",
+    "manufacture.set_controller",
+    "manufacture.update_tool",
     "manufacture.operation",
     "manufacture.face",
     "manufacture.pocket",
@@ -208,6 +214,11 @@ def test_selected_setup_exposes_only_lifecycle_supported_by_its_state() -> None:
         "manufacture.probe",
         "manufacture.template",
     } <= names
+    assert {
+        "manufacture.add_tool",
+        "manufacture.set_controller",
+        "manufacture.update_tool",
+    } <= names
     assert "manufacture.modify" not in names
     assert "manufacture.simulation" not in names
     assert "manufacture.simulation_result" not in names
@@ -355,6 +366,7 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
     definitions = (
         manufacture_job_capability_definition(),
         manufacture_tool_capability_definition(),
+        *manufacture_focused_tool_capability_definitions(),
         manufacture_operation_capability_definition(),
         *manufacture_focused_operation_capability_definitions(),
         manufacture_program_capability_definition(),
@@ -384,6 +396,7 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
     assert set(projected_no_tool.tool_names) == {
         "manufacture.job",
         "manufacture.tool",
+        "manufacture.add_tool",
         "manufacture.program",
     }
     no_tool_operations = {
@@ -410,6 +423,9 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
         "manufacture.pocket",
         "manufacture.profile",
         "manufacture.drill",
+        "manufacture.add_tool",
+        "manufacture.set_controller",
+        "manufacture.update_tool",
     } <= set(projected_with_tool.tool_names)
     with_tool_operations = {
         name: _schema_operations(schema)

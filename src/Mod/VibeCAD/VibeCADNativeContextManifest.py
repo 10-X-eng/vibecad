@@ -1100,13 +1100,13 @@ NATIVE_CONTEXT_ACTIONS = (
     ),
     _action(
         "VibeCAD_ManufactureUpdateController", ("manufacture",), ("task_panel",),
-        "mutation", "manufacture.tool", "update_controller",
+        "mutation", "manufacture.set_controller", "update_controller",
         "ExactCamToolControllerState", "document",
         source_command_id="CAM_ToolBitDock",
     ),
     _action(
         "VibeCAD_ManufactureUpdateToolBit", ("manufacture",), ("task_panel",),
-        "mutation", "manufacture.tool", "update_tool_bit",
+        "mutation", "manufacture.update_tool", "update_tool_bit",
         "ExactCamToolBitState", "document",
         source_command_id="CAM_ToolBitDock",
     ),

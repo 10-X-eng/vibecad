@@ -595,6 +595,15 @@ def _assert_no_graph_or_selection_change(document: Any, prepared: Any) -> None:
         )
 
 
+def _job_receipt(job: Any) -> dict[str, Any]:
+    state = job_state(job)
+    return {
+        "object_name": state["object_name"],
+        "state_sha256": state["state_sha256"],
+        "tool_count": state["counts"]["tools"],
+    }
+
+
 def verify_created_tool_controller(
     document: Any,
     draft: NativeMutationDraft,
@@ -681,11 +690,7 @@ def verify_created_tool_controller(
     return {
         "controller": state,
         "catalog_tool": prepared.record.summary(),
-        "job": {
-            "object_name": job_after["object_name"],
-            "state_sha256": job_after["state_sha256"],
-            "tool_count": job_after["counts"]["tools"],
-        },
+        "job": _job_receipt(prepared.job),
         "resource_count": len(graph),
     }
 
@@ -702,7 +707,7 @@ def verify_updated_tool_controller(
             "The CAM controller update made no durable change.",
             error_code="NATIVE_ARGUMENTS_INVALID",
         )
-    return {"controller": state}
+    return {"controller": state, "job": _job_receipt(prepared.job)}
 
 
 def verify_updated_tool_bit(
@@ -735,4 +740,5 @@ def verify_updated_tool_bit(
     return {
         "tool": state,
         "controllers": [tool_controller_state(item) for item in prepared.controllers],
+        "jobs": [_job_receipt(job) for job in prepared.jobs],
     }

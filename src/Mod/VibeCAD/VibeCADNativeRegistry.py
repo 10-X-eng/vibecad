@@ -517,6 +517,12 @@ from VibeCADNativeManufactureSimulationResultSchema import (
 from VibeCADNativeManufactureToolBindings import (
     register_manufacture_tool_capability_implementations,
 )
+from VibeCADNativeManufactureFocusedToolBindings import (
+    register_manufacture_focused_tool_capability_implementations,
+)
+from VibeCADNativeManufactureFocusedToolSchema import (
+    register_manufacture_focused_tool_capability_definitions,
+)
 from VibeCADNativeManufactureToolSchema import (
     register_manufacture_tool_capability_definitions,
 )
@@ -961,6 +967,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_manufacture_simulation_result_capability_implementation(registry)
     register_manufacture_tool_capability_definitions(registry)
     register_manufacture_tool_capability_implementations(registry)
+    register_manufacture_focused_tool_capability_definitions(registry)
+    register_manufacture_focused_tool_capability_implementations(registry)
     register_manufacture_tool_output_capability_definition(registry)
     register_manufacture_tool_output_capability_implementation(registry)
     register_drawing_page_capability_definition(registry)

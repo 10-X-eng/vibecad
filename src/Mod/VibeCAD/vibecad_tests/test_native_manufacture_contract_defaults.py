@@ -19,6 +19,9 @@ from VibeCADNativeManufactureToolSchema import (
     manufacture_tool_catalog_capability_definition,
     manufacture_tool_capability_definition,
 )
+from VibeCADNativeManufactureFocusedToolSchema import (
+    manufacture_focused_tool_capability_definitions,
+)
 
 
 def _branch(definition, operation: str) -> dict:
@@ -85,6 +88,29 @@ def test_adding_a_catalog_tool_only_requires_the_two_exact_owners() -> None:
 
     assert set(branch["required"]) == {"job_target", "catalog_tool"}
     assert branch["properties"]["tool_property_changes"]["default"] == []
+
+
+def test_tool_mutations_publish_as_three_focused_tools() -> None:
+    definitions = {
+        definition.name: definition
+        for definition in manufacture_focused_tool_capability_definitions()
+    }
+    expected = {
+        "manufacture.add_tool": "create_controller",
+        "manufacture.set_controller": "update_controller",
+        "manufacture.update_tool": "update_tool_bit",
+    }
+
+    assert {
+        name: definition.variants[0].operation
+        for name, definition in definitions.items()
+    } == expected
+    for definition in definitions.values():
+        schema = provider_visible_native_schema(
+            definition.provider_schema((definition.variants[0].operation,))
+        )
+        branch = schema["parameters"]["oneOf"][0]
+        assert "operation" not in branch["properties"]
 
 
 def test_model_geometry_read_is_exact_paged_and_drilling_aware() -> None:

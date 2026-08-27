@@ -665,6 +665,8 @@ set(VibeCAD_Scripts
     VibeCADNativeManufactureModifySchema.py
     VibeCADNativeManufactureFocusedOperationBindings.py
     VibeCADNativeManufactureFocusedOperationSchema.py
+    VibeCADNativeManufactureFocusedToolBindings.py
+    VibeCADNativeManufactureFocusedToolSchema.py
     VibeCADNativeManufactureOperationBindings.py
     VibeCADNativeManufactureOperationRuntime.py
     VibeCADNativeManufactureOperationSchema.py

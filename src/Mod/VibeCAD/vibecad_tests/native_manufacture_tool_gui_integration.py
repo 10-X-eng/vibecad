@@ -26,8 +26,10 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot
 from VibeCADNativeManufactureState import job_state, tool_controller_state
 from VibeCADNativeManufactureToolSchema import (
-    MANUFACTURE_TOOL_CAPABILITY_NAME,
     MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
+)
+from VibeCADNativeManufactureFocusedToolSchema import (
+    MANUFACTURE_FOCUSED_TOOL_CAPABILITIES,
 )
 from VibeCADNativeManufactureToolOutputSchema import (
     MANUFACTURE_TOOL_OUTPUT_CAPABILITY_NAME,
@@ -40,6 +42,11 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+ADD_TOOL = MANUFACTURE_FOCUSED_TOOL_CAPABILITIES["create_controller"]
+SET_CONTROLLER = MANUFACTURE_FOCUSED_TOOL_CAPABILITIES["update_controller"]
+UPDATE_TOOL = MANUFACTURE_FOCUSED_TOOL_CAPABILITIES["update_tool_bit"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -111,13 +118,16 @@ def _selection() -> tuple:
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
     catalog = registry.definition(MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME)
-    mutation = registry.definition(MANUFACTURE_TOOL_CAPABILITY_NAME)
+    mutations = tuple(
+        registry.definition(name) for name in (ADD_TOOL, SET_CONTROLLER, UPDATE_TOOL)
+    )
     output = registry.definition(MANUFACTURE_TOOL_OUTPUT_CAPABILITY_NAME)
-    assert catalog is not None and mutation is not None and output is not None
+    assert catalog is not None and all(mutations) and output is not None
     schemas = (
         catalog.provider_schema(("list_tools", "read_tool")),
-        mutation.provider_schema(
-            ("create_controller", "update_controller", "update_tool_bit")
+        *(
+            definition.provider_schema((definition.variants[0].operation,))
+            for definition in mutations
         ),
         output.provider_schema(("save", "save_as")),
     )
@@ -138,7 +148,9 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             unavailable_reason="",
             tool_names=(
                 MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
-                MANUFACTURE_TOOL_CAPABILITY_NAME,
+                ADD_TOOL,
+                SET_CONTROLLER,
+                UPDATE_TOOL,
                 MANUFACTURE_TOOL_OUTPUT_CAPABILITY_NAME,
             ),
             schemas=schemas,
@@ -223,7 +235,7 @@ def _run() -> None:
             plans["CAM_ToolBitDock"].classification.mutation,
             plans["CAM_ToolBitDock"].classification.human_only,
         ) == (
-            MANUFACTURE_TOOL_CAPABILITY_NAME,
+            ADD_TOOL,
             "create_controller",
             "ExactCamJobAndCatalogTool",
             True,
@@ -346,7 +358,6 @@ def _run() -> None:
         names_before_create = tuple(obj.Name for obj in document.Objects)
         resources_before_create = _job_resource_names(document, job)
         create_arguments = {
-            "operation": "create_controller",
             "job_target": _target(job_before_create),
             "catalog_tool": exact_catalog,
             "tool_label": "Native bullnose",
@@ -368,12 +379,12 @@ def _run() -> None:
             "kind": "explicit",
             "value": int(job.Tools.Group[0].ToolNumber),
         }
-        failed = call(MANUFACTURE_TOOL_CAPABILITY_NAME, conflict, succeeds=False)
+        failed = call(ADD_TOOL, conflict, succeeds=False)
         assert failed["error_code"] == "NATIVE_MANUFACTURE_TOOL_NUMBER_CONFLICT", failed
         assert tuple(obj.Name for obj in document.Objects) == names_before_create
         assert int(document.UndoCount) == undo_before_reads
 
-        created = call(MANUFACTURE_TOOL_CAPABILITY_NAME, create_arguments)
+        created = call(ADD_TOOL, create_arguments)
         _events(12)
         controller_name = created["controller"]["object_name"]
         tool_name = created["controller"]["tool"]["object_name"]
@@ -424,7 +435,6 @@ def _run() -> None:
         refresh_dispatcher()
 
         update_controller_arguments = {
-            "operation": "update_controller",
             "target": _target(tool_controller_state(tool_controller)),
             "controller": _controller_settings(
                 "Native finishing controller",
@@ -433,12 +443,18 @@ def _run() -> None:
             ),
         }
         updated_controller = call(
-            MANUFACTURE_TOOL_CAPABILITY_NAME,
+            SET_CONTROLLER,
             update_controller_arguments,
         )
         _events(8)
         controller_after = tool_controller_state(tool_controller)
         assert controller_after == updated_controller["controller"]
+        job_after_controller = job_state(job)
+        assert updated_controller["job"] == {
+            "object_name": job_after_controller["object_name"],
+            "state_sha256": job_after_controller["state_sha256"],
+            "tool_count": job_after_controller["counts"]["tools"],
+        }
         assert controller_after["tool_number"] == 9
         assert controller_after["horizontal_feed_mm_per_minute"] == 600.0
         document.undo()
@@ -455,7 +471,6 @@ def _run() -> None:
         shape_volume_before = float(tool_controller.Tool.Shape.Volume)
         visual_before = _job_resource_names(document, job)
         update_tool_arguments = {
-            "operation": "update_tool_bit",
             "target": _target(tool_before_update),
             "label": "Native 7.5 mm bullnose",
             "property_changes": [
@@ -469,12 +484,20 @@ def _run() -> None:
                 },
             ],
         }
-        updated_tool = call(MANUFACTURE_TOOL_CAPABILITY_NAME, update_tool_arguments)
+        updated_tool = call(UPDATE_TOOL, update_tool_arguments)
         _events(12)
         job = document.getObject(job_name)
         tool_controller = document.getObject(controller_name)
         tool_after = tool_controller_state(tool_controller)["tool"]
         assert tool_after == updated_tool["tool"]
+        job_after_tool = job_state(job)
+        assert updated_tool["jobs"] == [
+            {
+                "object_name": job_after_tool["object_name"],
+                "state_sha256": job_after_tool["state_sha256"],
+                "tool_count": job_after_tool["counts"]["tools"],
+            }
+        ]
         assert tool_after["label"] == "Native 7.5 mm bullnose"
         after_properties = {
             item["property_name"]: item for item in tool_after["editable_properties"]
@@ -622,9 +645,8 @@ def _run() -> None:
         )
 
         minimal_created = call(
-            MANUFACTURE_TOOL_CAPABILITY_NAME,
+            ADD_TOOL,
             {
-                "operation": "create_controller",
                 "job_target": _target(job_state(job)),
                 "catalog_tool": exact_catalog,
             },

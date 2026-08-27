@@ -244,6 +244,9 @@ from VibeCADNativeManufactureSimulationResultRuntime import (
     NativeManufactureSimulationResultRuntime,
 )
 from VibeCADNativeManufactureToolBindings import manufacture_tool_runtime_bindings
+from VibeCADNativeManufactureFocusedToolBindings import (
+    manufacture_focused_tool_runtime_bindings,
+)
 from VibeCADNativeManufactureToolRuntime import (
     NativeManufactureToolCatalogRuntime,
     NativeManufactureToolRuntime,
@@ -688,6 +691,7 @@ def build_native_runtime_bindings(
             manufacture_tool_catalog,
             manufacture_tool,
         ),
+        **manufacture_focused_tool_runtime_bindings(manufacture_tool),
         **manufacture_tool_output_runtime_bindings(manufacture_tool_output),
         **drawing_page_runtime_bindings(drawing_page),
         **drawing_active_view_runtime_bindings(drawing_active_view),

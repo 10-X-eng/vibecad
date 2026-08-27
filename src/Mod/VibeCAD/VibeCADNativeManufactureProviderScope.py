@@ -36,6 +36,7 @@ _DISCOVERY = frozenset(
 _SETUP_LIFECYCLE = frozenset(
     {
         "manufacture.tool",
+        "manufacture.add_tool",
         "manufacture.program",
         "manufacture.template",
     }
@@ -125,7 +126,13 @@ def manufacture_provider_tool_names(
         for setup in setups
     ):
         allowed.update(
-            _COMMON_OPERATIONS | {"manufacture.operation", "manufacture.probe"}
+            _COMMON_OPERATIONS
+            | {
+                "manufacture.operation",
+                "manufacture.probe",
+                "manufacture.set_controller",
+                "manufacture.update_tool",
+            }
         )
     if any(int(setup["counts"]["operations"]) > 0 for setup in setups):
         allowed.add("manufacture.modify")

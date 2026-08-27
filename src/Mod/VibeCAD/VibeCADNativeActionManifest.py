@@ -1141,7 +1141,7 @@ _CAPABILITY_OVERRIDES = {
     "CAM_Area_Workplane": "manufacture.area",
     "CAM_Job": "manufacture.job",
     "CAM_PropertyBag": "manufacture.property_bag",
-    "CAM_ToolBitDock": "manufacture.tool",
+    "CAM_ToolBitDock": "manufacture.add_tool",
     "CAM_Comment": "manufacture.program",
     "CAM_Stop": "manufacture.program",
     "CAM_Custom": "manufacture.program",

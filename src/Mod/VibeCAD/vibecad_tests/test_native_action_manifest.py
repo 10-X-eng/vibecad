@@ -161,6 +161,24 @@ def test_common_cam_operations_resolve_to_focused_provider_tools() -> None:
     } == expected
 
 
+def test_cam_tool_dock_resolves_to_focused_add_tool() -> None:
+    plan = _plan(
+        "manufacture",
+        "Tools",
+        RibbonAction(
+            command_id="CAM_ToolBitDock",
+            label="ToolBit Library",
+            available=True,
+            kind="command",
+        ),
+    )
+
+    assert (plan.capability_family, plan.operation_variant) == (
+        "manufacture.add_tool",
+        "create_controller",
+    )
+
+
 def test_drawing_page_actions_resolve_to_four_exact_variants() -> None:
     expected = {
         "TechDraw_PageDefault": (
