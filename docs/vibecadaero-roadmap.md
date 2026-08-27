@@ -196,12 +196,12 @@ Remote execution may be prototyped against inert test fixtures, but it may not b
 | Step | Current status | What remains before the step is closed |
 | --- | --- | --- |
 | 0 — live reconciliation | **Verified complete for this baseline** | Repeat on a newer `main` before implementation and record drift. |
-| 1 — characterization | **Partial** | Complete normalized lifecycle and FEM legacy/host A/B oracles across Windows/POSIX. |
+| 1 — characterization | **Partial** | The four-solver process-lifecycle A/B oracle is executable; complete document-lifecycle and installed Windows/POSIX traces. |
 | 2 — host contracts/facades | **Verified complete for the domain-neutral packaging/compatibility foundation** | Persistence, remote providers, and domain qualification remain later milestones and are not implied by this closure. |
 | 3 — local process mechanics | **Verified complete for the shared process primitive** | Keep the Windows/POSIX parity, timeout, cancellation, cleanup, output-bound, and redaction matrix required as later providers change; repeated lifecycle and leak burn-in remains Step 7. |
 | 4 — input/artifact sealing | **Partial** | Add quota enforcement, complete evidence-reference integrity, and prove installed/cross-platform integration around the implemented immutable manifests, storage, archive defenses, and cleanup. |
 | 5 — host orchestration | **Verified complete for the in-memory compatibility slice** | Persistence/recovery remain explicitly outside this step. |
-| 6 — current FEM migration | **Verified complete for CalculiX, Elmer, Z88, and Mystran** | Close the full A/B parity and rollback gates. |
+| 6 — current FEM migration | **Verified complete for CalculiX, Elmer, Z88, and Mystran** | The normalized process-lifecycle A/B matrix is frozen; close installed result-graph/History/receipt parity and rollback gates. |
 | 7 — stabilization | **Partial** | Complete stress, leak/orphan, cross-platform, lifecycle, and rollback burn-in. |
 | 8 — durable persistence | **Partial** | Complete supported schema migration, application-data integration, global discovery, full reconnect/crash recovery, quota/reference integrity, and authoritative installed/cross-platform acceptance. |
 | 8A — publication authority | **Partial** | Wire the coordinator through Native mutation authority and real domain adapters, then prove document-UID rebind, transaction rollback/postconditions, crash recovery, and strict current FEM compatibility. |
@@ -237,13 +237,13 @@ Exit evidence:
 
 **Status: Partial.**
 
-Real characterization exists for the generic runtime, atomic commit gate, shared process sequence, Native Aero background path, and each currently supported FEM local-provider path. The complete golden normalized lifecycle/A-B parity matrix is not yet present as one executable oracle.
+Real characterization exists for the generic runtime, atomic commit gate, shared process sequence, Native Aero background path, and each currently supported FEM local-provider path. `analysis_fem_parity_v2.json` and `test_analysis_fem_parity_oracle.py` now form one executable legacy/host process-lifecycle oracle for CalculiX, Elmer, Z88, and Mystran. It freezes success traces, exact process identity, public failures including repair data, cancellation, cleanup, and publication-seam delegation. Complete document-lifecycle and installed solver/platform traces remain open.
 
 Remaining exit criteria:
 
 - capture normalized lifecycle traces for process, input digest, exact command/environment identity, stale checks, result graph/History, receipts, public APIs/errors, timeout/cancel, cleanup, document close/switch/reopen, and Windows/POSIX behavior;
-- establish explicit legacy-versus-host A/B fixtures for all supported FEM solver paths;
-- record accepted intentional differences before further extraction.
+- add installed Windows/POSIX traces and representative result-graph/History/hash/receipt evidence to the executable legacy-versus-host fixture for all supported FEM solver paths;
+- preserve the reviewed intentional-difference list in both the compatibility report and executable oracle before further extraction.
 
 ### Step 2 — introduce host Analysis contracts and facades
 
@@ -308,11 +308,11 @@ This step explicitly excludes persistence, restart recovery, new concurrency, re
 
 **Status: Verified complete for the currently supported detached solver set; parity gate remains open.**
 
-CalculiX, Elmer, Z88, and Mystran execution route through the host local provider with compatibility mappings and solver-specific tests.
+CalculiX, Elmer, Z88, and Mystran execution route through the host local provider with compatibility mappings and solver-specific tests. The v2 executable A/B oracle now directly compares legacy and host success, failure, cancellation, cleanup, and exact legacy publication delegation for every solver. It also closed a discovered host-path loss of the legacy backend diagnostic repair payload by sharing the FEM failure translator.
 
 Remaining program obligations:
 
-- complete Gate 5 A/B parity evidence for exact inputs, commands, environment identity, result graph, History, receipts, public outputs/errors, and cleanup;
+- complete Gate 5 with installed representative result graph, History, hashes, receipts, and public output A/B evidence; exact inputs, commands, environment identity, process failures, cancellation, cleanup, and publication-seam identity are frozen by the v2 oracle;
 - treat any future FEM backend as a new solver migration requiring its own parity proof;
 - do not use this milestone to change FEM publication semantics.
 
@@ -320,14 +320,14 @@ Remaining program obligations:
 
 **Status: Partial.**
 
-Multiple host-runtime correctness slices have landed and dedicated regression tests exist. A named stabilization interval with cross-platform stress, leak/orphan checks, and a frozen compatibility report has not been completed.
+Multiple host-runtime correctness slices have landed and dedicated regression tests exist. The FEM compatibility and known-difference report is now frozen against the v2 executable oracle, but the named stabilization interval still lacks the complete cross-platform repeated stress, leak/orphan, document-lifecycle, installed-solver, and rollback evidence.
 
 Remaining exit criteria:
 
 - run repeated cancel/timeout/close/switch/reopen and process-output-bound stress;
 - test Windows and POSIX process behavior;
 - confirm no job, thread, process, workspace, or document mutation leaks;
-- publish the parity and known-difference report before persistence work begins.
+- keep the published parity and known-difference report synchronized with every compatibility change while completing the remaining installed-solver and lifecycle evidence.
 
 ### Step 8 — durable host metadata and artifact persistence
 

@@ -1,16 +1,24 @@
-# VibeCAD Analysis FEM compatibility baseline
+# VibeCAD Analysis FEM compatibility and known-difference report
 
 This report freezes the normalized compatibility target for the four FEM
 solver paths supported at the Analysis host migration boundary. The executable
-oracle is `src/Mod/VibeCAD/vibecad_tests/fixtures/analysis_fem_parity_v1.json`;
-`test_analysis_fem_parity_oracle.py` proves the host path against it.
+oracle is `src/Mod/VibeCAD/vibecad_tests/fixtures/analysis_fem_parity_v2.json`;
+`test_analysis_fem_parity_oracle.py` executes both the legacy and host paths
+against it.
 
 The oracle binds each solver's exact direct-argument command sequence,
 environment identity, timeout, normalized progress lifecycle, stage summary,
 input hash/count, solver-state dependency, History identity, document UID,
-adapter identity, and compatibility provenance. Existing solver-specific tests
-remain authoritative for timeout, cancellation, output-limit, backend-failure,
-cleanup, commit, verification, and public error mappings.
+adapter identity, and compatibility provenance. It also executes success,
+start failure, timeout, output-limit failure, backend failure, cancellation,
+failure cleanup, and exact commit/verification/discard delegation for every
+solver. Solver-specific tests remain additional backend-focused evidence.
+
+The v2 comparison found and closed one previously unrecorded incompatibility:
+the host adapter preserved the backend-failure code and message but omitted the
+legacy bounded diagnostic `repair` payload. Both execution paths now use one
+FEM-owned process-failure translator, so code, message, bounded diagnostics,
+and repair shape cannot drift independently.
 
 ## Covered solver paths
 
@@ -21,6 +29,19 @@ cleanup, commit, verification, and public error mappings.
 | Z88 | `local-process` | 2 | Frozen |
 | Mystran | `local-process` | 1 | Frozen |
 
+## Executable evidence matrix
+
+| Compatibility dimension | Evidence | Current disposition |
+|---|---|---|
+| Input digest/count, commands, cwd, environment, timeout | Legacy and host success paths execute independently for all four solvers and compare to the v2 fixture | Frozen |
+| Progress and stage summaries | Legacy and host traces compare directly and to the fixture | Frozen; the reviewed seven-percent host event is retained in both adapter-facing traces |
+| Public process failures | Four failure classes are compared for every solver, including bounded diagnostic repair data | Frozen |
+| Cancellation and failure cleanup | Both paths raise the preserved cancellation type and remove their private workspaces | Frozen |
+| Result publication seam | The host path passes the exact legacy prepared object to commit and returns the exact legacy verification result for every solver | Frozen at the compatibility seam |
+| Result graph, History, hashes, and receipts | The unchanged legacy commit/verify implementation remains authoritative behind the identity-preserving seam | Installed representative solver A/B evidence remains required before full Gate G5 closure |
+| Document close/switch/reopen behavior | Not claimed by this process-level oracle | Gate G4 and Step 7 remain open |
+| Rollback to the legacy execution route | Legacy implementation remains present, but no exercised host-level rollback switch exists in the current tree | Gate G7 remains open |
+
 ## Accepted intentional differences
 
 1. Execution is delegated to `LocalProcessProvider` instead of the legacy
@@ -30,14 +51,16 @@ cleanup, commit, verification, and public error mappings.
 3. Progress includes the host-owned input-frozen event at seven percent.
 
 No physics, input writer, command, environment, importer, result graph,
-History, receipt, publication, cleanup, or public error difference is accepted
-by this report. A future difference must update both this report and the
-executable oracle in a dedicated compatibility change.
+History, receipt, publication, cleanup, public error, or repair-payload
+difference is accepted by this report. A future difference must update both
+this report and the executable oracle in a dedicated compatibility change.
 
 ## Remaining stabilization boundary
 
-This baseline closes the normalized four-solver A/B fixture gap. It does not by
-itself claim cross-platform stabilization complete. Repeated process-tree,
-cancel/timeout, close/switch/reopen, bounded-output, orphan, workspace, thread,
-and document-mutation stress must still pass on Windows and POSIX before the
-roadmap can mark the full Step 7 stabilization interval complete.
+This baseline closes the normalized four-solver process-lifecycle A/B fixture
+gap and freezes the complete known-difference list at this seam. It does not by
+itself claim full FEM Gate G5 or cross-platform stabilization complete.
+Representative installed solver result-graph/History/hash/receipt A/B runs,
+repeated cancel/timeout/close/switch/reopen and bounded-output stress,
+job/thread/process/workspace/document leak checks, and the rollback exercise
+must still pass before Gates G4, G5, and G7 and Step 7 can close.
