@@ -270,8 +270,10 @@ def _click_mesh_point(view, viewport, source, point) -> None:
             )
             _process_events(2)
             preselection = Gui.Selection.getPreselection()
-            observed.add(preselection.ObjectName)
-            if preselection.ObjectName != source.Name:
+            info = view.getObjectInfo((position.x(), position.y())) or {}
+            object_name = preselection.ObjectName or str(info.get("Object", ""))
+            observed.add(object_name)
+            if object_name != source.Name:
                 continue
             _send_mouse(
                 viewport,
@@ -299,7 +301,11 @@ def _trigger_curve_create(viewport) -> None:
     def trigger_create():
         state["attempts"] += 1
         popup = QtWidgets.QApplication.activePopupWidget()
-        if popup is None:
+        labels = {
+            candidate.text().replace("&", "")
+            for candidate in popup.actions()
+        } if isinstance(popup, QtWidgets.QMenu) else set()
+        if popup is None or not {"Create", "Clear", "Cancel"}.issubset(labels):
             if state["attempts"] < 100:
                 QtCore.QTimer.singleShot(20, trigger_create)
             else:
@@ -363,6 +369,7 @@ def _human_intersections(result) -> tuple[tuple[float, float], ...]:
 
 
 def _assert_human_contract(document, source):
+    source_digest = Mesh.geometrySha256(source.Mesh)
     before = tuple(obj.Name for obj in document.Objects)
     before_undo = document.UndoCount
     assert Gui.isCommandActive("Surface_CurveOnMesh")
@@ -409,11 +416,15 @@ def _assert_human_contract(document, source):
     points = ((5.0, 5.0, 0.0), (15.0, 22.0, 0.0), (25.0, 8.0, 0.0))
     for point in points:
         _click_mesh_point(view, viewport, source, point)
+    assert source.Document is document
+    assert PartGui.isModelingObjectActive(source)
+    assert Mesh.geometrySha256(source.Mesh) == source_digest
     _trigger_curve_create(viewport)
 
     created = [obj for obj in document.Objects if obj.Name not in before]
-    assert len(created) == 1 and created[0].TypeId == "MeshPart::CurveOnMesh"
-    result = created[0]
+    curve_results = [obj for obj in created if obj.TypeId == "MeshPart::CurveOnMesh"]
+    assert len(curve_results) == 1, [(obj.Name, obj.TypeId) for obj in created]
+    result = curve_results[0]
     assert result.Source is source
     assert len(result.AnchorFacets) == 3
     assert len(result.AnchorWeights) == 3
@@ -539,16 +550,20 @@ def _run() -> None:
         )
         turn = _turn()
         debug_events = []
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state,
-            registry=build_native_capability_registry(),
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=lambda: None,
-            active_document=lambda: App.ActiveDocument,
-            debug_sink=debug_events.append,
-        )
+
+        def make_dispatcher():
+            return NativeTurnDispatcher(
+                document=document,
+                state=state,
+                registry=build_native_capability_registry(),
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=lambda: None,
+                active_document=lambda: App.ActiveDocument,
+                debug_sink=debug_events.append,
+            )
+
+        dispatcher = make_dispatcher()
         call_number = 0
 
         def native_call(arguments, *, succeeds=True):
@@ -615,15 +630,6 @@ def _run() -> None:
             assert source.Mesh.Topology == source_topology
             assert bool(source.Visibility) is source_visibility
             record = _record(result)
-            document.undo()
-            _process_events()
-            assert document.getObject(record["name"]) is None
-            assert bool(source.Visibility) is source_visibility
-            document.redo()
-            _process_events()
-            result = document.getObject(record["name"])
-            assert result is not None
-            _assert_signature(_shape_signature(result.Shape), signature)
             records.append(record)
 
         parity_result = document.getObject(records[0]["name"])
@@ -710,6 +716,7 @@ def _run() -> None:
         timeline_end = int(timeline.Position)
         timeline.Position = 0
         _process_events()
+        dispatcher = make_dispatcher()
         assert not PartGui.isModelingObjectActive(sources["InactiveMesh"])
         before = tuple(obj.Name for obj in document.Objects)
         inactive = native_call(
@@ -724,6 +731,7 @@ def _run() -> None:
         assert tuple(obj.Name for obj in document.Objects) == before
         timeline.Position = timeline_end
         _process_events()
+        dispatcher = make_dispatcher()
 
         stale_source = sources["RollbackMesh"]
         stale_arguments = _arguments(
@@ -752,6 +760,7 @@ def _run() -> None:
         finally:
             document.abortTransaction()
         assert tuple(obj.Name for obj in document.Objects) == names_before
+        dispatcher = make_dispatcher()
 
         rollback_arguments = _arguments(
             "Rollback Mesh Curve",
@@ -772,6 +781,19 @@ def _run() -> None:
         assert rollback["error_code"] == "NATIVE_MODEL_INVALID"
         assert tuple(obj.Name for obj in document.Objects) == rollback_names
         assert not document.HasPendingTransaction
+
+        latest_record = records[-1]
+        latest_source = sources[latest_record["source"]]
+        latest_visibility = bool(latest_source.Visibility)
+        document.undo()
+        _process_events()
+        assert document.getObject(latest_record["name"]) is None
+        assert bool(latest_source.Visibility) is latest_visibility
+        document.redo()
+        _process_events()
+        restored = document.getObject(latest_record["name"])
+        assert restored is not None
+        _assert_signature(_shape_signature(restored.Shape), latest_record["signature"])
 
         save_directory = Path(tempfile.mkdtemp(prefix="vibecad-native-curve-mesh-"))
         save_path = save_directory / "ModelSurfaceCurveOnMesh.FCStd"

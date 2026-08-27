@@ -61,8 +61,8 @@
 #include <Mod/Mesh/App/MeshFeature.h>
 
 #include "CommandGuard.h"
+#include "BackgroundMeshModification.h"
 #include "MeshEditor.h"
-#include "ParametricMeshFilter.h"
 #include "SoFCMeshObject.h"
 #include "SoPolygon.h"
 
@@ -297,25 +297,17 @@ void MeshFaceAddition::addFace()
             faceView->index[1],
             faceView->index[2],
         };
-        MeshGui::createParametricMeshFilters(
-            *doc,
+        MeshGui::startBackgroundMeshModification(
             {
-                MeshGui::ParametricMeshFilterTarget {
+                MeshGui::BackgroundMeshModificationTarget {
                     mf,
-                    [mf, indices](App::DocumentObject& object) {
-                        auto& edit = static_cast<Mesh::FacetEdit&>(object);
-                        edit.Action.setValue("Add Triangle");
-                        edit.Indices.setValues(indices);
-                        edit.AcceptedSource.setValue(mf->Mesh.getValue());
-                    },
-                },
+                    "Add Mesh Triangle",
+                    indices,
+                    {},
+                }
             },
-            MeshGui::ParametricMeshFilterSpec {
-                "Mesh::FacetEdit",
-                "AddTriangle",
-                "Add Mesh Triangle",
-                "Add triangle",
-            }
+            "add_triangle",
+            "{}"
         );
         clearPoints();
         finishEditing();

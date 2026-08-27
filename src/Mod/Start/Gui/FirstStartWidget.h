@@ -42,6 +42,8 @@ public:
     explicit FirstStartWidget(QWidget* parent = nullptr);
     bool eventFilter(QObject* object, QEvent* event) override;
     Q_SIGNAL void dismissed();
+    Q_SIGNAL void configureAIRequested();
+    Q_SIGNAL void openAssistantRequested();
 
 private:
     void retranslateUi();
@@ -52,6 +54,11 @@ private:
 
     QLabel* _welcomeLabel;
     QLabel* _descriptionLabel;
+    QLabel* _aiTitleLabel;
+    QLabel* _aiDescriptionLabel;
+    QLabel* _personalizeLabel;
+    QPushButton* _configureAIButton;
+    QPushButton* _openAssistantButton;
     QPushButton* _doneButton;
 };
 

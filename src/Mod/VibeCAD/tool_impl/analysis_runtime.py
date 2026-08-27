@@ -91,6 +91,9 @@ class AnalysisRuntimeMessages:
     document_lookup_requires_uid: str = (
         "An Analysis job lookup needs a document UID."
     )
+    document_change_resolver_boolean: str = (
+        "An Analysis document-change resolver must return a boolean."
+    )
     unknown_job: str = "The Analysis runtime job is unknown."
 
 
@@ -101,6 +104,7 @@ DocumentThreadDispatcher = Callable[[Callable[[], Any]], Any]
 CommitValidator = Callable[[], Any]
 DiagnosticSink = Callable[[str, Exception], str | None]
 CleanupHandler = Callable[[Any | None], None]
+DocumentChangeResolver = Callable[[Mapping[str, Any]], bool]
 
 
 class AnalysisRuntimeManager:
@@ -166,6 +170,7 @@ class AnalysisRuntimeManager:
         finalize_message: str | None = None,
         cleanup: CleanupHandler | None = None,
         changes_document: bool = False,
+        document_change_resolver: DocumentChangeResolver | None = None,
         durable_lifecycle: Any | None = None,
     ) -> AnalysisRuntimeSnapshot:
         uid = str(document_uid or "").strip()
@@ -186,6 +191,10 @@ class AnalysisRuntimeManager:
             raise TypeError(self._messages.cleanup_required)
         if type(changes_document) is not bool:
             raise TypeError("changes_document must be a boolean")
+        if document_change_resolver is not None and not callable(
+            document_change_resolver
+        ):
+            raise TypeError("document_change_resolver must be callable or None")
         if durable_lifecycle is not None:
             required = (
                 "submitted", "started", "prepared", "publication_started",
@@ -241,6 +250,7 @@ class AnalysisRuntimeManager:
                 dispatch_to_document_thread,
                 clean_finalize_message,
                 cleanup,
+                document_change_resolver,
                 durable_lifecycle,
             ),
             name=f"{self._thread_name_prefix}-{job.job_id[:8]}",
@@ -258,6 +268,7 @@ class AnalysisRuntimeManager:
         dispatch_to_document_thread: DocumentThreadDispatcher,
         finalize_message: str,
         cleanup: CleanupHandler | None,
+        document_change_resolver: DocumentChangeResolver | None,
         durable_lifecycle: Any | None,
     ) -> None:
         prepared = None
@@ -298,6 +309,14 @@ class AnalysisRuntimeManager:
                 return commit(prepared)
 
             result = dispatch_to_document_thread(apply)
+            if document_change_resolver is not None:
+                resolved_change = document_change_resolver(result)
+                if type(resolved_change) is not bool:
+                    raise self._error_class(
+                        self._messages.document_change_resolver_boolean
+                    )
+                with self._lock:
+                    job.changes_document = resolved_change
             encoded = self._encode_result(result)
             if durable_lifecycle is not None:
                 durable_lifecycle.succeeded(

@@ -118,6 +118,8 @@ def _read_open_file(
     capture_bytes: bool = False,
 ) -> tuple[str, bytes | None]:
     flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):

@@ -254,6 +254,12 @@ def _run() -> None:
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_BOUNDS_JSON") or ""
     ).strip()
     expected_bounds = json.loads(expected_bounds_raw) if expected_bounds_raw else None
+    mesh_expectations_raw = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_MESH_EXPECTATIONS_JSON") or ""
+    ).strip()
+    mesh_expectations = (
+        json.loads(mesh_expectations_raw) if mesh_expectations_raw else {}
+    )
     maximum_failures_raw = str(
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_MAX_FAILED_CALLS") or ""
     ).strip()
@@ -409,15 +415,27 @@ def _run() -> None:
             raise RuntimeError(
                 "VIBECAD_OLLAMA_ACCEPTANCE_AUTH_MODE must be api_key or chatgpt."
             )
-        if result_kind not in {"single_solid", "assembly", "analysis", "drawing"}:
+        if result_kind not in {
+            "single_solid",
+            "assembly",
+            "analysis",
+            "drawing",
+            "mesh",
+        }:
             raise RuntimeError(
                 "VIBECAD_OLLAMA_ACCEPTANCE_RESULT_KIND must be single_solid, "
-                "assembly, analysis, or drawing."
+                "assembly, analysis, drawing, or mesh."
             )
         if expected_volume is not None and result_kind != "single_solid":
             raise RuntimeError("Expected volume applies only to a single-solid run.")
         if expected_bounds is not None and result_kind != "single_solid":
             raise RuntimeError("Expected bounds apply only to a single-solid run.")
+        if not isinstance(mesh_expectations, dict):
+            raise RuntimeError(
+                "VIBECAD_OLLAMA_ACCEPTANCE_MESH_EXPECTATIONS_JSON must be an object."
+            )
+        if mesh_expectations and result_kind != "mesh":
+            raise RuntimeError("Mesh expectations apply only to a Mesh run.")
         if input_fixture is not None and not input_fixture.is_file():
             raise RuntimeError(
                 f"VIBECAD_OLLAMA_ACCEPTANCE_INPUT does not exist: {input_fixture}"
@@ -445,9 +463,16 @@ def _run() -> None:
                 else "OllamaVibeScriptAcceptance"
             )
             if input_fixture is not None:
-                import Import
+                from VibeCADNativeMeshImport import MESH_IMPORT_SUFFIXES
 
-                Import.insert(str(input_fixture), document.Name)
+                if input_fixture.suffix.lower() in MESH_IMPORT_SUFFIXES:
+                    import Mesh
+
+                    Mesh.insert(str(input_fixture), document.Name)
+                else:
+                    import Import
+
+                    Import.insert(str(input_fixture), document.Name)
         if document is None:
             raise RuntimeError("FreeCAD did not open the acceptance document.")
         if Gui.activeWorkbench().name() == workbench:
@@ -625,6 +650,7 @@ def _run() -> None:
                 assembly_evidence = None
                 analysis_evidence = None
                 drawing_evidence = None
+                mesh_evidence = None
                 if result_kind == "single_solid":
                     neutral_objects = [
                         obj
@@ -747,7 +773,7 @@ def _run() -> None:
                         raise AssertionError(
                             "Analyze acceptance has no source solid geometry to export."
                         )
-                else:
+                elif result_kind == "drawing":
                     from VibeCADNativeGeometrySources import (
                         active_design_geometry_sources,
                     )
@@ -807,6 +833,47 @@ def _run() -> None:
                         raise AssertionError(
                             "Drawing acceptance has no source solid geometry to export."
                         )
+                else:
+                    import Mesh
+                    import MeshGui
+                    from vibecad_tests.mesh_acceptance import validate_mesh_quality
+
+                    neutral_objects = [
+                        obj
+                        for obj in document.Objects
+                        if bool(obj.isDerivedFrom("Mesh::Feature"))
+                        and int(obj.Mesh.CountFacets) > 0
+                        and bool(MeshGui.isNativeMeshInputActive(obj))
+                        and bool(obj.ViewObject.Visibility)
+                    ]
+                    if not neutral_objects:
+                        raise AssertionError(
+                            "Mesh acceptance has no visible active Mesh with facets."
+                        )
+                    quality = []
+                    for obj in neutral_objects:
+                        report = Mesh.evaluateNative(obj.Mesh, "strict", 32)
+                        quality.append(
+                            {
+                                "object_name": str(obj.Name),
+                                "label": str(obj.Label),
+                                "points": int(obj.Mesh.CountPoints),
+                                "facets": int(obj.Mesh.CountFacets),
+                                "solid": bool(report.get("solid", False)),
+                                "watertight": bool(report.get("watertight", False)),
+                                "issue_counts": {
+                                    name: int(value.get("count", 0) or 0)
+                                    for name, value in dict(
+                                        report.get("issues") or {}
+                                    ).items()
+                                    if int(value.get("count", 0) or 0) > 0
+                                },
+                            }
+                        )
+                    mesh_evidence = validate_mesh_quality(
+                        quality,
+                        mesh_expectations,
+                    )
                 if output_artifact is not None and (
                     not output_artifact.is_file()
                     or output_artifact.stat().st_size <= 0
@@ -829,28 +896,40 @@ def _run() -> None:
                         "Live acceptance exceeded its failed-call limit: "
                         f"expected at most {maximum_failures}, found {len(failed_calls)}."
                     )
-                import Part
+                mesh_artifact = None
+                if result_kind == "mesh":
+                    import Mesh
 
-                step_artifact.parent.mkdir(parents=True, exist_ok=True)
-                expected_step_solids = sum(
-                    len(obj.Shape.Solids) for obj in neutral_objects
-                )
-                export_shape = Part.makeCompound(
-                    [obj.Shape.copy() for obj in neutral_objects]
-                )
-                export_shape.exportStep(str(step_artifact))
-                if not step_artifact.is_file() or step_artifact.stat().st_size <= 0:
-                    raise AssertionError("FreeCAD did not write the acceptance STEP file.")
-                imported_step = Part.read(str(step_artifact))
-                if (
-                    imported_step.isNull()
-                    or len(imported_step.Solids) != expected_step_solids
-                ):
-                    raise AssertionError(
-                        "Acceptance STEP geometry mismatch: "
-                        f"expected {expected_step_solids} solids, found "
-                        f"{len(imported_step.Solids)}."
+                    mesh_artifact = artifact.with_suffix(".stl")
+                    Mesh.export(neutral_objects, str(mesh_artifact))
+                    imported_mesh = Mesh.read(str(mesh_artifact))
+                    if int(imported_mesh.CountFacets) != mesh_evidence["facet_count"]:
+                        raise AssertionError(
+                            "Acceptance STL facet count changed during export."
+                        )
+                else:
+                    import Part
+
+                    step_artifact.parent.mkdir(parents=True, exist_ok=True)
+                    expected_step_solids = sum(
+                        len(obj.Shape.Solids) for obj in neutral_objects
                     )
+                    export_shape = Part.makeCompound(
+                        [obj.Shape.copy() for obj in neutral_objects]
+                    )
+                    export_shape.exportStep(str(step_artifact))
+                    if not step_artifact.is_file() or step_artifact.stat().st_size <= 0:
+                        raise AssertionError("FreeCAD did not write the acceptance STEP file.")
+                    imported_step = Part.read(str(step_artifact))
+                    if (
+                        imported_step.isNull()
+                        or len(imported_step.Solids) != expected_step_solids
+                    ):
+                        raise AssertionError(
+                            "Acceptance STEP geometry mismatch: "
+                            f"expected {expected_step_solids} solids, found "
+                            f"{len(imported_step.Solids)}."
+                        )
                 screenshot = artifact.with_suffix(".png")
                 drawing_svg = None
                 if result_kind == "drawing":
@@ -909,6 +988,7 @@ def _run() -> None:
                     "reasoning_effort": reasoning_effort,
                     "auth_mode": auth_mode,
                     "expected_result_type": expected_result_type,
+                    "mesh_expectations": mesh_expectations,
                     "excluded_tools": sorted(excluded_tools),
                     "artifact": str(artifact),
                     "input_fixture": (
@@ -918,7 +998,10 @@ def _run() -> None:
                     "linked_dependencies": [
                         str(path) for path in copied_dependencies
                     ],
-                    "step": str(step_artifact),
+                    "step": str(step_artifact) if result_kind != "mesh" else None,
+                    "mesh_output": (
+                        str(mesh_artifact) if mesh_artifact is not None else None
+                    ),
                     "output": (
                         str(output_artifact)
                         if output_artifact is not None
@@ -954,6 +1037,7 @@ def _run() -> None:
                     "assembly_evidence": assembly_evidence,
                     "analysis_evidence": analysis_evidence,
                     "drawing_evidence": drawing_evidence,
+                    "mesh_evidence": mesh_evidence,
                     "shape_summary": _shape_summary(document),
                 }
                 print(

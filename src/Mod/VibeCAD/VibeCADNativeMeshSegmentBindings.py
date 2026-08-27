@@ -11,7 +11,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
 )
 from VibeCADNativeMeshSegmentRuntime import NativeMeshSegmentRuntime
-from VibeCADNativeMeshSegmentSchema import MESH_SEGMENT_CAPABILITY_NAME
+from VibeCADNativeMeshSegmentSchema import MESH_SEGMENT_CAPABILITY_NAMES
 
 
 def _execute(call: Any) -> Mapping[str, Any]:
@@ -29,12 +29,11 @@ def register_mesh_segment_capability_implementation(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_implementation(
-        NativeCapabilityImplementation(MESH_SEGMENT_CAPABILITY_NAME, _execute)
-    )
+    for name in MESH_SEGMENT_CAPABILITY_NAMES:
+        registry.register_implementation(NativeCapabilityImplementation(name, _execute))
 
 
 def mesh_segment_runtime_bindings(runtime: NativeMeshSegmentRuntime) -> dict[str, Any]:
     if not isinstance(runtime, NativeMeshSegmentRuntime):
         raise TypeError("runtime must be a NativeMeshSegmentRuntime")
-    return {MESH_SEGMENT_CAPABILITY_NAME: runtime}
+    return {name: runtime for name in MESH_SEGMENT_CAPABILITY_NAMES}

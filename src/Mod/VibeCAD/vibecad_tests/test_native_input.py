@@ -49,6 +49,19 @@ def test_human_input_grant_is_exact_one_shot_and_path_free(tmp_path: Path) -> No
         authorization.claim(request)
 
 
+def test_human_input_reads_binary_control_bytes_without_text_translation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "binary.csv"
+    content = b"before\x1aafter\r\n\x00\xff"
+    source.write_bytes(content)
+    request = _request()
+
+    artifact = authorize_native_input_path(request, source).claim(request)
+
+    assert artifact.read_bytes() == content
+
+
 def test_input_authorization_rejects_wrong_kind_suffix_and_size(
     tmp_path: Path,
 ) -> None:
@@ -69,7 +82,6 @@ def test_input_authorization_rejects_wrong_kind_suffix_and_size(
         authorize_native_input_path(_request(maximum_bytes=4), large)
 
     unsafe_name = tmp_path / "unsafe\nname.csv"
-    unsafe_name.write_bytes(b"1234")
     with pytest.raises(NativeInputError, match="valid file name"):
         authorize_native_input_path(_request(), unsafe_name)
 

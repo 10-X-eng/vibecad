@@ -17,260 +17,31 @@
 #include <memory>
 #include <numbers>
 #include <string>
-#include <utility>
-#include <vector>
 
-#include <BRepClass3d_SolidClassifier.hxx>
-#include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepCheck_Analyzer.hxx>
-#include <BRep_Tool.hxx>
-#include <BRep_Builder.hxx>
 #include <BRepGProp.hxx>
-#include <BRepLib.hxx>
 #include <GProp_GProps.hxx>
 #include <Precision.hxx>
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
-#include <TopAbs_State.hxx>
 #include <TopExp_Explorer.hxx>
-#include <TopoDS.hxx>
-#include <TopoDS_Compound.hxx>
 #include <TopoDS_Shape.hxx>
-#include <TopoDS_Shell.hxx>
-#include <TopoDS_Solid.hxx>
-#include <TopoDS_Vertex.hxx>
 
-#include <App/ComplexGeoData.h>
 #include <App/Document.h>
 #include <App/DocumentTimeline.h>
 #include <Base/Exception.h>
-#include <Base/Vector3D.h>
 #include <Mod/Mesh/App/Mesh.h>
 #include <Mod/Part/App/FCBRepAlgoAPI_Common.h>
 #include <Mod/Part/App/FCBRepAlgoAPI_Cut.h>
 #include <Mod/Part/App/FCBRepAlgoAPI_Fuse.h>
-#include <Mod/Part/App/TopoShape.h>
 
 #include "MeshBoolean.h"
+#include "MeshSolidShape.h"
 #include "Mesher.h"
 
 
 namespace
 {
-
-constexpr double sewingTolerance = 1.0e-6;
-
-struct ClosedShell
-{
-    TopoDS_Shell outwardShell;
-    TopoDS_Solid enclosedVolume;
-    gp_Pnt samplePoint;
-    std::vector<bool> containedBy;
-    std::size_t depth = 0;
-};
-
-std::string sourceName(const App::DocumentObject& source)
-{
-    const char* label = source.Label.getValue();
-    if (label && *label) {
-        return label;
-    }
-    const char* name = source.getNameInDocument();
-    return name ? name : "mesh";
-}
-
-TopoDS_Shape meshSolidShape(const Mesh::Feature& source, const char* propertyName)
-{
-    const Mesh::MeshObject& mesh = source.Mesh.getValue();
-    const std::string name = sourceName(source);
-    if (mesh.countFacets() == 0) {
-        throw Base::ValueError(
-            std::string(propertyName) + " '" + name + "' is empty. Select a closed mesh with facets."
-        );
-    }
-    if (!mesh.isSolid()) {
-        throw Base::ValueError(
-            std::string(propertyName) + " '" + name
-            + "' is open or non-manifold. Repair it with the Mesh analysis "
-              "tools before using a boolean."
-        );
-    }
-    if (mesh.hasSelfIntersections()) {
-        throw Base::ValueError(
-            std::string(propertyName) + " '" + name
-            + "' has self-intersections. Repair it with the Mesh analysis "
-              "tools before using a boolean."
-        );
-    }
-
-    std::vector<Base::Vector3d> points;
-    std::vector<Data::ComplexGeoData::Facet> facets;
-    mesh.getFaces(points, facets, 0.0);
-    if (points.empty() || facets.empty()) {
-        throw Base::ValueError(
-            std::string(propertyName) + " '" + name + "' did not provide usable triangle topology."
-        );
-    }
-
-    Part::TopoShape faces;
-    faces.setFaces(points, facets, sewingTolerance);
-    if (faces.isNull()) {
-        throw Base::RuntimeError(
-            std::string(propertyName) + " '" + name + "' could not be converted to OCC faces."
-        );
-    }
-    faces.sewShape(sewingTolerance);
-    if (faces.isNull()) {
-        throw Base::RuntimeError(
-            std::string(propertyName) + " '" + name + "' could not be sewn into a shell."
-        );
-    }
-
-    TopExp_Explorer shells(faces.getShape(), TopAbs_SHELL);
-    if (!shells.More()) {
-        throw Base::ValueError(
-            std::string(propertyName) + " '" + name
-            + "' did not form a closed shell. Repair its boundaries before "
-              "using a boolean."
-        );
-    }
-    std::vector<ClosedShell> closedShells;
-    while (shells.More()) {
-        const TopoDS_Shell shell = TopoDS::Shell(shells.Current());
-        if (!shell.Closed()) {
-            throw Base::ValueError(
-                std::string(propertyName) + " '" + name
-                + "' produced an open OCC shell. Repair the source mesh "
-                  "before using a boolean."
-            );
-        }
-
-        BRepBuilderAPI_MakeSolid solidMaker(shell);
-        if (!solidMaker.IsDone()) {
-            throw Base::RuntimeError(
-                std::string(propertyName) + " '" + name
-                + "' contains a shell that could not be promoted to a "
-                  "solid."
-            );
-        }
-        TopoDS_Solid enclosedVolume = solidMaker.Solid();
-        if (enclosedVolume.IsNull() || !BRepLib::OrientClosedSolid(enclosedVolume)
-            || !BRepCheck_Analyzer(enclosedVolume).IsValid()) {
-            throw Base::RuntimeError(
-                std::string(propertyName) + " '" + name
-                + "' produced an invalid OCC solid. Repair "
-                  "self-intersections and non-manifold facets before using "
-                  "a boolean."
-            );
-        }
-
-        TopExp_Explorer orientedShells(enclosedVolume, TopAbs_SHELL);
-        if (!orientedShells.More()) {
-            throw Base::RuntimeError(
-                std::string(propertyName) + " '" + name
-                + "' contains a closed volume without a usable shell."
-            );
-        }
-        const TopoDS_Shell outwardShell = TopoDS::Shell(orientedShells.Current());
-        orientedShells.Next();
-        if (orientedShells.More()) {
-            throw Base::RuntimeError(
-                std::string(propertyName) + " '" + name
-                + "' produced an ambiguous shell during solid "
-                  "classification."
-            );
-        }
-
-        TopExp_Explorer vertices(outwardShell, TopAbs_VERTEX);
-        if (!vertices.More()) {
-            throw Base::RuntimeError(
-                std::string(propertyName) + " '" + name + "' contains a shell without vertices."
-            );
-        }
-        const gp_Pnt samplePoint = BRep_Tool::Pnt(TopoDS::Vertex(vertices.Current()));
-        closedShells.push_back({
-            outwardShell,
-            std::move(enclosedVolume),
-            samplePoint,
-            {},
-            0,
-        });
-        shells.Next();
-    }
-
-    for (std::size_t inner = 0; inner < closedShells.size(); ++inner) {
-        auto& classified = closedShells[inner];
-        classified.containedBy.assign(closedShells.size(), false);
-        for (std::size_t outer = 0; outer < closedShells.size(); ++outer) {
-            if (inner == outer) {
-                continue;
-            }
-            BRepClass3d_SolidClassifier classifier(closedShells[outer].enclosedVolume);
-            classifier.Perform(classified.samplePoint, sewingTolerance);
-            if (classifier.State() == TopAbs_ON) {
-                throw Base::ValueError(
-                    std::string(propertyName) + " '" + name
-                    + "' contains touching or coincident closed shells. "
-                      "Repair the mesh into unambiguous solid regions "
-                      "(shell "
-                    + std::to_string(inner + 1) + " against shell " + std::to_string(outer + 1) + ")."
-                );
-            }
-            if (classifier.State() == TopAbs_IN) {
-                classified.containedBy[outer] = true;
-                ++classified.depth;
-            }
-        }
-    }
-
-    std::vector<TopoDS_Solid> solids;
-    for (std::size_t outer = 0; outer < closedShells.size(); ++outer) {
-        const auto& boundary = closedShells[outer];
-        if (boundary.depth % 2 != 0) {
-            continue;
-        }
-
-        BRepBuilderAPI_MakeSolid solidMaker(boundary.outwardShell);
-        for (std::size_t inner = 0; inner < closedShells.size(); ++inner) {
-            const auto& cavity = closedShells[inner];
-            if (cavity.depth == boundary.depth + 1 && cavity.containedBy[outer]) {
-                solidMaker.Add(TopoDS::Shell(cavity.outwardShell.Reversed()));
-            }
-        }
-        if (!solidMaker.IsDone()) {
-            throw Base::RuntimeError(
-                std::string(propertyName) + " '" + name
-                + "' could not be assembled from its nested shells."
-            );
-        }
-        TopoDS_Solid solid = solidMaker.Solid();
-        if (solid.IsNull() || !BRepLib::OrientClosedSolid(solid)
-            || !BRepCheck_Analyzer(solid).IsValid()) {
-            throw Base::RuntimeError(
-                std::string(propertyName) + " '" + name
-                + "' produced an invalid solid while preserving nested "
-                  "cavities."
-            );
-        }
-        solids.push_back(std::move(solid));
-    }
-
-    if (solids.size() == 1) {
-        return solids.front();
-    }
-    BRep_Builder builder;
-    TopoDS_Compound compound;
-    builder.MakeCompound(compound);
-    for (const auto& solid : solids) {
-        builder.Add(compound, solid);
-    }
-    if (!BRepCheck_Analyzer(compound).IsValid()) {
-        throw Base::RuntimeError(
-            std::string(propertyName) + " '" + name + "' produced invalid disconnected solid topology."
-        );
-    }
-    return compound;
-}
 
 TopoDS_Shape booleanShape(const TopoDS_Shape& first, const TopoDS_Shape& second, const char* operation)
 {
@@ -384,6 +155,13 @@ MeshPart::Boolean::Boolean()
         App::Prop_None,
         "Interpret LinearDeflection relative to the result size."
     );
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (true),
+        "Boolean",
+        App::Prop_None,
+        "Recompute the solid boolean when either linked Mesh changes."
+    );
 
     static const App::PropertyFloatConstraint::Constraints angularRange = {0.0, std::numbers::pi, 0.01};
     AngularDeflection.setConstraints(&angularRange);
@@ -410,7 +188,8 @@ short MeshPart::Boolean::mustExecute() const
     };
     if (Source1.isTouched() || Source2.isTouched() || Operation.isTouched()
         || LinearDeflection.isTouched() || AngularDeflection.isTouched() || Relative.isTouched()
-        || suppressibleExt.Suppressed.isTouched() || sourceTouched(Source1.getValue())
+        || UpdateFromSource.isTouched() || suppressibleExt.Suppressed.isTouched()
+        || sourceTouched(Source1.getValue())
         || sourceTouched(Source2.getValue())) {
         return 1;
     }
@@ -421,7 +200,17 @@ App::DocumentObjectExecReturn* MeshPart::Boolean::execute()
 {
     try {
         if (isSuppressed()) {
-            Mesh.setValue(Mesh::MeshObject());
+            if (UpdateFromSource.getValue()) {
+                Mesh.setValue(Mesh::MeshObject());
+            }
+            return App::DocumentObject::StdReturn;
+        }
+        if (!UpdateFromSource.getValue()) {
+            if (Mesh.getValue().countFacets() == 0) {
+                throw Base::RuntimeError("The detached Mesh boolean has no cached result.");
+            }
+            // The process-isolated worker already validated the exact solid
+            // boolean.  A document recompute must not repeat any BREP work.
             return App::DocumentObject::StdReturn;
         }
         const auto* source1 = freecad_cast<const Mesh::Feature*>(Source1.getValue());
@@ -460,8 +249,8 @@ App::DocumentObjectExecReturn* MeshPart::Boolean::execute()
                                    "than zero and no greater than pi.");
         }
 
-        const TopoDS_Shape first = meshSolidShape(*source1, "Source1");
-        const TopoDS_Shape second = meshSolidShape(*source2, "Source2");
+        const TopoDS_Shape first = MeshPart::solidShapeFromMesh(*source1, 1.0e-6, "Source1");
+        const TopoDS_Shape second = MeshPart::solidShapeFromMesh(*source2, 1.0e-6, "Source2");
         const char* operation = Operation.getValueAsString();
         const TopoDS_Shape result = booleanShape(first, second, operation);
 

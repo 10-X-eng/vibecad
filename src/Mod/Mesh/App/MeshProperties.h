@@ -24,6 +24,9 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <list>
 #include <map>
 #include <set>
@@ -268,6 +271,7 @@ public:
      */
     const MeshObject& getValue() const;
     const MeshObject* getValuePtr() const;
+    std::uint64_t getGeometryRevision() const noexcept;
     unsigned int getMemSize() const override;
     //@}
 
@@ -322,8 +326,13 @@ public:
     //@}
 
 private:
+    void bumpGeometryRevision() noexcept;
+
     Base::Reference<MeshObject> _meshObject;
     MeshPy* meshPyObject {nullptr};
+    std::unique_ptr<std::unique_lock<std::shared_mutex>> editLock;
+    std::size_t editDepth {0};
+    std::atomic<std::uint64_t> geometryRevision {1};
 };
 
 }  // namespace Mesh

@@ -52,6 +52,7 @@ NewFileButton::NewFileButton(const NewButton& newButton)
     iconSize = int(hGrp->GetInt("NewFileIconSize", defaultSize));
 
     auto iconLabel = new QLabel(this);
+    iconLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     QIcon baseIcon(newButton.iconPath);
     iconLabel->setPixmap(baseIcon.pixmap(iconSize, iconSize));
 
@@ -61,11 +62,13 @@ NewFileButton::NewFileButton(const NewButton& newButton)
     textLayout->setContentsMargins(0, 0, 0, 0);
 
     headingLabel->setText(newButton.heading);
+    headingLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     QFont font = headingLabel->font();
     font.setWeight(QFont::Bold);
     headingLabel->setFont(font);
 
     descriptionLabel->setText(newButton.description);
+    descriptionLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     descriptionLabel->setWordWrap(true);
     descriptionLabel->setFixedWidth(labelWidth);
     descriptionLabel->setAlignment(Qt::AlignTop);
@@ -80,6 +83,7 @@ NewFileButton::NewFileButton(const NewButton& newButton)
     mainLayout->setContentsMargins(margin, margin, 2 * margin, margin);
     setLayout(mainLayout);
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    setCursor(Qt::PointingHandCursor);
 }
 
 QSize NewFileButton::minimumSizeHint() const

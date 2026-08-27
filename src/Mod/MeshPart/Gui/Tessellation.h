@@ -26,10 +26,16 @@
 
 #include <QPointer>
 #include <memory>
+#include <string>
 
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
 #include <Mod/Mesh/Gui/RemeshGmsh.h>
+
+
+template<typename T>
+class QFutureWatcher;
+class QProgressDialog;
 
 
 namespace App
@@ -46,25 +52,14 @@ namespace MeshPartGui
  */
 class Mesh2ShapeGmsh: public MeshGui::GmshWidget
 {
-    Q_OBJECT
-
 public:
     explicit Mesh2ShapeGmsh(QWidget* parent = nullptr, Qt::WindowFlags fl = Qt::WindowFlags());
     ~Mesh2ShapeGmsh() override;
 
-    void process(App::Document* doc, const std::list<App::SubObjectT>&);
-    void reject();
-
-Q_SIGNALS:
-    void processed();
-
-protected:
-    bool writeProject(QString& inpFile, QString& outFile) override;
-    bool loadOutput() override;
-
-private:
-    class Private;
-    std::unique_ptr<Private> d;
+    [[nodiscard]] int algorithm() const;
+    [[nodiscard]] double minimumSize() const;
+    [[nodiscard]] double maximumSize() const;
+    [[nodiscard]] std::string executable() const;
 };
 
 class Ui_Tessellation;
@@ -97,19 +92,7 @@ public:
 
 protected:
     void changeEvent(QEvent* e) override;
-    void process(
-        int method,
-        App::Document* doc,
-        const std::list<App::SubObjectT>&
-    );
     void saveParameters(int method);
-    void setFaceColors(int method, App::Document* doc, App::DocumentObject* obj);
-    void addFaceColors(Mesh::Feature* mesh, const std::vector<Base::Color>& colorPerSegm);
-    QString getMeshingParameters(int method, App::DocumentObject* obj) const;
-    QString getStandardParameters(App::DocumentObject* obj) const;
-    QString getMefistoParameters() const;
-    QString getNetgenParameters() const;
-    std::vector<Base::Color> getUniqueColors(const std::vector<Base::Color>& colors) const;
 
 private:
     bool processAndCommit(
@@ -117,24 +100,18 @@ private:
         App::Document* doc,
         const std::list<App::SubObjectT>&
     );
-    void setFaceColors(
-        int method,
-        App::Document* doc,
-        App::DocumentObject* source,
-        Mesh::Feature* result
-    );
     void setupConnections();
-    void meshingMethod(int id);
     void onEstimateMaximumEdgeLengthClicked();
     void onComboFinenessCurrentIndexChanged(int);
     void onCheckSecondOrderToggled(bool);
     void onCheckQuadDominatedToggled(bool);
-    void gmshProcessed();
 
 private:
     class SelectionState;
     QString document;
     QPointer<Mesh2ShapeGmsh> gmsh;
+    QFutureWatcher<double>* edgeEstimateWatcher;
+    QPointer<QProgressDialog> edgeEstimateProgress;
     std::unique_ptr<SelectionState> selectionState;
     std::unique_ptr<Ui_Tessellation> ui;
 };

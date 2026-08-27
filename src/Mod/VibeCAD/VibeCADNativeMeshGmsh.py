@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Mapping
@@ -27,6 +28,7 @@ from VibeCADNativeMeshTargets import (
 )
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity
+from VibeCADScriptedProcess import terminate_process_tree
 
 
 _ALGORITHMS = {
@@ -97,7 +99,10 @@ def prepare_gmsh_request(
     document_uid: str,
     values: Mapping[str, Any],
 ) -> GmshRemeshRequest:
-    target = prepare_mesh_target(document, document_uid, values["target"])
+    raw_targets = values["targets"]
+    if not isinstance(raw_targets, list) or len(raw_targets) != 1:
+        raise NativeMeshError("gmsh_remesh requires exactly one target in targets.")
+    target = prepare_mesh_target(document, document_uid, raw_targets[0])
     algorithm = str(values["algorithm"])
     if algorithm not in _ALGORITHMS:
         raise NativeMeshError("algorithm must be one of the published Gmsh algorithms.")
@@ -115,9 +120,6 @@ def prepare_gmsh_request(
         raise NativeMeshError("timeout_seconds must be between 1 and 86400.")
     import FreeCAD as App
 
-    local_source = target.source.Mesh.copy()
-    placement = App.Placement(local_source.Placement)
-    local_source.Placement = App.Placement()
     return GmshRemeshRequest(
         target,
         algorithm,
@@ -127,8 +129,8 @@ def prepare_gmsh_request(
         angle,
         timeout,
         _configured_gmsh_executable(),
-        local_source,
-        placement,
+        target.source_mesh,
+        App.Placement(target.source.Placement),
     )
 
 
@@ -155,14 +157,7 @@ def _project_text(request: GmshRemeshRequest, input_path: Path) -> str:
 
 
 def _stop_process(process: subprocess.Popen[Any]) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=2.0)
+    terminate_process_tree(process)
 
 
 def run_gmsh_remesh(
@@ -174,9 +169,21 @@ def run_gmsh_remesh(
     if not isinstance(request, GmshRemeshRequest):
         raise TypeError("request must be a GmshRemeshRequest")
     from VibeCADNativeBackground import NativeBackgroundCancelled
+    from VibeCADNativeMeshTargets import snapshot_mesh_targets
 
     if cancelled():
         raise NativeBackgroundCancelled()
+    progress(1, "Capturing exact Mesh snapshot")
+    exact_targets, snapshots = snapshot_mesh_targets((request.target,))
+    local_source = snapshots[0]
+    import FreeCAD as App
+
+    local_source.Placement = App.Placement()
+    request = replace(
+        request,
+        target=exact_targets[0],
+        local_source_mesh=local_source,
+    )
     progress(5, "Writing detached Gmsh input")
     with tempfile.TemporaryDirectory(prefix="vibecad-native-gmsh-") as directory:
         root = Path(directory)
@@ -212,6 +219,11 @@ def run_gmsh_remesh(
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     shell=False,
+                    creationflags=(
+                        int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        if sys.platform == "win32"
+                        else 0
+                    ),
                 )
                 last_progress = 20
                 while process.poll() is None:
@@ -333,7 +345,12 @@ def commit_gmsh_remesh(document: Any, prepared: PreparedGmshRemesh) -> NativeMut
         },
     )
     return NativeMutationDraft(
-        value={"prepared": operation, "results": (result,), "group": None},
+        value={
+            "prepared": operation,
+            "results": (result,),
+            "result_labels": (str(result.Label),),
+            "group": None,
+        },
         recompute_targets=(result,),
         created=(object_identity(result),),
         replaced=(object_identity(request.target.source),),

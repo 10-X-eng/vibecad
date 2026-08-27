@@ -746,34 +746,47 @@ void PropertyMeshKernel::setValuePtr(MeshObject* mesh)
     Base::Reference<MeshObject> tmp(_meshObject);
     aboutToSetValue();
     _meshObject = mesh;
+    bumpGeometryRevision();
     hasSetValue();
 }
 
 void PropertyMeshKernel::setValue(const MeshObject& mesh)
 {
     aboutToSetValue();
+    auto lock = _meshObject->acquireMutationLock();
     *_meshObject = mesh;
+    bumpGeometryRevision();
+    lock.unlock();
     hasSetValue();
 }
 
 void PropertyMeshKernel::setValue(const MeshCore::MeshKernel& mesh)
 {
     aboutToSetValue();
+    auto lock = _meshObject->acquireMutationLock();
     _meshObject->setKernel(mesh);
+    bumpGeometryRevision();
+    lock.unlock();
     hasSetValue();
 }
 
 void PropertyMeshKernel::swapMesh(MeshObject& mesh)
 {
     aboutToSetValue();
+    auto lock = _meshObject->acquireMutationLock();
     _meshObject->swap(mesh);
+    bumpGeometryRevision();
+    lock.unlock();
     hasSetValue();
 }
 
 void PropertyMeshKernel::swapMesh(MeshCore::MeshKernel& mesh)
 {
     aboutToSetValue();
+    auto lock = _meshObject->acquireMutationLock();
     _meshObject->swap(mesh);
+    bumpGeometryRevision();
+    lock.unlock();
     hasSetValue();
 }
 
@@ -785,6 +798,16 @@ const MeshObject& PropertyMeshKernel::getValue() const
 const MeshObject* PropertyMeshKernel::getValuePtr() const
 {
     return static_cast<MeshObject*>(_meshObject);
+}
+
+std::uint64_t PropertyMeshKernel::getGeometryRevision() const noexcept
+{
+    return geometryRevision.load(std::memory_order_relaxed);
+}
+
+void PropertyMeshKernel::bumpGeometryRevision() noexcept
+{
+    geometryRevision.fetch_add(1, std::memory_order_relaxed);
 }
 
 const Data::ComplexGeoData* PropertyMeshKernel::getComplexData() const
@@ -807,34 +830,57 @@ unsigned int PropertyMeshKernel::getMemSize() const
 
 MeshObject* PropertyMeshKernel::startEditing()
 {
+    if (editLock) {
+        ++editDepth;
+        return static_cast<MeshObject*>(_meshObject);
+    }
     aboutToSetValue();
+    editLock = std::make_unique<std::unique_lock<std::shared_mutex>>(
+        _meshObject->acquireMutationLock()
+    );
+    editDepth = 1;
     return static_cast<MeshObject*>(_meshObject);
 }
 
 void PropertyMeshKernel::finishEditing()
 {
+    if (!editLock) {
+        return;
+    }
+    if (--editDepth != 0) {
+        return;
+    }
+    editLock.reset();
+    bumpGeometryRevision();
     hasSetValue();
 }
 
 void PropertyMeshKernel::transformGeometry(const Base::Matrix4D& rclMat)
 {
     aboutToSetValue();
+    auto lock = _meshObject->acquireMutationLock();
     _meshObject->transformGeometry(rclMat);
+    bumpGeometryRevision();
+    lock.unlock();
     hasSetValue();
 }
 
 void PropertyMeshKernel::setPointIndices(const std::vector<std::pair<PointIndex, Base::Vector3f>>& inds)
 {
     aboutToSetValue();
+    auto lock = _meshObject->acquireMutationLock();
     MeshCore::MeshKernel& kernel = _meshObject->getKernel();
     for (const auto& it : inds) {
         kernel.SetPoint(it.first, it.second);
     }
+    bumpGeometryRevision();
+    lock.unlock();
     hasSetValue();
 }
 
 void PropertyMeshKernel::setTransform(const Base::Matrix4D& rclTrf)
 {
+    auto lock = _meshObject->acquireMutationLock();
     _meshObject->setTransform(rclTrf);
 }
 
@@ -910,7 +956,10 @@ void PropertyMeshKernel::Restore(Base::XMLReader& reader)
         kernel.Adopt(points, facets);
 
         aboutToSetValue();
+        auto lock = _meshObject->acquireMutationLock();
         _meshObject->getKernel().Adopt(points, facets);
+        bumpGeometryRevision();
+        lock.unlock();
         hasSetValue();
     }
     else {
@@ -927,7 +976,10 @@ void PropertyMeshKernel::SaveDocFile(Base::Writer& writer) const
 void PropertyMeshKernel::RestoreDocFile(Base::Reader& reader)
 {
     aboutToSetValue();
+    auto lock = _meshObject->acquireMutationLock();
     _meshObject->load(reader);
+    bumpGeometryRevision();
+    lock.unlock();
     hasSetValue();
 }
 
@@ -935,7 +987,8 @@ App::Property* PropertyMeshKernel::Copy() const
 {
     // Note: Copy the content, do NOT reference the same mesh object
     PropertyMeshKernel* prop = new PropertyMeshKernel();
-    *(prop->_meshObject) = *(this->_meshObject);
+    const auto snapshot = _meshObject->snapshot();
+    *(prop->_meshObject) = *snapshot;
     return prop;
 }
 
@@ -944,6 +997,10 @@ void PropertyMeshKernel::Paste(const App::Property& from)
     // Note: Copy the content, do NOT reference the same mesh object
     aboutToSetValue();
     const PropertyMeshKernel& prop = dynamic_cast<const PropertyMeshKernel&>(from);
-    *(this->_meshObject) = *(prop._meshObject);
+    const auto snapshot = prop._meshObject->snapshot();
+    auto lock = _meshObject->acquireMutationLock();
+    *(this->_meshObject) = *snapshot;
+    bumpGeometryRevision();
+    lock.unlock();
     hasSetValue();
 }

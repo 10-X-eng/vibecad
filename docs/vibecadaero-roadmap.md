@@ -4,7 +4,7 @@
 
 **Live baseline audited:** `halthinks/vibecad@31ea810db044db6311207a2538a9b6f7694011ae` on 2026-08-25
 
-**Current roadmap execution branch reconciled:** `halthinks/vibecad@911a4773db5cb0b529b2673b245e729656eea49d` on 2026-08-26, represented by the dependency-ordered PR stack #90 through #95. This is post-baseline implementation evidence awaiting integration, not a rewrite of the historical audit and not a claim that the complete roadmap is finished.
+**Current roadmap execution stack reconciled:** `halthinks/vibecad@c0157d9a6b4a6bc4d54130025ec9dfaf5c7fbbda` on 2026-08-27, represented by the dependency-ordered PR stack #90 through #135 and reconciled in the daily integration checkpoint with `10-X-eng/vibecad@60b8f3fd`. This is post-baseline implementation evidence, not a rewrite of the historical audit and not a claim that the complete roadmap is finished.
 
 **Scope:** VibeCAD host Analysis Runtime, Native Aero integration, the complete VibeCADAero solver ladder, evidence, visualization, remote compute, dynamics, and coupled analysis
 

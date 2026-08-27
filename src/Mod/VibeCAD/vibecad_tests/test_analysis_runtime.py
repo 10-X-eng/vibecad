@@ -41,6 +41,48 @@ def test_generic_analysis_runtime_executes_prepare_validate_commit_lifecycle() -
     assert calls == ["validate", {"prepared": True}]
 
 
+def test_generic_analysis_runtime_can_resolve_document_change_from_result() -> None:
+    manager = AnalysisRuntimeManager()
+
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="analysis.example",
+        prepare=lambda _cancelled, _progress: {"prepared": True},
+        validate_before_commit=lambda: None,
+        commit=lambda _prepared: {"changed": False},
+        dispatch_to_document_thread=lambda callback: callback(),
+        changes_document=True,
+        document_change_resolver=lambda result: result["changed"],
+    )
+
+    completed = manager.wait(submitted.job_id, 2.0)
+
+    assert completed.phase == "completed"
+    assert completed.document_changed is False
+
+
+def test_generic_analysis_runtime_rejects_non_boolean_document_change() -> None:
+    manager = AnalysisRuntimeManager()
+
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="analysis.example",
+        prepare=lambda _cancelled, _progress: {"prepared": True},
+        validate_before_commit=lambda: None,
+        commit=lambda _prepared: {"changed": "yes"},
+        dispatch_to_document_thread=lambda callback: callback(),
+        document_change_resolver=lambda result: result["changed"],
+    )
+
+    completed = manager.wait(submitted.job_id, 2.0)
+
+    assert completed.phase == "failed"
+    assert completed.error == {
+        "error_code": "ANALYSIS_RUNTIME_FAILED",
+        "message": "The Analysis operation failed before publication.",
+    }
+
+
 def test_native_background_is_a_compatibility_facade_over_analysis_runtime() -> None:
     manager = NativeBackgroundManager()
 

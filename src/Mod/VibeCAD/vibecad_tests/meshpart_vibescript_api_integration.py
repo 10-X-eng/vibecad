@@ -175,6 +175,7 @@ def _exercise_source_api() -> None:
     assert solid.properties["representation"] == "surface"
     assert solid.properties["require_closed"] is True
     assert solid.properties["tolerance"] == 0.01
+    assert solid.properties["refine"] is True
 
     try:
         standard.properties["method"] = "max_area"
@@ -317,7 +318,7 @@ def _source() -> str:
         "linear_deflection=inputs['deflection'], angular_deflection_degrees=15, "
         "preserve_face_groups=True, label='Converted Mesh')\n"
         "solid = api.shape_from_mesh(inputs['mesh'], output_type='solid', "
-        "tolerance=inputs['tolerance'], harmonize_normals=True, refine=True, "
+        "tolerance=inputs['tolerance'], harmonize_normals=True, "
         "label='Recovered Solid')\n"
         "boundary = api.shape_from_mesh(inputs['mesh'], output_type='wire', "
         "segment_index=inputs['segment'], label='Face Boundary')\n"
@@ -700,6 +701,7 @@ def _exercise_native_operation_matrix(
         assert by_name["Face"]["facts"]["faces"] == 1
         assert by_name["Shell"]["facts"]["shape_type"] == "Shell"
         assert by_name["Shell"]["detached_shape"].isClosed()
+        assert by_name["Shell"]["facts"]["faces"] == 6
         assert by_name["SurfaceCompound"]["facts"]["shape_type"] == "Compound"
         assert by_name["SurfaceCompound"]["facts"]["faces"] == 12
         boundary = by_name["BoundaryCompound"]

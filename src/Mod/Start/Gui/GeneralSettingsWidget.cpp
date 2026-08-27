@@ -68,22 +68,22 @@ void GeneralSettingsWidget::setupUi()
     createLanguageComboBox();
     createUnitSystemComboBox();
     createNavigationStyleComboBox();
-    createHorizontalUi();
+    createResponsiveUi();
     retranslateUi();
 }
 
-void GeneralSettingsWidget::createHorizontalUi()
+void GeneralSettingsWidget::createResponsiveUi()
 {
-    auto mainLayout = gsl::owner<QHBoxLayout*>(new QHBoxLayout(this));
-    const int extraSpace {36};
-    mainLayout->addWidget(_languageLabel);
-    mainLayout->addWidget(_languageComboBox);
-    mainLayout->addSpacing(extraSpace);
-    mainLayout->addWidget(_unitSystemLabel);
-    mainLayout->addWidget(_unitSystemComboBox);
-    mainLayout->addSpacing(extraSpace);
-    mainLayout->addWidget(_navigationStyleLabel);
-    mainLayout->addWidget(_navigationStyleComboBox);
+    auto mainLayout = gsl::owner<QGridLayout*>(new QGridLayout(this));
+    mainLayout->setHorizontalSpacing(24);
+    mainLayout->setVerticalSpacing(8);
+    mainLayout->addWidget(_languageLabel, 0, 0);
+    mainLayout->addWidget(_languageComboBox, 0, 1);
+    mainLayout->addWidget(_unitSystemLabel, 1, 0);
+    mainLayout->addWidget(_unitSystemComboBox, 1, 1);
+    mainLayout->addWidget(_navigationStyleLabel, 2, 0);
+    mainLayout->addWidget(_navigationStyleComboBox, 2, 1);
+    mainLayout->setColumnStretch(1, 1);
 }
 
 

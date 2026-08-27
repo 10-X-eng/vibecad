@@ -48,6 +48,7 @@ public:
     App::PropertyLink Source;
     PropertyCurvatureList CurvInfo;
     App::PropertyInteger SampleCount;
+    App::PropertyBool UpdateFromSource;
 
     /** @name methods override Feature */
     //@{

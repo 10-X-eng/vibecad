@@ -13,6 +13,7 @@ import VibeCADNativeAnalyzeSnapshot as analyze_snapshot_module
 import VibeCADNativeDrawingSnapshot as drawing_snapshot_module
 import VibeCADNativeModelSnapshot as model_snapshot_module
 import VibeCADNativeManufactureSnapshot as manufacture_snapshot_module
+import VibeCADNativeMeshSnapshot as mesh_snapshot_module
 import VibeCADNativeSketchSnapshot as sketch_snapshot_module
 from VibeCADNativeManufactureReadiness import resolve_active_job
 from VibeCADNativeSnapshot import (
@@ -463,6 +464,147 @@ def test_working_set_rebuild_ignores_deleted_receipt_targets() -> None:
 
     assert result["working_set"] == []
     assert "selection" not in result
+
+
+def test_mesh_snapshot_prioritizes_selected_mesh_beyond_inventory_page() -> None:
+    document = _Document()
+    for index in range(40):
+        mesh = document.add(f"Mesh{index:02d}", "Mesh::Feature")
+        mesh.Mesh = SimpleNamespace(
+            CountPoints=8 + index,
+            CountEdges=18 + index,
+            CountFacets=12 + index,
+        )
+    selected = document.getObject("Mesh39")
+    selection = {
+        "document_uid": "document-a",
+        "selected_count": 1,
+        "items": [
+            {
+                "object": {
+                    "document_uid": "document-a",
+                    "object_name": selected.Name,
+                    "type_id": selected.TypeId,
+                }
+            }
+        ],
+    }
+    state = {
+        "document_uid": "document-a",
+        "structural_revision": 1,
+        "recent_receipts": [],
+    }
+
+    result = build_active_snapshot(document, "mesh", state, selection=selection)
+
+    domain = result["domain"]
+    assert domain["counts"]["mesh"] == 40
+    assert domain["truncated"] is True
+    assert domain["total_objects"] == 40
+    assert len(domain["objects"]) == 32
+    assert domain["objects"][0]["object_name"] == selected.Name
+    assert domain["objects"][0]["topology"] == {
+        "points": 47,
+        "edges": 57,
+        "facets": 51,
+    }
+    assert len(domain["objects"][0]["state_sha256"]) == 64
+
+
+def test_mesh_snapshot_identifies_converted_shape_representation() -> None:
+    document = _Document()
+    converted = document.add("ConvertedMesh", "MeshPart::ShapeFromMesh")
+    converted.Shape = SimpleNamespace(
+        ShapeType="Shell",
+        Solids=[],
+        Shells=[object()],
+        Faces=[object()] * 12,
+        Wires=[],
+        Edges=[object()] * 18,
+        Vertexes=[object()] * 8,
+    )
+
+    result = mesh_snapshot_module.build_mesh_snapshot(document)
+
+    assert result["objects"][0]["shape_type"] == "Shell"
+    assert result["objects"][0]["topology"]["solids"] == 0
+    assert result["objects"][0]["topology"]["shells"] == 1
+
+
+def test_mesh_snapshot_includes_active_design_shape_sources(monkeypatch) -> None:
+    document = _Document()
+    source = document.add("SourceBox", "Part::Box")
+    source.Shape = SimpleNamespace(
+        ShapeType="Solid",
+        Solids=[object()],
+        Shells=[object()],
+        Faces=[object()] * 6,
+        Wires=[],
+        Edges=[object()] * 12,
+        Vertexes=[object()] * 8,
+    )
+    monkeypatch.setattr(
+        mesh_snapshot_module,
+        "active_design_geometry_sources",
+        lambda exact_document: (source,) if exact_document is document else (),
+        raising=False,
+    )
+
+    result = mesh_snapshot_module.build_mesh_snapshot(document)
+
+    assert result["counts"]["shape"] == 1
+    assert [item["object_name"] for item in result["objects"]] == [source.Name]
+    assert result["objects"][0]["shape_type"] == "Solid"
+
+
+def test_mesh_snapshot_omits_replaced_sources_from_domain_and_working_set(
+    monkeypatch,
+) -> None:
+    document = _Document()
+    source_a = document.add("MeshA", "Mesh::Feature")
+    source_b = document.add("MeshB", "Mesh::Feature")
+    result_mesh = document.add("Combined", "Mesh::Merge")
+    for obj, facets in ((source_a, 4), (source_b, 4), (result_mesh, 8)):
+        obj.Mesh = SimpleNamespace(
+            CountPoints=facets,
+            CountEdges=facets + 2,
+            CountFacets=facets,
+        )
+    monkeypatch.setattr(
+        mesh_snapshot_module,
+        "mesh_object_is_context_active",
+        lambda obj: obj is result_mesh,
+        raising=False,
+    )
+    state = {
+        "document_uid": "document-a",
+        "structural_revision": 2,
+        "recent_receipts": [
+            {
+                "created": [{"object_name": result_mesh.Name}],
+                "changed": [],
+                "replaced": [
+                    {"object_name": source_a.Name},
+                    {"object_name": source_b.Name},
+                ],
+            }
+        ],
+    }
+
+    snapshot = build_active_snapshot(
+        document,
+        "mesh",
+        state,
+        selection={"document_uid": "document-a", "items": []},
+    )
+
+    assert snapshot["domain"]["counts"]["mesh"] == 1
+    assert [item["object_name"] for item in snapshot["domain"]["objects"]] == [
+        result_mesh.Name
+    ]
+    assert [item["object_name"] for item in snapshot["working_set"]] == [
+        result_mesh.Name
+    ]
 
 
 def test_model_snapshot_exposes_meshes_needed_by_model_surface_tools() -> None:

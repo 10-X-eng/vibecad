@@ -165,7 +165,7 @@ def _domain_builder(
     if surface_id == "mesh":
         from VibeCADNativeMeshSnapshot import build_mesh_snapshot
 
-        return build_mesh_snapshot
+        return lambda document: build_mesh_snapshot(document, selection=selection)
     if surface_id == "analyze":
         from VibeCADNativeAnalyzeSnapshot import build_analyze_snapshot
 
@@ -301,6 +301,10 @@ def capture_active_snapshot_base(
             analysis_artifact_names=analysis_artifacts,
         )
         include_working_object = include_drawing_object
+    elif surface_id == "mesh":
+        from VibeCADNativeMeshSnapshot import mesh_object_is_context_active
+
+        include_working_object = mesh_object_is_context_active
     working_set = live_working_set(
         document,
         selected,

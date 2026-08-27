@@ -33,6 +33,7 @@ class PreparedMeshPolygon:
     labels: tuple[str, ...]
     expected_result_sha256: tuple[str, ...]
     result_mode: str
+    accepted_meshes: tuple[Any, ...] = ()
 
 
 def _label(value: Any, field: str) -> str:
@@ -144,41 +145,13 @@ def prepare_mesh_polygon(
     )
     polygon = _polygon(values["polygon"])
     result_mode, regions, labels = _result_spec(values["result"])
-    import FreeCAD as App
-
-    vectors = [App.Vector(*point) for point in polygon]
-    expected = []
-    for region in regions:
-        trial = target.source.Mesh.copy()
-        try:
-            getattr(trial, "cut" if operation == "poly_cut" else "trim")(
-                vectors,
-                0 if region == "Inside" else 1,
-            )
-        except Exception as exc:
-            raise NativeMeshError(
-                "The model-space polygon could not be applied to the exact Mesh."
-            ) from exc
-        if int(trial.CountFacets) < 1:
-            raise NativeMeshError(
-                f"The polygon would leave no usable {labels[len(expected)]} result."
-            )
-        digest = mesh_geometry_sha256(trial)
-        if digest == target.source_geometry_sha256:
-            raise NativeMeshError(
-                f"The polygon does not change the requested {labels[len(expected)]} result.",
-                error_code="NATIVE_MESH_OPERATION_NO_CHANGE",
-            )
-        expected.append(digest)
-    if len(set(expected)) != len(expected):
-        raise NativeMeshError("The polygon split did not produce two distinct complements.")
     return PreparedMeshPolygon(
         operation,
         target,
         polygon,
         regions,
         labels,
-        tuple(expected),
+        (),
         result_mode,
     )
 
@@ -196,8 +169,19 @@ def create_mesh_polygon(
     import Mesh  # noqa: F401 - registers Mesh::PolygonEdit
     import MeshGui
 
+    if (
+        len(prepared.accepted_meshes) != len(prepared.regions)
+        or len(prepared.expected_result_sha256) != len(prepared.regions)
+    ):
+        raise NativeMeshError("The accepted polygon results are incomplete.")
+
     results = []
-    for region, label in zip(prepared.regions, prepared.labels):
+    for region, label, accepted in zip(
+        prepared.regions,
+        prepared.labels,
+        prepared.accepted_meshes,
+        strict=True,
+    ):
         result = document.addObject(
             "Mesh::PolygonEdit",
             document.getUniqueObjectName(
@@ -211,6 +195,8 @@ def create_mesh_polygon(
         result.Polygon = [App.Vector(*point) for point in prepared.polygon]
         result.Action = _ACTION[prepared.operation]
         result.Region = region
+        result.UpdateFromSource = False
+        result.Mesh = accepted
         results.append(result)
     group = MeshGui.publishReplacingOutputs(
         str(document.Name),
@@ -290,6 +276,7 @@ def verify_mesh_polygon(document: Any, draft: NativeMutationDraft) -> dict[str, 
             or str(result.Action) != _ACTION[prepared.operation]
             or str(result.Region) != region
             or str(result.Label) != label
+            or bool(result.UpdateFromSource)
             or actual_polygon != prepared.polygon
             or not bool(result.isValid())
             or int(result.Mesh.CountFacets) < 1

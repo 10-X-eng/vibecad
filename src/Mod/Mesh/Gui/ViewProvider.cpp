@@ -25,6 +25,9 @@
 #include <algorithm>
 
 #include <QAction>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMenu>
 #include <cmath>
 #include <cstdlib>
@@ -94,6 +97,8 @@
 #include <zipios++/gzipoutputstream.h>
 
 #include "CommandGuard.h"
+#include "BackgroundMeshCut.h"
+#include "BackgroundMeshModification.h"
 #include "ParametricMeshFilter.h"
 #include "SoFCIndexedFaceSet.h"
 #include "SoFCMeshObject.h"
@@ -962,193 +967,83 @@ void ViewProviderMesh::showOpenEdges(bool show)
     (void)show;
 }
 
-namespace MeshGui
+void ViewProviderMesh::scheduleViewportPolygonEdit(
+    Gui::View3DInventorViewer& view,
+    const std::vector<SbVec2f>& polygon,
+    Gui::SelectionRole role,
+    const char* operation
+)
 {
-static bool sameMeshGeometry(const Mesh::MeshObject& left, const Mesh::MeshObject& right)
-{
-    const auto& leftKernel = left.getKernel();
-    const auto& rightKernel = right.getKernel();
-    if (leftKernel.GetPoints() != rightKernel.GetPoints()) {
-        return false;
+    auto* guiDocument = view.getDocument();
+    auto* document = guiDocument ? guiDocument->getDocument() : nullptr;
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+        return;
     }
-    const auto& leftFacets = leftKernel.GetFacets();
-    const auto& rightFacets = rightKernel.GetFacets();
-    if (leftFacets.size() != rightFacets.size()) {
-        return false;
+    QJsonArray targets;
+    for (auto* provider : view.getViewProvidersOfType(ViewProviderMesh::getClassTypeId())) {
+        auto* meshProvider = static_cast<ViewProviderMesh*>(provider);
+        if (meshProvider->getEditingMode() < 0) {
+            continue;
+        }
+        meshProvider->finishEditing();
+        auto* source = meshProvider->getObject<Mesh::Feature>();
+        if (!source || source->getDocument() != document
+            || !MeshGui::isNativeMeshInputActive(source)) {
+            throw Base::RuntimeError("The viewport Mesh selection changed before dispatch");
+        }
+        targets.append(QString::fromUtf8(source->getNameInDocument()));
     }
-    return std::ranges::equal(
-        leftFacets,
-        rightFacets,
-        [](const MeshCore::MeshFacet& first, const MeshCore::MeshFacet& second) {
-            return first._aulPoints[0] == second._aulPoints[0]
-                && first._aulPoints[1] == second._aulPoints[1]
-                && first._aulPoints[2] == second._aulPoints[2];
+    if (targets.isEmpty()) {
+        return;
+    }
+    QJsonArray points;
+    for (const auto& point : polygon) {
+        QJsonArray value;
+        value.append(point[0]);
+        value.append(point[1]);
+        points.append(value);
+    }
+    auto* camera = view.getSoRenderManager()->getCamera();
+    if (!camera) {
+        throw Base::RuntimeError("The viewport camera is unavailable");
+    }
+    const Gui::ViewVolumeProjection projection(camera->getViewVolume());
+    const Base::Matrix4D matrix = projection.getProjectionMatrix();
+    QJsonArray matrixValues;
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            matrixValues.append(matrix[row][column]);
         }
-    );
-}
-
-class MeshSplit
-{
-public:
-    using Batch = std::vector<std::shared_ptr<MeshSplit>>;
-
-    MeshSplit(ViewProviderMesh* mesh, std::vector<SbVec2f> poly, const Gui::ViewVolumeProjection& proj)
-        : object(mesh ? mesh->getObject<Mesh::Feature>() : nullptr)
-        , poly(std::move(poly))
-        , proj(proj)
-    {}
-    static void applyBatch(const std::shared_ptr<Batch>& batch, bool trim)
-    {
-        if (!batch || batch->empty()) {
-            return;
-        }
-        App::Document* document = batch->front()->document();
-        if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
-            return;
-        }
+    }
+    const char* mode = role == Gui::SelectionRole::Inner
+        ? "remove_inside"
+        : role == Gui::SelectionRole::Outer ? "remove_outside" : "split";
+    const QJsonObject payload {
+        {"document", QString::fromUtf8(document->getName())},
+        {"targets", targets},
+        {"polygon", points},
+        {"projection_matrix", matrixValues},
+        {"mode", mode},
+    };
+    const std::string operationName(operation);
+    const std::string arguments = QJsonDocument(payload)
+                                      .toJson(QJsonDocument::Compact)
+                                      .toStdString();
+    auto* dispatch = new Gui::TimerFunction();
+    dispatch->setAutoDelete(true);
+    dispatch->setFunction([operationName, arguments]() {
         try {
-            std::vector<MeshGui::ParametricMeshFilterTarget> cutOperations;
-            std::vector<MeshGui::StoredMeshEditTarget> trimOperations;
-            for (const auto& operation : *batch) {
-                if (!operation || operation->document() != document) {
-                    throw Base::RuntimeError("Mesh cut selection changed before it was applied");
-                }
-                operation->appendOperations(trim, cutOperations, trimOperations);
-            }
-            if (trim) {
-                MeshGui::createStoredMeshEdits(
-                    *document,
-                    trimOperations,
-                    QT_TRANSLATE_NOOP("Command", "Trim"),
-                    true,
-                    "PolygonTrimSplit",
-                    "Split Mesh by Polygon",
-                    "Polygon trim split"
-                );
-            }
-            else {
-                MeshGui::createParametricMeshFilters(
-                    *document,
-                    cutOperations,
-                    MeshGui::ParametricMeshFilterSpec {
-                        "Mesh::FacetEdit",
-                        "PolygonCut",
-                        "Polygon Cut Mesh",
-                        QT_TRANSLATE_NOOP("Command", "Cut"),
-                        true,
-                        true,
-                        true,
-                        "PolygonCutSplit",
-                        "Split Mesh by Polygon",
-                        "Polygon cut split",
-                    }
-                );
-            }
+            MeshGui::startBackgroundMeshCut(operationName.c_str(), arguments);
         }
         catch (const Base::Exception& error) {
-            Base::Console().error("Mesh polygon operation failed: %s\n", error.what());
+            Base::Console().error("Mesh viewport polygon edit failed: %s\n", error.what());
         }
-        catch (...) {
-            Base::Console().error("Mesh polygon operation failed with an unknown error\n");
-        }
-    }
-
-private:
-    void appendOperations(
-        bool trim,
-        std::vector<MeshGui::ParametricMeshFilterTarget>& cutOperations,
-        std::vector<MeshGui::StoredMeshEditTarget>& trimOperations
-    )
-    {
-        auto* feature = object.get<Mesh::Feature>();
-        if (!MeshGui::isNativeMeshInputActive(feature)) {
-            throw Base::RuntimeError("The mesh selected for splitting is no longer active");
-        }
-        Gui::Document* gui = feature && Gui::Application::Instance
-            ? Gui::Application::Instance->getDocument(document())
-            : nullptr;
-        auto* mesh = gui ? freecad_cast<ViewProviderMesh*>(gui->getViewProvider(feature)) : nullptr;
-        if (!mesh) {
-            throw Base::RuntimeError("The mesh selected for splitting no longer exists");
-        }
-        const Mesh::MeshObject source = feature->Mesh.getValue();
-        if (trim) {
-            Base::Polygon2d polygon;
-            for (const auto& point : poly) {
-                polygon.Add(Base::Vector2d(point[0], point[1]));
-            }
-            Mesh::MeshObject outer = source;
-            Mesh::MeshObject inner = source;
-            outer.trim(polygon, proj, Mesh::MeshObject::OUTER);
-            inner.trim(polygon, proj, Mesh::MeshObject::INNER);
-            if (outer.countFacets() == 0 || inner.countFacets() == 0
-                || sameMeshGeometry(outer, source) || sameMeshGeometry(inner, source)) {
-                throw Base::RuntimeError(
-                    "The selected polygon does not divide the mesh into two usable results"
-                );
-            }
-            trimOperations.push_back(
-                MeshGui::StoredMeshEditTarget {
-                    feature,
-                    std::move(outer),
-                    "PolygonTrim",
-                    "Polygon Trim Mesh",
-                    "Polygon trim outside",
-                }
-            );
-            trimOperations.push_back(
-                MeshGui::StoredMeshEditTarget {
-                    feature,
-                    std::move(inner),
-                    "PolygonTrim",
-                    "Polygon Trim Mesh",
-                    "Polygon trim inside",
-                }
-            );
-        }
-        else {
-            for (bool inner : {false, true}) {
-                std::vector<Mesh::FacetIndex> selected;
-                mesh->getFacetsFromPolygon(poly, proj, inner, selected);
-                if (selected.empty() || selected.size() == source.countFacets()) {
-                    throw Base::RuntimeError(
-                        "The selected polygon does not divide the mesh into two usable results"
-                    );
-                }
-                std::vector<long> indices(selected.begin(), selected.end());
-                cutOperations.push_back(
-                    MeshGui::ParametricMeshFilterTarget {
-                        feature,
-                        [feature, indices = std::move(indices)](App::DocumentObject& object) {
-                            auto& edit = static_cast<Mesh::FacetEdit&>(object);
-                            edit.Action.setValue("Remove Facets");
-                            edit.Indices.setValues(indices);
-                            edit.AcceptedSource.setValue(feature->Mesh.getValue());
-                        },
-                    }
-                );
-            }
-        }
-    }
-
-    App::Document* document() const
-    {
-        auto* feature = object.get<Mesh::Feature>();
-        return feature ? feature->getDocument() : nullptr;
-    }
-
-private:
-    App::DocumentObjectWeakPtrT object;
-    std::vector<SbVec2f> poly;
-    Gui::ViewVolumeProjection proj;
-};
-}  // namespace MeshGui
+    });
+    dispatch->singleShot(0);
+}
 
 void ViewProviderMesh::clipMeshCallback(void* ud, SoEventCallback* cb)
 {
-    // show the wait cursor because this could take quite some time
-    Gui::WaitCursor wc;
-
     // When this callback function is invoked we must in either case leave the edit mode
     auto view = static_cast<Gui::View3DInventorViewer*>(cb->getUserData());
     view->setEditing(false);
@@ -1160,113 +1055,17 @@ void ViewProviderMesh::clipMeshCallback(void* ud, SoEventCallback* cb)
     if (clPoly.size() < 3) {
         return;
     }
-    if (clPoly.front() != clPoly.back()) {
-        clPoly.push_back(clPoly.front());
+    try {
+        scheduleViewportPolygonEdit(*view, clPoly, role, "viewport_cut");
     }
-
-    std::vector<Gui::ViewProvider*> views = view->getViewProvidersOfType(
-        ViewProviderMesh::getClassTypeId()
-    );
-    if (!views.empty()) {
-        Gui::Document* guiDocument = view->getDocument();
-        App::Document* document = guiDocument ? guiDocument->getDocument() : nullptr;
-        std::vector<MeshGui::ParametricMeshFilterTarget> cutOperations;
-        auto splitBatch = std::make_shared<MeshSplit::Batch>();
-        try {
-            for (auto it : views) {
-                auto self = static_cast<ViewProviderMesh*>(it);
-                if (self->getEditingMode() > -1) {
-                    self->finishEditing();
-                    auto* source = self->getObject<Mesh::Feature>();
-                    if (!source || source->getDocument() != document
-                        || !MeshGui::isNativeMeshInputActive(source)) {
-                        throw Base::RuntimeError(
-                            "Mesh cut selection changed before it was applied"
-                        );
-                    }
-                    SoCamera* cam = view->getSoRenderManager()->getCamera();
-                    SbViewVolume vv = cam->getViewVolume();
-                    Gui::ViewVolumeProjection proj(vv);
-                    proj.setTransform(
-                        source->Placement.getValue().toMatrix()
-                    );
-                    if (role == Gui::SelectionRole::Inner || role == Gui::SelectionRole::Outer) {
-                        std::vector<Mesh::FacetIndex> selected;
-                        self->getFacetsFromPolygon(
-                            clPoly,
-                            proj,
-                            role == Gui::SelectionRole::Inner,
-                            selected
-                        );
-                        if (!selected.empty()
-                            && selected.size() < source->Mesh.getValue().countFacets()) {
-                            std::vector<long> indices(selected.begin(), selected.end());
-                            cutOperations.push_back(
-                                MeshGui::ParametricMeshFilterTarget {
-                                    source,
-                                    [source,
-                                     indices = std::move(indices)](App::DocumentObject& object) {
-                                        auto& edit = static_cast<Mesh::FacetEdit&>(object);
-                                        edit.Action.setValue("Remove Facets");
-                                        edit.Indices.setValues(indices);
-                                        edit.AcceptedSource.setValue(source->Mesh.getValue());
-                                    },
-                                }
-                            );
-                        }
-                    }
-                    else if (role == Gui::SelectionRole::Split) {
-                        splitBatch->push_back(std::make_shared<MeshSplit>(self, clPoly, proj));
-                    }
-                }
-            }
-        }
-        catch (const Base::Exception& error) {
-            Base::Console().error("Mesh polygon cut failed: %s\n", error.what());
-            view->redraw();
-            return;
-        }
-        catch (...) {
-            Base::Console().error("Mesh polygon cut failed with an unknown error\n");
-            view->redraw();
-            return;
-        }
-
-        if (!cutOperations.empty()) {
-            try {
-                MeshGui::createParametricMeshFilters(
-                    *document,
-                    cutOperations,
-                    MeshGui::ParametricMeshFilterSpec {
-                        "Mesh::FacetEdit",
-                        "PolygonCut",
-                        "Polygon Cut Mesh",
-                        QT_TRANSLATE_NOOP("Command", "Cut"),
-                    }
-                );
-            }
-            catch (const Base::Exception& error) {
-                Base::Console().error("The mesh cut could not be committed: %s\n", error.what());
-            }
-        }
-        if (!splitBatch->empty()) {
-            // Adding result nodes during scenegraph traversal is unsafe,
-            // so execute the entire split as one delayed transaction.
-            auto func = new Gui::TimerFunction();
-            func->setAutoDelete(true);
-            func->setFunction([splitBatch]() { MeshSplit::applyBatch(splitBatch, false); });
-            func->singleShot(0);
-        }
-
-        view->redraw();
+    catch (const Base::Exception& error) {
+        Base::Console().error("Mesh polygon cut failed: %s\n", error.what());
     }
+    view->redraw();
 }
 
 void ViewProviderMesh::trimMeshCallback(void* ud, SoEventCallback* cb)
 {
-    // show the wait cursor because this could take quite some time
-    Gui::WaitCursor wc;
-
     // When this callback function is invoked we must in either case leave the edit mode
     auto view = static_cast<Gui::View3DInventorViewer*>(cb->getUserData());
     view->setEditing(false);
@@ -1278,102 +1077,13 @@ void ViewProviderMesh::trimMeshCallback(void* ud, SoEventCallback* cb)
     if (clPoly.size() < 3) {
         return;
     }
-    if (clPoly.front() != clPoly.back()) {
-        clPoly.push_back(clPoly.front());
+    try {
+        scheduleViewportPolygonEdit(*view, clPoly, role, "viewport_trim");
     }
-
-    std::vector<Gui::ViewProvider*> views = view->getViewProvidersOfType(
-        ViewProviderMesh::getClassTypeId()
-    );
-    if (!views.empty()) {
-        Gui::Document* guiDocument = view->getDocument();
-        App::Document* document = guiDocument ? guiDocument->getDocument() : nullptr;
-        std::vector<MeshGui::StoredMeshEditTarget> trimOperations;
-        auto splitBatch = std::make_shared<MeshSplit::Batch>();
-        try {
-            for (auto it : views) {
-                auto self = static_cast<ViewProviderMesh*>(it);
-                if (self->getEditingMode() > -1) {
-                    self->finishEditing();
-                    auto* source = self->getObject<Mesh::Feature>();
-                    if (!source || source->getDocument() != document
-                        || !MeshGui::isNativeMeshInputActive(source)) {
-                        throw Base::RuntimeError(
-                            "Mesh trim selection changed before it was applied"
-                        );
-                    }
-                    SoCamera* cam = view->getSoRenderManager()->getCamera();
-                    SbViewVolume vv = cam->getViewVolume();
-                    Gui::ViewVolumeProjection proj(vv);
-                    proj.setTransform(
-                        source->Placement.getValue().toMatrix()
-                    );
-                    if (role == Gui::SelectionRole::Inner || role == Gui::SelectionRole::Outer) {
-                        Mesh::MeshObject accepted = source->Mesh.getValue();
-                        Base::Polygon2d polygon;
-                        for (const auto& point : clPoly) {
-                            polygon.Add(Base::Vector2d(point[0], point[1]));
-                        }
-                        accepted.trim(
-                            polygon,
-                            proj,
-                            role == Gui::SelectionRole::Inner ? Mesh::MeshObject::INNER
-                                                              : Mesh::MeshObject::OUTER
-                        );
-                        if (accepted.countFacets() > 0
-                            && !sameMeshGeometry(accepted, source->Mesh.getValue())) {
-                            trimOperations.push_back(
-                                MeshGui::StoredMeshEditTarget {
-                                    source,
-                                    std::move(accepted),
-                                    "PolygonTrim",
-                                    "Polygon Trim Mesh",
-                                    role == Gui::SelectionRole::Inner ? "Polygon trim inside"
-                                                                      : "Polygon trim outside",
-                                }
-                            );
-                        }
-                    }
-                    else if (role == Gui::SelectionRole::Split) {
-                        splitBatch->push_back(std::make_shared<MeshSplit>(self, clPoly, proj));
-                    }
-                }
-            }
-        }
-        catch (const Base::Exception& error) {
-            Base::Console().error("Mesh polygon trim failed: %s\n", error.what());
-            view->redraw();
-            return;
-        }
-        catch (...) {
-            Base::Console().error("Mesh polygon trim failed with an unknown error\n");
-            view->redraw();
-            return;
-        }
-
-        if (!trimOperations.empty()) {
-            try {
-                MeshGui::createStoredMeshEdits(
-                    *document,
-                    trimOperations,
-                    QT_TRANSLATE_NOOP("Command", "Trim")
-                );
-            }
-            catch (const Base::Exception& error) {
-                Base::Console().error("The mesh trim could not be committed: %s\n", error.what());
-            }
-        }
-        if (!splitBatch->empty()) {
-            // Adding result nodes during scenegraph traversal is unsafe,
-            // so execute the entire split as one delayed transaction.
-            auto func = new Gui::TimerFunction();
-            func->setAutoDelete(true);
-            func->setFunction([splitBatch]() { MeshSplit::applyBatch(splitBatch, true); });
-            func->singleShot(0);
-        }
-
-        view->redraw();
+    catch (const Base::Exception& error) {
+        Base::Console().error("Mesh polygon trim failed: %s\n", error.what());
     }
+    view->redraw();
 }
 
 void ViewProviderMesh::partMeshCallback(void* ud, SoEventCallback* cb)
@@ -1971,6 +1681,7 @@ void ViewProviderMesh::splitMesh(
     auto splitMesh = doc->addObject<Mesh::Feature>(name);
     // Note: deletes also kernel
     splitMesh->Mesh.setValuePtr(kernel);
+    MeshGui::ensureMeshesGroup(*doc);
     getObject()->purgeTouched();
 }
 
@@ -2148,12 +1859,10 @@ void ViewProviderMesh::fillHoleCallback(void* ud, SoEventCallback* cb)
                 // get the boundary to the picked facet
                 Mesh::FacetIndex uFacet = static_cast<const SoFaceDetail*>(detail)->getFaceIndex();
                 that->fillHole(uFacet);
-                if (!that->isVisible()) {
-                    view->setEditing(false);
-                    view->setSelectionEnabled(true);
-                    view->getWidget()->setCursor(QCursor(Qt::ArrowCursor));
-                    view->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), fillHoleCallback, ud);
-                }
+                view->setEditing(false);
+                view->setSelectionEnabled(true);
+                view->getWidget()->setCursor(QCursor(Qt::ArrowCursor));
+                view->removeEventCallback(SoMouseButtonEvent::getClassTypeId(), fillHoleCallback, ud);
             }
         }
     }
@@ -2351,111 +2060,19 @@ void ViewProviderMesh::fillHole(Mesh::FacetIndex uFacet)
         "Mod/Mesh"
     );
     int level = (int)hGrp->GetInt("FillHoleLevel", 2);
-
-    // get the boundary to the picked facet
-    std::list<Mesh::PointIndex> aBorder;
-    const MeshCore::MeshKernel& rKernel = getMeshObject().getKernel();
-    MeshCore::MeshRefPointToFacets cPt2Fac(rKernel);
-    MeshCore::MeshAlgorithm meshAlg(rKernel);
-    meshAlg.GetFacetBorder(uFacet, aBorder);
-    std::vector<Mesh::PointIndex> boundary(aBorder.begin(), aBorder.end());
-    std::list<std::vector<Mesh::PointIndex>> boundaries;
-    boundaries.push_back(boundary);
-    meshAlg.SplitBoundaryLoops(boundaries);
-
-    std::vector<MeshCore::MeshFacet> newFacets;
-    std::vector<Base::Vector3f> newPoints;
-    unsigned long numberOfOldPoints = rKernel.CountPoints();
-    for (const auto& it : boundaries) {
-        if (it.size() < 3 /* || it->size() > 200*/) {
-            continue;
-        }
-        boundary = it;
-        MeshCore::MeshFacetArray faces;
-        MeshCore::MeshPointArray points;
-        MeshCore::QuasiDelaunayTriangulator cTria /*(0.05f)*/;
-        cTria.SetVerifier(new MeshCore::TriangulationVerifierV2);
-        if (meshAlg.FillupHole(boundary, cTria, faces, points, level, &cPt2Fac)) {
-            if (boundary.front() == boundary.back()) {
-                boundary.pop_back();
-            }
-            // the triangulation may produce additional points which we must take into account when
-            // appending to the mesh
-            unsigned long countBoundaryPoints = boundary.size();
-            unsigned long countDifference = points.size() - countBoundaryPoints;
-            if (countDifference > 0) {
-                auto pt = points.begin() + countBoundaryPoints;
-                for (unsigned long i = 0; i < countDifference; i++, pt++) {
-                    boundary.push_back(numberOfOldPoints++);
-                    newPoints.push_back(*pt);
-                }
-            }
-            for (auto& face : faces) {
-                face._aulPoints[0] = boundary[face._aulPoints[0]];
-                face._aulPoints[1] = boundary[face._aulPoints[1]];
-                face._aulPoints[2] = boundary[face._aulPoints[2]];
-                newFacets.push_back(face);
-            }
-        }
-    }
-
-    if (newFacets.empty()) {
-        return;  // nothing to do
-    }
-
-    App::Document* document = source->getDocument();
-    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
-        return;
-    }
-    auto& prop = getMeshProperty();
-    const Mesh::MeshObject original = prop.getValue();
-    Mesh::MeshObject filled = original;
-    filled.addFacets(newFacets, newPoints, true);
-    if (filled.countFacets() - original.countFacets() != newFacets.size()) {
-        return;
-    }
-
-    // MeshKernel inserts proposed points before it filters invalid facets.
-    // Reject a partial result if that filtering left any newly-added point
-    // unreferenced; committing such a result would corrupt the mesh even
-    // though at least one triangle happened to be accepted.
-    const unsigned long originalPointCount = original.countPoints();
-    const unsigned long appendedPointCount = filled.countPoints() - originalPointCount;
-    std::vector<bool> appendedPointUsed(appendedPointCount, false);
-    const auto& acceptedFacets = filled.getKernel().GetFacets();
-    for (unsigned long facetIndex = original.countFacets(); facetIndex < acceptedFacets.size();
-         ++facetIndex) {
-        for (Mesh::PointIndex pointIndex : acceptedFacets[facetIndex]._aulPoints) {
-            if (pointIndex >= originalPointCount) {
-                appendedPointUsed[pointIndex - originalPointCount] = true;
-            }
-        }
-    }
-    if (std::ranges::any_of(appendedPointUsed, [](bool used) { return !used; })) {
-        return;
-    }
-
     try {
-        MeshGui::createParametricMeshFilters(
-            *document,
+        MeshGui::startBackgroundMeshModification(
             {
-                MeshGui::ParametricMeshFilterTarget {
+                MeshGui::BackgroundMeshModificationTarget {
                     source,
-                    [source, uFacet, level](App::DocumentObject& object) {
-                        auto& edit = static_cast<Mesh::FacetEdit&>(object);
-                        edit.Action.setValue("Fill Hole");
-                        edit.SeedFacet.setValue(static_cast<long>(uFacet));
-                        edit.Level.setValue(level);
-                        edit.AcceptedSource.setValue(source->Mesh.getValue());
-                    },
-                },
+                    "Fill Mesh Hole",
+                    {},
+                    {},
+                }
             },
-            MeshGui::ParametricMeshFilterSpec {
-                "Mesh::FacetEdit",
-                "FillHole",
-                "Fill Mesh Hole",
-                QT_TRANSLATE_NOOP("Command", "Fill hole"),
-            }
+            "fill_boundary",
+            "{\"seed_facet_index\":" + std::to_string(uFacet)
+                + ",\"refinement_level\":" + std::to_string(level) + "}"
         );
     }
     catch (const Base::Exception& error) {

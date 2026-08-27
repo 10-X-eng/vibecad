@@ -23,7 +23,15 @@ from VibeCADNativeBackgroundSchema import NATIVE_BACKGROUND_CAPABILITY_NAME
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeMeshComponents import mesh_components
-from VibeCADNativeMeshModifySchema import MESH_MODIFY_CAPABILITY_NAME
+from VibeCADNativeMeshModifySchema import (
+    MESH_DECIMATE_CAPABILITY_NAME,
+    MESH_FILL_HOLES_CAPABILITY_NAME,
+    MESH_MODIFY_CAPABILITY_NAME,
+    MESH_REPAIR_CAPABILITY_NAME,
+    MESH_REMESH_CAPABILITY_NAME,
+    MESH_SCALE_CAPABILITY_NAME,
+    MESH_SMOOTH_CAPABILITY_NAME,
+)
 from VibeCADNativeMeshState import mesh_object_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -34,6 +42,7 @@ from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
 from native_mesh_modify_gui_support import (
     add_sources,
+    duplicated_tetrahedron,
     open_tetrahedron,
     point_index,
     smoothing_patch,
@@ -68,13 +77,26 @@ def _select_mesh_ribbon(main_window):
 def _turn(surface, registry) -> NativeTurnSnapshot:
     jobs = registry.definition(NATIVE_BACKGROUND_CAPABILITY_NAME)
     modify = registry.definition(MESH_MODIFY_CAPABILITY_NAME)
-    assert jobs is not None and modify is not None
+    focused_names = (
+        MESH_REPAIR_CAPABILITY_NAME,
+        MESH_FILL_HOLES_CAPABILITY_NAME,
+        MESH_SMOOTH_CAPABILITY_NAME,
+        MESH_REMESH_CAPABILITY_NAME,
+        MESH_DECIMATE_CAPABILITY_NAME,
+        MESH_SCALE_CAPABILITY_NAME,
+    )
+    focused = tuple(registry.definition(name) for name in focused_names)
+    assert jobs is not None and modify is not None and all(focused)
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(NATIVE_BACKGROUND_CAPABILITY_NAME, MESH_MODIFY_CAPABILITY_NAME),
+            tool_names=(
+                NATIVE_BACKGROUND_CAPABILITY_NAME,
+                MESH_MODIFY_CAPABILITY_NAME,
+                *focused_names,
+            ),
             schemas=(
                 jobs.provider_schema(("status", "cancel")),
                 modify.provider_schema(
@@ -90,6 +112,11 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
                         "decimate",
                         "scale",
                     )
+                ),
+                *(
+                    definition.provider_schema((definition.variants[0].operation,))
+                    for definition in focused
+                    if definition is not None
                 ),
             ),
             human_only_action_ids=(),
@@ -165,15 +192,6 @@ def _run() -> None:
             background_manager=service.native_background_manager(),
             document_thread_dispatch=VibeGui._dispatch_to_document_thread,
         )
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
         call_number = 0
 
         def call(name: str, arguments: dict, *, succeeds: bool = True) -> dict:
@@ -187,10 +205,34 @@ def _run() -> None:
             assert response.get("ok") is succeeds, response
             return response
 
+        def call_modify(
+            arguments: dict,
+            *,
+            capability: str = MESH_MODIFY_CAPABILITY_NAME,
+            timeout_seconds: float = 30.0,
+        ) -> dict:
+            started = time.monotonic()
+            queued = call(capability, arguments)
+            assert time.monotonic() - started < 0.25, queued
+            job_id = queued["job"]["job_id"]
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
+                _process_events(2)
+                snapshot = context.background_manager.snapshot(job_id)
+                if snapshot.terminal:
+                    break
+                time.sleep(0.01)
+            snapshot = context.background_manager.snapshot(job_id)
+            assert snapshot.phase == "completed", snapshot.error
+            assert isinstance(snapshot.result, dict)
+            return snapshot.result
+
         sources = add_sources(
             document,
             (
                 ("HarmonizeSource", tetrahedron(inconsistent=True)),
+                ("RepairSource", duplicated_tetrahedron()),
+                ("CleanNormalsSource", tetrahedron()),
                 ("FlipSourceA", tetrahedron()),
                 ("FlipSourceB", tetrahedron(12.0)),
                 ("FillHolesSource", open_tetrahedron()),
@@ -203,6 +245,29 @@ def _run() -> None:
                 ("ScaleSource", tetrahedron()),
                 ("GmshSource", tetrahedron()),
             ),
+        )
+        imported_path = root / "ImportedRepair.stl"
+        duplicated_tetrahedron().write(str(imported_path))
+        existing_names = {obj.Name for obj in document.Objects}
+        Mesh.insert(str(imported_path), document.Name)
+        imported = [
+            obj
+            for obj in document.Objects
+            if obj.Name not in existing_names and obj.isDerivedFrom("Mesh::Feature")
+        ]
+        assert len(imported) == 1
+        sources["ImportedRepairSource"] = imported[0]
+        _process_events(8)
+        document.save()
+        _process_events(8)
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
         )
         stale = call(
             MESH_MODIFY_CAPABILITY_NAME,
@@ -218,22 +283,75 @@ def _run() -> None:
             },
             succeeds=False,
         )
-        assert stale["error_code"] == "NATIVE_MESH_STATE_STALE"
+        assert stale["error_code"] == "NATIVE_MESH_STATE_STALE", stale
         assert "current_state_sha256" in stale["repair"]
 
-        harmonized = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+        clean_source = sources["CleanNormalsSource"]
+        history_before_noop = tuple(document.VibeCADTimeline.Operations)
+        revision_before_noop = state.current_revision(context.document_uid)
+        clean_noop = call_modify(
             {
                 "operation": "harmonize_normals",
-                "targets": [_target(sources["HarmonizeSource"], "Harmonized Mesh")],
+                "targets": [_target(clean_source, "Already Coherent Mesh")],
             },
         )
+        assert clean_noop["changed"] is False
+        assert clean_noop["outputs"] == []
+        assert clean_noop["unchanged"][0]["object_name"] == clean_source.Name
+        assert clean_source.Visibility
+        assert tuple(document.VibeCADTimeline.Operations) == history_before_noop
+        assert state.current_revision(context.document_uid) == revision_before_noop
+
+        harmonized = call_modify(
+            {
+                "operation": "harmonize_normals",
+                "targets": [
+                    _target(sources["HarmonizeSource"], "Harmonized Mesh"),
+                    _target(clean_source, "Already Coherent Mesh"),
+                ],
+            },
+        )
+        assert harmonized["changed"] is True
+        assert harmonized["unchanged"][0]["object_name"] == clean_source.Name
         harmonized_result = _result_object(document, harmonized)
         assert harmonized_result.TypeId == "Mesh::HarmonizeNormals"
         assert harmonized_result.Mesh.countNonUniformOrientedFacets() == 0
+        assert clean_source.Visibility
 
-        flipped = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+        repaired = call_modify(
+            {
+                "targets": [_target(sources["RepairSource"], "Repaired Mesh")],
+                "defects": ["duplicated_facets"],
+            },
+            capability=MESH_REPAIR_CAPABILITY_NAME,
+        )
+        repaired_result = _result_object(document, repaired)
+        repaired_report = Mesh.evaluateNative(repaired_result.Mesh, "strict", 8)
+        assert repaired_result.TypeId == "Mesh::Repair"
+        assert repaired_result.Mesh.CountFacets == 4
+        assert repaired_report["issues"]["duplicated_facets"]["count"] == 0
+        assert repaired_report["solid"] and repaired_report["watertight"]
+
+        imported_repaired = call_modify(
+            {
+                "targets": [
+                    _target(
+                        sources["ImportedRepairSource"],
+                        sources["ImportedRepairSource"].Label,
+                    )
+                ],
+                "defects": ["duplicated_facets", "non_manifold_edges"],
+            },
+            capability=MESH_REPAIR_CAPABILITY_NAME,
+        )
+        imported_result = _result_object(document, imported_repaired)
+        imported_report = Mesh.evaluateNative(imported_result.Mesh, "strict", 8)
+        assert imported_result.TypeId == "Mesh::Repair"
+        assert imported_report["issues"]["duplicated_facets"]["count"] == 0
+        assert imported_report["issues"]["non_manifold_edges"]["count"] == 0
+        assert imported_report["solid"] and imported_report["watertight"]
+
+        flipped = call_modify(
             {
                 "operation": "flip_normals",
                 "targets": [
@@ -254,22 +372,30 @@ def _run() -> None:
         document.redo()
         flip_group = document.getObject(flip_group_name)
         assert flip_group is not None and len(flip_group.Group) == 2
+        _process_events(8)
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
 
-        filled = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+        filled = call_modify(
             {
-                "operation": "fill_holes",
                 "targets": [_target(sources["FillHolesSource"], "Filled Holes")],
                 "maximum_boundary_edges": 3,
             },
+            capability=MESH_FILL_HOLES_CAPABILITY_NAME,
         )
         assert _result_object(document, filled).Mesh.CountFacets == 4
 
-        boundary = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+        boundary = call_modify(
             {
                 "operation": "fill_boundary",
-                "target": _target(sources["FillBoundarySource"], "Filled Boundary"),
+                "targets": [_target(sources["FillBoundarySource"], "Filled Boundary")],
                 "seed_facet_index": 0,
                 "refinement_level": 0,
             },
@@ -281,22 +407,20 @@ def _run() -> None:
             point_index(add_source.Mesh, coordinate)
             for coordinate in ((24.0, 7.0, 0.0), (32.0, 0.0, 0.0), (24.0, 0.0, 6.0))
         ]
-        added = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+        added = call_modify(
             {
                 "operation": "add_triangle",
-                "target": _target(add_source, "Added Triangle"),
+                "targets": [_target(add_source, "Added Triangle")],
                 "point_indices": add_indices,
             },
         )
         added_result = _result_object(document, added)
         assert added_result.Mesh.CountFacets == 4 and added_result.Mesh.isSolid()
 
-        removed_size = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+        removed_size = call_modify(
             {
                 "operation": "remove_components",
-                "target": _target(sources["RemoveBySizeSource"], "Removed Small Component"),
+                "targets": [_target(sources["RemoveBySizeSource"], "Removed Small Component")],
                 "selection": {"kind": "maximum_facets", "maximum_facets": 1},
             },
         )
@@ -304,11 +428,10 @@ def _run() -> None:
         id_source = sources["RemoveByIdSource"]
         components = mesh_components(id_source.Mesh)
         small_id = next(item.component_id for item in components if len(item.facet_indices) == 1)
-        removed_id = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+        removed_id = call_modify(
             {
                 "operation": "remove_components",
-                "target": _target(id_source, "Removed Exact Component"),
+                "targets": [_target(id_source, "Removed Exact Component")],
                 "selection": {"kind": "component_ids", "component_ids": [small_id]},
             },
         )
@@ -316,10 +439,8 @@ def _run() -> None:
 
         smooth_source = sources["SmoothSource"]
         center = point_index(smooth_source.Mesh, (5.0, 5.0, 4.0))
-        smoothed = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+        smoothed = call_modify(
             {
-                "operation": "smooth",
                 "targets": [
                     {
                         **_target(smooth_source, "Smoothed Center"),
@@ -329,40 +450,41 @@ def _run() -> None:
                         },
                     }
                 ],
-                "settings": {"method": "laplace", "iterations": 1, "lambda": 0.5},
+                "method": "laplace",
+                "iterations": 1,
+                "lambda": 0.5,
             },
+            capability=MESH_SMOOTH_CAPABILITY_NAME,
         )
         smoothed_result = _result_object(document, smoothed)
         assert tuple(smoothed_result.PointIndices) == (center,)
 
         decimate_source = sources["DecimateSource"]
         target_facets = int(decimate_source.Mesh.CountFacets * 0.65)
-        decimated = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+        decimated = call_modify(
             {
-                "operation": "decimate",
                 "targets": [_target(decimate_source, "Decimated Mesh")],
-                "settings": {"mode": "target_facets", "target_facet_count": target_facets},
+                "mode": "target_facets",
+                "target_facet_count": target_facets,
             },
+            capability=MESH_DECIMATE_CAPABILITY_NAME,
         )
         assert _result_object(document, decimated).Mesh.CountFacets <= target_facets
 
-        scaled = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+        scaled = call_modify(
             {
-                "operation": "scale",
                 "targets": [_target(sources["ScaleSource"], "Scaled Mesh")],
                 "factor": 1.5,
             },
+            capability=MESH_SCALE_CAPABILITY_NAME,
         )
         scaled_result = _result_object(document, scaled)
         assert abs(scaled_result.Mesh.BoundBox.XLength - 12.0) < 1.0e-6
 
         gmsh_started = call(
-            MESH_MODIFY_CAPABILITY_NAME,
+            MESH_REMESH_CAPABILITY_NAME,
             {
-                "operation": "gmsh_remesh",
-                "target": _target(sources["GmshSource"], "Background Gmsh Mesh"),
+                "targets": [_target(sources["GmshSource"], "Background Gmsh Mesh")],
                 "algorithm": "automatic",
                 "minimum_element_size_mm": 0.0,
                 "maximum_element_size_mm": 2.0,

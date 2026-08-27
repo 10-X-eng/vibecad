@@ -22,10 +22,12 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <algorithm>
 #include <limits>
 #include <sstream>
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QMessageBox>
 
@@ -42,15 +44,13 @@
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/Document.h>
-#include <Gui/ExactTransaction.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/ViewProvider.h>
 #include <Mod/Mesh/App/MeshFeature.h>
+#include <Mod/Mesh/Gui/BackgroundMeshCut.h>
 #include <Mod/Mesh/Gui/CommandGuard.h>
-#include <Mod/Mesh/Gui/ParametricMeshFilter.h>
 
-#include "../App/FeatureMeshPartOperations.h"
 #include "CrossSections.h"
 #include "ui_CrossSections.h"
 
@@ -294,55 +294,37 @@ bool CrossSections::applyAndReport()
     bool connectEdges = ui->checkBoxConnect->isChecked();
     double eps = ui->spinEpsilon->value();
 
-    Gui::ExactTransaction transaction(*document, "Mesh cross-sections");
-    std::vector<App::DocumentObject*> outputs;
-    outputs.reserve(meshes.size());
-    const Base::Vector3d normal(a, b, c);
+    QJsonArray targets;
     for (auto* source : meshes) {
-        std::string name = source->getNameInDocument();
-        name += "_cs";
-        auto* section =
-            document->addObject<MeshPart::CrossSections>(name.c_str());
-        section->Label.setValue(
-            source->Label.getStrValue() + " Cross-Sections"
-        );
-        section->Source.setValue(source);
-        section->PlaneNormal.setValue(normal);
-        section->PlanePositions.setValues(d);
-        section->Epsilon.setValue(eps);
-        section->ConnectEdges.setValue(connectEdges);
-        outputs.push_back(section);
+        targets.append(QString::fromUtf8(source->getNameInDocument()));
     }
-    document->recompute();
-    if (std::ranges::any_of(
-            outputs,
-            [](const App::DocumentObject* output) {
-                const auto* section =
-                    freecad_cast<const MeshPart::CrossSections*>(
-                        output
-                    );
-                return !section || section->Shape.getShape().isNull()
-                    || !section->Shape.getShape().isValid();
-            }
-        )) {
-        QMessageBox::information(
+    QJsonArray normal;
+    normal.append(a);
+    normal.append(b);
+    normal.append(c);
+    QJsonArray positions;
+    for (const double value : d) {
+        positions.append(value);
+    }
+    const QJsonObject payload {
+        {"targets", targets},
+        {"normal", normal},
+        {"positions_mm", positions},
+        {"epsilon_mm", eps},
+        {"connect_edges", connectEdges},
+    };
+    try {
+        MeshGui::startBackgroundMeshCut(
+            "cross_sections",
+            QJsonDocument(payload).toJson(QJsonDocument::Compact).toStdString()
+        );
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
             this,
             tr("Cross-Sections"),
-            tr("The selected planes do not intersect every selected mesh.")
+            QString::fromUtf8(error.what())
         );
-        return false;
-    }
-    std::vector<App::DocumentObject*> sources(meshes.begin(), meshes.end());
-    MeshGui::createSourcePreservingOutputGroup(
-        *document,
-        sources,
-        outputs,
-        "MeshCrossSections",
-        "Mesh Cross-Sections",
-        "Create mesh cross-sections"
-    );
-    document->recompute();
-    if (!transaction.commit()) {
         return false;
     }
     return true;

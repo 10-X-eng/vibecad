@@ -6,6 +6,12 @@ engineering extension
 **Audited baseline:**
 `93500486c1515eac2ee98121e16a96a3038c0299` on 2026-08-26
 
+**Current implementation checkpoint:** the dependency-ordered roadmap stack
+#90 through #135 reaches `c0157d9a6b4a6bc4d54130025ec9dfaf5c7fbbda`
+and was reconciled on 2026-08-27 with `10-X-eng/vibecad@60b8f3fd` for the daily
+fork integration. Milestone status below remains evidence-bounded and does not
+claim full program completion.
+
 ## 1. Purpose
 
 This roadmap turns the Governed Engineering Architecture whitepaper into an

@@ -391,6 +391,8 @@ SET(Mesh_SRCS
     PreCompiled.h
     Segment.cpp
     Segment.h
+    SegmentationTools.cpp
+    SegmentationTools.h
 )
 
 # Suppress -Wundefined-var-template

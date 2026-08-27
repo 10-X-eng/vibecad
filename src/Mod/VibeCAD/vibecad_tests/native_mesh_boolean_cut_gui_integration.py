@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import traceback
 
 import FreeCAD as App
@@ -159,6 +160,8 @@ def _run() -> None:
             active_document=lambda: App.ActiveDocument,
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
+            background_manager=service.native_background_manager(),
+            document_thread_dispatch=VibeGui._dispatch_to_document_thread,
         )
         dispatcher = NativeTurnDispatcher(
             document=document,
@@ -174,12 +177,28 @@ def _run() -> None:
         def call(name: str, arguments: dict, *, succeeds: bool = True) -> dict:
             nonlocal call_number
             call_number += 1
+            started = time.monotonic()
             response = dispatcher.call(
                 name,
                 json.dumps(arguments, separators=(",", ":")),
                 f"native-mesh-boolean-cut-{call_number}",
             )
+            dispatch_ms = int((time.monotonic() - started) * 1000)
             assert response.get("ok") is succeeds, response
+            job = response.get("job")
+            if succeeds and name == MESH_CUT_CAPABILITY_NAME:
+                assert dispatch_ms < 250, dispatch_ms
+                assert isinstance(job, dict), (arguments["operation"], response)
+            if succeeds and isinstance(job, dict):
+                deadline = time.monotonic() + 120.0
+                while time.monotonic() < deadline:
+                    _process_events(2)
+                    snapshot = service.native_background_manager().snapshot(job["job_id"])
+                    if snapshot.terminal:
+                        assert snapshot.phase == "completed", snapshot.error
+                        return {"ok": True, **dict(snapshot.result or {})}
+                    time.sleep(0.01)
+                raise AssertionError("Native Mesh boolean background job did not finish")
             return response
 
         sources = {
@@ -200,6 +219,17 @@ def _run() -> None:
         snapshot = build_mesh_snapshot(document)
         assert snapshot["counts"]["datum_plane"] == 1
         assert any(item["object_name"] == plane.Name for item in snapshot["objects"])
+        # Fixture creation is deliberately outside the frozen Native turn.
+        # Recreate the dispatcher at the document revision the model reads.
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
 
         stale = call(
             MESH_BOOLEAN_CAPABILITY_NAME,
@@ -214,7 +244,7 @@ def _run() -> None:
             },
             succeeds=False,
         )
-        assert stale["error_code"] == "NATIVE_MESH_STATE_STALE"
+        assert stale["error_code"] == "NATIVE_MESH_STATE_STALE", stale
 
         result_names = []
         for operation, first, second in (
@@ -300,6 +330,15 @@ def _run() -> None:
         document.redo()
         _process_events(10)
         assert all(document.getObject(name) is not None for name in split_names)
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
 
         section = call(
             MESH_CUT_CAPABILITY_NAME,

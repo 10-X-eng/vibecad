@@ -26,6 +26,7 @@
 
 #include <vector>
 
+#include <Gui/Namespace.h>
 #include <Gui/ViewProviderBuilder.h>
 #include <Gui/ViewProviderGeometryObject.h>
 #include <Gui/ViewProviderGroupExtension.h>
@@ -290,6 +291,12 @@ public:
     );
 
 private:
+    static void scheduleViewportPolygonEdit(
+        Gui::View3DInventorViewer& view,
+        const std::vector<SbVec2f>& polygon,
+        Gui::SelectionRole role,
+        const char* operation
+    );
     static void renderGLCallback(void* ud, SoAction* a);
     static void boxZoom(const SbBox2s& box, const SbViewportRegion& vp, SoCamera* cam);
     static void panCamera(SoCamera*, float, const SbPlane&, const SbVec2f&, const SbVec2f&);

@@ -56,8 +56,8 @@ def _variant(operation: str, description: str, action_id: str) -> NativeCapabili
         action_ids=frozenset({action_id}),
         surface_ids=frozenset({"mesh"}),
         exact_target_type="TwoExactCurrentHistoryClosedMeshes",
-        transaction_behavior="document",
-        background_required=False,
+        transaction_behavior="background",
+        background_required=True,
         parameters=_parameters(),
     )
 

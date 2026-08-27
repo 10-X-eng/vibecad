@@ -5329,7 +5329,7 @@ class OpenAssistantCommand(_BaseCommand):
     pixmap = ICON_OPEN_ASSISTANT
 
     def Activated(self) -> None:
-        _show_panel()
+        open_assistant()
 
 
 class OpenPreferencesCommand(_BaseCommand):
@@ -5338,9 +5338,8 @@ class OpenPreferencesCommand(_BaseCommand):
     pixmap = ICON_MARK
 
     def Activated(self) -> None:
-        ensure_preferences_registered()
         try:
-            Gui.showPreferencesByName("VibeCAD", "VibeCAD")
+            open_preferences()
         except Exception as exc:
             _show_panel(f"VibeCAD preferences could not be opened: {exc}")
 
@@ -5518,6 +5517,19 @@ def ensure_preferences_registered() -> None:
     )
     Gui.addPreferencePage(VibeCADPreferences.VibeCADDebugPreferencesPage, "VibeCAD")
     _preferences_registered = True
+
+
+def open_preferences(page_name: str = "VibeCAD") -> None:
+    """Open VibeCAD Preferences without depending on command dispatch state."""
+
+    ensure_preferences_registered()
+    Gui.showPreferencesByName("VibeCAD", str(page_name or "VibeCAD"))
+
+
+def open_assistant() -> None:
+    """Open the assistant without depending on command dispatch state."""
+
+    _show_panel()
 
 
 def ensure_commands_registered() -> None:

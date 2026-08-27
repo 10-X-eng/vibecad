@@ -41,6 +41,7 @@
 
 #include "DlgRegularSolidImp.h"
 #include "CommandGuard.h"
+#include "ParametricMeshFilter.h"
 #include "ui_DlgRegularSolid.h"
 
 
@@ -273,6 +274,7 @@ void DlgRegularSolidImp::onCreateSolidButtonClicked()
                 "The regular solid did not produce a usable mesh"
             );
         }
+        MeshGui::ensureMeshesGroup(*doc);
         if (!mutation.commit()) {
             throw Base::RuntimeError(
                 "The mesh could not be committed"
