@@ -22,7 +22,7 @@ def test_schema_is_exact_job_only_and_exposes_no_process_or_output_controls() ->
     branch = schema["parameters"]["oneOf"][0]
 
     assert definition.primary_classification == "export"
-    assert branch["required"] == ["operation", "job"]
+    assert branch["required"] == ["job"]
     assert branch["additionalProperties"] is False
     assert set(branch["properties"]) == {"operation", "job"}
     assert branch["properties"]["job"]["required"] == [
@@ -46,7 +46,7 @@ def test_selected_schema_requires_one_ordered_exact_operation_subset() -> None:
     schema = definition.provider_schema(("selected_operations",))
     branch = schema["parameters"]["oneOf"][0]
 
-    assert branch["required"] == ["operation", "job", "operations"]
+    assert branch["required"] == ["job", "operations"]
     assert branch["additionalProperties"] is False
     assert set(branch["properties"]) == {"operation", "job", "operations"}
     operations = branch["properties"]["operations"]
