@@ -301,7 +301,7 @@ behavior while it waits for host persistence/workflows.
 | G10 — assembly sequencing | O | **Design-ready** | Insertion/access/fastener/precedence model, bounded solver, collision/currentness evidence, sampled-versus-continuous verdicts. |
 | G11 — service/disassembly | P | **Blocked by G10** | Target/removal constraints, minimum-set objective, verified reverse sequence, uncertainty and service claim ceilings. |
 | G12 — Robot task projection | Q | **Partial foundation** | Versioned step-to-task contract, frames/units/tool/TCP/force/torque/tolerance, traceability, Robot-domain validation and downstream boundary. |
-| X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; later slices dependency-bound** | Project exact identity, result, finding, activity, workflow, optimization, Manufacture, Assembly, service and Robot state through one coherent shell without replacing domain owners. |
+| X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; X1 contract foundation partial** | Bounded no-authority G1 presentation projection and six-domain fixtures exist; real result adapters, Qt shell, durable/workflow/optimization/domain views, GUI/accessibility and installed acceptance remain dependency-bound. |
 
 ## 8. Dependency-ordered implementation roadmap
 
@@ -829,6 +829,15 @@ slices land only with sufficient backing G contracts:
   G7 without a generic CAM owner; and
 - X8-X12 add Assembly interfaces/motion, propose-only joints, sequence,
   service, and Robot task overlays only as G8-G12 become authoritative.
+
+The X1 contract foundation is implemented in
+`tool_impl/engineering_experience.py` behind the installed
+`VibeCADEngineeringExperience.py` facade. It projects rather than replaces the
+G1 envelope, preserves domain payload, represents the four governance axes
+independently, separates scientific colormap identity from semantic status
+roles, and declares no mutation/execution/verification/publication/export
+authority. This is not X1 closure: real domain adapters, the Qt shell,
+GUI/accessibility behavior and installed application acceptance remain.
 
 The shared shell may be designed early, but no durable activity, workflow,
 candidate, interface, sequence, service, or Robot behavior is faked ahead of

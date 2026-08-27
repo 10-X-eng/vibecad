@@ -23,6 +23,7 @@ PUBLIC_ANALYSIS_FACADES = (
     "VibeCADAnalysisPersistence.py",
     "VibeCADAnalysisPublication.py",
     "VibeCADEngineeringContracts.py",
+    "VibeCADEngineeringExperience.py",
     "VibeCADNativeAuthorityPolicy.py",
     "VibeCADAnalysisWorkflow.py",
     "VibeCADGovernedOptimization.py",

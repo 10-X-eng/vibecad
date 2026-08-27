@@ -25,18 +25,32 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
 | X11 — service/disassembly | G11 | service contracts; Service pages | Target, removal set, reverse sequence, tool/access assumptions, uncertainty and service claim ceiling | Verified target fixture and no-solution/uncertain cases; no shop-feasibility overclaim |
 | X12 — Robot task handoff | G12 | Assembly-step projection and existing Robot owners; Task/Frame/Validation layers | Unit/frame/tool/TCP/force/torque/tolerance-explicit task view and downstream validation state | Frame/unit round trips; stale step, unsupported tool and unreachable handoff; trajectory/export traceability |
 
+## Current implementation status
+
+- **X0: documented.** The source material is preserved with hashes and the
+  target, component, color, workspace, ownership and dependency contracts are
+  repository-native.
+- **X1: partial contract foundation.** `tool_impl/engineering_experience.py` and
+  the installed `VibeCADEngineeringExperience.py` facade project the existing
+  G1 envelope into bounded presentation metrics/fields, preserve exact common
+  identities, findings, artifacts, provenance and opaque domain payload, expose
+  execution/verification/currentness/publication as independent axes, and
+  declare an inert no-authority surface. Cross-domain fixtures cover Native,
+  FEM, Aero, Manufacture, Assembly and Robot. Remaining X1 work is integration
+  with real domain result adapters and the Qt Engineering dock, GUI/accessibility
+  tests, and installed application acceptance.
+
 ## First PR-sized implementation sequence
 
-1. X0 design/source inventory and non-authoritative theme selectors.
-2. X1 presentation contracts over the already-landed common engineering
-   envelope, with fixture-backed independent state axes.
-3. X2 durable activity/artifact/publication views over the existing G2
+1. Complete X1 real domain adapters and the non-authoritative shared shell over
+   the already-landed common engineering envelope.
+2. X2 durable activity/artifact/publication views over the existing G2
    foundation; leave unintegrated durability visibly partial.
-4. X5 workflow projection over the existing durable DAG foundation.
-5. X6 candidate/ranking projection over governed optimization.
-6. Continue G7 and implement X7 together so Manufacture does not receive a
+3. X5 workflow projection over the existing durable DAG foundation.
+4. X6 candidate/ranking projection over governed optimization.
+5. Continue G7 and implement X7 together so Manufacture does not receive a
    disconnected generic result UI.
-7. Advance X3/X4 and X8-X12 only with their owning G closure slices.
+6. Advance X3/X4 and X8-X12 only with their owning G closure slices.
 
 This order reflects the current repository, where G1, the G2 core, G4 census,
 G5 core and G6 core exist but remain partial at their real integration gates.
@@ -56,4 +70,3 @@ G5 core and G6 core exist but remain partial at their real integration gates.
 - Accessibility, keyboard navigation, light/dark themes, localization-safe
   labels, DPI scaling and installed packaging are acceptance concerns, not
   polish deferred indefinitely.
-
