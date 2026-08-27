@@ -28,7 +28,10 @@ from tool_impl.analysis_contracts import (
 )
 from tool_impl.analysis_local_provider import LocalProcessProvider
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
-from VibeCADNativeBackground import NativeBackgroundCancelled
+from VibeCADNativeAnalyzeSolverExecutionProcess import (
+    raise_solver_process_cancelled,
+    raise_solver_process_error,
+)
 from VibeCADScriptedProcess import ExternalProcessCancelled, ExternalProcessError
 import VibeCADNativeAnalyzeSolverExecution as _legacy
 
@@ -344,28 +347,13 @@ def _run_local_solver(
             maximum_log_bytes=MAX_SOLVER_LOG_BYTES,
         )
     except ExternalProcessCancelled as exc:
-        raise NativeBackgroundCancelled() from exc
+        raise_solver_process_cancelled(exc)
     except ExternalProcessError as exc:
-        if exc.reason == "timeout":
-            raise NativeAnalyzeError(
-                f"{backend} exceeded timeout_seconds before producing results.",
-                error_code="NATIVE_ANALYZE_SOLVER_TIMEOUT",
-            ) from exc
-        if exc.reason == "output_limit":
-            raise NativeAnalyzeError(
-                f"{backend} exceeded the 16 MiB diagnostic-output bound.",
-                error_code="NATIVE_ANALYZE_SOLVER_OUTPUT_LIMIT",
-            ) from exc
-        if exc.reason == "start_failed":
-            raise NativeAnalyzeError(
-                f"{backend} stage {exc.stage} could not be started.",
-                error_code="NATIVE_ANALYZE_SOLVER_START_FAILED",
-            ) from exc
-        suffix = f": {exc.detail}" if exc.detail else ""
-        raise NativeAnalyzeError(
-            f"{backend} stage {exc.stage} exited with code {exc.exit_code}{suffix}",
-            error_code="NATIVE_ANALYZE_SOLVER_BACKEND_FAILED",
-        ) from exc
+        raise_solver_process_error(
+            exc,
+            working_directory=request.working_directory,
+            backend=backend,
+        )
 
     progress(84, f"{backend} result artifacts ready")
     summaries = tuple(

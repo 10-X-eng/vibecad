@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, NoReturn
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeBackground import NativeBackgroundCancelled
@@ -106,6 +106,62 @@ def _failure_diagnostics(
     return diagnostics
 
 
+def raise_solver_process_cancelled(
+    error: ExternalProcessCancelled,
+) -> NoReturn:
+    """Translate shared-process cancellation through the preserved FEM surface."""
+
+    if not isinstance(error, ExternalProcessCancelled):
+        raise TypeError("error must be ExternalProcessCancelled")
+    raise NativeBackgroundCancelled() from error
+
+
+def raise_solver_process_error(
+    error: ExternalProcessError,
+    *,
+    working_directory: str | Path,
+    backend: str,
+) -> NoReturn:
+    """Translate a shared-process failure with legacy-exact FEM diagnostics."""
+
+    if not isinstance(error, ExternalProcessError):
+        raise TypeError("error must be ExternalProcessError")
+    root = Path(working_directory)
+    backend = str(backend)
+    if error.reason == "timeout":
+        raise NativeAnalyzeError(
+            f"{backend} exceeded timeout_seconds before producing results.",
+            error_code="NATIVE_ANALYZE_SOLVER_TIMEOUT",
+        ) from error
+    if error.reason == "output_limit":
+        raise NativeAnalyzeError(
+            f"{backend} exceeded the 16 MiB diagnostic-output bound.",
+            error_code="NATIVE_ANALYZE_SOLVER_OUTPUT_LIMIT",
+        ) from error
+    if error.reason == "start_failed":
+        raise NativeAnalyzeError(
+            f"{backend} stage {error.stage} could not be started.",
+            error_code="NATIVE_ANALYZE_SOLVER_START_FAILED",
+        ) from error
+
+    log_path = root / f"solver-{error.stage}.log"
+    diagnostics = _failure_diagnostics(root, log_path, backend)
+    detail = diagnostics[0]["excerpt"] if diagnostics else error.detail
+    if backend.casefold() == "openfoam":
+        detail = _failure_detail(log_path, backend) or detail
+    suffix = f": {detail}" if detail else ""
+    raise NativeAnalyzeError(
+        f"{backend} stage {error.stage} exited with code {error.exit_code}{suffix}",
+        error_code="NATIVE_ANALYZE_SOLVER_BACKEND_FAILED",
+        repair={
+            "backend": backend,
+            "stage": error.stage,
+            "exit_code": error.exit_code,
+            "diagnostics": diagnostics,
+        },
+    ) from error
+
+
 def run_solver_processes(
     commands: tuple[tuple[str, tuple[str, ...]], ...],
     *,
@@ -149,40 +205,13 @@ def run_solver_processes(
             maximum_log_bytes=MAX_SOLVER_LOG_BYTES,
         )
     except ExternalProcessCancelled as exc:
-        raise NativeBackgroundCancelled() from exc
+        raise_solver_process_cancelled(exc)
     except ExternalProcessError as exc:
-        if exc.reason == "timeout":
-            raise NativeAnalyzeError(
-                f"{backend} exceeded timeout_seconds before producing results.",
-                error_code="NATIVE_ANALYZE_SOLVER_TIMEOUT",
-            ) from exc
-        if exc.reason == "output_limit":
-            raise NativeAnalyzeError(
-                f"{backend} exceeded the 16 MiB diagnostic-output bound.",
-                error_code="NATIVE_ANALYZE_SOLVER_OUTPUT_LIMIT",
-            ) from exc
-        if exc.reason == "start_failed":
-            raise NativeAnalyzeError(
-                f"{backend} stage {exc.stage} could not be started.",
-                error_code="NATIVE_ANALYZE_SOLVER_START_FAILED",
-            ) from exc
-
-        log_path = root / f"solver-{exc.stage}.log"
-        diagnostics = _failure_diagnostics(root, log_path, backend)
-        detail = diagnostics[0]["excerpt"] if diagnostics else exc.detail
-        if str(backend).casefold() == "openfoam":
-            detail = _failure_detail(log_path, backend) or detail
-        suffix = f": {detail}" if detail else ""
-        raise NativeAnalyzeError(
-            f"{backend} stage {exc.stage} exited with code {exc.exit_code}{suffix}",
-            error_code="NATIVE_ANALYZE_SOLVER_BACKEND_FAILED",
-            repair={
-                "backend": str(backend),
-                "stage": exc.stage,
-                "exit_code": exc.exit_code,
-                "diagnostics": diagnostics,
-            },
-        ) from exc
+        raise_solver_process_error(
+            exc,
+            working_directory=root,
+            backend=backend,
+        )
 
     progress(84, f"{backend} result artifacts ready")
     return tuple(

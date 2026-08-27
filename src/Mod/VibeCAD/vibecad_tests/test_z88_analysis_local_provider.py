@@ -160,6 +160,12 @@ def test_z88_backend_failure_mapping_is_legacy_exact(
     assert caught.value.failure() == {
         "error_code": "NATIVE_ANALYZE_SOLVER_BACKEND_FAILED",
         "message": "Z88 stage 2 exited with code 17: solver rejected input",
+        "repair": {
+            "backend": "Z88",
+            "stage": 2,
+            "exit_code": 17,
+            "diagnostics": [],
+        },
     }
 
 
