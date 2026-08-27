@@ -20,6 +20,40 @@ from VibeCADNativeTargets import NativeObjectRef, resolve_object
 
 
 _SAMPLE_LIMIT = 16
+
+
+def _evaluation_issue_report(issues: Mapping[str, Any]) -> dict[str, Any]:
+    """Separate repair defects from exact geometric observations."""
+
+    issue_counts: dict[str, int] = {}
+    issue_samples: dict[str, Any] = {}
+    observations: dict[str, Any] = {}
+    for name, value in issues.items():
+        if not isinstance(name, str) or not isinstance(value, Mapping):
+            continue
+        count = int(value.get("count", 0) or 0)
+        samples = value.get("sample_indices", value.get("sample_pairs"))
+        if name == "surface_fold_overs":
+            if count > 0:
+                observation = {
+                    "count": count,
+                    "threshold_degrees": 120,
+                }
+                if isinstance(samples, (list, tuple)) and samples:
+                    observation["sample_facet_indices"] = list(samples)
+                observations["steep_normal_transitions"] = observation
+            continue
+        issue_counts[name] = count
+        if count > 0 and isinstance(samples, (list, tuple)) and samples:
+            issue_samples[name] = list(samples)
+    return {
+        "repair_defects_found": any(value > 0 for value in issue_counts.values()),
+        "issue_counts": issue_counts,
+        "issue_samples": issue_samples,
+        "geometric_observations": observations,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedMeshEvaluation:
     target: PreparedMeshTarget
@@ -57,7 +91,7 @@ def prepare_mesh_evaluation(
         values["target"],
         require_label=False,
     )
-    mode = str(values["degeneration_mode"])
+    mode = str(values.get("degeneration_mode", "strict"))
     if mode not in {"strict", "mesh_tolerance"}:
         raise NativeMeshError(
             "degeneration_mode must be strict or mesh_tolerance."
@@ -65,7 +99,7 @@ def prepare_mesh_evaluation(
     return PreparedMeshEvaluation(
         target=target,
         degeneration_mode=mode,
-        detached_mesh=target.source.Mesh.copy(),
+        detached_mesh=target.source_mesh,
     )
 
 
@@ -79,12 +113,14 @@ def run_mesh_evaluation(
 
     if cancelled():
         raise NativeBackgroundCancelled()
-    progress(5, "Evaluating detached Mesh quality")
+    progress(1, "Capturing exact Mesh snapshot")
     try:
         import Mesh
 
+        detached, _digest = Mesh.snapshotWithSha256(request.detached_mesh)
+        progress(5, "Evaluating detached Mesh quality")
         raw = Mesh.evaluateNative(
-            request.detached_mesh,
+            detached,
             request.degeneration_mode,
             _SAMPLE_LIMIT,
         )
@@ -102,17 +138,7 @@ def run_mesh_evaluation(
             "The native Mesh evaluator returned an invalid report.",
             error_code="NATIVE_MESH_EVALUATION_FAILED",
         )
-    issue_counts: dict[str, int] = {}
-    issue_samples: dict[str, Any] = {}
-    for name, value in issues.items():
-        if not isinstance(name, str) or not isinstance(value, Mapping):
-            continue
-        count = int(value.get("count", 0) or 0)
-        issue_counts[name] = count
-        if count > 0:
-            samples = value.get("sample_indices", value.get("sample_pairs"))
-            if isinstance(samples, (list, tuple)) and samples:
-                issue_samples[name] = list(samples)
+    findings = _evaluation_issue_report(issues)
     return {
         "degeneration_mode": request.degeneration_mode,
         "topology": dict(raw.get("topology") or {}),
@@ -120,9 +146,7 @@ def run_mesh_evaluation(
         "solid": bool(raw.get("solid", False)),
         "watertight": bool(raw.get("watertight", False)),
         "open_edge_count": int(raw.get("open_edge_count", 0) or 0),
-        "repair_defects_found": any(value > 0 for value in issue_counts.values()),
-        "issue_counts": issue_counts,
-        "issue_samples": issue_samples,
+        **findings,
     }
 
 

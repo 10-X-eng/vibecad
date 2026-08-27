@@ -592,7 +592,7 @@ class MeshPartDomainAPI:
         segment_index: int | None = None,
         tolerance: float | None = None,
         harmonize_normals: bool = False,
-        refine: bool = False,
+        refine: bool | None = None,
         require_closed: bool = False,
         label: str = "",
     ) -> DomainValue:
@@ -649,7 +649,11 @@ class MeshPartDomainAPI:
                 segment_index,
             )
         clean_harmonize = _boolean(operation, "harmonize_normals", harmonize_normals)
-        clean_refine = _boolean(operation, "refine", refine)
+        clean_refine = (
+            clean_representation == "surface"
+            if refine is None
+            else _boolean(operation, "refine", refine)
+        )
         clean_closed = _boolean(operation, "require_closed", require_closed)
         if clean_representation == "boundary" and clean_harmonize:
             raise _error(

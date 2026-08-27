@@ -23,7 +23,6 @@
  ***************************************************************************/
 
 #include <algorithm>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,6 +31,8 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMessageBox>
 #include <QPushButton>
 
@@ -40,25 +41,23 @@
 #include <App/DocumentObserver.h>
 #include <Base/Converter.h>
 #include <Base/Exception.h>
+#include <Base/Interpreter.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Control.h>
 #include <Gui/Document.h>
-#include <Gui/ExactTransaction.h>
 #include <Gui/MainWindow.h>
 #include <Gui/QuantitySpinBox.h>
 #include <Gui/ViewProvider.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Mod/Mesh/App/MeshFeature.h>
-#include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/Gui/CommandGuard.h>
-#include <Mod/Mesh/Gui/ParametricMeshFilter.h>
+#include <Mod/Mesh/Gui/BackgroundMeshCut.h>
 #include <Mod/Part/App/PartFeature.h>
 
 #include <TopAbs_ShapeEnum.hxx>
 
-#include "../App/FeatureMeshPartOperations.h"
 #include "CrossSections.h"
 #include "TaskCurveOnMesh.h"
 #include "Tessellation.h"
@@ -128,27 +127,6 @@ bool allMeshesNonEmpty(const std::vector<Mesh::Feature*>& meshes)
     return std::ranges::all_of(meshes, [](const Mesh::Feature* mesh) {
         return mesh && mesh->Mesh.getValue().countFacets() > 0;
     });
-}
-
-bool sameMeshGeometry(const Mesh::MeshObject& first, const Mesh::MeshObject& second)
-{
-    const auto& firstKernel = first.getKernel();
-    const auto& secondKernel = second.getKernel();
-    const auto& firstPoints = firstKernel.GetPoints();
-    const auto& secondPoints = secondKernel.GetPoints();
-    const auto& firstFacets = firstKernel.GetFacets();
-    const auto& secondFacets = secondKernel.GetFacets();
-    return firstPoints.size() == secondPoints.size() && firstFacets.size() == secondFacets.size()
-        && std::ranges::equal(firstPoints, secondPoints)
-        && std::ranges::equal(
-               firstFacets,
-               secondFacets,
-               [](const MeshCore::MeshFacet& left, const MeshCore::MeshFacet& right) {
-                   return left._aulPoints[0] == right._aulPoints[0]
-                       && left._aulPoints[1] == right._aulPoints[1]
-                       && left._aulPoints[2] == right._aulPoints[2];
-               }
-        );
 }
 
 }  // namespace
@@ -224,8 +202,16 @@ void CmdMeshPartShapeFromMesh::activated(int)
     tolerance.setSingleStep(0.1);
     tolerance.setValue(0.1);
     QCheckBox sew(qApp->translate("MeshPart_ShapeFromMesh", "Sew adjacent faces"), &dialog);
+    QCheckBox solid(qApp->translate("MeshPart_ShapeFromMesh", "Build solid volumes"), &dialog);
     layout.addRow(qApp->translate("MeshPart_ShapeFromMesh", "Tolerance"), &tolerance);
     layout.addRow(&sew);
+    layout.addRow(&solid);
+    QObject::connect(&solid, &QCheckBox::toggled, &dialog, [&sew](bool checked) {
+        if (checked) {
+            sew.setChecked(true);
+        }
+        sew.setEnabled(!checked);
+    });
     QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     layout.addRow(&buttons);
     QObject::connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -248,47 +234,25 @@ void CmdMeshPartShapeFromMesh::activated(int)
         return;
     }
 
-    Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Convert mesh to shape"));
-    std::vector<App::DocumentObject*> sources(meshes.begin(), meshes.end());
-    std::vector<App::DocumentObject*> outputs;
-    outputs.reserve(meshes.size());
-    for (auto* source : meshes) {
-        std::string name = source->getNameInDocument();
-        name += "_shape";
-        auto* result = document->addObject<MeshPart::ShapeFromMesh>(name.c_str());
-        result->Label.setValue(source->Label.getStrValue() + " (Shape)");
-        result->Source.setValue(source);
-        result->Tolerance.setValue(tolerance.value().getValue());
-        result->SewShape.setValue(sew.isChecked());
-        outputs.push_back(result);
+    Base::PyGILStateLocker lock;
+    Py::List sources;
+    for (auto* mesh : meshes) {
+        sources.append(Py::asObject(mesh->getPyObject()));
     }
-    document->recompute();
-    if (std::ranges::any_of(outputs, [](const App::DocumentObject* output) {
-            const auto* shape = freecad_cast<const MeshPart::ShapeFromMesh*>(output);
-            return !shape || shape->Shape.getShape().isNull() || !shape->Shape.getShape().isValid()
-                || shape->isError();
-        })) {
-        QMessageBox::critical(
-            Gui::getMainWindow(),
-            qApp->translate("MeshPart_ShapeFromMesh", "Shape From Mesh"),
-            qApp->translate(
-                "MeshPart_ShapeFromMesh",
-                "The selected mesh could not be converted with these settings."
-            )
-        );
-        return;
+    PyObject* imported = PyImport_ImportModule("VibeCADMeshConversionGui");
+    if (!imported) {
+        throw Py::Exception();
     }
-    MeshGui::createSourcePreservingOutputGroup(
-        *document,
-        sources,
-        outputs,
-        "ConvertedMeshShapes",
-        "Converted Mesh Shapes",
-        "Convert mesh to shape"
+    Py::Module module(imported, true);
+    module.callMemberFunction(
+        "start_mesh_conversions",
+        Py::TupleN(
+            sources,
+            Py::Float(tolerance.value().getValue()),
+            Py::Boolean(sew.isChecked()),
+            Py::Boolean(solid.isChecked())
+        )
     );
-    if (!transaction.commit()) {
-        throw Base::RuntimeError("Mesh-to-shape conversion could not be committed");
-    }
 }
 
 bool CmdMeshPartShapeFromMesh::isActive()
@@ -371,84 +335,27 @@ void CmdMeshPartTrimByPlane::activated(int)
         || !MeshGui::isNativeMeshInputActive(planeFeature)) {
         return;
     }
-    Base::Placement plnPlacement = planeFeature->Placement.getValue();
-    Base::Vector3d normal(0, 0, 1);
-    plnPlacement.getRotation().multVec(normal, normal);
-    Base::Vector3d base = plnPlacement.getPosition();
-    Base::Vector3f plnBase = Base::convertTo<Base::Vector3f>(base);
-    Base::Vector3f plnNormal = Base::convertTo<Base::Vector3f>(normal);
-
-    const Mesh::MeshObject original = feature->Mesh.getValue();
-    Mesh::MeshObject primary = original;
-    std::optional<Mesh::MeshObject> secondary;
-    if (role == Gui::SelectionRole::Inner) {
-        primary.trimByPlane(plnBase, plnNormal);
-    }
-    else if (role == Gui::SelectionRole::Outer) {
-        primary.trimByPlane(plnBase, -plnNormal);
-    }
-    else {
-        secondary.emplace(primary);
-        primary.trimByPlane(plnBase, plnNormal);
-        secondary->trimByPlane(plnBase, -plnNormal);
-    }
-    if (primary.countFacets() == 0 || (secondary && secondary->countFacets() == 0)) {
-        QMessageBox::information(
-            Gui::getMainWindow(),
-            qApp->translate("MeshPart_TrimByPlane", "Trim With Plane"),
-            qApp->translate(
-                "MeshPart_TrimByPlane",
-                "The plane does not leave usable mesh geometry on every requested side."
-            )
-        );
-        return;
-    }
-    if (sameMeshGeometry(primary, original) || (secondary && sameMeshGeometry(*secondary, original))) {
-        QMessageBox::information(
-            Gui::getMainWindow(),
-            qApp->translate("MeshPart_TrimByPlane", "Trim With Plane"),
-            qApp->translate("MeshPart_TrimByPlane", "The plane does not split the mesh.")
-        );
-        return;
-    }
-
-    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
-    const auto makeOperation = [feature, planeFeature](int side) {
-        return MeshGui::ParametricMeshFilterTarget {
-            feature,
-            [planeFeature, side](App::DocumentObject& object) {
-                auto& trim = static_cast<Mesh::TrimByPlane&>(object);
-                trim.Plane.setValue(planeFeature);
-                trim.Side.setValue(side);
-            },
-        };
+    const char* mode = role == Gui::SelectionRole::Inner
+        ? "keep_below"
+        : role == Gui::SelectionRole::Outer ? "keep_above" : "split";
+    const QJsonObject payload {
+        {"target", QString::fromUtf8(feature->getNameInDocument())},
+        {"plane", QString::fromUtf8(planeFeature->getNameInDocument())},
+        {"mode", mode},
     };
-    if (role == Gui::SelectionRole::Inner) {
-        operations.push_back(makeOperation(0));
+    try {
+        MeshGui::startBackgroundMeshCut(
+            "trim_by_plane",
+            QJsonDocument(payload).toJson(QJsonDocument::Compact).toStdString()
+        );
     }
-    else if (role == Gui::SelectionRole::Outer) {
-        operations.push_back(makeOperation(1));
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            qApp->translate("MeshPart_TrimByPlane", "Trim With Plane"),
+            QString::fromUtf8(error.what())
+        );
     }
-    else {
-        operations.push_back(makeOperation(0));
-        operations.push_back(makeOperation(1));
-    }
-    MeshGui::createParametricMeshFilters(
-        *document,
-        operations,
-        MeshGui::ParametricMeshFilterSpec {
-            "Mesh::TrimByPlane",
-            "TrimByPlane",
-            role == Gui::SelectionRole::Split ? "Mesh Plane Split" : "Mesh Plane Trim",
-            QT_TRANSLATE_NOOP("Command", "Trim with plane"),
-            true,
-            true,
-            role == Gui::SelectionRole::Split,
-            "PlaneSplit",
-            "Split Mesh by Plane",
-            "Plane split",
-        }
-    );
 }
 
 bool CmdMeshPartTrimByPlane::isActive()
@@ -501,33 +408,24 @@ void CmdMeshPartSection::activated(int)
         return;
     }
 
-    Gui::ExactTransaction transaction(*document, QT_TRANSLATE_NOOP("Command", "Section with plane"));
-    auto* result = document->addObject<MeshPart::SectionByPlane>("Section");
-    result->Label.setValue("Mesh Plane Section");
-    result->Source.setValue(meshFeature);
-    result->Plane.setValue(planeFeature);
-    result->MinimumLength.setValue(1.0e-7);
-    result->ConnectEdges.setValue(true);
-    document->recompute();
-    if (result->Shape.getShape().isNull() || !result->Shape.getShape().isValid()) {
-        QMessageBox::information(
+    const QJsonObject payload {
+        {"target", QString::fromUtf8(meshFeature->getNameInDocument())},
+        {"plane", QString::fromUtf8(planeFeature->getNameInDocument())},
+        {"minimum_length_mm", 1.0e-7},
+        {"connect_edges", true},
+    };
+    try {
+        MeshGui::startBackgroundMeshCut(
+            "section_by_plane",
+            QJsonDocument(payload).toJson(QJsonDocument::Compact).toStdString()
+        );
+    }
+    catch (const Base::Exception& error) {
+        QMessageBox::warning(
             Gui::getMainWindow(),
             qApp->translate("MeshPart_Section", "Section"),
-            qApp->translate("MeshPart_Section", "The plane does not intersect the mesh.")
+            QString::fromUtf8(error.what())
         );
-        return;
-    }
-    MeshGui::createSourcePreservingOutputGroup(
-        *document,
-        {meshFeature, planeFeature},
-        {result},
-        "MeshPlaneSections",
-        "Mesh Plane Sections",
-        "Section mesh with plane"
-    );
-    document->recompute();
-    if (!transaction.commit()) {
-        throw Base::RuntimeError("The mesh section could not be committed");
     }
 }
 

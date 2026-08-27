@@ -18,6 +18,8 @@ class NativeArgumentError(RuntimeError):
 def strict_variant_arguments(
     arguments: Mapping[str, Any],
     variants: Mapping[str, frozenset[str]],
+    *,
+    defaults: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Select one declared operation and reject every undeclared field."""
 
@@ -28,6 +30,10 @@ def strict_variant_arguments(
     expected = variants.get(operation)
     if expected is None:
         raise NativeArgumentError("Native capability operation is unavailable.")
+    for name, value in dict((defaults or {}).get(operation, {})).items():
+        if name not in expected:
+            raise NativeArgumentError("Native capability default is undeclared.")
+        values.setdefault(name, value)
     if set(values) != expected:
         raise NativeArgumentError(
             "Native capability arguments do not match the selected operation."

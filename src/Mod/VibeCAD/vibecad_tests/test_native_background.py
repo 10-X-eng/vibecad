@@ -108,6 +108,23 @@ def test_completed_mutating_job_reports_its_document_change() -> None:
     assert completed.document_changed is True
 
 
+def test_completed_noop_resolves_to_no_document_change() -> None:
+    manager = NativeBackgroundManager()
+    submitted = manager.submit(
+        **_callbacks(
+            prepare=lambda _cancelled, _progress: {"prepared": True},
+            commit=lambda _value: {"changed": False},
+        ),
+        changes_document=True,
+        document_change_resolver=lambda result: bool(result["changed"]),
+    )
+
+    completed = manager.wait(submitted.job_id, 2.0)
+
+    assert completed.phase == "completed"
+    assert completed.document_changed is False
+
+
 def test_cooperative_cancel_never_dispatches_a_commit() -> None:
     manager = NativeBackgroundManager()
     entered = threading.Event()

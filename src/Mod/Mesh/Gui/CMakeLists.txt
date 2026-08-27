@@ -129,6 +129,14 @@ SET(MeshGui_SRCS
     CommandGuard.cpp
     CommandGuard.h
     Command.cpp
+    BackgroundMeshCut.cpp
+    BackgroundMeshCut.h
+    BackgroundMeshCurvature.cpp
+    BackgroundMeshCurvature.h
+    BackgroundMeshModification.cpp
+    BackgroundMeshModification.h
+    BackgroundMeshSegmentation.cpp
+    BackgroundMeshSegmentation.h
     ParametricMeshFilter.cpp
     ParametricMeshFilter.h
     PreCompiled.h

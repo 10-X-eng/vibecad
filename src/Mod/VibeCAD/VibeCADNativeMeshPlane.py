@@ -33,6 +33,7 @@ class PreparedMeshPlaneTrim:
     labels: tuple[str, ...]
     expected_result_sha256: tuple[str, ...]
     result_mode: str
+    accepted_meshes: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,7 @@ class PreparedMeshPlaneSection:
     result_label: str
     minimum_length_mm: float
     connect_edges: bool
+    accepted_shapes: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +55,7 @@ class PreparedMeshCrossSections:
     positions_mm: tuple[float, ...]
     epsilon_mm: float
     connect_edges: bool
+    accepted_shapes: tuple[Any, ...] = ()
 
 
 PreparedMeshPlaneOperation = (
@@ -123,28 +126,8 @@ def _prepare_plane_trim(
     )
     plane = prepare_plane_target(document, document_uid, values["plane"])
     mode, sides, labels = _plane_trim_spec(values["result"])
-    base, normal = _plane_vectors(plane.plane)
-    expected = []
-    for side, label in zip(sides, labels):
-        trial = target.source.Mesh.copy()
-        direction = normal if side == "Below" else -normal
-        try:
-            trial.trimByPlane(base, direction)
-        except Exception as exc:
-            raise NativeMeshError("The datum plane could not trim the exact Mesh.") from exc
-        if int(trial.CountFacets) < 1:
-            raise NativeMeshError(f"The datum plane leaves no usable {label} result.")
-        digest = mesh_geometry_sha256(trial)
-        if digest == target.source_geometry_sha256:
-            raise NativeMeshError(
-                f"The datum plane does not change the requested {label} result.",
-                error_code="NATIVE_MESH_OPERATION_NO_CHANGE",
-            )
-        expected.append(digest)
-    if len(set(expected)) != len(expected):
-        raise NativeMeshError("The datum plane did not produce two distinct split sides.")
     return PreparedMeshPlaneTrim(
-        "trim_by_plane", target, plane, sides, labels, tuple(expected), mode
+        "trim_by_plane", target, plane, sides, labels, (), mode
     )
 
 
@@ -184,10 +167,6 @@ def _prepare_plane_section(
         raise NativeMeshError(
             "minimum_length_mm must be non-negative and connect_edges must be boolean."
         )
-    base, normal = _plane_vectors(plane.plane)
-    sections = _intersections(target.source.Mesh, [(base, normal)], minimum, connect)
-    if not sections or not any(list(section or []) for section in sections):
-        raise NativeMeshError("The exact datum plane does not intersect the exact Mesh.")
     return PreparedMeshPlaneSection(
         "section_by_plane",
         target,
@@ -232,16 +211,6 @@ def _prepare_cross_sections(
         raise NativeMeshError(
             "epsilon_mm must be between 0 and 1000000 and connect_edges must be boolean."
         )
-    import FreeCAD as App
-
-    direction = App.Vector(*normal)
-    section_planes = [(direction * position, direction) for position in positions]
-    for target in targets:
-        sections = _intersections(target.source.Mesh, section_planes, epsilon, connect)
-        if not sections or not any(list(section or []) for section in sections):
-            raise NativeMeshError(
-                f"The configured planes do not intersect exact Mesh {target.source.Name!r}."
-            )
     return PreparedMeshCrossSections(
         "cross_sections", targets, normal, positions, epsilon, connect
     )
@@ -281,8 +250,19 @@ def _create_plane_trim(document: Any, prepared: PreparedMeshPlaneTrim) -> Native
     import Mesh  # noqa: F401 - registers Mesh::TrimByPlane
     import MeshGui
 
+    if (
+        len(prepared.accepted_meshes) != len(prepared.sides)
+        or len(prepared.expected_result_sha256) != len(prepared.sides)
+    ):
+        raise NativeMeshError("The accepted plane-trim results are incomplete.")
+
     results = []
-    for side, label in zip(prepared.sides, prepared.labels):
+    for side, label, accepted in zip(
+        prepared.sides,
+        prepared.labels,
+        prepared.accepted_meshes,
+        strict=True,
+    ):
         result = document.addObject(
             "Mesh::TrimByPlane", document.getUniqueObjectName("TrimByPlane")
         )
@@ -292,6 +272,8 @@ def _create_plane_trim(document: Any, prepared: PreparedMeshPlaneTrim) -> Native
         result.Source = prepared.target.source
         result.Plane = prepared.plane.plane
         result.Side = side
+        result.UpdateFromSource = False
+        result.Mesh = accepted
         results.append(result)
     group = MeshGui.publishReplacingOutputs(
         str(document.Name),
@@ -299,7 +281,7 @@ def _create_plane_trim(document: Any, prepared: PreparedMeshPlaneTrim) -> Native
         results,
         "PlaneSplit",
         "Split Mesh by Plane" if len(results) > 1 else "Trim Mesh by Plane",
-        "Plane trim",
+        "Plane split" if len(results) > 1 else "Plane trim",
     )
     created = [*results, *([group] if group is not None else [])]
     return NativeMutationDraft(
@@ -317,6 +299,9 @@ def _create_plane_section(
     import MeshPart  # noqa: F401 - registers MeshPart::SectionByPlane
     import MeshGui
 
+    if len(prepared.accepted_shapes) != 1:
+        raise NativeMeshError("The accepted plane-section result is incomplete.")
+
     result = document.addObject(
         "MeshPart::SectionByPlane", document.getUniqueObjectName("MeshPlaneSection")
     )
@@ -327,6 +312,8 @@ def _create_plane_section(
     result.Plane = prepared.plane.plane
     result.MinimumLength = prepared.minimum_length_mm
     result.ConnectEdges = prepared.connect_edges
+    result.UpdateFromSource = False
+    result.Shape = prepared.accepted_shapes[0]
     MeshGui.publishSourcePreservingOutputs(
         str(document.Name),
         [prepared.target.source, prepared.plane.plane],
@@ -354,8 +341,15 @@ def _create_cross_sections(
     import MeshPart  # noqa: F401 - registers MeshPart::CrossSections
     import MeshGui
 
+    if len(prepared.accepted_shapes) != len(prepared.targets):
+        raise NativeMeshError("The accepted cross-section results are incomplete.")
+
     results = []
-    for target in prepared.targets:
+    for target, accepted in zip(
+        prepared.targets,
+        prepared.accepted_shapes,
+        strict=True,
+    ):
         result = document.addObject(
             "MeshPart::CrossSections", document.getUniqueObjectName("MeshCrossSections")
         )
@@ -367,6 +361,8 @@ def _create_cross_sections(
         result.PlanePositions = list(prepared.positions_mm)
         result.Epsilon = prepared.epsilon_mm
         result.ConnectEdges = prepared.connect_edges
+        result.UpdateFromSource = False
+        result.Shape = accepted
         results.append(result)
     group = MeshGui.publishSourcePreservingOutputs(
         str(document.Name),
@@ -434,7 +430,8 @@ def _replacement_history(
         and tuple(getattr(group, "Sources", ()) or ()) == (target.source,)
         and tuple(getattr(group, "Group", ()) or ()) == results
         and str(getattr(group, "InputMode", "") or "") == "Replacement"
-        and str(getattr(group, "OperationKind", "") or "") == "Plane trim"
+        and str(getattr(group, "OperationKind", "") or "")
+        == ("Plane split" if len(results) > 1 else "Plane trim")
         and tuple(getattr(group, "VibeCADTimelineReplacedInputs", ()) or ()) == replaced
         and all(
             str(getattr(result, "VibeCADTimelineRole", "") or "") == "resource"
@@ -498,6 +495,7 @@ def _verify_plane_trim(document: Any, draft: NativeMutationDraft) -> dict[str, A
             or result.Plane is not prepared.plane.plane
             or str(result.Side) != side
             or str(result.Label) != label
+            or bool(result.UpdateFromSource)
             or not bool(result.isValid())
             or int(result.Mesh.CountFacets) < 1
             or mesh_geometry_sha256(result.Mesh) != expected
@@ -543,6 +541,7 @@ def _verify_plane_section(document: Any, draft: NativeMutationDraft) -> dict[str
         or str(result.Label) != prepared.result_label
         or not math.isclose(float(result.MinimumLength.Value), prepared.minimum_length_mm)
         or bool(result.ConnectEdges) is not prepared.connect_edges
+        or bool(result.UpdateFromSource)
         or not bool(result.isValid())
         or shape.isNull()
         or not shape.isValid()
@@ -594,6 +593,7 @@ def _verify_cross_sections(document: Any, draft: NativeMutationDraft) -> dict[st
             != prepared.positions_mm
             or not math.isclose(float(result.Epsilon.Value), prepared.epsilon_mm)
             or bool(result.ConnectEdges) is not prepared.connect_edges
+            or bool(result.UpdateFromSource)
             or not bool(result.isValid())
             or shape.isNull()
             or not shape.isValid()

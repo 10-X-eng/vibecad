@@ -109,6 +109,9 @@ def create_regular_solid(
         obj.Radius1 = major
         obj.Radius2 = minor
         obj.Sampling = _sampling(solid["sampling"])
+    import MeshGui
+
+    MeshGui.ensureMeshesGroup(str(document.Name))
     return NativeMutationDraft(
         value={"object": obj, "kind": kind},
         recompute_targets=(obj,),

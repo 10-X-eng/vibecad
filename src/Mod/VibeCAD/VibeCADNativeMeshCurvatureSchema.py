@@ -51,8 +51,8 @@ def mesh_curvature_capability_definition() -> NativeCapabilityDefinition:
                 action_ids=frozenset({"Mesh_VertexCurvature"}),
                 surface_ids=frozenset({"mesh"}),
                 exact_target_type="ExactCurrentHistoryMeshStatesWithResultLabels",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters={
                     "type": "object",
                     "properties": {

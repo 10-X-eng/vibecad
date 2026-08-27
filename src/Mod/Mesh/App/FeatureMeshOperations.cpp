@@ -413,11 +413,48 @@ Merge::Merge()
         App::Prop_None,
         "Ordered source meshes combined by this operation"
     );
+    ADD_PROPERTY_TYPE(
+        AcceptedResult,
+        (MeshObject()),
+        "Internal",
+        App::Prop_Hidden,
+        "Authenticated detached merge result retained across History changes"
+    );
+    ADD_PROPERTY_TYPE(
+        AcceptedSourceRevisions,
+        (),
+        "Internal",
+        App::Prop_Hidden,
+        "Geometry revisions of the sources accepted by the detached merge"
+    );
+    ADD_PROPERTY_TYPE(
+        AcceptedSourcePlacements,
+        (),
+        "Internal",
+        App::Prop_Hidden,
+        "Placements of the sources accepted by the detached merge"
+    );
+    ADD_PROPERTY_TYPE(
+        AcceptedSourcesStale,
+        (false),
+        "Internal",
+        App::Prop_Hidden,
+        "Whether a linked source changed after the detached merge was accepted"
+    );
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (true),
+        "Merge",
+        App::Prop_None,
+        "Recompute the merge when a linked source changes"
+    );
 }
 
 short Merge::mustExecute() const
 {
-    if (Sources.isTouched()
+    if (Sources.isTouched() || AcceptedResult.isTouched()
+        || AcceptedSourceRevisions.isTouched() || AcceptedSourcePlacements.isTouched()
+        || AcceptedSourcesStale.isTouched() || UpdateFromSource.isTouched()
         || suppressibleExt.Suppressed.isTouched()) {
         return 1;
     }
@@ -439,10 +476,75 @@ bool Merge::isSuppressed() const
     return timeline && !timeline->isOperationActive(this);
 }
 
+bool Merge::detachedSourcesChanged() const
+{
+    const auto sources = Sources.getValues();
+    const auto revisions = AcceptedSourceRevisions.getValues();
+    const auto placements = AcceptedSourcePlacements.getValues();
+    if (sources.size() != revisions.size() || sources.size() != placements.size()) {
+        return true;
+    }
+    for (std::size_t index = 0; index < sources.size(); ++index) {
+        const auto* source = dynamic_cast<const Mesh::Feature*>(sources[index]);
+        if (!source || source == this || source->getDocument() != getDocument()
+            || !getDocument() || !getDocument()->containsObject(source)
+            || std::to_string(source->Mesh.getGeometryRevision()) != revisions[index]
+            || source->Placement.getValue() != placements[index]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Merge::onDocumentRestored()
+{
+    Mesh::Feature::onDocumentRestored();
+    if (UpdateFromSource.getValue() || AcceptedSourcesStale.getValue()
+        || AcceptedResult.getValue().countFacets() == 0) {
+        return;
+    }
+    std::vector<std::string> revisions;
+    std::vector<Base::Placement> placements;
+    for (const auto* object : Sources.getValues()) {
+        const auto* source = dynamic_cast<const Mesh::Feature*>(object);
+        if (!source || source == this || source->getDocument() != getDocument()) {
+            AcceptedSourcesStale.setValue(true);
+            return;
+        }
+        revisions.push_back(std::to_string(source->Mesh.getGeometryRevision()));
+        placements.push_back(source->Placement.getValue());
+    }
+    AcceptedSourceRevisions.setValues(revisions);
+    AcceptedSourcePlacements.setValues(placements);
+}
+
 App::DocumentObjectExecReturn* Merge::execute()
 {
     if (isSuppressed()) {
-        Mesh.setValue(MeshObject());
+        if (UpdateFromSource.getValue() || AcceptedResult.getValue().countFacets() > 0) {
+            Mesh.setValue(MeshObject());
+        }
+        return App::DocumentObject::StdReturn;
+    }
+    if (!UpdateFromSource.getValue()) {
+        if (detachedSourcesChanged()) {
+            AcceptedSourcesStale.setValue(true);
+        }
+        if (AcceptedSourcesStale.getValue()) {
+            Mesh.setValue(MeshObject());
+            return new App::DocumentObjectExecReturn(
+                "A linked source changed after this background merge was accepted; rerun the merge"
+            );
+        }
+        if (AcceptedResult.getValue().countFacets() > 0) {
+            Mesh.setValue(AcceptedResult.getValue());
+            return App::DocumentObject::StdReturn;
+        }
+        if (Mesh.getValue().countFacets() == 0) {
+            return new App::DocumentObjectExecReturn(
+                "The detached Mesh merge has no cached result"
+            );
+        }
         return App::DocumentObject::StdReturn;
     }
 
@@ -799,6 +901,11 @@ PROPERTY_SOURCE(Mesh::Decimation, Mesh::FixDefects)
 
 Decimation::Decimation()
 {
+    static const App::PropertyFloatConstraint::Constraints reductionConstraints {
+        0.0,
+        100.0,
+        0.1,
+    };
     ADD_PROPERTY_TYPE(
         UseTargetFacetCount,
         (false),
@@ -821,6 +928,7 @@ Decimation::Decimation()
         App::Prop_None,
         "Percentage of source facets to remove"
     );
+    Reduction.setConstraints(&reductionConstraints);
 }
 
 short Decimation::mustExecute() const
@@ -944,12 +1052,20 @@ TrimByPlane::TrimByPlane()
 {
     ADD_PROPERTY_TYPE(Plane, (nullptr), "Trim", App::Prop_None, "Linked trimming plane");
     ADD_PROPERTY_TYPE(Side, (0L), "Trim", App::Prop_None, "Side of the plane to retain");
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (true),
+        "Trim",
+        App::Prop_None,
+        "Rebuild the trim when the linked source or plane changes"
+    );
     Side.setEnums(SideEnums);
 }
 
 short TrimByPlane::mustExecute() const
 {
-    if (Plane.isTouched() || Side.isTouched() || (Plane.getValue() && Plane.getValue()->isTouched())) {
+    if (Plane.isTouched() || Side.isTouched() || UpdateFromSource.isTouched()
+        || (Plane.getValue() && Plane.getValue()->isTouched())) {
         return 1;
     }
     return FixDefects::mustExecute();
@@ -957,13 +1073,28 @@ short TrimByPlane::mustExecute() const
 
 App::DocumentObjectExecReturn* TrimByPlane::execute()
 {
+    if (isSuppressed()) {
+        if (UpdateFromSource.getValue()) {
+            MeshObject source;
+            if (auto* error = loadSourceMesh(source)) {
+                return error;
+            }
+            Mesh.setValue(source);
+        }
+        return App::DocumentObject::StdReturn;
+    }
+    if (!UpdateFromSource.getValue()) {
+        if (Mesh.getValue().countFacets() == 0) {
+            return new App::DocumentObjectExecReturn(
+                "The detached plane trim has no cached mesh result"
+            );
+        }
+        return App::DocumentObject::StdReturn;
+    }
+
     MeshObject mesh;
     if (auto* error = loadSourceMesh(mesh)) {
         return error;
-    }
-    if (isSuppressed()) {
-        Mesh.setValue(mesh);
-        return App::DocumentObject::StdReturn;
     }
 
     auto* plane = Plane.getValue();
@@ -1023,11 +1154,19 @@ PolygonEdit::PolygonEdit()
         "Projected polygon region to remove"
     );
     Region.setEnums(RegionEnums);
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (true),
+        "Polygon",
+        App::Prop_None,
+        "Rebuild the edit when the linked source changes"
+    );
 }
 
 short PolygonEdit::mustExecute() const
 {
-    if (Polygon.isTouched() || Action.isTouched() || Region.isTouched()) {
+    if (Polygon.isTouched() || Action.isTouched() || Region.isTouched()
+        || UpdateFromSource.isTouched()) {
         return 1;
     }
     return FixDefects::mustExecute();
@@ -1035,13 +1174,28 @@ short PolygonEdit::mustExecute() const
 
 App::DocumentObjectExecReturn* PolygonEdit::execute()
 {
+    if (isSuppressed()) {
+        if (UpdateFromSource.getValue()) {
+            MeshObject source;
+            if (auto* error = loadSourceMesh(source)) {
+                return error;
+            }
+            Mesh.setValue(source);
+        }
+        return App::DocumentObject::StdReturn;
+    }
+    if (!UpdateFromSource.getValue()) {
+        if (Mesh.getValue().countFacets() == 0) {
+            return new App::DocumentObjectExecReturn(
+                "The detached polygon edit has no cached mesh result"
+            );
+        }
+        return App::DocumentObject::StdReturn;
+    }
+
     MeshObject mesh;
     if (auto* error = loadSourceMesh(mesh)) {
         return error;
-    }
-    if (isSuppressed()) {
-        Mesh.setValue(mesh);
-        return App::DocumentObject::StdReturn;
     }
 
     try {
@@ -1292,25 +1446,104 @@ FacetSubset::FacetSubset()
         "facet indices"
     );
     ADD_PROPERTY_TYPE(
+        AcceptedResult,
+        (MeshObject()),
+        "Internal",
+        App::Prop_Hidden,
+        "Authenticated detached facet subset retained across History changes"
+    );
+    ADD_PROPERTY_TYPE(
+        AcceptedSourceRevision,
+        (""),
+        "Internal",
+        App::Prop_Hidden,
+        "Geometry revision of the source accepted by the detached subset"
+    );
+    ADD_PROPERTY_TYPE(
+        AcceptedSourceStale,
+        (false),
+        "Internal",
+        App::Prop_Hidden,
+        "Whether source geometry changed after the detached subset was accepted"
+    );
+    ADD_PROPERTY_TYPE(
         SelectionKind,
         ("Facet subset"),
         "Selection",
         App::Prop_ReadOnly,
         "Meaning of the accepted facet selection"
     );
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (true),
+        "Selection",
+        App::Prop_None,
+        "Rebuild this subset when the linked source changes"
+    );
 }
 
 short FacetSubset::mustExecute() const
 {
     if (FacetIndices.isTouched() || AcceptedTopology.isTouched()
+        || AcceptedResult.isTouched() || AcceptedSourceRevision.isTouched()
+        || AcceptedSourceStale.isTouched() || UpdateFromSource.isTouched()
         || SelectionKind.isTouched()) {
         return 1;
     }
     return FixDefects::mustExecute();
 }
 
+void FacetSubset::onDocumentRestored()
+{
+    Mesh::FixDefects::onDocumentRestored();
+    if (UpdateFromSource.getValue() || AcceptedSourceStale.getValue()
+        || AcceptedResult.getValue().countFacets() == 0) {
+        return;
+    }
+    const auto* source = dynamic_cast<const Mesh::Feature*>(Source.getValue());
+    if (!source || source == this || source->getDocument() != getDocument()) {
+        AcceptedSourceStale.setValue(true);
+        return;
+    }
+    AcceptedSourceRevision.setValue(
+        std::to_string(source->Mesh.getGeometryRevision())
+    );
+}
+
 App::DocumentObjectExecReturn* FacetSubset::execute()
 {
+    if (!UpdateFromSource.getValue()) {
+        const auto* source = dynamic_cast<const Mesh::Feature*>(Source.getValue());
+        if (!source || source == this || !getDocument()
+            || source->getDocument() != getDocument()
+            || !getDocument()->containsObject(source)) {
+            Mesh.setValue(MeshObject());
+            return new App::DocumentObjectExecReturn(
+                "The detached Mesh facet subset has no live source"
+            );
+        }
+        if (std::to_string(source->Mesh.getGeometryRevision())
+            != AcceptedSourceRevision.getValue()) {
+            AcceptedSourceStale.setValue(true);
+        }
+        if (AcceptedSourceStale.getValue()) {
+            Mesh.setValue(MeshObject());
+            return new App::DocumentObjectExecReturn(
+                "The linked source geometry changed after this background facet subset "
+                "was accepted; rerun the segmentation"
+            );
+        }
+        if (AcceptedResult.getValue().countFacets() == 0) {
+            Mesh.setValue(MeshObject());
+            return new App::DocumentObjectExecReturn(
+                "The detached Mesh facet subset has no cached result"
+            );
+        }
+        MeshObject restored(AcceptedResult.getValue());
+        restored.setTransform(source->Placement.getValue().toMatrix());
+        Mesh.setValue(restored);
+        return App::DocumentObject::StdReturn;
+    }
     MeshObject source;
     if (auto* error = loadSourceMesh(source)) {
         Mesh.setValue(MeshObject());

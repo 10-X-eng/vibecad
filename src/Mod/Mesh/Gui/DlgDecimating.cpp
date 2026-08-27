@@ -23,17 +23,20 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
 
 #include <Gui/CommandT.h>
 #include <Gui/ExactTransaction.h>
 #include <Gui/Selection/Selection.h>
-#include <Gui/WaitCursor.h>
+#include <Base/Interpreter.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 
 #include "DlgDecimating.h"
+#include "BackgroundMeshModification.h"
 #include "CommandGuard.h"
 #include "ParametricMeshFilter.h"
 #include "ui_DlgDecimating.h"
@@ -183,9 +186,6 @@ bool TaskDecimating::accept()
     if (meshes.empty()) {
         return false;
     }
-    Gui::WaitCursor wc;
-
-
     float tolerance = float(widget->tolerance());
     float reduction = float(widget->reduction());
     bool absolute = widget->isAbsoluteNumber();
@@ -202,38 +202,46 @@ bool TaskDecimating::accept()
            })) {
         return false;
     }
-    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
+    std::vector<MeshGui::BackgroundMeshModificationTarget> operations;
     operations.reserve(meshes.size());
     for (auto* feature : meshes) {
         if (feature->Mesh.getValue().countFacets() == 0) {
             return false;
         }
         operations.push_back(
-            MeshGui::ParametricMeshFilterTarget {
+            MeshGui::BackgroundMeshModificationTarget {
                 feature,
-                [absolute, targetSize, tolerance, reduction](App::DocumentObject& object) {
-                    auto& decimation = static_cast<Mesh::Decimation&>(object);
-                    decimation.UseTargetFacetCount.setValue(absolute);
-                    decimation.TargetFacetCount.setValue(targetSize);
-                    decimation.Tolerance.setValue(tolerance);
-                    decimation.Reduction.setValue(reduction * 100.0F);
-                },
+                "Decimate Mesh",
+                {},
+                {},
             }
         );
     }
 
     try {
-        MeshGui::createParametricMeshFilters(
-            *document,
+        std::ostringstream arguments;
+        arguments << "{\"settings\":";
+        if (absolute) {
+            arguments << "{\"mode\":\"target_facets\",\"target_facet_count\":"
+                      << targetSize << "}";
+        }
+        else {
+            arguments << "{\"mode\":\"percentage\",\"reduction_percent\":"
+                      << std::setprecision(17) << reduction * 100.0F
+                      << ",\"tolerance_mm\":" << std::setprecision(17) << tolerance << "}";
+        }
+        arguments << "}";
+        MeshGui::startBackgroundMeshModification(
             operations,
-            MeshGui::ParametricMeshFilterSpec {
-                "Mesh::Decimation",
-                "Decimation",
-                "Decimate Mesh",
-                QT_TRANSLATE_NOOP("Command", "Mesh Decimating"),
-            }
+            "decimate",
+            arguments.str()
         );
         return true;
+    }
+    catch (const Py::Exception&) {
+        Base::PyException error;
+        Base::Console().error("Mesh decimation failed: %s\n", error.what());
+        return false;
     }
     catch (const Base::Exception& error) {
         Base::Console().error("Mesh decimation failed: %s\n", error.what());

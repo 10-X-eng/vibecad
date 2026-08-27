@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import traceback
+import zipfile
 
 import FreeCAD as App
 import FreeCADGui as Gui
@@ -120,7 +121,7 @@ def _run() -> None:
         ledger = NativeAssistantUndoLedger()
         ledger.begin_run("native-mesh-io-gui")
         selected_input = {"path": None}
-        selected_output = {"path": root / "exported-mesh.stl"}
+        selected_output = {"path": root / "exported-mesh.3mf"}
         input_authorizations = {"count": 0}
         output_authorizations = {"count": 0}
 
@@ -198,6 +199,11 @@ def _run() -> None:
             created.append(obj)
         assert int(document.UndoCount) == len(solids)
         assert tuple(document.VibeCADTimeline.Operations) == tuple(created)
+        meshes_group = document.getObject("Meshes")
+        assert meshes_group is not None
+        assert meshes_group.TypeId == "App::DocumentObjectGroup"
+        assert meshes_group.Label == "Meshes"
+        assert tuple(meshes_group.Group) == tuple(created)
 
         snapshot = build_mesh_snapshot(document)
         assert snapshot["counts"]["mesh"] == len(solids)
@@ -211,26 +217,26 @@ def _run() -> None:
             MESH_EXPORT_CAPABILITY_NAME,
             {
                 "operation": "export_mesh",
-                "target": {"object_name": created[3].Name},
-                "expected_state_sha256": "0" * 64,
-                "expected_point_count": topology["points"],
-                "expected_facet_count": topology["facets"],
-                "format": "binary_stl",
+                "target": {
+                    "object_name": created[3].Name,
+                    "expected_state_sha256": "0" * 64,
+                },
+                "format": "3mf",
             },
             succeeds=False,
         )
-        assert stale["error_code"] == "NATIVE_MESH_STATE_STALE"
+        assert stale["error_code"] == "NATIVE_MESH_STATE_STALE", stale
         assert output_authorizations["count"] == auth_before
 
         export_started = call(
             MESH_EXPORT_CAPABILITY_NAME,
             {
                 "operation": "export_mesh",
-                "target": {"object_name": created[3].Name},
-                "expected_state_sha256": target_state["state_sha256"],
-                "expected_point_count": topology["points"],
-                "expected_facet_count": topology["facets"],
-                "format": "binary_stl",
+                "target": {
+                    "object_name": created[3].Name,
+                    "expected_state_sha256": target_state["state_sha256"],
+                },
+                "format": "3mf",
             },
         )
 
@@ -254,6 +260,42 @@ def _run() -> None:
         assert export_job["result"]["output"]["size_bytes"] > 0
         assert int(document.UndoCount) == len(solids)
 
+        empty_3mf = root / "empty.3mf"
+        with zipfile.ZipFile(empty_3mf, "w") as archive:
+            archive.writestr(
+                "[Content_Types].xml",
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>'
+                "</Types>",
+            )
+            archive.writestr(
+                "_rels/.rels",
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Target="/3D/3dmodel.model" Id="rel0" '
+                'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>'
+                "</Relationships>",
+            )
+            archive.writestr(
+                "3D/3dmodel.model",
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<model unit="millimeter" xml:lang="en-US" '
+                'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+                '<resources><object id="1" type="model"><mesh><vertices/><triangles/>'
+                '</mesh></object></resources><build><item objectid="1"/></build></model>',
+            )
+        objects_before_empty = tuple(document.Objects)
+        undo_before_empty = int(document.UndoCount)
+        selected_input["path"] = empty_3mf
+        empty_started = call(MESH_IO_CAPABILITY_NAME, {"operation": "import_mesh"})
+        empty_job = wait_for_job(empty_started["job"]["job_id"])
+        assert empty_job["phase"] == "failed", empty_job
+        assert empty_job["failure"]["error_code"] == "NATIVE_MESH_IMPORT_EMPTY"
+        assert tuple(document.Objects) == objects_before_empty
+        assert int(document.UndoCount) == undo_before_empty
+
         selected_input["path"] = selected_output["path"]
         import_started = call(
             MESH_IO_CAPABILITY_NAME,
@@ -269,7 +311,8 @@ def _run() -> None:
         assert MeshGui.isNativeMeshInputActive(imported)
         assert int(document.UndoCount) == len(solids) + 1
         assert tuple(document.VibeCADTimeline.Operations)[-1] is imported
-        assert input_authorizations["count"] == 1
+        assert imported in meshes_group.Group
+        assert input_authorizations["count"] == 2
         assert output_authorizations["count"] == 1
 
         document.save()
@@ -285,12 +328,16 @@ def _run() -> None:
         assert reopened.VibeCADTimelineRole == "operation"
         assert list(reopened.VibeCADExternalInputs) == [selected_output["path"].name]
         assert tuple(document.VibeCADTimeline.Operations)[-1] is reopened
+        reopened_meshes_group = document.getObject("Meshes")
+        assert reopened_meshes_group is not None
+        assert reopened in reopened_meshes_group.Group
 
         print(
             "VIBECAD_NATIVE_MESH_IO_GUI_OK "
             f"solids={len(solids)} imported_facets={imported_facets} "
             f"history={len(document.VibeCADTimeline.Operations)} "
-            "background_import=true background_export=true",
+            "background_import=true background_export=true format=3mf "
+            "empty_rejected=true",
             flush=True,
         )
         exit_code = 0

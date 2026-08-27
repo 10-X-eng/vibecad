@@ -54,12 +54,19 @@ public:
     Merge();
 
     App::PropertyLinkList Sources;
+    Mesh::PropertyMeshKernel AcceptedResult;
+    App::PropertyStringList AcceptedSourceRevisions;
+    App::PropertyPlacementList AcceptedSourcePlacements;
+    App::PropertyBool AcceptedSourcesStale;
+    App::PropertyBool UpdateFromSource;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
+    void onDocumentRestored() override;
 
 private:
     [[nodiscard]] bool isSuppressed() const;
+    [[nodiscard]] bool detachedSourcesChanged() const;
 
     App::SuppressibleExtension suppressibleExt;
 };
@@ -141,7 +148,7 @@ public:
     App::PropertyBool UseTargetFacetCount;
     App::PropertyInteger TargetFacetCount;
     App::PropertyFloat Tolerance;
-    App::PropertyPercent Reduction;
+    App::PropertyFloatConstraint Reduction;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
@@ -178,6 +185,7 @@ public:
 
     App::PropertyLink Plane;
     App::PropertyEnumeration Side;
+    App::PropertyBool UpdateFromSource;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
@@ -204,6 +212,7 @@ public:
     App::PropertyVectorList Polygon;
     App::PropertyEnumeration Action;
     App::PropertyEnumeration Region;
+    App::PropertyBool UpdateFromSource;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
@@ -255,10 +264,15 @@ public:
 
     App::PropertyIntegerList FacetIndices;
     Mesh::PropertyMeshKernel AcceptedTopology;
+    Mesh::PropertyMeshKernel AcceptedResult;
+    App::PropertyString AcceptedSourceRevision;
+    App::PropertyBool AcceptedSourceStale;
     App::PropertyString SelectionKind;
+    App::PropertyBool UpdateFromSource;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
+    void onDocumentRestored() override;
 };
 
 /**

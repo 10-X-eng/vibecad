@@ -30,6 +30,9 @@
 
 #include <QDialog>
 #include <QDoubleSpinBox>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMessageBox>
 #include <QVBoxLayout>
 
@@ -44,6 +47,7 @@
 #include <Mod/Mesh/App/MeshFeature.h>
 
 #include "SegmentationBestFit.h"
+#include "BackgroundMeshSegmentation.h"
 #include "CommandGuard.h"
 #include "ParametricMeshFilter.h"
 #include "ui_SegmentationBestFit.h"
@@ -434,148 +438,96 @@ void SegmentationBestFit::accept()
             "The mesh selected for segmentation is no longer active in History"
         );
     }
-    const Mesh::MeshObject* mesh = target->Mesh.getValuePtr();
-    const MeshCore::MeshKernel& kernel = mesh->getKernel();
-
-    MeshCore::MeshSegmentAlgorithm finder(kernel);
-
-    std::vector<MeshCore::MeshSurfaceSegmentPtr> segm;
+    QJsonArray surfaces;
     if (ui->groupBoxCyl->isChecked()) {
-        MeshCore::AbstractSurfaceFit* fitter {};
+        QJsonObject surface {
+            {"kind", "cylinder"},
+            {"minimum_facets", ui->numCyl->value()},
+            {"distance_tolerance_mm", ui->tolCyl->value()},
+        };
         if (cylinderParameter.size() == 7) {
-            std::vector<float>& p = cylinderParameter;
-            fitter = new MeshCore::CylinderSurfaceFit(
-                Base::Vector3f(p[0], p[1], p[2]),
-                Base::Vector3f(p[3], p[4], p[5]),
-                p[6]
-            );
+            surface.insert("initial", QJsonObject {
+                {
+                    "base_mm",
+                    QJsonObject {
+                        {"x_mm", cylinderParameter[0]},
+                        {"y_mm", cylinderParameter[1]},
+                        {"z_mm", cylinderParameter[2]},
+                    }
+                },
+                {
+                    "axis",
+                    QJsonObject {
+                        {"x", cylinderParameter[3]},
+                        {"y", cylinderParameter[4]},
+                        {"z", cylinderParameter[5]},
+                    }
+                },
+                {"radius_mm", cylinderParameter[6]},
+            });
         }
-        else {
-            fitter = new MeshCore::CylinderSurfaceFit;
-        }
-        segm.emplace_back(
-            std::make_shared<MeshCore::MeshDistanceGenericSurfaceFitSegment>(
-                fitter,
-                kernel,
-                ui->numCyl->value(),
-                ui->tolCyl->value()
-            )
-        );
+        surfaces.append(surface);
     }
     if (ui->groupBoxSph->isChecked()) {
-        MeshCore::AbstractSurfaceFit* fitter {};
+        QJsonObject surface {
+            {"kind", "sphere"},
+            {"minimum_facets", ui->numSph->value()},
+            {"distance_tolerance_mm", ui->tolSph->value()},
+        };
         if (sphereParameter.size() == 4) {
-            std::vector<float>& p = sphereParameter;
-            fitter = new MeshCore::SphereSurfaceFit(Base::Vector3f(p[0], p[1], p[2]), p[3]);
+            surface.insert("initial", QJsonObject {
+                {
+                    "center_mm",
+                    QJsonObject {
+                        {"x_mm", sphereParameter[0]},
+                        {"y_mm", sphereParameter[1]},
+                        {"z_mm", sphereParameter[2]},
+                    }
+                },
+                {"radius_mm", sphereParameter[3]},
+            });
         }
-        else {
-            fitter = new MeshCore::SphereSurfaceFit;
-        }
-        segm.emplace_back(
-            std::make_shared<MeshCore::MeshDistanceGenericSurfaceFitSegment>(
-                fitter,
-                kernel,
-                ui->numSph->value(),
-                ui->tolSph->value()
-            )
-        );
+        surfaces.append(surface);
     }
     if (ui->groupBoxPln->isChecked()) {
-        MeshCore::AbstractSurfaceFit* fitter {};
+        QJsonObject surface {
+            {"kind", "plane"},
+            {"minimum_facets", ui->numPln->value()},
+            {"distance_tolerance_mm", ui->tolPln->value()},
+        };
         if (planeParameter.size() == 6) {
-            std::vector<float>& p = planeParameter;
-            fitter = new MeshCore::PlaneSurfaceFit(
-                Base::Vector3f(p[0], p[1], p[2]),
-                Base::Vector3f(p[3], p[4], p[5])
-            );
-        }
-        else {
-            fitter = new MeshCore::PlaneSurfaceFit;
-        }
-        segm.emplace_back(
-            std::make_shared<MeshCore::MeshDistanceGenericSurfaceFitSegment>(
-                fitter,
-                kernel,
-                ui->numPln->value(),
-                ui->tolPln->value()
-            )
-        );
-    }
-    finder.FindSegments(segm);
-
-    struct Result
-    {
-        std::vector<long> facets;
-        std::string type;
-    };
-    std::vector<Result> results;
-    for (const auto& segment : segm) {
-        for (const auto& result : segment->GetSegments()) {
-            if (result.empty()) {
-                continue;
-            }
-            results.push_back(
+            surface.insert("initial", QJsonObject {
                 {
-                    std::vector<long>(result.begin(), result.end()),
-                    segment->GetType(),
-                }
-            );
-        }
-    }
-    if (results.empty()) {
-        throw Base::RuntimeError("The current settings did not find any mesh segments");
-    }
-
-    App::Document* document = target->getDocument();
-    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
-        throw Base::RuntimeError("Another document operation is already in progress");
-    }
-    std::vector<std::string> labels;
-    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
-    labels.reserve(results.size());
-    operations.reserve(results.size());
-    for (const auto& result : results) {
-        std::stringstream label;
-        label << "Mesh Segment (" << result.type << ")";
-        labels.push_back(label.str());
-        operations.push_back(
-            MeshGui::ParametricMeshFilterTarget {
-                target,
-                [target,
-                 facets = result.facets,
-                 label = labels.back(),
-                 type = result.type](
-                    App::DocumentObject& object
-                ) {
-                    auto& subset =
-                        static_cast<Mesh::FacetSubset&>(object);
-                    subset.Label.setValue(label);
-                    subset.FacetIndices.setValues(facets);
-                    subset.AcceptedTopology.setValue(
-                        target->Mesh.getValue()
-                    );
-                    subset.SelectionKind.setValue(type);
+                    "point_mm",
+                    QJsonObject {
+                        {"x_mm", planeParameter[0]},
+                        {"y_mm", planeParameter[1]},
+                        {"z_mm", planeParameter[2]},
+                    }
                 },
-            }
-        );
-    }
-    std::string groupLabel = "Best-Fit Segments ";
-    groupLabel += target->Label.getValue();
-    MeshGui::createParametricMeshFilters(
-        *document,
-        operations,
-        MeshGui::ParametricMeshFilterSpec {
-            "Mesh::FacetSubset",
-            "Segment",
-            "Mesh Segment",
-            "Segmentation",
-            true,
-            true,
-            true,
-            "BestFitSegmentation",
-            groupLabel.c_str(),
-            "Best-fit segmentation",
+                {
+                    "normal",
+                    QJsonObject {
+                        {"x", planeParameter[3]},
+                        {"y", planeParameter[4]},
+                        {"z", planeParameter[5]},
+                    }
+                },
+            });
         }
+        surfaces.append(surface);
+    }
+    if (surfaces.isEmpty()) {
+        throw Base::ValueError("Select at least one surface type to segment");
+    }
+    const QJsonObject settings {
+        {"surfaces", surfaces},
+        {"result_label_prefix", "Mesh Segment"},
+    };
+    MeshGui::startBackgroundMeshSegmentation(
+        {target},
+        "segmentation_best_fit",
+        QJsonDocument(settings).toJson(QJsonDocument::Compact).toStdString()
     );
 }
 

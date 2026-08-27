@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import math
 from typing import Any, Mapping
 
+from VibeCADMeshModificationOperation import FEATURE_TYPES, configure_mesh_feature
 from VibeCADNativeMeshComponents import resolve_component_facets
 from VibeCADNativeMeshErrors import NativeMeshError
 from VibeCADNativeMeshState import mesh_geometry_sha256, mesh_object_state
@@ -16,7 +17,6 @@ from VibeCADNativeMeshTargets import (
     is_active_mesh_input as _active,
     is_live as _live,
     mesh_target_still_exact as _still_exact,
-    prepare_mesh_target as _prepare_target,
     prepare_mesh_targets as _prepare_targets,
     replace_mesh_target as _replace_target,
 )
@@ -30,18 +30,20 @@ from VibeCADNativeTargets import (
 MAX_EXPANDED_SMOOTHING_POINTS = 250_000
 
 _FEATURES = {
-    "harmonize_normals": ("Mesh::HarmonizeNormals", "HarmonizedNormals"),
-    "flip_normals": ("Mesh::FlipNormals", "FlippedNormals"),
-    "fill_holes": ("Mesh::FillHoles", "FilledHoles"),
-    "fill_boundary": ("Mesh::FacetEdit", "FilledBoundary"),
-    "add_triangle": ("Mesh::FacetEdit", "AddedTriangle"),
-    "remove_components": ("Mesh::FacetEdit", "RemovedComponents"),
-    "smooth": ("Mesh::Smoothing", "Smoothing"),
-    "decimate": ("Mesh::Decimation", "Decimation"),
-    "scale": ("Mesh::Scale", "Scale"),
+    "repair": (FEATURE_TYPES["repair"], "Repair"),
+    "harmonize_normals": (FEATURE_TYPES["harmonize_normals"], "HarmonizedNormals"),
+    "flip_normals": (FEATURE_TYPES["flip_normals"], "FlippedNormals"),
+    "fill_holes": (FEATURE_TYPES["fill_holes"], "FilledHoles"),
+    "fill_boundary": (FEATURE_TYPES["fill_boundary"], "FilledBoundary"),
+    "add_triangle": (FEATURE_TYPES["add_triangle"], "AddedTriangle"),
+    "remove_components": (FEATURE_TYPES["remove_components"], "RemovedComponents"),
+    "smooth": (FEATURE_TYPES["smooth"], "Smoothing"),
+    "decimate": (FEATURE_TYPES["decimate"], "Decimation"),
+    "scale": (FEATURE_TYPES["scale"], "Scale"),
     "gmsh_remesh": ("Mesh::GmshRemesh", "GmshRemesh"),
 }
 _OPERATION_LABELS = {
+    "repair": "Repair mesh",
     "harmonize_normals": "Harmonize mesh normals",
     "flip_normals": "Flip mesh normals",
     "fill_holes": "Fill mesh holes",
@@ -60,6 +62,42 @@ class PreparedMeshModification:
     operation: str
     targets: tuple[PreparedMeshTarget, ...]
     settings: Mapping[str, Any]
+    unchanged_targets: tuple[PreparedMeshTarget, ...] = ()
+    accepted_results: tuple[Any, ...] = ()
+
+
+def accept_mesh_modification_results(
+    prepared: PreparedMeshModification,
+    result: Any,
+) -> PreparedMeshModification:
+    outputs = tuple(getattr(result, "output_meshes", ()) or ())
+    changes = tuple(getattr(result, "changed", ()) or ())
+    if (
+        len(outputs) != len(prepared.targets)
+        or len(changes) != len(prepared.targets)
+        or any(type(changed) is not bool for changed in changes)
+    ):
+        raise NativeMeshError("The prepared Mesh modification result count is invalid.")
+    changed_targets = []
+    unchanged_targets = []
+    accepted_results = []
+    for target, output, changed in zip(
+        prepared.targets,
+        outputs,
+        changes,
+    ):
+        if changed:
+            changed_targets.append(target)
+            accepted_results.append(output)
+        else:
+            unchanged_targets.append(target)
+    return PreparedMeshModification(
+        operation=prepared.operation,
+        targets=tuple(changed_targets),
+        settings=prepared.settings,
+        unchanged_targets=tuple(unchanged_targets),
+        accepted_results=tuple(accepted_results),
+    )
 
 
 def _finite(value: Any, field: str) -> float:
@@ -115,27 +153,6 @@ def _expand_point_selection(selection: Any, point_count: int) -> tuple[int, ...]
     return tuple(sorted(indices))
 
 
-def _require_changed_trial(target: PreparedMeshTarget, operation: str, setting: int = 0) -> None:
-    trial = target.source.Mesh.copy()
-    before = target.source_geometry_sha256
-    try:
-        if operation == "harmonize_normals":
-            trial.harmonizeNormals()
-        elif operation == "fill_holes":
-            trial.fillupHoles(setting, 0)
-        else:
-            raise AssertionError(operation)
-    except Exception as exc:
-        raise NativeMeshError(f"The {operation} preflight failed on the exact Mesh.") from exc
-    if mesh_geometry_sha256(trial) == before:
-        message = (
-            "The exact Mesh already has coherent facet normals."
-            if operation == "harmonize_normals"
-            else "No boundary within maximum_boundary_edges can be filled on the exact Mesh."
-        )
-        raise NativeMeshError(message, error_code="NATIVE_MESH_OPERATION_NO_CHANGE")
-
-
 def prepare_mesh_modification(
     document: Any,
     document_uid: str,
@@ -145,33 +162,64 @@ def prepare_mesh_modification(
     if operation not in _FEATURES or operation == "gmsh_remesh":
         raise NativeMeshError("The requested immediate Mesh modification is unavailable.")
     settings: dict[str, Any] = {}
-    if operation in {
-        "harmonize_normals",
-        "flip_normals",
-        "fill_holes",
-        "smooth",
-        "decimate",
-        "scale",
-    }:
-        targets = _prepare_targets(
-            document,
-            document_uid,
-            values["targets"],
-            extra_keys=("selection",) if operation == "smooth" else (),
-        )
-    else:
-        targets = (_prepare_target(document, document_uid, values["target"]),)
+    unchanged_targets: tuple[PreparedMeshTarget, ...] = ()
+    targets = _prepare_targets(
+        document,
+        document_uid,
+        values["targets"],
+        extra_keys=("selection",) if operation == "smooth" else (),
+    )
+    if operation in {"fill_boundary", "add_triangle", "remove_components"} and len(targets) != 1:
+        raise NativeMeshError(f"{operation} requires exactly one target in targets.")
 
-    if operation == "harmonize_normals":
-        for target in targets:
-            _require_changed_trial(target, operation)
+    if operation == "repair":
+        raw_settings = values.get("settings")
+        if not isinstance(raw_settings, Mapping):
+            raise NativeMeshError("settings must identify exact Mesh repair passes.")
+        repairs = raw_settings.get("repairs")
+        allowed_repairs = {
+            "orientation",
+            "duplicates",
+            "non_manifold_topology",
+            "indices",
+            "degeneracies",
+            "self_intersections",
+            "surface_folds",
+            "holes",
+        }
+        if (
+            not isinstance(repairs, list)
+            or not repairs
+            or len(repairs) != len(set(repairs))
+            or any(repair not in allowed_repairs for repair in repairs)
+        ):
+            raise NativeMeshError("repairs contains an unavailable Mesh repair pass.")
+        maximum_edges = raw_settings.get("maximum_boundary_edges")
+        if type(maximum_edges) is not int or not (
+            maximum_edges == 0 or 3 <= maximum_edges <= 10_000
+        ):
+            raise NativeMeshError(
+                "maximum_boundary_edges must be zero or between 3 and 10000."
+            )
+        if ("holes" in repairs) != (maximum_edges > 0):
+            raise NativeMeshError(
+                "holes repair and maximum_boundary_edges must be selected together."
+            )
+        max_iterations = raw_settings.get("max_iterations")
+        if type(max_iterations) is not int or not 1 <= max_iterations <= 100:
+            raise NativeMeshError("max_iterations must be between 1 and 100.")
+        settings.update(
+            repairs=tuple(repairs),
+            maximum_boundary_edges=maximum_edges,
+            max_iterations=max_iterations,
+        )
+    elif operation == "harmonize_normals":
+        pass
     elif operation == "fill_holes":
         maximum = values["maximum_boundary_edges"]
         if type(maximum) is not int or not 3 <= maximum <= 10_000:
             raise NativeMeshError("maximum_boundary_edges must be between 3 and 10000.")
         settings["maximum_boundary_edges"] = maximum
-        for target in targets:
-            _require_changed_trial(target, operation, maximum)
     elif operation == "fill_boundary":
         seed = values["seed_facet_index"]
         level = values["refinement_level"]
@@ -195,7 +243,10 @@ def prepare_mesh_modification(
     elif operation == "smooth":
         prepared_targets = []
         for target, raw in zip(targets, values["targets"]):
-            indices = _expand_point_selection(raw["selection"], int(target.topology["points"]))
+            indices = _expand_point_selection(
+                raw.get("selection", {"kind": "all"}),
+                int(target.topology["points"]),
+            )
             prepared_targets.append(_replace_target(target, point_indices=indices))
         targets = tuple(prepared_targets)
         raw_settings = values["settings"]
@@ -244,61 +295,82 @@ def prepare_mesh_modification(
         factor = _finite(values["factor"], "factor")
         if factor <= 0.0 or factor == 1.0:
             raise NativeMeshError("factor must be positive and different from 1.")
-        maximum = 3.4028234663852886e38
-        for target in targets:
-            points, _facets = target.source.Mesh.Topology
-            for point in points:
-                if any(
-                    not math.isfinite(float(value) * factor)
-                    or abs(float(value) * factor) > maximum
-                    for value in (point.x, point.y, point.z)
-                ):
-                    raise NativeMeshError("factor would create invalid Mesh coordinates.")
         settings["factor"] = factor
-    return PreparedMeshModification(operation, targets, settings)
+    return PreparedMeshModification(
+        operation,
+        targets,
+        settings,
+        unchanged_targets,
+    )
+
+
+def prepare_selected_mesh_facets(
+    document: Any,
+    document_uid: str,
+    values: Any,
+) -> PreparedMeshModification:
+    """Prepare exact viewport-selected facets for the shared removal operation."""
+
+    targets = _prepare_targets(
+        document,
+        document_uid,
+        values,
+        extra_keys=("facet_indices",),
+    )
+    prepared = []
+    for target, raw in zip(targets, values):
+        indices = raw["facet_indices"]
+        facet_count = int(target.topology["facets"])
+        if not isinstance(indices, list) or not indices:
+            raise NativeMeshError("Every selected Mesh must contain facet indices.")
+        if any(
+            type(index) is not int or index < 0 or index >= facet_count
+            for index in indices
+        ):
+            raise NativeMeshError("A selected facet index is outside the exact source Mesh.")
+        if len(indices) != len(set(indices)):
+            raise NativeMeshError("Selected facet indices must not repeat.")
+        prepared.append(
+            _replace_target(target, facet_indices=tuple(sorted(indices)))
+        )
+    return PreparedMeshModification("remove_components", tuple(prepared), {})
+
+
+def verify_mesh_modification_noop(
+    document: Any,
+    prepared: PreparedMeshModification,
+) -> dict[str, Any]:
+    if prepared.targets or not prepared.unchanged_targets:
+        raise NativeMeshError("The Mesh modification is not a no-op.")
+    if any(not _still_exact(document, target) for target in prepared.unchanged_targets):
+        raise NativeMeshError(
+            "An exact Mesh changed during no-op verification.",
+            error_code="NATIVE_MESH_STATE_STALE",
+        )
+    return {
+        "operation": prepared.operation,
+        "changed": False,
+        "outputs": [],
+        "unchanged": [
+            mesh_object_state(target.source) for target in prepared.unchanged_targets
+        ],
+        "settings": {
+            name: setting
+            for name, setting in prepared.settings.items()
+            if not name.startswith("_")
+        },
+    }
 
 
 def _configure_result(result: Any, prepared: PreparedMeshModification, target: PreparedMeshTarget) -> None:
-    operation = prepared.operation
-    settings = prepared.settings
-    if operation == "fill_holes":
-        result.FillupHolesOfLength = settings["maximum_boundary_edges"]
-        result.Method = "Flat"
-    elif operation == "fill_boundary":
-        result.Action = "Fill Hole"
-        result.SeedFacet = settings["seed_facet_index"]
-        result.Level = settings["refinement_level"]
-        result.AcceptedSource = target.source.Mesh
-    elif operation == "add_triangle":
-        result.Action = "Add Triangle"
-        result.Indices = list(target.point_indices)
-        result.AcceptedSource = target.source.Mesh
-    elif operation == "remove_components":
-        result.Action = "Remove Facets"
-        result.Indices = list(target.facet_indices)
-        result.AcceptedSource = target.source.Mesh
-    elif operation == "smooth":
-        result.Method = {"taubin": "Taubin", "laplace": "Laplace", "median": "Median"}[
-            settings["method"]
-        ]
-        result.Iterations = settings["iterations"]
-        if "lambda" in settings:
-            result.Lambda = settings["lambda"]
-        if "mu" in settings:
-            result.Mu = settings["mu"]
-        result.PointIndices = list(target.point_indices)
-        if target.point_indices:
-            result.SelectionSource = target.source.Mesh
-    elif operation == "decimate":
-        absolute = settings["mode"] == "target_facets"
-        result.UseTargetFacetCount = absolute
-        if absolute:
-            result.TargetFacetCount = settings["target_facet_count"]
-        else:
-            result.Tolerance = settings["tolerance_mm"]
-            result.Reduction = settings["reduction_percent"]
-    elif operation == "scale":
-        result.Factor = settings["factor"]
+    configure_mesh_feature(
+        result,
+        source_mesh=target.source.Mesh,
+        operation=prepared.operation,
+        settings=prepared.settings,
+        point_indices=target.point_indices,
+        facet_indices=target.facet_indices,
+    )
 
 
 def create_mesh_modification(
@@ -316,14 +388,21 @@ def create_mesh_modification(
     import MeshGui
 
     type_id, base_name = _FEATURES[prepared.operation]
+    if prepared.accepted_results and len(prepared.accepted_results) != len(prepared.targets):
+        raise NativeMeshError("The prepared Mesh result count does not match its targets.")
     results = []
-    for target in prepared.targets:
+    for index, target in enumerate(prepared.targets):
         result = document.addObject(type_id, document.getUniqueObjectName(base_name))
         if result is None or not bool(result.isDerivedFrom("Mesh::Feature")):
             raise NativeMeshError("The retained Mesh operation could not be created.")
         result.Label = target.label
         result.Source = target.source
         _configure_result(result, prepared, target)
+        if prepared.accepted_results:
+            result.Mesh = prepared.accepted_results[index]
+        result.Placement = target.source.Placement
+        if prepared.accepted_results:
+            result.purgeTouched()
         results.append(result)
     group = MeshGui.publishReplacingOutputs(
         str(document.Name),
@@ -335,8 +414,13 @@ def create_mesh_modification(
     )
     created_objects = [*results, *([group] if group is not None else [])]
     return NativeMutationDraft(
-        value={"prepared": prepared, "results": tuple(results), "group": group},
-        recompute_targets=tuple(created_objects),
+        value={
+            "prepared": prepared,
+            "results": tuple(results),
+            "result_labels": tuple(str(result.Label) for result in results),
+            "group": group,
+        },
+        recompute_targets=() if prepared.accepted_results else tuple(created_objects),
         created=tuple(object_identity(obj) for obj in created_objects),
         replaced=tuple(object_identity(target.source) for target in prepared.targets),
     )
@@ -400,6 +484,25 @@ def _settings_postcondition(
         return (
             int(result.FillupHolesOfLength) == settings["maximum_boundary_edges"]
             and str(result.Method) == "Flat"
+        )
+    if operation == "repair":
+        repairs = set(settings["repairs"])
+        expected = {
+            "HarmonizeNormals": "orientation",
+            "RemoveDuplicates": "duplicates",
+            "RemoveNonManifolds": "non_manifold_topology",
+            "FixIndices": "indices",
+            "FixDegenerations": "degeneracies",
+            "FixSelfIntersections": "self_intersections",
+            "RemoveFolds": "surface_folds",
+        }
+        return (
+            all(bool(getattr(result, name)) is (repair in repairs) for name, repair in expected.items())
+            and bool(result.RemoveNonManifoldPoints)
+            is ("non_manifold_topology" in repairs)
+            and int(result.FillHolesMaxEdges) == settings["maximum_boundary_edges"]
+            and bool(result.Repeat) is (settings["max_iterations"] > 1)
+            and int(result.MaxIterations) == settings["max_iterations"]
         )
     if operation == "fill_boundary":
         return (
@@ -504,36 +607,54 @@ def verify_mesh_modification(document: Any, draft: NativeMutationDraft) -> dict[
     value = draft.value
     prepared = value["prepared"]
     results = value["results"]
+    result_labels = value["result_labels"]
     group = value["group"]
     if not isinstance(prepared, PreparedMeshModification):
         raise NativeMeshError("The Mesh modification lost its prepared state.")
+    if any(not _still_exact(document, target) for target in prepared.unchanged_targets):
+        raise NativeMeshError(
+            "An unchanged exact Mesh failed modification verification.",
+            error_code="NATIVE_MESH_STATE_STALE",
+        )
     if len(results) != len(prepared.targets) or not _history_postcondition(
         document, prepared, results, group
     ):
         raise NativeMeshError("The Mesh modification failed its exact History postcondition.")
     summaries = []
-    for target, result in zip(prepared.targets, results):
+    for target, result, retained_label in zip(
+        prepared.targets,
+        results,
+        result_labels,
+    ):
         status = str(getattr(result, "getStatusString", lambda: "")() or "").strip()
         output_mesh = getattr(result, "Mesh", None)
         output_facets = int(getattr(output_mesh, "CountFacets", 0) or 0)
         allow_empty = prepared.operation == "remove_components"
-        if (
-            not _live(document, target.source)
-            or not _live(document, result)
-            or getattr(result, "Source", None) is not target.source
-            or str(getattr(result, "Label", "")) != target.label
-            or not _settings_postcondition(prepared, target, result)
-            or not bool(result.isValid())
-            or (not allow_empty and output_facets < 1)
-            or mesh_object_state(target.source).get("state_sha256")
-            != target.expected_state_sha256
-            or mesh_geometry_sha256(target.source.Mesh) != target.source_geometry_sha256
-            or bool(target.source.Visibility)
-        ):
+        checks = {
+            "source_live": _live(document, target.source),
+            "result_live": _live(document, result),
+            "source_link": getattr(result, "Source", None) is target.source,
+            "result_label": str(getattr(result, "Label", "")) == retained_label,
+            "settings": _settings_postcondition(prepared, target, result),
+            "result_valid": bool(result.isValid()),
+            "result_nonempty": allow_empty or output_facets > 0,
+            "source_state": mesh_object_state(target.source).get("state_sha256")
+            == target.expected_state_sha256,
+            "source_geometry": mesh_geometry_sha256(target.source.Mesh)
+            == target.source_geometry_sha256,
+            "source_hidden": not bool(target.source.Visibility),
+        }
+        failed_checks = [name for name, passed in checks.items() if not passed]
+        if failed_checks:
             raise NativeMeshError(
                 status
                 if not bool(result.isValid())
-                else "A retained Mesh result failed its exact postcondition."
+                else "The retained Mesh result failed: " + ", ".join(failed_checks) + ".",
+                repair={
+                    "failed_postconditions": failed_checks,
+                    "expected_label": retained_label,
+                    "observed_label": str(getattr(result, "Label", "")),
+                },
             )
         if mesh_geometry_sha256(output_mesh) == target.source_geometry_sha256:
             raise NativeMeshError(
@@ -548,7 +669,11 @@ def verify_mesh_modification(document: Any, draft: NativeMutationDraft) -> dict[
         )
     response: dict[str, Any] = {
         "operation": prepared.operation,
+        "changed": True,
         "outputs": summaries,
+        "unchanged": [
+            mesh_object_state(target.source) for target in prepared.unchanged_targets
+        ],
         "settings": {
             name: setting
             for name, setting in prepared.settings.items()

@@ -340,6 +340,12 @@ from VibeCADNativeComponentInterfaceSchema import (
 )
 from VibeCADNativeCommonBindings import register_common_capability_implementations
 from VibeCADNativeCommonSchema import register_common_capability_definitions
+from VibeCADNativeInspectionCompareBindings import (
+    register_inspection_compare_capability_implementation,
+)
+from VibeCADNativeInspectionCompareSchema import (
+    register_inspection_compare_capability_definition,
+)
 from VibeCADNativeWorkspaceBindings import (
     register_workspace_capability_implementation,
 )
@@ -857,6 +863,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_reverse_capability_implementations(registry)
     register_common_capability_definitions(registry)
     register_common_capability_implementations(registry)
+    register_inspection_compare_capability_definition(registry)
+    register_inspection_compare_capability_implementation(registry)
     register_workspace_capability_definition(registry)
     register_workspace_capability_implementation(registry)
     register_parameters_capability_definitions(registry)

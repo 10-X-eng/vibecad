@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "FeatureMeshPartOperations.h"
+#include "MeshSolidShape.h"
 
 #include <cmath>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <numbers>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,30 +26,20 @@
 #include <TopoDS_Wire.hxx>
 #include <TColgp_Array1OfPnt.hxx>
 
-#include <QProcess>
-#include <QStringList>
-
-#include <App/Application.h>
 #include <App/ComplexGeoData.h>
 #include <App/Document.h>
 #include <App/DocumentTimeline.h>
 #include <App/GeoFeature.h>
 #include <Base/Converter.h>
 #include <Base/Exception.h>
-#include <Base/FileInfo.h>
 #include <Base/Matrix.h>
-#include <Base/Stream.h>
 #include <Base/Tools.h>
 #include <Mod/Mesh/App/Mesh.h>
 #include <Mod/Mesh/App/Core/Algorithm.h>
 #include <Mod/Mesh/App/Core/Grid.h>
-#include <Mod/Mesh/App/Core/MeshIO.h>
 #include <Mod/Mesh/App/Core/Projection.h>
 #include <Mod/Part/App/FaceMakerCheese.h>
 #include <Mod/Part/App/TopoShape.h>
-
-#include "Mesher.h"
-
 
 namespace
 {
@@ -213,122 +204,6 @@ Part::TopoShape makeSectionShape(
     return Part::TopoShape(compound, 0, document.getStringHasher());
 }
 
-class TemporaryGmshFiles
-{
-public:
-    TemporaryGmshFiles()
-    {
-        const std::string prefix = App::Application::getTempFileName();
-        brep = prefix + "vibecad-gmsh.brep";
-        project = prefix + "vibecad-gmsh.geo";
-        output = prefix + "vibecad-gmsh.stl";
-    }
-
-    ~TemporaryGmshFiles()
-    {
-        Base::FileInfo(brep).deleteFile();
-        Base::FileInfo(project).deleteFile();
-        Base::FileInfo(output).deleteFile();
-    }
-
-    std::string brep;
-    std::string project;
-    std::string output;
-};
-
-std::string gmshQuotedPath(const std::string& path)
-{
-    std::string escaped;
-    escaped.reserve(path.size());
-    for (char character : path) {
-        if (character == '\\' || character == '"') {
-            escaped.push_back('\\');
-        }
-        escaped.push_back(character);
-    }
-    return escaped;
-}
-
-Mesh::MeshObject runGmsh(
-    const Part::TopoShape& sourceShape,
-    int algorithm,
-    double minimumSize,
-    double maximumSize,
-    double geometryTolerance,
-    int elementOrder,
-    bool optimize,
-    const std::string& executable,
-    int timeoutSeconds
-)
-{
-    TemporaryGmshFiles files;
-    sourceShape.exportBrep(files.brep.c_str());
-
-    Base::ofstream project(Base::FileInfo(files.project), std::ios::out);
-    if (!project.is_open()) {
-        throw Base::RuntimeError("The Gmsh project file could not be created");
-    }
-    const double effectiveMaximum = maximumSize > 0.0 ? maximumSize : 1.0e22;
-    project << "Merge \"" << gmshQuotedPath(files.brep) << "\";\n"
-            << "Mesh.CharacteristicLengthMax = " << effectiveMaximum << ";\n"
-            << "Mesh.CharacteristicLengthMin = " << minimumSize << ";\n"
-            << "Mesh.Optimize = " << (optimize ? 1 : 0) << ";\n"
-            << "Mesh.OptimizeNetgen = 0;\n"
-            << "Mesh.HighOrderOptimize = 0;\n"
-            << "Mesh.ElementOrder = " << elementOrder << ";\n"
-            << "Mesh.SecondOrderLinear = 1;\n"
-            << "Mesh.Algorithm = " << algorithm << ";\n"
-            << "Mesh.Algorithm3D = 1;\n"
-            << "Geometry.Tolerance = " << geometryTolerance << ";\n"
-            << "Mesh 2;\n"
-            << "Coherence Mesh;\n";
-    project.close();
-
-    QProcess process;
-    process.setProgram(QString::fromUtf8(executable.empty() ? "gmsh" : executable.c_str()));
-    process.setArguments({
-        QStringLiteral("-"),
-        QStringLiteral("-bin"),
-        QStringLiteral("-2"),
-        QString::fromUtf8(files.project.c_str()),
-        QStringLiteral("-o"),
-        QString::fromUtf8(files.output.c_str()),
-    });
-    process.start();
-    if (!process.waitForStarted(10000)) {
-        throw Base::RuntimeError("Gmsh could not be started");
-    }
-    const int timeoutMilliseconds = timeoutSeconds > std::numeric_limits<int>::max() / 1000
-        ? std::numeric_limits<int>::max()
-        : timeoutSeconds * 1000;
-    if (!process.waitForFinished(timeoutMilliseconds)) {
-        process.kill();
-        process.waitForFinished(1000);
-        throw Base::RuntimeError("Gmsh timed out before producing a mesh");
-    }
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        std::string detail = process.readAllStandardError().toStdString();
-        if (detail.size() > 1000) {
-            detail.resize(1000);
-        }
-        throw Base::RuntimeError(std::string("Gmsh failed") + (detail.empty() ? "" : ": " + detail));
-    }
-
-    Mesh::MeshObject result;
-    MeshCore::MeshInput input(result.getKernel());
-    Base::ifstream stream(Base::FileInfo(files.output), std::ios::in | std::ios::binary);
-    if (!stream.is_open()) {
-        throw Base::RuntimeError("Gmsh did not create a readable mesh file");
-    }
-    input.LoadBinarySTL(stream);
-    stream.close();
-    result.harmonizeNormals();
-    if (result.countFacets() == 0) {
-        throw Base::RuntimeError("Gmsh produced an empty mesh");
-    }
-    return result;
-}
-
 }  // namespace
 
 
@@ -453,14 +328,14 @@ MeshFromShape::MeshFromShape()
         ("gmsh"),
         "Gmsh",
         App::Prop_None,
-        "Gmsh executable used for every recompute"
+        "Gmsh executable used by the background tessellation job"
     );
     ADD_PROPERTY_TYPE(
         GmshTimeoutSeconds,
         (600),
         "Gmsh",
         App::Prop_None,
-        "Maximum time allowed for a Gmsh recompute"
+        "Maximum time allowed for the background Gmsh job"
     );
     static const App::PropertyIntegerConstraint::Constraints timeoutRange = {
         1,
@@ -501,7 +376,44 @@ MeshFromShape::MeshFromShape()
     GrowthRate.setConstraints(&nonNegative);
     SegmentsPerEdge.setConstraints(&nonNegative);
     SegmentsPerRadius.setConstraints(&nonNegative);
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (false),
+        "Source",
+        static_cast<App::PropertyType>(App::Prop_ReadOnly | App::Prop_Hidden),
+        "Background tessellation snapshot state"
+    );
     Source.setScope(App::LinkScope::Global);
+    for (App::Property* property : std::initializer_list<App::Property*>{
+             &Source,
+             &Method,
+             &LinearDeflection,
+             &AngularDeflection,
+             &Relative,
+             &Segments,
+             &MaximumEdgeLength,
+             &Fineness,
+             &GrowthRate,
+             &SegmentsPerEdge,
+             &SegmentsPerRadius,
+             &SecondOrder,
+             &Optimize,
+             &QuadDominated,
+             &GmshAlgorithm,
+             &GmshMinimumSize,
+             &GmshMaximumSize,
+             &GmshGeometryTolerance,
+             &GmshElementOrder,
+             &GmshOptimize,
+             &GmshExecutable,
+             &GmshTimeoutSeconds,
+             &CachedGmshSourceBrep,
+             &CachedGmshResult,
+             &UpdateFromSource,
+         }) {
+        property->setStatus(App::Property::ReadOnly, true);
+    }
+    UpdateFromSource.setStatus(App::Property::Hidden, true);
 }
 
 bool MeshFromShape::isSuppressed() const
@@ -522,6 +434,7 @@ short MeshFromShape::mustExecute() const
         || GmshMinimumSize.isTouched() || GmshMaximumSize.isTouched()
         || GmshGeometryTolerance.isTouched() || GmshElementOrder.isTouched()
         || GmshOptimize.isTouched() || GmshExecutable.isTouched() || GmshTimeoutSeconds.isTouched()
+        || UpdateFromSource.isTouched()
         || suppressibleExt.Suppressed.isTouched() || (source && source->isTouched())
         || (shape && shape->isTouched()) || (placement && placement->isTouched())) {
         return 1;
@@ -533,154 +446,22 @@ App::DocumentObjectExecReturn* MeshFromShape::execute()
 {
     try {
         if (isSuppressed()) {
-            Mesh.setValue(Mesh::MeshObject());
             return App::DocumentObject::StdReturn;
         }
-
-        auto* source = Source.getValue();
-        if (!isLiveSource(source, *this) || isExplicitlySuppressed(source)) {
-            throw Base::ValueError("Source must link to one live, unsuppressed shape in this "
-                                   "document");
-        }
-
-        const auto options = Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform;
-        const auto& subElements = Source.getSubValues();
-        Part::TopoShape sourceShape;
-        if (subElements.empty()) {
-            sourceShape = Part::Feature::getTopoShape(source, options);
-        }
-        else {
-            std::vector<Part::TopoShape> selectedShapes;
-            selectedShapes.reserve(subElements.size());
-            for (const auto& subElement : subElements) {
-                auto selected = Part::Feature::getTopoShape(
-                    source,
-                    options | Part::ShapeOption::NeedSubElement,
-                    subElement.c_str()
-                );
-                if (selected.isNull() || !selected.isValid()) {
-                    throw Base::ValueError("A selected source subshape is invalid");
-                }
-                selectedShapes.push_back(std::move(selected));
-            }
-            sourceShape.makeElementCompound(
-                selectedShapes,
-                0,
-                Part::TopoShape::SingleShapeCompoundCreationPolicy::returnShape
+        if (UpdateFromSource.getValue()) {
+            throw Base::RuntimeError(
+                "Mesh From Shape regeneration must run through the background command"
             );
         }
-        if (sourceShape.isNull() || !sourceShape.isValid()) {
-            throw Base::ValueError("Source does not provide a valid shape");
+        if (Mesh.getValue().countFacets() == 0) {
+            throw Base::RuntimeError("Mesh From Shape has no prepared mesh result");
         }
-
-        std::unique_ptr<Mesh::MeshObject> output;
-        switch (Method.getValue()) {
-            case static_cast<long>(MeshingMethod::Standard): {
-                const double linear = LinearDeflection.getValue();
-                const double angular = AngularDeflection.getValue();
-                if (!std::isfinite(linear) || linear <= 0.0) {
-                    throw Base::ValueError("LinearDeflection must be finite and greater than zero");
-                }
-                if (!std::isfinite(angular) || angular <= 0.0 || angular > std::numbers::pi) {
-                    throw Base::ValueError("AngularDeflection must be finite, greater than zero, "
-                                           "and no greater than pi");
-                }
-                MeshPart::Mesher mesher(sourceShape.getShape());
-                mesher.setMethod(MeshPart::Mesher::Standard);
-                mesher.setDeflection(linear);
-                mesher.setAngularDeflection(angular);
-                mesher.setRelative(Relative.getValue());
-                mesher.setSegments(Segments.getValue());
-                output.reset(mesher.createMesh());
-                break;
-            }
-            case static_cast<long>(MeshingMethod::Mefisto): {
-                MeshPart::Mesher mesher(sourceShape.getShape());
-                mesher.setMethod(MeshPart::Mesher::Mefisto);
-                mesher.setMaxLength(MaximumEdgeLength.getValue());
-                output.reset(mesher.createMesh());
-                break;
-            }
-            case static_cast<long>(MeshingMethod::Netgen):
-#if defined(HAVE_NETGEN)
-            {
-                MeshPart::Mesher mesher(sourceShape.getShape());
-                mesher.setMethod(MeshPart::Mesher::Netgen);
-                mesher.setFineness(Fineness.getValue());
-                mesher.setGrowthRate(GrowthRate.getValue());
-                mesher.setNbSegPerEdge(SegmentsPerEdge.getValue());
-                mesher.setNbSegPerRadius(SegmentsPerRadius.getValue());
-                mesher.setSecondOrder(SecondOrder.getValue());
-                mesher.setOptimize(Optimize.getValue());
-                mesher.setQuadAllowed(QuadDominated.getValue());
-                output.reset(mesher.createMesh());
-                break;
-            }
-#else
-                throw Base::RuntimeError("Netgen is not available in this build");
-#endif
-            case static_cast<long>(MeshingMethod::Gmsh): {
-                const double minimumSize = GmshMinimumSize.getValue();
-                const double maximumSize = GmshMaximumSize.getValue();
-                const double geometryTolerance = GmshGeometryTolerance.getValue();
-                if (!std::isfinite(minimumSize) || minimumSize < 0.0 || !std::isfinite(maximumSize)
-                    || maximumSize < 0.0 || (maximumSize > 0.0 && minimumSize > maximumSize)) {
-                    throw Base::ValueError("Gmsh element sizes must be finite, non-negative, "
-                                           "and ordered minimum-to-maximum");
-                }
-                if (!std::isfinite(geometryTolerance) || geometryTolerance <= 0.0) {
-                    throw Base::ValueError("GmshGeometryTolerance must be finite and greater "
-                                           "than zero");
-                }
-
-                std::ostringstream serialized;
-                sourceShape.exportBrep(serialized);
-                const std::string sourceBrep = serialized.str();
-                const bool settingsTouched = Method.isTouched() || GmshAlgorithm.isTouched()
-                    || GmshMinimumSize.isTouched() || GmshMaximumSize.isTouched()
-                    || GmshGeometryTolerance.isTouched() || GmshElementOrder.isTouched()
-                    || GmshOptimize.isTouched() || GmshExecutable.isTouched()
-                    || GmshTimeoutSeconds.isTouched();
-                const Mesh::MeshObject& cached = CachedGmshResult.getValue();
-                if (!settingsTouched && cached.countFacets() > 0
-                    && sourceBrep == CachedGmshSourceBrep.getValue()) {
-                    output = std::make_unique<Mesh::MeshObject>(cached);
-                }
-                else {
-                    Mesh::MeshObject generated = runGmsh(
-                        sourceShape,
-                        GmshAlgorithm.getValue(),
-                        minimumSize,
-                        maximumSize,
-                        geometryTolerance,
-                        GmshElementOrder.getValue(),
-                        GmshOptimize.getValue(),
-                        GmshExecutable.getValue(),
-                        GmshTimeoutSeconds.getValue()
-                    );
-                    CachedGmshSourceBrep.setValue(sourceBrep);
-                    CachedGmshResult.setValue(generated);
-                    output = std::make_unique<Mesh::MeshObject>(std::move(generated));
-                }
-                break;
-            }
-            default:
-                throw Base::ValueError("Unknown mesh-from-shape method");
-        }
-
-        if (!output || output->countFacets() == 0) {
-            throw Base::RuntimeError("Meshing produced no facets");
-        }
-        output->setTransform(Placement.getValue().toMatrix());
-        Mesh.setValue(*output);
         return App::DocumentObject::StdReturn;
     }
     catch (const Base::Exception& error) {
-        Mesh.setValue(Mesh::MeshObject());
         return new App::DocumentObjectExecReturn(error.what());
     }
     catch (const Standard_Failure& error) {
-        Mesh.setValue(Mesh::MeshObject());
         return new App::DocumentObjectExecReturn(error.GetMessageString());
     }
 }
@@ -700,6 +481,20 @@ ShapeFromMesh::ShapeFromMesh()
         "Tolerance used to build and optionally sew OCC faces"
     );
     ADD_PROPERTY_TYPE(SewShape, (false), "Conversion", App::Prop_None, "Sew adjacent generated faces");
+    ADD_PROPERTY_TYPE(
+        MakeSolid,
+        (false),
+        "Conversion",
+        App::Prop_None,
+        "Build validated solid volumes from closed sewn shells"
+    );
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (true),
+        "Conversion",
+        App::Prop_None,
+        "Rebuild the shape when the linked source mesh changes"
+    );
     Source.setScope(App::LinkScope::Global);
 }
 
@@ -711,6 +506,7 @@ bool ShapeFromMesh::isSuppressed() const
 short ShapeFromMesh::mustExecute() const
 {
     if (Source.isTouched() || Tolerance.isTouched() || SewShape.isTouched()
+        || MakeSolid.isTouched() || UpdateFromSource.isTouched()
         || suppressibleExt.Suppressed.isTouched() || sourcePropertyTouched(Source)) {
         return 1;
     }
@@ -721,7 +517,19 @@ App::DocumentObjectExecReturn* ShapeFromMesh::execute()
 {
     try {
         if (isSuppressed()) {
-            Shape.setValue(Part::TopoShape());
+            if (UpdateFromSource.getValue()) {
+                Shape.setValue(Part::TopoShape());
+            }
+            return App::DocumentObject::StdReturn;
+        }
+        if (!UpdateFromSource.getValue()) {
+            const Part::TopoShape current = Shape.getValue();
+            if (current.isNull()) {
+                throw Base::RuntimeError("The detached mesh conversion has no cached shape");
+            }
+            // The process-isolated conversion worker validated the exact BREP
+            // before publication.  Repeating OCC's full validity traversal in
+            // a document recompute would block the GUI for large meshes.
             return App::DocumentObject::StdReturn;
         }
         const auto* source = linkedMesh(Source, *this, "Source");
@@ -731,14 +539,23 @@ App::DocumentObjectExecReturn* ShapeFromMesh::execute()
                                    "confusion tolerance");
         }
 
-        std::vector<Base::Vector3d> points;
-        std::vector<Data::ComplexGeoData::Facet> facets;
-        source->Mesh.getValue().getFaces(points, facets, 0.0);
         Part::TopoShape result(0, getDocument()->getStringHasher());
-        result.setFaces(points, facets, tolerance);
-        if (SewShape.getValue()) {
-            result.sewShape(tolerance);
+        if (MakeSolid.getValue()) {
+            if (!SewShape.getValue()) {
+                throw Base::ValueError("MakeSolid requires SewShape");
+            }
+            result.setShape(MeshPart::solidShapeFromMesh(*source, tolerance, "Source"));
         }
+        else {
+            std::vector<Base::Vector3d> points;
+            std::vector<Data::ComplexGeoData::Facet> facets;
+            source->Mesh.getValue().getFaces(points, facets, 0.0);
+            result.setFaces(points, facets, tolerance);
+            if (SewShape.getValue()) {
+                result.sewShape(tolerance);
+            }
+        }
+        result = result.makeElementRefine();
         if (result.isNull() || !result.isValid()) {
             throw Base::RuntimeError("Mesh conversion produced an invalid shape");
         }
@@ -777,6 +594,13 @@ SectionByPlane::SectionByPlane()
         App::Prop_None,
         "Connect adjacent intersection edges into polylines"
     );
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (true),
+        "Section",
+        App::Prop_None,
+        "Rebuild the section when the linked source or plane changes"
+    );
     Source.setScope(App::LinkScope::Global);
     Plane.setScope(App::LinkScope::Global);
 }
@@ -789,7 +613,8 @@ bool SectionByPlane::isSuppressed() const
 short SectionByPlane::mustExecute() const
 {
     if (Source.isTouched() || Plane.isTouched() || MinimumLength.isTouched()
-        || ConnectEdges.isTouched() || suppressibleExt.Suppressed.isTouched()
+        || ConnectEdges.isTouched() || UpdateFromSource.isTouched()
+        || suppressibleExt.Suppressed.isTouched()
         || sourcePropertyTouched(Source) || sourcePropertyTouched(Plane)) {
         return 1;
     }
@@ -800,7 +625,15 @@ App::DocumentObjectExecReturn* SectionByPlane::execute()
 {
     try {
         if (isSuppressed()) {
-            Shape.setValue(Part::TopoShape());
+            if (UpdateFromSource.getValue()) {
+                Shape.setValue(Part::TopoShape());
+            }
+            return App::DocumentObject::StdReturn;
+        }
+        if (!UpdateFromSource.getValue()) {
+            if (Shape.getShape().isNull()) {
+                throw Base::RuntimeError("The detached plane section has no cached shape");
+            }
             return App::DocumentObject::StdReturn;
         }
         const auto* source = linkedMesh(Source, *this, "Source");
@@ -884,6 +717,13 @@ CrossSections::CrossSections()
         App::Prop_None,
         "Connect adjacent intersection edges into polylines"
     );
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (true),
+        "Cross Sections",
+        App::Prop_None,
+        "Rebuild the cross-sections when the linked source changes"
+    );
     Source.setScope(App::LinkScope::Global);
 }
 
@@ -895,7 +735,8 @@ bool CrossSections::isSuppressed() const
 short CrossSections::mustExecute() const
 {
     if (Source.isTouched() || PlaneNormal.isTouched() || PlanePositions.isTouched()
-        || Epsilon.isTouched() || ConnectEdges.isTouched() || suppressibleExt.Suppressed.isTouched()
+        || Epsilon.isTouched() || ConnectEdges.isTouched() || UpdateFromSource.isTouched()
+        || suppressibleExt.Suppressed.isTouched()
         || sourcePropertyTouched(Source)) {
         return 1;
     }
@@ -906,7 +747,15 @@ App::DocumentObjectExecReturn* CrossSections::execute()
 {
     try {
         if (isSuppressed()) {
-            Shape.setValue(Part::TopoShape());
+            if (UpdateFromSource.getValue()) {
+                Shape.setValue(Part::TopoShape());
+            }
+            return App::DocumentObject::StdReturn;
+        }
+        if (!UpdateFromSource.getValue()) {
+            if (Shape.getShape().isNull()) {
+                throw Base::RuntimeError("The detached cross-sections have no cached shape");
+            }
             return App::DocumentObject::StdReturn;
         }
         const auto* source = linkedMesh(Source, *this, "Source");
@@ -987,6 +836,13 @@ Boundary::Boundary()
         App::Prop_None,
         "Create faces from closed boundaries when possible"
     );
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (true),
+        "Boundary",
+        App::Prop_None,
+        "Rebuild the boundary when the linked source changes"
+    );
     Source.setScope(App::LinkScope::Global);
 }
 
@@ -998,7 +854,8 @@ bool Boundary::isSuppressed() const
 short Boundary::mustExecute() const
 {
     if (Source.isTouched() || FacetIndices.isTouched() || AcceptedTopology.isTouched()
-        || MakeFaces.isTouched() || suppressibleExt.Suppressed.isTouched()
+        || MakeFaces.isTouched() || UpdateFromSource.isTouched()
+        || suppressibleExt.Suppressed.isTouched()
         || sourcePropertyTouched(Source)) {
         return 1;
     }
@@ -1009,7 +866,18 @@ App::DocumentObjectExecReturn* Boundary::execute()
 {
     try {
         if (isSuppressed()) {
-            Shape.setValue(Part::TopoShape());
+            if (UpdateFromSource.getValue()) {
+                Shape.setValue(Part::TopoShape());
+            }
+            return App::DocumentObject::StdReturn;
+        }
+        if (!UpdateFromSource.getValue()) {
+            const Part::TopoShape& cached = Shape.getShape();
+            if (cached.isNull() || !cached.isValid()) {
+                throw Base::RuntimeError(
+                    "The detached Mesh boundary has no valid cached result"
+                );
+            }
             return App::DocumentObject::StdReturn;
         }
         const auto* source = linkedMesh(Source, *this, "Source");

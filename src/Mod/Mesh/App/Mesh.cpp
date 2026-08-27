@@ -94,6 +94,17 @@ MeshObject::MeshObject(MeshObject&& mesh)
 
 MeshObject::~MeshObject() = default;
 
+std::unique_ptr<MeshObject> MeshObject::snapshot() const
+{
+    std::shared_lock lock(_snapshotMutex);
+    return std::make_unique<MeshObject>(*this);
+}
+
+std::unique_lock<std::shared_mutex> MeshObject::acquireMutationLock()
+{
+    return std::unique_lock(_snapshotMutex);
+}
+
 std::vector<const char*> MeshObject::getElementTypes() const
 {
     std::vector<const char*> temp;

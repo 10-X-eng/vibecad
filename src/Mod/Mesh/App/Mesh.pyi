@@ -19,6 +19,7 @@ from App.ComplexGeoData import ComplexGeoData
 )
 @class_declarations("""
     private:
+    friend class Module;
     friend class PropertyMeshKernel;
     class PropertyMeshKernel* parentProperty = nullptr;""")
 class Mesh(ComplexGeoData):
