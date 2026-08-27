@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 set(VibeCAD_Scripts
+    analysis_fem_execution_route.py
     analysis_fem_publication_parity.py
     Init.py
     InitGui.py
@@ -1310,6 +1311,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_analyze_solver_control_gui_integration.py
     vibecad_tests/native_analyze_solver_execution_gui_integration.py
     vibecad_tests/analysis_fem_installed_publication_integration.py
+    vibecad_tests/test_analysis_fem_execution_route.py
     vibecad_tests/native_analyze_openfoam_gui_integration.py
     vibecad_tests/native_analyze_result_inspect_gui_integration.py
     vibecad_tests/native_analyze_clipping_gui_integration.py

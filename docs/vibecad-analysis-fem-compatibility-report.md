@@ -39,8 +39,8 @@ and repair shape cannot drift independently.
 | Cancellation and failure cleanup | Both paths raise the preserved cancellation type and remove their private workspaces | Frozen |
 | Result publication seam | The host path passes the exact legacy prepared object to commit and returns the exact legacy verification result for every solver | Frozen at the compatibility seam |
 | Result graph, History, hashes, and receipts | An installed Windows VibeCAD 26.3 `FreeCADCmd` A/B gate now covers all four solvers with deterministic synthetic fields. It compares object graph, solver membership, canonical History order, timeline ownership, input/state hash presence, public JSON, and save/reopen links. Both paths expose no durable publication receipt. | Publication parity frozen for the covered installed Windows host; durable receipt integration and installed POSIX evidence remain open |
-| Document close/switch/reopen behavior | The installed gate proves exact save/close/reopen persistence for each legacy/host solver pair. Active-document switch, same-name replacement, close-while-running, and repeated lifecycle stress are not claimed. | Gate G4 and Step 7 remain open |
-| Rollback to the legacy execution route | Legacy implementation remains present, but no exercised host-level rollback switch exists in the current tree | Gate G7 remains open |
+| Document close/switch/reopen behavior | The installed gate proves exact save/close/reopen persistence for each legacy/host solver pair. The routed runtime now rejects publication after the exact active document is switched or replaced on both routes. Same-name installed replacement, close-while-running, and repeated lifecycle stress are not yet claimed. | Gate G4 and Step 7 remain open |
+| Rollback to the legacy execution route | The internal `analysis_runtime_fem` default and temporary `legacy_fem_execution` route are executable and context-local. Submission captures one route; nested use restores the prior route; another thread retains the default. The routed tests cover success, cancellation, failure, cleanup, and stale-document refusal. The v2 oracle supplies independent four-solver host/legacy execution evidence, the installed Windows gate supplies equivalent CAD/save-reopen state, and compatibility-facade tests preserve the old API path. | Gate G7 is covered; this is an internal recovery mechanism, not a public preference or product option |
 
 ## Accepted intentional differences
 
@@ -61,8 +61,10 @@ This baseline closes the normalized four-solver process-lifecycle A/B fixture
 gap and freezes the complete known-difference list at this seam. It does not by
 itself claim full FEM Gate G5 or cross-platform stabilization complete.
 The installed Windows publication gate uses deterministic synthetic result fields,
-not physical solver runs. Installed POSIX evidence, real backend/importer result
-publication, durable receipt integration, repeated cancel/timeout/close/switch/
-reopen and bounded-output stress, job/thread/process/workspace/document leak
-checks, and the rollback exercise must still pass before Gates G4, G5, and G7
+not physical solver runs. Gate G7's rollback exercise is now covered by the
+temporary routed runtime, the v2 A/B oracle, the installed publication parity
+gate, and compatibility-facade checks. Installed POSIX evidence, real
+backend/importer result publication, durable receipt integration, repeated
+cancel/timeout/close/switch/reopen and bounded-output stress, and job/thread/
+process/workspace/document leak checks must still pass before Gates G4 and G5
 and Step 7 can close.
