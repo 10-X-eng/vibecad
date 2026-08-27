@@ -32,19 +32,21 @@ def _branch(schema: dict, operation: str) -> dict:
     )
 
 
-def test_drawing_format_schema_has_two_closed_exact_branches() -> None:
+def test_drawing_format_schema_has_three_closed_exact_branches() -> None:
     definition = drawing_format_capability_definition()
     schema = definition.provider_schema(DRAWING_FORMAT_OPERATIONS)
 
     assert DRAWING_FORMAT_OPERATIONS == (
         "set_dimension_format",
         "set_balloon_text",
+        "apply_iso_286_fit",
     )
     assert definition.primary_classification == "mutation"
     assert definition.preserve_operation_branches
-    assert len(schema["parameters"]["oneOf"]) == 2
+    assert len(schema["parameters"]["oneOf"]) == 3
     dimension = _branch(schema, "set_dimension_format")
     balloon = _branch(schema, "set_balloon_text")
+    fit = _branch(schema, "apply_iso_286_fit")
     assert dimension["required"] == [
         "operation",
         "dimension",
@@ -66,14 +68,27 @@ def test_drawing_format_schema_has_two_closed_exact_branches() -> None:
         assert "preview" not in branch["properties"]
         assert "property_name" not in branch["properties"]
 
+    assert fit["required"] == ["operation", "dimension", "tolerance_class"]
+    assert fit["additionalProperties"] is False
+    assert fit["properties"]["dimension"] == dimension["properties"]["dimension"]
+    assert fit["properties"]["tolerance_class"]["enum"] == [
+        "c11", "f7", "h6", "h7", "h9", "k6", "n6", "r6", "s6",
+        "D10", "E9", "F8", "G7", "H7", "H8", "H11", "K7", "N7",
+        "R7", "S7",
+    ]
+
     assert definition.variants[0].exact_target_type == (
         "ExactDrawingDimensionAndCompleteFormat"
     )
     assert definition.variants[1].exact_target_type == (
         "ExactDrawingBalloonAndLiteralText"
     )
+    assert definition.variants[2].exact_target_type == (
+        "ExactDrawingDimensionAndIso286ToleranceClass"
+    )
     assert not definition.variants[0].provider_supplemental
     assert definition.variants[1].provider_supplemental
+    assert not definition.variants[2].provider_supplemental
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert len(encoded.encode("utf-8")) < 6 * 1024

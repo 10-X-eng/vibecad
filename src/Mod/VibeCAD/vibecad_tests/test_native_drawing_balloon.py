@@ -44,10 +44,8 @@ def test_balloon_schema_has_four_closed_exact_operations() -> None:
     assert create["properties"]["label"]["maxLength"] == 160
     anchor = create["properties"]["anchor"]
     assert anchor["additionalProperties"] is False
-    assert anchor["required"] == [
-        "subelement",
-        "expected_element_state_sha256",
-    ]
+    assert anchor["required"] == ["subelement"]
+    assert set(anchor["properties"]) == {"subelement"}
     assert anchor["properties"]["subelement"]["pattern"] == (
         r"^(?:Edge|Vertex)(?:0|[1-9][0-9]*)$"
     )

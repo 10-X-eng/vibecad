@@ -96,6 +96,7 @@ def drawing_cosmetic_line_capability_definition() -> NativeCapabilityDefinition:
             "exact projected vertex; TechDraw derives every coordinate and length."
         ),
         primary_classification="mutation",
+        preserve_operation_branches=True,
         variants=(
             NativeCapabilityVariant(
                 operation="create_parallel",

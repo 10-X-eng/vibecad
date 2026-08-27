@@ -97,6 +97,7 @@ def drawing_section_position_capability_definition() -> NativeCapabilityDefiniti
             "axis or by aligning one exact section edge to one exact base vertex."
         ),
         primary_classification="mutation",
+        preserve_operation_branches=True,
         variants=(
             NativeCapabilityVariant(
                 operation="align_axis",

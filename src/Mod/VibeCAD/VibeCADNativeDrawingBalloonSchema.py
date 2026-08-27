@@ -197,6 +197,7 @@ def drawing_balloon_capability_definition() -> NativeCapabilityDefinition:
             "or at an exact projected vertex."
         ),
         primary_classification="mutation",
+        preserve_operation_branches=True,
         variants=(
             NativeCapabilityVariant(
                 operation="create",

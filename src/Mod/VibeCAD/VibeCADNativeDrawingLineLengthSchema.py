@@ -137,6 +137,7 @@ def drawing_line_length_capability_definition() -> NativeCapabilityDefinition:
             "and shorten one cosmetic line or centerline by an explicit distance."
         ),
         primary_classification="mutation",
+        preserve_operation_branches=True,
         variants=(
             NativeCapabilityVariant(
                 operation="extend",

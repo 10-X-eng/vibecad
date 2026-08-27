@@ -88,6 +88,7 @@ def drawing_cosmetic_curve_capability_definition() -> NativeCapabilityDefinition
             "named projected vertices; TechDraw derives all geometry."
         ),
         primary_classification="mutation",
+        preserve_operation_branches=True,
         variants=(
             NativeCapabilityVariant(
                 operation="create_one_point_circle",

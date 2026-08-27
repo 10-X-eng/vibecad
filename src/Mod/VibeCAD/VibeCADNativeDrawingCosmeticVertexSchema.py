@@ -123,6 +123,7 @@ def drawing_cosmetic_vertex_capability_definition() -> NativeCapabilityDefinitio
             "TechDraw owns coordinate conversion, formatting, and persistence."
         ),
         primary_classification="mutation",
+        preserve_operation_branches=True,
         variants=(
             NativeCapabilityVariant(
                 operation="create_intersections",
