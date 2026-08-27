@@ -106,6 +106,7 @@ def test_common_milling_operations_inherit_setup_defaults() -> None:
     facing = _branch(definition, "mill_facing")
     pocket = _branch(definition, "pocket_shape")
     drilling = _branch(definition, "drilling")
+    profile = _branch(definition, "profile")
 
     assert set(facing["properties"]) == {
         "operation",
@@ -128,3 +129,16 @@ def test_common_milling_operations_inherit_setup_defaults() -> None:
         geometry = branch["properties"]["geometry"]
         assert geometry["type"] == "array"
         assert set(geometry["items"]["required"]) == {"model", "subelements"}
+    assert set(profile["properties"]) == {
+        "operation",
+        "job",
+        "tool_controller",
+        "geometry",
+        "cut_side",
+    }
+    assert set(profile["required"]) == {
+        "job",
+        "tool_controller",
+        "geometry",
+        "cut_side",
+    }

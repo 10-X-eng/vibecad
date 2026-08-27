@@ -1799,37 +1799,28 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="profile",
                 description=(
-                    "Machine inside, outside, or on profiles from a setup or selected "
-                    "Faces and Edges."
+                    "Machine exact Faces or Edges on the inside or outside using setup defaults."
                 ),
                 action_ids=frozenset({"CAM_Profile"}),
                 surface_ids=frozenset({"manufacture"}),
-                exact_target_type=("ExactCamJobProfileGeometryControllerAndParameters"),
+                exact_target_type="ExactCamJobProfileGeometryAndController",
                 transaction_behavior="document",
                 background_required=False,
                 parameters=_closed(
                     {
-                        "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
-                        "geometry": _GEOMETRY,
-                        "profile": _PROFILE_SETTINGS,
-                        "depths": _DEPTHS,
-                        "heights": _HEIGHTS,
-                        "coolant": {
+                        "geometry": _FEATURE_SELECTION,
+                        "cut_side": {
                             "type": "string",
-                            "enum": ["none", "flood", "mist"],
+                            "enum": ["outside", "inside"],
                         },
                     },
                     (
-                        "label",
                         "job",
                         "tool_controller",
                         "geometry",
-                        "profile",
-                        "depths",
-                        "heights",
-                        "coolant",
+                        "cut_side",
                     ),
                 ),
             ),

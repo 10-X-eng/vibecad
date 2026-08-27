@@ -52,10 +52,10 @@ from VibeCADNativeManufactureMillFacing import (
     verify_created_mill_facing_defaults,
 )
 from VibeCADNativeManufactureProfile import (
-    ProfileCreateSpec,
-    create_profile,
-    preflight_profile_create,
-    verify_created_profile,
+    ProfileDefaultsSpec,
+    create_profile_defaults,
+    preflight_profile_defaults,
+    verify_created_profile_defaults,
 )
 from VibeCADNativeManufactureSlot import (
     SlotCreateSpec,
@@ -123,14 +123,10 @@ from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
 _PROFILE_FIELDS = frozenset(
     {
-        "label",
         "job",
         "tool_controller",
         "geometry",
-        "profile",
-        "depths",
-        "heights",
-        "coolant",
+        "cut_side",
     }
 )
 _POCKET_SHAPE_FIELDS = frozenset(
@@ -358,22 +354,18 @@ class NativeManufactureOperationRuntime:
             mutate = partial(set_start_point, prepared=prepared)
             verify = verify_start_point
         elif operation == "profile":
-            prepared = preflight_profile_create(
+            prepared = preflight_profile_defaults(
                 context.document,
-                ProfileCreateSpec(
-                    label=values["label"],
+                ProfileDefaultsSpec(
                     job=values["job"],
                     tool_controller=values["tool_controller"],
-                    geometry=values["geometry"],
-                    profile=values["profile"],
-                    depths=values["depths"],
-                    heights=values["heights"],
-                    coolant=values["coolant"],
+                    geometry=tuple(values["geometry"]),
+                    cut_side=values["cut_side"],
                 ),
             )
             transaction_name = "Create Native CAM Profile"
-            mutate = partial(create_profile, prepared=prepared)
-            verify = verify_created_profile
+            mutate = partial(create_profile_defaults, prepared=prepared)
+            verify = verify_created_profile_defaults
         elif operation == "pocket_shape":
             prepared = preflight_pocket_shape_defaults(
                 context.document,

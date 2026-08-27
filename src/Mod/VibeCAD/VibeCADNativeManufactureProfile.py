@@ -11,6 +11,14 @@ import re
 from typing import Any, Mapping
 
 from VibeCADNativeManufactureErrors import NativeManufactureError
+from VibeCADNativeManufactureOperationSupport import (
+    PreparedOperationBoundary,
+    create_native_operation,
+    extend_native_operation_draft,
+    preflight_operation_boundary,
+    quantity_mm as shared_quantity_mm,
+    verify_native_operation,
+)
 from VibeCADNativeManufactureState import (
     capture_other_job_states,
     job_state,
@@ -93,6 +101,20 @@ class PreparedProfileCreate:
     objects_before: tuple[Any, ...]
     selection_before: Any
     timeline_before: _TimelineState
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileDefaultsSpec:
+    job: Mapping[str, Any]
+    tool_controller: Mapping[str, Any]
+    geometry: tuple[Mapping[str, Any], ...]
+    cut_side: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedProfileDefaults:
+    boundary: PreparedOperationBoundary
+    cut_side: str
 
 
 def _error(message: str, code: str = "NATIVE_ARGUMENTS_INVALID") -> None:
@@ -464,6 +486,29 @@ def preflight_profile_create(
     )
 
 
+def preflight_profile_defaults(
+    document: Any,
+    spec: ProfileDefaultsSpec,
+) -> PreparedProfileDefaults:
+    """Freeze exact profile geometry while retaining setup-owned defaults."""
+
+    if not isinstance(spec, ProfileDefaultsSpec):
+        raise TypeError("spec must be a ProfileDefaultsSpec")
+    cut_side = str(spec.cut_side or "")
+    if cut_side not in {"outside", "inside"}:
+        _error("Profile cut_side must be outside or inside.")
+    boundary = preflight_operation_boundary(
+        document,
+        noun="Profile",
+        job_target=spec.job,
+        tool_controller_target=spec.tool_controller,
+        geometry={"kind": "subelements", "items": list(spec.geometry)},
+        allowed_subelement_types=frozenset({"Face", "Edge"}),
+        allow_entire_job=False,
+    )
+    return PreparedProfileDefaults(boundary=boundary, cut_side=cut_side)
+
+
 def _assert_preflight_current(document: Any, prepared: PreparedProfileCreate) -> None:
     if tuple(document.Objects) != prepared.objects_before:
         _error(
@@ -629,6 +674,46 @@ def create_profile(
         created=(object_identity(operation),),
         changed=(object_identity(prepared.job),),
     )
+
+
+def _apply_profile_default_intent(
+    operation: Any,
+    *,
+    prepared: PreparedProfileDefaults,
+) -> None:
+    operation.Side = prepared.cut_side.capitalize()
+
+
+def create_profile_defaults(
+    document: Any,
+    *,
+    prepared: PreparedProfileDefaults,
+) -> NativeMutationDraft:
+    """Create Profile with setup defaults plus the required cut-side intent."""
+
+    if not isinstance(prepared, PreparedProfileDefaults):
+        raise TypeError("prepared must be a PreparedProfileDefaults")
+    from functools import partial
+
+    import Path.Op.Profile as PathProfile
+    import Path.Op.Gui.Profile as PathProfileGui
+
+    draft = create_native_operation(
+        document,
+        prepared=prepared.boundary,
+        internal_name="Profile",
+        operation_factory=PathProfile.Create,
+        provider_factory=PathProfileGui.PathOpGui.ViewProvider,
+        provider_resource=PathProfileGui.Command.res,
+        configure=partial(_apply_profile_default_intent, prepared=prepared),
+        payload={
+            "parameters": {
+                "source": "setup_defaults",
+                "cut_side": prepared.cut_side,
+            }
+        },
+    )
+    return extend_native_operation_draft(draft, profile_defaults=prepared)
 
 
 def _base_state(operation: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -837,3 +922,45 @@ def verify_created_profile(
             "operation_count": job_after["counts"]["operations"],
         },
     }
+
+
+def _default_profile_result(
+    operation: Any,
+    _payload: Mapping[str, Any],
+    *,
+    prepared: PreparedProfileDefaults,
+) -> Mapping[str, Any]:
+    if str(operation.Side).lower() != prepared.cut_side:
+        _error(
+            "The created Profile did not retain its cut side.",
+            "NATIVE_MANUFACTURE_PROFILE_POSTCONDITION_FAILED",
+        )
+    return {
+        "parameters": {
+            "source": "setup_defaults",
+            "cut_side": prepared.cut_side,
+            "direction": str(operation.Direction),
+            "start_depth_mm": shared_quantity_mm(operation, "StartDepth"),
+            "final_depth_mm": shared_quantity_mm(operation, "FinalDepth"),
+            "step_down_mm": shared_quantity_mm(operation, "StepDown"),
+            "safe_height_mm": shared_quantity_mm(operation, "SafeHeight"),
+            "clearance_height_mm": shared_quantity_mm(operation, "ClearanceHeight"),
+            "coolant": str(operation.CoolantMode),
+        }
+    }
+
+
+def verify_created_profile_defaults(
+    document: Any,
+    draft: NativeMutationDraft,
+) -> dict[str, Any]:
+    from functools import partial
+
+    prepared: PreparedProfileDefaults = draft.value["profile_defaults"]
+    return verify_native_operation(
+        document,
+        draft,
+        result_key="profile",
+        assert_settings=lambda _operation, _payload: None,
+        additional_verify=partial(_default_profile_result, prepared=prepared),
+    )

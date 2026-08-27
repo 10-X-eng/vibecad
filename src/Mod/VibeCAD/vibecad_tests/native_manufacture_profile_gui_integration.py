@@ -26,12 +26,6 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureOperationSchema import (
     MANUFACTURE_OPERATION_CAPABILITY_NAME,
 )
-from VibeCADNativeManufactureProfile import (
-    ProfileCreateSpec,
-    _assert_preflight_current,
-    preflight_profile_create,
-)
-from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -141,15 +135,20 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     schema = definition.provider_schema(("profile",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.lower()
-    for field in (
+    branch = schema["parameters"]["oneOf"][0]
+    assert set(branch["properties"]) == {
+        "operation",
+        "job",
         "tool_controller",
-        "subelements",
+        "geometry",
         "cut_side",
-        "step_down_mm",
-        "clearance_height_mm",
-        "profile_noncircular_holes",
-    ):
-        assert field in encoded
+    }
+    assert set(branch["required"]) == {
+        "job",
+        "tool_controller",
+        "geometry",
+        "cut_side",
+    }
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
@@ -173,42 +172,15 @@ def _arguments(model, job) -> dict:
     )
     return {
         "operation": "profile",
-        "label": "Native exterior Profile",
         "job": _target(state),
         "tool_controller": _target(controller),
-        "geometry": {
-            "kind": "subelements",
-            "items": [
-                {
-                    "model": _target(job_model),
-                    "subelements": [_top_face_name(model)],
-                }
-            ],
-        },
-        "profile": {
-            "direction": "clockwise",
-            "cut_side": "outside",
-            "cutter_compensation": True,
-            "extra_offset_mm": 0.0,
-            "pass_count": 1,
-            "stepover_mm": 0.0,
-            "multiple_features": "individually",
-            "sorting": "automatic",
-            "start_on_longest_edge": False,
-            "profile_outer_perimeter": True,
-            "profile_noncircular_holes": False,
-            "profile_circular_holes": False,
-        },
-        "depths": {
-            "start_depth_mm": 10.0,
-            "final_depth_mm": 0.0,
-            "step_down_mm": 2.0,
-        },
-        "heights": {
-            "safe_height_mm": 12.0,
-            "clearance_height_mm": 15.0,
-        },
-        "coolant": "none",
+        "geometry": [
+            {
+                "model": _target(job_model),
+                "subelements": [_top_face_name(model)],
+            }
+        ],
+        "cut_side": "outside",
     }
 
 
@@ -231,17 +203,17 @@ def _assert_profile_graph(
         assert operation.ViewObject.Proxy.deleteOnReject is False
     assert tuple(operation.Base) == ((job.Model.Group[0], (face_name,)),)
     assert job.Proxy.baseObject(job, operation.Base[0][0]) is model
-    assert operation.Label == "Native exterior Profile"
-    assert operation.Direction == "CW"
+    assert operation.Label
+    assert operation.Direction in {"CW", "CCW"}
     assert operation.Side == "Outside"
-    assert operation.UseComp is True
-    assert operation.NumPasses == 1
-    assert operation.HandleMultipleFeatures == "Individually"
-    assert operation.SortingMode == "Automatic"
-    assert operation.processPerimeter is True
-    assert operation.processHoles is False
-    assert operation.processCircles is False
-    assert operation.UseStartPoint is False
+    expressions = {str(name) for name, _expression in operation.ExpressionEngine}
+    assert {
+        "StartDepth",
+        "FinalDepth",
+        "StepDown",
+        "SafeHeight",
+        "ClearanceHeight",
+    } <= expressions
     assert tuple(document.VibeCADTimeline.Operations)[-1] is operation
     commands = tuple(operation.Path.Commands)
     assert any(command.Name in {"G1", "G2", "G3"} for command in commands)
@@ -278,7 +250,7 @@ def _run() -> None:
         ) == (
             MANUFACTURE_OPERATION_CAPABILITY_NAME,
             "profile",
-            "ExactCamJobProfileGeometryControllerAndParameters",
+            "ExactCamJobProfileGeometryAndController",
             True,
             False,
         )
@@ -296,32 +268,6 @@ def _run() -> None:
         initial_timeline = tuple(document.VibeCADTimeline.Operations)
         arguments = _arguments(model, job)
 
-        boundary = preflight_profile_create(
-            document,
-            ProfileCreateSpec(
-                label=arguments["label"],
-                job=arguments["job"],
-                tool_controller=arguments["tool_controller"],
-                geometry=arguments["geometry"],
-                profile=arguments["profile"],
-                depths=arguments["depths"],
-                heights=arguments["heights"],
-                coolant=arguments["coolant"],
-            ),
-        )
-        other_postprocessor_args = str(other_job.PostProcessorArgs)
-        other_job.PostProcessorArgs = "--other-setup-change"
-        try:
-            try:
-                _assert_preflight_current(document, boundary)
-            except NativeManufactureError as exc:
-                assert exc.error_code == "NATIVE_MANUFACTURE_STATE_STALE"
-            else:
-                raise AssertionError(
-                    "Profile preflight did not detect another setup changing"
-                )
-        finally:
-            other_job.PostProcessorArgs = other_postprocessor_args
         other_job_before = job_state(other_job)
 
         registry = build_native_capability_registry()
@@ -375,20 +321,12 @@ def _run() -> None:
         undo_before = int(document.UndoCount)
 
         stale = json.loads(json.dumps(arguments))
-        stale["geometry"]["items"][0]["model"]["expected_state_sha256"] = "0" * 64
+        stale["geometry"][0]["model"]["expected_state_sha256"] = "0" * 64
         stale_result = call(stale, succeeds=False)
         assert stale_result["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE"
         assert tuple(obj.Name for obj in document.Objects) == initial_names
         assert tuple(job.Operations.Group) == initial_operations
         assert tuple(document.VibeCADTimeline.Operations) == initial_timeline
-        assert int(document.UndoCount) == undo_before
-
-        invalid = json.loads(json.dumps(arguments))
-        invalid["profile"]["stepover_mm"] = 1.0
-        invalid_result = call(invalid, succeeds=False)
-        assert invalid_result["error_code"] == "NATIVE_ARGUMENTS_INVALID"
-        assert tuple(obj.Name for obj in document.Objects) == initial_names
-        assert tuple(job.Operations.Group) == initial_operations
         assert int(document.UndoCount) == undo_before
 
         result = call(arguments)
@@ -403,6 +341,8 @@ def _run() -> None:
             "items": [{"object_name": model.Name, "subelements": [face_name]}],
         }
         assert result["profile"]["cutting_command_count"] >= 1
+        assert result["profile"]["parameters"]["source"] == "setup_defaults"
+        assert result["profile"]["parameters"]["cut_side"] == "outside"
         assert result["job"]["operation_count"] == len(initial_operations) + 1
         assert [item["object_name"] for item in result["receipt"]["created"]] == [
             operation_name

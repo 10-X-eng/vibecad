@@ -1878,7 +1878,7 @@ _EXACT_TARGET_TYPE_OVERRIDES = {
     "Spreadsheet_StyleItalic": "ExactParametersRange",
     "Spreadsheet_StyleUnderline": "ExactParametersRange",
     "CAM_Job": "ExactCurrentCamModelsAndCreationEnvironment",
-    "CAM_Profile": "ExactCamJobProfileGeometryControllerAndParameters",
+    "CAM_Profile": "ExactCamJobProfileGeometryAndController",
     "CAM_Pocket_Shape": "ExactCamJobPocketGeometryAndController",
     "CAM_MillFacing": "ExactCamJobStockAndController",
     "CAM_Helix": "ExactCamJobHoleFeaturesControllerAndHelixParameters",
