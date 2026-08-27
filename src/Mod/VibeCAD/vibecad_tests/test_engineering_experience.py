@@ -31,6 +31,7 @@ from VibeCADEngineeringExperience import (
     governance_role,
     project_analysis_activity,
     project_engineering_result,
+    project_manufacture_post_evidence,
     project_optimization_run,
     project_workflow_run,
 )
@@ -280,3 +281,106 @@ def test_optimization_projection_consumes_store_ranking_without_selecting(tmp_pa
 def test_durable_projections_reject_incomplete_records(projector, record, match):
     with pytest.raises(AnalysisContractError, match=match):
         projector(record)
+
+
+def _manufacture_post_result():
+    return {
+        "operation": "complete_job",
+        "job": {
+            "object_name": "Job", "state_sha256": "a" * 64,
+            "posted_operation_count": 2, "command_count": 48,
+            "active_operation_count": 2,
+        },
+        "postprocessor": {
+            "name": "grbl", "source_sha256": "b" * 64,
+            "machine_configured": True, "machine_config_sha256": "c" * 64,
+        },
+        "outputs": [{
+            "file_name": "bracket.ngc", "size_bytes": 128,
+            "sha256": "d" * 64, "replaced_existing": False,
+        }],
+        "output_count": 1,
+        "total_size_bytes": 128,
+        "document_unchanged": True,
+        "history_unchanged": True,
+        "selection_unchanged": True,
+        "visibility_unchanged": True,
+        "claim_ceiling": "not_proven_toolpath",
+        "proven_toolpath": False,
+        "manufacturable": False,
+    }
+
+
+def _manufacture_governance_records():
+    analysis = {
+        "schema_version": 1, "analysis_id": "analysis-post-1",
+        "domain": "manufacture", "adapter_id": "native.manufacture.post",
+        "source_document_uid": "document-1", "state": "succeeded",
+        "created_at": "2026-08-26T00:00:00Z", "updated_at": "2026-08-26T00:01:00Z",
+        "terminal_reason": "completed",
+        "attempts": [{"attempt": 1, "provider_id": "native-background"}],
+        "artifacts": [], "currentness_evaluations": [],
+        "publication": {"intent": {}, "authorization": {}, "receipt": {}},
+        "events": [{"sequence": 1, "state": "succeeded"}],
+    }
+    workflow = {
+        "schema_version": 1, "run_id": "workflow-post-1",
+        "workflow_id": "manufacture-post", "workflow_version": "1",
+        "definition_sha256": "f" * 64, "state": "succeeded",
+        "cancel_requested": False, "nodes": {
+            "post": {"state": "succeeded", "analysis_id": "analysis-post-1",
+                     "attempts": [{"attempt": 1, "analysis_id": "analysis-post-1"}],
+                     "outcome": {}, "publication_receipt_id": "receipt-1"},
+        },
+    }
+    return analysis, workflow
+
+
+def test_manufacture_post_projection_preserves_owner_evidence_and_claim_ceiling():
+    source = _manufacture_post_result()
+    analysis, workflow = _manufacture_governance_records()
+    projected = project_manufacture_post_evidence(
+        source, analysis_record=analysis, workflow_record=workflow,
+        provider_attempt_id="1",
+    )
+
+    assert projected["job"] == source["job"]
+    assert projected["postprocessor"] == source["postprocessor"]
+    assert projected["outputs"] == source["outputs"]
+    assert projected["analysis_id"] == "analysis-post-1"
+    assert projected["workflow_run_id"] == "workflow-post-1"
+    assert projected["claim_ceiling"] == "not_proven_toolpath"
+    assert projected["proven_toolpath"] is projected["manufacturable"] is False
+    assert set(projected["authority"].values()) == {False}
+
+
+@pytest.mark.parametrize("change,match", (
+    ({"claim_ceiling": "machine_verified", "proven_toolpath": True}, "claim ceiling"),
+    ({"output_count": 2}, "count"),
+    ({"total_size_bytes": 127}, "byte total"),
+    ({"document_unchanged": False}, "unrelated domain state"),
+))
+def test_manufacture_post_projection_rejects_overclaim_and_inconsistent_evidence(change, match):
+    source = {**_manufacture_post_result(), **change}
+    analysis, workflow = _manufacture_governance_records()
+    with pytest.raises(AnalysisContractError, match=match):
+        project_manufacture_post_evidence(
+            source, analysis_record=analysis, workflow_record=workflow,
+            provider_attempt_id="1",
+        )
+
+
+def test_manufacture_post_projection_requires_exact_analysis_workflow_linkage():
+    analysis, workflow = _manufacture_governance_records()
+    with pytest.raises(AnalysisContractError, match="not bound"):
+        project_manufacture_post_evidence(
+            _manufacture_post_result(), analysis_record=analysis,
+            workflow_record={**workflow, "nodes": {
+                "post": {**workflow["nodes"]["post"], "analysis_id": "another-analysis"},
+            }}, provider_attempt_id="1",
+        )
+    with pytest.raises(AnalysisContractError, match="attempt"):
+        project_manufacture_post_evidence(
+            _manufacture_post_result(), analysis_record=analysis,
+            workflow_record=workflow, provider_attempt_id="2",
+        )

@@ -24,6 +24,7 @@ MAX_ACTIVITY_ATTEMPTS = 256
 MAX_ACTIVITY_ARTIFACTS = 4096
 MAX_ACTIVITY_CURRENTNESS_EVALUATIONS = 4096
 MAX_ACTIVITY_EVENTS = 8192
+MAX_MANUFACTURE_OUTPUTS = 64
 ASSOCIATIONS = frozenset({"point", "cell", "object"})
 PRESENTATIONS = frozenset({"scalar", "vector", "tensor"})
 SCIENTIFIC_COLOR_MAPS = frozenset(
@@ -385,5 +386,93 @@ def project_optimization_run(
         "candidates": projected,
         "selection": source.get("selection"),
         "publication": source.get("publication"),
+    }
+    return CanonicalJson.from_value(value).to_value()
+
+
+def project_manufacture_post_evidence(
+    result: Mapping[str, Any],
+    *,
+    analysis_record: Mapping[str, Any],
+    workflow_record: Mapping[str, Any],
+    provider_attempt_id: str,
+) -> dict[str, Any]:
+    """Project an owning Manufacture post result without certifying a process."""
+
+    source = _mapping(result, "Manufacture post result")
+    activity = project_analysis_activity(analysis_record)
+    workflow = project_workflow_run(workflow_record)
+    if activity["domain"] != "manufacture":
+        raise AnalysisContractError("Manufacture evidence requires a Manufacture Analysis record.")
+    attempt_id = _text(provider_attempt_id, "provider_attempt_id")
+    attempts = activity["attempts"]
+    if not any(str(item.get("attempt")) == attempt_id for item in attempts):
+        raise AnalysisContractError("Manufacture provider attempt is not in the Analysis record.")
+    if not any(node["analysis_id"] == activity["analysis_id"] for node in workflow["nodes"]):
+        raise AnalysisContractError("Manufacture Analysis is not bound to the workflow run.")
+    required = ("operation", "job", "postprocessor", "outputs", "output_count",
+                "total_size_bytes", "document_unchanged", "history_unchanged",
+                "selection_unchanged", "visibility_unchanged", "claim_ceiling",
+                "proven_toolpath", "manufacturable")
+    if any(name not in source for name in required):
+        raise AnalysisContractError("Manufacture post result is incomplete.")
+    if source["operation"] not in {"complete_job", "selected_operations"}:
+        raise AnalysisContractError("Unknown Manufacture post operation.")
+    if (source["claim_ceiling"] != "not_proven_toolpath"
+            or source["proven_toolpath"] is not False
+            or source["manufacturable"] is not False):
+        raise AnalysisContractError("Manufacture post evidence exceeds its claim ceiling.")
+    job, postprocessor = source["job"], source["postprocessor"]
+    if not isinstance(job, Mapping) or not isinstance(postprocessor, Mapping):
+        raise AnalysisContractError("Manufacture owner evidence is invalid.")
+    if not str(job.get("object_name") or "").strip() or len(str(job.get("state_sha256") or "")) != 64:
+        raise AnalysisContractError("Manufacture Job identity is invalid.")
+    outputs = source["outputs"]
+    if not isinstance(outputs, list) or not 1 <= len(outputs) <= MAX_MANUFACTURE_OUTPUTS:
+        raise AnalysisContractError("Manufacture outputs exceed their presentation bound.")
+    if source["output_count"] != len(outputs):
+        raise AnalysisContractError("Manufacture output count does not match its evidence.")
+    digests = set()
+    total = 0
+    for output in outputs:
+        if not isinstance(output, Mapping):
+            raise AnalysisContractError("Manufacture output evidence is invalid.")
+        name = str(output.get("file_name") or "")
+        digest = str(output.get("sha256") or "").lower()
+        size = output.get("size_bytes")
+        if (not name or name in {".", ".."} or "/" in name or "\\" in name
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                or type(size) is not int or size < 0):
+            raise AnalysisContractError("Manufacture output descriptor is invalid.")
+        if digest in digests:
+            raise AnalysisContractError("Manufacture output digests must be unique.")
+        digests.add(digest)
+        total += size
+    if source["total_size_bytes"] != total:
+        raise AnalysisContractError("Manufacture output byte total does not match its evidence.")
+    unchanged = {name: source[name] for name in (
+        "document_unchanged", "history_unchanged", "selection_unchanged",
+        "visibility_unchanged",
+    )}
+    if set(unchanged.values()) != {True}:
+        raise AnalysisContractError("Manufacture publication changed unrelated domain state.")
+    value = {
+        **_inert("manufacture_post_evidence"),
+        "analysis_id": activity["analysis_id"],
+        "workflow_run_id": workflow["run_id"],
+        "provider_attempt_id": attempt_id,
+        "operation": source["operation"],
+        "job": job,
+        "operations": source.get("operations", []),
+        "postprocessor": postprocessor,
+        "outputs": outputs,
+        "output_count": len(outputs),
+        "total_size_bytes": total,
+        "unchanged_state": unchanged,
+        "publication_state": "human_authorized_outputs_written",
+        "claim_ceiling": source["claim_ceiling"],
+        "proven_toolpath": False,
+        "manufacturable": False,
     }
     return CanonicalJson.from_value(value).to_value()

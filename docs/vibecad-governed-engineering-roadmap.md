@@ -295,13 +295,13 @@ behavior while it waits for host persistence/workflows.
 | G4 — authority policy and preview evidence | F, G | **Partial** | The executable registry-bound census classifies all current operations; add bounded domain preview evidence where justified and prove authoritative installed/runtime integration. |
 | G5 — workflow DAG | H | **Partial** | The bounded durable DAG, scheduler, restart, cancellation, retry, and publish-once core is implemented; wire real G2 jobs/domain adapters and prove installed/runtime and real five-stage FEM acceptance. |
 | G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
-| G7 — Manufacture runtime integration | J | **Partial foundation** | Adapt expensive detached Manufacture tasks to G2/G5 without replacing current Jobs, operations, simulation, posts, or exports. |
+| G7 — Manufacture runtime integration | J | **Partial evidence foundation** | Existing post output can be projected only with exact G2 attempt/G5 node linkage while preserving Job/post/output hashes and `not_proven_toolpath`; runtime record wiring, CAMotics/simulation, A/B, stale/restart and installed closure remain. |
 | G8 — Assembly consolidation | K, L, N | **Partial** | Extend the existing Assembly owner; close stable identities, interface taxonomy, continuous motion, flexible graphs, fit, evidence, and Part Design facade gates. |
 | G9 — joint inference | M | **Design-ready** | Bounded interface extraction/classification, ranked compatibility evidence, explicit accept/reject, no direct authoritative mutation. |
 | G10 — assembly sequencing | O | **Design-ready** | Insertion/access/fastener/precedence model, bounded solver, collision/currentness evidence, sampled-versus-continuous verdicts. |
 | G11 — service/disassembly | P | **Blocked by G10** | Target/removal constraints, minimum-set objective, verified reverse sequence, uncertainty and service claim ceilings. |
 | G12 — Robot task projection | Q | **Partial foundation** | Versioned step-to-task contract, frames/units/tool/TCP/force/torque/tolerance, traceability, Robot-domain validation and downstream boundary. |
-| X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; X1/X2/X5/X6 projection foundations partial** | Bounded no-authority G1 result, G2 activity/artifact/restart, G5 workflow and G6 candidate/ranking projections exist with durable-store tests; real adapters, Qt shell/views, domain slices, GUI/accessibility and installed acceptance remain dependency-bound. |
+| X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; X1/X2/X5/X6/X7 projection foundations partial** | Bounded no-authority G1, G2, G5, G6 and Manufacture-post projections exist; real runtime wiring, Qt shell/views, remaining domain slices, GUI/accessibility and installed acceptance remain dependency-bound. |
 
 ## 8. Dependency-ordered implementation roadmap
 
@@ -646,6 +646,15 @@ Closure requires A/B compatibility for selected current operations, restart and
 stale-source tests, installed packaging, and at least one real bounded
 Manufacture workflow that publishes once without changing untouched domain
 behavior.
+
+The first G7/X7 evidence seam is implemented in
+`tool_impl/engineering_experience.py`: it accepts the existing Native
+Manufacture post owner's committed result only when a validated Manufacture G2
+record contains the exact provider attempt and a validated G5 node references
+that Analysis identity. It preserves Job, postprocessor, machine and output
+hash evidence, requires unchanged document/history/selection/visibility state,
+and refuses any claim above `not_proven_toolpath`. This does not yet wire the
+runtime to create those durable records and therefore does not close G7 or X7.
 
 ### G8 — Assembly state, interface, and validation consolidation
 

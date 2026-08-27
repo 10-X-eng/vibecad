@@ -56,6 +56,14 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
   and publication evidence. The projection cannot rank, select, mutate or
   publish. Compare UI, provenance branches and restart/staleness GUI acceptance
   remain.
+- **X7: partial Manufacture evidence foundation.** A bounded projection now
+  accepts only the existing Native Manufacture post owner's committed output,
+  validates its exact G2 Analysis attempt and G5 workflow-node linkage, retains
+  Job/postprocessor/output hashes and unchanged-document evidence, and enforces
+  `not_proven_toolpath`. It cannot choose destinations, write files, mutate the
+  Job, or certify manufacturability. Runtime record wiring, CAMotics/simulation
+  projections, Qt pages, A/B behavior, stale/restart and installed acceptance
+  remain.
 
 ## First PR-sized implementation sequence
 
@@ -65,8 +73,9 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
    activity views; leave unintegrated durability visibly partial.
 3. Connect the X5 workflow projection to the Qt graph/activity views.
 4. Connect the X6 candidate/ranking projection to the Qt Compare view.
-5. Continue G7 and implement X7 together so Manufacture does not receive a
-   disconnected generic result UI.
+5. Wire the G7 post runtime to durable G2/G5 records and the X7 evidence
+   projection, then extend the same owner-preserving pattern to CAMotics and
+   simulation. Manufacture does not receive a disconnected generic result UI.
 6. Advance X3/X4 and X8-X12 only with their owning G closure slices.
 
 This order reflects the current repository, where G1, the G2 core, G4 census,
