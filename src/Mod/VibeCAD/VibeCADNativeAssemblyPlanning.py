@@ -15,7 +15,10 @@ from VibeCADNativeAssemblyIdentity import (
     NativeAssemblyIdentityError,
     read_persistent_identity,
 )
-from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
+from VibeCADNativeAssemblyJointBindings import (
+    ASSEMBLY_JOINT_CAPABILITY_NAME,
+    ASSEMBLY_RELATION_CAPABILITY_NAME,
+)
 from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
 from VibeCADNativeState import NativeCallTicket
 import VibeCADReferenceContracts as reference_contracts
@@ -23,6 +26,9 @@ import VibeCADReferenceContracts as reference_contracts
 
 _NATIVE_PLANNED_JOINTS = frozenset({
     "fixed", "revolute", "cylindrical", "slider", "ball",
+})
+_NATIVE_PLANNED_RELATIONS = frozenset({
+    "distance", "parallel", "perpendicular", "angle",
 })
 
 
@@ -90,7 +96,7 @@ def _native_owner(
 
     def owner(proposal: dict[str, Any]) -> Mapping[str, Any]:
         joint_kind = str(proposal.get("joint_kind") or "")
-        if joint_kind not in _NATIVE_PLANNED_JOINTS:
+        if joint_kind not in _NATIVE_PLANNED_JOINTS | _NATIVE_PLANNED_RELATIONS:
             raise AssemblyPlanningError(
                 f"Native planned acceptance does not yet support {joint_kind!r}."
             )
@@ -129,14 +135,19 @@ def _native_owner(
             })
         if len(endpoint_values) != 2:
             raise AssemblyPlanningError("A planned Native joint requires exactly two interfaces.")
-        return runtime.mutate_joint(
-            {
+        arguments = {
                 "operation": "create",
-                "joint_type": joint_kind,
                 "first": endpoint_values[0],
                 "second": endpoint_values[1],
                 "label": f"VibeCAD {joint_kind.replace('_', ' ').title()} Joint",
-            },
+        }
+        if joint_kind in _NATIVE_PLANNED_RELATIONS:
+            arguments["relation"] = joint_kind
+            arguments.update(dict(proposal.get("parameters") or {}))
+        else:
+            arguments["joint_type"] = joint_kind
+        return runtime.mutate_joint(
+            arguments,
             ticket=ticket,
         )
 
@@ -157,8 +168,11 @@ def accept_joint_proposal_native(
         raise AssemblyPlanningError("A Native Assembly joint runtime is required.")
     if not isinstance(ticket, NativeCallTicket):
         raise AssemblyPlanningError("A Native Assembly call ticket is required.")
-    if ticket.capability_name != ASSEMBLY_JOINT_CAPABILITY_NAME:
-        raise AssemblyPlanningError("The call ticket is not authorized for Assembly joints.")
+    if ticket.capability_name not in {
+        ASSEMBLY_JOINT_CAPABILITY_NAME,
+        ASSEMBLY_RELATION_CAPABILITY_NAME,
+    }:
+        raise AssemblyPlanningError("The call ticket is not authorized for Assembly joints or relations.")
     if ticket.document_uid != runtime._context.document_uid:
         raise AssemblyPlanningError("The call ticket belongs to a different document.")
     return accept_joint_proposal(

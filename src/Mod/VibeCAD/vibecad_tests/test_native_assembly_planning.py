@@ -18,7 +18,10 @@ from VibeCADNativeAssemblyIdentity import (
     IDENTITY_SCHEMA,
     IDENTITY_SCHEMA_PROPERTY,
 )
-from VibeCADNativeAssemblyJointBindings import ASSEMBLY_JOINT_CAPABILITY_NAME
+from VibeCADNativeAssemblyJointBindings import (
+    ASSEMBLY_JOINT_CAPABILITY_NAME,
+    ASSEMBLY_RELATION_CAPABILITY_NAME,
+)
 from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
 from VibeCADNativeState import NativeCallTicket
 import VibeCADReferenceContracts as reference_contracts
@@ -185,3 +188,52 @@ def test_native_acceptance_rejects_live_geometry_change_before_mutation(monkeypa
             ticket=ticket,
         )
     assert calls == []
+
+
+def test_native_relation_acceptance_uses_relation_ticket_and_explicit_parameter(
+    monkeypatch,
+) -> None:
+    source = _scenario()
+    for interface in source["interfaces"]:
+        interface["allowed_joints"] = ["distance"]
+        interface["joint_parameters"] = {
+            "schema": "vibecad-interface-joint-parameters-v1",
+            "values": {"distance": {"distance_mm": 8.25}},
+        }
+    proposals = propose_joints(source)
+    runtime, _ticket = _runtime()
+    ticket = NativeCallTicket(
+        runtime._context.document_uid,
+        ASSEMBLY_RELATION_CAPABILITY_NAME,
+        7,
+        "native-relation-planning-ticket",
+    )
+    calls = []
+    monkeypatch.setattr(
+        reference_contracts,
+        "resolve_component_interface",
+        lambda component, name: {
+            "resolved": {"geometry_binding": {"status": "current"}},
+        },
+    )
+    monkeypatch.setattr(
+        NativeAssemblyJointRuntime,
+        "mutate_joint",
+        lambda self, arguments, *, ticket: calls.append((arguments, ticket)) or {
+            "receipt": {"capability": ASSEMBLY_RELATION_CAPABILITY_NAME}
+        },
+    )
+
+    accept_joint_proposal_native(
+        source,
+        proposals,
+        proposals["candidates"][0]["proposal_id"],
+        runtime=runtime,
+        ticket=ticket,
+    )
+
+    arguments, used_ticket = calls[0]
+    assert used_ticket is ticket
+    assert arguments["relation"] == "distance"
+    assert arguments["distance_mm"] == 8.25
+    assert "joint_type" not in arguments

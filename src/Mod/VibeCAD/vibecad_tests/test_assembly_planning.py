@@ -120,6 +120,48 @@ def test_joint_proposals_keep_compatibility_and_fit_evidence_separate() -> None:
     assert propose_joints(source)["status"] == "no-candidate"
 
 
+def test_parameterized_relation_requires_matching_explicit_interface_values() -> None:
+    source = scenario()
+    for interface in source["interfaces"][:2]:
+        interface["allowed_joints"] = ["distance"]
+        interface["joint_parameters"] = {
+            "schema": "vibecad-interface-joint-parameters-v1",
+            "values": {"distance": {"distance_mm": 12.5}},
+        }
+
+    candidate = propose_joints(source)["candidates"][0]
+
+    assert candidate["joint_kind"] == "distance"
+    assert candidate["parameters"] == {"distance_mm": 12.5}
+    source["interfaces"][1]["joint_parameters"]["values"]["distance"]["distance_mm"] = 13.0
+    assert propose_joints(source)["status"] == "no-candidate"
+
+
+def test_parameterized_relation_refuses_missing_invalid_or_fabricated_values() -> None:
+    source = scenario()
+    for interface in source["interfaces"][:2]:
+        interface["allowed_joints"] = ["angle"]
+    assert propose_joints(source)["status"] == "no-candidate"
+
+    for interface in source["interfaces"][:2]:
+        interface["joint_parameters"] = {
+            "schema": "vibecad-interface-joint-parameters-v1",
+            "values": {"angle": {"angle_degrees": 361.0}},
+        }
+    assert propose_joints(source)["status"] == "no-candidate"
+
+
+def test_unparameterized_relation_is_proposed_without_numeric_invention() -> None:
+    source = scenario()
+    for interface in source["interfaces"][:2]:
+        interface["allowed_joints"] = ["parallel"]
+
+    candidate = propose_joints(source)["candidates"][0]
+
+    assert candidate["joint_kind"] == "parallel"
+    assert candidate["parameters"] == {}
+
+
 def test_joint_proposals_reject_stale_geometry_but_preserve_unknown_ceiling() -> None:
     source = scenario()
     source["interfaces"][0]["geometry_binding"] = {"status": "current"}

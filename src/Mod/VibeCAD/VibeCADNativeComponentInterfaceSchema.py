@@ -11,7 +11,11 @@ from VibeCADNativeCapabilityRegistry import (
 )
 from VibeCADNativeDesignSchema import object_reference_schema, parameters_schema
 from vibescript_assembly_api import JOINT_TYPES
-from VibeCADReferenceContracts import INTERFACE_FIT_CLASSES, INTERFACE_FIT_SCHEMA
+from VibeCADReferenceContracts import (
+    INTERFACE_FIT_CLASSES,
+    INTERFACE_FIT_SCHEMA,
+    INTERFACE_JOINT_PARAMETERS_SCHEMA,
+)
 
 
 COMPONENT_INTERFACE_CAPABILITY_NAME = "component.interface"
@@ -59,6 +63,36 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
             "required": ["schema", "fit_class"],
             "additionalProperties": False,
         },
+        "joint_parameters": {
+            "type": "object",
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "enum": [INTERFACE_JOINT_PARAMETERS_SCHEMA],
+                },
+                "values": {
+                    "type": "object",
+                    "properties": {
+                        "distance": {
+                            "type": "object",
+                            "properties": {"distance_mm": {"type": "number"}},
+                            "required": ["distance_mm"],
+                            "additionalProperties": False,
+                        },
+                        "angle": {
+                            "type": "object",
+                            "properties": {"angle_degrees": {"type": "number"}},
+                            "required": ["angle_degrees"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "minProperties": 1,
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["schema", "values"],
+            "additionalProperties": False,
+        },
     }
     return NativeCapabilityDefinition(
         name=COMPONENT_INTERFACE_CAPABILITY_NAME,
@@ -73,7 +107,10 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type="Component + LocalCoordinateSystem",
                 transaction_behavior="document",
                 background_required=False,
-                parameters=parameters_schema(fields, tuple(key for key in fields if key != "fit")),
+                parameters=parameters_schema(
+                    fields,
+                    tuple(key for key in fields if key not in {"fit", "joint_parameters"}),
+                ),
             ),
         ),
     )

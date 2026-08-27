@@ -23,6 +23,8 @@ _FIELDS = frozenset(
     {"component", "lcs", "name", "kind", "allowed_joints", "compatibility"}
 )
 _FIELDS_WITH_FIT = _FIELDS | {"fit"}
+_FIELDS_WITH_JOINT_PARAMETERS = _FIELDS | {"joint_parameters"}
+_FIELDS_WITH_OPTIONALS = _FIELDS | {"fit", "joint_parameters"}
 
 
 class NativeComponentInterfaceRuntime:
@@ -51,13 +53,23 @@ class NativeComponentInterfaceRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        try:
-            _operation, values = strict_variant_arguments(
-                arguments, {"publish_interface": _FIELDS_WITH_FIT}
-            )
-        except NativeArgumentError:
-            _operation, values = strict_variant_arguments(
-                arguments, {"publish_interface": _FIELDS}
+        error = None
+        for fields in (
+            _FIELDS_WITH_OPTIONALS,
+            _FIELDS_WITH_FIT,
+            _FIELDS_WITH_JOINT_PARAMETERS,
+            _FIELDS,
+        ):
+            try:
+                _operation, values = strict_variant_arguments(
+                    arguments, {"publish_interface": fields}
+                )
+                break
+            except NativeArgumentError as exc:
+                error = exc
+        else:
+            raise error or NativeArgumentError(
+                "Native capability arguments do not match the selected operation."
             )
         self._context.guard()
         prepared = prepare_component_interface(self._context.document, values)

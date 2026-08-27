@@ -22,7 +22,10 @@ from VibeCADNativeCapabilityRegistry import provider_visible_native_schema
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeUndo import NativeAssistantUndoLedger
-from VibeCADReferenceContracts import INTERFACE_FIT_SCHEMA
+from VibeCADReferenceContracts import (
+    INTERFACE_FIT_SCHEMA,
+    INTERFACE_JOINT_PARAMETERS_SCHEMA,
+)
 from VibeCADReferenceContracts import (
     INTERFACE_GEOMETRY_SCHEMA,
     PROP_NATIVE_INTERFACE_GEOMETRY,
@@ -183,7 +186,7 @@ def test_component_interface_preflight_resolves_and_normalizes_exact_targets() -
     assert prepared.spec.kind == "axis"
     assert prepared.spec.allowed_joints == ("revolute", "fixed")
     assert prepared.spec.compatibility == "mount-v1"
-    assert prepared.initial_state == ((False, None),) * 7
+    assert prepared.initial_state == ((False, None),) * 8
 
 
 def test_component_interface_fit_is_optional_versioned_and_separate_from_compatibility() -> None:
@@ -201,6 +204,32 @@ def test_component_interface_fit_is_optional_versioned_and_separate_from_compati
 
     assert spec.compatibility == "mount-v1"
     assert spec.fit == values["fit"]
+
+
+def test_component_interface_carries_explicit_versioned_relation_parameters() -> None:
+    document = _Document()
+    values = {key: value for key, value in _arguments().items() if key != "operation"}
+    values["allowed_joints"] = ["distance"]
+    values["joint_parameters"] = {
+        "schema": INTERFACE_JOINT_PARAMETERS_SCHEMA,
+        "values": {"distance": {"distance_mm": 12.5}},
+    }
+
+    spec = prepare_component_interface(document, values).spec
+
+    assert spec.joint_parameters == values["joint_parameters"]
+
+
+def test_component_interface_parameters_must_target_an_allowed_relation() -> None:
+    document = _Document()
+    values = {key: value for key, value in _arguments().items() if key != "operation"}
+    values["joint_parameters"] = {
+        "schema": INTERFACE_JOINT_PARAMETERS_SCHEMA,
+        "values": {"distance": {"distance_mm": 12.5}},
+    }
+
+    with pytest.raises(NativeComponentInterfaceError, match="explicitly allowed"):
+        prepare_component_interface(document, values)
 
 
 @pytest.mark.parametrize(
@@ -357,6 +386,38 @@ def test_component_interface_runtime_accepts_additive_fit_field(monkeypatch) -> 
             object()
             if target_document is document and target_values == values
             else pytest.fail("fit field did not reach exact preflight")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "run_immediate_mutation",
+        lambda context, **kwargs: captured.update(context=context, **kwargs)
+        or {"routed": True},
+    )
+
+    assert runtime.publish_interface(
+        arguments,
+        ticket=state.begin_call(document.Uid, "component.interface"),
+    ) == {"routed": True}
+
+
+def test_component_interface_runtime_accepts_additive_joint_parameters(monkeypatch) -> None:
+    runtime, state, document = _runtime()
+    captured = {}
+    arguments = _arguments()
+    arguments["allowed_joints"] = ["distance"]
+    arguments["joint_parameters"] = {
+        "schema": INTERFACE_JOINT_PARAMETERS_SCHEMA,
+        "values": {"distance": {"distance_mm": 4.0}},
+    }
+    values = {key: value for key, value in arguments.items() if key != "operation"}
+    monkeypatch.setattr(
+        runtime_module,
+        "prepare_component_interface",
+        lambda target_document, target_values: (
+            object()
+            if target_document is document and target_values == values
+            else pytest.fail("joint parameters did not reach exact preflight")
         ),
     )
     monkeypatch.setattr(

@@ -22,6 +22,11 @@ _VERDICTS = frozenset({
     "sampled-clear", "continuous-pass", "collision", "inaccessible",
     "unsupported", "indeterminate",
 })
+_PARAMETERIZED_RELATIONS = {
+    "distance": ("distance_mm", -1_000_000.0, 1_000_000.0),
+    "angle": ("angle_degrees", -360.0, 360.0),
+}
+_UNPARAMETERIZED_RELATIONS = frozenset({"parallel", "perpendicular"})
 
 
 class AssemblyPlanningError(ValueError):
@@ -46,6 +51,43 @@ def _finite(value: Any, field: str, *, minimum: float = 0.0) -> float:
     if not math.isfinite(result) or result < minimum:
         raise AssemblyPlanningError(f"{field} must be at least {minimum}.")
     return result
+
+
+def _relation_parameters(
+    joint_kind: str,
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> dict[str, float] | None:
+    """Return matching explicit relation parameters; never manufacture a value."""
+
+    if joint_kind in _UNPARAMETERIZED_RELATIONS:
+        return {}
+    contract = _PARAMETERIZED_RELATIONS.get(joint_kind)
+    if contract is None:
+        return {}
+    field, minimum, maximum = contract
+    declarations = []
+    for interface in (left, right):
+        raw = interface.get("joint_parameters")
+        if (
+            not isinstance(raw, Mapping)
+            or raw.get("schema") != "vibecad-interface-joint-parameters-v1"
+            or not isinstance(raw.get("values"), Mapping)
+        ):
+            return None
+        values = raw["values"].get(joint_kind)
+        if not isinstance(values, Mapping) or set(values) != {field}:
+            return None
+        value = values[field]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        number = float(value)
+        if not math.isfinite(number) or not minimum <= number <= maximum:
+            return None
+        declarations.append(number)
+    if declarations[0] != declarations[1]:
+        return None
+    return {field: declarations[0]}
 
 
 def _canonical_hash(value: Any) -> str:
@@ -162,7 +204,10 @@ def propose_joints(
             if left["persistent_id"] in occupied or right["persistent_id"] in occupied:
                 score -= 50
             for joint_kind in kinds:
-                candidates.append({
+                parameters = _relation_parameters(joint_kind, left, right)
+                if parameters is None:
+                    continue
+                candidate = {
                     "proposal_id": _canonical_hash([normalized["graph_revision"], left["persistent_id"], right["persistent_id"], joint_kind])[:24],
                     "joint_kind": joint_kind,
                     "interface_ids": [left["persistent_id"], right["persistent_id"]],
@@ -187,7 +232,13 @@ def propose_joints(
                         "allowed_by_both": True,
                     },
                     "acceptance": "requires-currentness-check-and-assembly-owner",
-                })
+                }
+                if (
+                    joint_kind in _PARAMETERIZED_RELATIONS
+                    or joint_kind in _UNPARAMETERIZED_RELATIONS
+                ):
+                    candidate["parameters"] = parameters
+                candidates.append(candidate)
     candidates.sort(key=lambda item: (-item["score"], item["joint_kind"], item["interface_ids"]))
     bounded = candidates[:max_candidates]
     ambiguous = len(bounded) > 1 and bounded[0]["score"] == bounded[1]["score"]
