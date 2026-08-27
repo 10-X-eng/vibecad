@@ -312,9 +312,9 @@ behavior while it waits for host persistence/workflows.
 | G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
 | G7 — Manufacture runtime integration | J | **Partial runtime integration** | Post, CAMotics, live GL simulation and retained simulation now create exact durable G2 Analysis/G5 workflow records and bounded X7 evidence while preserving owner-specific claim ceilings; A/B, stale/restart and authoritative installed closure remain. |
 | G8 — Assembly consolidation | K, L, N | **Partial identity/evidence foundation** | New Native-authored assemblies, joint groups, occurrences, regular joints and published interfaces receive write-once persisted identities, while the existing simulation-state/solver projection remains; legacy migration, real reopen/rename proof, stable graph revision, expanded interfaces, continuous motion, flexible/closed-loop/contact, fit and Part Design gates remain. |
-| G9 — joint inference | M | **Design-ready** | Bounded interface extraction/classification, ranked compatibility evidence, explicit accept/reject, no direct authoritative mutation. |
-| G10 — assembly sequencing | O | **Design-ready** | Insertion/access/fastener/precedence model, bounded solver, collision/currentness evidence, sampled-versus-continuous verdicts. |
-| G11 — service/disassembly | P | **Blocked by G10** | Target/removal constraints, minimum-set objective, verified reverse sequence, uncertainty and service claim ceilings. |
+| G9 — joint inference | M | **Partial contract foundation** | The installed mutation-free planning facade now binds deterministic ranked proposals to the exact persisted-identity graph revision and reports ambiguous/no-candidate outcomes; real bounded geometry extraction, all intended joint families, acceptance/rejection receipts through the Assembly owner, stale acceptance and adversarial fixture coverage remain. |
+| G10 — assembly sequencing | O | **Partial contract foundation** | The installed bounded planner now validates exact graph currentness and precedence, deterministically enumerates explicit-evidence orders, and separates sampled, continuous, collision, inaccessible, unsupported and indeterminate verdicts; real insertion/access/fastener/fixture/contact extraction, native collision/continuous-motion evidence, durable records and runtime/GUI integration remain. |
+| G11 — service/disassembly | P | **Partial projection foundation; closure blocked by G10** | Current G10 alternatives can now be reversed for explicit targets under protected-component constraints, with a bounded-model-only ceiling and equal-optimum reporting; full removal constraints, fastener/tool/fixture/access and replacement policy, minimum-set search, failed reverse-step verification, durable evidence and runtime/GUI integration remain. |
 | G12 — Robot task projection | Q | **Partial foundation** | Versioned step-to-task contract, frames/units/tool/TCP/force/torque/tolerance, traceability, Robot-domain validation and downstream boundary. |
 | X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; X1/X2/X5/X6/X7/X8 projection foundations partial** | Bounded no-authority common, durable, workflow, optimization, Manufacture-post and Assembly-state projections exist; real wiring, Qt shell/views, remaining domain slices, GUI/accessibility and installed acceptance remain dependency-bound. |
 
@@ -750,10 +750,22 @@ remain required before stable graph identity is claimed.
 
 ### G9 — propose-only joint inference
 
-**Status: Design-ready.**
+**Status: Partial contract foundation.**
 
 Joint inference reads G8 interfaces and geometry snapshots and returns ranked,
 bounded proposals. It never authors an accepted joint directly.
+
+`VibeCADAssemblyPlanning.py` is now an installed facade over a pure,
+mutation-free planning core. It validates the normalized persisted-identity
+scenario, computes a canonical graph revision independent of input ordering,
+and deterministically ranks only pairs whose explicitly declared allowed-joint
+sets overlap and whose compatibility declarations do not conflict. Results are
+bound to that exact revision, report `proposed`, `ambiguous`, or
+`no-candidate`, and explicitly require a currentness check plus the existing
+Assembly owner for acceptance. This is a contract and deterministic ranking
+foundation only: it does not yet extract geometry, infer intent from topology,
+author joints, issue acceptance receipts, or establish supported-family
+coverage.
 
 Pipeline:
 
@@ -781,11 +793,22 @@ Required gates:
 
 ### G10 — verified assembly sequencing
 
-**Status: Design-ready.**
+**Status: Partial contract foundation.**
 
 Sequencing consumes a validated G8 graph plus explicitly declared assembly
 constraints. Exploded-view placements are presentation evidence only and do
 not prove a feasible sequence.
+
+The same installed facade now provides a bounded deterministic precedence
+planner over caller-supplied per-occurrence evidence. It rejects stale graph
+revisions, detects cyclic precedence, caps returned alternatives, and preserves
+the distinction between `sampled-clear`, `continuous-pass`, `collision`,
+`inaccessible`, `unsupported`, and `indeterminate`. Its result cannot exceed
+`sampled-or-indeterminate` unless every supplied step is explicitly
+`continuous-pass`. It performs no CAD mutation and does not manufacture
+collision, access, fastener, contact, force, torque, or continuous-motion
+evidence. Native evidence extraction, durable result ownership and acceptance
+remain open.
 
 The sequencing model includes:
 
@@ -815,11 +838,20 @@ Required behavior:
 
 ### G11 — service and disassembly planning
 
-**Status: Blocked by G10.**
+**Status: Partial projection foundation; closure blocked by G10.**
 
 Service planning reverses or modifies the sequencing problem for an explicit
 target and service objective. It reuses the same graph, access, collision,
 fastener, fixture, and evidence owners.
+
+The first projection foundation consumes only a current G10 contract result,
+reverses bounded alternatives for explicit target occurrences, rejects removal
+paths that disturb protected occurrences, minimizes the modeled removed-count
+objective, and reports multiple equal optima. Every result is labeled
+`bounded-model-only`; it is not a universal minimum-removal proof. This does not
+unblock closure because the upstream G10 alternatives still need native
+geometry/access/fastener/contact/continuous-motion evidence and durable runtime
+integration.
 
 Each request declares target components, protected components, allowed damage
 or replacement policy, available tools/fixtures, access boundary, cost metric,
