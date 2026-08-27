@@ -368,7 +368,8 @@ class AnalysisRuntimeManager:
                         except Exception:
                             pass
             with self._lock:
-                self._active_documents.pop(job.document_uid, None)
+                if self._active_documents.get(job.document_uid) == job.job_id:
+                    self._active_documents.pop(job.document_uid, None)
                 job.completed.set()
                 self._trim_jobs_locked()
 

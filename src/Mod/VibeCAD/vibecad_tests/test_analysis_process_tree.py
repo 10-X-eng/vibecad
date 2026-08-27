@@ -57,7 +57,11 @@ def _assert_descendant_reaped(child_pid_file: Path, reason: str) -> None:
     assert not _pid_exists(child_pid), f"{reason} Analysis descendant survived cleanup"
 
 
-def test_cancel_reaps_descendant_process_tree(tmp_path: Path) -> None:
+@pytest.mark.parametrize("attempt", range(3))
+def test_cancel_reaps_descendant_process_tree(
+    tmp_path: Path,
+    attempt: int,
+) -> None:
     child_pid_file = tmp_path / "child.pid"
     parent_code = _child_spawning_program(child_pid_file)
 
@@ -74,10 +78,14 @@ def test_cancel_reaps_descendant_process_tree(tmp_path: Path) -> None:
             poll_seconds=0.01,
         )
 
-    _assert_descendant_reaped(child_pid_file, "cancelled")
+    _assert_descendant_reaped(child_pid_file, f"cancelled attempt {attempt}")
 
 
-def test_timeout_reaps_descendant_process_tree(tmp_path: Path) -> None:
+@pytest.mark.parametrize("attempt", range(3))
+def test_timeout_reaps_descendant_process_tree(
+    tmp_path: Path,
+    attempt: int,
+) -> None:
     child_pid_file = tmp_path / "child.pid"
     parent_code = _child_spawning_program(child_pid_file)
 
@@ -92,7 +100,7 @@ def test_timeout_reaps_descendant_process_tree(tmp_path: Path) -> None:
         )
 
     assert caught.value.reason == "timeout"
-    _assert_descendant_reaped(child_pid_file, "timed-out")
+    _assert_descendant_reaped(child_pid_file, f"timed-out attempt {attempt}")
 
 
 def test_process_creation_uses_shell_free_isolated_tree(monkeypatch: pytest.MonkeyPatch) -> None:

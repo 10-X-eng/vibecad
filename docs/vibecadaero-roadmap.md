@@ -320,13 +320,13 @@ Remaining program obligations:
 
 **Status: Partial.**
 
-Multiple host-runtime correctness slices have landed and dedicated regression tests exist. The FEM compatibility and known-difference report is frozen against the v2 executable oracle. Gate G7 is now covered by a temporary internal, context-local route that defaults to `analysis_runtime_fem`, can exercise `legacy_fem_execution` without a public or durable setting, captures the route at submission, and restores it automatically. The route tests cover success, cancellation, failure, cleanup, and stale-document refusal; the v2 oracle, installed Windows A/B publication gate, and compatibility-facade checks prove the associated execution, CAD-state, save/reopen, and old-API invariants. The named stabilization interval still lacks the complete cross-platform repeated stress, leak/orphan, document-lifecycle, and installed physical-solver evidence.
+Multiple host-runtime correctness slices have landed and dedicated regression tests exist. The FEM compatibility and known-difference report is frozen against the v2 executable oracle. Gate G7 is covered by a temporary internal, context-local route that defaults to `analysis_runtime_fem`, can exercise `legacy_fem_execution` without a public or durable setting, captures the route at submission, and restores it automatically. The route tests cover success, cancellation, failure, cleanup, and stale-document refusal; the v2 oracle, installed Windows A/B publication gate, and compatibility-facade checks prove the associated execution, CAD-state, save/reopen, and old-API invariants. The Windows/POSIX FEM workflow now repeats descendant-process cancellation and timeout, bounded-output execution, runtime success/failure/cancellation, terminal-job retention, document-owner release, worker-thread shutdown, and private-workspace cleanup. The burn-in found and fixed a real race where an older terminal job's delayed cleanup could remove a newer job's document ownership and admit a third concurrent mutation. The named stabilization interval still lacks the complete installed document-lifecycle, physical-solver/importer, and installed leak/orphan evidence.
 
 Remaining exit criteria:
 
-- run repeated cancel/timeout/close/switch/reopen and process-output-bound stress;
-- test Windows and POSIX process behavior;
-- confirm no job, thread, process, workspace, or document mutation leaks;
+- preserve the now-repeated Windows/POSIX cancel, timeout, process-output-bound, descendant-process, runtime-terminal, worker-thread, document-owner, and synthetic-workspace checks;
+- complete repeated installed close/switch/reopen/same-name replacement and exact-source rebind behavior;
+- confirm no installed-host document mutation, physical solver/importer process, or real case-workspace leaks;
 - keep the published parity and known-difference report synchronized with every compatibility change while completing the remaining installed-solver and lifecycle evidence.
 
 ### Step 8 — durable host metadata and artifact persistence
@@ -705,7 +705,7 @@ Stop the affected implementation slice and resolve explicitly if:
 
 The next work should be small, reversible, and dependency-ordered:
 
-1. **Close Steps 1 and 7:** produce the complete host/FEM characterization and A/B parity matrix; complete Windows/POSIX process-tree tests and a stabilization report. Keep the verified Step 2 packaging/compatibility foundation covered as later host capabilities are added.
+1. **Close Steps 1 and 7:** preserve the repeated Windows/POSIX runtime/process/workspace burn-in and complete installed close/switch/reopen/same-name replacement, exact-source rebind, physical solver/importer, and installed leak/orphan evidence. Keep the verified Step 2 packaging/compatibility foundation covered as later host capabilities are added.
 2. **Close Step 4:** add quota/reference-integrity and installed/cross-platform acceptance around the implemented immutable workspace/artifact sealing slice.
 3. **Close Step 8:** finish migration, application-data integration, discovery, reconnect/crash recovery, quota/reference integrity, and platform acceptance around the implemented durable lifecycle slice.
 4. **Close Step 8A:** integrate the implemented coordinator with Native mutation authority and domain adapters, proving real rebind, transaction, rollback, restart, and compatibility behavior.

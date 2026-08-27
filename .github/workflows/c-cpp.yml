@@ -83,6 +83,7 @@ jobs:
             src/Mod/VibeCAD/vibecad_tests/test_analysis_architecture_boundaries.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_parity_oracle.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_execution_route.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_lifecycle_burnin.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_installed_publication.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_error_mapping.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_process_tree.py \
