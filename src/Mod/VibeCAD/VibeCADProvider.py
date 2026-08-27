@@ -4766,6 +4766,7 @@ def _gemini_child_main(
         conn.close()
         return
 
+    client = None
     try:
         live_context = dict(context)
 
@@ -5052,6 +5053,13 @@ def _gemini_child_main(
     except BaseException as exc:
         _send_child_error(conn, "Google Gemini provider", exc)
     finally:
+        if client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
         conn.close()
 
 

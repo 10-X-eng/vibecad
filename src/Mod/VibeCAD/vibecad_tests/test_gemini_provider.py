@@ -367,6 +367,7 @@ def test_gemini_stream_preserves_thought_signatures_and_repairs_tool_arguments(
         iter([_chunk(content="Inspection complete."), _chunk(finish_reason="stop")]),
     ]
     client_kwargs: list[dict[str, object]] = []
+    client_closed: list[bool] = []
     requests: list[dict[str, object]] = []
 
     class _OpenAI:
@@ -375,6 +376,10 @@ def test_gemini_stream_preserves_thought_signatures_and_repairs_tool_arguments(
             self.chat = SimpleNamespace(
                 completions=SimpleNamespace(create=self._create)
             )
+
+        @staticmethod
+        def close() -> None:
+            client_closed.append(True)
 
         @staticmethod
         def _create(**kwargs):
@@ -408,6 +413,7 @@ def test_gemini_stream_preserves_thought_signatures_and_repairs_tool_arguments(
             "max_retries": 2,
         }
     ]
+    assert client_closed == [True]
     tool_messages = [
         message for message in connection.messages if message.get("type") == "tool"
     ]
