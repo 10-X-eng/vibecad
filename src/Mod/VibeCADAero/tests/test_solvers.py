@@ -142,8 +142,7 @@ def test_analyze_writes_hover_and_cruise_from_section_coefficients():
         cfg,
         coords=[[1.0, 0.0], [0.0, 0.07], [1.0, 0.0]],
         neuralfoil_fn=fake_nf,
-        aerobuildup_fn=None,
-        vlm_fn=None,
+        run_vlm_solve=False,
     )
     assert result["source"] == "NeuralFoil"
     assert result["hover"]["source"] == "momentum-theory"
