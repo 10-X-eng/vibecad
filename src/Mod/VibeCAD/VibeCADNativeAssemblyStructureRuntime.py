@@ -67,6 +67,7 @@ from VibeCADNativeModelErrors import NativeModelError
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
 from VibeCADNativeTargets import NativeObjectRef
+from VibeCADSurfaceAuthority import enter_edit_mode
 
 
 _INTENT_VARIANTS = {
@@ -461,7 +462,7 @@ class NativeAssemblyStructureRuntime:
                     "The created root Assembly document is no longer active."
                 )
             active = read_active_assembly(self._context.document)
-            if active is None and not bool(gui_document.setEdit(str(assembly.Name))):
+            if active is None and not enter_edit_mode(gui_document, assembly.Name):
                 raise NativeAssemblyStructureError(
                     "The created root Assembly could not be activated."
                 )
