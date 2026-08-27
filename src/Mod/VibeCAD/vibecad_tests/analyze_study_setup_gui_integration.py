@@ -297,6 +297,7 @@ def _run() -> None:
         assert widget.results_browser.result_combo.count() == 2
         assert widget.results_browser.field_combo.count() >= 2
         assert widget.results_browser.field_table.topLevelItemCount() >= 2
+        assert widget.results_browser.show_field_button.isEnabled()
         field_units = {
             widget.results_browser.field_table.topLevelItem(index).text(3)
             for index in range(

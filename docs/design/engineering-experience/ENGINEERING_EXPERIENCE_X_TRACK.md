@@ -49,7 +49,7 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
   bounded descriptors in the existing Analyze shell, preserves all flow
   controls, and labels governance axes unavailable when no G1 envelope exists.
   Remaining X1 work is attachment of exact G1 envelopes/status axes, richer
-  result-card interaction and owner-routed non-flow presentation,
+  result-card interaction and full owner-routed presentation acceptance,
   accessibility coverage, and installed application acceptance.
 - **X2: partial durable-view foundation.** The installed facade projects
   validated G2 records, attempts, artifacts, currentness evaluations,
@@ -130,6 +130,11 @@ workbench or authority layer. The implementation sequence is:
 4. **EVS-04 — owner-routed viewport presentation (X1).** Route structural and
    flow field selection through the existing FEM/VTK/domain presentation
    owners. Never copy field arrays or create a second scientific renderer.
+   **Partial:** human selection now performs a fresh result-state check and
+   delegates supported legacy FEM fields to `femresult.resultpresentation`, VTK
+   fields to the existing pipeline ViewObject, and flow fields to the existing
+   OpenFOAM owner with rollback/refusal boundaries. Real installed GUI coverage,
+   ambiguous same-name point/cell selection and unsupported legacy fields remain.
 5. **EVS-05 — legend and colormap view state (X1).** Add named units, exact
    min/max, auto/manual/clamped range and a validated colormap registry.
    Palette choice remains presentation state and cannot alter engineering

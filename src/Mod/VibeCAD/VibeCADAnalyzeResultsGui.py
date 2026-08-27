@@ -214,7 +214,7 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
             self.field_table.resizeColumnToContents(column)
         if self.field_table.topLevelItemCount():
             self.field_table.setCurrentItem(self.field_table.topLevelItem(0))
-        self.show_field_button.setEnabled(name in self._summaries)
+        self.show_field_button.setEnabled(bool(presentation.fields))
 
     def refresh(self, document: Any, analysis: Any) -> None:
         previous = str(self.result_combo.currentData() or "")
@@ -494,17 +494,35 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
             )
 
     def _show_selected_field(self) -> None:
+        result, _summary = self._selected()
+        name = str(self.result_combo.currentData() or "")
+        frozen_state = self._states.get(name)
         field_id = str(self.field_combo.currentData() or "")
-        presentation = self._presentations.get(
-            str(self.result_combo.currentData() or "")
-        )
-        if presentation is None:
+        presentation = self._presentations.get(name)
+        if result is None or frozen_state is None or presentation is None:
             return
         selected = next(
             (field for field in presentation.fields if field.field_id == field_id),
             None,
         )
         if selected is None:
+            return
+        try:
+            current = result_state(result)
+            if current["state_sha256"] != frozen_state["state_sha256"]:
+                raise RuntimeError(
+                    "The selected engineering result changed; refresh before display."
+                )
+            if current["result_kind"] == "result":
+                self._show_legacy_field(result, selected.semantic)
+                return
+            if name not in self._summaries:
+                self._show_vtk_field(result, selected.field_id, selected.components)
+                return
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                Gui.getMainWindow(), "Engineering Results", str(exc)
+            )
             return
         flow_field = {
             "pressure": "pressure",
@@ -514,3 +532,70 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         }.get(selected.semantic)
         if flow_field is not None:
             self._show_field(flow_field)
+
+    @staticmethod
+    def _show_legacy_field(result: Any, semantic: str) -> None:
+        field = {
+            "displacement.magnitude": "displacement_magnitude",
+            "stress.von_mises": "von_mises_stress",
+            "stress.principal.maximum": "maximum_principal_stress",
+            "stress.principal.minimum": "minimum_principal_stress",
+            "stress.shear.maximum": "maximum_shear_stress",
+            "strain.plastic.equivalent": "equivalent_plastic_strain",
+            "temperature": "temperature",
+            "flow.mass_rate": "mass_flow_rate",
+            "pressure.network": "network_pressure",
+        }.get(semantic)
+        if field is None:
+            raise RuntimeError("The legacy FEM presentation owner does not support this field.")
+        from femresult.resultpresentation import (
+            apply_result_presentation,
+            prepare_result_presentation,
+            restore_result_presentation,
+        )
+
+        prepared = prepare_result_presentation(result, field, 1.0, True)
+        try:
+            applied = apply_result_presentation(prepared)
+            if applied.get("field") != field or applied.get("visible") is not True:
+                raise RuntimeError("The legacy FEM presentation was not retained.")
+        except Exception:
+            restore_result_presentation(prepared)
+            raise
+
+    @staticmethod
+    def _show_vtk_field(result: Any, field_id: str, components: int) -> None:
+        if ":" in field_id:
+            raise RuntimeError(
+                "The VTK presentation owner cannot distinguish same-named point and cell fields."
+            )
+        field_name = field_id
+        view = getattr(result, "ViewObject", None)
+        if view is None:
+            raise RuntimeError("The VTK result has no presentation object.")
+        available = tuple(view.getEnumerationsOfProperty("Field") or ())
+        if field_name not in available:
+            raise RuntimeError("The VTK presentation owner does not expose this field.")
+        previous = {
+            "field": str(getattr(view, "Field", "")),
+            "component": str(getattr(view, "Component", "")),
+            "visible": bool(getattr(view, "Visibility", False)),
+        }
+        try:
+            view.Field = field_name
+            available_components = tuple(
+                view.getEnumerationsOfProperty("Component") or ()
+            )
+            if components > 1 and "Magnitude" in available_components:
+                view.Component = "Magnitude"
+            view.Visibility = True
+            if str(view.Field) != field_name or bool(view.Visibility) is not True:
+                raise RuntimeError("The VTK presentation was not retained.")
+        except Exception:
+            view.Field = previous["field"]
+            if previous["component"] in tuple(
+                view.getEnumerationsOfProperty("Component") or ()
+            ):
+                view.Component = previous["component"]
+            view.Visibility = previous["visible"]
+            raise

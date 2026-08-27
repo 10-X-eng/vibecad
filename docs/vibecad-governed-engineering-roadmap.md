@@ -1069,10 +1069,12 @@ OpenFOAM-only discovery to every live legacy FEM or VTK result accepted by the
 Native Analyze result-state owner. It renders bounded field cards with exact
 available ranges, units, association and presentation type, retains all current
 flow controls, and leaves execution/verification/currentness/publication visibly
-unavailable when no G1 envelope is attached. Generic selection invokes only the
-existing flow presentation owner when supported; it does not yet route legacy
-FEM/VTK selection, attach common provenance/metrics or prove installed GUI
-behavior. EVS-03 and EVS-04 therefore remain partial.
+unavailable when no G1 envelope is attached. Generic selection routes supported
+flow, legacy FEM and VTK fields through their existing owner surfaces after a
+fresh state-hash check, with rollback or explicit refusal where the owner cannot
+represent the request. It does not attach common provenance/metrics or prove installed GUI
+behavior. Ambiguous same-name point/cell arrays and unsupported legacy fields
+are refused rather than guessed. EVS-03 and EVS-04 therefore remain partial.
 
 The shared shell may be designed early, but no durable activity, workflow,
 candidate, interface, sequence, service, or Robot behavior is faked ahead of
@@ -1257,8 +1259,8 @@ Keep the first changes small, reversible, and source-bound:
 3. **EVS-03 and EVS-04 / X1 results and presentation — partial/next:** real
    cross-result field discovery/cards are present and unsupported governance
    axes remain explicitly unavailable. Next attach exact G1 envelopes,
-   metrics/provenance and route legacy FEM/VTK selection through existing
-   viewport presentation owners.
+   metrics/provenance, complete owner-supported field routing, and prove the
+   result browser through installed GUI acceptance.
 4. **EVS-05 and EVS-06 / X1 scientific view controls:** add truthful legends,
    validated colormaps, deformation and scoped Technical/Analysis presets as
    presentation state only.
