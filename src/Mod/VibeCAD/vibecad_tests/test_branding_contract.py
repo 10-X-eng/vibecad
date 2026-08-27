@@ -1316,13 +1316,20 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     monkeypatch.setitem(sys.modules, "FreeCAD", app)
     monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
     monkeypatch.setitem(sys.modules, "VibeCADGui", gui)
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
+    )
 
     namespace = runpy.run_path(str(ROOT / "src/Mod/VibeCAD/InitGui.py"))
     assert preferences.disabled == "TestWorkbench,NoneWorkbench"
     assert startup_events == [
         "commands",
+        "scheduled:_setup_development_identity",
         "scheduled:_setup_always_on_grid",
         "scheduled:_setup_agent_control",
+        "scheduled:_setup_native_preview_ribbon",
         "scheduled:_setup_aero_ribbon",
     ]
 
@@ -1384,6 +1391,11 @@ def test_vibecad_bootstrap_helpers_survive_freecad_exec_namespace(monkeypatch) -
     )
     monkeypatch.setitem(
         sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
         "VibeCADFasteners",
         fasteners,
     )
@@ -1406,8 +1418,10 @@ def test_vibecad_bootstrap_helpers_survive_freecad_exec_namespace(monkeypatch) -
 
     assert "assistant" in startup_events
     assert "fasteners" in startup_events
+    assert "scheduled:_setup_development_identity" in startup_events
     assert "scheduled:_setup_always_on_grid" in startup_events
     assert "scheduled:_setup_agent_control" in startup_events
+    assert "scheduled:_setup_native_preview_ribbon" in startup_events
     assert "scheduled:_setup_aero_ribbon" in startup_events
     assert not any("GUI bootstrap failed" in warning for warning in warnings)
     assert any("ribbon extension" in warning for warning in warnings)
@@ -1467,6 +1481,11 @@ def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> Non
             ensure_commands_registered=lambda: None,
             _dispatch_to_document_thread=dispatch,
         ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
     )
     monkeypatch.setitem(
         sys.modules,
