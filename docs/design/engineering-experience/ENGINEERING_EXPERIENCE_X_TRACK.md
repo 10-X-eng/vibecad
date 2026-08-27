@@ -179,8 +179,14 @@ workbench or authority layer. The implementation sequence is:
    metrics only when IDs, units and qualifiers match, and field extrema only
    when semantic, association, components, units and presentation match. Both
    owner-state SHA-256 identities are required. Pointwise differences remain
-   explicitly unavailable until a shared mesh/array owner exists; optimization
-   ranking integration and installed GUI acceptance remain.
+   explicitly unavailable until a shared mesh/array owner exists. The shell
+   also discovers exact-document durable G6 runs, reconstructs and hash-checks
+   their persisted definitions, asks the G6 owner for its ranking, and displays
+   ranked/excluded candidates, variables, metrics, findings, constraint
+   failures, workflow-attempt counts and selection/publication evidence without
+   ranking or accepting anything itself. Provenance branches, shared-mesh
+   pointwise comparison, restart/staleness GUI acceptance and installed GUI
+   acceptance remain.
 
 EVS-01 through EVS-09 are individually reviewable and must retain compatibility
 with the existing Analyze UI. X3/X4, X7 and X8-X12 continue in parallel or

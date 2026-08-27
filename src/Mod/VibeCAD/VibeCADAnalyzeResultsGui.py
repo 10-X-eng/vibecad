@@ -17,6 +17,7 @@ from VibeCADEngineeringChartSeries import (
     chart_series_from_visualization,
 )
 from VibeCADEngineeringActivity import discover_engineering_activity
+from VibeCADEngineeringOptimization import discover_engineering_optimization
 from VibeCADEngineeringFieldAdapters import presentation_from_result_state
 from VibeCADEngineeringExperience import compare_domain_presentations
 
@@ -40,6 +41,8 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self._charts: dict[str, Any] = {}
         self._activity: dict[str, Any] | None = None
         self._activity_error = ""
+        self._optimization: dict[str, Any] | None = None
+        self._optimization_error = ""
         layout = QtWidgets.QVBoxLayout(self)
 
         self.result_combo = QtWidgets.QComboBox()
@@ -127,6 +130,23 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self.activity_table.setAlternatingRowColors(True)
         activity_layout.addWidget(self.activity_table)
         layout.addWidget(activity)
+
+        optimization = QtWidgets.QGroupBox("Optimization Runs")
+        optimization.setObjectName("VibeCADEngineeringOptimizationCard")
+        optimization.setProperty("vibeResultCard", True)
+        optimization_layout = QtWidgets.QVBoxLayout(optimization)
+        self.optimization_table = QtWidgets.QTreeWidget()
+        self.optimization_table.setObjectName("VibeCADEngineeringOptimization")
+        self.optimization_table.setAccessibleName(
+            "Durable owner-ranked optimization runs"
+        )
+        self.optimization_table.setHeaderLabels(
+            ("Kind", "Identity", "Rank", "State", "Currentness", "Evidence")
+        )
+        self.optimization_table.setRootIsDecorated(True)
+        self.optimization_table.setAlternatingRowColors(True)
+        optimization_layout.addWidget(self.optimization_table)
+        layout.addWidget(optimization)
 
         status = QtWidgets.QGroupBox("Governed State")
         status.setObjectName("VibeCADEngineeringStatusCard")
@@ -526,6 +546,134 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         for column in range(self.activity_table.columnCount()):
             self.activity_table.resizeColumnToContents(column)
 
+    def _render_optimization(self) -> None:
+        self.optimization_table.clear()
+        if self._optimization_error:
+            item = QtWidgets.QTreeWidgetItem(
+                ("Unavailable", "Durable optimization", "—", "Read Failed", "—", "—")
+            )
+            item.setToolTip(0, self._optimization_error)
+            self.optimization_table.addTopLevelItem(item)
+        elif self._optimization is None or not self._optimization["runs"]:
+            self.optimization_table.addTopLevelItem(
+                QtWidgets.QTreeWidgetItem(
+                    ("Optimization", "No durable runs", "—", "Unavailable", "—", "—")
+                )
+            )
+        else:
+            for run in self._optimization["runs"]:
+                selection = run.get("selection")
+                publication = run.get("publication")
+                evidence = (
+                    ("Selected" if selection else "Not Selected")
+                    + " · "
+                    + ("Published" if publication else "Not Published")
+                )
+                run_item = QtWidgets.QTreeWidgetItem(
+                    (
+                        "Run",
+                        str(run["run_id"]),
+                        "—",
+                        "Recorded",
+                        "—",
+                        evidence,
+                    )
+                )
+                run_item.setToolTip(
+                    1,
+                    f"Definition SHA-256: {run['definition_sha256']} · "
+                    f"Source SHA-256: {run['source_sha256']}"
+                    + (
+                        f" · Selected candidate: {selection['candidate_id']}"
+                        if selection
+                        else ""
+                    )
+                    + (
+                        f" · Publication receipt: "
+                        f"{publication['publication_receipt_id']}"
+                        if publication
+                        else ""
+                    ),
+                )
+                ordered = sorted(
+                    run["candidates"],
+                    key=lambda item: (
+                        item["rank"] is None,
+                        item["rank"] if item["rank"] is not None else 0,
+                        item["candidate_id"],
+                    ),
+                )
+                for candidate in ordered:
+                    metrics = candidate.get("metrics") or {}
+                    failures = candidate.get("constraint_failures") or []
+                    candidate_item = QtWidgets.QTreeWidgetItem(
+                        (
+                            "Candidate",
+                            str(candidate["candidate_id"]),
+                            "Excluded" if candidate["rank"] is None else str(candidate["rank"]),
+                            str(candidate.get("state") or "Unavailable")
+                            .replace("_", " ")
+                            .title(),
+                            str(candidate.get("currentness") or "Unavailable")
+                            .replace("_", " ")
+                            .title(),
+                            f"{len(metrics)} metrics · {len(failures)} constraint failures",
+                        )
+                    )
+                    candidate_item.setToolTip(
+                        1,
+                        f"Candidate SHA-256: {candidate['candidate_sha256']} · "
+                        f"Workflow attempts: {candidate['workflow_attempt_count']} · "
+                        f"Mutation proposal retained by owner: "
+                        f"{bool(candidate.get('mutation_proposal'))}",
+                    )
+                    for name, value in sorted(
+                        (candidate.get("values") or {}).items()
+                    ):
+                        candidate_item.addChild(
+                            QtWidgets.QTreeWidgetItem(
+                                ("Variable", str(name), "—", str(value), "—", "Owner proposal")
+                            )
+                        )
+                    for name, value in sorted(metrics.items()):
+                        candidate_item.addChild(
+                            QtWidgets.QTreeWidgetItem(
+                                ("Metric", str(name), "—", str(value), "—", "Recorded")
+                            )
+                        )
+                    for failure in failures:
+                        candidate_item.addChild(
+                            QtWidgets.QTreeWidgetItem(
+                                (
+                                    "Constraint",
+                                    str(failure),
+                                    "—",
+                                    "Failed",
+                                    str(candidate.get("currentness") or "Unavailable").title(),
+                                    "Owner ranking",
+                                )
+                            )
+                        )
+                    for finding in candidate.get("findings") or []:
+                        finding_name = (
+                            finding.get("code")
+                            or finding.get("finding_id")
+                            or finding.get("message")
+                            or "Recorded finding"
+                            if isinstance(finding, dict)
+                            else str(finding)
+                        )
+                        candidate_item.addChild(
+                            QtWidgets.QTreeWidgetItem(
+                                ("Finding", str(finding_name), "—", "Recorded", "—", "Owner evidence")
+                            )
+                        )
+                    run_item.addChild(candidate_item)
+                run_item.setExpanded(True)
+                self.optimization_table.addTopLevelItem(run_item)
+        for column in range(self.optimization_table.columnCount()):
+            self.optimization_table.resizeColumnToContents(column)
+
     def refresh(self, document: Any, analysis: Any) -> None:
         previous = str(self.result_combo.currentData() or "")
         previous_candidate = str(self.compare_result_combo.currentData() or "")
@@ -539,11 +687,19 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self._charts = {}
         self._activity = None
         self._activity_error = ""
+        self._optimization = None
+        self._optimization_error = ""
         if document is not None:
             try:
                 self._activity = discover_engineering_activity(str(document.Uid))
             except Exception as exc:
                 self._activity_error = str(exc)
+            try:
+                self._optimization = discover_engineering_optimization(
+                    str(document.Uid)
+                )
+            except Exception as exc:
+                self._optimization_error = str(exc)
         if document is not None and analysis is not None:
             for chart in chart_series_from_analysis(analysis):
                 self._charts[chart.series_id] = chart
@@ -599,6 +755,7 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self.engineering_compare_combo.blockSignals(False)
         self._render_charts()
         self._render_activity()
+        self._render_optimization()
         self._render()
 
     @staticmethod

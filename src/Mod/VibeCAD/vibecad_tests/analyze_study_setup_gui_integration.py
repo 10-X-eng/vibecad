@@ -175,6 +175,13 @@ def _run() -> None:
         assert widget.results_browser.activity_table.topLevelItemCount() == 1
         assert (
             widget.results_browser.findChild(
+                QtWidgets.QGroupBox, "VibeCADEngineeringOptimizationCard"
+            )
+            is not None
+        )
+        assert widget.results_browser.optimization_table.topLevelItemCount() == 1
+        assert (
+            widget.results_browser.findChild(
                 QtWidgets.QGroupBox, "VibeCADEngineeringResultComparisonCard"
             )
             is not None

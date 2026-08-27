@@ -18,6 +18,7 @@ set(VibeCAD_Scripts
     VibeCADEngineeringFieldAdapters.py
     VibeCADEngineeringChartSeries.py
     VibeCADEngineeringActivity.py
+    VibeCADEngineeringOptimization.py
     VibeCADGovernedOptimization.py
     VibeCADHostSurfaceAuthority.py
     VibeCADAnalyzeStudyGui.py

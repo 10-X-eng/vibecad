@@ -144,6 +144,8 @@ class StudySetupWidget(QtWidgets.QWidget):
             analysis_root / "metadata" / "records",
             analysis_root / "workflows",
             analysis_root / "workflows" / "workflow-runs",
+            analysis_root / "optimization",
+            analysis_root / "optimization" / "optimization-runs",
         )
         return tuple(str(path) for path in candidates if path.is_dir())
 

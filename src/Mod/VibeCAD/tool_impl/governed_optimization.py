@@ -23,6 +23,7 @@ from .analysis_contracts import AnalysisContractError, CanonicalJson
 OPTIMIZATION_SCHEMA_VERSION = 1
 MAX_VARIABLES = 32
 MAX_CANDIDATES = 4096
+MAX_DISCOVERABLE_OPTIMIZATION_RUNS = 4096
 MAX_VALUES_PER_VARIABLE = 256
 VARIABLE_KINDS = frozenset({"continuous", "integer", "discrete"})
 OBJECTIVE_DIRECTIONS = frozenset({"minimize", "maximize"})
@@ -238,6 +239,38 @@ class OptimizationDefinition:
         return tuple(result)
 
 
+def optimization_definition_from_value(
+    value: Mapping[str, Any],
+) -> OptimizationDefinition:
+    """Reconstruct the exact persisted definition for owner-computed ranking."""
+
+    if not isinstance(value, Mapping):
+        raise OptimizationError("Optimization definition must be an object.")
+    try:
+        return OptimizationDefinition(
+            optimization_id=value["optimization_id"],
+            source_document_uid=value["source_document_uid"],
+            source_revision=value["source_revision"],
+            source_sha256=value["source_sha256"],
+            workflow_definition_sha256=value["workflow_definition_sha256"],
+            variables=tuple(DesignVariable(**item) for item in value["variables"]),
+            objectives=tuple(Objective(**item) for item in value["objectives"]),
+            constraints=tuple(MetricConstraint(**item) for item in value["constraints"]),
+            budget=OptimizationBudget(**value["budget"]),
+            seed=value["seed"],
+            algorithm=value["algorithm"],
+            algorithm_version=value["algorithm_version"],
+            failure_treatment=value["failure_treatment"],
+            stale_treatment=value["stale_treatment"],
+            indeterminate_treatment=value["indeterminate_treatment"],
+            publication_policy=value["publication_policy"],
+        )
+    except (KeyError, TypeError, AnalysisContractError) as exc:
+        raise OptimizationError(
+            "Persisted optimization definition is incomplete or invalid."
+        ) from exc
+
+
 def rank_candidates(definition: OptimizationDefinition, evaluations: Mapping[str, Mapping[str, Any]]) -> tuple[dict[str, Any], ...]:
     candidates = {item["candidate_id"]: item for item in definition.candidates()}
     ranked = []
@@ -390,6 +423,52 @@ class OptimizationRunStore:
             return self._validate(json.loads(self._path(run_id).read_text(encoding="utf-8")))
         except (OSError, ValueError) as exc:
             raise OptimizationError("Optimization run is missing or corrupt.") from exc
+
+    def list_records(self) -> tuple[dict[str, Any], ...]:
+        """Read all bounded run records without selection or publication authority."""
+
+        if not self.records.exists():
+            return ()
+        paths = tuple(sorted(self.records.glob("*.json"), key=lambda path: path.name))
+        if len(paths) > MAX_DISCOVERABLE_OPTIMIZATION_RUNS:
+            raise OptimizationError(
+                "Optimization discovery exceeds its bounded record limit."
+            )
+        records = []
+        for path in paths:
+            try:
+                record = self._validate(
+                    json.loads(path.read_text(encoding="utf-8"))
+                )
+                definition = optimization_definition_from_value(record["definition"])
+            except (OSError, ValueError, KeyError, OptimizationError) as exc:
+                raise OptimizationError(
+                    f"Optimization discovery found an invalid record: {path.name}"
+                ) from exc
+            if path.stem != record["run_id"]:
+                raise OptimizationError(
+                    f"Optimization filename does not match its identity: {path.name}"
+                )
+            if definition.sha256() != record["definition_sha256"]:
+                raise OptimizationError(
+                    f"Optimization definition identity does not match: {path.name}"
+                )
+            records.append(record)
+        return tuple(records)
+
+    def find_by_document_uid(
+        self, document_uid: str
+    ) -> tuple[dict[str, Any], ...]:
+        """Find exact runs for one document identity without path/label inference."""
+
+        identity = str(document_uid or "").strip()
+        if not identity:
+            raise OptimizationError("document_uid must be non-empty.")
+        return tuple(
+            record
+            for record in self.list_records()
+            if record["source_document_uid"] == identity
+        )
 
     def _update(self, run_id: str, mutate) -> dict[str, Any]:
         with self._writer():

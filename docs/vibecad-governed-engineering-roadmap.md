@@ -1312,6 +1312,13 @@ installed GUI evidence remain.
    identities are mandatory. Pointwise differences remain explicitly
    unavailable without a shared mesh/array owner, and the projection grants no
    ranking, selection, mutation, publication or export authority.
+   Exact-document G6 discovery now reconstructs and hash-checks each persisted
+   definition before requesting the owning store's deterministic ranking. The
+   Analyze shell displays ranked and excluded candidates with variables,
+   metrics, findings, constraint failures, workflow attempts and exact
+   selection/publication evidence; it has no independent ranking, acceptance or
+   publication action. Provenance-branch, shared-mesh pointwise,
+   restart/staleness GUI and installed acceptance remain.
 6. **Continue G-track closure in dependency order:** complete G2/G5 acceptance,
    G7 stale/restart/installed behavior, and the current G8/G9 Assembly
    identity/interface/inference acceptance. Advance X3/X4 and X7-X12 only from
