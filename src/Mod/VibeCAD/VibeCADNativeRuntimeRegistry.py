@@ -230,6 +230,9 @@ from VibeCADNativeManufactureCamoticsRuntime import (
     NativeManufactureCamoticsRuntime,
 )
 from VibeCADNativeManufacturePostBindings import manufacture_post_runtime_bindings
+from VibeCADNativeManufactureFocusedPostBindings import (
+    manufacture_focused_post_runtime_bindings,
+)
 from VibeCADNativeManufacturePostRuntime import NativeManufacturePostRuntime
 from VibeCADNativeManufactureTemplateBindings import (
     manufacture_template_runtime_bindings,
@@ -690,6 +693,7 @@ def build_native_runtime_bindings(
         **manufacture_focused_operation_runtime_bindings(manufacture_operation),
         **manufacture_camotics_runtime_bindings(manufacture_camotics),
         **manufacture_post_runtime_bindings(manufacture_post),
+        **manufacture_focused_post_runtime_bindings(manufacture_post),
         **manufacture_template_runtime_bindings(manufacture_template),
         **manufacture_simulation_runtime_bindings(manufacture_simulation),
         **manufacture_simulation_result_runtime_bindings(

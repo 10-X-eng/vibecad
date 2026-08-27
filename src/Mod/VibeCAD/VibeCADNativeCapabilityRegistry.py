@@ -35,11 +35,9 @@ MAX_NATIVE_SCHEMAS_JSON_BYTES = 64 * 1024
 # Analyze resolves its complete registry before exact study state projects the
 # much smaller turn surface. This ceiling protects registry completeness; the
 # scoped turn still obeys the session's 128-KiB transport limit.
-# Manufacture's CAM operations and dress-ups require exact, operation-specific
-# geometry, process, depth, entry, and toolpath contracts. Keeping those fields
-# strongly typed is more useful and safer than replacing them with one generic
-# property bag merely to meet the cross-surface default. Its surface remains
-# below the same 128-KiB provider transport ceiling with measured headroom.
+# Manufacture also resolves its complete registry before exact setup state
+# projects the smaller turn surface. Its full inventory stays below 128 KiB;
+# only the projected setup-relevant tools are sent to the provider.
 # Drawing likewise owns more than one hundred shipped actions. Its focused
 # families use the same compact provider form as Model: an exact operation
 # field map on the wire followed by validation against the selected variant's
@@ -48,7 +46,7 @@ MAX_NATIVE_SCHEMAS_JSON_BYTES = 64 * 1024
 # acceptance.
 MAX_NATIVE_SCHEMAS_JSON_BYTES_BY_SURFACE = {
     "analyze": 160 * 1024,
-    "manufacture": 120 * 1024,
+    "manufacture": 128 * 1024,
     "drawing": 120 * 1024,
 }
 _CAPABILITY_NAME = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
@@ -430,17 +428,17 @@ def _compact_schema_options(
             {"type": "string", "enum": string_values},
             fallback,
         )
-    labels = [_kind_labels(option) for option in unique]
-    kinded = (
+    labels = _closed_object_discriminator_labels(tuple(unique))
+    discriminated = (
         _compact_closed_object_options(
-            tuple("/".join(label) for label in labels if label is not None),
+            tuple("/".join(label) for label in labels),
             tuple(unique),
         )
-        if all(labels)
+        if labels is not None
         else None
     )
     candidate = (
-        kinded
+        discriminated
         or _numeric_union(unique)
         or _unlabelled_closed_object_union(unique)
         or _array_union(unique)
@@ -497,27 +495,44 @@ def _compact_closed_object_options(
     ) else None
 
 
-def _kind_labels(branch: Mapping[str, Any]) -> tuple[str, ...] | None:
-    """Return one closed branch's explicit kind discriminator values."""
+def _closed_object_discriminator_labels(
+    branches: tuple[Mapping[str, Any], ...],
+) -> tuple[tuple[str, ...], ...] | None:
+    """Return labels for one shared explicit string discriminator."""
 
-    if (
+    if not branches or any(
         branch.get("type") != "object"
         or branch.get("additionalProperties") is not False
         or not isinstance(branch.get("properties"), Mapping)
-        or "kind" not in branch.get("required", ())
+        for branch in branches
     ):
         return None
-    kind = branch["properties"].get("kind")
-    if not isinstance(kind, Mapping) or kind.get("type") != "string":
-        return None
-    values = kind.get("enum", [kind.get("const")])
-    if (
-        not isinstance(values, list)
-        or not values
-        or any(not isinstance(value, str) or not value for value in values)
-    ):
-        return None
-    return tuple(values)
+    common_required = set(branches[0].get("required", ()))
+    for branch in branches[1:]:
+        common_required.intersection_update(branch.get("required", ()))
+    for name in branches[0].get("required", ()):
+        if name not in common_required:
+            continue
+        labels = []
+        for branch in branches:
+            discriminator = branch["properties"].get(name)
+            if not isinstance(discriminator, Mapping) or discriminator.get(
+                "type"
+            ) != "string":
+                break
+            values = discriminator.get("enum", [discriminator.get("const")])
+            if (
+                not isinstance(values, list)
+                or not values
+                or any(
+                    not isinstance(value, str) or not value for value in values
+                )
+            ):
+                break
+            labels.append(tuple(values))
+        if len(labels) == len(branches):
+            return tuple(labels)
+    return None
 
 
 def _compact_nested_provider_unions(value: Any) -> Any:
@@ -575,13 +590,14 @@ def _compact_nested_provider_unions(value: Any) -> Any:
         result.get("oneOf"), list
     ):
         branches = result["oneOf"]
-        labels = [
-            _kind_labels(branch) if isinstance(branch, Mapping) else None
-            for branch in branches
-        ]
-        if branches and all(labels):
+        labels = (
+            _closed_object_discriminator_labels(tuple(branches))
+            if all(isinstance(branch, Mapping) for branch in branches)
+            else None
+        )
+        if labels is not None:
             compact = _compact_closed_object_options(
-                tuple("/".join(label) for label in labels if label is not None),
+                tuple("/".join(label) for label in labels),
                 tuple(branches),
             )
             if compact is not None:

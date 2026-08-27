@@ -77,6 +77,8 @@ _AVAILABLE = (
     "manufacture.simulation_result",
     "manufacture.camotics",
     "manufacture.post",
+    "manufacture.post_job",
+    "manufacture.post_selected",
     "manufacture.property_bag",
     "manufacture.area",
     "manufacture.tool_output",
@@ -229,6 +231,8 @@ def test_selected_setup_exposes_only_lifecycle_supported_by_its_state() -> None:
     assert "manufacture.simulation_result" not in names
     assert "manufacture.camotics" not in names
     assert "manufacture.post" not in names
+    assert "manufacture.post_job" not in names
+    assert "manufacture.post_selected" not in names
     assert not any(name.startswith("robot.") for name in names)
 
 
@@ -256,8 +260,10 @@ def test_valid_paths_add_correction_simulation_and_post_without_hiding_setup_too
         "manufacture.simulation",
         "manufacture.simulation_result",
         "manufacture.camotics",
-        "manufacture.post",
+        "manufacture.post_job",
+        "manufacture.post_selected",
     } <= names
+    assert "manufacture.post" not in names
 
 
 def test_unselected_independent_setups_keep_explicit_target_lifecycle_available() -> None:
@@ -280,6 +286,8 @@ def test_unselected_independent_setups_keep_explicit_target_lifecycle_available(
         "manufacture.simulation",
     } <= names
     assert "manufacture.post" not in names
+    assert "manufacture.post_job" not in names
+    assert "manufacture.post_selected" not in names
 
 
 def test_provider_authorization_applies_manufacture_scope_after_human_ribbon() -> None:

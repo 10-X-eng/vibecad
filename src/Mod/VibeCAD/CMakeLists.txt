@@ -699,6 +699,8 @@ set(VibeCAD_Scripts
     VibeCADNativeManufactureCamoticsSchema.py
     VibeCADNativeManufactureCamoticsWorker.py
     VibeCADNativeManufacturePostBindings.py
+    VibeCADNativeManufactureFocusedPostBindings.py
+    VibeCADNativeManufactureFocusedPostSchema.py
     VibeCADNativeManufacturePostChild.py
     VibeCADNativeManufacturePostConfiguration.py
     VibeCADNativeManufacturePostInput.py

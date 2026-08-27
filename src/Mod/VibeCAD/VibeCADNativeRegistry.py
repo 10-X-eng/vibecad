@@ -508,6 +508,12 @@ from VibeCADNativeManufacturePostBindings import (
 from VibeCADNativeManufacturePostSchema import (
     register_manufacture_post_capability_definition,
 )
+from VibeCADNativeManufactureFocusedPostBindings import (
+    register_manufacture_focused_post_capability_implementations,
+)
+from VibeCADNativeManufactureFocusedPostSchema import (
+    register_manufacture_focused_post_capability_definitions,
+)
 from VibeCADNativeManufactureTemplateBindings import (
     register_manufacture_template_capability_implementation,
 )
@@ -975,6 +981,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_manufacture_camotics_capability_implementation(registry)
     register_manufacture_post_capability_definition(registry)
     register_manufacture_post_capability_implementation(registry)
+    register_manufacture_focused_post_capability_definitions(registry)
+    register_manufacture_focused_post_capability_implementations(registry)
     register_manufacture_template_capability_definition(registry)
     register_manufacture_template_capability_implementation(registry)
     register_manufacture_simulation_capability_definition(registry)

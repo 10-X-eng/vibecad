@@ -13,6 +13,9 @@ from VibeCADNativeManufactureFocusedInspectSchema import (
 from VibeCADNativeManufactureFocusedModifySchema import (
     manufacture_focused_modify_capability_definitions,
 )
+from VibeCADNativeManufactureFocusedPostSchema import (
+    manufacture_focused_post_capability_definitions,
+)
 from VibeCADNativeManufactureJobSchema import manufacture_job_capability_definition
 from VibeCADNativeManufactureOperationSchema import (
     manufacture_operation_capability_definition,
@@ -188,6 +191,24 @@ def test_cam_operation_edits_publish_as_two_intent_tools() -> None:
             "z_correct_dressup",
         ),
     }
+
+
+def test_cam_post_scopes_publish_as_single_intent_tools() -> None:
+    definitions = manufacture_focused_post_capability_definitions()
+    assert {
+        definition.name: tuple(variant.operation for variant in definition.variants)
+        for definition in definitions
+    } == {
+        "manufacture.post_job": ("complete_job",),
+        "manufacture.post_selected": ("selected_operations",),
+    }
+    for definition in definitions:
+        schema = provider_visible_native_schema(
+            definition.provider_schema(
+                tuple(variant.operation for variant in definition.variants)
+            )
+        )
+        assert "operation" not in schema["parameters"]["oneOf"][0]["properties"]
 
 
 def test_common_milling_operations_inherit_setup_defaults() -> None:

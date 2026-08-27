@@ -177,7 +177,7 @@ def manufacture_provider_tool_names(
             }
         )
     if any(_readiness_ready(setup, "post") for setup in setups):
-        allowed.add("manufacture.post")
+        allowed.update({"manufacture.post_job", "manufacture.post_selected"})
     return tuple(name for name in available_tool_names if name in allowed)
 
 

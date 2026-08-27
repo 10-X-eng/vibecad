@@ -241,6 +241,34 @@ def test_cam_operation_edit_commands_resolve_by_intent() -> None:
         for command_id, plan in plans.items()
     } == expected
 
+
+def test_cam_post_commands_resolve_by_output_scope() -> None:
+    expected = {
+        "CAM_Post": ("manufacture.post_job", "complete_job"),
+        "CAM_PostSelected": (
+            "manufacture.post_selected",
+            "selected_operations",
+        ),
+    }
+    plans = {
+        command_id: _plan(
+            "manufacture",
+            "Program",
+            RibbonAction(
+                command_id=command_id,
+                label=command_id,
+                available=True,
+                kind="command",
+            ),
+        )
+        for command_id in expected
+    }
+    assert {
+        command_id: (plan.capability_family, plan.operation_variant)
+        for command_id, plan in plans.items()
+    } == expected
+
+
 def test_drawing_page_actions_resolve_to_four_exact_variants() -> None:
     expected = {
         "TechDraw_PageDefault": (
