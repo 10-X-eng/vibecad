@@ -142,3 +142,94 @@ def test_invalid_lifecycle_jump_is_refused_without_a_write(tmp_path: Path) -> No
     with pytest.raises(AnalysisPersistenceError, match="prepared -> succeeded"):
         store.transition("analysis-1", "succeeded", reason="guessed")
     assert store.load("analysis-1")["state"] == "prepared"
+
+
+def test_retry_creates_new_attempt_only_for_exact_interrupted_identity(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    first = store.begin_attempt(
+        "analysis-1", provider_id="local-process", provider_kind="local"
+    )
+    assert first["attempts"][0]["attempt"] == 1
+    store.transition("analysis-1", "interrupted", reason="host_restart")
+
+    with pytest.raises(AnalysisPersistenceError, match="does not match"):
+        store.retry_interrupted(
+            "analysis-1",
+            expected_prepared_analysis_sha256="f" * 64,
+            expected_dependency_sha256="b" * 64,
+            expected_input_manifest_sha256="c" * 64,
+            expected_execution_spec_sha256="d" * 64,
+        )
+    retried = store.retry_interrupted(
+        "analysis-1",
+        expected_prepared_analysis_sha256="a" * 64,
+        expected_dependency_sha256="b" * 64,
+        expected_input_manifest_sha256="c" * 64,
+        expected_execution_spec_sha256="d" * 64,
+    )
+    second = store.begin_attempt(
+        "analysis-1", provider_id="local-process", provider_kind="local"
+    )
+    assert retried["events"][-1]["reason"] == "retry_prepared"
+    assert [item["attempt"] for item in second["attempts"]] == [1, 2]
+
+
+def test_remote_attempt_persists_reconnect_identity(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    running = store.begin_attempt(
+        "analysis-1",
+        provider_id="kaggle",
+        provider_kind="remote",
+        provider_job_id="kernel-123",
+    )
+    assert running["attempts"][-1]["provider_job_id"] == "kernel-123"
+    assert store.restart_disposition("analysis-1")["action"] == "reconnect_remote"
+
+
+def test_artifact_tombstone_is_idempotent_and_evidence_aware(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    descriptor = {"sha256": "e" * 64, "role": "solver_output", "byte_count": 12}
+    admitted = store.record_artifact(
+        "analysis-1", descriptor, cleanup_eligible=True
+    )
+    assert admitted["artifacts"][0]["tombstoned_at"] is None
+    tombstoned = store.tombstone_artifact("analysis-1", "e" * 64)
+    assert tombstoned["artifacts"][0]["tombstoned_at"]
+    assert store.tombstone_artifact("analysis-1", "e" * 64) == tombstoned
+
+    store.record_artifact(
+        "analysis-1",
+        {"sha256": "f" * 64, "role": "input"},
+        pinned=True,
+        cleanup_eligible=True,
+    )
+    with pytest.raises(AnalysisPersistenceError, match="engineering evidence"):
+        store.tombstone_artifact("analysis-1", "f" * 64)
+
+
+@pytest.mark.parametrize(
+    ("fault_point", "durable_state"),
+    (
+        ("before_stage", "prepared"),
+        ("after_stage", "prepared"),
+        ("before_replace", "prepared"),
+        ("after_replace", "running_local"),
+    ),
+)
+def test_transition_fault_points_have_defined_durable_outcome(
+    tmp_path: Path, fault_point: str, durable_state: str,
+) -> None:
+    baseline = AnalysisMetadataStore(tmp_path)
+    baseline.create(_record())
+
+    def inject(point, _value):
+        if point == fault_point:
+            raise RuntimeError(point)
+
+    faulted = AnalysisMetadataStore(tmp_path, fault_injector=inject)
+    with pytest.raises(RuntimeError, match=fault_point):
+        faulted.transition("analysis-1", "running_local", reason="start")
+    assert baseline.load("analysis-1")["state"] == durable_state

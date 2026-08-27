@@ -222,6 +222,130 @@ class AnalysisMetadataStore:
             action = f"resume_{state}"
         return {"analysis_id": record["analysis_id"], "state": state, "action": action}
 
+    def begin_attempt(
+        self,
+        analysis_id: str,
+        *,
+        provider_id: str,
+        provider_kind: str,
+        provider_job_id: str = "",
+    ) -> dict[str, Any]:
+        kind = str(provider_kind or "").strip()
+        if kind not in {"local", "remote"}:
+            raise AnalysisPersistenceError("provider_kind must be local or remote")
+        record = self.load(analysis_id)
+        attempt = {
+            "attempt": len(record["attempts"]) + 1,
+            "provider_id": str(provider_id or "").strip(),
+            "provider_kind": kind,
+            "provider_job_id": str(provider_job_id or "").strip(),
+            "started_at": _utc_now(),
+            "terminal_reason": None,
+        }
+        if not attempt["provider_id"]:
+            raise AnalysisPersistenceError("provider_id must be non-empty")
+        return self.transition(
+            analysis_id,
+            "running_remote" if kind == "remote" else "running_local",
+            reason="provider_attempt_started",
+            updates={"attempts": [*record["attempts"], attempt]},
+        )
+
+    def retry_interrupted(
+        self,
+        analysis_id: str,
+        *,
+        expected_prepared_analysis_sha256: str,
+        expected_dependency_sha256: str,
+        expected_input_manifest_sha256: str,
+        expected_execution_spec_sha256: str,
+    ) -> dict[str, Any]:
+        expected = {
+            "prepared_analysis_sha256": expected_prepared_analysis_sha256,
+            "dependency_sha256": expected_dependency_sha256,
+            "input_manifest_sha256": expected_input_manifest_sha256,
+            "execution_spec_sha256": expected_execution_spec_sha256,
+        }
+        with self._writer():
+            current = self.load(analysis_id)
+            if current["state"] != "interrupted":
+                raise AnalysisPersistenceError("Only an interrupted analysis can retry")
+            if any(current[key] != str(value).lower() for key, value in expected.items()):
+                raise AnalysisPersistenceError("Retry identity does not match frozen analysis inputs")
+            candidate = deepcopy(current)
+            now = _utc_now()
+            candidate["state"] = "prepared"
+            candidate["updated_at"] = now
+            candidate["terminal_reason"] = None
+            candidate["events"].append({
+                "sequence": len(candidate["events"]) + 1,
+                "at": now,
+                "state": "prepared",
+                "reason": "retry_prepared",
+            })
+            candidate = self._validate(candidate)
+            self._write_atomic(self._path(analysis_id), candidate, backup=True)
+            return deepcopy(candidate)
+
+    def record_artifact(
+        self,
+        analysis_id: str,
+        descriptor: Mapping[str, Any],
+        *,
+        pinned: bool = False,
+        cleanup_eligible: bool = False,
+    ) -> dict[str, Any]:
+        artifact = deepcopy(dict(descriptor))
+        digest = str(artifact.get("sha256") or "").lower()
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise AnalysisPersistenceError("Artifact sha256 must be a digest")
+        artifact["sha256"] = digest
+        artifact["pinned"] = bool(pinned)
+        artifact["cleanup_eligible"] = bool(cleanup_eligible)
+        artifact["tombstoned_at"] = None
+        with self._writer():
+            current = self.load(analysis_id)
+            if any(item.get("sha256") == digest for item in current["artifacts"]):
+                return current
+            candidate = deepcopy(current)
+            candidate["artifacts"].append(artifact)
+            self._append_metadata_event(candidate, "artifact_admitted")
+            candidate = self._validate(candidate)
+            self._write_atomic(self._path(analysis_id), candidate, backup=True)
+            return deepcopy(candidate)
+
+    def tombstone_artifact(self, analysis_id: str, sha256: str) -> dict[str, Any]:
+        digest = str(sha256 or "").lower()
+        with self._writer():
+            current = self.load(analysis_id)
+            candidate = deepcopy(current)
+            match = next(
+                (item for item in candidate["artifacts"] if item.get("sha256") == digest),
+                None,
+            )
+            if match is None:
+                raise AnalysisPersistenceError("Artifact identity is unknown")
+            if match.get("pinned") or not match.get("cleanup_eligible"):
+                raise AnalysisPersistenceError("Artifact is retained as engineering evidence")
+            if match.get("tombstoned_at"):
+                return current
+            match["tombstoned_at"] = _utc_now()
+            self._append_metadata_event(candidate, "artifact_tombstoned")
+            candidate = self._validate(candidate)
+            self._write_atomic(self._path(analysis_id), candidate, backup=True)
+            return deepcopy(candidate)
+
+    @staticmethod
+    def _append_metadata_event(record: dict[str, Any], reason: str) -> None:
+        now = _utc_now()
+        record["updated_at"] = now
+        record["events"].append({
+            "sequence": len(record["events"]) + 1,
+            "at": now,
+            "state": record["state"],
+            "reason": reason,
+        })
+
     def _write_atomic(self, path: Path, record: Mapping[str, Any], *, backup: bool) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.backups.mkdir(parents=True, exist_ok=True)
@@ -258,3 +382,95 @@ class AnalysisMetadataStore:
         if [item.get("sequence") for item in events] != list(range(1, len(events) + 1)):
             raise AnalysisPersistenceError("Analysis event sequence is not monotonic")
         return record
+
+
+class DurableRuntimeLifecycle:
+    """Explicit opt-in bridge from in-memory orchestration to durable metadata."""
+
+    def __init__(
+        self,
+        store: AnalysisMetadataStore,
+        *,
+        domain: str,
+        adapter_id: str,
+        prepared_analysis_sha256: str,
+        dependency_sha256: str,
+        input_manifest_sha256: str,
+        execution_spec_sha256: str,
+        provider_id: str = "local-process",
+        provider_kind: str = "local",
+        provider_job_id: str = "",
+    ) -> None:
+        self.store = store
+        self.identity = {
+            "domain": domain,
+            "adapter_id": adapter_id,
+            "prepared_analysis_sha256": prepared_analysis_sha256,
+            "dependency_sha256": dependency_sha256,
+            "input_manifest_sha256": input_manifest_sha256,
+            "execution_spec_sha256": execution_spec_sha256,
+        }
+        self.provider_id = provider_id
+        self.provider_kind = provider_kind
+        self.provider_job_id = provider_job_id
+        self.analysis_id = ""
+
+    def submitted(self, job_id: str, document_uid: str, _capability_name: str) -> None:
+        self.analysis_id = _clean_id(job_id, "job_id")
+        self.store.create(new_job_record(
+            analysis_id=self.analysis_id,
+            source_document_uid=document_uid,
+            **self.identity,
+        ))
+
+    def started(self) -> None:
+        self.store.begin_attempt(
+            self.analysis_id,
+            provider_id=self.provider_id,
+            provider_kind=self.provider_kind,
+            provider_job_id=self.provider_job_id,
+        )
+
+    def prepared(self) -> None:
+        for state, reason in (
+            ("collecting", "provider_completed"),
+            ("verifying", "outputs_collected"),
+            ("waiting_to_publish", "outputs_verified"),
+        ):
+            self.store.transition(self.analysis_id, state, reason=reason)
+
+    def publication_started(self) -> None:
+        self.store.transition(
+            self.analysis_id, "publishing", reason="legacy_inline_publication_started"
+        )
+
+    def succeeded(self, result_sha256: str) -> None:
+        receipt = {
+            "publication_id": f"legacy-inline-{self.analysis_id}",
+            "analysis_id": self.analysis_id,
+            "result_sha256": str(result_sha256),
+            "compatibility_mode": "legacy_inline_publication",
+        }
+        current = self.store.load(self.analysis_id)
+        publication = deepcopy(current["publication"])
+        publication["receipt"] = receipt
+        self.store.transition(
+            self.analysis_id,
+            "succeeded",
+            reason="legacy_inline_published",
+            updates={"publication": publication},
+        )
+
+    def failed(self, reason: str) -> None:
+        current = self.store.load(self.analysis_id)
+        if current["state"] == "publishing":
+            return
+        if current["state"] not in TERMINAL_STATES:
+            self.store.transition(self.analysis_id, "failed", reason=reason)
+
+    def cancelled(self) -> None:
+        current = self.store.load(self.analysis_id)
+        if current["state"] not in TERMINAL_STATES:
+            self.store.transition(
+                self.analysis_id, "cancelled", reason="cancelled_before_publication"
+            )

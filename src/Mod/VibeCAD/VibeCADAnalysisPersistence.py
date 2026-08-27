@@ -10,6 +10,7 @@ from tool_impl.analysis_persistence import (
     AnalysisMetadataStore,
     AnalysisPersistenceError,
     AnalysisStoreBusy,
+    DurableRuntimeLifecycle,
     new_job_record,
 )
 
@@ -21,5 +22,6 @@ __all__ = (
     "AnalysisMetadataStore",
     "AnalysisPersistenceError",
     "AnalysisStoreBusy",
+    "DurableRuntimeLifecycle",
     "new_job_record",
 )

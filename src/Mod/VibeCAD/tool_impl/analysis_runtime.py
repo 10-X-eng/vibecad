@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+import hashlib
 import json
 import secrets
 import threading
@@ -165,6 +166,7 @@ class AnalysisRuntimeManager:
         finalize_message: str | None = None,
         cleanup: CleanupHandler | None = None,
         changes_document: bool = False,
+        durable_lifecycle: Any | None = None,
     ) -> AnalysisRuntimeSnapshot:
         uid = str(document_uid or "").strip()
         capability = str(capability_name or "").strip()
@@ -184,6 +186,13 @@ class AnalysisRuntimeManager:
             raise TypeError(self._messages.cleanup_required)
         if type(changes_document) is not bool:
             raise TypeError("changes_document must be a boolean")
+        if durable_lifecycle is not None:
+            required = (
+                "submitted", "started", "prepared", "publication_started",
+                "succeeded", "failed", "cancelled",
+            )
+            if any(not callable(getattr(durable_lifecycle, name, None)) for name in required):
+                raise TypeError("durable_lifecycle does not implement the Analysis lifecycle")
         clean_finalize_message = str(finalize_message or "").strip()
         if len(clean_finalize_message) > self._maximum_progress_message_chars:
             raise self._error_class(self._messages.finalization_message_too_long)
@@ -216,6 +225,8 @@ class AnalysisRuntimeManager:
                 capability,
                 changes_document=changes_document,
             )
+            if durable_lifecycle is not None:
+                durable_lifecycle.submitted(job.job_id, uid, capability)
             self._jobs[job.job_id] = job
             self._active_documents[uid] = job.job_id
             self._trim_jobs_locked()
@@ -230,6 +241,7 @@ class AnalysisRuntimeManager:
                 dispatch_to_document_thread,
                 clean_finalize_message,
                 cleanup,
+                durable_lifecycle,
             ),
             name=f"{self._thread_name_prefix}-{job.job_id[:8]}",
             daemon=True,
@@ -246,9 +258,12 @@ class AnalysisRuntimeManager:
         dispatch_to_document_thread: DocumentThreadDispatcher,
         finalize_message: str,
         cleanup: CleanupHandler | None,
+        durable_lifecycle: Any | None,
     ) -> None:
         prepared = None
         try:
+            if durable_lifecycle is not None:
+                durable_lifecycle.started()
             self._set_progress(job, "preparing", 1, "Preparing detached data")
 
             def report(percent: int, message: str) -> None:
@@ -264,6 +279,8 @@ class AnalysisRuntimeManager:
             prepared = prepare(job.cancellation.is_set, report)
             if job.cancellation.is_set():
                 raise self._cancelled_class()
+            if durable_lifecycle is not None:
+                durable_lifecycle.prepared()
             self._set_progress(job, "waiting_to_commit", 90, "Waiting to commit")
 
             def apply() -> Mapping[str, Any]:
@@ -276,10 +293,16 @@ class AnalysisRuntimeManager:
                     95,
                     finalize_message or "Committing document change",
                 )
+                if durable_lifecycle is not None:
+                    durable_lifecycle.publication_started()
                 return commit(prepared)
 
             result = dispatch_to_document_thread(apply)
             encoded = self._encode_result(result)
+            if durable_lifecycle is not None:
+                durable_lifecycle.succeeded(
+                    hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+                )
             with self._lock:
                 job.result_json = encoded
             self._set_progress(job, "completed", 100, "Completed")
@@ -295,6 +318,18 @@ class AnalysisRuntimeManager:
                 if isinstance(exc, self._cancelled_class)
                 else "failed"
             )
+            if durable_lifecycle is not None:
+                try:
+                    if phase == "cancelled":
+                        durable_lifecycle.cancelled()
+                    else:
+                        durable_lifecycle.failed(type(exc).__name__)
+                except Exception as durable_exc:
+                    if self._diagnostic_sink is not None:
+                        try:
+                            self._diagnostic_sink(job.job_id, durable_exc)
+                        except Exception:
+                            pass
             with self._lock:
                 job.error = self._summarize_error(exc, diagnostic_id)
             self._set_progress(
