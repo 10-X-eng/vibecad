@@ -4,6 +4,8 @@
 
 **Live baseline audited:** `halthinks/vibecad@31ea810db044db6311207a2538a9b6f7694011ae` on 2026-08-25
 
+**Current roadmap execution branch reconciled:** `halthinks/vibecad@911a4773db5cb0b529b2673b245e729656eea49d` on 2026-08-26, represented by the dependency-ordered PR stack #90 through #95. This is post-baseline implementation evidence awaiting integration, not a rewrite of the historical audit and not a claim that the complete roadmap is finished.
+
 **Scope:** VibeCAD host Analysis Runtime, Native Aero integration, the complete VibeCADAero solver ladder, evidence, visualization, remote compute, dynamics, and coupled analysis
 
 This is the repository's real implementation roadmap for the recovered Advanced VibeCAD / VibeCADAero program. It converts the recovered research and design package into one dependency-ordered, evidence-bounded plan tied to the current source tree.
@@ -153,9 +155,17 @@ The audit of `main@31ea810db` found the following real implementation. These are
 
 No current integrated implementation was found for Aero FluidX3D, Aero CfdOF/OpenFOAM, Kaggle compute, common CFD field visualization, benchmark qualification registry, high-Re FluidX3D, moving geometry, propulsion-interaction CFD, complete unsteady 6DOF, aeroelasticity/FSI, or advanced refinement orchestration.
 
-### Post-baseline Step 2 packaging reconciliation
+### Post-baseline implementation reconciliation
 
-The table above is historical evidence from `main@31ea810db`; it is not rewritten to attribute later work to that revision. In the current tree, after that audit, all five public `VibeCADAnalysis*.py` facades are registered in `VibeCAD_Scripts`, the existing default `Unspecified` install-component behavior is retained, and `test_analysis_facade_packaging.py` proves isolated imports from both the real CMake build tree and a module-scoped `Unspecified` component-installed tree. This post-baseline evidence is the basis for the current Step 2 status below.
+The table above is historical evidence from `main@31ea810db`; it is not rewritten to attribute later work to that revision. In the current roadmap execution tree, after that audit:
+
+- all public Analysis facades are registered in `VibeCAD_Scripts`, the existing default `Unspecified` install-component behavior is retained, and isolated build-tree and component-installed import coverage exists;
+- artifact descriptors, manifests, canonical hashing, bounded archive admission, content-addressed storage, and protected idempotent cleanup are implemented and tested;
+- the four supported FEM adapters have a frozen normalized compatibility oracle and report, and shared process execution has descendant cleanup and environment-output redaction coverage;
+- versioned atomic durable metadata, legal lifecycle transitions, attempt/provider identity, restart disposition, retry identity, artifact retention metadata, and opt-in runtime lifecycle binding are implemented;
+- a publication coordinator enforces exact result/source/output identity, dependency currentness, adapter compatibility, fresh authorization, one publication owner, receipt replay, and outcome-unknown recovery.
+
+These are additive post-baseline slices. They do not yet close the remaining cross-platform packaging, quota/reference-integrity, real document rebind, full crash matrix, domain migration, or production-integration gates listed below.
 
 ## 6. Dependency graph
 
@@ -189,12 +199,12 @@ Remote execution may be prototyped against inert test fixtures, but it may not b
 | 1 — characterization | **Partial** | Complete normalized lifecycle and FEM legacy/host A/B oracles across Windows/POSIX. |
 | 2 — host contracts/facades | **Verified complete for the domain-neutral packaging/compatibility foundation** | Persistence, remote providers, and domain qualification remain later milestones and are not implied by this closure. |
 | 3 — local process mechanics | **Partial** | Prove complete descendant-process ownership and cleanup on Windows and POSIX. |
-| 4 — input/artifact sealing | **Partial** | Finish safe immutable manifests, storage, archive/path defenses, and evidence-aware cleanup. |
+| 4 — input/artifact sealing | **Partial** | Add quota enforcement, complete evidence-reference integrity, and prove installed/cross-platform integration around the implemented immutable manifests, storage, archive defenses, and cleanup. |
 | 5 — host orchestration | **Verified complete for the in-memory compatibility slice** | Persistence/recovery remain explicitly outside this step. |
 | 6 — current FEM migration | **Verified complete for CalculiX, Elmer, Z88, and Mystran** | Close the full A/B parity and rollback gates. |
 | 7 — stabilization | **Partial** | Complete stress, leak/orphan, cross-platform, lifecycle, and rollback burn-in. |
-| 8 — durable persistence | **Design-ready** | Implement versioned transactional job metadata and immutable artifact recovery. |
-| 8A — publication authority | **Design-ready** | Implement fresh exact-source publication authorization and replay-idempotent receipts. |
+| 8 — durable persistence | **Partial** | Complete supported schema migration, application-data integration, global discovery, full reconnect/crash recovery, quota/reference integrity, and authoritative installed/cross-platform acceptance. |
+| 8A — publication authority | **Partial** | Wire the coordinator through Native mutation authority and real domain adapters, then prove document-UID rebind, transaction rollback/postconditions, crash recovery, and strict current FEM compatibility. |
 | 9 — Aero repair authority | **Partial** | Converge host revision and preview/apply/reject authority; define bounded preview persistence. |
 | 10 — Aero evidence/frames | **Partial** | Complete case schema, frames/references, readiness, correspondence, stamps/results/context, and claim ceilings. |
 | 11 — Aero runtime client | **Partial** | Generalize the integrated low-order client across solver-neutral high-fidelity cases/results. |
@@ -319,9 +329,11 @@ Remaining exit criteria:
 
 ### Step 8 — durable host metadata and artifact persistence
 
-**Status: Design-ready; not implemented.**
+**Status: Partial on the current roadmap execution branch.**
 
-Implement versioned transactional local persistence for compact job metadata plus immutable/content-addressed artifact storage in per-user VibeCAD application data. FCStd stores compact references and engineering evidence, not multi-gigabyte solver artifacts.
+The current roadmap execution branch implements versioned atomic JSON metadata, inter-process locking, legal state transitions, attempt and provider identities, backup, explicit fault points, restart dispositions, same-analysis retry with a new attempt, artifact records, pins, cleanup eligibility, tombstones, content-addressed artifacts, and an additive opt-in runtime lifecycle binding. Existing in-memory clients remain unchanged. FCStd still stores compact references and engineering evidence, not multi-gigabyte solver artifacts.
+
+Remaining work includes supported migrations rather than refusal alone, per-user application-data ownership and global discovery, complete remote reconnect and real process-crash integration, quota enforcement, evidence-reference integrity, corruption/restore acceptance, and installed/cross-platform packaging evidence.
 
 Required durable data:
 
@@ -351,9 +363,11 @@ Restart rules:
 
 ### Step 8A — durable publication authority
 
-**Status: Design-ready; not implemented.**
+**Status: Partial on the current roadmap execution branch.**
 
-Build an independent publication coordinator using inert descriptors, exact `Document.Uid` rebind, validated output manifests, domain currentness, adapter compatibility, fresh Native authorization, one publication owner, and replay-idempotent receipts.
+The current roadmap execution branch contains an independent publication coordinator using inert descriptors, exact source/dependency/output/result identity, validated output descriptors, domain currentness, adapter compatibility, fresh authorization, one publication owner, replay-idempotent receipts, and an explicit outcome-unknown state. It is not yet the production publication path.
+
+Remaining work is to rebind through the real `Document.Uid` owner, enter Native mutation authority for one real document transaction, validate domain postconditions and rollback, migrate each domain additively, and prove crash/restart/retry cannot duplicate document objects or publication history while preserving current FEM behavior.
 
 Required preconditions before mutation:
 
@@ -690,9 +704,9 @@ Stop the affected implementation slice and resolve explicitly if:
 The next work should be small, reversible, and dependency-ordered:
 
 1. **Close Steps 1 and 7:** produce the complete host/FEM characterization and A/B parity matrix; complete Windows/POSIX process-tree tests and a stabilization report. Keep the verified Step 2 packaging/compatibility foundation covered as later host capabilities are added.
-2. **Close Step 4:** finish immutable workspace/artifact sealing and safety tests without changing persistence or scheduling.
-3. **Implement Step 8:** add versioned transactional metadata/artifact persistence with restart fault injection, but no new publication semantics.
-4. **Implement Step 8A:** add fresh durable publication authority and replay-idempotent receipts independently, preserving current FEM publication behavior.
+2. **Close Step 4:** add quota/reference-integrity and installed/cross-platform acceptance around the implemented immutable workspace/artifact sealing slice.
+3. **Close Step 8:** finish migration, application-data integration, discovery, reconnect/crash recovery, quota/reference integrity, and platform acceptance around the implemented durable lifecycle slice.
+4. **Close Step 8A:** integrate the implemented coordinator with Native mutation authority and domain adapters, proving real rebind, transaction, rollback, restart, and compatibility behavior.
 5. **Close Steps 9-11:** converge Aero repair authority and complete common Aero evidence/readiness/frame/case contracts on the shared runtime.
 6. **Implement real high-fidelity baselines:** OpenFOAM/CfdOF and FluidX3D in separate solver-focused tranches, each with real benchmark evidence.
 7. **Then** add the common field viewer, remote providers/routing, qualification, dynamics, coupling, and refinement in dependency order.

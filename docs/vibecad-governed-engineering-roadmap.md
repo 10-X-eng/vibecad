@@ -217,6 +217,10 @@ found these foundations:
 | Robot | setup, tool shape, home state, trajectory/waypoints/features, simulation, KUKA export | No verified Assembly-step-to-Robot-task projection. |
 | Aero host plan | canonical Steps 8/8A define durable jobs/artifacts/publication before remote compute | Those steps are design-ready, not implemented. |
 
+### Post-baseline implementation reconciliation
+
+The table above remains the historical `93500486c` audit. The current roadmap execution branch was reconciled at `911a4773db5cb0b529b2673b245e729656eea49d` on 2026-08-26 through the dependency-ordered fork PR stack #90 through #95. That stack adds artifact sealing, a four-solver compatibility oracle, process cleanup/redaction hardening, durable metadata and recovery primitives, runtime lifecycle wiring, and an independent publication coordinator. It moves G2 from design-ready to partial; it does not prove G2 closed or attribute those changes to the historical baseline.
+
 ## 6. Dependency graph
 
 ```mermaid
@@ -251,7 +255,7 @@ behavior while it waits for host persistence/workflows.
 | --- | --- | --- | --- |
 | G0 — live reconciliation | prerequisite | **Verified complete for this baseline** | Repeat at the start of every implementation tranche and record drift. |
 | G1 — common engineering contracts | C, D, E | **Partial** | Define versioned identities, result envelope, finding taxonomy/profile, provenance graph, compatibility rules, and cross-domain fixtures. |
-| G2 — durable Analysis and publication | A plus C/E | **Design-ready** | Transactional metadata, immutable artifacts, migration, locking, crash recovery, retention, fresh publication, replay-idempotent receipts. |
+| G2 — durable Analysis and publication | A plus C/E | **Partial** | Complete migrations, application-data/global discovery, reconnect and crash recovery, quota/reference integrity, Native/domain publication wiring, and installed cross-platform acceptance. |
 | G3 — remote provider | B | **Blocked by G2** | One real target, reconnect/cancel/poll/event semantics, credential isolation, verified bundle/output transport, real restart acceptance. |
 | G4 — authority policy and preview evidence | F, G | **Partial** | Census every operation, lock policy ownership, close unclassified consequential paths, add bounded evidence where justified. |
 | G5 — workflow DAG | H | **Design-ready** | Versioned definitions/runs, cycle and bound checks, deterministic scheduling, recovery, cancellation, failure/publication policies. |
@@ -329,10 +333,12 @@ require G2 persistence.
 
 ### G2 — durable Analysis jobs, artifacts, recovery, and publication
 
-**Status: Design-ready.**
+**Status: Partial on the current roadmap execution branch.**
 
 This milestone consolidates VibeCADAero Steps 8 and 8A as a host capability;
 the Aero roadmap remains the detailed compatibility and first-consumer owner.
+
+Implemented post-baseline slices include immutable artifact descriptors and admission, content-addressed storage, protected cleanup, versioned atomic metadata, inter-process locking, legal lifecycle transitions, attempt/provider identity, restart disposition, same-analysis retry, artifact retention metadata, additive runtime lifecycle binding, and an independent publication coordinator with exact identity/currentness/authorization/receipt replay checks. Remaining closure requirements below continue to apply, especially migration, quota/reference integrity, real provider reconnect, complete crash recovery, real Native document rebind/transaction wiring, domain migration, and authoritative cross-platform packaging acceptance.
 
 Durable metadata must record:
 
