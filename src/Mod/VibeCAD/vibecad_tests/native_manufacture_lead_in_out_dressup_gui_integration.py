@@ -180,8 +180,14 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     assert "unknown" not in encoded.lower()
     variant = schema["parameters"]["oneOf"][0]["properties"]
     assert variant["lead_in"]["oneOf"] == variant["lead_out"]["oneOf"]
+    assert len(variant["lead_in"]["oneOf"]) == 10
     styles = {
-        item["properties"]["style"]["const"] for item in variant["lead_in"]["oneOf"]
+        style
+        for item in variant["lead_in"]["oneOf"]
+        for style in item["properties"]["style"].get(
+            "enum",
+            [item["properties"]["style"].get("const")],
+        )
     }
     assert styles == {"disabled", *(request["style"] for request in _style_requests())}
     assert all(
@@ -190,13 +196,21 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     arc_z_follow = next(
         item
         for item in variant["lead_in"]["oneOf"]
-        if item["properties"]["style"].get("const") == "arc_z_follow"
+        if "arc_z_follow"
+        in item["properties"]["style"].get(
+            "enum",
+            [item["properties"]["style"].get("const")],
+        )
     )
     assert arc_z_follow["properties"]["angle_degrees"]["maximum"] == 179.0
     line_z_follow = next(
         item
         for item in variant["lead_in"]["oneOf"]
-        if item["properties"]["style"].get("const") == "line_z_follow"
+        if "line_z_follow"
+        in item["properties"]["style"].get(
+            "enum",
+            [item["properties"]["style"].get("const")],
+        )
     )
     assert line_z_follow["properties"]["angle_degrees"]["maximum"] == 89.0
     return NativeTurnSnapshot.from_provider_surface(

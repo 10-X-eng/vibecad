@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
 import math
 from typing import Any, Mapping
 
@@ -262,17 +261,6 @@ def _apply_controller_settings(
         setattr(controller, property_name, f"{getattr(settings, input_name)} mm/min")
 
 
-def _stabilize_created_tool(document: Any, *, tool: Any) -> None:
-    if (
-        getattr(tool, "Document", None) is not document
-        or document.getObject(str(getattr(tool, "Name", "") or "")) is not tool
-    ):
-        raise RuntimeError("The created CAM ToolBit is no longer in the document")
-    proxy = tool.Proxy
-    proxy._suppress_visual_update = False
-    proxy.update_visual_representation_in_place()
-
-
 def preflight_tool_controller_create(
     document: Any,
     spec: ToolControllerCreateSpec,
@@ -483,10 +471,9 @@ def create_tool_controller(
             "graph": graph,
             "created_objects": created_objects,
         },
-        recompute_targets=(tool, controller, prepared.job),
+        recompute_targets=(*graph, prepared.job),
         created=(object_identity(controller),),
         changed=(object_identity(prepared.job),),
-        after_recompute=partial(_stabilize_created_tool, tool=tool),
     )
 
 
@@ -671,6 +658,7 @@ def verify_created_tool_controller(
             "Tool creation changed the human selection.",
             error_code="NATIVE_MANUFACTURE_TOOL_POSTCONDITION_FAILED",
         )
+    tool.Proxy._suppress_visual_update = False
     if not other_job_states_are_current(document, prepared.other_job_states):
         raise NativeManufactureError(
             "Tool creation changed another CAM setup.",

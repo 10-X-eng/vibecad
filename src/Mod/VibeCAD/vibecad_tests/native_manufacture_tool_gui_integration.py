@@ -385,7 +385,18 @@ def _run() -> None:
         assert int(document.UndoCount) == undo_before_reads
 
         created = call(ADD_TOOL, create_arguments)
+        revision_after_create = state_store.current_revision(context.document_uid)
+        created_tool = document.getObject(created["controller"]["tool"]["object_name"])
+        assert created_tool is not None
+        assert not bool(getattr(created_tool.Proxy, "_visual_update_queued", False))
+        assert not hasattr(created_tool.Proxy, "_recompute_observer")
+        assert not bool(document.RecomputePending)
+        touched_after_create = [
+            obj.Name for obj in document.Objects if "Touched" in obj.State
+        ]
+        assert not touched_after_create, touched_after_create
         _events(12)
+        assert state_store.current_revision(context.document_uid) == revision_after_create
         controller_name = created["controller"]["object_name"]
         tool_name = created["controller"]["tool"]["object_name"]
         tool_controller = document.getObject(controller_name)

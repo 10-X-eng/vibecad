@@ -67,6 +67,18 @@ def _style(name: str) -> dict:
     return {"type": "string", "const": name}
 
 
+def _shared_styles(schema: dict, *styles: str) -> dict:
+    """Publish one branch for styles with the exact same fields."""
+
+    result = dict(schema)
+    result.pop("description", None)
+    result["properties"] = {
+        **schema["properties"],
+        "style": {"type": "string", "enum": list(styles)},
+    }
+    return result
+
+
 def _angled_radius(name: str, *, maximum: float = 180.0, invert: bool = True) -> dict:
     properties = {
         "style": _style(name),
@@ -186,19 +198,15 @@ _VERTICAL = _closed(
 
 LEAD_DEFINITION_SCHEMA = {
     "oneOf": [
-        _DISABLED,
+        _shared_styles(_DISABLED, "disabled", "no_retract"),
         _ARC,
         _LINE,
-        _PERPENDICULAR,
-        _TANGENT,
-        _ARC_3D,
-        _ARC_Z,
-        _ARC_Z_FOLLOW,
-        _HELIX,
+        _shared_styles(_PERPENDICULAR, "perpendicular", "tangent"),
+        _shared_styles(_ARC_3D, "arc_3d", "helix"),
+        _shared_styles(_ARC_Z, "arc_z", "arc_z_follow"),
         _LINE_3D,
         _LINE_Z,
         _LINE_Z_FOLLOW,
-        _NO_RETRACT,
         _VERTICAL,
     ]
 }
