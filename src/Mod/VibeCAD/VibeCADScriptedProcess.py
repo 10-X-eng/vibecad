@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import signal
 import subprocess
 import sys
@@ -170,7 +170,7 @@ def terminate_process_tree(
             pass
         return
     try:
-        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        system_root = PureWindowsPath(os.environ.get("SystemRoot", r"C:\Windows"))
         taskkill = system_root / "System32" / "taskkill.exe"
         subprocess.run(
             [str(taskkill), "/PID", str(process.pid), "/T", "/F"],

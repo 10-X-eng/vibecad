@@ -35,19 +35,31 @@ def _pid_exists(pid: int) -> bool:
     return True
 
 
-def test_cancel_reaps_descendant_process_tree(tmp_path: Path) -> None:
-    child_pid_file = tmp_path / "child.pid"
+def _child_spawning_program(child_pid_file: Path) -> str:
     child_code = (
         "import signal, sys, time; "
         "signal.signal(signal.SIGTERM, signal.SIG_IGN) "
         "if sys.platform != 'win32' else None; time.sleep(30)"
     )
-    parent_code = (
+    return (
         "import pathlib, subprocess, sys, time; "
         f"child=subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
         f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid)); "
         "time.sleep(30)"
     )
+
+
+def _assert_descendant_reaped(child_pid_file: Path, reason: str) -> None:
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 5.0
+    while _pid_exists(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _pid_exists(child_pid), f"{reason} Analysis descendant survived cleanup"
+
+
+def test_cancel_reaps_descendant_process_tree(tmp_path: Path) -> None:
+    child_pid_file = tmp_path / "child.pid"
+    parent_code = _child_spawning_program(child_pid_file)
 
     def cancelled() -> bool:
         return child_pid_file.exists()
@@ -62,11 +74,25 @@ def test_cancel_reaps_descendant_process_tree(tmp_path: Path) -> None:
             poll_seconds=0.01,
         )
 
-    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
-    deadline = time.monotonic() + 5.0
-    while _pid_exists(child_pid) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert not _pid_exists(child_pid), "cancelled Analysis descendant survived cleanup"
+    _assert_descendant_reaped(child_pid_file, "cancelled")
+
+
+def test_timeout_reaps_descendant_process_tree(tmp_path: Path) -> None:
+    child_pid_file = tmp_path / "child.pid"
+    parent_code = _child_spawning_program(child_pid_file)
+
+    with pytest.raises(ExternalProcessError) as caught:
+        run_process_sequence(
+            ((sys.executable, ("-c", parent_code)),),
+            working_directory=tmp_path,
+            environment=os.environ,
+            timeout_seconds=1,
+            cancellation_check=lambda: False,
+            poll_seconds=0.01,
+        )
+
+    assert caught.value.reason == "timeout"
+    _assert_descendant_reaped(child_pid_file, "timed-out")
 
 
 def test_process_creation_uses_shell_free_isolated_tree(monkeypatch: pytest.MonkeyPatch) -> None:
