@@ -4,6 +4,7 @@
 
 from tool_impl.analysis_persistence import (
     ANALYSIS_METADATA_SCHEMA_VERSION,
+    MAX_DISCOVERABLE_ANALYSES,
     ALLOWED_TRANSITIONS,
     KNOWN_STATES,
     TERMINAL_STATES,
@@ -16,6 +17,7 @@ from tool_impl.analysis_persistence import (
 
 __all__ = (
     "ANALYSIS_METADATA_SCHEMA_VERSION",
+    "MAX_DISCOVERABLE_ANALYSES",
     "ALLOWED_TRANSITIONS",
     "KNOWN_STATES",
     "TERMINAL_STATES",

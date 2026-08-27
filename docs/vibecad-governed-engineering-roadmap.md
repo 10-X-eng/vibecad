@@ -396,7 +396,7 @@ require G2 persistence.
 This milestone consolidates VibeCADAero Steps 8 and 8A as a host capability;
 the Aero roadmap remains the detailed compatibility and first-consumer owner.
 
-Implemented post-baseline slices include immutable artifact descriptors and admission, content-addressed storage, protected cleanup, versioned atomic metadata, inter-process locking, legal lifecycle transitions, attempt/provider identity, restart disposition, same-analysis retry, artifact retention metadata, additive runtime lifecycle binding, and an independent publication coordinator with exact identity/currentness/authorization/receipt replay checks. Remaining closure requirements below continue to apply, especially migration, quota/reference integrity, real provider reconnect, complete crash recovery, real Native document rebind/transaction wiring, domain migration, and authoritative cross-platform packaging acceptance.
+Implemented post-baseline slices include immutable artifact descriptors and admission, content-addressed storage, protected cleanup, versioned atomic metadata, inter-process locking, legal lifecycle transitions, attempt/provider identity, restart disposition, same-analysis retry, artifact retention metadata, additive runtime lifecycle binding, and an independent publication coordinator with exact identity/currentness/authorization/receipt replay checks. A bounded read-only discovery increment now enumerates validated application-data records and selects them only by exact source document UID; corrupt records and filename/record identity mismatches fail closed instead of disappearing. Remaining closure requirements below continue to apply, especially migration, quota/reference integrity, real provider reconnect, complete crash recovery, real Native document rebind/transaction wiring, domain migration, and authoritative cross-platform packaging acceptance.
 
 Durable metadata must record:
 
@@ -554,7 +554,9 @@ deterministic topological/ready scheduling, atomic inter-process run metadata,
 node attempts, restart interruption, cancellation and late-completion guards,
 upstream state eligibility, deterministic condition skipping, retry limits,
 publish-once receipts, bounded summaries, and a failure-injected five-stage
-contract benchmark. Production G2 submission/domain wiring and a real local FEM
+contract benchmark. Read-only discovery now finds validated runs by both current
+and prior node-attempt Analysis identities, without invoking recovery or
+scheduling. Production G2 submission/domain wiring and a real local FEM
 benchmark remain before closure.
 
 One workflow definition contains bounded nodes and edges with:

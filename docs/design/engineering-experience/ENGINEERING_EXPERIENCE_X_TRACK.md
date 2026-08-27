@@ -160,7 +160,9 @@ workbench or authority layer. The implementation sequence is:
    series and installed GUI acceptance remain.
 8. **EVS-08 — durable Analysis activity dashboard (X2/X5).** Connect exact G2
    attempts, artifacts, recovery/publication state and G5 workflow nodes to
-   the shell. Progress and counters come only from durable owners.
+   the shell. Progress and counters come only from durable owners. The G2/G5
+   stores now provide bounded fail-closed discovery by exact document and
+   Analysis identities; shell presentation and installed acceptance remain.
 9. **EVS-09 — result comparison (X6).** Present baseline/candidate metrics and
    field differences only when exact comparable sources and the owning
    ranking/result contracts exist; selection and publication remain gated.

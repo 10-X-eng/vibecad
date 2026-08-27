@@ -76,6 +76,20 @@ def test_durable_benchmark_recovers_and_retries_with_new_attempt(tmp_path) -> No
         store.start_node("run-1", "geometry", analysis_id="analysis-geometry-3")
 
 
+def test_workflow_discovery_retains_current_and_prior_analysis_links(tmp_path) -> None:
+    workflow = _benchmark()
+    store = WorkflowRunStore(tmp_path)
+    store.create(workflow, "run-2")
+    store.start_node("run-2", "geometry", analysis_id="analysis-first")
+    store.recover("run-2")
+    store.start_node("run-2", "geometry", analysis_id="analysis-retry")
+
+    assert [record["run_id"] for record in store.list_records()] == ["run-2"]
+    assert store.find_by_analysis_ids(["analysis-first"])[0]["run_id"] == "run-2"
+    assert store.find_by_analysis_ids(["analysis-retry"])[0]["run_id"] == "run-2"
+    assert store.find_by_analysis_ids(["unrelated"]) == ()
+
+
 def test_upstream_eligibility_rejects_stale_failed_and_unpublished(tmp_path) -> None:
     geometry = _node("geometry", outputs=("geometry",))
     mesh = WorkflowNode(

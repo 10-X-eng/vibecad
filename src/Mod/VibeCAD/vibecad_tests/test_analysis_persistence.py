@@ -63,6 +63,31 @@ def test_create_transition_backup_and_terminal_idempotence(tmp_path: Path) -> No
     assert backup["state"] == "running_local"
 
 
+def test_read_only_discovery_is_exact_by_document_identity(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record("analysis-2"))
+    other = _record("analysis-1")
+    other["source_document_uid"] = "other-document"
+    store.create(other)
+
+    assert [item["analysis_id"] for item in store.list_records()] == [
+        "analysis-1", "analysis-2"
+    ]
+    assert [item["analysis_id"] for item in store.find_by_document_uid("document-uid")] == [
+        "analysis-2"
+    ]
+
+
+def test_discovery_refuses_corrupt_or_misnamed_records(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    (store.records / "wrong-name.json").write_text(
+        json.dumps(_record("different-id")), encoding="utf-8"
+    )
+    with pytest.raises(AnalysisPersistenceError, match="filename"):
+        store.list_records()
+
+
 def test_fault_before_replace_preserves_previous_durable_record(tmp_path: Path) -> None:
     baseline = AnalysisMetadataStore(tmp_path)
     baseline.create(_record())

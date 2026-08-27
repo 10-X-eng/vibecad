@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterator, Mapping
 
 ANALYSIS_METADATA_SCHEMA_VERSION = 1
 MAX_PUBLICATION_EVIDENCE_BYTES = 64 * 1024
+MAX_DISCOVERABLE_ANALYSES = 4096
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
 KNOWN_STATES = frozenset({
     "prepared", "running_local", "running_remote", "collecting", "verifying",
@@ -167,6 +168,49 @@ class AnalysisMetadataStore:
         except (OSError, ValueError) as exc:
             raise AnalysisPersistenceError("Analysis metadata is missing or corrupt") from exc
         return self._validate(value)
+
+    def list_records(self) -> tuple[dict[str, Any], ...]:
+        """Read every bounded durable record without acquiring write authority."""
+
+        if not self.records.exists():
+            return ()
+        paths = tuple(sorted(self.records.glob("*.json"), key=lambda path: path.name))
+        if len(paths) > MAX_DISCOVERABLE_ANALYSES:
+            raise AnalysisPersistenceError(
+                "Analysis metadata discovery exceeds its bounded record limit"
+            )
+        records = []
+        for path in paths:
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                record = self._validate(value)
+            except (OSError, ValueError, AnalysisPersistenceError) as exc:
+                raise AnalysisPersistenceError(
+                    f"Analysis metadata discovery found an invalid record: {path.name}"
+                ) from exc
+            if path.stem != record["analysis_id"]:
+                raise AnalysisPersistenceError(
+                    f"Analysis metadata filename does not match its identity: {path.name}"
+                )
+            records.append(record)
+        return tuple(records)
+
+    def find_by_document_uid(self, document_uid: str) -> tuple[dict[str, Any], ...]:
+        """Find exact records for one document identity; never infer by path or label."""
+
+        identity = str(document_uid or "").strip()
+        if not identity:
+            raise AnalysisPersistenceError("document_uid must be non-empty")
+        matches = []
+        for record in self.list_records():
+            source_uid = record.get("source_document_uid")
+            if not isinstance(source_uid, str) or not source_uid.strip():
+                raise AnalysisPersistenceError(
+                    "Discovered Analysis metadata has no source document identity"
+                )
+            if source_uid == identity:
+                matches.append(record)
+        return tuple(matches)
 
     def transition(
         self, analysis_id: str, state: str, *, reason: str,

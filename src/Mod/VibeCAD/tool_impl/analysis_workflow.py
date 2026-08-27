@@ -349,6 +349,60 @@ class WorkflowRunStore:
         except (OSError, ValueError) as exc:
             raise WorkflowRunError("Workflow run is missing or corrupt.") from exc
 
+    def list_records(self) -> tuple[dict[str, Any], ...]:
+        """Read every bounded workflow record without changing recovery state."""
+
+        if not self.records.exists():
+            return ()
+        paths = tuple(sorted(self.records.glob("*.json"), key=lambda path: path.name))
+        if len(paths) > 4096:
+            raise WorkflowRunError("Workflow discovery exceeds its bounded record limit.")
+        records = []
+        for path in paths:
+            try:
+                record = self._validate(
+                    json.loads(path.read_text(encoding="utf-8"))
+                )
+            except (OSError, ValueError, WorkflowRunError) as exc:
+                raise WorkflowRunError(
+                    f"Workflow discovery found an invalid record: {path.name}"
+                ) from exc
+            if path.stem != record["run_id"]:
+                raise WorkflowRunError(
+                    f"Workflow filename does not match its identity: {path.name}"
+                )
+            records.append(record)
+        return tuple(records)
+
+    def find_by_analysis_ids(
+        self, analysis_ids: tuple[str, ...] | list[str]
+    ) -> tuple[dict[str, Any], ...]:
+        """Find runs whose node history explicitly references an Analysis identity."""
+
+        if not isinstance(analysis_ids, (tuple, list)) or len(analysis_ids) > 4096:
+            raise WorkflowRunError("analysis_ids exceed their bounded discovery limit.")
+        identities = frozenset(_safe_id(value, "analysis_id") for value in analysis_ids)
+        if not identities:
+            return ()
+        matches = []
+        for record in self.list_records():
+            references = set()
+            for node in record["nodes"].values():
+                if node.get("analysis_id"):
+                    references.add(_safe_id(node["analysis_id"], "analysis_id"))
+                for attempt in node.get("attempts", ()):
+                    if not isinstance(attempt, Mapping):
+                        raise WorkflowRunError(
+                            "Workflow discovery found an invalid node attempt."
+                        )
+                    if attempt.get("analysis_id"):
+                        references.add(
+                            _safe_id(attempt["analysis_id"], "analysis_id")
+                        )
+            if identities & references:
+                matches.append(record)
+        return tuple(matches)
+
     def _update(self, run_id: str, mutator) -> dict[str, Any]:
         with self._writer():
             record = self.load(run_id)
