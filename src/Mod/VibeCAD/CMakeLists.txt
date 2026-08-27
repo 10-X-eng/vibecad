@@ -713,6 +713,8 @@ set(VibeCAD_Scripts
     VibeCADNativeManufactureTemplateSchema.py
     VibeCADNativeManufactureSimulation.py
     VibeCADNativeManufactureSimulationBindings.py
+    VibeCADNativeManufactureSimulationControlBindings.py
+    VibeCADNativeManufactureSimulationControlSchema.py
     VibeCADNativeManufactureSimulationRuntime.py
     VibeCADNativeManufactureSimulationSchema.py
     VibeCADNativeManufactureSimulationResult.py

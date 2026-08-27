@@ -78,7 +78,7 @@ class NativeManufactureToolCatalogRuntime:
             _READ_VARIANTS,
             defaults={"list_tools": {"offset": 0, "page_size": 32}},
         )
-        self._context.guard()
+        self._context.guard(allow_owned_cam_simulation=True)
         if operation == "list_tools":
             catalog = capture_tool_catalog()
             if catalog.state_sha256 != self._catalog_state_sha256:

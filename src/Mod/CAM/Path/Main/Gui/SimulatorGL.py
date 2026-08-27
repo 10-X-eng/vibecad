@@ -25,6 +25,7 @@ Command and task window handler for the OpenGL based CAM simulator
 """
 
 import os
+import uuid
 import FreeCAD
 import Path.Base.Util as PathUtil
 import Path.Dressup.Utils as PathDressup
@@ -108,6 +109,7 @@ class CAMSimulation:
         self.operations = []
         self.baseShape = None
         self.nativePrepared = False
+        self.nativeSimulationId = None
         self._preparedStockMesh = None
         self._preparedBaseMesh = None
         self._preparedRuns = ()
@@ -385,6 +387,7 @@ def activate_prepared_simulation(**prepared):
     if _active_native_prepared_simulation is not None:
         raise RuntimeError("A Native prepared GL simulation is already active")
     simulation = CAMSimulation()
+    simulation.nativeSimulationId = uuid.uuid4().hex
     simulation.ActivatePrepared(**prepared)
     _active_native_prepared_simulation = simulation
     return simulation

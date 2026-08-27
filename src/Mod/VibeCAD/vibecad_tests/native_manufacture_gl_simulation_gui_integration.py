@@ -27,10 +27,19 @@ from VibeCADNativeBackground import (
     NativeBackgroundManager,
 )
 from VibeCADNativeBackgroundSchema import NATIVE_BACKGROUND_CAPABILITY_NAME
-from VibeCADNativeCapabilityRegistry import NativeProviderSurface
+from VibeCADNativeCapabilityRegistry import (
+    NativeProviderSurface,
+    provider_visible_native_schema,
+)
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureSimulationSchema import (
     MANUFACTURE_SIMULATION_CAPABILITY_NAME,
+)
+from VibeCADNativeManufactureSimulationControlSchema import (
+    MANUFACTURE_SIMULATION_CONTROL_CAPABILITY_NAME,
+)
+from VibeCADNativeManufactureFocusedInspectSchema import (
+    MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES,
 )
 from VibeCADNativeManufactureState import (
     job_state,
@@ -89,10 +98,22 @@ def _surface():
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
+    read_setup_name = MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES["read_job"]
     simulation = registry.definition(MANUFACTURE_SIMULATION_CAPABILITY_NAME)
+    simulation_control = registry.definition(
+        MANUFACTURE_SIMULATION_CONTROL_CAPABILITY_NAME
+    )
     background = registry.definition(NATIVE_BACKGROUND_CAPABILITY_NAME)
-    assert simulation is not None and background is not None
+    read_setup = registry.definition(read_setup_name)
+    assert simulation is not None and simulation_control is not None
+    assert background is not None and read_setup is not None
     simulation_schema = simulation.provider_schema(("gl",))
+    control_schema = provider_visible_native_schema(
+        simulation_control.provider_schema(("close",))
+    )
+    read_setup_schema = provider_visible_native_schema(
+        read_setup.provider_schema(("read_job",))
+    )
     background_schema = background.provider_schema(("status", "cancel"))
     branch = simulation_schema["parameters"]["oneOf"][0]
     assert branch["required"] == ["job", "operations", "quality"]
@@ -112,6 +133,9 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     encoded = json.dumps(simulation_schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert len(encoded.encode("utf-8")) < 5_000
+    control_parameters = control_schema["parameters"]["oneOf"][0]
+    assert set(control_parameters["properties"]) == {"simulation_id"}
+    assert control_parameters["required"] == ["simulation_id"]
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
@@ -119,9 +143,16 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             unavailable_reason="",
             tool_names=(
                 MANUFACTURE_SIMULATION_CAPABILITY_NAME,
+                MANUFACTURE_SIMULATION_CONTROL_CAPABILITY_NAME,
+                read_setup_name,
                 NATIVE_BACKGROUND_CAPABILITY_NAME,
             ),
-            schemas=(simulation_schema, background_schema),
+            schemas=(
+                simulation_schema,
+                control_schema,
+                read_setup_schema,
+                background_schema,
+            ),
             human_only_action_ids=(),
             missing_definition_names=(),
             missing_implementation_names=(),
@@ -446,6 +477,7 @@ def _run() -> None:
         result = success_terminal.result["simulation"]
         assert result == {
             "mode": "gl",
+            "simulation_id": result["simulation_id"],
             "job": job.Name,
             "operations": [operation.Name],
             "operation_count": 1,
@@ -456,6 +488,11 @@ def _run() -> None:
             "task_active": True,
             "document_changed": False,
         }
+        assert success_terminal.result["next"] == {
+            "tool": MANUFACTURE_SIMULATION_CONTROL_CAPABILITY_NAME,
+            "simulation_id": result["simulation_id"],
+        }
+        assert len(result["simulation_id"]) == 32
         assert len(result["program_sha256"]) == 64
         assert tuple(document.Objects) == objects_before
         assert _timeline(document) == timeline_before
@@ -474,7 +511,34 @@ def _run() -> None:
         assert status["job"]["result"] == success_terminal.result
         active_simulation = PathSimulatorGL.active_prepared_simulation()
         assert active_simulation is not None
-        active_simulation.taskForm.reject()
+        assert active_simulation.nativeSimulationId == result["simulation_id"]
+        read_while_open = call(
+            MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES["read_job"],
+            {
+                "target": _target(job_state(job)),
+                "operation_offset": 0,
+                "page_size": 32,
+            },
+        )
+        assert read_while_open["ok"] is True
+        assert read_while_open["job"]["object_name"] == job.Name
+        stale_close = call(
+            MANUFACTURE_SIMULATION_CONTROL_CAPABILITY_NAME,
+            {"simulation_id": "0" * 32},
+        )
+        assert stale_close["ok"] is False
+        assert stale_close["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE"
+        closed = call(
+            MANUFACTURE_SIMULATION_CONTROL_CAPABILITY_NAME,
+            {"simulation_id": result["simulation_id"]},
+        )
+        assert closed["ok"] is True
+        assert closed["simulation"] == {
+            "mode": "gl",
+            "simulation_id": result["simulation_id"],
+            "closed": True,
+            "document_changed": False,
+        }
         _events(8)
         assert not Gui.Control.activeDialog()
         assert PathSimulatorGL.active_prepared_simulation() is None

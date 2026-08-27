@@ -1111,6 +1111,11 @@ NATIVE_CONTEXT_ACTIONS = (
         source_command_id="CAM_ToolBitDock",
     ),
     _action(
+        "CAMSimulationClose", ("manufacture",), ("task_panel",),
+        "view", "manufacture.close_simulation", "close",
+        "NativeOwnedCamSimulation", "presentation", interactive=True,
+    ),
+    _action(
         "CAM_ExportTemplate", ("manufacture",), ("workbench_context", "menu"),
         "export", "manufacture.template", "export_template",
         "ExactCamJobTemplateContentAndHumanAuthorizedOutput", "output",

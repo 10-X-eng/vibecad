@@ -80,8 +80,16 @@ class NativeCommonRuntime:
         self._edit_or_task_active = context.edit_or_task_active
         self._scoped_capability_prefix = context.scoped_capability_prefix
 
-    def _guard(self, *, allow_owned_playback: bool = False) -> None:
-        self._context.guard(allow_owned_playback=allow_owned_playback)
+    def _guard(
+        self,
+        *,
+        allow_owned_playback: bool = False,
+        allow_owned_cam_simulation: bool = False,
+    ) -> None:
+        self._context.guard(
+            allow_owned_playback=allow_owned_playback,
+            allow_owned_cam_simulation=allow_owned_cam_simulation,
+        )
 
     def _object(self, value: Mapping[str, Any]) -> NativeObjectRef:
         if not isinstance(value, Mapping) or set(value) != {"object_name"}:
@@ -162,7 +170,10 @@ class NativeCommonRuntime:
             arguments,
             {"active": frozenset(), "selection": frozenset()},
         )
-        self._guard(allow_owned_playback=True)
+        self._guard(
+            allow_owned_playback=True,
+            allow_owned_cam_simulation=True,
+        )
         if operation == "selection":
             return read_current_selection(self._document)
         return self._snapshot()
@@ -262,7 +273,10 @@ class NativeCommonRuntime:
                 "validity": frozenset({"targets"}),
             },
         )
-        self._guard(allow_owned_playback=True)
+        self._guard(
+            allow_owned_playback=True,
+            allow_owned_cam_simulation=True,
+        )
         targets = list(values.get("targets") or [])
         if operation == "distance":
             return measure_distance(

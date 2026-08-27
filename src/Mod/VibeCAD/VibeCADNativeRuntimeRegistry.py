@@ -243,6 +243,9 @@ from VibeCADNativeManufactureTemplateRuntime import (
 from VibeCADNativeManufactureSimulationBindings import (
     manufacture_simulation_runtime_bindings,
 )
+from VibeCADNativeManufactureSimulationControlBindings import (
+    manufacture_simulation_control_runtime_bindings,
+)
 from VibeCADNativeManufactureSimulationRuntime import (
     NativeManufactureSimulationRuntime,
 )
@@ -696,6 +699,7 @@ def build_native_runtime_bindings(
         **manufacture_focused_post_runtime_bindings(manufacture_post),
         **manufacture_template_runtime_bindings(manufacture_template),
         **manufacture_simulation_runtime_bindings(manufacture_simulation),
+        **manufacture_simulation_control_runtime_bindings(manufacture_simulation),
         **manufacture_simulation_result_runtime_bindings(
             manufacture_simulation_result
         ),

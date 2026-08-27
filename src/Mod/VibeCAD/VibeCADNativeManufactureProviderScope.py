@@ -174,6 +174,7 @@ def manufacture_provider_tool_names(
                 "manufacture.simulation",
                 "manufacture.simulation_result",
                 "manufacture.camotics",
+                "manufacture.close_simulation",
             }
         )
     if any(_readiness_ready(setup, "post") for setup in setups):

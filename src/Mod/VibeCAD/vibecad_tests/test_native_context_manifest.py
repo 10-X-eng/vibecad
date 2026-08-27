@@ -183,6 +183,7 @@ EXPECTED_CONTEXT_ACTION_IDS = {
     "VibeCAD_ManufactureReadTool",
     "VibeCAD_ManufactureUpdateController",
     "VibeCAD_ManufactureUpdateToolBit",
+    "CAMSimulationClose",
     "CAM_ExportTemplate",
     "CAM_SetStartPoint",
     "CAM_ToolBitSave",
@@ -248,8 +249,8 @@ def test_surface_filtering_never_leaks_context_actions() -> None:
     assert len(provider_context_actions_for_surface("drawing")) == 8
     assert len(context_actions_for_surface("assemble")) == 13
     assert len(provider_context_actions_for_surface("assemble")) == 10
-    assert len(context_actions_for_surface("manufacture")) == 12
-    assert len(provider_context_actions_for_surface("manufacture")) == 10
+    assert len(context_actions_for_surface("manufacture")) == 13
+    assert len(provider_context_actions_for_surface("manufacture")) == 11
     assert len(context_actions_for_surface("model")) == 2
     assert provider_context_actions_for_surface("model") == ()
     analyze = context_actions_for_surface("analyze")
@@ -501,6 +502,15 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
             "VibeCAD_AnalyzeIsolateAssignment",
             "VibeCAD_AnalyzeRestoreAssignmentView",
         }
+    )
+    assert provider_actions["CAMSimulationClose"].capability_family == (
+        "manufacture.close_simulation"
+    )
+    assert provider_actions["CAMSimulationClose"].operation_variant == "close"
+    assert provider_actions["CAMSimulationClose"].classification.view
+    assert provider_actions["CAMSimulationClose"].classification.interactive
+    assert provider_actions["CAMSimulationClose"].transaction_behavior == (
+        "presentation"
     )
     assert {
         provider_actions[action_id].operation_variant

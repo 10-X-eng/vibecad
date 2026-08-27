@@ -10,6 +10,7 @@ from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeBackground import NativeBackgroundError
 from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureSimulation import (
+    close_gl_simulation,
     preflight_gl_simulation,
     prepare_gl_simulation,
     present_gl_simulation,
@@ -107,3 +108,34 @@ class NativeManufactureSimulationRuntime:
                 "job_id": str(snapshot.job_id),
             },
         }
+
+    def close(
+        self,
+        arguments: Mapping[str, Any],
+        *,
+        ticket: NativeCallTicket,
+    ) -> dict[str, Any]:
+        operation, values = strict_variant_arguments(
+            arguments,
+            {"close": frozenset({"simulation_id"})},
+        )
+        if operation != "close" or not isinstance(ticket, NativeCallTicket):
+            raise TypeError("CAM simulation close requires one exact Native call ticket")
+        context = self._context
+        context.guard(allow_owned_cam_simulation=True)
+        authorization = context.state.authorize_mutation(ticket)
+        if authorization.duplicate:
+            return dict(authorization.prior_verified_result or {})
+        context.state.begin_mutation_observation(ticket)
+        try:
+            revision_before = context.state.current_revision(context.document_uid)
+            result = close_gl_simulation(
+                context.document,
+                str(values["simulation_id"]),
+            )
+            revision_after = context.state.current_revision(context.document_uid)
+            if revision_after != revision_before:
+                raise NativeRevisionConflict(revision_before, revision_after)
+            return result
+        finally:
+            context.state.cancel_mutation(ticket)

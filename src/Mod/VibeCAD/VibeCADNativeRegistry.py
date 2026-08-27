@@ -526,6 +526,12 @@ from VibeCADNativeManufactureSimulationBindings import (
 from VibeCADNativeManufactureSimulationSchema import (
     register_manufacture_simulation_capability_definition,
 )
+from VibeCADNativeManufactureSimulationControlBindings import (
+    register_manufacture_simulation_control_capability_implementation,
+)
+from VibeCADNativeManufactureSimulationControlSchema import (
+    register_manufacture_simulation_control_capability_definition,
+)
 from VibeCADNativeManufactureSimulationResultBindings import (
     register_manufacture_simulation_result_capability_implementation,
 )
@@ -987,6 +993,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_manufacture_template_capability_implementation(registry)
     register_manufacture_simulation_capability_definition(registry)
     register_manufacture_simulation_capability_implementation(registry)
+    register_manufacture_simulation_control_capability_definition(registry)
+    register_manufacture_simulation_control_capability_implementation(registry)
     register_manufacture_simulation_result_capability_definition(registry)
     register_manufacture_simulation_result_capability_implementation(registry)
     register_manufacture_tool_capability_definitions(registry)

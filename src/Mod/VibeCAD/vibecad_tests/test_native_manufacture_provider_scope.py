@@ -74,6 +74,7 @@ _AVAILABLE = (
     "manufacture.probe",
     "manufacture.template",
     "manufacture.simulation",
+    "manufacture.close_simulation",
     "manufacture.simulation_result",
     "manufacture.camotics",
     "manufacture.post",
@@ -228,6 +229,7 @@ def test_selected_setup_exposes_only_lifecycle_supported_by_its_state() -> None:
     } <= names
     assert "manufacture.modify" not in names
     assert "manufacture.simulation" not in names
+    assert "manufacture.close_simulation" not in names
     assert "manufacture.simulation_result" not in names
     assert "manufacture.camotics" not in names
     assert "manufacture.post" not in names
@@ -258,6 +260,7 @@ def test_valid_paths_add_correction_simulation_and_post_without_hiding_setup_too
         "manufacture.operations",
         "manufacture.dressup",
         "manufacture.simulation",
+        "manufacture.close_simulation",
         "manufacture.simulation_result",
         "manufacture.camotics",
         "manufacture.post_job",
@@ -284,6 +287,7 @@ def test_unselected_independent_setups_keep_explicit_target_lifecycle_available(
         "manufacture.operations",
         "manufacture.dressup",
         "manufacture.simulation",
+        "manufacture.close_simulation",
     } <= names
     assert "manufacture.post" not in names
     assert "manufacture.post_job" not in names

@@ -581,7 +581,7 @@ def present_gl_simulation(
     try:
         from Path.Main.Gui import SimulatorGL
 
-        SimulatorGL.activate_prepared_simulation(
+        simulation = SimulatorGL.activate_prepared_simulation(
             job=prepared.frozen.job,
             operations=tuple(run.operation for run in prepared.frozen.runs),
             quality=prepared.frozen.quality,
@@ -621,9 +621,16 @@ def present_gl_simulation(
             error_code="NATIVE_MANUFACTURE_GL_PRESENTATION_SIDE_EFFECT",
         )
     names = [run.operation_name for run in prepared.frozen.runs]
+    simulation_id = str(simulation.nativeSimulationId or "")
+    if len(simulation_id) != 32:
+        raise NativeManufactureError(
+            "The prepared GL simulation has no stable task identity.",
+            error_code="NATIVE_MANUFACTURE_GL_PRESENTATION_FAILED",
+        )
     return {
         "simulation": {
             "mode": "gl",
+            "simulation_id": simulation_id,
             "job": str(prepared.frozen.job.Name),
             "operations": names,
             "operation_count": len(names),
@@ -632,6 +639,83 @@ def present_gl_simulation(
             "quality": prepared.frozen.quality,
             "program_sha256": prepared.program_sha256,
             "task_active": SimulatorGL.owns_active_prepared_simulation(document),
+            "document_changed": False,
+        },
+        "next": {
+            "tool": "manufacture.close_simulation",
+            "simulation_id": simulation_id,
+        },
+    }
+
+
+def close_gl_simulation(document: Any, simulation_id: str) -> dict[str, Any]:
+    """Close only the exact Native-owned simulation for this document."""
+
+    from Path.Main.Gui import SimulatorGL
+    from VibeCADNativeTargets import read_current_selection
+
+    simulation = SimulatorGL.active_prepared_simulation()
+    if simulation is None or not SimulatorGL.owns_active_prepared_simulation(document):
+        _error(
+            "This document has no active Native CAM simulation.",
+            "NATIVE_MANUFACTURE_GL_SIMULATION_NOT_ACTIVE",
+        )
+    observed_id = str(getattr(simulation, "nativeSimulationId", "") or "")
+    if str(simulation_id or "") != observed_id:
+        _error(
+            "The active Native CAM simulation changed after it was opened.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+            repair={"current_simulation_id": observed_id},
+        )
+
+    objects_before = tuple(document.Objects)
+    visibility_before = tuple(
+        (obj, bool(obj.ViewObject.Visibility))
+        for obj in objects_before
+        if getattr(obj, "ViewObject", None) is not None
+    )
+    selection_before = read_current_selection(document)
+    timeline = document.getObject("VibeCADTimeline")
+    timeline_before = (
+        tuple(getattr(timeline, "Operations", ()) or ()),
+        tuple(bool(value) for value in getattr(timeline, "VisibilityAtEnd", ()) or ()),
+        tuple(bool(value) for value in getattr(timeline, "SuppressionAtEnd", ()) or ()),
+        int(getattr(timeline, "Position", 0) or 0),
+    )
+    undo_before = int(getattr(document, "UndoCount", 0) or 0)
+    simulation.taskForm.reject()
+    if (
+        SimulatorGL.active_prepared_simulation() is not None
+        or tuple(document.Objects) != objects_before
+        or any(
+            bool(obj.ViewObject.Visibility) is not visible
+            for obj, visible in visibility_before
+        )
+        or read_current_selection(document) != selection_before
+        or (
+            tuple(getattr(timeline, "Operations", ()) or ()),
+            tuple(
+                bool(value)
+                for value in getattr(timeline, "VisibilityAtEnd", ()) or ()
+            ),
+            tuple(
+                bool(value)
+                for value in getattr(timeline, "SuppressionAtEnd", ()) or ()
+            ),
+            int(getattr(timeline, "Position", 0) or 0),
+        )
+        != timeline_before
+        or int(getattr(document, "UndoCount", 0) or 0) != undo_before
+    ):
+        raise NativeManufactureError(
+            "Closing GL simulation did not restore its exact presentation state.",
+            error_code="NATIVE_MANUFACTURE_GL_PRESENTATION_SIDE_EFFECT",
+        )
+    return {
+        "simulation": {
+            "mode": "gl",
+            "simulation_id": observed_id,
+            "closed": True,
             "document_changed": False,
         }
     }

@@ -73,7 +73,7 @@ class NativeManufactureInspectRuntime:
             },
         )
         context = self._context
-        context.guard()
+        context.guard(allow_owned_cam_simulation=True)
         if operation == "read_model_geometry":
             if not isinstance(ticket, NativeCallTicket):
                 raise TypeError("CAM geometry inspection requires one exact call ticket")
@@ -97,7 +97,7 @@ class NativeManufactureInspectRuntime:
                 )
 
             def validate() -> None:
-                context.guard()
+                context.guard(allow_owned_cam_simulation=True)
                 revision = context.state.current_revision(context.document_uid)
                 if revision != ticket.expected_revision:
                     raise NativeRevisionConflict(ticket.expected_revision, revision)
