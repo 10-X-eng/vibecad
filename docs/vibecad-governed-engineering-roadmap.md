@@ -259,7 +259,7 @@ behavior while it waits for host persistence/workflows.
 | G3 — remote provider | B | **Blocked by G2** | One real target, reconnect/cancel/poll/event semantics, credential isolation, verified bundle/output transport, real restart acceptance. |
 | G4 — authority policy and preview evidence | F, G | **Partial** | The executable registry-bound census classifies all current operations; add bounded domain preview evidence where justified and prove authoritative installed/runtime integration. |
 | G5 — workflow DAG | H | **Partial** | The bounded durable DAG, scheduler, restart, cancellation, retry, and publish-once core is implemented; wire real G2 jobs/domain adapters and prove installed/runtime and real five-stage FEM acceptance. |
-| G6 — optimization | I | **Blocked by G4 and G5** | Governed candidate mutation, variables/objectives/constraints, budgets, deduplication, provenance, ranking, approval/publication gates. |
+| G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
 | G7 — Manufacture runtime integration | J | **Partial foundation** | Adapt expensive detached Manufacture tasks to G2/G5 without replacing current Jobs, operations, simulation, posts, or exports. |
 | G8 — Assembly consolidation | K, L, N | **Partial** | Extend the existing Assembly owner; close stable identities, interface taxonomy, continuous motion, flexible graphs, fit, evidence, and Part Design facade gates. |
 | G9 — joint inference | M | **Design-ready** | Bounded interface extraction/classification, ranked compatibility evidence, explicit accept/reject, no direct authoritative mutation. |
@@ -530,7 +530,7 @@ edge. Remote execution is not required to close the local workflow slice.
 
 ### G6 — governed optimization
 
-**Status: Blocked by G4 and G5.**
+**Status: Partial.**
 
 Optimization composes existing design mutation and workflow evaluation. It is
 not a provider feature and does not gain direct document authority.
@@ -553,6 +553,32 @@ must not silently replace accepted document state. The first acceptance case
 uses a small deterministic design with an independently enumerable search
 space, injected failures, duplicate candidates, restart recovery, and a final
 human-authorized publish-once operation.
+
+Implemented contract foundation:
+
+- `tool_impl/governed_optimization.py` and the installed
+  `VibeCADGovernedOptimization.py` facade bind exact source/workflow identities,
+  typed owner-scoped variables, objectives, constraints, deterministic
+  algorithm identity, and finite candidate/workflow/time/cost/concurrency
+  budgets;
+- `enumerate-v1` normalizes exact decimal values, rejects duplicates, checks the
+  complete search-space bound before evaluation, and creates immutable hashed
+  mutation proposals without document authority;
+- atomic durable run records cover child-workflow references, injected write
+  failure, interruption recovery, and workflow-run budget exhaustion;
+- deterministic ranking keeps constraint feasibility distinct from objectives
+  and explicitly handles failed, cancelled, stale, interrupted, missing-metric,
+  unevaluated, and indeterminate candidates;
+- exact-source human selection and receipt-bound publish-once intent prevent
+  candidate geometry from silently replacing accepted document state; and
+- focused tests independently enumerate the bounded benchmark and packaging
+  tests require the facade in source, build, and installed trees.
+
+Remaining closure criteria are real mutation-owner candidate preparation, G5
+workflow submission/reconnect, measured runtime resource/time/cost accounting,
+G3 publication-coordinator consumption, and the complete acceptance case in an
+installed VibeCAD deployment. See
+[VibeCAD governed optimization](vibecad-governed-optimization.md).
 
 ### G7 — Manufacture runtime integration
 
