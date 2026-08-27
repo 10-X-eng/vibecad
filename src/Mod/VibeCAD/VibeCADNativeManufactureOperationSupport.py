@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 from dataclasses import replace
 import hashlib
 import math
@@ -43,6 +44,7 @@ class PreparedOperationGeometry:
     public_source: Any
     job_resource: Any
     source_state_sha256: str
+    source_shape: Any = field(repr=False, compare=False)
     shape_sha256: str
     subelements: tuple[str, ...]
     element_sha256: tuple[str, ...]
@@ -317,6 +319,7 @@ def _prepare_geometry(
                 public_source=public,
                 job_resource=resource,
                 source_state_sha256=model_states.get(name, ""),
+                source_shape=public.Shape,
                 shape_sha256=shape_sha256(public.Shape, f"CAM model {name}"),
                 subelements=(),
                 element_sha256=(),
@@ -369,6 +372,7 @@ def _prepare_geometry(
                     public_source=public,
                     job_resource=resource,
                     source_state_sha256=expected,
+                    source_shape=public.Shape,
                     shape_sha256=shape_sha256(public.Shape, f"CAM model {name}"),
                     subelements=(),
                     element_sha256=(),
@@ -443,6 +447,7 @@ def _prepare_geometry(
                 public_source=public,
                 job_resource=resource,
                 source_state_sha256=expected,
+                source_shape=public.Shape,
                 shape_sha256=shape_sha256(public.Shape, f"CAM model {name}"),
                 subelements=names,
                 element_sha256=tuple(element_hashes),
@@ -839,11 +844,13 @@ def verify_native_operation(
         )
     assert_settings(operation, payload)
     for item in prepared.geometry:
-        actual_shape_sha256 = shape_sha256(
-            item.public_source.Shape,
-            f"CAM model {item.public_source.Name}",
-        )
-        if actual_shape_sha256 != item.shape_sha256:
+        actual_shape = item.public_source.Shape
+        same_shape = getattr(actual_shape, "isSame", None)
+        if not callable(same_shape) or not same_shape(item.source_shape):
+            actual_shape_sha256 = shape_sha256(
+                actual_shape,
+                f"CAM model {item.public_source.Name}",
+            )
             raise NativeManufactureError(
                 f"{prepared.noun} creation changed public model source "
                 f"{item.public_source.Name!r}.",

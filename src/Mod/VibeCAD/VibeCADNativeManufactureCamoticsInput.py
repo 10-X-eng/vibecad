@@ -24,7 +24,7 @@ from VibeCADNativeManufactureState import (
     capture_other_job_states,
     job_state,
     operation_active_state,
-    operation_reference_state,
+    operation_state,
     other_job_states_are_current,
     resolve_job_target,
 )
@@ -501,7 +501,7 @@ def preflight_camotics(
             "NATIVE_MANUFACTURE_STATE_STALE",
         )
     for run in runs:
-        if operation_reference_state(run.operation).get("state_sha256") != (
+        if operation_state(run.operation).get("state_sha256") != (
             run.expected_state_sha256
         ):
             _error(
@@ -563,7 +563,7 @@ def validate_camotics(document: Any, frozen: FrozenCamoticsInput) -> None:
     previous_position = -1
     for run in frozen.runs:
         position = positions.get(id(run.operation), -1)
-        current = operation_reference_state(run.operation)
+        current = operation_state(run.operation)
         if (
             position <= previous_position
             or current.get("state_sha256") != run.expected_state_sha256

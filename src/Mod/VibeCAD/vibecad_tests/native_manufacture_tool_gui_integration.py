@@ -496,6 +496,22 @@ def _run() -> None:
         tool_before_update = tool_controller_state(tool_controller)["tool"]
         shape_volume_before = float(tool_controller.Tool.Shape.Volume)
         visual_before = _job_resource_names(document, job)
+        controller_as_tool = call(
+            UPDATE_TOOL,
+            {
+                "target": _target(tool_controller_state(tool_controller)),
+                "label": "Wrong target",
+                "property_changes": [
+                    {
+                        "property_name": "Diameter",
+                        "value": {"kind": "length_mm", "value": 7.5},
+                    }
+                ],
+            },
+            succeeds=False,
+        )
+        assert controller_as_tool["error_code"] == "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID"
+        assert controller_as_tool["repair"]["target"] == _target(tool_before_update)
         update_tool_arguments = {
             "target": _target(tool_before_update),
             "label": "Native 7.5 mm bullnose",

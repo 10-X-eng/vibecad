@@ -22,9 +22,10 @@ from VibeCADNativeManufactureState import (
     capture_other_job_states,
     job_state,
     operation_active_state,
-    operation_reference_state,
+    operation_state,
     other_job_states_are_current,
     resolve_job_target,
+    resolve_operation_target,
 )
 from VibeCADNativeTargets import read_current_selection
 
@@ -415,22 +416,9 @@ def _resolve_selected_operations(
                 "Each selected CAM operation target must contain only object_name "
                 "and expected_state_sha256."
             )
-        name = str(value.get("object_name") or "").strip()
-        expected = str(value.get("expected_state_sha256") or "").strip()
-        operation = document.getObject(name) if name else None
-        if operation is None or getattr(operation, "Document", None) is not document:
-            _error(
-                f"Selected CAM operation {name!r} no longer exists.",
-                "NATIVE_MANUFACTURE_TARGET_STALE",
-            )
-        current = operation_reference_state(operation)
-        if current.get("state_sha256") != expected:
-            _error(
-                f"Selected CAM operation {name!r} changed after turn start.",
-                "NATIVE_MANUFACTURE_STATE_STALE",
-                object_name=name,
-                current_state_sha256=current.get("state_sha256"),
-            )
+        operation, current = resolve_operation_target(document, value)
+        name = str(current["object_name"])
+        expected = str(current["state_sha256"])
         if id(operation) not in positions:
             _error(
                 f"Selected CAM operation {name!r} is not a direct entry of the exact Job.",
@@ -623,7 +611,7 @@ def _preflight_post(
                 "NATIVE_MANUFACTURE_STATE_STALE",
             )
         if any(
-            operation_reference_state(operation).get("state_sha256") != expected
+            operation_state(operation).get("state_sha256") != expected
             for operation, expected in zip(
                 selected,
                 selected_states,
@@ -699,7 +687,7 @@ def validate_post_source(document: Any, frozen: FrozenPostInput) -> None:
             == frozen.active_operation_count
             and all(operation in group for operation in frozen.selected_operations)
             and all(
-                operation_reference_state(operation).get("state_sha256") == expected
+                operation_state(operation).get("state_sha256") == expected
                 and operation_active_state(operation)
                 for operation, expected in zip(
                     frozen.selected_operations,

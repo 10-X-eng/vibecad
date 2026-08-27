@@ -15,8 +15,9 @@ from VibeCADNativeManufactureState import (
     capture_other_job_states,
     job_state,
     operation_active_state,
-    operation_reference_state,
+    operation_state,
     other_job_states_are_current,
+    resolve_operation_target,
     resolve_job_target,
 )
 
@@ -223,24 +224,8 @@ def _operation_target(
     document: Any,
     value: Mapping[str, Any],
 ) -> tuple[Any, Mapping[str, Any]]:
-    name, expected = _exact_target(value, "CAM operation")
-    operation = document.getObject(name)
-    if operation is None or getattr(operation, "Document", None) is not document:
-        _error(
-            f"Exact CAM operation {name!r} no longer exists.",
-            "NATIVE_MANUFACTURE_TARGET_STALE",
-        )
-    current = operation_reference_state(operation)
-    if current.get("state_sha256") != expected:
-        _error(
-            f"Exact CAM operation {name!r} changed after turn start.",
-            "NATIVE_MANUFACTURE_STATE_STALE",
-            repair={
-                "object_name": name,
-                "current_state_sha256": current.get("state_sha256"),
-            },
-        )
-    return operation, current
+    _exact_target(value, "CAM operation")
+    return resolve_operation_target(document, value)
 
 
 def resolve_simulation_operation_target(
@@ -402,7 +387,7 @@ def preflight_gl_simulation(
             "NATIVE_MANUFACTURE_STATE_STALE",
         )
     for run in runs:
-        current = operation_reference_state(run.operation)
+        current = operation_state(run.operation)
         if current.get("state_sha256") != run.expected_state_sha256:
             _error(
                 f"CAM operation {run.operation_name!r} changed while simulation inputs "
@@ -542,7 +527,7 @@ def validate_gl_simulation(document: Any, frozen: FrozenGlSimulation) -> None:
     previous = -1
     for run in frozen.runs:
         position = positions.get(id(run.operation), -1)
-        current = operation_reference_state(run.operation)
+        current = operation_state(run.operation)
         if position <= previous or current.get("state_sha256") != run.expected_state_sha256:
             _error(
                 f"CAM operation {run.operation_name!r} changed during background "

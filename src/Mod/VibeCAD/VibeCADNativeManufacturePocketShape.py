@@ -103,6 +103,7 @@ class PreparedPocketShapeCreate:
 
 @dataclass(frozen=True, slots=True)
 class PocketShapeDefaultsSpec:
+    label: Any
     job: Mapping[str, Any]
     tool_controller: Mapping[str, Any]
     geometry: tuple[Mapping[str, Any], ...]
@@ -110,6 +111,7 @@ class PocketShapeDefaultsSpec:
 
 @dataclass(frozen=True, slots=True)
 class PreparedPocketShapeDefaults:
+    label: str
     boundary: PreparedOperationBoundary
 
 
@@ -286,7 +288,10 @@ def preflight_pocket_shape_defaults(
         allow_entire_job=False,
     )
     validate_pocket_feature_geometry(boundary, noun="Pocket Shape")
-    return PreparedPocketShapeDefaults(boundary=boundary)
+    return PreparedPocketShapeDefaults(
+        label=clean_operation_label(spec.label, "Pocket Shape"),
+        boundary=boundary,
+    )
 
 
 def _parameter_payload(prepared: PreparedPocketShapeCreate) -> dict[str, Any]:
@@ -402,7 +407,7 @@ def create_pocket_shape_defaults(
         operation_factory=PathPocketShape.Create,
         provider_factory=PathPocketShapeGui.PathOpGui.ViewProvider,
         provider_resource=PathPocketShapeGui.Command.res,
-        configure=lambda _operation: None,
+        configure=lambda operation: setattr(operation, "Label", prepared.label),
         payload={"parameters": {"source": "setup_defaults"}},
     )
     return extend_native_operation_draft(draft, pocket_defaults=prepared)

@@ -43,6 +43,15 @@ _TARGET = _closed(
     },
     ("object_name", "expected_state_sha256"),
 )
+_JOB_TARGET = {**_TARGET, "description": "Exact setup from read_setup job."}
+_CONTROLLER_TARGET = {
+    **_TARGET,
+    "description": "Exact controller from read_setup tools[].",
+}
+_TOOL_BIT_TARGET = {
+    **_TARGET,
+    "description": "Exact ToolBit from read_setup tools[].tool.",
+}
 _CATALOG_TARGET = _closed(
     {
         "catalog_id": {
@@ -227,7 +236,7 @@ def manufacture_tool_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=_closed(
                     {
-                        "job_target": _TARGET,
+                        "job_target": _JOB_TARGET,
                         "catalog_tool": _CATALOG_TARGET,
                         "tool_label": LABEL_SCHEMA,
                         "tool_property_changes": _TOOL_PROPERTY_CHANGES,
@@ -248,7 +257,7 @@ def manufacture_tool_capability_definition() -> NativeCapabilityDefinition:
                 transaction_behavior="document",
                 background_required=False,
                 parameters=_closed(
-                    {"target": _TARGET, "controller": _CONTROLLER},
+                    {"target": _CONTROLLER_TARGET, "controller": _CONTROLLER},
                     ("target", "controller"),
                 ),
             ),
@@ -265,7 +274,7 @@ def manufacture_tool_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=_closed(
                     {
-                        "target": _TARGET,
+                        "target": _TOOL_BIT_TARGET,
                         "label": LABEL_SCHEMA,
                         "property_changes": {
                             **_TOOL_PROPERTY_CHANGES,

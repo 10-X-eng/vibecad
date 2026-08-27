@@ -131,6 +131,7 @@ _PROFILE_FIELDS = frozenset(
 )
 _POCKET_SHAPE_FIELDS = frozenset(
     {
+        "label",
         "job",
         "tool_controller",
         "geometry",
@@ -333,6 +334,7 @@ class NativeManufactureOperationRuntime:
                 "simple_copy": _SIMPLE_COPY_FIELDS,
                 "set_start_point": _START_POINT_FIELDS,
             },
+            defaults={"pocket_shape": {"label": "Pocket Shape"}},
         )
         context = self._context
         context.guard()
@@ -370,6 +372,7 @@ class NativeManufactureOperationRuntime:
             prepared = preflight_pocket_shape_defaults(
                 context.document,
                 PocketShapeDefaultsSpec(
+                    label=values.get("label", "Pocket Shape"),
                     job=values["job"],
                     tool_controller=values["tool_controller"],
                     geometry=tuple(values["geometry"]),

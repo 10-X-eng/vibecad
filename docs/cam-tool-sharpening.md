@@ -319,6 +319,18 @@ comparison, not implementation instructions.
   background job, and created a follow-up setup with no failed calls. Terra/high
   independently retained the stock and created the follow-up setup with no failed
   calls. Both saved documents reopened with two Jobs and valid retained stock.
+- Exact operation targets now accept the bounded setup-summary identity and the
+  full `read_setup` or operation-result identity, then normalize to the complete
+  toolpath state. Simulation, retained-stock verification, CAMotics, selected
+  posting, copies, arrays, and dress-ups all consume the same public target.
+- An ordinary Qwen bracket run exposed eight failed calls, including an impossible
+  read-to-simulation identity mismatch and a false model-source mutation after
+  Pocket generation. After production fixes, the identical prompt produced a real
+  Pocket, completed interactive simulation, posted NC, and saved successfully with
+  five failed calls. One was a reasonable optional Pocket label and is now
+  accepted. The other four were inconsistent retries on schemas Qwen had already
+  used successfully; Terra validation remains required before changing those
+  complete-replacement contracts.
 
 ## Reusable benchmark corpus
 

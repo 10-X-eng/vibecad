@@ -43,7 +43,7 @@ from VibeCADNativeManufactureFocusedInspectSchema import (
 )
 from VibeCADNativeManufactureState import (
     job_state,
-    operation_reference_state,
+    operation_state,
 )
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -232,7 +232,7 @@ def _arguments(job, operation, quality: int = 8) -> dict:
     return {
         "operation": "gl",
         "job": _target(job_state(job)),
-        "operations": [_target(operation_reference_state(operation))],
+        "operations": [_target(operation_state(operation))],
         "quality": quality,
     }
 

@@ -39,7 +39,7 @@ from VibeCADNativeManufactureFollowUpState import (
     setup_relationship_state,
     simulation_result_state,
 )
-from VibeCADNativeManufactureState import job_state, operation_reference_state
+from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
@@ -257,7 +257,7 @@ def _arguments(job, operation, quality: int = 10) -> dict:
     return {
         "operation": "native",
         "job": _target(job_state(job)),
-        "operations": [_target(operation_reference_state(operation))],
+        "operations": [_target(operation_state(operation))],
         "quality": quality,
     }
 

@@ -37,7 +37,7 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureFocusedPostSchema import (
     MANUFACTURE_FOCUSED_POST_CAPABILITIES,
 )
-from VibeCADNativeManufactureState import job_state, operation_reference_state
+from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeOutput import authorize_native_output_path
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -259,7 +259,7 @@ def _target(job) -> dict[str, str]:
 
 
 def _operation_target(operation) -> dict[str, str]:
-    state = operation_reference_state(operation)
+    state = operation_state(operation)
     return {
         "object_name": str(state["object_name"]),
         "expected_state_sha256": str(state["state_sha256"]),

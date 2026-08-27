@@ -34,7 +34,7 @@ from VibeCADNativeManufactureFocusedModifySchema import (
 
 from VibeCADNativeManufactureState import (
     job_state,
-    operation_reference_state,
+    operation_state,
     persistent_resource_state,
 )
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -89,7 +89,7 @@ def _arguments(job, base, placement, *, label="Native CAM Holding Tags") -> dict
         "operation": "tag_dressup",
         "label": label,
         "job": _target(job_state(job)),
-        "base_operation": _target(operation_reference_state(base)),
+        "base_operation": _target(operation_state(base)),
         "placement": placement,
     }
 
@@ -373,7 +373,7 @@ def _run() -> None:
 
         copy_placement = {
             "kind": "copy_enabled_from_dressup",
-            "source_tag_dressup": _target(operation_reference_state(auto_output)),
+            "source_tag_dressup": _target(operation_state(auto_output)),
         }
         copy_result = call(_arguments(job, copy_base, copy_placement))
         copy_output = document.getObject(copy_result["object_name"])

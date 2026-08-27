@@ -236,7 +236,7 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
     from VibeCADNativeManufactureState import (
         job_state,
         operation_active_state,
-        operation_reference_state,
+        operation_state,
     )
 
     workspace = Path(str(request["workspace"])).resolve(strict=True)
@@ -369,7 +369,7 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
                     "A selected CAM operation is not a direct member of the restored Job.",
                 )
             if (
-                operation_reference_state(operation).get("state_sha256") != expected
+                operation_state(operation).get("state_sha256") != expected
                 or not operation_active_state(operation)
                 or not tuple(
                     getattr(getattr(operation, "Path", None), "Commands", ()) or ()

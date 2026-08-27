@@ -13,10 +13,10 @@ from VibeCADNativeManufactureOperationSupport import clean_operation_label, exac
 from VibeCADNativeManufactureState import (
     copy_configuration_state,
     job_state,
-    operation_reference_state,
     operation_state,
     persistent_resource_state,
     resolve_job_target,
+    resolve_operation_target,
     tool_controller_state,
 )
 from VibeCADNativeTargets import read_current_selection
@@ -175,22 +175,7 @@ def preflight_dressup_base(
         normalize_exact_target(job_target, f"{noun} job"),
     )
     target = normalize_exact_target(base_target, f"{noun} base_operation")
-    base = document.getObject(target["object_name"])
-    if base is None or getattr(base, "Document", None) is not document:
-        dressup_error(
-            f"{noun} base {target['object_name']!r} no longer exists.",
-            "NATIVE_MANUFACTURE_TARGET_STALE",
-        )
-    reference = operation_reference_state(base)
-    if reference.get("state_sha256") != target["expected_state_sha256"]:
-        dressup_error(
-            f"{noun} base {target['object_name']!r} changed after turn start.",
-            "NATIVE_MANUFACTURE_STATE_STALE",
-            repair={
-                "object_name": target["object_name"],
-                "current_state_sha256": reference.get("state_sha256"),
-            },
-        )
+    base, reference = resolve_operation_target(document, target)
 
     try:
         import Path.Base.Util as PathUtil
@@ -275,7 +260,7 @@ def assert_dressup_preflight_current(
         or tuple(prepared.job.Operations.Group or ()) != prepared.job_operations_before
         or job_state(prepared.job).get("state_sha256")
         != prepared.job_before.get("state_sha256")
-        or operation_reference_state(prepared.base) != prepared.base_reference_before
+        or operation_state(prepared.base) != prepared.base_reference_before
         or persistent_resource_state(prepared.base) != prepared.base_state_before
         or tool_controller_state(prepared.controller).get("state_sha256")
         != prepared.controller_before.get("state_sha256")

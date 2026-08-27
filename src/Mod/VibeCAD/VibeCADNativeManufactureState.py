@@ -1132,12 +1132,43 @@ def resolve_operation_target(
     document: Any,
     value: Mapping[str, Any],
 ) -> tuple[Any, dict[str, Any]]:
-    return _resolve_target(
-        document,
-        value,
-        state_reader=operation_state,
-        noun="CAM operation",
-    )
+    if not isinstance(value, Mapping) or set(value) != {
+        "object_name",
+        "expected_state_sha256",
+    }:
+        raise NativeManufactureError(
+            "The exact CAM operation target must contain object_name and "
+            "expected_state_sha256.",
+            error_code="NATIVE_ARGUMENTS_INVALID",
+        )
+    name = str(value.get("object_name") or "").strip()
+    expected = str(value.get("expected_state_sha256") or "").strip()
+    operation = document.getObject(name) if name else None
+    if operation is None or getattr(operation, "Document", None) is not document:
+        raise NativeManufactureError(
+            "The exact CAM operation target no longer exists.",
+            error_code="NATIVE_MANUFACTURE_TARGET_STALE",
+        )
+    current = operation_state(operation)
+    reference = operation_reference_state(operation)
+    if expected not in {
+        current.get("state_sha256"),
+        reference.get("state_sha256"),
+    }:
+        current_target = {
+            "object_name": name,
+            "expected_state_sha256": current.get("state_sha256"),
+        }
+        raise NativeManufactureError(
+            "The exact CAM operation target changed after turn start.",
+            error_code="NATIVE_MANUFACTURE_STATE_STALE",
+            repair={
+                "object_name": name,
+                "current_state_sha256": current.get("state_sha256"),
+                "target": current_target,
+            },
+        )
+    return operation, current
 
 
 def resolve_model_target(document: Any, value: Mapping[str, Any]) -> tuple[Any, dict[str, Any]]:
@@ -1165,9 +1196,31 @@ def resolve_tool_bit_target(
     document: Any,
     value: Mapping[str, Any],
 ) -> tuple[Any, dict[str, Any]]:
-    return _resolve_target(
-        document,
-        value,
-        state_reader=tool_bit_state,
-        noun="CAM ToolBit",
-    )
+    try:
+        return _resolve_target(
+            document,
+            value,
+            state_reader=tool_bit_state,
+            noun="CAM ToolBit",
+        )
+    except NativeManufactureError as exc:
+        name = str(value.get("object_name") or "") if isinstance(value, Mapping) else ""
+        controller = document.getObject(name) if name else None
+        tool = getattr(controller, "Tool", None)
+        if (
+            exc.error_code == "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID"
+            and tool is not None
+            and getattr(tool, "Document", None) is document
+        ):
+            current = tool_bit_state(tool)
+            raise NativeManufactureError(
+                "The exact ToolBit target is read_setup tools[].tool, not its controller.",
+                error_code="NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
+                repair={
+                    "target": {
+                        "object_name": current["object_name"],
+                        "expected_state_sha256": current["state_sha256"],
+                    }
+                },
+            ) from exc
+        raise

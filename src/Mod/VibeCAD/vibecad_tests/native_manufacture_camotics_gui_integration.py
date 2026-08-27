@@ -35,7 +35,7 @@ from VibeCADNativeManufactureCamoticsSchema import (
     MANUFACTURE_CAMOTICS_CAPABILITY_NAME,
 )
 from VibeCADNativeManufactureErrors import NativeManufactureError
-from VibeCADNativeManufactureState import job_state, operation_reference_state
+from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
@@ -236,7 +236,7 @@ def _arguments(job, operation, kind: str, resolution: str = "medium") -> dict:
     return {
         "operation": "camotics",
         "job": _target(job_state(job)),
-        "operations": [_target(operation_reference_state(operation))],
+        "operations": [_target(operation_state(operation))],
         "request": {"kind": kind, "resolution": resolution},
     }
 

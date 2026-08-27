@@ -176,6 +176,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     branch = schema["parameters"]["oneOf"][0]
     assert set(branch["properties"]) == {
         "operation",
+        "label",
         "job",
         "tool_controller",
         "geometry",
@@ -393,8 +394,11 @@ def _run() -> None:
         assert not Gui.Control.activeDialog()
         created_state = operation_state(operation)
 
-        bracket_result = call(_arguments(bracket, bracket_job, bracket_face))
+        bracket_arguments = _arguments(bracket, bracket_job, bracket_face)
+        bracket_arguments["label"] = "Top pocket"
+        bracket_result = call(bracket_arguments)
         bracket_operation_name = bracket_result["pocket_shape"]["object_name"]
+        assert document.getObject(bracket_operation_name).Label == "Top pocket"
         assert bracket_result["pocket_shape"]["geometry"] == {
             "kind": "subelements",
             "items": [

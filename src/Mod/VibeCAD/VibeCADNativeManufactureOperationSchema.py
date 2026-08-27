@@ -1836,6 +1836,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=_closed(
                     {
+                        "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
                         "geometry": _FEATURE_SELECTION,

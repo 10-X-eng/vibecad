@@ -16,7 +16,7 @@ from VibeCADNativeManufactureSimulationResultInput import (
 from VibeCADNativeManufactureSimulationResultWorker import (
     PreparedNativeSimulation,
 )
-from VibeCADNativeManufactureState import job_state, operation_reference_state
+from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeMeshState import mesh_object_state
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity, object_reference, read_current_selection
@@ -375,7 +375,7 @@ def verify_native_simulation_result(
         job_state(frozen.job).get("state_sha256")
         != frozen.expected_job_state_sha256
         or any(
-            operation_reference_state(run.operation).get("state_sha256")
+            operation_state(run.operation).get("state_sha256")
             != run.expected_state_sha256
             for run in frozen.runs
         )
