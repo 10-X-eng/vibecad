@@ -10,6 +10,7 @@ set(VibeCAD_Scripts
     VibeCADAnalysisLocalProvider.py
     VibeCADAnalysisProviders.py
     VibeCADAnalysisPersistence.py
+    VibeCADAnalysisPublication.py
     VibeCADAnalysisRuntime.py
     VibeCADAnalyzeStudyGui.py
     VibeCADAnalyzeGeometryGui.py
