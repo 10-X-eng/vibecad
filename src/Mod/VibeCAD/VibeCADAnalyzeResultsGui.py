@@ -12,6 +12,10 @@ from PySide import QtCore, QtWidgets
 
 from VibeCADNativeAnalyzeFlowPresentation import present_flow_result
 from VibeCADNativeAnalyzeResultState import result_state
+from VibeCADEngineeringChartSeries import (
+    chart_series_from_analysis,
+    chart_series_from_visualization,
+)
 from VibeCADEngineeringFieldAdapters import presentation_from_result_state
 
 
@@ -31,6 +35,7 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self._states: dict[str, dict[str, Any]] = {}
         self._presentations: dict[str, Any] = {}
         self._summaries: dict[str, dict[str, Any]] = {}
+        self._charts: dict[str, Any] = {}
         layout = QtWidgets.QVBoxLayout(self)
 
         self.result_combo = QtWidgets.QComboBox()
@@ -83,6 +88,26 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         deformation.addWidget(self.deformation_scale)
         fields_layout.addLayout(deformation)
         layout.addWidget(fields)
+
+        charts = QtWidgets.QGroupBox("Engineering Charts")
+        charts.setObjectName("VibeCADEngineeringChartsCard")
+        charts.setProperty("vibeResultCard", True)
+        charts_layout = QtWidgets.QVBoxLayout(charts)
+        self.chart_table = QtWidgets.QTreeWidget()
+        self.chart_table.setObjectName("VibeCADEngineeringChartSeries")
+        self.chart_table.setAccessibleName("Available owner-rendered engineering charts")
+        self.chart_table.setHeaderLabels(
+            ("Chart", "Type", "Samples", "X axis", "Y axis", "Units")
+        )
+        self.chart_table.setRootIsDecorated(False)
+        self.chart_table.setAlternatingRowColors(True)
+        charts_layout.addWidget(self.chart_table)
+        self.open_chart_button = QtWidgets.QPushButton("Open Selected Chart")
+        self.open_chart_button.setObjectName("VibeCADEngineeringOpenChart")
+        self.open_chart_button.clicked.connect(self._open_selected_chart)
+        self.open_chart_button.setEnabled(False)
+        charts_layout.addWidget(self.open_chart_button)
+        layout.addWidget(charts)
 
         status = QtWidgets.QGroupBox("Governed State")
         status.setObjectName("VibeCADEngineeringStatusCard")
@@ -233,6 +258,64 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         state = self._states.get(name, {})
         self.deformation_scale.setEnabled(state.get("result_kind") == "result")
 
+    def _render_charts(self) -> None:
+        previous = ""
+        current = self.chart_table.currentItem()
+        if current is not None:
+            previous = str(current.data(0, QtCore.Qt.UserRole) or "")
+        self.chart_table.clear()
+        selected = None
+        for chart in self._charts.values():
+            x_axis = chart.x_axis
+            x_text = "Unavailable" if x_axis is None else x_axis.label
+            y_text = ", ".join(axis.label for axis in chart.y_axes) or "Unavailable"
+            units = []
+            if x_axis is not None:
+                units.append(f"X: {x_axis.unit or 'Unavailable'}")
+            if chart.y_axes:
+                y_units = sorted({axis.unit or "Unavailable" for axis in chart.y_axes})
+                units.append("Y: " + ", ".join(y_units))
+            item = QtWidgets.QTreeWidgetItem(
+                (
+                    chart.label,
+                    chart.kind.replace("_", " ").title(),
+                    str(chart.row_count),
+                    x_text,
+                    y_text,
+                    " · ".join(units) or "Unavailable",
+                )
+            )
+            item.setData(0, QtCore.Qt.UserRole, chart.series_id)
+            self.chart_table.addTopLevelItem(item)
+            if chart.series_id == previous:
+                selected = item
+        if selected is None and self.chart_table.topLevelItemCount():
+            selected = self.chart_table.topLevelItem(0)
+        if selected is not None:
+            self.chart_table.setCurrentItem(selected)
+        for column in range(self.chart_table.columnCount()):
+            self.chart_table.resizeColumnToContents(column)
+        self.open_chart_button.setEnabled(bool(self._charts))
+
+    def _open_selected_chart(self) -> None:
+        item = self.chart_table.currentItem()
+        name = str(item.data(0, QtCore.Qt.UserRole) or "") if item is not None else ""
+        expected = self._charts.get(name)
+        owner = self._document.getObject(name) if self._document is not None else None
+        try:
+            if expected is None or owner is None:
+                raise RuntimeError("The selected chart owner is no longer available.")
+            current = chart_series_from_visualization(owner)
+            if current.owner_state_sha256 != expected.owner_state_sha256:
+                raise RuntimeError("The selected chart changed; refresh before opening it.")
+            presenter = getattr(getattr(owner, "ViewObject", None), "Proxy", None)
+            show = getattr(presenter, "show_visualization", None)
+            if not callable(show):
+                raise RuntimeError("The selected chart owner has no rendering action.")
+            show()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Engineering Chart", str(exc))
+
     def refresh(self, document: Any, analysis: Any) -> None:
         previous = str(self.result_combo.currentData() or "")
         previous_candidate = str(self.compare_result_combo.currentData() or "")
@@ -240,7 +323,10 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self._states = {}
         self._presentations = {}
         self._summaries = {}
+        self._charts = {}
         if document is not None and analysis is not None:
+            for chart in chart_series_from_analysis(analysis):
+                self._charts[chart.series_id] = chart
             for member in tuple(getattr(analysis, "Group", ()) or ()):
                 try:
                     state = result_state(member)
@@ -278,6 +364,7 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
             self.compare_result_combo.setCurrentIndex(1)
         self.result_combo.blockSignals(False)
         self.compare_result_combo.blockSignals(False)
+        self._render_charts()
         self._render()
 
     def _selected(self) -> tuple[Any | None, dict[str, Any] | None]:

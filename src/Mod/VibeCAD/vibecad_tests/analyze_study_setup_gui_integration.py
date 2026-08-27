@@ -155,6 +155,14 @@ def _run() -> None:
         assert not widget.results_browser.deformation_scale.isEnabled()
         assert (
             widget.results_browser.findChild(
+                QtWidgets.QGroupBox, "VibeCADEngineeringChartsCard"
+            )
+            is not None
+        )
+        assert widget.results_browser.chart_table.topLevelItemCount() == 0
+        assert not widget.results_browser.open_chart_button.isEnabled()
+        assert (
+            widget.results_browser.findChild(
                 QtWidgets.QGroupBox, "VibeCADEngineeringPerformanceCard"
             )
             is not None

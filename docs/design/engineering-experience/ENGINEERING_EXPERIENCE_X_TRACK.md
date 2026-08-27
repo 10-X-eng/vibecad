@@ -151,7 +151,13 @@ workbench or authority layer. The implementation sequence is:
    acceptance remain.
 7. **EVS-07 — engineering charts (X1/X5/X6).** Reuse the existing table,
    histogram and line-plot owners for real convergence, history and comparison
-   series with declared axes/units. No cosmetic data.
+   series with declared axes/units. No cosmetic data. **Partial owner-backed
+   slice:** the Analyze browser now discovers existing FEM post table,
+   histogram and line-plot owners, projects bounded sample/range/axis/unit
+   descriptors without copying value arrays, and invokes only the owner's
+   rendering action after an exact streaming table-state freshness check.
+   Dedicated convergence/history/comparison associations, governed G1/G2/G5
+   series and installed GUI acceptance remain.
 8. **EVS-08 — durable Analysis activity dashboard (X2/X5).** Connect exact G2
    attempts, artifacts, recovery/publication state and G5 workflow nodes to
    the shell. Progress and counters come only from durable owners.

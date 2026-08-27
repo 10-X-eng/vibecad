@@ -18,6 +18,7 @@ from .governed_optimization import OPTIMIZATION_SCHEMA_VERSION
 EXPERIENCE_SCHEMA_VERSION = 1
 MAX_PRESENTATION_METRICS = 128
 MAX_PRESENTATION_FIELDS = 128
+MAX_PRESENTATION_CHART_SERIES = 64
 MAX_LABEL_LENGTH = 160
 MAX_UNIT_LENGTH = 48
 MAX_ACTIVITY_ATTEMPTS = 256
@@ -159,6 +160,80 @@ class EngineeringFieldViewState:
 
     def to_dict(self) -> dict[str, Any]:
         return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringChartAxis:
+    label: str
+    unit: str | None
+    minimum: float
+    maximum: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "label", _text(self.label, "chart axis label"))
+        if self.unit is not None:
+            object.__setattr__(self, "unit", _text(self.unit, "chart axis unit", MAX_UNIT_LENGTH))
+        object.__setattr__(self, "minimum", _number(self.minimum, "chart axis minimum"))
+        object.__setattr__(self, "maximum", _number(self.maximum, "chart axis maximum"))
+        if self.minimum > self.maximum:
+            raise AnalysisContractError("Chart axis minimum cannot exceed maximum.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringChartSeries:
+    """Bounded descriptor for data retained and rendered by an existing owner."""
+
+    series_id: str
+    label: str
+    kind: str
+    row_count: int
+    x_axis: EngineeringChartAxis | None
+    y_axes: tuple[EngineeringChartAxis, ...]
+    owner_state_sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "series_id", _text(self.series_id, "series_id"))
+        object.__setattr__(self, "label", _text(self.label, "chart label"))
+        if self.kind not in {"table", "histogram", "line_plot"}:
+            raise AnalysisContractError("Unknown engineering chart kind.")
+        if type(self.row_count) is not int or self.row_count < 1:
+            raise AnalysisContractError("Engineering chart row_count must be positive.")
+        if self.x_axis is not None and not isinstance(self.x_axis, EngineeringChartAxis):
+            raise AnalysisContractError("Engineering chart x_axis is invalid.")
+        axes = tuple(self.y_axes)
+        if len(axes) > MAX_PRESENTATION_CHART_SERIES or any(
+            not isinstance(axis, EngineeringChartAxis) for axis in axes
+        ):
+            raise AnalysisContractError("Engineering chart series exceed their bounded contract.")
+        if self.kind == "line_plot" and (self.x_axis is None or not axes):
+            raise AnalysisContractError("Line plots require exact x and y axis descriptors.")
+        if self.kind == "histogram" and (self.x_axis is None or axes):
+            raise AnalysisContractError(
+                "Histogram projections expose only their exact source-value axis."
+            )
+        if self.kind == "table" and (self.x_axis is not None or not axes):
+            raise AnalysisContractError("Tables require one or more exact column descriptors.")
+        object.__setattr__(self, "y_axes", axes)
+        digest = _text(self.owner_state_sha256, "owner_state_sha256", 64)
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise AnalysisContractError("owner_state_sha256 must be a lowercase SHA-256 digest.")
+        object.__setattr__(self, "owner_state_sha256", digest)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "series_id": self.series_id,
+            "label": self.label,
+            "kind": self.kind,
+            "row_count": self.row_count,
+            "x_axis": None if self.x_axis is None else self.x_axis.to_dict(),
+            "y_axes": [axis.to_dict() for axis in self.y_axes],
+            "owner_state_sha256": self.owner_state_sha256,
+            "values_copied": False,
+            "presentation_owner_unchanged": True,
+        }
 
 
 @dataclass(frozen=True, slots=True)

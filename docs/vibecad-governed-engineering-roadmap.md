@@ -1283,8 +1283,14 @@ advertise that capability. Mesh-edge/undeformed controls, scoped presets and
 installed GUI evidence remain.
 5. **EVS-07 through EVS-09 / X2/X5/X6:** connect real chart series, durable
    Analysis activity/workflow state and exact comparable-result projections.
-   Do not fabricate data or grant scheduling, ranking, selection, mutation or
-   publication authority.
+   The first EVS-07 increment now discovers the existing FEM post table,
+   histogram and line-plot owners in the selected Analysis, presents bounded
+   axis/unit/range/sample descriptors, and delegates display to those owners
+   only after a full bounded table-state freshness check. It does not copy
+   scientific value arrays or claim dedicated convergence/history/comparison
+   association. Those associations, governed G1/G2/G5 series and installed GUI
+   acceptance remain. Do not fabricate data or grant scheduling, ranking,
+   selection, mutation or publication authority.
 6. **Continue G-track closure in dependency order:** complete G2/G5 acceptance,
    G7 stale/restart/installed behavior, and the current G8/G9 Assembly
    identity/interface/inference acceptance. Advance X3/X4 and X7-X12 only from
