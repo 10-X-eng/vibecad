@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -139,6 +140,30 @@ def _set_provenance(result: Any, prepared: PreparedNativeSimulation) -> None:
         "RetainedStockSolidCount",
         "Solid regions in the remaining stock",
     )
+    _add_read_only_property(
+        result,
+        "App::PropertyBool",
+        "SimulationProtectedModelChecked",
+        "Whether cutter sweeps were checked against the protected model",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyBool",
+        "SimulationProtectedModelCollision",
+        "Whether a cutting sweep entered protected model volume",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyInteger",
+        "SimulationCollisionCommandCount",
+        "Cutting commands that entered protected model volume",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyString",
+        "SimulationVerificationJSON",
+        "Structured verification coverage and findings",
+    )
     result.SimulationJob = frozen.job
     result.SimulationJobName = str(frozen.job.Name)
     result.SimulationJobStateSHA256 = frozen.expected_job_state_sha256
@@ -149,6 +174,18 @@ def _set_provenance(result: Any, prepared: PreparedNativeSimulation) -> None:
     result.RetainedStockShape = prepared.stock_shape
     result.RetainedStockShapeSHA256 = prepared.stock_shape_sha256
     result.RetainedStockSolidCount = prepared.stock_solid_count
+    protected = prepared.verification["protected_model"]
+    result.SimulationProtectedModelChecked = bool(protected["checked"])
+    result.SimulationProtectedModelCollision = bool(protected["collision"])
+    result.SimulationCollisionCommandCount = int(
+        protected["collision_command_count"]
+    )
+    result.SimulationVerificationJSON = json.dumps(
+        prepared.verification,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def create_native_simulation_result(
@@ -301,6 +338,19 @@ def verify_native_simulation_result(
         != prepared.stock_shape_sha256
         or int(getattr(result, "RetainedStockSolidCount", 0) or 0)
         != prepared.stock_solid_count
+        or bool(getattr(result, "SimulationProtectedModelChecked", False))
+        is not bool(prepared.verification["protected_model"]["checked"])
+        or bool(getattr(result, "SimulationProtectedModelCollision", False))
+        is not bool(prepared.verification["protected_model"]["collision"])
+        or int(getattr(result, "SimulationCollisionCommandCount", -1))
+        != int(prepared.verification["protected_model"]["collision_command_count"])
+        or str(getattr(result, "SimulationVerificationJSON", ""))
+        != json.dumps(
+            prepared.verification,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         or str(getattr(result, "VibeCADTimelineRole", "") or "") != "operation"
         or getattr(result, "VibeCADTimelineOwner", None) is not None
         or tuple(getattr(result, "VibeCADTimelineReplacedInputs", ()) or ())
@@ -357,5 +407,6 @@ def verify_native_simulation_result(
                 ),
                 "modified_cells": int(statistics["modified_cells"]),
             },
+            "verification": dict(prepared.verification),
         }
     }

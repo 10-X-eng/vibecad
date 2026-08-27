@@ -97,6 +97,7 @@ class FrozenNativeSimulation:
     tool_resolution_mm: float
     stock_shape: Any
     stock_z_max_mm: float
+    protected_model_shapes: tuple[Any, ...]
     runs: tuple[FrozenSimulationRun, ...]
     source_command_count: int
     executable_command_count: int
@@ -201,6 +202,32 @@ def _validate_commands(
             repair={"unsupported_commands": unsupported},
         )
     return executable
+
+
+def _tool_sweep_parameters(tool: Any) -> tuple[str, tuple[tuple[str, float], ...]]:
+    shape_id = str(getattr(tool, "ShapeID", "") or "").strip()
+    names = (
+        "Diameter",
+        "CuttingEdgeHeight",
+        "Length",
+        "TipAngle",
+        "CuttingEdgeAngle",
+        "TipDiameter",
+    )
+    values = []
+    properties = set(str(name) for name in getattr(tool, "PropertiesList", ()) or ())
+    for name in names:
+        if name not in properties:
+            continue
+        raw = getattr(tool, name)
+        value = float(getattr(raw, "Value", raw))
+        if not math.isfinite(value):
+            _error(
+                f"CAM ToolBit {tool.Name!r} has non-finite {name}.",
+                "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
+            )
+        values.append((name, value))
+    return shape_id, tuple(values)
 
 
 def _simulation_resolutions(stock_shape: Any, quality: int) -> tuple[float, float, float]:
@@ -362,6 +389,7 @@ def preflight_native_simulation(
                 f"CAM operation {operation.Name!r} has an invalid tool number or diameter.",
                 "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
             )
+        tool_shape_id, tool_parameters = _tool_sweep_parameters(tool)
         runs.append(
             FrozenSimulationRun(
                 operation=operation,
@@ -373,6 +401,8 @@ def preflight_native_simulation(
                 tool_shape=tool_shape.copy(),
                 tool_number=tool_number,
                 diameter_mm=diameter,
+                tool_shape_id=tool_shape_id,
+                tool_parameters=tool_parameters,
             )
         )
 
@@ -389,6 +419,16 @@ def preflight_native_simulation(
             "NATIVE_MANUFACTURE_SIMULATION_STOCK_INVALID",
         )
     _usable_at_history_position(document, stock, "CAM stock")
+    protected_model_shapes = tuple(
+        getattr(model, "Shape", None).copy()
+        for model in tuple(getattr(getattr(exact_job, "Model", None), "Group", ()) or ())
+        if valid_simulation_shape(getattr(model, "Shape", None))
+    )
+    if not protected_model_shapes:
+        _error(
+            "The exact CAM Job has no valid protected model shape.",
+            "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
+        )
     accuracy, stock_resolution, tool_resolution = _simulation_resolutions(
         stock_shape,
         quality,
@@ -426,6 +466,7 @@ def preflight_native_simulation(
         tool_resolution_mm=tool_resolution,
         stock_shape=stock_shape.copy(),
         stock_z_max_mm=float(stock_shape.BoundBox.ZMax),
+        protected_model_shapes=protected_model_shapes,
         runs=tuple(runs),
         source_command_count=source_count,
         executable_command_count=executable_count,

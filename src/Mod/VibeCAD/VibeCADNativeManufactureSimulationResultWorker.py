@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import math
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping
 
 from VibeCADNativeBackground import NativeBackgroundCancelled
@@ -31,6 +32,7 @@ class PreparedNativeSimulation:
     stock_shape_type: str
     stock_solid_count: int
     stock_shape_sha256: str
+    verification: Mapping[str, Any]
     statistics: Mapping[str, Any]
     program_sha256: str
     executed_command_count: int
@@ -167,6 +169,29 @@ def _validate_statistics(statistics: Mapping[str, Any]) -> None:
             )
 
 
+def _tool_proxy(run: Any) -> Any:
+    parameters = dict(run.tool_parameters)
+    return SimpleNamespace(
+        Name=run.operation_name,
+        ShapeID=run.tool_shape_id,
+        PropertiesList=tuple(parameters),
+        **parameters,
+    )
+
+
+def _collision_bounds(shape: Any) -> dict[str, list[float]] | None:
+    if shape is None or shape.isNull():
+        return None
+    box = shape.BoundBox
+    values = tuple(
+        float(getattr(box, name))
+        for name in ("XMin", "YMin", "ZMin", "XMax", "YMax", "ZMax")
+    )
+    if not bool(box.isValid()) or any(not math.isfinite(value) for value in values):
+        return None
+    return {"min": list(values[:3]), "max": list(values[3:])}
+
+
 def execute_native_simulation(
     frozen: FrozenNativeSimulation,
     *,
@@ -180,6 +205,8 @@ def execute_native_simulation(
     try:
         import FreeCAD
         import Path
+        import Part
+        import Path.Main.Simulation as NativeSimulation
         import PathScripts.PathUtils as PathUtils
         import PathSimulator
 
@@ -187,6 +214,12 @@ def execute_native_simulation(
         progress(4, "Initializing detached stock")
         simulator = PathSimulator.PathSim()
         simulator.BeginSimulation(frozen.stock_shape, frozen.stock_resolution_mm)
+        protected_model = Part.makeCompound(list(frozen.protected_model_shapes))
+        if protected_model.isNull() or not protected_model.isValid():
+            _error(
+                "Native CAM verification could not build the protected model.",
+                "NATIVE_MANUFACTURE_SIMULATION_RESULT_INVALID",
+            )
         _cancel(cancelled)
 
         digest = hashlib.sha256()
@@ -196,6 +229,9 @@ def execute_native_simulation(
         )
         processed_sources = 0
         executed = 0
+        collision_count = 0
+        collision_records = []
+        maximum_collision_records = 32
         total_sources = max(1, frozen.source_command_count)
         for run_index, run in enumerate(frozen.runs):
             _cancel(cancelled)
@@ -228,6 +264,41 @@ def execute_native_simulation(
                 FreeCAD.Rotation(),
             )
             first_cycle = True
+
+            def apply(command: Any, source_index: int, *, rapid: bool) -> None:
+                nonlocal position, executed, collision_count
+                _cancel(cancelled)
+                if not rapid:
+                    try:
+                        sweep, _end = NativeSimulation._swept_tool(
+                            _tool_proxy(run),
+                            command,
+                            FreeCAD.Vector(position.Base),
+                        )
+                    except Exception as exc:
+                        raise NativeManufactureError(
+                            f"CAM operation {run.operation_name!r} command "
+                            f"{source_index} could not be verified: {exc}",
+                            error_code="NATIVE_MANUFACTURE_VERIFICATION_FAILED",
+                        ) from exc
+                    if sweep is not None:
+                        overlap = sweep.common(protected_model)
+                        volume = float(overlap.Volume) if not overlap.isNull() else 0.0
+                        if volume > 1.0e-7:
+                            collision_count += 1
+                            if len(collision_records) < maximum_collision_records:
+                                collision_records.append(
+                                    {
+                                        "operation": run.operation_name,
+                                        "command_index": source_index,
+                                        "command": canonical_simulation_command(command.Name),
+                                        "volume_mm3": round(volume, 9),
+                                        "bounds_mm": _collision_bounds(overlap),
+                                    }
+                                )
+                position = simulator.ApplyCommand(position, command)
+                executed += 1
+
             for source_index, command in enumerate(placed_commands):
                 _cancel(cancelled)
                 name = canonical_simulation_command(command.Name)
@@ -235,8 +306,7 @@ def execute_native_simulation(
                 digest.update(len(gcode).to_bytes(8, "big"))
                 digest.update(gcode)
                 if is_motion_simulation_command(name):
-                    position = simulator.ApplyCommand(position, command)
-                    executed += 1
+                    apply(command, source_index, rapid=name == "G0")
                     first_cycle = True
                 elif is_canned_simulation_command(name):
                     for expanded in _expanded_cycle(
@@ -245,9 +315,11 @@ def execute_native_simulation(
                         source_index=source_index,
                         include_initial_retract=first_cycle,
                     ):
-                        _cancel(cancelled)
-                        position = simulator.ApplyCommand(position, expanded)
-                        executed += 1
+                        apply(
+                            expanded,
+                            source_index,
+                            rapid=canonical_simulation_command(expanded.Name) == "G0",
+                        )
                     first_cycle = False
                 elif name == "G80":
                     first_cycle = True
@@ -306,6 +378,22 @@ def execute_native_simulation(
                 "NATIVE_MANUFACTURE_SIMULATION_RESULT_INVALID",
             )
         progress(89, "Prepared retained material result")
+        verification = {
+            "protected_model": {
+                "checked": True,
+                "collision": collision_count > 0,
+                "collision_command_count": collision_count,
+                "collisions": collision_records,
+                "collisions_truncated": collision_count > len(collision_records),
+            },
+            "unavailable_checks": [
+                "holder_collision",
+                "fixture_collision",
+                "rapid_clearance",
+                "machine_travel",
+                "cycle_time",
+            ],
+        }
         return PreparedNativeSimulation(
             frozen=frozen,
             mesh=result_mesh,
@@ -316,6 +404,7 @@ def execute_native_simulation(
             stock_shape_type=stock_shape_type,
             stock_solid_count=len(stock_solids),
             stock_shape_sha256=stock_shape_sha256,
+            verification=verification,
             statistics=statistics,
             program_sha256=digest.hexdigest(),
             executed_command_count=executed,

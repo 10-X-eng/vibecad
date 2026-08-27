@@ -118,6 +118,14 @@ def simulation_result_state(result: Any) -> dict[str, Any]:
         and len(tuple(retained_shape.Solids)) == retained_solid_count
         and len(retained_shape_sha256) == 64
     )
+    try:
+        verification = json.loads(
+            str(getattr(result, "SimulationVerificationJSON", "") or "{}")
+        )
+    except (TypeError, ValueError):
+        verification = {}
+    if not isinstance(verification, Mapping):
+        verification = {}
     valid_provenance = bool(
         math.isfinite(resolution)
         and resolution > 0.0
@@ -162,6 +170,7 @@ def simulation_result_state(result: Any) -> dict[str, Any]:
             "solid_count": retained_solid_count,
             "shape_sha256": retained_shape_sha256,
         },
+        "verification": dict(verification),
     }
     state["state_sha256"] = _digest(state)
     return state

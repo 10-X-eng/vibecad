@@ -328,6 +328,23 @@ def _assert_retained_result(document, result, job, operation, quality: int) -> N
     assert len(result.RetainedStockShape.Solids) >= 1
     assert len(result.RetainedStockShapeSHA256) == 64
     assert result.RetainedStockSolidCount == len(result.RetainedStockShape.Solids)
+    assert result.SimulationProtectedModelChecked is True
+    assert result.SimulationProtectedModelCollision is False
+    assert result.SimulationCollisionCommandCount == 0
+    verification = json.loads(result.SimulationVerificationJSON)
+    assert verification["protected_model"] == {
+        "checked": True,
+        "collision": False,
+        "collision_command_count": 0,
+        "collisions": [],
+        "collisions_truncated": False,
+    }
+    assert {
+        "holder_collision",
+        "fixture_collision",
+        "rapid_clearance",
+        "machine_travel",
+    }.issubset(verification["unavailable_checks"])
     assert result.VibeCADTimelineRole == "operation"
     assert getattr(result, "VibeCADTimelineOwner", None) is None
     assert not tuple(getattr(result, "VibeCADTimelineReplacedInputs", ()) or ())
@@ -593,6 +610,9 @@ def _run() -> None:
         assert payload["simulation_result"]["executed_command_count"] >= 1
         assert payload["simulation_result"]["tool_run_count"] == 1
         assert len(payload["simulation_result"]["program_sha256"]) == 64
+        assert payload["simulation_result"]["verification"] == json.loads(
+            result.SimulationVerificationJSON
+        )
         assert payload["assistant_undo_available"] is True
         assert [item["object_name"] for item in payload["receipt"]["created"]] == [
             result.Name

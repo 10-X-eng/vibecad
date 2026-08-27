@@ -1349,6 +1349,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_manufacture_start_point_gui_integration.py
     vibecad_tests/native_manufacture_gl_simulation_gui_integration.py
     vibecad_tests/native_manufacture_simulation_result_gui_integration.py
+    vibecad_tests/native_manufacture_verification_gui_integration.py
     vibecad_tests/native_path_simulator_solid_mesh_gui_integration.py
         vibecad_tests/native_manufacture_camotics_gui_support.py
         vibecad_tests/native_manufacture_camotics_gui_integration.py

@@ -46,6 +46,8 @@ class FrozenSimulationRun:
     tool_shape: Any
     tool_number: int
     diameter_mm: float
+    tool_shape_id: str = ""
+    tool_parameters: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

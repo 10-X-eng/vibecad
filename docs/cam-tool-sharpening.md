@@ -298,6 +298,11 @@ comparison, not implementation instructions.
 - PathSimulator produces its visual preview Mesh and a separate exact solid
   representation of the simulated height field. Follow-up setups consume the
   solid representation; they do not attempt to repair the render Mesh.
+- Retained simulation checks exact detached cutter sweeps against the protected
+  setup model off the document thread. Collision-free and deliberate-gouge gates
+  prove both outcomes; result objects retain bounded collision evidence and name
+  holder, fixture, rapid-clearance, machine-travel, and cycle-time checks as
+  unavailable rather than passing them implicitly.
 - On a two-operation bracket, Qwen selected retained-stock simulation, polled its
   background job, and created a follow-up setup with no failed calls. Terra/high
   independently retained the stock and created the follow-up setup with no failed
