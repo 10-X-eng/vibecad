@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 import re
@@ -27,6 +28,8 @@ PROP_NATIVE_INTERFACE_KIND = "VibeCADInterfaceKind"
 PROP_NATIVE_INTERFACE_ALLOWED_JOINTS = "VibeCADInterfaceAllowedJoints"
 PROP_NATIVE_INTERFACE_COMPATIBILITY = "VibeCADInterfaceCompatibility"
 PROP_NATIVE_INTERFACE_FIT = "VibeCADInterfaceFit"
+PROP_NATIVE_INTERFACE_GEOMETRY = "VibeCADInterfaceGeometryBinding"
+INTERFACE_GEOMETRY_SCHEMA = "vibecad-interface-geometry-binding-v1"
 INTERFACE_FIT_SCHEMA = "vibecad-interface-fit-v1"
 INTERFACE_FIT_CLASSES = frozenset({
     "bearing", "clearance", "custom", "interference", "threaded", "transition",
@@ -114,6 +117,93 @@ def normalize_interface_fit(value: Any) -> dict[str, Any] | None:
     return result
 
 
+def _native_support_entries(lcs: Any) -> list[tuple[Any, list[str]]]:
+    raw = getattr(lcs, "AttachmentSupport", None)
+    if not raw:
+        raw = getattr(lcs, "Support", None)
+    if not raw:
+        return []
+    if isinstance(raw, tuple) and len(raw) == 2 and hasattr(raw[0], "Name"):
+        raw = [raw]
+    entries: list[tuple[Any, list[str]]] = []
+    for item in list(raw)[:8]:
+        if not isinstance(item, (tuple, list)) or len(item) != 2 or not hasattr(item[0], "Name"):
+            continue
+        subelements = item[1]
+        if isinstance(subelements, str):
+            subelements = [subelements]
+        entries.append((item[0], sorted(str(value) for value in list(subelements)[:32] if str(value))))
+    return entries
+
+
+def capture_native_interface_geometry(lcs: Any) -> dict[str, Any]:
+    """Capture conservative LCS support evidence for later invalidation checks."""
+
+    supports = []
+    status = "current"
+    for source, subelements in _native_support_entries(lcs):
+        shape = getattr(source, "Shape", None)
+        export = getattr(shape, "exportBrepToString", None)
+        shape_hash = ""
+        if callable(export):
+            try:
+                shape_hash = hashlib.sha256(str(export()).encode("utf-8")).hexdigest()
+            except Exception:
+                status = "indeterminate"
+        else:
+            status = "indeterminate"
+        supports.append({
+            "object_name": str(source.Name),
+            "subelements": subelements,
+            **({"shape_sha256": shape_hash} if shape_hash else {}),
+        })
+    if not supports:
+        status = "unbound"
+    snapshot = {
+        "schema": INTERFACE_GEOMETRY_SCHEMA,
+        "map_mode": str(getattr(lcs, "MapMode", "") or ""),
+        "supports": supports,
+    }
+    return {**snapshot, "binding_sha256": _interface_geometry_hash(snapshot), "status": status}
+
+
+def _interface_geometry_hash(value: Mapping[str, Any]) -> str:
+    payload = {key: value[key] for key in ("schema", "map_mode", "supports") if key in value}
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def native_interface_geometry_currentness(lcs: Any) -> dict[str, Any]:
+    """Compare persisted support evidence with the current LCS support graph."""
+
+    raw = str(getattr(lcs, PROP_NATIVE_INTERFACE_GEOMETRY, "") or "").strip()
+    if not raw:
+        return {"schema": INTERFACE_GEOMETRY_SCHEMA, "status": "unrecorded"}
+    try:
+        recorded = json.loads(raw)
+    except ValueError:
+        return {"schema": INTERFACE_GEOMETRY_SCHEMA, "status": "invalid"}
+    if not isinstance(recorded, Mapping) or recorded.get("schema") != INTERFACE_GEOMETRY_SCHEMA:
+        return {"schema": INTERFACE_GEOMETRY_SCHEMA, "status": "invalid"}
+    live = capture_native_interface_geometry(lcs)
+    recorded_hash = str(recorded.get("binding_sha256") or "")
+    if recorded.get("status") == "unbound" and live["status"] == "unbound":
+        status = "unbound"
+    elif live["status"] == "indeterminate":
+        status = "indeterminate"
+    else:
+        status = "current" if recorded_hash == live["binding_sha256"] else "stale"
+    return {
+        "schema": INTERFACE_GEOMETRY_SCHEMA,
+        "status": status,
+        "recorded_binding_sha256": recorded_hash,
+        "live_binding_sha256": live["binding_sha256"],
+        "map_mode": live["map_mode"],
+        "supports": live["supports"],
+    }
+
+
 def is_native_coordinate_system(obj: Any) -> bool:
     """Return whether *obj* is one shipped native coordinate-system type."""
 
@@ -189,6 +279,7 @@ def native_interface_definitions(component: Any) -> dict[str, dict[str, Any]]:
                 "subelements": [],
                 "geometry": [],
                 "connector_frame": _placement_frame(lcs.Placement),
+                "geometry_binding": native_interface_geometry_currentness(lcs),
             },
         }
     return definitions
@@ -282,6 +373,7 @@ def publish_native_interface(
         ("App::PropertyString", PROP_NATIVE_INTERFACE_ALLOWED_JOINTS, "JSON list of allowed Assembly joint kinds."),
         ("App::PropertyString", PROP_NATIVE_INTERFACE_COMPATIBILITY, "Exact connector compatibility token."),
         ("App::PropertyString", PROP_NATIVE_INTERFACE_FIT, "Versioned explicit engineering fit JSON."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_GEOMETRY, "Canonical LCS support binding and shape evidence."),
     ):
         if property_name not in set(getattr(lcs, "PropertiesList", []) or []):
             lcs.addProperty(
@@ -303,6 +395,12 @@ def publish_native_interface(
         lcs,
         PROP_NATIVE_INTERFACE_FIT,
         "" if spec.fit is None else json.dumps(spec.fit, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+    )
+    geometry_binding = capture_native_interface_geometry(lcs)
+    setattr(
+        lcs,
+        PROP_NATIVE_INTERFACE_GEOMETRY,
+        json.dumps(geometry_binding, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
     )
     return native_interface_definitions(component)[spec.name]
 
@@ -550,6 +648,9 @@ def component_interface_descriptors(
         frame = resolved.get("connector_frame")
         if isinstance(frame, Mapping):
             descriptor["frame"] = dict(frame)
+        geometry_binding = resolved.get("geometry_binding")
+        if isinstance(geometry_binding, Mapping):
+            descriptor["geometry_binding"] = dict(geometry_binding)
         descriptors.append(descriptor)
     return bool(native), descriptors
 
@@ -598,7 +699,7 @@ def connector_interface_record(
             origin = [float(value) for value in raw_origin]
         if isinstance(raw_axis, list) and len(raw_axis) == 3:
             axis = [float(value) for value in raw_axis]
-    return {
+    record = {
         "selection": {
             "type": "published_interface",
             "interface_name": name,
@@ -609,6 +710,10 @@ def connector_interface_record(
         "origin_mm": origin,
         "axis": axis,
     }
+    geometry_binding = descriptor.get("geometry_binding")
+    if isinstance(geometry_binding, Mapping):
+        record["geometry_binding"] = dict(geometry_binding)
+    return record
 
 
 def resolve_component_interface(source: Any, interface_name: str) -> dict[str, Any]:

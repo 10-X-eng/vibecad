@@ -141,6 +141,13 @@ def propose_joints(
             semantic_equal = bool(left.get("kind")) and left.get("kind") == right.get("kind")
             left_fit = left.get("fit")
             right_fit = right.get("fit")
+            left_geometry = left.get("geometry_binding")
+            right_geometry = right.get("geometry_binding")
+            geometry_statuses = [
+                str(value.get("status") or "unrecorded")
+                if isinstance(value, Mapping) else "unrecorded"
+                for value in (left_geometry, right_geometry)
+            ]
             fit_declared_both = isinstance(left_fit, Mapping) and isinstance(right_fit, Mapping)
             fit_equal = fit_declared_both and dict(left_fit) == dict(right_fit)
             fit_conflict = fit_declared_both and not fit_equal
@@ -148,7 +155,10 @@ def propose_joints(
                 continue
             if fit_conflict:
                 continue
-            score = 100 + (20 if compatibility_equal else 0) + (15 if fit_equal else 0) + (10 if semantic_equal else 0)
+            if any(status in {"stale", "invalid"} for status in geometry_statuses):
+                continue
+            geometry_current = all(status == "current" for status in geometry_statuses)
+            score = 100 + (20 if compatibility_equal else 0) + (15 if fit_equal else 0) + (10 if semantic_equal else 0) + (15 if geometry_current else 0)
             if left["persistent_id"] in occupied or right["persistent_id"] in occupied:
                 score -= 50
             for joint_kind in kinds:
@@ -157,7 +167,11 @@ def propose_joints(
                     "joint_kind": joint_kind,
                     "interface_ids": [left["persistent_id"], right["persistent_id"]],
                     "score": score,
-                    "confidence": "high" if compatibility_equal and semantic_equal else "bounded",
+                    "confidence": (
+                        "high"
+                        if compatibility_equal and semantic_equal and geometry_current
+                        else "bounded"
+                    ),
                     "evidence": {
                         "compatibility_equal": compatibility_equal,
                         "fit_status": (
@@ -165,6 +179,10 @@ def propose_joints(
                             "partial" if isinstance(left_fit, Mapping) != isinstance(right_fit, Mapping)
                             else "undeclared"
                         ),
+                        "geometry_currentness": {
+                            left["persistent_id"]: geometry_statuses[0],
+                            right["persistent_id"]: geometry_statuses[1],
+                        },
                         "semantic_kind_equal": semantic_equal,
                         "allowed_by_both": True,
                     },

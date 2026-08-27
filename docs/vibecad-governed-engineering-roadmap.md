@@ -311,7 +311,7 @@ behavior while it waits for host persistence/workflows.
 | G5 — workflow DAG | H | **Partial** | The bounded durable DAG, scheduler, restart, cancellation, retry, and publish-once core is implemented; wire real G2 jobs/domain adapters and prove installed/runtime and real five-stage FEM acceptance. |
 | G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
 | G7 — Manufacture runtime integration | J | **Partial runtime integration** | Post, CAMotics, live GL simulation and retained simulation now create exact durable G2 Analysis/G5 workflow records and bounded X7 evidence while preserving owner-specific claim ceilings; A/B, stale/restart and authoritative installed closure remain. |
-| G8 — Assembly consolidation | K, L, N | **Partial identity/interface/evidence foundation** | New Native-authored graph objects receive write-once persisted identities; component interfaces expose the expanded semantic taxonomy plus a separate optional versioned engineering-fit contract through provider, Native persistence, projection and human-dialog paths; and the existing simulation-state/solver projection remains. Legacy migration, real reopen/rename proof, stable graph revision, exact geometry/invalidation per semantic kind, fit evaluation against geometry/catalog standards, continuous motion, flexible/closed-loop/contact and Part Design gates remain. |
+| G8 — Assembly consolidation | K, L, N | **Partial identity/interface/currentness/evidence foundation** | New Native-authored graph objects receive write-once persisted identities; component interfaces expose expanded semantic and fit contracts plus conservative LCS-support geometry bindings with current/stale/unbound/indeterminate evidence; and the existing simulation-state/solver projection remains. Legacy migration, real reopen/rename proof, stable graph revision, semantic-kind-specific geometry validation, topology-stable references beyond conservative whole-support invalidation, catalog fit evaluation, continuous motion, flexible/closed-loop/contact and Part Design gates remain. |
 | G9 — joint inference | M | **Partial contract/acceptance foundation** | The installed mutation-free planning facade binds deterministic ranked proposals to the exact persisted-identity graph revision, reports ambiguous/no-candidate outcomes, and revalidates accepted proposals before delegating once to an injected Assembly mutation owner with its ordinary receipt and provenance; real runtime-owner binding, rejection persistence, bounded geometry extraction, all intended joint families and adversarial fixture coverage remain. |
 | G10 — assembly sequencing | O | **Partial contract foundation** | The installed bounded planner now validates exact graph currentness and precedence, deterministically enumerates explicit-evidence orders, and separates sampled, continuous, collision, inaccessible, unsupported and indeterminate verdicts; real insertion/access/fastener/fixture/contact extraction, native collision/continuous-motion evidence, durable records and runtime/GUI integration remain. |
 | G11 — service/disassembly | P | **Partial projection foundation; closure blocked by G10** | Current G10 alternatives can now be reversed for explicit targets under protected-component constraints, with a bounded-model-only ceiling and equal-optimum reporting; full removal constraints, fastener/tool/fixture/access and replacement policy, minimum-set search, failed reverse-step verification, durable evidence and runtime/GUI integration remain. |
@@ -743,6 +743,19 @@ interface kind, geometry, or proximity. G9 proposal evidence reports
 compatibility-token agreement and fit agreement separately and rejects two
 explicitly contradictory fit declarations. Geometry- and catalog-backed fit
 evaluation remains open.
+
+Native component-interface publication now also persists a
+`vibecad-interface-geometry-binding-v1` snapshot of the LCS map mode, bounded
+support object/subelements, and a conservative SHA-256 of each complete support
+shape. Reads independently recapture that evidence and report `current`,
+`stale`, `unbound`, `indeterminate`, `unrecorded`, or `invalid`; the evidence is
+projected through component discovery and connector descriptors. G9 proposals
+reject stale/invalid bindings before ranking and cannot receive high confidence
+unless both interfaces have current geometry evidence. A free LCS remains a
+valid semantic frame but is explicitly `unbound`, not geometry proof. Because
+whole-support hashing intentionally invalidates on any support-shape change,
+semantic-kind-specific topology validation and finer stable-reference behavior
+remain open.
 
 Closure remains governed by the Assembly specification's release gates and
 owner approval points. This host roadmap must not mark G8 complete merely

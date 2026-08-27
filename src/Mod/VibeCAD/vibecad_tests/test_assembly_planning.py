@@ -120,6 +120,22 @@ def test_joint_proposals_keep_compatibility_and_fit_evidence_separate() -> None:
     assert propose_joints(source)["status"] == "no-candidate"
 
 
+def test_joint_proposals_reject_stale_geometry_but_preserve_unknown_ceiling() -> None:
+    source = scenario()
+    source["interfaces"][0]["geometry_binding"] = {"status": "current"}
+    source["interfaces"][1]["geometry_binding"] = {"status": "unbound"}
+    candidate = propose_joints(source)["candidates"][0]
+    expected_statuses = {
+        source["interfaces"][0]["persistent_id"]: "current",
+        source["interfaces"][1]["persistent_id"]: "unbound",
+    }
+    assert candidate["evidence"]["geometry_currentness"] == expected_statuses
+    assert candidate["confidence"] == "bounded"
+
+    source["interfaces"][1]["geometry_binding"] = {"status": "stale"}
+    assert propose_joints(source)["status"] == "no-candidate"
+
+
 def test_joint_acceptance_revalidates_and_delegates_once_with_provenance() -> None:
     source = scenario()
     proposals = propose_joints(source)

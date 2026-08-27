@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,12 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADReferenceContracts import INTERFACE_FIT_SCHEMA
+from VibeCADReferenceContracts import (
+    INTERFACE_GEOMETRY_SCHEMA,
+    PROP_NATIVE_INTERFACE_GEOMETRY,
+    capture_native_interface_geometry,
+    native_interface_geometry_currentness,
+)
 
 
 class _Object:
@@ -176,7 +183,7 @@ def test_component_interface_preflight_resolves_and_normalizes_exact_targets() -
     assert prepared.spec.kind == "axis"
     assert prepared.spec.allowed_joints == ("revolute", "fixed")
     assert prepared.spec.compatibility == "mount-v1"
-    assert prepared.initial_state == ((False, None),) * 6
+    assert prepared.initial_state == ((False, None),) * 7
 
 
 def test_component_interface_fit_is_optional_versioned_and_separate_from_compatibility() -> None:
@@ -226,6 +233,41 @@ def test_component_interface_rejects_invalid_or_partial_fit(fit: dict, message: 
     values["fit"] = fit
     with pytest.raises(NativeComponentInterfaceError, match=message):
         prepare_component_interface(document, values)
+
+
+def test_interface_geometry_binding_is_conservative_and_detects_stale_support() -> None:
+    document = _Document()
+    source = _Object(document, "SupportedFeature", "PartDesign::Feature")
+    source.Shape = SimpleNamespace(exportBrepToString=lambda: "brep-v1")
+    document.lcs.AttachmentSupport = [(source, ["Face3"])]
+    document.lcs.MapMode = "FlatFace"
+    binding = capture_native_interface_geometry(document.lcs)
+    setattr(
+        document.lcs,
+        PROP_NATIVE_INTERFACE_GEOMETRY,
+        json.dumps(binding, sort_keys=True, separators=(",", ":")),
+    )
+
+    current = native_interface_geometry_currentness(document.lcs)
+    assert current["schema"] == INTERFACE_GEOMETRY_SCHEMA
+    assert current["status"] == "current"
+    assert current["supports"][0]["object_name"] == "SupportedFeature"
+    assert current["supports"][0]["subelements"] == ["Face3"]
+
+    source.Shape.exportBrepToString = lambda: "brep-v2"
+    assert native_interface_geometry_currentness(document.lcs)["status"] == "stale"
+
+
+def test_interface_geometry_binding_never_promotes_an_unbound_frame() -> None:
+    document = _Document()
+    binding = capture_native_interface_geometry(document.lcs)
+    setattr(
+        document.lcs,
+        PROP_NATIVE_INTERFACE_GEOMETRY,
+        json.dumps(binding, sort_keys=True, separators=(",", ":")),
+    )
+    assert binding["status"] == "unbound"
+    assert native_interface_geometry_currentness(document.lcs)["status"] == "unbound"
 
 
 @pytest.mark.parametrize(

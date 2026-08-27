@@ -23,6 +23,7 @@ from VibeCADReferenceContracts import (
     PROP_NATIVE_INTERFACE_ALLOWED_JOINTS,
     PROP_NATIVE_INTERFACE_COMPATIBILITY,
     PROP_NATIVE_INTERFACE_FIT,
+    PROP_NATIVE_INTERFACE_GEOMETRY,
     PROP_NATIVE_INTERFACE_KIND,
     PROP_NATIVE_INTERFACE_NAME,
     ReferenceContractError,
@@ -41,6 +42,7 @@ _INTERFACE_PROPERTIES = (
     PROP_NATIVE_INTERFACE_ALLOWED_JOINTS,
     PROP_NATIVE_INTERFACE_COMPATIBILITY,
     PROP_NATIVE_INTERFACE_FIT,
+    PROP_NATIVE_INTERFACE_GEOMETRY,
 )
 _LCS_TYPES = (
     "App::LocalCoordinateSystem",
@@ -78,7 +80,17 @@ def _published_interface(component: Any, lcs: Any) -> dict[str, Any] | None:
         if selection.get("native_lcs") != str(lcs.Name):
             continue
         connector = dict(definition.get("connector") or {})
-        return {"name": name, **connector}
+        resolved = dict(definition.get("resolved") or {})
+        geometry_binding = resolved.get("geometry_binding")
+        return {
+            "name": name,
+            **connector,
+            **(
+                {"geometry_binding": dict(geometry_binding)}
+                if isinstance(geometry_binding, Mapping)
+                else {}
+            ),
+        }
     return None
 
 
@@ -352,6 +364,7 @@ def verify_component_interface(
             "allowed_joints": list(spec.allowed_joints),
             "compatibility": spec.compatibility,
             "fit": None if spec.fit is None else dict(spec.fit),
+            "geometry_binding": dict(resolved.get("geometry_binding") or {}),
             "origin_mm": list(frame["origin_mm"]),
             "axis_direction": list(frame["axis_direction"]),
             "x_direction": list(frame["x_direction"]),
