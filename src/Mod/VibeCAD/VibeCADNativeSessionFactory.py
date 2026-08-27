@@ -25,6 +25,7 @@ from VibeCADNativeTargets import document_uid
 from VibeCADNativeTurn import (
     NativeTurnSnapshot,
     freeze_native_turn,
+    native_operation_scope_digest as _operation_scope_digest,
     require_frozen_native_turn,
 )
 from VibeCADNativeUndo import NativeAssistantUndoLedger
@@ -135,25 +136,59 @@ def _validate_expected_turn(
             + (f" ({', '.join(mismatched)})" if mismatched else "")
         )
     if expected_authorization is not None:
-        if (
-            str(expected_authorization.get("schema_sha256") or "")
-            != visible_turn_digest
-        ):
-            changed.append("operation authorization digest")
+        provider_schema_digest = str(
+            expected_authorization.get("provider_schema_sha256")
+            or expected_authorization.get("schema_sha256")
+            or ""
+        )
+        if provider_schema_digest != visible_turn_digest:
+            changed.append("provider schema authorization digest")
+        compatibility_digest = str(
+            expected_authorization.get("schema_sha256") or ""
+        )
+        if compatibility_digest and compatibility_digest != provider_schema_digest:
+            changed.append("provider schema authorization alias")
         expected_operations = expected_authorization.get("operations_by_tool")
         if not isinstance(expected_operations, Mapping):
             changed.append("operation authorization map")
         else:
+            captured_operations = {}
+            operation_map_valid = True
+            for name, operations in expected_operations.items():
+                clean_name = str(name or "").strip()
+                if (
+                    not clean_name
+                    or clean_name in captured_operations
+                    or not isinstance(operations, (list, tuple))
+                ):
+                    operation_map_valid = False
+                    continue
+                captured_operations[clean_name] = [
+                    str(operation) for operation in operations
+                ]
+            try:
+                captured_scope_digest = _operation_scope_digest(
+                    captured_operations
+                )
+            except (TypeError, ValueError):
+                operation_map_valid = False
+                captured_scope_digest = ""
+            if not operation_map_valid:
+                changed.append("operation authorization map")
+            expected_scope_digest = str(
+                expected_authorization.get("operation_scope_sha256") or ""
+            )
+            if (
+                expected_scope_digest
+                and expected_scope_digest != captured_scope_digest
+            ):
+                changed.append("operation authorization digest")
             frozen_operations = {
                 str(schema.get("name") or ""): list(operations)
                 for schema in turn.provider_schemas
                 if (operations := _provider_schema_operations(schema))
             }
-            if {
-                str(name): [str(operation) for operation in operations]
-                for name, operations in expected_operations.items()
-                if isinstance(operations, (list, tuple))
-            } != frozen_operations:
+            if captured_operations != frozen_operations:
                 changed.append("operation authorization scope")
     if str(expected_surface.get("domain") or "") != turn.surface.surface_id:
         changed.append("ribbon domain")

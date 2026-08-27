@@ -25,6 +25,7 @@ from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeSurface import NativeSurfaceSnapshot
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
+from VibeCADRibbonSurface import SURFACE_IDS
 
 
 class _Document:
@@ -224,6 +225,153 @@ def test_session_factory_passes_internal_operation_authorization_to_turn_freeze(
 
     assert captured["authorized_operations"] == authorization["operations_by_tool"]
     execution.close()
+
+
+@pytest.mark.parametrize("surface_id", sorted(SURFACE_IDS - {"unavailable"}))
+def test_session_factory_keeps_provider_and_operation_digests_independent(
+    monkeypatch,
+    surface_id,
+) -> None:
+    turn, exact_schemas, frozen = _common_turn(surface_id)
+    provider_schemas = [
+        provider_visible_native_schema(schema) for schema in exact_schemas
+    ]
+    provider_digest = hashlib.sha256(
+        json.dumps(
+            provider_schemas,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    operations = {
+        schema["name"]: list(_provider_schema_operations(schema))
+        for schema in exact_schemas
+        if _provider_schema_operations(schema)
+    }
+    authorization = {
+        "schema_sha256": provider_digest,
+        "provider_schema_sha256": provider_digest,
+        "operation_scope_sha256": factory_module._operation_scope_digest(operations),
+        "operations_by_tool": operations,
+    }
+    frozen.update(
+        {
+            "domain": surface_id,
+            "schema_sha256": provider_digest,
+            "schema_count": len(provider_schemas),
+        }
+    )
+    monkeypatch.setattr(
+        factory_module,
+        "freeze_native_turn",
+        lambda *_args, **_kwargs: turn,
+    )
+    monkeypatch.setattr(
+        factory_module,
+        "require_frozen_native_turn",
+        lambda expected, *_args: expected,
+    )
+
+    execution = create_native_session_execution(
+        service=_Service(),
+        expected_surface=frozen,
+        expected_schemas=provider_schemas,
+        expected_authorization=authorization,
+        registry=build_native_capability_registry(),
+    )
+
+    execution.close()
+
+
+def test_session_factory_rejects_operation_scope_digest_corruption(monkeypatch) -> None:
+    turn, exact_schemas, frozen = _common_turn("analyze")
+    provider_schemas = [
+        provider_visible_native_schema(schema) for schema in exact_schemas
+    ]
+    provider_digest = hashlib.sha256(
+        json.dumps(
+            provider_schemas,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    operations = {
+        schema["name"]: list(_provider_schema_operations(schema))
+        for schema in exact_schemas
+        if _provider_schema_operations(schema)
+    }
+    frozen.update(
+        {
+            "schema_sha256": provider_digest,
+            "schema_count": len(provider_schemas),
+        }
+    )
+    monkeypatch.setattr(
+        factory_module,
+        "freeze_native_turn",
+        lambda *_args, **_kwargs: turn,
+    )
+
+    with pytest.raises(Exception, match="operation authorization digest"):
+        create_native_session_execution(
+            service=_Service(),
+            expected_surface=frozen,
+            expected_schemas=provider_schemas,
+            expected_authorization={
+                "schema_sha256": provider_digest,
+                "provider_schema_sha256": provider_digest,
+                "operation_scope_sha256": "0" * 64,
+                "operations_by_tool": operations,
+            },
+            registry=build_native_capability_registry(),
+        )
+
+
+def test_session_factory_rejects_malformed_operation_scope_map(monkeypatch) -> None:
+    turn, exact_schemas, frozen = _common_turn("analyze")
+    provider_schemas = [
+        provider_visible_native_schema(schema) for schema in exact_schemas
+    ]
+    provider_digest = hashlib.sha256(
+        json.dumps(
+            provider_schemas,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    operations = {
+        schema["name"]: list(_provider_schema_operations(schema))
+        for schema in exact_schemas
+        if _provider_schema_operations(schema)
+    }
+    operations["malformed.extra"] = "study"
+    frozen.update(
+        {
+            "schema_sha256": provider_digest,
+            "schema_count": len(provider_schemas),
+        }
+    )
+    monkeypatch.setattr(
+        factory_module,
+        "freeze_native_turn",
+        lambda *_args, **_kwargs: turn,
+    )
+
+    with pytest.raises(Exception, match="operation authorization map"):
+        create_native_session_execution(
+            service=_Service(),
+            expected_surface=frozen,
+            expected_schemas=provider_schemas,
+            expected_authorization={
+                "schema_sha256": provider_digest,
+                "provider_schema_sha256": provider_digest,
+                "operations_by_tool": operations,
+            },
+            registry=build_native_capability_registry(),
+        )
 
 
 def test_session_factory_refuses_schema_or_authority_drift(monkeypatch) -> None:

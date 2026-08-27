@@ -44,6 +44,11 @@ SET(DXF_Plate
 set(Import_Scripts
     Init.py
     stepZ.py
+    cadzip.py
+    cad_geometry.py
+    fusion_ogs.py
+    importFusion.py
+    importJT.py
 )
 
 if(BUILD_GUI)
