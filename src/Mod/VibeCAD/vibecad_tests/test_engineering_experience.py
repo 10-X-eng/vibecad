@@ -30,6 +30,7 @@ from VibeCADEngineeringExperience import (
     PresentationMetric,
     governance_role,
     project_analysis_activity,
+    project_assembly_state,
     project_engineering_result,
     project_manufacture_post_evidence,
     project_optimization_run,
@@ -384,3 +385,33 @@ def test_manufacture_post_projection_requires_exact_analysis_workflow_linkage():
             _manufacture_post_result(), analysis_record=analysis,
             workflow_record=workflow, provider_attempt_id="2",
         )
+
+
+def test_assembly_projection_preserves_graph_identity_and_refuses_inference_authority():
+    state = {
+        "available": True, "state_sha256": "a" * 64,
+        "component_count": 3, "grounded_count": 1, "joint_count": 2,
+        "eligible_joint_count": 1, "simulation_count": 1, "motion_count": 1,
+        "eligible_joints": [{"object_name": "Hinge", "joint_type": "Revolute",
+                             "supported_motion_types": ["angular"]}],
+        "simulations": [{"object_name": "Cycle", "motion_count": 1,
+                         "time_start_seconds": 0.0, "time_end_seconds": 2.0,
+                         "output_time_step_seconds": 0.05}],
+    }
+    diagnostics = {
+        "solver_status": 0, "remaining_degrees_of_freedom": 1,
+        "has_conflicts": False, "has_redundancies": False,
+        "has_partial_redundancies": False, "has_malformed_constraints": False,
+        "conflicting_joints": [], "redundant_joints": [],
+        "partially_redundant_joints": [], "malformed_joints": [],
+        "grounded_components": [], "residual_tolerance": 1.0e-6,
+    }
+
+    projected = project_assembly_state(state, diagnostics)
+
+    assert projected["graph_state_sha256"] == "a" * 64
+    assert projected["solver_diagnostics"] == diagnostics
+    assert projected["continuous_motion_certified"] is False
+    assert projected["joint_proposals"] == projected["sequence_proposals"] == []
+    assert projected["service_proposals"] == []
+    assert set(projected["authority"].values()) == {False}

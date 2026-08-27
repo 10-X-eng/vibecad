@@ -476,3 +476,51 @@ def project_manufacture_post_evidence(
         "manufacturable": False,
     }
     return CanonicalJson.from_value(value).to_value()
+
+
+def project_assembly_state(
+    simulation_state: Mapping[str, Any],
+    solver_diagnostics: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project exact Native Assembly graph evidence without solving or inferring."""
+
+    state = _mapping(simulation_state, "Assembly simulation state")
+    diagnostics = _mapping(solver_diagnostics, "Assembly solver diagnostics")
+    required = ("available", "state_sha256", "component_count", "grounded_count",
+                "joint_count", "eligible_joint_count", "simulation_count",
+                "motion_count", "eligible_joints", "simulations")
+    if any(name not in state for name in required) or state["available"] is not True:
+        raise AnalysisContractError("Assembly simulation state is incomplete.")
+    digest = str(state["state_sha256"] or "").lower()
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise AnalysisContractError("Assembly graph state identity is invalid.")
+    for field in ("component_count", "grounded_count", "joint_count",
+                  "eligible_joint_count", "simulation_count", "motion_count"):
+        if type(state[field]) is not int or state[field] < 0:
+            raise AnalysisContractError("Assembly graph counts are invalid.")
+    joints, simulations = state["eligible_joints"], state["simulations"]
+    if not isinstance(joints, list) or len(joints) > 128:
+        raise AnalysisContractError("Assembly joint preview exceeds its bound.")
+    if not isinstance(simulations, list) or len(simulations) > 128:
+        raise AnalysisContractError("Assembly simulation preview exceeds its bound.")
+    if "solver_status" not in diagnostics:
+        raise AnalysisContractError("Assembly solver diagnostics are incomplete.")
+    value = {
+        **_inert("assembly_state"),
+        "graph_state_sha256": digest,
+        "counts": {field: state[field] for field in (
+            "component_count", "grounded_count", "joint_count",
+            "eligible_joint_count", "simulation_count", "motion_count",
+        )},
+        "eligible_joints": joints,
+        "eligible_joints_truncated": bool(state.get("eligible_joints_truncated", False)),
+        "simulations": simulations,
+        "simulations_truncated": bool(state.get("simulations_truncated", False)),
+        "solver_diagnostics": diagnostics,
+        "claim_ceiling": "graph_and_sampled_motion_evidence_only",
+        "continuous_motion_certified": False,
+        "joint_proposals": [],
+        "sequence_proposals": [],
+        "service_proposals": [],
+    }
+    return CanonicalJson.from_value(value).to_value()

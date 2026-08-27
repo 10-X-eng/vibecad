@@ -296,12 +296,12 @@ behavior while it waits for host persistence/workflows.
 | G5 — workflow DAG | H | **Partial** | The bounded durable DAG, scheduler, restart, cancellation, retry, and publish-once core is implemented; wire real G2 jobs/domain adapters and prove installed/runtime and real five-stage FEM acceptance. |
 | G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
 | G7 — Manufacture runtime integration | J | **Partial evidence foundation** | Existing post output can be projected only with exact G2 attempt/G5 node linkage while preserving Job/post/output hashes and `not_proven_toolpath`; runtime record wiring, CAMotics/simulation, A/B, stale/restart and installed closure remain. |
-| G8 — Assembly consolidation | K, L, N | **Partial** | Extend the existing Assembly owner; close stable identities, interface taxonomy, continuous motion, flexible graphs, fit, evidence, and Part Design facade gates. |
+| G8 — Assembly consolidation | K, L, N | **Partial evidence projection** | Existing native simulation-state hash and solver diagnostics project without a second graph; stable identities, interfaces, continuous motion, flexible/closed-loop/contact, fit and Part Design gates remain. |
 | G9 — joint inference | M | **Design-ready** | Bounded interface extraction/classification, ranked compatibility evidence, explicit accept/reject, no direct authoritative mutation. |
 | G10 — assembly sequencing | O | **Design-ready** | Insertion/access/fastener/precedence model, bounded solver, collision/currentness evidence, sampled-versus-continuous verdicts. |
 | G11 — service/disassembly | P | **Blocked by G10** | Target/removal constraints, minimum-set objective, verified reverse sequence, uncertainty and service claim ceilings. |
 | G12 — Robot task projection | Q | **Partial foundation** | Versioned step-to-task contract, frames/units/tool/TCP/force/torque/tolerance, traceability, Robot-domain validation and downstream boundary. |
-| X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; X1/X2/X5/X6/X7 projection foundations partial** | Bounded no-authority G1, G2, G5, G6 and Manufacture-post projections exist; real runtime wiring, Qt shell/views, remaining domain slices, GUI/accessibility and installed acceptance remain dependency-bound. |
+| X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; X1/X2/X5/X6/X7/X8 projection foundations partial** | Bounded no-authority common, durable, workflow, optimization, Manufacture-post and Assembly-state projections exist; real wiring, Qt shell/views, remaining domain slices, GUI/accessibility and installed acceptance remain dependency-bound. |
 
 ## 8. Dependency-ordered implementation roadmap
 
@@ -694,6 +694,14 @@ Remaining consolidation work:
 Closure remains governed by the Assembly specification's release gates and
 owner approval points. This host roadmap must not mark G8 complete merely
 because graph-reading modules exist.
+
+The first G8/X8 projection consumes `AssemblySimulationState.summary()` and
+the existing bounded `solver_diagnostics()` result. It preserves the native
+graph-state hash, counts, eligible-joint summaries and authored simulation
+summaries, exposes no mutation/solve/inference authority, leaves joint,
+sequence and service proposals empty, and fixes the claim ceiling at graph and
+sampled-motion evidence only. This is not persisted identity, interface,
+continuous-motion, flexible/closed-loop/contact or GUI closure.
 
 ### G9 — propose-only joint inference
 

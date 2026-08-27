@@ -64,6 +64,13 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
   Job, or certify manufacturability. Runtime record wiring, CAMotics/simulation
   projections, Qt pages, A/B behavior, stale/restart and installed acceptance
   remain.
+- **X8: partial Assembly evidence foundation.** The Native Assembly simulation
+  state hash and bounded solver diagnostics can now be projected without
+  creating a second graph. Counts, eligible joints and authored simulation
+  summaries remain source-owned; continuous-motion certification is false and
+  joint, sequence and service proposal collections are deliberately empty.
+  Stable persisted interface/occurrence identity, flexible/closed-loop/contact
+  evidence, Qt overlays and save/reopen/currentness acceptance remain.
 
 ## First PR-sized implementation sequence
 
