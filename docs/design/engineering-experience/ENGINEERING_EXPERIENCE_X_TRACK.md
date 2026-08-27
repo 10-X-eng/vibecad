@@ -165,9 +165,11 @@ workbench or authority layer. The implementation sequence is:
    Analysis identities. **Partial owner-backed dashboard:** the Analyze shell
    now projects and displays exact durable Analysis/workflow identities,
    lifecycle state, attempt/artifact counts and timestamps for the active
-   document. Empty and failed discovery remain explicit. Detailed attempt,
-   artifact, recovery/publication and node views, live refresh and installed
-   acceptance remain.
+   document. Expandable owner-backed rows now expose every bounded attempt,
+   admitted artifact, restart disposition, currentness record, publication
+   evidence axis and workflow-node state carried by that same snapshot. Empty
+   and failed discovery remain explicit. Event-driven refresh and installed
+   GUI acceptance remain.
 9. **EVS-09 — result comparison (X6).** Present baseline/candidate metrics and
    field differences only when exact comparable sources and the owning
    ranking/result contracts exist; selection and publication remain gated.

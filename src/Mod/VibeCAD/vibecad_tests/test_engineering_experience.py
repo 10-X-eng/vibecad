@@ -266,6 +266,15 @@ def test_analysis_activity_projection_uses_exact_durable_record_without_mutation
             **disposition, "analysis_id": "analysis-2",
         })
 
+    for field, value, message in (
+        ("attempts", ["not-an-attempt"], "attempt state is invalid"),
+        ("artifacts", [{"sha256": "not-a-digest"}], "artifact identity is invalid"),
+        ("currentness_evaluations", ["not-an-evaluation"], "currentness state is invalid"),
+    ):
+        malformed = {**before, field: value}
+        with pytest.raises(AnalysisContractError, match=message):
+            project_analysis_activity(malformed)
+
 
 def test_workflow_projection_follows_store_and_never_schedules(tmp_path):
     definition = WorkflowDefinition("fem-flow", "1", (
@@ -369,7 +378,11 @@ def _manufacture_governance_records():
         "source_document_uid": "document-1", "state": "succeeded",
         "created_at": "2026-08-26T00:00:00Z", "updated_at": "2026-08-26T00:01:00Z",
         "terminal_reason": "completed",
-        "attempts": [{"attempt": 1, "provider_id": "native-background"}],
+        "attempts": [{
+            "attempt": 1, "provider_id": "native-background",
+            "provider_kind": "local", "provider_job_id": "",
+            "started_at": "2026-08-26T00:00:01Z", "terminal_reason": None,
+        }],
         "artifacts": [], "currentness_evaluations": [],
         "publication": {"intent": {}, "authorization": {}, "receipt": {}},
         "events": [{"sequence": 1, "state": "succeeded"}],

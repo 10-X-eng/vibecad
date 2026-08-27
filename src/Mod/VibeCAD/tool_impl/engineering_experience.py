@@ -376,6 +376,24 @@ def project_analysis_activity(
         raise AnalysisContractError("Analysis currentness evaluations exceed their presentation bound.")
     if not isinstance(events, list) or len(events) > MAX_ACTIVITY_EVENTS:
         raise AnalysisContractError("Analysis events exceed their presentation bound.")
+    for attempt in attempts:
+        if not isinstance(attempt, Mapping):
+            raise AnalysisContractError("Analysis attempt state is invalid.")
+        if not all(name in attempt for name in (
+            "attempt", "provider_id", "provider_kind", "provider_job_id",
+            "started_at", "terminal_reason",
+        )):
+            raise AnalysisContractError("Analysis attempt state is incomplete.")
+    for artifact in artifacts:
+        if not isinstance(artifact, Mapping):
+            raise AnalysisContractError("Analysis artifact state is invalid.")
+        digest = str(artifact.get("sha256") or "")
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise AnalysisContractError("Analysis artifact identity is invalid.")
+    if any(not isinstance(evaluation, Mapping) for evaluation in currentness):
+        raise AnalysisContractError("Analysis currentness state is invalid.")
     disposition = None if restart_disposition is None else _mapping(
         restart_disposition, "restart disposition"
     )

@@ -122,7 +122,7 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self.activity_table.setHeaderLabels(
             ("Kind", "Identity", "State", "Attempts", "Artifacts", "Updated")
         )
-        self.activity_table.setRootIsDecorated(False)
+        self.activity_table.setRootIsDecorated(True)
         self.activity_table.setAlternatingRowColors(True)
         activity_layout.addWidget(self.activity_table)
         layout.addWidget(activity)
@@ -352,32 +352,149 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
             )
         else:
             for activity in self._activity["analyses"]:
-                self.activity_table.addTopLevelItem(
-                    QtWidgets.QTreeWidgetItem(
-                        (
-                            "Analysis",
-                            str(activity["analysis_id"]),
-                            str(activity["state"]).replace("_", " ").title(),
-                            str(activity["attempt_count"]),
-                            str(activity["artifact_count"]),
-                            str(activity.get("updated_at") or "Unavailable"),
-                        )
+                analysis_item = QtWidgets.QTreeWidgetItem(
+                    (
+                        "Analysis",
+                        str(activity["analysis_id"]),
+                        str(activity["state"]).replace("_", " ").title(),
+                        str(activity["attempt_count"]),
+                        str(activity["artifact_count"]),
+                        str(activity.get("updated_at") or "Unavailable"),
                     )
                 )
+                analysis_item.setToolTip(
+                    1,
+                    f"Domain: {activity['domain']} · Adapter: {activity['adapter_id']}",
+                )
+                for attempt in activity["attempts"]:
+                    provider_job_id = str(attempt.get("provider_job_id") or "")
+                    attempt_item = QtWidgets.QTreeWidgetItem(
+                        (
+                            "Attempt",
+                            f"#{attempt['attempt']} · {attempt['provider_id']}",
+                            str(attempt.get("terminal_reason") or "Started").replace(
+                                "_", " "
+                            ).title(),
+                            "—",
+                            "—",
+                            str(attempt.get("started_at") or "Unavailable"),
+                        )
+                    )
+                    attempt_item.setToolTip(
+                        1,
+                        f"Provider kind: {attempt['provider_kind']}"
+                        + (f" · Provider job: {provider_job_id}" if provider_job_id else ""),
+                    )
+                    analysis_item.addChild(attempt_item)
+                for artifact in activity["artifacts"]:
+                    if artifact.get("tombstoned_at"):
+                        artifact_state = "Tombstoned"
+                    elif artifact.get("pinned"):
+                        artifact_state = "Pinned"
+                    elif artifact.get("cleanup_eligible"):
+                        artifact_state = "Cleanup Eligible"
+                    else:
+                        artifact_state = "Retained"
+                    artifact_item = QtWidgets.QTreeWidgetItem(
+                        (
+                            "Artifact",
+                            str(artifact["sha256"]),
+                            artifact_state,
+                            "—",
+                            str(artifact.get("role") or "Admitted"),
+                            str(artifact.get("tombstoned_at") or "Unavailable"),
+                        )
+                    )
+                    if artifact.get("byte_count") is not None:
+                        artifact_item.setToolTip(
+                            1, f"Recorded byte count: {artifact['byte_count']}"
+                        )
+                    analysis_item.addChild(artifact_item)
+                disposition = activity.get("restart_disposition")
+                if disposition is not None:
+                    analysis_item.addChild(
+                        QtWidgets.QTreeWidgetItem(
+                            (
+                                "Restart",
+                                str(disposition["analysis_id"]),
+                                str(disposition["action"]).replace("_", " ").title(),
+                                "—",
+                                "—",
+                                "—",
+                            )
+                        )
+                    )
+                for evaluation in activity["currentness_evaluations"]:
+                    currentness_item = QtWidgets.QTreeWidgetItem(
+                        (
+                            "Currentness",
+                            str(evaluation.get("evaluation_id") or "Recorded evaluation"),
+                            str(evaluation.get("state") or evaluation.get("status") or "Recorded")
+                            .replace("_", " ")
+                            .title(),
+                            "—",
+                            "—",
+                            str(evaluation.get("evaluated_at") or "Unavailable"),
+                        )
+                    )
+                    analysis_item.addChild(currentness_item)
+                for axis, recorded in activity["publication_axes"].items():
+                    analysis_item.addChild(
+                        QtWidgets.QTreeWidgetItem(
+                            (
+                                "Publication",
+                                axis.replace("_recorded", "").replace("_", " ").title(),
+                                "Recorded" if recorded else "Not Recorded",
+                                "—",
+                                "—",
+                                "—",
+                            )
+                        )
+                    )
+                analysis_item.setExpanded(True)
+                self.activity_table.addTopLevelItem(analysis_item)
             for workflow in self._activity["workflows"]:
                 attempts = sum(node["attempt_count"] for node in workflow["nodes"])
-                self.activity_table.addTopLevelItem(
-                    QtWidgets.QTreeWidgetItem(
-                        (
-                            "Workflow",
-                            str(workflow["run_id"]),
-                            str(workflow["state"]).replace("_", " ").title(),
-                            str(attempts),
-                            "—",
-                            str(workflow.get("updated_at") or "Unavailable"),
-                        )
+                workflow_item = QtWidgets.QTreeWidgetItem(
+                    (
+                        "Workflow",
+                        str(workflow["run_id"]),
+                        str(workflow["state"]).replace("_", " ").title(),
+                        str(attempts),
+                        "—",
+                        str(workflow.get("updated_at") or "Unavailable"),
                     )
                 )
+                workflow_item.setToolTip(
+                    1,
+                    f"Definition: {workflow['workflow_id']} v{workflow['workflow_version']}"
+                    f" · SHA-256: {workflow['definition_sha256']}",
+                )
+                for node in workflow["nodes"]:
+                    node_item = QtWidgets.QTreeWidgetItem(
+                        (
+                            "Workflow Node",
+                            str(node["node_id"]),
+                            str(node.get("state") or "Unavailable")
+                            .replace("_", " ")
+                            .title(),
+                            str(node["attempt_count"]),
+                            "—",
+                            "—",
+                        )
+                    )
+                    details = []
+                    if node.get("analysis_id"):
+                        details.append(f"Analysis: {node['analysis_id']}")
+                    if node.get("publication_receipt_id"):
+                        details.append(
+                            f"Publication receipt: {node['publication_receipt_id']}"
+                        )
+                    if details:
+                        node_item.setToolTip(1, " · ".join(details))
+                    workflow_item.addChild(node_item)
+                workflow_item.setExpanded(True)
+                self.activity_table.addTopLevelItem(workflow_item)
         for column in range(self.activity_table.columnCount()):
             self.activity_table.resizeColumnToContents(column)
 
