@@ -9,6 +9,10 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeManufactureErrors import NativeManufactureError
+from VibeCADNativeManufactureFollowUpState import (
+    is_simulation_result,
+    simulation_result_state,
+)
 from VibeCADNativeManufactureReadiness import build_active_job_summary
 from VibeCADNativeManufactureState import (
     candidate_model_state,
@@ -101,6 +105,48 @@ def list_setups(
         items.append(item)
     return {
         "setups": {
+            "query": normalized_query,
+            "offset": start,
+            "count": len(items),
+            "total": len(matches),
+            "next_offset": stop if stop < len(matches) else None,
+            "items": items,
+        }
+    }
+
+
+def list_remaining_stock(
+    document: Any,
+    *,
+    query: str,
+    offset: int,
+    page_size: int,
+) -> dict[str, Any]:
+    """Return one searchable page of exact retained-stock targets."""
+
+    normalized_query = str(query or "").strip().casefold()
+    results = [
+        obj
+        for obj in tuple(getattr(document, "Objects", ()) or ())
+        if is_simulation_result(obj)
+    ]
+    matches = [
+        result
+        for result in results
+        if not normalized_query
+        or normalized_query
+        in "\n".join(
+            (
+                str(getattr(result, "Name", "") or ""),
+                str(getattr(result, "Label", "") or ""),
+            )
+        ).casefold()
+    ]
+    start = min(int(offset), len(matches))
+    stop = min(start + int(page_size), len(matches))
+    items = [simulation_result_state(result) for result in matches[start:stop]]
+    return {
+        "remaining_stock": {
             "query": normalized_query,
             "offset": start,
             "count": len(items),

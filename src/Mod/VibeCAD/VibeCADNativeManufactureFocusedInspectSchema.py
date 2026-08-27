@@ -15,6 +15,7 @@ from VibeCADNativeManufactureInspectSchema import (
 
 MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES = {
     "list_setups": "manufacture.setups",
+    "list_remaining_stock": "manufacture.remaining_stock",
     "read_job": "manufacture.read_setup",
     "search_setup_options": "manufacture.setup_options",
     "validate_job": "manufacture.validate",

@@ -136,6 +136,10 @@ def manufacture_provider_tool_names(
     allowed = set(_SHARED | _DISCOVERY)
     if not isinstance(domain, Mapping) or domain.get("kind") != "manufacture":
         return tuple(name for name in available_tool_names if name in allowed)
+    result_count = _nonnegative_int(domain.get("remaining_stock_result_count"))
+    if result_count:
+        allowed.add("manufacture.follow_up_setup")
+        allowed.add("manufacture.remaining_stock")
     setups = _scoped_setups(domain)
     if not setups:
         return tuple(name for name in available_tool_names if name in allowed)
@@ -215,6 +219,8 @@ def _operation_scope(
     inspect = available_by_tool.get("manufacture.inspect")
     if inspect is not None:
         allowed = {"list_setups"}
+        if _nonnegative_int(domain.get("remaining_stock_result_count")):
+            allowed.add("list_remaining_stock")
         if has_setup:
             allowed.update({"read_job", "search_setup_options", "validate_job"})
         if tool_count:

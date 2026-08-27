@@ -81,9 +81,21 @@ def _set_provenance(result: Any, prepared: PreparedNativeSimulation) -> None:
     frozen = prepared.frozen
     _add_read_only_property(
         result,
+        "App::PropertyLink",
+        "SimulationJob",
+        "Exact CAM Job used to create this retained material result",
+    )
+    _add_read_only_property(
+        result,
         "App::PropertyString",
         "SimulationJobName",
         "Exact CAM Job used to create this retained material result",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyString",
+        "SimulationJobStateSHA256",
+        "Exact CAM Job state used to create this retained material result",
     )
     _add_read_only_property(
         result,
@@ -109,11 +121,34 @@ def _set_provenance(result: Any, prepared: PreparedNativeSimulation) -> None:
         "SimulationProgramSHA256",
         "Digest of the exact placed CAM program and simulation settings",
     )
+    _add_read_only_property(
+        result,
+        "Part::PropertyPartShape",
+        "RetainedStockShape",
+        "Solid remaining stock represented by this simulation result",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyString",
+        "RetainedStockShapeSHA256",
+        "Digest of the solid remaining stock",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyInteger",
+        "RetainedStockSolidCount",
+        "Solid regions in the remaining stock",
+    )
+    result.SimulationJob = frozen.job
     result.SimulationJobName = str(frozen.job.Name)
+    result.SimulationJobStateSHA256 = frozen.expected_job_state_sha256
     result.SimulationOperationNames = [run.operation_name for run in frozen.runs]
     result.SimulationQuality = frozen.quality
     result.SimulationResolution = frozen.stock_resolution_mm
     result.SimulationProgramSHA256 = prepared.program_sha256
+    result.RetainedStockShape = prepared.stock_shape
+    result.RetainedStockShapeSHA256 = prepared.stock_shape_sha256
+    result.RetainedStockSolidCount = prepared.stock_solid_count
 
 
 def create_native_simulation_result(
@@ -243,6 +278,9 @@ def verify_native_simulation_result(
             for actual, expected in zip(color, _RESULT_COLOR)
         )
         or str(getattr(result, "SimulationJobName", "")) != str(frozen.job.Name)
+        or getattr(result, "SimulationJob", None) is not frozen.job
+        or str(getattr(result, "SimulationJobStateSHA256", ""))
+        != frozen.expected_job_state_sha256
         or list(getattr(result, "SimulationOperationNames", ()) or ())
         != expected_operations
         or int(getattr(result, "SimulationQuality", 0) or 0) != frozen.quality
@@ -254,6 +292,15 @@ def verify_native_simulation_result(
         )
         or str(getattr(result, "SimulationProgramSHA256", ""))
         != prepared.program_sha256
+        or getattr(result, "RetainedStockShape", None) is None
+        or result.RetainedStockShape.isNull()
+        or str(result.RetainedStockShape.ShapeType) != prepared.stock_shape_type
+        or len(tuple(result.RetainedStockShape.Solids))
+        != prepared.stock_solid_count
+        or str(getattr(result, "RetainedStockShapeSHA256", ""))
+        != prepared.stock_shape_sha256
+        or int(getattr(result, "RetainedStockSolidCount", 0) or 0)
+        != prepared.stock_solid_count
         or str(getattr(result, "VibeCADTimelineRole", "") or "") != "operation"
         or getattr(result, "VibeCADTimelineOwner", None) is not None
         or tuple(getattr(result, "VibeCADTimelineReplacedInputs", ()) or ())

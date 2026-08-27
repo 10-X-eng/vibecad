@@ -18,6 +18,7 @@ from VibeCADNativeManufactureGeometryRead import (
 from VibeCADNativeManufactureInspect import (
     detect_loop,
     inspect_toolpath,
+    list_remaining_stock,
     list_setups,
     read_job,
     search_setup_options,
@@ -30,6 +31,7 @@ from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
 _VARIANTS = {
     "list_setups": frozenset({"query", "offset", "page_size"}),
+    "list_remaining_stock": frozenset({"query", "offset", "page_size"}),
     "search_setup_options": frozenset({"category", "query", "offset", "page_size"}),
     "read_job": frozenset({"target", "operation_offset", "page_size"}),
     "validate_job": frozenset({"target"}),
@@ -57,6 +59,11 @@ class NativeManufactureInspectRuntime:
             _VARIANTS,
             defaults={
                 "list_setups": {"query": "", "offset": 0, "page_size": 32},
+                "list_remaining_stock": {
+                    "query": "",
+                    "offset": 0,
+                    "page_size": 32,
+                },
                 "search_setup_options": {
                     "query": "",
                     "offset": 0,
@@ -138,6 +145,8 @@ class NativeManufactureInspectRuntime:
             }
         if operation == "list_setups":
             return list_setups(context.document, **values)
+        if operation == "list_remaining_stock":
+            return list_remaining_stock(context.document, **values)
         if operation == "read_job":
             return read_job(context.document, **values)
         if operation == "search_setup_options":

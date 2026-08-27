@@ -9,6 +9,11 @@ from typing import Any, Mapping
 from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureAreaState import area_snapshot
 from VibeCADNativeManufactureJobState import capture_job_creation_environment
+from VibeCADNativeManufactureFollowUpState import (
+    is_simulation_result,
+    setup_relationship_state,
+    simulation_result_state,
+)
 from VibeCADNativeManufacturePropertyBag import property_bag_snapshot
 from VibeCADNativeManufactureReadiness import (
     build_active_job_summary,
@@ -35,6 +40,7 @@ from VibeCADNativeRobotTrajectoryState import (
 MAX_JOBS = 12
 MAX_MODEL_CANDIDATES = 24
 MAX_SNAPSHOT_JOB_ITEMS = 8
+MAX_REMAINING_STOCK_RESULTS = 24
 _NON_MODEL_SHAPE_TYPES = frozenset({"App::Line", "App::Plane", "App::Point"})
 
 
@@ -92,6 +98,7 @@ def build_manufacture_snapshot(
 ) -> dict[str, Any]:
     objects = list(getattr(document, "Objects", []) or [])
     job_objects = [obj for obj in objects if is_job(obj)]
+    retained_results = [obj for obj in objects if is_simulation_result(obj)]
     resource_ids: set[int] = set()
     for job in job_objects:
         resource_ids.update(_contained_resources(job))
@@ -104,6 +111,10 @@ def build_manufacture_snapshot(
         )
         for obj in job_objects[:MAX_JOBS]
     }
+    for job in job_objects[:MAX_JOBS]:
+        relationship = setup_relationship_state(job)
+        if relationship is not None:
+            job_states[id(job)]["relationship"] = relationship
     job_workflows = {
         id(obj): build_active_job_summary(
             document,
@@ -130,6 +141,9 @@ def build_manufacture_snapshot(
             tool_limit=MAX_SNAPSHOT_JOB_ITEMS,
             model_limit=MAX_SNAPSHOT_JOB_ITEMS,
         )
+        relationship = setup_relationship_state(active_job)
+        if relationship is not None:
+            job_states[id(active_job)]["relationship"] = relationship
         job_workflows[id(active_job)] = build_active_job_summary(
             document,
             active_job,
@@ -169,6 +183,13 @@ def build_manufacture_snapshot(
         "model_candidates": candidates[:MAX_MODEL_CANDIDATES],
         "model_candidates_truncated": len(candidates) > MAX_MODEL_CANDIDATES,
         "job_creation": capture_job_creation_environment().summary(),
+        "remaining_stock_result_count": len(retained_results),
+        "remaining_stock_results": [
+            simulation_result_state(result)
+            for result in retained_results[:MAX_REMAINING_STOCK_RESULTS]
+        ],
+        "remaining_stock_results_truncated": len(retained_results)
+        > MAX_REMAINING_STOCK_RESULTS,
     }
     result.update(property_bag_snapshot(document))
     result.update(area_snapshot(document))

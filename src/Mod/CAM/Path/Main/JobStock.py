@@ -231,12 +231,18 @@ def stock_configuration_state(job: Any) -> dict[str, Any]:
         )
     else:
         sources = tuple(getattr(stock, "Objects", ()) or ())
+        if not sources:
+            source = getattr(stock, "Source", None)
+            sources = (source,) if source is not None else ()
         if len(sources) == 1:
             source = sources[0]
             result["source"] = {
                 "object_name": str(getattr(source, "Name", "") or ""),
                 "label": str(getattr(source, "Label", "") or ""),
             }
+        artifact = str(getattr(stock, "ArtifactSHA256", "") or "")
+        if artifact:
+            result["artifact_sha256"] = artifact
     result["state_sha256"] = _digest(result)
     return result
 

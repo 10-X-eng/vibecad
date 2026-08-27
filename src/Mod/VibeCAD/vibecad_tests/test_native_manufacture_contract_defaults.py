@@ -151,6 +151,7 @@ def test_cam_inspection_reads_publish_as_focused_tools() -> None:
         for name, definition in definitions.items()
     } == {
         "manufacture.setups": "list_setups",
+        "manufacture.remaining_stock": "list_remaining_stock",
         "manufacture.read_setup": "read_job",
         "manufacture.setup_options": "search_setup_options",
         "manufacture.validate": "validate_job",

@@ -89,12 +89,13 @@ design developed here must be applicable to many FEM studies, meshes, solvers,
 and results. FEM correction is a separate coherent follow-up PR; the first CAM PR
 must not mix unrelated FEM changes into its review surface.
 
-## Current surface
+## Baseline surface
 
-The default human Manufacture ribbon contains 60 actions and has seven optional
-actions. Composite buttons and related actions resolve to 27 Native provider
-families. The human-owned `workspace.switch` family is removed before dispatch,
-so the model currently receives 26 tools on a default CAM turn:
+At the start of this effort, the default human Manufacture ribbon contained 60
+actions and had seven optional actions. Composite buttons and related actions
+resolved to 27 Native provider families. The human-owned `workspace.switch`
+family was removed before dispatch,
+so the model received 26 tools on a default CAM turn:
 
 - seven shared document, state, view, inspection, background, save, and undo
   families;
@@ -287,6 +288,20 @@ comparison, not implementation instructions.
   reviewed for genuine ambiguity.
 - Model feedback may describe what was unclear on the published surface. Models
   are not asked to design code they cannot see.
+
+### Validation evidence
+
+- Independent setup gates create three Jobs for the same model without replacing
+  or cross-mutating one another.
+- Related-setup gates support sibling branches from one retained result, reject
+  stale predecessors, and preserve links through undo, redo, and save/reopen.
+- PathSimulator produces its visual preview Mesh and a separate exact solid
+  representation of the simulated height field. Follow-up setups consume the
+  solid representation; they do not attempt to repair the render Mesh.
+- On a two-operation bracket, Qwen selected retained-stock simulation, polled its
+  background job, and created a follow-up setup with no failed calls. Terra/high
+  independently retained the stock and created the follow-up setup with no failed
+  calls. Both saved documents reopened with two Jobs and valid retained stock.
 
 ## Reusable benchmark corpus
 

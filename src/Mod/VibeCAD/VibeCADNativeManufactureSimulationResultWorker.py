@@ -27,6 +27,10 @@ class PreparedNativeSimulation:
     mesh_points: int
     mesh_facets: int
     mesh_bounds_mm: tuple[tuple[float, float, float], tuple[float, float, float]]
+    stock_shape: Any
+    stock_shape_type: str
+    stock_solid_count: int
+    stock_shape_sha256: str
     statistics: Mapping[str, Any]
     program_sha256: str
     executed_command_count: int
@@ -272,6 +276,25 @@ def execute_native_simulation(
                 "NATIVE_MANUFACTURE_SIMULATION_RESULT_INVALID",
             )
         bounds = _mesh_bounds(result_mesh)
+        progress(85, "Building solid retained stock")
+        stock_shape = simulator.GetRemainingStockShape()
+        stock_solids = tuple(getattr(stock_shape, "Solids", ()) or ())
+        stock_shape_type = str(getattr(stock_shape, "ShapeType", "") or "")
+        if (
+            stock_shape is None
+            or stock_shape.isNull()
+            or not stock_shape.isValid()
+            or stock_shape_type not in {"Solid", "CompSolid", "Compound"}
+            or not stock_solids
+            or any(solid.isNull() or not solid.isValid() for solid in stock_solids)
+        ):
+            _error(
+                "Native CAM simulation produced no valid solid retained stock.",
+                "NATIVE_MANUFACTURE_SIMULATION_RESULT_INVALID",
+            )
+        stock_shape_sha256 = hashlib.sha256(
+            stock_shape.exportBrepToString().encode("utf-8")
+        ).hexdigest()
         statistics = dict(simulator.GetSimulationStats())
         _validate_statistics(statistics)
         if executed != (
@@ -289,6 +312,10 @@ def execute_native_simulation(
             mesh_points=mesh_points,
             mesh_facets=mesh_facets,
             mesh_bounds_mm=bounds,
+            stock_shape=stock_shape,
+            stock_shape_type=stock_shape_type,
+            stock_solid_count=len(stock_solids),
+            stock_shape_sha256=stock_shape_sha256,
             statistics=statistics,
             program_sha256=digest.hexdigest(),
             executed_command_count=executed,

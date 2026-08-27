@@ -96,6 +96,7 @@ SET(PathPythonDressupGui_SRCS
 SET(PathPythonMain_SRCS
     Path/Main/__init__.py
     Path/Main/Job.py
+    Path/Main/JobRelationship.py
     Path/Main/JobSetup.py
     Path/Main/JobStock.py
     Path/Main/JobWorkCoordinate.py

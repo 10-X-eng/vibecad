@@ -28,6 +28,7 @@ import Path
 import Path.Base.Util as PathUtil
 import math
 from PySide.QtCore import QT_TRANSLATE_NOOP
+from typing import Mapping
 
 # lazily loaded modules
 from lazy_loader.lazy_loader import LazyLoader
@@ -104,6 +105,42 @@ class Stock(object):
                     "Stock Material property is deprecated. Removing the Material property. Please use native material system to assign a ShapeMaterial",
                 )
             )
+
+
+class StockFromPreparedShape(Stock):
+    """A worker-verified solid snapshot retained as one setup's stock."""
+
+    def __init__(self, obj, shape, source, artifact_sha256):
+        obj.addProperty(
+            "App::PropertyLink",
+            "Source",
+            "Stock",
+            QT_TRANSLATE_NOOP(
+                "App::Property",
+                "The retained material result used to create this stock",
+            ),
+        )
+        obj.addProperty(
+            "App::PropertyString",
+            "ArtifactSHA256",
+            "Stock",
+            QT_TRANSLATE_NOOP(
+                "App::Property",
+                "The verified BREP artifact used to create this stock",
+            ),
+        )
+        obj.setEditorMode("Source", 1)
+        obj.setEditorMode("ArtifactSHA256", 1)
+        obj.Source = source
+        obj.ArtifactSHA256 = str(artifact_sha256)
+        obj.Shape = shape
+        obj.Proxy = self
+
+    def dumps(self):
+        return None
+
+    def loads(self, state):
+        return None
 
 
 class StockFromBase(Stock):
@@ -513,6 +550,52 @@ def CreateCylinder(job, radius=None, height=None, placement=None):
         obj.Placement = FreeCAD.Placement(origin, FreeCAD.Vector(), 0)
 
     SetupStockObject(obj, StockType.CreateCylinder)
+    return obj
+
+
+def CreateFromPreparedShape(
+    job,
+    shape,
+    source,
+    artifact_sha256,
+    shape_type,
+    topology,
+):
+    """Create setup-owned stock from verified detached solid volumes."""
+
+    document = _getDocument(job, source)
+    solids = tuple(getattr(shape, "Solids", ()) or ()) if shape is not None else ()
+    expected_shape_type = str(shape_type or "")
+    expected_solids = (
+        int(topology.get("solids", 0)) if isinstance(topology, Mapping) else 0
+    )
+    if (
+        job is None
+        or getattr(job, "Document", None) is not document
+        or source is None
+        or getattr(source, "Document", None) is not document
+        or shape is None
+        or bool(shape.isNull())
+        or expected_shape_type not in {"Solid", "CompSolid", "Compound"}
+        or str(shape.ShapeType) != expected_shape_type
+        or expected_solids < 1
+        or len(solids) != expected_solids
+    ):
+        raise RuntimeError(
+            "Prepared CAM stock requires verified solid volumes and one live source"
+        )
+    digest = str(artifact_sha256 or "")
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise RuntimeError("Prepared CAM stock requires its verified artifact digest")
+    obj = document.addObject("Part::FeaturePython", "Stock")
+    PathUtil.markTimelineResource(obj, job)
+    if obj.ViewObject:
+        obj.ViewObject.Visibility = False
+    obj.Proxy = StockFromPreparedShape(obj, shape, source, digest)
+    SetupStockObject(obj, StockType.Unknown)
+    ApplyStockViewDefaults(obj)
     return obj
 
 

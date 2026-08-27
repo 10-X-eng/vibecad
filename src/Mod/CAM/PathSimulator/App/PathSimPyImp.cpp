@@ -149,6 +149,25 @@ PyObject* PathSimPy::GetCombinedResultMesh(PyObject* args)
     return new Mesh::MeshPy(meshOuter.release());
 }
 
+PyObject* PathSimPy::GetRemainingStockShape(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    cStock* stock = getPathSimPtr()->m_stock.get();
+    if (!stock) {
+        PyErr_SetString(PyExc_RuntimeError, "Simulation has no stock object");
+        return nullptr;
+    }
+
+    TopoDS_Shape shape;
+    {
+        Base::PyGILStateRelease release;
+        shape = stock->RemainingStockShape();
+    }
+    return new Part::TopoShapePy(new Part::TopoShape(shape));
+}
+
 PyObject* PathSimPy::GetSimulationStats(PyObject* args)
 {
     if (!PyArg_ParseTuple(args, "")) {

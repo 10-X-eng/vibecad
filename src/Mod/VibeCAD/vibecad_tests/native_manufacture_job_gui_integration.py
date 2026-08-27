@@ -390,6 +390,33 @@ def _run() -> None:
         assert job_state(job) == created_state
         assert int(document.UndoCount) == undo_before + 2
 
+        third_arguments = _arguments(
+            build_manufacture_snapshot(document),
+            label="Independent third setup",
+            model_names=("SecondModel",),
+        )
+        third_result = call(third_arguments)
+        _events(12)
+        third_job_name = third_result["job"]["object_name"]
+        third_job = document.getObject(third_job_name)
+        assert third_job is not None
+        third_resources = _assert_job_graph(
+            document,
+            third_job,
+            (second_model,),
+            (),
+        )
+        assert third_resources
+        assert job_state(job) == created_state
+        assert job_state(second_job) == second_created_state
+        assert int(document.UndoCount) == undo_before + 3
+
+        document.undo()
+        _events(12)
+        assert document.getObject(third_job_name) is None
+        assert job_state(job) == created_state
+        assert job_state(second_job) == second_created_state
+
         document.undo()
         _events(12)
         assert document.getObject(second_job_name) is None

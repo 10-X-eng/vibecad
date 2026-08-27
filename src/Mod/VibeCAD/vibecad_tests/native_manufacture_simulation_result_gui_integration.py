@@ -32,6 +32,13 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureSimulationResultSchema import (
     MANUFACTURE_SIMULATION_RESULT_CAPABILITY_NAME,
 )
+from VibeCADNativeManufactureFollowUpSchema import (
+    MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME,
+)
+from VibeCADNativeManufactureFollowUpState import (
+    setup_relationship_state,
+    simulation_result_state,
+)
 from VibeCADNativeManufactureState import job_state, operation_reference_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -83,6 +90,27 @@ def _surface():
         True,
     )
     assert actual == expected, (actual, expected)
+    follow_up = next(
+        value
+        for value in resolve_native_action_inventory(surface).plans
+        if value.command_id == "CAM_FollowUpSetup"
+    )
+    assert (
+        follow_up.capability_family,
+        follow_up.operation_variant,
+        follow_up.exact_target_type,
+        follow_up.classification.mutation,
+        follow_up.transaction_behavior,
+        follow_up.background_required,
+    ) == (
+        MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME,
+        "create",
+        "ExactCurrentRetainedStockResult",
+        True,
+        "background",
+        True,
+    )
+    assert Gui.Command.get("CAM_FollowUpSetup") is not None
     return controller, surface
 
 
@@ -113,6 +141,39 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
                 NATIVE_BACKGROUND_CAPABILITY_NAME,
             ),
             schemas=(schema, background_schema),
+            human_only_action_ids=(),
+            missing_definition_names=(),
+            missing_implementation_names=(),
+            incomplete_definition_names=(),
+        )
+    )
+
+
+def _follow_up_turn(surface, registry) -> NativeTurnSnapshot:
+    follow_up = registry.definition(MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME)
+    background = registry.definition(NATIVE_BACKGROUND_CAPABILITY_NAME)
+    assert follow_up is not None and background is not None
+    schema = follow_up.provider_schema(("create",))
+    branch = schema["parameters"]["oneOf"][0]
+    assert branch["required"] == ["remaining_stock", "label"]
+    assert branch["additionalProperties"] is False
+    assert branch["properties"]["operation"]["const"] == "create"
+    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    assert "unknown" not in encoded.casefold()
+    assert len(encoded.encode("utf-8")) < 2_500
+    return NativeTurnSnapshot.from_provider_surface(
+        NativeProviderSurface(
+            snapshot=NativeSurfaceSnapshot.from_surface(surface),
+            available=True,
+            unavailable_reason="",
+            tool_names=(
+                MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME,
+                NATIVE_BACKGROUND_CAPABILITY_NAME,
+            ),
+            schemas=(
+                schema,
+                background.provider_schema(("status", "cancel")),
+            ),
             human_only_action_ids=(),
             missing_definition_names=(),
             missing_implementation_names=(),
@@ -256,10 +317,17 @@ def _assert_retained_result(document, result, job, operation, quality: int) -> N
     assert result.Mesh.CountPoints >= 3
     assert result.Mesh.CountFacets >= 1
     assert result.SimulationJobName == job.Name
+    assert result.SimulationJob is job
+    assert result.SimulationJobStateSHA256 == job_state(job)["state_sha256"]
     assert list(result.SimulationOperationNames) == [operation.Name]
     assert result.SimulationQuality == quality
     assert float(result.SimulationResolution.getValueAs("mm")) > 0.0
     assert len(result.SimulationProgramSHA256) == 64
+    assert not result.RetainedStockShape.isNull()
+    assert result.RetainedStockShape.isValid()
+    assert len(result.RetainedStockShape.Solids) >= 1
+    assert len(result.RetainedStockShapeSHA256) == 64
+    assert result.RetainedStockSolidCount == len(result.RetainedStockShape.Solids)
     assert result.VibeCADTimelineRole == "operation"
     assert getattr(result, "VibeCADTimelineOwner", None) is None
     assert not tuple(getattr(result, "VibeCADTimelineReplacedInputs", ()) or ())
@@ -396,7 +464,10 @@ def _run() -> None:
             release.set()
             stale_terminal = _await(manager, stale_id)
         assert stale_terminal.phase == "failed"
-        assert stale_terminal.error["error_code"] == "NATIVE_REVISION_CONFLICT"
+        assert stale_terminal.error["error_code"] == "NATIVE_REVISION_CONFLICT", (
+            stale_terminal,
+            diagnostics.get(stale_id),
+        )
         assert tuple(obj.Name for obj in document.Objects) == objects_initial
 
         secondary = App.newDocument("NativeManufactureSimulationCloseGate")
@@ -586,7 +657,210 @@ def _run() -> None:
         assert result.Mesh.CountFacets == result_facet_count
         assert result.SimulationProgramSHA256 == result_program
 
+        follow_up_surface = read_active_ribbon_surface(controller)
+        follow_up_turn = _follow_up_turn(follow_up_surface, registry)
+        follow_up_context = NativeRuntimeContext(
+            service=service,
+            document=document,
+            state=state_store,
+            undo_ledger=ledger,
+            reauthorize_turn=lambda: require_frozen_native_surface(
+                follow_up_turn.surface,
+                controller,
+            ),
+            active_document=lambda: App.ActiveDocument,
+            active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
+            edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
+            background_manager=manager,
+            document_thread_dispatch=VibeGui._dispatch_to_document_thread,
+        )
+        follow_up_dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=follow_up_turn,
+            runtimes=build_native_runtime_bindings(
+                follow_up_context,
+                follow_up_turn.tool_names,
+            ),
+            reauthorize_turn=follow_up_context.reauthorize_turn,
+            active_document=lambda: App.ActiveDocument,
+        )
+        source_job_state = job_state(job)
+        source_result_state = simulation_result_state(result)
+        follow_up_start = follow_up_dispatcher.call(
+            MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME,
+            json.dumps(
+                {
+                    "operation": "create",
+                    "remaining_stock": _target(source_result_state),
+                    "label": "Retained second setup",
+                },
+                separators=(",", ":"),
+            ),
+            "native-retained-follow-up-success",
+        )
+        assert follow_up_start["ok"] is True, follow_up_start
+        follow_up_terminal = _await(
+            manager,
+            follow_up_start["job"]["job_id"],
+            timeout=60.0,
+        )
+        assert follow_up_terminal.phase == "completed", (
+            follow_up_terminal,
+            diagnostics.get(follow_up_start["job"]["job_id"]),
+        )
+        follow_up_payload = follow_up_terminal.result["follow_up_setup"]
+        follow_up_job = document.getObject(follow_up_payload["setup"]["object_name"])
+        converted_stock = document.getObject(
+            follow_up_payload["remaining_stock"]["object_name"]
+        )
+        assert follow_up_job is not None and converted_stock is not None
+        assert follow_up_job is not job
+        assert follow_up_job.PreviousSetup is job
+        assert follow_up_job.RemainingStockResult is result
+        assert follow_up_job.RemainingStockSolid is converted_stock
+        assert follow_up_job.PreviousSetupStateSHA256 == source_job_state["state_sha256"]
+        assert follow_up_job.RemainingStockResultStateSHA256 == source_result_state[
+            "state_sha256"
+        ]
+        assert follow_up_job.MachiningProgramSHA256 == result_program
+        assert follow_up_job.Stock is converted_stock
+        assert converted_stock.Source is result
+        shared_stock = converted_stock.Shape.common(result.RetainedStockShape)
+        volume_tolerance = max(
+            1.0e-7,
+            abs(float(result.RetainedStockShape.Volume)) * 1.0e-9,
+        )
+        assert abs(
+            float(shared_stock.Volume) - float(result.RetainedStockShape.Volume)
+        ) <= volume_tolerance
+        assert abs(
+            float(converted_stock.Shape.Volume)
+            - float(result.RetainedStockShape.Volume)
+        ) <= volume_tolerance
+        assert converted_stock.ArtifactSHA256 == result.RetainedStockShapeSHA256
+        assert converted_stock.Shape.ShapeType in {"Solid", "CompSolid", "Compound"}
+        assert len(converted_stock.Shape.Solids) >= 1
+        assert job_state(job)["state_sha256"] == source_job_state["state_sha256"]
+        assert follow_up_payload["relationship"]["current"] is True
+
+        follow_up_name = follow_up_job.Name
+        converted_name = converted_stock.Name
+        document.undo()
+        _events(12)
+        assert document.getObject(follow_up_name) is None
+        assert document.getObject(converted_name) is None
+        assert job_state(document.getObject(job_name))["state_sha256"] == source_job_state[
+            "state_sha256"
+        ]
+        document.redo()
+        _events(12)
+        follow_up_job = document.getObject(follow_up_name)
+        converted_stock = document.getObject(converted_name)
+        assert follow_up_job is not None and converted_stock is not None
+        assert follow_up_job.PreviousSetup is document.getObject(job_name)
+        assert follow_up_job.RemainingStockResult is document.getObject(result_name)
+        assert follow_up_job.RemainingStockSolid is converted_stock
+        assert follow_up_job.Stock is converted_stock
+        assert converted_stock.Source is document.getObject(result_name)
+
+        branch_surface = read_active_ribbon_surface(controller)
+        branch_turn = _follow_up_turn(branch_surface, registry)
+        branch_context = NativeRuntimeContext(
+            service=service,
+            document=document,
+            state=state_store,
+            undo_ledger=ledger,
+            reauthorize_turn=lambda: require_frozen_native_surface(
+                branch_turn.surface,
+                controller,
+            ),
+            active_document=lambda: App.ActiveDocument,
+            active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
+            edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
+            background_manager=manager,
+            document_thread_dispatch=VibeGui._dispatch_to_document_thread,
+        )
+        branch_dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=branch_turn,
+            runtimes=build_native_runtime_bindings(
+                branch_context,
+                branch_turn.tool_names,
+            ),
+            reauthorize_turn=branch_context.reauthorize_turn,
+            active_document=lambda: App.ActiveDocument,
+        )
+        branch_start = branch_dispatcher.call(
+            MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME,
+            json.dumps(
+                {
+                    "operation": "create",
+                    "remaining_stock": _target(source_result_state),
+                    "label": "Retained alternate setup",
+                },
+                separators=(",", ":"),
+            ),
+            "native-retained-follow-up-branch",
+        )
+        assert branch_start["ok"] is True, branch_start
+        branch_terminal = _await(
+            manager,
+            branch_start["job"]["job_id"],
+            timeout=60.0,
+        )
+        assert branch_terminal.phase == "completed", (
+            branch_terminal,
+            diagnostics.get(branch_start["job"]["job_id"]),
+        )
+        branch_payload = branch_terminal.result["follow_up_setup"]
+        branch_job = document.getObject(branch_payload["setup"]["object_name"])
+        branch_stock = document.getObject(
+            branch_payload["remaining_stock"]["object_name"]
+        )
+        assert branch_job is not None and branch_stock is not None
+        assert branch_job is not follow_up_job
+        assert branch_job.PreviousSetup is document.getObject(job_name)
+        assert branch_job.RemainingStockResult is document.getObject(result_name)
+        assert branch_job.Stock is branch_stock
+        assert branch_stock.Source is document.getObject(result_name)
+        assert branch_payload["relationship"]["current"] is True
+
+        branch_name = branch_job.Name
+        branch_stock_name = branch_stock.Name
+        source_label = document.getObject(job_name).Label
+        document.getObject(job_name).Label = f"{source_label} changed"
+        document.recompute()
+        assert setup_relationship_state(follow_up_job)["current"] is False
+        assert setup_relationship_state(branch_job)["current"] is False
+        document.getObject(job_name).Label = source_label
+        document.recompute()
+        assert setup_relationship_state(follow_up_job)["current"] is True
+        assert setup_relationship_state(branch_job)["current"] is True
+
         document.saveAs(str(save_path))
+        App.closeDocument(document.Name)
+        document = App.openDocument(str(save_path))
+        follow_up_job = document.getObject(follow_up_name)
+        converted_stock = document.getObject(converted_name)
+        branch_job = document.getObject(branch_name)
+        branch_stock = document.getObject(branch_stock_name)
+        assert follow_up_job is not None and converted_stock is not None
+        assert branch_job is not None and branch_stock is not None
+        assert follow_up_job.PreviousSetup is document.getObject(job_name)
+        assert follow_up_job.RemainingStockResult is document.getObject(result_name)
+        assert follow_up_job.RemainingStockSolid is converted_stock
+        assert follow_up_job.Stock is converted_stock
+        assert converted_stock.Source is document.getObject(result_name)
+        assert branch_job.PreviousSetup is document.getObject(job_name)
+        assert branch_job.RemainingStockResult is document.getObject(result_name)
+        assert branch_job.Stock is branch_stock
+        assert branch_stock.Source is document.getObject(result_name)
+
+        document.save()
         App.closeDocument(document.Name)
         document = App.openDocument(str(save_path))
         job = document.getObject(job_name)
@@ -604,6 +878,8 @@ def _run() -> None:
             "duplicate_guard=true "
             "durable_mesh=true provenance=true history=true receipt=true undo=true "
             "redo=true reopen=true selection=true visibility=true low_noise=true",
+            "follow_up=true related_setup=true branching=true stale=true "
+            "remaining_stock=true acyclic=true",
             flush=True,
         )
         exit_code = 0

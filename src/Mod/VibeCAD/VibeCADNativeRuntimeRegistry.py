@@ -255,6 +255,12 @@ from VibeCADNativeManufactureSimulationResultBindings import (
 from VibeCADNativeManufactureSimulationResultRuntime import (
     NativeManufactureSimulationResultRuntime,
 )
+from VibeCADNativeManufactureFollowUpBindings import (
+    manufacture_follow_up_runtime_bindings,
+)
+from VibeCADNativeManufactureFollowUpRuntime import (
+    NativeManufactureFollowUpRuntime,
+)
 from VibeCADNativeManufactureToolBindings import manufacture_tool_runtime_bindings
 from VibeCADNativeManufactureFocusedToolBindings import (
     manufacture_focused_tool_runtime_bindings,
@@ -551,6 +557,7 @@ def build_native_runtime_bindings(
     manufacture_template = NativeManufactureTemplateRuntime(context)
     manufacture_simulation = NativeManufactureSimulationRuntime(context)
     manufacture_simulation_result = NativeManufactureSimulationResultRuntime(context)
+    manufacture_follow_up = NativeManufactureFollowUpRuntime(context)
     manufacture_tool_catalog = NativeManufactureToolCatalogRuntime(context)
     manufacture_tool = NativeManufactureToolRuntime(context)
     manufacture_tool_output = NativeManufactureToolOutputRuntime(context)
@@ -703,6 +710,7 @@ def build_native_runtime_bindings(
         **manufacture_simulation_result_runtime_bindings(
             manufacture_simulation_result
         ),
+        **manufacture_follow_up_runtime_bindings(manufacture_follow_up),
         **manufacture_tool_runtime_bindings(
             manufacture_tool_catalog,
             manufacture_tool,

@@ -210,6 +210,9 @@ try:
     import VibeCADAnalyzeStudyGui
 
     VibeCADAnalyzeStudyGui.ensure_command_registered()
+    import VibeCADManufactureFollowUpGui
+
+    VibeCADManufactureFollowUpGui.ensure_command_registered()
     _load_ribbon_extension_commands()
     if fasteners_available:
         try:

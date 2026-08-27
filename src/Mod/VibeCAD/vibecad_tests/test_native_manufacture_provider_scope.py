@@ -76,6 +76,7 @@ _AVAILABLE = (
     "manufacture.simulation",
     "manufacture.close_simulation",
     "manufacture.simulation_result",
+    "manufacture.follow_up_setup",
     "manufacture.camotics",
     "manufacture.post",
     "manufacture.post_job",
@@ -199,6 +200,21 @@ def test_blank_document_exposes_setup_creation_and_bounded_discovery_only() -> N
         "manufacture.job",
         "manufacture.setups",
         "manufacture.tool_catalog",
+    }
+
+
+def test_retained_stock_exposes_only_the_explicit_follow_up_setup_tool() -> None:
+    domain = _domain()
+    domain["remaining_stock_result_count"] = 1
+
+    names = set(manufacture_provider_tool_names(domain, _AVAILABLE))
+
+    assert names == _SHARED | {
+        "manufacture.job",
+        "manufacture.setups",
+        "manufacture.tool_catalog",
+        "manufacture.follow_up_setup",
+        "manufacture.remaining_stock",
     }
 
 
@@ -358,6 +374,18 @@ def test_focused_inspection_tools_follow_exact_setup_content() -> None:
     }
     assert set(with_path.tool_names) == set(configured.tool_names) | {
         "manufacture.toolpath"
+    }
+
+    retained_domain = _domain()
+    retained_domain["remaining_stock_result_count"] = 25
+    retained = scope_manufacture_provider_surface(
+        surface,
+        {"surface_id": "manufacture", "domain": retained_domain},
+        registry=registry,
+    )
+    assert set(retained.tool_names) == {
+        "manufacture.setups",
+        "manufacture.remaining_stock",
     }
 
 
@@ -705,6 +733,52 @@ def test_setup_catalog_is_searchable_paged_and_returns_exact_targets(monkeypatch
             {"operation_limit": 0, "tool_limit": 0, "model_limit": 0},
         ),
     ]
+
+
+def test_remaining_stock_catalog_pages_beyond_context_limit(monkeypatch) -> None:
+    results = [
+        SimpleNamespace(Name=f"CutMaterial{index:03d}", Label=f"Rear stock {index:03d}")
+        for index in range(40)
+    ]
+    document = SimpleNamespace(Objects=results)
+    monkeypatch.setattr(manufacture_inspect, "is_simulation_result", lambda _obj: True)
+    state_reads = []
+
+    def read_result_state(result):
+        state_reads.append(result.Name)
+        return {
+            "object_name": result.Name,
+            "label": result.Label,
+            "type_id": "Mesh::FeaturePython",
+            "state_sha256": f"{int(result.Name[-3:]) + 1:064x}",
+            "source_setup": {
+                "object_name": f"Job{result.Name[-3:]}",
+                "label": f"Rear setup {result.Name[-3:]}",
+            },
+            "source_current": True,
+            "provenance_valid": True,
+        }
+
+    monkeypatch.setattr(
+        manufacture_inspect,
+        "simulation_result_state",
+        read_result_state,
+    )
+
+    page = manufacture_inspect.list_remaining_stock(
+        document,
+        query="rear",
+        offset=32,
+        page_size=8,
+    )
+
+    assert page["remaining_stock"]["total"] == 40
+    assert page["remaining_stock"]["offset"] == 32
+    assert page["remaining_stock"]["next_offset"] is None
+    assert [item["object_name"] for item in page["remaining_stock"]["items"]] == [
+        f"CutMaterial{index:03d}" for index in range(32, 40)
+    ]
+    assert state_reads == [f"CutMaterial{index:03d}" for index in range(32, 40)]
 
 
 def test_provider_state_removes_unadvertised_domains_and_keeps_exact_setup_targets() -> None:

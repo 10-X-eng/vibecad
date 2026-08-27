@@ -50,6 +50,7 @@ _SETUP_FIELDS = (
     "configuration",
     "toolpath_validity",
     "readiness",
+    "relationship",
 )
 _DOMAIN_FIELDS = (
     "kind",
@@ -60,6 +61,8 @@ _DOMAIN_FIELDS = (
     "model_candidates",
     "model_candidates_truncated",
     "job_creation",
+    "remaining_stock_result_count",
+    "remaining_stock_results_truncated",
 )
 
 
@@ -121,5 +124,26 @@ def compact_manufacture_provider_state(
             for name in ("state_sha256", "count")
             if name in catalog
         }
+    retained = domain.get("remaining_stock_results")
+    if isinstance(retained, list):
+        compact["remaining_stock_results"] = [
+            {
+                name: value[name]
+                for name in (
+                    "object_name",
+                    "label",
+                    "type_id",
+                    "state_sha256",
+                    "source_setup",
+                    "source_current",
+                    "provenance_valid",
+                    "resolution_mm",
+                    "program_sha256",
+                )
+                if name in value
+            }
+            for value in retained
+            if isinstance(value, Mapping)
+        ]
     result["domain"] = compact
     return result

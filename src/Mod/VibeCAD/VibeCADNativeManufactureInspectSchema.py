@@ -151,6 +151,26 @@ def manufacture_inspect_capability_definition() -> NativeCapabilityDefinition:
                 provider_supplemental=True,
             ),
             _variant(
+                "list_remaining_stock",
+                "Find retained stock by label or object name and return one exact ordered page.",
+                "VibeCAD_ManufactureReadJob",
+                "CurrentDocumentRetainedStockCatalog",
+                _closed(
+                    {
+                        "query": {
+                            "type": "string",
+                            "maxLength": 80,
+                            "default": "",
+                            "description": "Case-insensitive retained-stock label or object-name substring; empty matches all.",
+                        },
+                        "offset": _OFFSET,
+                        "page_size": _PAGE_SIZE,
+                    },
+                    (),
+                ),
+                provider_supplemental=True,
+            ),
+            _variant(
                 "read_job",
                 "Read one exact CAM Job with bounded ordered operation paging.",
                 "VibeCAD_ManufactureReadJob",
