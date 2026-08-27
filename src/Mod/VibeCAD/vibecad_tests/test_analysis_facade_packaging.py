@@ -23,6 +23,7 @@ PUBLIC_ANALYSIS_FACADES = (
     "VibeCADAnalysisPersistence.py",
     "VibeCADAnalysisPublication.py",
     "VibeCADEngineeringContracts.py",
+    "VibeCADNativeAuthorityPolicy.py",
 )
 PACKAGED_TREE_ENVIRONMENT = (
     ("VIBECAD_BUILD_MODULE_DIR", "CMake build tree"),

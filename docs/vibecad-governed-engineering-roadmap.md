@@ -257,7 +257,7 @@ behavior while it waits for host persistence/workflows.
 | G1 — common engineering contracts | C, D, E | **Partial** | Define versioned identities, result envelope, finding taxonomy/profile, provenance graph, compatibility rules, and cross-domain fixtures. |
 | G2 — durable Analysis and publication | A plus C/E | **Partial** | Complete migrations, application-data/global discovery, reconnect and crash recovery, quota/reference integrity, Native/domain publication wiring, and installed cross-platform acceptance. |
 | G3 — remote provider | B | **Blocked by G2** | One real target, reconnect/cancel/poll/event semantics, credential isolation, verified bundle/output transport, real restart acceptance. |
-| G4 — authority policy and preview evidence | F, G | **Partial** | Census every operation, lock policy ownership, close unclassified consequential paths, add bounded evidence where justified. |
+| G4 — authority policy and preview evidence | F, G | **Partial** | The executable registry-bound census classifies all current operations; add bounded domain preview evidence where justified and prove authoritative installed/runtime integration. |
 | G5 — workflow DAG | H | **Design-ready** | Versioned definitions/runs, cycle and bound checks, deterministic scheduling, recovery, cancellation, failure/publication policies. |
 | G6 — optimization | I | **Blocked by G4 and G5** | Governed candidate mutation, variables/objectives/constraints, budgets, deduplication, provenance, ranking, approval/publication gates. |
 | G7 — Manufacture runtime integration | J | **Partial foundation** | Adapt expensive detached Manufacture tasks to G2/G5 without replacing current Jobs, operations, simulation, posts, or exports. |
@@ -439,8 +439,13 @@ and operational cost. This roadmap does not invent or pre-approve one.
 
 **Status: Partial.**
 
-The current preview store and ten modeling families are a real foundation. The
-next work is a complete operation census, not indiscriminate previewing.
+The current preview store and modeling families are a real foundation. The
+current roadmap execution stack also supplies an executable census projected
+from the production registry: 738 registered variants plus `/v1/prompt` and
+`/v1/run`, with exactly one of the eight policies below and explicit owner,
+currentness, evidence, rollback, and test metadata. The remaining work is
+bounded domain preview evidence and authoritative installed/runtime acceptance,
+not indiscriminate previewing.
 
 For every frozen capability operation, record exactly one primary policy:
 

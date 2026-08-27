@@ -256,6 +256,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAeroSnapshot.py
     VibeCADNativeAeroSchema.py
     VibeCADNativeAeroRuntime.py
+    VibeCADNativeAuthorityPolicy.py
     VibeCADNativeAeroBindings.py
     VibeCADNativeAnalyzeState.py
     VibeCADNativeAnalyzeSupportBindings.py
