@@ -5,12 +5,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 import math
 from typing import Any, Mapping
 
 from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureState import (
+    capture_other_job_states,
     job_state,
+    other_job_states_are_current,
     resolve_job_target,
     resolve_tool_bit_target,
     resolve_tool_controller_target,
@@ -65,9 +68,9 @@ class ToolCatalogTarget:
 class ToolControllerCreateSpec:
     job_target: Mapping[str, Any]
     catalog_tool: ToolCatalogTarget
-    tool_label: str
+    tool_label: str | None
     tool_property_changes: tuple[Mapping[str, Any], ...]
-    controller: ToolControllerSettings
+    controller: ToolControllerSettings | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +95,7 @@ class PreparedToolControllerCreate:
     detached_toolbit: Any
     tool_number: int
     objects_before: tuple[Any, ...]
+    other_job_states: tuple[tuple[Any, str], ...]
     selection_before: tuple[Any, ...]
 
 
@@ -104,6 +108,7 @@ class PreparedToolControllerUpdate:
     job_before: Mapping[str, Any]
     tool_number: int
     objects_before: tuple[Any, ...]
+    other_job_states: tuple[tuple[Any, str], ...]
     selection_before: tuple[Any, ...]
 
 
@@ -118,7 +123,15 @@ class PreparedToolBitUpdate:
     job_states: tuple[Mapping[str, Any], ...]
     visual_resources_before: tuple[Any, ...]
     objects_before: tuple[Any, ...]
+    other_job_states: tuple[tuple[Any, str], ...]
     selection_before: tuple[Any, ...]
+
+
+def _other_job_states(
+    document: Any,
+    owned_jobs: tuple[Any, ...],
+) -> tuple[tuple[Any, str], ...]:
+    return capture_other_job_states(document, owned_jobs)
 
 
 def _label(value: Any, noun: str) -> str:
@@ -249,24 +262,42 @@ def _apply_controller_settings(
         setattr(controller, property_name, f"{getattr(settings, input_name)} mm/min")
 
 
+def _stabilize_created_tool(document: Any, *, tool: Any) -> None:
+    if (
+        getattr(tool, "Document", None) is not document
+        or document.getObject(str(getattr(tool, "Name", "") or "")) is not tool
+    ):
+        raise RuntimeError("The created CAM ToolBit is no longer in the document")
+    proxy = tool.Proxy
+    proxy._suppress_visual_update = False
+    proxy.update_visual_representation_in_place()
+
+
 def preflight_tool_controller_create(
     document: Any,
     spec: ToolControllerCreateSpec,
 ) -> PreparedToolControllerCreate:
     if not isinstance(spec, ToolControllerCreateSpec):
         raise TypeError("spec must be a ToolControllerCreateSpec")
-    settings = _clean_settings(spec.controller)
     job, before = resolve_job_target(document, spec.job_target)
     _catalog, record = resolve_catalog_record(
         spec.catalog_tool.catalog_id,
         spec.catalog_tool.expected_content_sha256,
     )
+    settings = _clean_settings(spec.controller) if spec.controller is not None else None
     toolbit = instantiate_catalog_tool(record)
-    toolbit.label = _label(spec.tool_label, "ToolBit label")
+    toolbit.label = _label(spec.tool_label or record.label, "ToolBit label")
     changes = tuple(spec.tool_property_changes)
     if changes:
-        apply_tool_property_changes(toolbit.obj, changes)
-    tool_number = _resolve_tool_number(job, settings.tool_number)
+        apply_tool_property_changes(
+            toolbit.obj,
+            changes,
+            shape=toolbit._tool_bit_shape,
+        )
+    tool_number = _resolve_tool_number(
+        job,
+        settings.tool_number if settings is not None else {"kind": "next_available"},
+    )
     return PreparedToolControllerCreate(
         spec=ToolControllerCreateSpec(
             job_target=dict(spec.job_target),
@@ -281,6 +312,7 @@ def preflight_tool_controller_create(
         detached_toolbit=toolbit,
         tool_number=tool_number,
         objects_before=tuple(document.Objects),
+        other_job_states=_other_job_states(document, (job,)),
         selection_before=read_current_selection(document),
     )
 
@@ -302,6 +334,7 @@ def preflight_tool_controller_update(
         job_before=job_state(job),
         tool_number=_resolve_tool_number(job, settings.tool_number, controller),
         objects_before=tuple(document.Objects),
+        other_job_states=_other_job_states(document, (job,)),
         selection_before=read_current_selection(document),
     )
 
@@ -354,6 +387,7 @@ def preflight_tool_bit_update(
         job_states=tuple(job_state(item) for item in jobs),
         visual_resources_before=visual_resources,
         objects_before=tuple(document.Objects),
+        other_job_states=_other_job_states(document, jobs),
         selection_before=read_current_selection(document),
     )
 
@@ -367,6 +401,11 @@ def _assert_common_current(document: Any, prepared: Any) -> None:
     if read_current_selection(document) != prepared.selection_before:
         raise NativeManufactureError(
             "The human selection changed after preflight.",
+            error_code="NATIVE_MANUFACTURE_STATE_STALE",
+        )
+    if not other_job_states_are_current(document, prepared.other_job_states):
+        raise NativeManufactureError(
+            "Another CAM setup changed after tool preflight.",
             error_code="NATIVE_MANUFACTURE_STATE_STALE",
         )
 
@@ -403,17 +442,22 @@ def create_tool_controller(
             timeline_owner=prepared.job,
         )
         controller = PathToolControllerGui.Create(
-            prepared.spec.controller.label,
+            (
+                prepared.spec.controller.label
+                if prepared.spec.controller is not None
+                else f"TC: {prepared.spec.tool_label}"
+            ),
             tool,
             prepared.tool_number,
             document=document,
             timelineOwner=prepared.job,
         )
-        _apply_controller_settings(
-            controller,
-            prepared.spec.controller,
-            prepared.tool_number,
-        )
+        if prepared.spec.controller is not None:
+            _apply_controller_settings(
+                controller,
+                prepared.spec.controller,
+                prepared.tool_number,
+            )
         prepared.job.Proxy.addToolController(controller)
         graph = tuple(PathUtil.toolControllerResourceGraph(controller))
         PathUtil.finalizeTimelineResourceGraphExtension(
@@ -421,6 +465,8 @@ def create_tool_controller(
             reconciliation,
             graph,
         )
+        tool.Proxy.update_visual_representation_in_place()
+        tool.Proxy._suppress_visual_update = True
     except NativeManufactureError:
         raise
     except Exception as exc:
@@ -440,6 +486,7 @@ def create_tool_controller(
         recompute_targets=(tool, controller, prepared.job),
         created=(object_identity(controller),),
         changed=(object_identity(prepared.job),),
+        after_recompute=partial(_stabilize_created_tool, tool=tool),
     )
 
 
@@ -541,6 +588,11 @@ def _assert_no_graph_or_selection_change(document: Any, prepared: Any) -> None:
             "The CAM settings update changed the human selection.",
             error_code="NATIVE_MANUFACTURE_TOOL_POSTCONDITION_FAILED",
         )
+    if not other_job_states_are_current(document, prepared.other_job_states):
+        raise NativeManufactureError(
+            "The CAM tool edit changed another setup.",
+            error_code="NATIVE_MANUFACTURE_TOOL_POSTCONDITION_FAILED",
+        )
 
 
 def verify_created_tool_controller(
@@ -553,10 +605,21 @@ def verify_created_tool_controller(
     tool = value["tool"]
     graph = tuple(value["graph"])
     created_objects = tuple(value["created_objects"])
-    if tuple(obj for obj in document.Objects if obj not in prepared.objects_before) != created_objects:
+    current_created_objects = tuple(
+        obj for obj in document.Objects if obj not in prepared.objects_before
+    )
+    if current_created_objects != created_objects:
         raise NativeManufactureError(
             "Tool creation changed objects outside its exact graph.",
             error_code="NATIVE_MANUFACTURE_TOOL_POSTCONDITION_FAILED",
+            repair={
+                "mutation_object_names": [
+                    str(obj.Name) for obj in created_objects[:16]
+                ],
+                "verified_object_names": [
+                    str(obj.Name) for obj in current_created_objects[:16]
+                ],
+            },
         )
     if (
         not graph
@@ -579,14 +642,29 @@ def verify_created_tool_controller(
         if origin is not None:
             implicit.add(origin)
             implicit.update(tuple(getattr(origin, "OriginFeatures", ()) or ()))
-    if any(obj not in graph and obj not in implicit for obj in created_objects):
+    unexpected = tuple(
+        obj
+        for obj in created_objects
+        if obj not in graph and obj not in implicit
+    )
+    if unexpected:
         raise NativeManufactureError(
             "Tool creation produced an object outside its exact Job graph.",
             error_code="NATIVE_MANUFACTURE_TOOL_POSTCONDITION_FAILED",
+            repair={
+                "unexpected_object_names": [
+                    str(obj.Name) for obj in unexpected[:16]
+                ],
+            },
         )
     if read_current_selection(document) != prepared.selection_before:
         raise NativeManufactureError(
             "Tool creation changed the human selection.",
+            error_code="NATIVE_MANUFACTURE_TOOL_POSTCONDITION_FAILED",
+        )
+    if not other_job_states_are_current(document, prepared.other_job_states):
+        raise NativeManufactureError(
+            "Tool creation changed another CAM setup.",
             error_code="NATIVE_MANUFACTURE_TOOL_POSTCONDITION_FAILED",
         )
     state = tool_controller_state(controller)

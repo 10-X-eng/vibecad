@@ -12,9 +12,11 @@ from typing import Any, Callable, Mapping
 from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureState import (
+    capture_other_job_states,
     job_state,
     operation_active_state,
     operation_reference_state,
+    other_job_states_are_current,
     resolve_job_target,
 )
 
@@ -50,6 +52,7 @@ class FrozenSimulationRun:
 class FrozenGlSimulation:
     job: Any
     expected_job_state_sha256: str
+    other_job_states: tuple[tuple[Any, str], ...]
     quality: int
     stock_shape: Any
     base_shapes: tuple[Any, ...]
@@ -265,6 +268,7 @@ def preflight_gl_simulation(
         _error("GL simulation requires one through 64 exact operations.")
 
     exact_job, job_before = resolve_job_target(document, job)
+    other_job_states = capture_other_job_states(document, (exact_job,))
     group = tuple(getattr(getattr(exact_job, "Operations", None), "Group", ()) or ())
     group_positions = {id(operation): index for index, operation in enumerate(group)}
     if len(group_positions) != len(group):
@@ -388,6 +392,11 @@ def preflight_gl_simulation(
             "The exact CAM Job changed while simulation inputs were frozen.",
             "NATIVE_MANUFACTURE_STATE_STALE",
         )
+    if not other_job_states_are_current(document, other_job_states):
+        _error(
+            "Another CAM setup changed while simulation inputs were frozen.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
     for run in runs:
         current = operation_reference_state(run.operation)
         if current.get("state_sha256") != run.expected_state_sha256:
@@ -399,6 +408,7 @@ def preflight_gl_simulation(
     return FrozenGlSimulation(
         job=exact_job,
         expected_job_state_sha256=str(job_before["state_sha256"]),
+        other_job_states=other_job_states,
         quality=quality,
         stock_shape=stock_shape.copy(),
         base_shapes=tuple(base_shapes),
@@ -517,6 +527,11 @@ def validate_gl_simulation(document: Any, frozen: FrozenGlSimulation) -> None:
                 "object_name": str(frozen.job.Name),
                 "current_state_sha256": current_job.get("state_sha256"),
             },
+        )
+    if not other_job_states_are_current(document, frozen.other_job_states):
+        _error(
+            "Another CAM setup changed during background simulation preparation.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
         )
     group = tuple(getattr(frozen.job.Operations, "Group", ()) or ())
     positions = {id(operation): index for index, operation in enumerate(group)}

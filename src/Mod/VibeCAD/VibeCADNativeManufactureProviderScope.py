@@ -155,7 +155,9 @@ def _operation_scope(
     if job is not None:
         allowed = {"create_job"}
         if has_setup:
-            allowed.add("update_setup")
+            allowed.update(
+                {"configure_stock", "orient_workpiece", "update_setup"}
+            )
         result["manufacture.job"] = tuple(
             operation for operation in job if operation in allowed
         )
@@ -166,7 +168,7 @@ def _operation_scope(
         if has_setup:
             allowed.update({"read_job", "search_setup_options", "validate_job"})
         if model_count:
-            allowed.add("detect_loop")
+            allowed.update({"detect_loop", "read_model_geometry"})
         if operation_count:
             allowed.add("inspect_toolpath")
         result["manufacture.inspect"] = tuple(

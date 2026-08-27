@@ -334,6 +334,7 @@ def test_inspection_operations_follow_exact_setup_content() -> None:
         "read_job",
         "validate_job",
         "detect_loop",
+        "read_model_geometry",
         "read_thread_catalog",
     }
     assert operations(with_path) == operations(configured) | {"inspect_toolpath"}
@@ -383,7 +384,12 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
     }
     assert no_tool_operations["manufacture.tool"] == {"create_controller"}
     assert no_tool_operations["manufacture.program"] == {"comment", "stop"}
-    assert no_tool_operations["manufacture.job"] == {"create_job", "update_setup"}
+    assert no_tool_operations["manufacture.job"] == {
+        "configure_stock",
+        "create_job",
+        "orient_workpiece",
+        "update_setup",
+    }
 
     assert "manufacture.operation" in projected_with_tool.tool_names
     with_tool_operations = {
@@ -405,7 +411,9 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
         "custom",
     }
     assert with_tool_operations["manufacture.job"] == {
+        "configure_stock",
         "create_job",
+        "orient_workpiece",
         "update_setup",
     }
     assert "manufacture.modify" not in projected_with_tool.tool_names

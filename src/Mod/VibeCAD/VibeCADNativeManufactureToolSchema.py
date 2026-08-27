@@ -107,6 +107,7 @@ _TOOL_PROPERTY_CHANGES = {
     "items": _TOOL_PROPERTY_CHANGE,
     "minItems": 0,
     "maxItems": 64,
+    "default": [],
 }
 _CONTROLLER = _closed(
     {
@@ -171,14 +172,16 @@ def manufacture_tool_catalog_capability_definition() -> NativeCapabilityDefiniti
                             "type": "integer",
                             "minimum": 0,
                             "maximum": 100_000_000,
+                            "default": 0,
                         },
                         "page_size": {
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 64,
+                            "default": 32,
                         },
                     },
-                    ("expected_catalog_state_sha256", "offset", "page_size"),
+                    ("expected_catalog_state_sha256",),
                 ),
             ),
             NativeCapabilityVariant(
@@ -209,8 +212,8 @@ def manufacture_tool_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="create_controller",
                 description=(
-                    "Clone one exact catalog tool into one Job and add its fully "
-                    "specified controller as a contiguous History resource extension."
+                    "Add one exact catalog tool to one Job. Omitted labels, tool number, "
+                    "and controller values use the same defaults as the human command."
                 ),
                 action_ids=frozenset({"CAM_ToolBitDock"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -228,9 +231,6 @@ def manufacture_tool_capability_definition() -> NativeCapabilityDefinition:
                     (
                         "job_target",
                         "catalog_tool",
-                        "tool_label",
-                        "tool_property_changes",
-                        "controller",
                     ),
                 ),
             ),

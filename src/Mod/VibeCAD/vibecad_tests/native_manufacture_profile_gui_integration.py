@@ -26,6 +26,12 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureOperationSchema import (
     MANUFACTURE_OPERATION_CAPABILITY_NAME,
 )
+from VibeCADNativeManufactureProfile import (
+    ProfileCreateSpec,
+    _assert_preflight_current,
+    preflight_profile_create,
+)
+from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -69,18 +75,29 @@ def _commit(document, label: str, action):
     return value
 
 
-def _create_model_and_job(document):
+def _create_model_and_job(
+    document,
+    *,
+    model_name: str = "ProfileGateModel",
+    job_name: str = "ProfileJob",
+    x_offset_mm: float = 0.0,
+):
     def create_model():
-        model = document.addObject("Part::Feature", "ProfileGateModel")
-        model.Label = "Profile gate model"
-        model.Shape = Part.makeBox(40.0, 30.0, 10.0)
+        model = document.addObject("Part::Feature", model_name)
+        model.Label = f"{job_name} model"
+        model.Shape = Part.makeBox(
+            40.0,
+            30.0,
+            10.0,
+            App.Vector(x_offset_mm, 0.0, 0.0),
+        )
         document.publishProvisionalTimelineOperationBlock(model, (), ())
         return model
 
     model = _commit(document, "Create Profile gate model", create_model)
 
     def create_job():
-        job = PathJob.Create("ProfileJob", [model], templateFile=None)
+        job = PathJob.Create(job_name, [model], templateFile=None)
         provider = PathJobGui.ViewProvider(job.ViewObject)
         job.ViewObject.Proxy = provider
         job.ViewObject.addExtension("Gui::ViewProviderGroupExtensionPython")
@@ -267,11 +284,45 @@ def _run() -> None:
         )
 
         model, job = _create_model_and_job(document)
+        _other_model, other_job = _create_model_and_job(
+            document,
+            model_name="OtherSetupModel",
+            job_name="OtherSetup",
+            x_offset_mm=60.0,
+        )
         face_name = _top_face_name(model)
         initial_names = tuple(obj.Name for obj in document.Objects)
         initial_operations = tuple(job.Operations.Group)
         initial_timeline = tuple(document.VibeCADTimeline.Operations)
         arguments = _arguments(model, job)
+
+        boundary = preflight_profile_create(
+            document,
+            ProfileCreateSpec(
+                label=arguments["label"],
+                job=arguments["job"],
+                tool_controller=arguments["tool_controller"],
+                geometry=arguments["geometry"],
+                profile=arguments["profile"],
+                depths=arguments["depths"],
+                heights=arguments["heights"],
+                coolant=arguments["coolant"],
+            ),
+        )
+        other_postprocessor_args = str(other_job.PostProcessorArgs)
+        other_job.PostProcessorArgs = "--other-setup-change"
+        try:
+            try:
+                _assert_preflight_current(document, boundary)
+            except NativeManufactureError as exc:
+                assert exc.error_code == "NATIVE_MANUFACTURE_STATE_STALE"
+            else:
+                raise AssertionError(
+                    "Profile preflight did not detect another setup changing"
+                )
+        finally:
+            other_job.PostProcessorArgs = other_postprocessor_args
+        other_job_before = job_state(other_job)
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -342,6 +393,7 @@ def _run() -> None:
 
         result = call(arguments)
         _events(12)
+        assert job_state(other_job)["state_sha256"] == other_job_before["state_sha256"]
         operation_name = result["profile"]["object_name"]
         operation = document.getObject(operation_name)
         assert operation is not None
@@ -401,7 +453,7 @@ def _run() -> None:
         print(
             "VIBECAD_NATIVE_MANUFACTURE_PROFILE_GUI_OK "
             "exact_targets=true geometry=true parameters=true toolpath=true "
-            "history=true rollback=true undo=true redo=true reopen=true",
+            "multi_setup=true history=true rollback=true undo=true redo=true reopen=true",
             flush=True,
         )
         exit_code = 0

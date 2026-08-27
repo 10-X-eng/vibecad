@@ -1786,8 +1786,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="profile",
                 description=(
-                    "Create one Profile toolpath for an entire Job or exact current "
-                    "Face/Edge subelements; no task panel is opened."
+                    "Machine inside, outside, or on profiles from a setup or selected "
+                    "Faces and Edges."
                 ),
                 action_ids=frozenset({"CAM_Profile"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -1823,9 +1823,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="pocket_shape",
                 description=(
-                    "Create one Pocket Shape toolpath from exact current Face/Edge "
-                    "geometry, with optional explicit edge extensions; no task panel "
-                    "is opened."
+                    "Clear planar pockets from selected Faces or Edges, with optional "
+                    "edge extensions."
                 ),
                 action_ids=frozenset({"CAM_Pocket_Shape"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -1865,9 +1864,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="pocket_3d",
                 description=(
-                    "Create one 3D Pocket toolpath from exact current Face or "
-                    "closed horizontal Edge-loop geometry; final depth is derived "
-                    "from the frozen model features and no task panel is opened."
+                    "Clear bounded 3D pockets from Faces or closed horizontal Edge loops."
                 ),
                 action_ids=frozenset({"CAM_Pocket3D"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -1905,10 +1902,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="surface",
                 description=(
-                    "Create one planar OpenCamLib Surface toolpath for the complete "
-                    "exact Job or ordered exact current Faces, with explicit pattern, "
-                    "layer, boundary, quality, depth, height, and cutter controls; no "
-                    "task panel is opened."
+                    "Finish 3D surfaces with planar OpenCamLib paths over a setup or "
+                    "selected Faces."
                 ),
                 action_ids=frozenset({"CAM_Surface"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -1946,10 +1941,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="waterline",
                 description=(
-                    "Create one bounded constant-Z Waterline toolpath for the complete "
-                    "exact Job or ordered exact current Faces. The algorithm is an "
-                    "explicit closed choice among OCL drop-cutter, OCL adaptive, and "
-                    "experimental clearing; no task panel is opened."
+                    "Machine constant-Z contours over a setup or selected Faces."
                 ),
                 action_ids=frozenset({"CAM_Waterline"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -2021,9 +2013,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="mill_facing",
                 description=(
-                    "Create one Mill Facing toolpath over the exact Job stock with "
-                    "explicit pattern, depth, height, extension, and linking values; "
-                    "no task panel is opened."
+                    "Face the setup stock to a flat depth."
                 ),
                 action_ids=frozenset({"CAM_MillFacing"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -2059,9 +2049,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="helix",
                 description=(
-                    "Create one internal Helix toolpath from exact current circular "
-                    "Face/Edge features with explicit ordering and process values; no "
-                    "task panel is opened."
+                    "Helically mill selected circular Faces or Edges."
                 ),
                 action_ids=frozenset({"CAM_Helix"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -2099,10 +2087,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="adaptive",
                 description=(
-                    "Create one libarea Adaptive clearing or profiling toolpath from "
-                    "exact current Face/Edge regions, with explicit helix-entry, "
-                    "extension, depth, height, and process values; no task panel is "
-                    "opened."
+                    "Adaptively clear or profile selected Face and Edge regions."
                 ),
                 action_ids=frozenset({"CAM_Adaptive"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -2144,9 +2129,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="slot",
                 description=(
-                    "Create one horizontal Slot toolpath from explicit points or one "
-                    "of the exact human-supported single-model feature forms; no task "
-                    "panel is opened."
+                    "Mill a horizontal slot from explicit points or supported model "
+                    "features."
                 ),
                 action_ids=frozenset({"CAM_Slot"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -2180,10 +2164,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="drilling",
                 description=(
-                    "Create one Drilling or Tapping operation from exact circular "
-                    "features and explicit XY locations, with explicit ordering, "
-                    "cycle, depth, height, linking, and coolant values; no task "
-                    "panel is opened."
+                    "Drill or tap selected circular features and explicit XY locations."
                 ),
                 action_ids=frozenset({"CAM_Drilling"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -2223,9 +2204,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="thread_milling",
                 description=(
-                    "Create one internal or external Thread Milling operation from "
-                    "exact circular features and either a shipped standard designation "
-                    "or explicit custom thread geometry; no task panel is opened."
+                    "Mill internal or external threads in selected circular features."
                 ),
                 action_ids=frozenset({"CAM_ThreadMilling"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -2265,9 +2244,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="engrave",
                 description=(
-                    "Create one Engrave toolpath from exact Edge selections, exact "
-                    "whole zero-volume wire models, or all engravable Job models; "
-                    "no task panel is opened."
+                    "Engrave selected Edges, wire models, or engravable setup models."
                 ),
                 action_ids=frozenset({"CAM_Engrave"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -2305,9 +2282,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="deburr",
                 description=(
-                    "Create one Deburr chamfer toolpath from exact current Edge/Face "
-                    "features with explicit width, immersion, direction, step-down, "
-                    "height, linking, and coolant values; no task panel is opened."
+                    "Chamfer or deburr selected Edges and Faces."
                 ),
                 action_ids=frozenset({"CAM_Deburr"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -2345,9 +2320,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="v_carve",
                 description=(
-                    "Create one Voronoi medial-line V-carve toolpath from exact "
-                    "horizontal Faces or face-bearing models with an exact V-bit; "
-                    "no task panel is opened."
+                    "V-carve horizontal Faces or face-bearing models with a V-bit."
                 ),
                 action_ids=frozenset({"CAM_Vcarve"}),
                 surface_ids=frozenset({"manufacture"}),

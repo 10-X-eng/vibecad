@@ -9,7 +9,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
 )
-from VibeCADNativeDesignSchema import LABEL_SCHEMA
+from VibeCADNativeDesignSchema import LABEL_SCHEMA, placement_schema
 
 
 MANUFACTURE_JOB_CAPABILITY_NAME = "manufacture.job"
@@ -54,6 +54,7 @@ _MODEL_INPUT = _closed(
     ("target", "replace_in_history"),
 )
 _TEMPLATE = {
+    "default": {"kind": "none"},
     "oneOf": [
         _closed({"kind": {"type": "string", "const": "none"}}, ("kind",)),
         _closed(
@@ -118,6 +119,91 @@ _SETUP_CHANGES = {
     "minProperties": 1,
     "additionalProperties": False,
 }
+_SIGNED_MM = {
+    "type": "number",
+    "minimum": -1_000_000.0,
+    "maximum": 1_000_000.0,
+}
+_POSITIVE_MM = {
+    "type": "number",
+    "exclusiveMinimum": 0.0,
+    "maximum": 1_000_000.0,
+}
+_PLACEMENT = placement_schema()
+_ALLOWANCE = _closed(
+    {
+        name: dict(_SIGNED_MM)
+        for name in (
+            "x_negative",
+            "x_positive",
+            "y_negative",
+            "y_positive",
+            "z_negative",
+            "z_positive",
+        )
+    },
+    (
+        "x_negative",
+        "x_positive",
+        "y_negative",
+        "y_positive",
+        "z_negative",
+        "z_positive",
+    ),
+)
+_BOX_SIZE = _closed(
+    {axis: dict(_POSITIVE_MM) for axis in ("x", "y", "z")},
+    ("x", "y", "z"),
+)
+_STOCK = {
+    "oneOf": [
+        _closed(
+            {
+                "kind": {"type": "string", "const": "model_bounds"},
+                "allowance_mm": _ALLOWANCE,
+                "placement": _PLACEMENT,
+            },
+            ("kind", "allowance_mm"),
+        ),
+        _closed(
+            {
+                "kind": {"type": "string", "const": "box"},
+                "size_mm": _BOX_SIZE,
+                "placement": _PLACEMENT,
+            },
+            ("kind", "size_mm"),
+        ),
+        _closed(
+            {
+                "kind": {"type": "string", "const": "cylinder"},
+                "radius_mm": dict(_POSITIVE_MM),
+                "height_mm": dict(_POSITIVE_MM),
+                "placement": _PLACEMENT,
+            },
+            ("kind", "radius_mm", "height_mm"),
+        ),
+        _closed(
+            {
+                "kind": {"type": "string", "const": "existing_solid"},
+                "source": _MODEL_TARGET,
+                "placement": _PLACEMENT,
+            },
+            ("kind", "source"),
+        ),
+    ]
+}
+_VECTOR = _closed(
+    {axis: {"type": "number"} for axis in ("x", "y", "z")},
+    ("x", "y", "z"),
+)
+_WORKPIECE_FRAME = _closed(
+    {
+        "origin_mm": _VECTOR,
+        "x_direction_hint": _VECTOR,
+        "z_direction": _VECTOR,
+    },
+    ("origin_mm", "x_direction_hint", "z_direction"),
+)
 
 
 def manufacture_job_capability_definition() -> NativeCapabilityDefinition:
@@ -132,8 +218,8 @@ def manufacture_job_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="create_job",
                 description=(
-                    "Create stock, model clones, setup sheet, tools, and Job as one "
-                    "undoable History block; no task panel or filesystem path is exposed."
+                    "Create a machining setup with its models, stock, setup sheet, "
+                    "and initial tools."
                 ),
                 action_ids=frozenset({"CAM_Job"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -160,7 +246,6 @@ def manufacture_job_capability_definition() -> NativeCapabilityDefinition:
                     (
                         "label",
                         "models",
-                        "template",
                         "expected_creation_state_sha256",
                         "expected_job_count",
                     ),
@@ -183,6 +268,44 @@ def manufacture_job_capability_definition() -> NativeCapabilityDefinition:
                         "changes": _SETUP_CHANGES,
                     },
                     ("target", "changes"),
+                ),
+                provider_supplemental=True,
+            ),
+            NativeCapabilityVariant(
+                operation="configure_stock",
+                description=(
+                    "Configure model-bounds, box, cylinder, or exact existing-solid "
+                    "stock on one CAM setup."
+                ),
+                action_ids=frozenset({"CAM_Job"}),
+                surface_ids=frozenset({"manufacture"}),
+                exact_target_type="ExactCamJobAndStockConfiguration",
+                transaction_behavior="document",
+                background_required=False,
+                parameters=_closed(
+                    {"target": _JOB_TARGET, "stock": _STOCK},
+                    ("target", "stock"),
+                ),
+                provider_supplemental=True,
+            ),
+            NativeCapabilityVariant(
+                operation="orient_workpiece",
+                description=(
+                    "Map a workpiece frame in current model coordinates onto machine "
+                    "XYZ for one CAM setup."
+                ),
+                action_ids=frozenset({"CAM_Job"}),
+                surface_ids=frozenset({"manufacture"}),
+                exact_target_type="ExactCamJobAndWorkpieceFrame",
+                transaction_behavior="document",
+                background_required=False,
+                parameters=_closed(
+                    {
+                        "target": _JOB_TARGET,
+                        "frame": _WORKPIECE_FRAME,
+                        "include_stock": {"type": "boolean"},
+                    },
+                    ("target", "frame", "include_stock"),
                 ),
                 provider_supplemental=True,
             ),

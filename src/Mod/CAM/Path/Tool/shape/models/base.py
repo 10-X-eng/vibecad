@@ -48,6 +48,42 @@ else:
     Path.Log.setLevel(Path.Log.Level.ERROR, Path.Log.thisModule())
 
 
+def _recompute_body_graph(document, body) -> None:
+    pending = [body]
+    resources = []
+    while pending:
+        candidate = pending.pop(0)
+        if candidate is None or candidate in resources:
+            continue
+        resources.append(candidate)
+        pending.extend(tuple(getattr(candidate, "Group", ()) or ()))
+
+    resource_set = set(resources)
+    ordered = []
+    visiting = set()
+    visited = set()
+
+    def append_with_dependencies(candidate):
+        if candidate in visited:
+            return
+        if candidate in visiting:
+            raise ValueError("The ToolBit body resource graph is cyclic")
+        visiting.add(candidate)
+        for dependency in tuple(getattr(candidate, "OutList", ()) or ()):
+            if dependency in resource_set:
+                append_with_dependencies(dependency)
+        visiting.remove(candidate)
+        visited.add(candidate)
+        ordered.append(candidate)
+
+    for candidate in resources:
+        append_with_dependencies(candidate)
+    for resource in ordered:
+        resource.touch()
+        if resource.recompute() is False:
+            raise RuntimeError("The ToolBit body failed to recompute")
+
+
 class ToolBitShape(Asset):
     """Abstract base class for tool bit shapes."""
 
@@ -736,8 +772,7 @@ class ToolBitShape(Asset):
 
             update_shape_object_properties(props, self.get_parameters())
 
-            # Recompute the document to apply property changes
-            tmp_doc.recompute()
+            _recompute_body_graph(tmp_doc, shape)
 
             # Temporarily disable duplicate labels to let FreeCAD automatically
             # make labels unique during the copy operation
@@ -795,9 +830,9 @@ class ToolBitShape(Asset):
             )
 
         parameters = {name: self.get_parameter(name) for name in self.schema()}
-        update_shape_object_properties(parameter_objects[0], parameters)
-        if document.recompute([body], True, True) is False:
-            raise RuntimeError("The ToolBit body failed to recompute")
+        parameter_object = parameter_objects[0]
+        update_shape_object_properties(parameter_object, parameters)
+        _recompute_body_graph(document, body)
 
         """
         Retrieves the thumbnail data for the tool bit shape in PNG format.

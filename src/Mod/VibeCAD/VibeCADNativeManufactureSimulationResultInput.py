@@ -17,9 +17,11 @@ from VibeCADNativeManufactureSimulation import (
     valid_simulation_shape,
 )
 from VibeCADNativeManufactureState import (
+    capture_other_job_states,
     job_state,
     operation_active_state,
     operation_reference_state,
+    other_job_states_are_current,
     resolve_job_target,
 )
 
@@ -85,6 +87,7 @@ class SimulationTimelineState:
 class FrozenNativeSimulation:
     job: Any
     expected_job_state_sha256: str
+    other_job_states: tuple[tuple[Any, str], ...]
     job_operations: tuple[Any, ...]
     objects_before: tuple[Any, ...]
     timeline_before: SimulationTimelineState
@@ -260,6 +263,7 @@ def preflight_native_simulation(
         _error("Native CAM simulation requires one through 64 exact operations.")
 
     exact_job, job_before = resolve_job_target(document, job)
+    other_job_states = capture_other_job_states(document, (exact_job,))
     _usable_at_history_position(document, exact_job, "CAM Job")
     group = tuple(getattr(getattr(exact_job, "Operations", None), "Group", ()) or ())
     positions = {id(operation): index for index, operation in enumerate(group)}
@@ -395,6 +399,11 @@ def preflight_native_simulation(
             "The exact CAM Job changed while native simulation inputs were frozen.",
             "NATIVE_MANUFACTURE_STATE_STALE",
         )
+    if not other_job_states_are_current(document, other_job_states):
+        _error(
+            "Another CAM setup changed while simulation inputs were frozen.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
     for run in runs:
         if operation_reference_state(run.operation).get("state_sha256") != (
             run.expected_state_sha256
@@ -407,6 +416,7 @@ def preflight_native_simulation(
     return FrozenNativeSimulation(
         job=exact_job,
         expected_job_state_sha256=str(job_before["state_sha256"]),
+        other_job_states=other_job_states,
         job_operations=group,
         objects_before=tuple(document.Objects),
         timeline_before=_timeline_state(document),
@@ -438,6 +448,7 @@ def validate_native_simulation(
         != frozen.job_operations
         or job_state(frozen.job).get("state_sha256")
         != frozen.expected_job_state_sha256
+        or not other_job_states_are_current(document, frozen.other_job_states)
         or _timeline_state(document) != frozen.timeline_before
     ):
         _error(

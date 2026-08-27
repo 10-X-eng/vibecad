@@ -95,9 +95,10 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     simulation_schema = simulation.provider_schema(("gl",))
     background_schema = background.provider_schema(("status", "cancel"))
     branch = simulation_schema["parameters"]["oneOf"][0]
-    assert branch["required"] == ["operation", "job", "operations", "quality"]
+    assert branch["required"] == ["job", "operations", "quality"]
     assert branch["additionalProperties"] is False
-    assert branch["properties"]["operation"] == {"type": "string", "const": "gl"}
+    assert branch["properties"]["operation"]["type"] == "string"
+    assert branch["properties"]["operation"]["const"] == "gl"
     assert branch["properties"]["operations"]["maxItems"] == 64
     assert branch["properties"]["quality"] == {
         "type": "integer",
@@ -382,6 +383,17 @@ def _run() -> None:
         assert stale_terminal.error["error_code"] == "NATIVE_REVISION_CONFLICT"
         assert not Gui.Control.activeDialog()
 
+        turn = _turn(surface, registry)
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
+
         objects_before = tuple(document.Objects)
         timeline_before = _timeline(document)
         selection_before = _selection()
@@ -412,6 +424,7 @@ def _run() -> None:
                 call_id="native-gl-simulation-success",
             )
             launch_elapsed = time.monotonic() - started_at
+            assert success_start["ok"] is True, success_start
             success_id = success_start["job"]["job_id"]
             assert launch_elapsed < 0.75, launch_elapsed
             assert entered.wait(2.0)

@@ -31,11 +31,17 @@ _TARGET = {
     "required": ["object_name", "expected_state_sha256"],
     "additionalProperties": False,
 }
-_OFFSET = {"type": "integer", "minimum": 0, "maximum": 100_000_000}
+_OFFSET = {
+    "type": "integer",
+    "minimum": 0,
+    "maximum": 100_000_000,
+    "default": 0,
+}
 _PAGE_SIZE = {
     "type": "integer",
     "minimum": 1,
     "maximum": 128,
+    "default": 32,
     "description": "Return 1 through 128 ordered items.",
 }
 _EDGE = {
@@ -100,6 +106,7 @@ def _variant(
     parameters: dict,
     *,
     provider_supplemental: bool = False,
+    background_required: bool = False,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
@@ -108,7 +115,7 @@ def _variant(
         surface_ids=frozenset({"manufacture"}),
         exact_target_type=exact_target_type,
         transaction_behavior="none",
-        background_required=False,
+        background_required=background_required,
         parameters=parameters,
         provider_supplemental=provider_supplemental,
     )
@@ -133,12 +140,13 @@ def manufacture_inspect_capability_definition() -> NativeCapabilityDefinition:
                         "query": {
                             "type": "string",
                             "maxLength": 80,
+                            "default": "",
                             "description": "Case-insensitive setup label or object-name substring; empty matches all.",
                         },
                         "offset": _OFFSET,
                         "page_size": _PAGE_SIZE,
                     },
-                    ("query", "offset", "page_size"),
+                    (),
                 ),
                 provider_supplemental=True,
             ),
@@ -153,7 +161,7 @@ def manufacture_inspect_capability_definition() -> NativeCapabilityDefinition:
                         "operation_offset": _OFFSET,
                         "page_size": _PAGE_SIZE,
                     },
-                    ("target", "operation_offset", "page_size"),
+                    ("target",),
                 ),
             ),
             _variant(
@@ -170,12 +178,13 @@ def manufacture_inspect_capability_definition() -> NativeCapabilityDefinition:
                         "query": {
                             "type": "string",
                             "maxLength": 80,
+                            "default": "",
                             "description": "Case-insensitive name substring; empty matches all.",
                         },
                         "offset": _OFFSET,
                         "page_size": _PAGE_SIZE,
                     },
-                    ("category", "query", "offset", "page_size"),
+                    ("category",),
                 ),
                 provider_supplemental=True,
             ),
@@ -193,7 +202,7 @@ def manufacture_inspect_capability_definition() -> NativeCapabilityDefinition:
                 "ExactCamOperationToolpathAndState",
                 _closed(
                     {"target": _TARGET, "offset": _OFFSET, "page_size": _PAGE_SIZE},
-                    ("target", "offset", "page_size"),
+                    ("target",),
                 ),
             ),
             _variant(
@@ -205,6 +214,26 @@ def manufacture_inspect_capability_definition() -> NativeCapabilityDefinition:
                     {"target": _TARGET, "selection": _LOOP_SELECTION},
                     ("target", "selection"),
                 ),
+            ),
+            _variant(
+                "read_model_geometry",
+                "Read exact paged Faces, Edges, or CAM-drillable features from one model.",
+                "CAM_Inspect",
+                "ExactCurrentCamModelGeometry",
+                _closed(
+                    {
+                        "target": _TARGET,
+                        "elements": {
+                            "type": "string",
+                            "enum": ["faces", "edges", "drillable"],
+                        },
+                        "offset": _OFFSET,
+                        "page_size": _PAGE_SIZE,
+                    },
+                    ("target", "elements"),
+                ),
+                provider_supplemental=True,
+                background_required=True,
             ),
             _variant(
                 "read_thread_catalog",
@@ -228,17 +257,24 @@ def manufacture_inspect_capability_definition() -> NativeCapabilityDefinition:
                         "query": {
                             "type": "string",
                             "maxLength": 80,
+                            "default": "",
                             "description": "Case-insensitive designation substring; empty matches all.",
                         },
-                        "offset": {"type": "integer", "minimum": 0, "maximum": 1000},
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1000,
+                            "default": 0,
+                        },
                         "page_size": {
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 64,
+                            "default": 32,
                             "description": "Return 1 through 64 ordered designations.",
                         },
                     },
-                    ("series", "query", "offset", "page_size"),
+                    ("series",),
                 ),
             ),
         ),

@@ -12,8 +12,10 @@ from typing import Any, Mapping
 
 from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureState import (
+    capture_other_job_states,
     job_state,
     operation_state,
+    other_job_states_are_current,
     resolve_job_target,
     resolve_tool_controller_target,
     tool_controller_state,
@@ -87,6 +89,7 @@ class PreparedProfileCreate:
     geometry_kind: str
     geometry: tuple[PreparedProfileGeometry, ...]
     job_operations_before: tuple[Any, ...]
+    other_job_states: tuple[tuple[Any, str], ...]
     objects_before: tuple[Any, ...]
     selection_before: Any
     timeline_before: _TimelineState
@@ -454,6 +457,7 @@ def preflight_profile_create(
         geometry_kind=geometry_kind,
         geometry=geometry,
         job_operations_before=operations,
+        other_job_states=capture_other_job_states(document, (job,)),
         objects_before=tuple(document.Objects),
         selection_before=read_current_selection(document),
         timeline_before=_timeline_state(document),
@@ -485,6 +489,11 @@ def _assert_preflight_current(document: Any, prepared: PreparedProfileCreate) ->
     ):
         _error(
             "The CAM Job or controller changed before Profile creation.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
+    if not other_job_states_are_current(document, prepared.other_job_states):
+        _error(
+            "Another CAM setup changed before Profile creation.",
             "NATIVE_MANUFACTURE_STATE_STALE",
         )
     for item in prepared.geometry:
@@ -808,6 +817,11 @@ def verify_created_profile(
     ):
         _error(
             "Profile creation changed unrelated CAM Job resources.",
+            "NATIVE_MANUFACTURE_PROFILE_POSTCONDITION_FAILED",
+        )
+    if not other_job_states_are_current(document, prepared.other_job_states):
+        _error(
+            "Profile creation changed another CAM setup.",
             "NATIVE_MANUFACTURE_PROFILE_POSTCONDITION_FAILED",
         )
     return {

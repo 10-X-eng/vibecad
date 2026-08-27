@@ -74,7 +74,11 @@ class NativeManufactureToolCatalogRuntime:
         self._context = context
 
     def inspect(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _READ_VARIANTS)
+        operation, values = strict_variant_arguments(
+            arguments,
+            _READ_VARIANTS,
+            defaults={"list_tools": {"offset": 0, "page_size": 32}},
+        )
         self._context.guard()
         if operation == "list_tools":
             catalog = capture_tool_catalog()
@@ -109,7 +113,17 @@ class NativeManufactureToolRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _MUTATION_VARIANTS)
+        operation, values = strict_variant_arguments(
+            arguments,
+            _MUTATION_VARIANTS,
+            defaults={
+                "create_controller": {
+                    "tool_label": None,
+                    "tool_property_changes": [],
+                    "controller": None,
+                }
+            },
+        )
         context = self._context
         context.guard()
         if not isinstance(ticket, NativeCallTicket):
@@ -125,7 +139,11 @@ class NativeManufactureToolRuntime:
                     catalog_tool=_catalog_target(values["catalog_tool"]),
                     tool_label=values["tool_label"],
                     tool_property_changes=tuple(values["tool_property_changes"]),
-                    controller=_controller(values["controller"]),
+                    controller=(
+                        _controller(values["controller"])
+                        if values["controller"] is not None
+                        else None
+                    ),
                 ),
             )
             return run_immediate_mutation(

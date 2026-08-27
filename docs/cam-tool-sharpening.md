@@ -51,6 +51,12 @@ CAM is not a singleton workflow. One document may contain:
 
 The architecture must therefore work for zero, one, ten, or hundreds of setups.
 
+- A Job is a setup aggregate, not a document-wide CAM container. Every stock,
+  fixture, WCS, controller, operation, verification result, and posted artifact
+  has exactly one owning setup unless it is an immutable library definition.
+- The document has no authoritative `active setup` singleton. Human selection may
+  focus one setup for a turn; it never changes ownership or creates an implicit
+  dependency.
 - Every mutation targets an explicit Job/setup identity. The executor never
   guesses a target from “the active Job.”
 - Human selection is a turn-start disambiguation signal, not hidden mutation
@@ -66,6 +72,10 @@ The architecture must therefore work for zero, one, ten, or hundreds of setups.
 - Related setups use explicit links. A remaining-stock result from Setup A may be
   adopted by Setup B only through a declared handoff with exact source state.
   Document order, labels, and geometric similarity never imply a relationship.
+- Explicit setup relationships form an acyclic process graph. One setup may feed
+  several later setups, and an unrelated setup remains a separate graph root.
+  Recomputing a setup invalidates only its own derived state and declared
+  downstream consumers.
 - Posting targets one explicit setup, selected operations, or an explicit ordered
   process plan. It never silently posts every Job in the document.
 - Background jobs and caches are keyed by setup identity and exact source state,

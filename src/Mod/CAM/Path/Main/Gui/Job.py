@@ -35,6 +35,7 @@ import Path.GuiInit as PathGuiInit
 import Path.Main.Gui.JobDlg as PathJobDlg
 import Path.Main.Job as PathJob
 import Path.Main.JobSetup as PathJobSetup
+import Path.Main.JobStock as PathJobStock
 import Path.Main.Stock as PathStock
 import Path.Tool.Gui.Controller as PathToolControllerGui
 import PathScripts.PathUtils as PathUtils
@@ -769,31 +770,14 @@ class StockEdit(object):
         showHide(self.form.stockCreateCylinder, editor)
         self.setFields(obj)
 
-    def setStock(self, obj, stock):
-        Path.Log.track(obj.Label, stock)
-        old_stock = obj.Stock
-        if self.timelineEdit is not None:
-            if old_stock:
-                PathUtil.recordTimelineResourceGraphReplacement(
-                    obj,
-                    self.timelineEdit,
-                    old_stock,
-                    stock,
-                )
-            else:
-                PathUtil.recordTimelineResourceGraphAddition(
-                    obj,
-                    self.timelineEdit,
-                    (stock,),
-                )
-        if old_stock:
-            Path.Log.track(old_stock.Name)
-            obj.Document.removeObject(old_stock.Name)
-        Path.Log.track(stock.Name)
-        obj.Stock = stock
-        PathStock.ApplyStockViewDefaults(stock)
+    def setStock(self, obj, create_stock):
+        Path.Log.track(obj.Label)
+        if self.timelineEdit is None:
+            raise RuntimeError("CAM stock replacement requires a staged Job edit")
+        stock = PathJobStock.replace_stock(obj, create_stock, self.timelineEdit)
         if stock.ViewObject and stock.ViewObject.Proxy:
             stock.ViewObject.Proxy.onEdit(_OpenCloseResourceEditor)
+        return stock
 
     def setLengthField(self, widget, prop):
         quantity = FreeCAD.Units.Quantity(prop.Value, FreeCAD.Units.Length)
@@ -881,10 +865,13 @@ class StockFromBaseBoundBoxEdit(StockEdit):
         Path.Log.track()
         if self.force or not self.IsStock(obj):
             Path.Log.track()
-            stock = PathStock.CreateFromBase(obj)
-            if self.force and self.editorFrame().isVisible():
-                self.getFieldsStock(stock)
-            self.setStock(obj, stock)
+            def create_stock():
+                stock = PathStock.CreateFromBase(obj)
+                if self.force and self.editorFrame().isVisible():
+                    self.getFieldsStock(stock)
+                return stock
+
+            self.setStock(obj, create_stock)
             self.force = False
         self.setLengthField(self.form.stockExtXneg, obj.Stock.ExtXneg)
         self.setLengthField(self.form.stockExtXpos, obj.Stock.ExtXpos)
@@ -985,7 +972,7 @@ class StockCreateBoxEdit(StockEdit):
 
     def setFields(self, obj):
         if self.force or not self.IsStock(obj):
-            self.setStock(obj, PathStock.CreateBox(obj))
+            self.setStock(obj, lambda: PathStock.CreateBox(obj))
             self.force = False
         self.setLengthField(self.form.stockBoxLength, obj.Stock.Length)
         self.setLengthField(self.form.stockBoxWidth, obj.Stock.Width)
@@ -1025,7 +1012,7 @@ class StockCreateCylinderEdit(StockEdit):
 
     def setFields(self, obj):
         if self.force or not self.IsStock(obj):
-            self.setStock(obj, PathStock.CreateCylinder(obj))
+            self.setStock(obj, lambda: PathStock.CreateCylinder(obj))
             self.force = False
         self.setLengthField(self.form.stockCylinderRadius, obj.Stock.Radius)
         self.setLengthField(self.form.stockCylinderHeight, obj.Stock.Height)
@@ -1052,11 +1039,19 @@ class StockFromExistingEdit(StockEdit):
             and obj.Stock.Objects[0] == stock
         ):
             if stock:
-                stock = PathJob.createResourceClone(obj, stock, self.StockLabelPrefix, "Stock")
-                stock.ViewObject.Visibility = True
-                PathStock.SetupStockObject(stock, PathStock.StockType.Unknown)
-                stock.Proxy.execute(stock)
-                self.setStock(obj, stock)
+                def create_stock():
+                    clone = PathJob.createResourceClone(
+                        obj,
+                        stock,
+                        self.StockLabelPrefix,
+                        "Stock",
+                    )
+                    clone.ViewObject.Visibility = True
+                    PathStock.SetupStockObject(clone, PathStock.StockType.Unknown)
+                    clone.Proxy.execute(clone)
+                    return clone
+
+                self.setStock(obj, create_stock)
 
     def candidates(self, obj):
         return list(PathStock.existingSolidCandidates(obj))

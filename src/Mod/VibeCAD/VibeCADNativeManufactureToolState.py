@@ -137,8 +137,13 @@ def tool_property_state(tool: Any) -> list[dict[str, Any]]:
     return [_property_descriptor(tool, name) for name in sorted(names)]
 
 
-def apply_tool_property_changes(tool: Any, changes: tuple[Mapping[str, Any], ...]) -> None:
-    """Apply exact typed property changes to an attached ToolBit object."""
+def apply_tool_property_changes(
+    tool: Any,
+    changes: tuple[Mapping[str, Any], ...],
+    *,
+    shape: Any = None,
+) -> None:
+    """Apply exact typed property changes to an attached or detached ToolBit."""
 
     current = {
         item["property_name"]: item for item in tool_property_state(tool)
@@ -216,8 +221,16 @@ def apply_tool_property_changes(tool: Any, changes: tuple[Mapping[str, Any], ...
         try:
             setattr(tool, name, value)
             if expected.get("group") == "Shape":
-                shape = getattr(getattr(tool, "Proxy", None), "_tool_bit_shape", None)
-                set_parameter = getattr(shape, "set_parameter", None)
+                target_shape = (
+                    shape
+                    if shape is not None
+                    else getattr(
+                        getattr(tool, "Proxy", None),
+                        "_tool_bit_shape",
+                        None,
+                    )
+                )
+                set_parameter = getattr(target_shape, "set_parameter", None)
                 if callable(set_parameter):
                     set_parameter(name, tool.getPropertyByName(name))
         except Exception as exc:

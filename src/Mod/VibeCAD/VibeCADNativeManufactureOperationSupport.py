@@ -14,8 +14,10 @@ from typing import Any, Callable, Mapping
 from VibeCADNativeManufactureContract import clean_path_operation_label
 from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureState import (
+    capture_other_job_states,
     job_state,
     operation_state,
+    other_job_states_are_current,
     resolve_job_target,
     resolve_tool_controller_target,
     tool_controller_state,
@@ -64,6 +66,7 @@ class PreparedOperationBoundary:
     geometry: tuple[PreparedOperationGeometry, ...]
     selected_types: frozenset[str]
     job_operations_before: tuple[Any, ...]
+    other_job_states: tuple[tuple[Any, str], ...]
     objects_before: tuple[Any, ...]
     visibility_before: tuple[tuple[Any, bool], ...]
     selection_before: Any
@@ -509,6 +512,7 @@ def preflight_operation_boundary(
         job_operations_before=tuple(
             getattr(getattr(job, "Operations", None), "Group", ()) or ()
         ),
+        other_job_states=capture_other_job_states(document, (job,)),
         objects_before=tuple(document.Objects),
         visibility_before=tuple(
             (obj, bool(obj.ViewObject.Visibility))
@@ -577,6 +581,11 @@ def assert_operation_boundary_current(
     ):
         _error(
             f"The CAM Job or controller changed before {prepared.noun} creation.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
+    if not other_job_states_are_current(document, prepared.other_job_states):
+        _error(
+            f"Another CAM setup changed before {prepared.noun} creation.",
             "NATIVE_MANUFACTURE_STATE_STALE",
         )
     for item in prepared.geometry:
@@ -894,6 +903,11 @@ def verify_native_operation(
     ):
         _error(
             f"{prepared.noun} creation changed unrelated CAM Job resources.",
+            "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",
+        )
+    if not other_job_states_are_current(document, prepared.other_job_states):
+        _error(
+            f"{prepared.noun} creation changed another CAM setup.",
             "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",
         )
     extra = additional_verify(operation, payload) if additional_verify else None

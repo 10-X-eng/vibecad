@@ -202,7 +202,7 @@ def _surface_and_turn():
         "complete_job",
         "selected_operations",
     ]
-    assert "selected_operations=job,operations" in (
+    assert "selected_operations=operations" in (
         parameters["properties"]["operation"]["description"]
     )
     operations_schema = parameters["properties"]["operations"]

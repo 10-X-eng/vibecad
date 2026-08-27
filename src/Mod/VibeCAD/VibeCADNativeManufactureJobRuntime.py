@@ -21,6 +21,16 @@ from VibeCADNativeManufactureSetupEdit import (
     update_setup_configuration,
     verify_setup_update,
 )
+from VibeCADNativeManufactureStockEdit import (
+    configure_stock,
+    prepare_stock_configuration,
+    verify_stock_configuration,
+)
+from VibeCADNativeManufactureWorkCoordinateEdit import (
+    orient_workpiece,
+    prepare_workpiece_orientation,
+    verify_workpiece_orientation,
+)
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
@@ -35,6 +45,8 @@ _CREATE_FIELDS = frozenset(
     }
 )
 _UPDATE_FIELDS = frozenset({"target", "changes"})
+_STOCK_FIELDS = frozenset({"target", "stock"})
+_WORKPIECE_FIELDS = frozenset({"target", "frame", "include_stock"})
 
 
 class NativeManufactureJobRuntime:
@@ -53,8 +65,11 @@ class NativeManufactureJobRuntime:
             arguments,
             {
                 "create_job": _CREATE_FIELDS,
+                "configure_stock": _STOCK_FIELDS,
+                "orient_workpiece": _WORKPIECE_FIELDS,
                 "update_setup": _UPDATE_FIELDS,
             },
+            defaults={"create_job": {"template": {"kind": "none"}}},
         )
         context = self._context
         context.guard()
@@ -71,6 +86,24 @@ class NativeManufactureJobRuntime:
                 transaction_name="Edit Native CAM Setup",
                 mutate=partial(update_setup_configuration, prepared=prepared),
                 verify=verify_setup_update,
+            )
+        if operation == "configure_stock":
+            prepared = prepare_stock_configuration(context.document, **values)
+            return run_immediate_mutation(
+                context,
+                ticket=ticket,
+                transaction_name="Configure Native CAM Stock",
+                mutate=partial(configure_stock, prepared=prepared),
+                verify=verify_stock_configuration,
+            )
+        if operation == "orient_workpiece":
+            prepared = prepare_workpiece_orientation(context.document, **values)
+            return run_immediate_mutation(
+                context,
+                ticket=ticket,
+                transaction_name="Orient Native CAM Workpiece",
+                mutate=partial(orient_workpiece, prepared=prepared),
+                verify=verify_workpiece_orientation,
             )
         if operation != "create_job":
             raise RuntimeError("The requested CAM Job operation is unavailable.")

@@ -966,6 +966,13 @@ def job_state(
                 "type_id": state.get("type_id"),
                 "state_sha256": state.get("state_sha256"),
                 "resource_name": str(getattr(resource, "Name", "") or ""),
+                "resource_placement": _placement_state(resource),
+                "resource_state_sha256": _digest(
+                    {
+                        "source_state_sha256": state.get("state_sha256"),
+                        "placement": _placement_state(resource),
+                    }
+                ),
             }
         )
     operation_states = []
@@ -1005,7 +1012,15 @@ def job_state(
     )
     stock = getattr(job, "Stock", None)
     if stock is not None:
-        result["stock"] = concise_object(stock)
+        try:
+            from Path.Main.JobStock import stock_configuration_state
+
+            result["stock"] = stock_configuration_state(job)
+        except Exception as exc:
+            raise NativeManufactureError(
+                "The CAM stock configuration could not be read.",
+                error_code="NATIVE_MANUFACTURE_STATE_INVALID",
+            ) from exc
         stock_shape = getattr(stock, "Shape", None)
         bounds = _bounds(stock_shape) if stock_shape is not None else None
         if bounds is not None:
@@ -1024,7 +1039,7 @@ def job_state(
     ):
         digest_source.pop(name, None)
     digest_source["model_states"] = [
-        value.get("state_sha256") for value in models
+        value.get("resource_state_sha256") for value in models
     ]
     digest_source["tool_states"] = [
         value.get("state_sha256") for value in tool_states
@@ -1034,6 +1049,38 @@ def job_state(
     ]
     result["state_sha256"] = _digest(digest_source)
     return result
+
+
+def capture_other_job_states(
+    document: Any,
+    owned_jobs: tuple[Any, ...],
+) -> tuple[tuple[Any, str], ...]:
+    """Freeze every CAM Job not owned by one exact operation boundary."""
+
+    owned = tuple(owned_jobs)
+    return tuple(
+        (candidate, str(job_state(candidate)["state_sha256"]))
+        for candidate in tuple(document.Objects)
+        if is_job(candidate)
+        and not any(candidate is owned_job for owned_job in owned)
+    )
+
+
+def other_job_states_are_current(
+    document: Any,
+    frozen: tuple[tuple[Any, str], ...],
+) -> bool:
+    """Return whether every frozen CAM Job retains identity and semantic state."""
+
+    try:
+        return all(
+            getattr(job, "Document", None) is document
+            and document.getObject(str(job.Name)) is job
+            and job_state(job).get("state_sha256") == expected
+            for job, expected in frozen
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return False
 
 
 def _resolve_target(

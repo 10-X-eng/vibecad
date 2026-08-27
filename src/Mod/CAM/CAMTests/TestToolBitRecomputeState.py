@@ -49,3 +49,21 @@ class TestToolBitRecomputeState(PathTestWithAssets):
             "Touched" in obj.State,
             "Toolbit with unitless expression should not be touched after recompute",
         )
+
+    def testQueuedVisualUpdateRecoversMissingLegacyBody(self):
+        """A queued update rebuilds a genuinely missing legacy display body."""
+        shape = self.assets.get("toolbitshape://endmill")
+        toolbit = ToolBitEndmill(shape, id="legacy_endmill")
+        obj = toolbit.attach_to_doc(self.doc, label="LegacyEndmill")
+        old_body = obj.BitBody
+        self.doc.removeObject(old_body.Name)
+        self.doc.recompute()
+        self.assertIsNone(obj.BitBody)
+
+        toolbit._visual_update_queued = True
+        toolbit._process_queued_visual_update()
+        self.doc.recompute()
+
+        self.assertIsNotNone(obj.BitBody)
+        self.assertIs(obj.BitBody.Document, self.doc)
+        self.assertFalse(obj.Shape.isNull())

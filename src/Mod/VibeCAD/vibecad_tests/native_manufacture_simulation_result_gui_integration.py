@@ -93,12 +93,10 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     schema = simulation.provider_schema(("native",))
     background_schema = background.provider_schema(("status", "cancel"))
     branch = schema["parameters"]["oneOf"][0]
-    assert branch["required"] == ["operation", "job", "operations", "quality"]
+    assert branch["required"] == ["job", "operations", "quality"]
     assert branch["additionalProperties"] is False
-    assert branch["properties"]["operation"] == {
-        "type": "string",
-        "const": "native",
-    }
+    assert branch["properties"]["operation"]["type"] == "string"
+    assert branch["properties"]["operation"]["const"] == "native"
     assert branch["properties"]["operations"]["maxItems"] == 64
     assert branch["properties"]["quality"]["minimum"] == 1
     assert branch["properties"]["quality"]["maximum"] == 10
@@ -450,6 +448,16 @@ def _run() -> None:
 
         App.setActiveDocument(document.Name)
         _events(8)
+        turn = _turn(surface, registry)
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         revision_before = state_store.current_revision(document_uid(document))
         heartbeat = {"count": 0, "native_delta": 0}
         timer = QtCore.QTimer()
@@ -479,8 +487,8 @@ def _run() -> None:
                 call_id="native-retained-simulation-success",
             )
             launch_elapsed = time.monotonic() - started_at
+            assert success_start["ok"] is True, success_start
             success_id = success_start["job"]["job_id"]
-            assert success_start["ok"] is True
             assert launch_elapsed < 0.75
             assert entered.wait(2.0)
             duplicate = call(

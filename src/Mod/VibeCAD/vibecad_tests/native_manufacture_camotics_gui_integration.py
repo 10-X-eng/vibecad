@@ -118,7 +118,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     schema = definition.provider_schema(("camotics",))
     background_schema = background.provider_schema(("status", "cancel"))
     branch = schema["parameters"]["oneOf"][0]
-    assert branch["required"] == ["operation", "job", "operations", "request"]
+    assert branch["required"] == ["job", "operations", "request"]
     assert branch["additionalProperties"] is False
     request = branch["properties"]["request"]
     assert [item["properties"]["kind"]["const"] for item in request["oneOf"]] == [
@@ -506,6 +506,9 @@ def _run() -> None:
 
         App.setActiveDocument(document.Name)
         _events(8)
+        turn = _turn(surface, registry)
+        frozen_surface = turn.surface
+        dispatcher = make_dispatcher(document)
         before_instances = len(FakeCamoticsSimulation.instances)
         switch_start = call(
             MANUFACTURE_CAMOTICS_CAPABILITY_NAME,

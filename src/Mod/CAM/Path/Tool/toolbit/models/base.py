@@ -925,7 +925,16 @@ class ToolBit(Asset, ABC):
         if hasattr(self, "_visual_update_queued") and self._visual_update_queued:
             self._visual_update_queued = False
             Path.Log.debug(f"Processing queued visual update for {self.obj.Label}")
-            self._update_visual_representation()
+            body = getattr(self.obj, "BitBody", None)
+            document = getattr(self.obj, "Document", None)
+            if (
+                body is not None
+                and getattr(body, "Document", None) is document
+                and document.getObject(str(getattr(body, "Name", ""))) is body
+            ):
+                self.update_visual_representation_in_place()
+            else:
+                self._update_visual_representation()
 
             # Clean up the observer
             if hasattr(self, "_recompute_observer"):

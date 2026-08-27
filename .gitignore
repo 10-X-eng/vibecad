@@ -81,3 +81,5 @@ tsupdate_stdout.log
 goals.md
 #explicitly ignore local env
 .env
+# Local model/tool-sharpening outputs
+/benchmark-artifacts/
