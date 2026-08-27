@@ -84,11 +84,19 @@ document does not by itself complete a milestone.
 | Assembly occurrences, connectors, joints, solved placements, kinematic state | Native Assembly and its shared mechanism-evaluation layer | Propose candidates and consume validated graph/evidence |
 | Manufacturing Job, CAM operations, tools, post-processing, simulation | Native Manufacture/CAM domain | Run suitable detached tasks and attach evidence to exact domain state |
 | Robot setup, kinematics, trajectory, simulation, and export | Native Robot domain | Receive verified task intent and perform downstream domain validation |
+| Engineering Experience shell, cards, charts, and overlays | Presentation layer consuming exact G/domain contracts | Render governed state and request owning actions; never infer, mutate, execute, verify, publish, or export |
 | Human approval and authoring mode | Human-selected VibeCAD authority state | Report requirements and wait for the owning authority |
 
 No milestone may create a second canonical Assembly graph, manufacturing Job,
 Robot trajectory stack, preview controller, publication coordinator, solver
 physics selector, or provider-specific CAD mutation API.
+
+The visual north star is a quality and information-architecture target, not
+engineering evidence. Scientific field color and governance/status color are
+independent systems. No screenshot, card, chart, thumbnail, progress indicator,
+or badge may invent a value or strengthen the source claim. The cross-cutting
+[Engineering Experience X-track](design/engineering-experience/ENGINEERING_EXPERIENCE_X_TRACK.md)
+is a presentation projection of G0-G12, not a parallel owner or roadmap.
 
 ### 4.2 Identities are distinct and non-substitutable
 
@@ -221,6 +229,14 @@ found these foundations:
 
 The table above remains the historical `93500486c` audit. The current roadmap execution branch was reconciled at `911a4773db5cb0b529b2673b245e729656eea49d` on 2026-08-26 through the dependency-ordered fork PR stack #90 through #95. That stack adds artifact sealing, a four-solver compatibility oracle, process cleanup/redaction hardening, durable metadata and recovery primitives, runtime lifecycle wiring, and an independent publication coordinator. It moves G2 from design-ready to partial; it does not prove G2 closed or attribute those changes to the historical baseline.
 
+Subsequent post-baseline work through fork PR #100 adds truthful roadmap
+reconciliation, common engineering contracts, the Native authority census, the
+durable workflow-DAG core, and governed-optimization contracts. Each remains
+partial at the real domain/runtime/installed acceptance gates stated below.
+The Engineering Experience pivot was incorporated after PR #100 reached a
+checked boundary; it does not retroactively alter the historical audit or claim
+that the north-star UI exists.
+
 ## 6. Dependency graph
 
 ```mermaid
@@ -242,6 +258,25 @@ flowchart TD
     G10 --> G11[G11 service and disassembly planning]
     G10 --> G12[G12 Robot task projection]
     G1 --> G12
+    G0 --> X0[X0 target and GUI inventory]
+    G1 --> X1[X1 common engineering presentation]
+    G2 --> X2[X2 durable activity and artifacts]
+    G3 --> X3[X3 remote execution state]
+    G4 --> X4[X4 governed preview evidence]
+    G5 --> X5[X5 workflow visualization]
+    G6 --> X6[X6 optimization comparison]
+    G7 --> X7[X7 Manufacture evidence]
+    G8 --> X8[X8 Assembly evidence]
+    G9 --> X9[X9 joint proposals]
+    G10 --> X10[X10 sequence visualization]
+    G11 --> X11[X11 service visualization]
+    G12 --> X12[X12 Robot task visualization]
+    X0 --> X1 --> X2
+    X1 --> X4
+    X2 --> X3
+    X2 --> X5 --> X6 --> X7
+    X8 --> X9 --> X10 --> X11
+    X10 --> X12
 ```
 
 G4 and G8 may proceed in parallel with G2 because they have independent state
@@ -266,6 +301,7 @@ behavior while it waits for host persistence/workflows.
 | G10 — assembly sequencing | O | **Design-ready** | Insertion/access/fastener/precedence model, bounded solver, collision/currentness evidence, sampled-versus-continuous verdicts. |
 | G11 — service/disassembly | P | **Blocked by G10** | Target/removal constraints, minimum-set objective, verified reverse sequence, uncertainty and service claim ceilings. |
 | G12 — Robot task projection | Q | **Partial foundation** | Versioned step-to-task contract, frames/units/tool/TCP/force/torque/tolerance, traceability, Robot-domain validation and downstream boundary. |
+| X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; later slices dependency-bound** | Project exact identity, result, finding, activity, workflow, optimization, Manufacture, Assembly, service and Robot state through one coherent shell without replacing domain owners. |
 
 ## 8. Dependency-ordered implementation roadmap
 
@@ -764,6 +800,42 @@ and unreachable-task handoff states, current Robot-domain import/validation,
 traceability through trajectory/export, and no direct generation of accepted
 motion from unverified assembly inference.
 
+### X0-X12 — Engineering Experience presentation track
+
+The Engineering Experience layer is the visible, human-facing projection of
+the corresponding G milestone. It does not introduce a visualization
+workbench, universal engineering owner, scientific renderer, shadow document
+graph, scheduler, preview controller, publication path, Manufacture result
+engine, Assembly graph, or Robot task authority.
+
+The user-supplied visual reference and reconciled planning source are preserved
+verbatim and hash-bound under
+[`docs/design/engineering-experience/source-material/`](design/engineering-experience/source-material/README.md).
+They establish a visual north star while executable source and this roadmap
+remain authoritative.
+
+X0 is documented through the visual target, component map, color system, Analyze
+workspace specification, and exact X0-X12 dependency/delivery matrix. Later X
+slices land only with sufficient backing G contracts:
+
+- X1 renders the G1 result/finding/provenance envelope and its independent
+  execution, verification, currentness and publication axes;
+- X2/X3 render durable local/remote attempts, artifacts, recovery and receipts
+  from G2/G3;
+- X4 renders G4 policy-specific preview/evidence without gaining apply
+  authority;
+- X5/X6 render authoritative workflow and optimization state from G5/G6;
+- X7 presents Manufacture-owned Job/toolpath/simulation/output evidence from
+  G7 without a generic CAM owner; and
+- X8-X12 add Assembly interfaces/motion, propose-only joints, sequence,
+  service, and Robot task overlays only as G8-G12 become authoritative.
+
+The shared shell may be designed early, but no durable activity, workflow,
+candidate, interface, sequence, service, or Robot behavior is faked ahead of
+its dependency. Exact owners, initial files, visual examples, and acceptance
+gates are canonicalized in the
+[X-track specification](design/engineering-experience/ENGINEERING_EXPERIENCE_X_TRACK.md).
+
 ## 9. Cross-cutting verification matrix
 
 | Area | Required unit/contract evidence | Required integrated evidence |
@@ -780,6 +852,7 @@ motion from unverified assembly inference.
 | Assembly | identity, graph diagnostics, interface invalidation, motion verdicts | deterministic rigid/flexible/closed-loop/reference mechanisms |
 | Sequencing/service | precedence, access/collision bounds, optimal small fixtures, no-solution cases | verified sequence and service target on real Assembly documents |
 | Robot projection | frames, units, task schema, currentness, unsupported assumptions | Assembly step -> Robot validation -> traceable trajectory/export handoff |
+| Engineering Experience | projection/view-model bounds, independent state axes, semantic color separation, accessibility, no authority | real structural/flow/workflow/optimization/Manufacture/Assembly/Robot state rendered from exact current contracts |
 | Packaging | source/build/installed imports, resource lists, component behavior, upgrades | supported Windows/Linux/macOS package matrix as applicable |
 
 Documentation-only roadmap changes do not require red/green production tests.
@@ -851,6 +924,17 @@ documentation and tests separately identify `/v1/run` as privileged
 compatibility execution until an approved migration changes it; no claim says
 that every local automation path is dispatcher-only.
 
+### 10.10 Governed Engineering Experience
+
+The Analyze workspace selects a real published structural or flow result,
+displays an exact field through the existing owning presentation path with a
+named unit/range/scale, and separately displays execution, verification,
+currentness and publication state. The same shell renders a real recovered G2
+attempt, G5 workflow progression, G6 candidate comparison and G7 Manufacture
+evidence without creating new authority. Stale source remains visibly
+historical, scientific red is not presented as a failed verdict, and every
+displayed item can reach its exact provenance and claim ceiling.
+
 ## 11. Hazards and forbidden shortcuts
 
 - Do not create a second generic scheduler inside Aero, Manufacture, Assembly,
@@ -873,6 +957,10 @@ that every local automation path is dispatcher-only.
 - Do not call source-text filtering of Python a security sandbox.
 - Do not replace existing Manufacture, Assembly, component-interface, or Robot
   state with whitepaper greenfield models.
+- Do not treat the Engineering Experience layer or north-star image as an
+  engineering owner, capability proof, scientific renderer, or source of
+  values/status; do not conflate scientific magnitude color with governance
+  state color.
 - Do not treat an exploded view as a verified assembly sequence.
 - Do not treat joint inference as joint acceptance.
 - Do not treat robot task projection as reachability, motion planning,
@@ -915,27 +1003,26 @@ Stop the affected tranche and resolve explicitly if:
 
 Keep the first changes small, reversible, and source-bound:
 
-1. **G1 identity vocabulary:** add internal typed identity and descriptor
-   contracts plus canonical/bounds/non-substitution tests. No persistence.
-2. **G1 result/finding/provenance slice:** wrap one existing FEM result and one
-   Native receipt with domain payload preservation and schema fixtures. No
-   public migration.
-3. **G2 metadata-store spike:** compare the lightest viable transactional local
-   stores under packaging, locking, migration, crash, copy/backup, and
-   corruption tests; record the decision before production integration.
-4. **G4 authority census:** generate and review the complete current operation
-   policy matrix, including `/v1/run`; do not change behavior in the census PR.
-5. **G2 durable job metadata:** persist one local non-public test job lifecycle
-   with fault injection, then add immutable artifacts in a separate tranche.
-6. **G2 publication authority:** add fresh replay-idempotent publication only
-   after recovery is proven, preserving current FEM behavior behind the
-   compatibility boundary.
-7. **G8 Assembly reconciliation:** update the Assembly specification's current
-   status against the live graph/interface/diagnosis implementation before
-   starting inference or sequencing.
-8. **Then** close local workflow, remote provider, Manufacture integration,
-   optimization, inference, sequencing, service, and Robot projection in the
-   dependency order above.
+1. **X0 source/design inventory:** preserve the pivot source and north-star
+   image with hashes; define component, color, workspace, ownership and
+   dependency rules. No capability claim from the image.
+2. **X1 common presentation contracts:** project the implemented G1 envelope
+   and independent status axes through bounded, domain-preserving view models
+   and cross-domain fixtures. No duplicate result model.
+3. **X2 durable activity projection:** consume the existing G2 metadata,
+   artifact and publication foundations while leaving unintegrated recovery
+   and domain wiring visibly partial.
+4. **X5/X6 projection slices:** render the implemented durable workflow and
+   governed-optimization cores with failure/restart/currentness evidence; do
+   not schedule or mutate from the UI.
+5. **G7 + X7 Manufacture integration:** attach one existing expensive detached
+   Manufacture path to exact G2/G5 identities and display Manufacture-owned
+   evidence without replacing Job/Post/CAMotics behavior.
+6. **G8 reconciliation + X8 shell:** reconcile live Assembly identity/interface/
+   mechanism state and design the overlay boundary before inference.
+7. **Then** close remote provider, preview evidence, Manufacture, Assembly,
+   inference, sequencing, service, Robot projection and their dependency-bound
+   X slices in the graph order above.
 
 No tranche claims a later milestone because it introduces an interface the
 later milestone may eventually consume.
@@ -960,7 +1047,7 @@ Do not mark a milestone complete from prose, stubs, mocks alone, source-tree
 imports, one platform, one solver exit, screenshots, or a generated status
 report.
 
-## 15. Programs A-Q traceability index
+## 15. Programs A-Q and X-track traceability index
 
 | Original program | Canonical milestone |
 | --- | --- |
@@ -981,3 +1068,4 @@ report.
 | O — Assembly Sequencing | G10 |
 | P — Service and Disassembly | G11 |
 | Q — Robot Task Projection | G12, adapting into current Robot |
+| X0-X12 — Engineering Experience | Presentation projection paired with G0-G12; never a new domain owner |
