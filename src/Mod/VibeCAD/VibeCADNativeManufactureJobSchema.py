@@ -211,15 +211,14 @@ def manufacture_job_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MANUFACTURE_JOB_CAPABILITY_NAME,
         description=(
-            "Create one complete CAM Job resource graph from exact current models, "
-            "with explicit human-equivalent History replacement semantics."
+            "Create a CAM setup from exact current models using installed defaults."
         ),
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="create_job",
                 description=(
-                    "Create a machining setup with its models, stock, setup sheet, "
+                    "Create a machining setup with default stock, setup settings, "
                     "and initial tools."
                 ),
                 action_ids=frozenset({"CAM_Job"}),

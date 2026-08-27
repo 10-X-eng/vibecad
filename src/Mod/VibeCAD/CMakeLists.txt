@@ -1347,6 +1347,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_manufacture_camotics_gui_integration.py
     vibecad_tests/native_manufacture_post_gui_integration.py
     vibecad_tests/native_manufacture_bracket_fixture.py
+    vibecad_tests/native_manufacture_multi_setup_fixture.py
     vibecad_tests/native_manufacture_template_gui_integration.py
         vibecad_tests/test_native_manufacture_camotics.py
         vibecad_tests/test_native_manufacture_post.py
