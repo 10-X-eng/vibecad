@@ -978,6 +978,15 @@ def job_state(
     result = concise_object(job)
     result["settings_sha256"] = _property_state_sha256(job)
     result["machine"] = configured_machine_state(job)
+    try:
+        from Path.Main.JobSetup import setup_configuration_state
+
+        result["configuration"] = setup_configuration_state(job)
+    except Exception as exc:
+        raise NativeManufactureError(
+            "The CAM setup configuration could not be read.",
+            error_code="NATIVE_MANUFACTURE_STATE_INVALID",
+        ) from exc
     result.update(
         models=models[:model_limit],
         tools=tool_states[:tool_limit],
@@ -1005,6 +1014,15 @@ def job_state(
     if postprocessor:
         result["postprocessor"] = postprocessor[:160]
     digest_source = _semantic(result)
+    for name in (
+        "models",
+        "tools",
+        "operations",
+        "models_truncated",
+        "tools_truncated",
+        "operations_truncated",
+    ):
+        digest_source.pop(name, None)
     digest_source["model_states"] = [
         value.get("state_sha256") for value in models
     ]

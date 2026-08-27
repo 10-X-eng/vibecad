@@ -98,6 +98,8 @@ def _variant(
     action_id: str,
     exact_target_type: str,
     parameters: dict,
+    *,
+    provider_supplemental: bool = False,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
@@ -108,6 +110,7 @@ def _variant(
         transaction_behavior="none",
         background_required=False,
         parameters=parameters,
+        provider_supplemental=provider_supplemental,
     )
 
 
@@ -121,6 +124,25 @@ def manufacture_inspect_capability_definition() -> NativeCapabilityDefinition:
         primary_classification="read",
         variants=(
             _variant(
+                "list_setups",
+                "Find CAM setups by label or object name and return one exact ordered page.",
+                "VibeCAD_ManufactureReadJob",
+                "CurrentDocumentCamSetupCatalog",
+                _closed(
+                    {
+                        "query": {
+                            "type": "string",
+                            "maxLength": 80,
+                            "description": "Case-insensitive setup label or object-name substring; empty matches all.",
+                        },
+                        "offset": _OFFSET,
+                        "page_size": _PAGE_SIZE,
+                    },
+                    ("query", "offset", "page_size"),
+                ),
+                provider_supplemental=True,
+            ),
+            _variant(
                 "read_job",
                 "Read one exact CAM Job with bounded ordered operation paging.",
                 "VibeCAD_ManufactureReadJob",
@@ -133,6 +155,29 @@ def manufacture_inspect_capability_definition() -> NativeCapabilityDefinition:
                     },
                     ("target", "operation_offset", "page_size"),
                 ),
+            ),
+            _variant(
+                "search_setup_options",
+                "Find installed machine or postprocessor values accepted by setup editing.",
+                "VibeCAD_ManufactureReadJob",
+                "InstalledCamSetupCatalog",
+                _closed(
+                    {
+                        "category": {
+                            "type": "string",
+                            "enum": ["machine", "postprocessor"],
+                        },
+                        "query": {
+                            "type": "string",
+                            "maxLength": 80,
+                            "description": "Case-insensitive name substring; empty matches all.",
+                        },
+                        "offset": _OFFSET,
+                        "page_size": _PAGE_SIZE,
+                    },
+                    ("category", "query", "offset", "page_size"),
+                ),
+                provider_supplemental=True,
             ),
             _variant(
                 "validate_job",

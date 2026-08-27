@@ -66,6 +66,25 @@ def _contained_resources(job: Any) -> set[int]:
     return result
 
 
+def _focused_setup_state(
+    exact_state: Mapping[str, Any],
+    workflow: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Add targeting facts omitted by the richer workflow presentation."""
+
+    result = dict(workflow)
+    for name in (
+        "counts",
+        "models",
+        "models_truncated",
+        "postprocessor",
+        "configuration",
+    ):
+        if name in exact_state:
+            result[name] = exact_state[name]
+    return result
+
+
 def build_manufacture_snapshot(
     document: Any,
     *,
@@ -85,6 +104,19 @@ def build_manufacture_snapshot(
         )
         for obj in job_objects[:MAX_JOBS]
     }
+    job_workflows = {
+        id(obj): build_active_job_summary(
+            document,
+            obj,
+            job_states[id(obj)],
+        )
+        for obj in job_objects[:MAX_JOBS]
+    }
+    for object_id, workflow in job_workflows.items():
+        job_states[object_id].update(
+            readiness=dict(workflow["readiness"]),
+            toolpath_validity=dict(workflow["toolpath_validity"]),
+        )
     jobs = [job_states[id(obj)] for obj in job_objects[:MAX_JOBS]]
     active_job, active_job_resolution = resolve_active_job(
         document,
@@ -97,6 +129,11 @@ def build_manufacture_snapshot(
             operation_limit=MAX_SNAPSHOT_JOB_ITEMS,
             tool_limit=MAX_SNAPSHOT_JOB_ITEMS,
             model_limit=MAX_SNAPSHOT_JOB_ITEMS,
+        )
+        job_workflows[id(active_job)] = build_active_job_summary(
+            document,
+            active_job,
+            job_states[id(active_job)],
         )
     candidates = []
     for obj in objects:
@@ -121,10 +158,9 @@ def build_manufacture_snapshot(
         "jobs_truncated": len(job_objects) > MAX_JOBS,
         "active_job_resolution": active_job_resolution,
         "active_job": (
-            build_active_job_summary(
-                document,
-                active_job,
+            _focused_setup_state(
                 job_states[id(active_job)],
+                job_workflows[id(active_job)],
             )
             if active_job is not None
             else None

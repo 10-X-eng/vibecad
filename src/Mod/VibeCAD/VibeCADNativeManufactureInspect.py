@@ -9,8 +9,10 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeManufactureErrors import NativeManufactureError
+from VibeCADNativeManufactureReadiness import build_active_job_summary
 from VibeCADNativeManufactureState import (
     candidate_model_state,
+    is_job,
     job_state,
     operation_state,
     resolve_job_target,
@@ -21,6 +23,92 @@ from VibeCADNativeManufactureState import (
 
 MAX_SANITY_ISSUES = 128
 MAX_COMMAND_PARAMETERS = 32
+
+
+def search_setup_options(
+    *,
+    category: str,
+    query: str,
+    offset: int,
+    page_size: int,
+) -> dict[str, Any]:
+    """Read values accepted by the shared CAM setup editor."""
+
+    try:
+        from Path.Main import JobSetup
+
+        options = JobSetup.search_setup_options(
+            category,
+            query=query,
+            offset=offset,
+            page_size=page_size,
+        )
+    except ValueError as exc:
+        raise NativeManufactureError(
+            str(exc),
+            error_code="NATIVE_ARGUMENTS_INVALID",
+        ) from exc
+    except Exception as exc:
+        raise NativeManufactureError(
+            "The installed CAM setup catalogs could not be read.",
+            error_code="NATIVE_MANUFACTURE_ENVIRONMENT_UNAVAILABLE",
+        ) from exc
+    return {"setup_options": options}
+
+
+def list_setups(
+    document: Any,
+    *,
+    query: str,
+    offset: int,
+    page_size: int,
+) -> dict[str, Any]:
+    """Return one searchable page of exact independent CAM setup targets."""
+
+    normalized_query = str(query or "").strip().casefold()
+    matches = [
+        obj
+        for obj in tuple(getattr(document, "Objects", ()) or ())
+        if is_job(obj)
+        and normalized_query
+        in "\n".join(
+            (
+                str(getattr(obj, "Name", "") or ""),
+                str(getattr(obj, "Label", "") or ""),
+            )
+        ).casefold()
+    ] if normalized_query else [
+        obj
+        for obj in tuple(getattr(document, "Objects", ()) or ())
+        if is_job(obj)
+    ]
+    start = min(int(offset), len(matches))
+    stop = min(start + int(page_size), len(matches))
+    items = []
+    for job in matches[start:stop]:
+        state = job_state(
+            job,
+            operation_limit=0,
+            tool_limit=0,
+            model_limit=0,
+        )
+        workflow = build_active_job_summary(document, job, state)
+        item = dict(state)
+        item.update(
+            readiness=dict(workflow["readiness"]),
+            toolpath_validity=dict(workflow["toolpath_validity"]),
+        )
+        items.append(item)
+    return {
+        "setups": {
+            "query": normalized_query,
+            "offset": start,
+            "count": len(items),
+            "total": len(matches),
+            "next_offset": stop if stop < len(matches) else None,
+            "items": items,
+        }
+    }
 
 
 def _finite(value: Any) -> float | None:

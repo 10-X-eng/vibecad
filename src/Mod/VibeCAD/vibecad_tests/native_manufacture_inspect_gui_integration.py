@@ -27,6 +27,7 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureInspectSchema import (
     MANUFACTURE_INSPECT_CAPABILITY_NAME,
 )
+from VibeCADNativeManufactureJobSchema import MANUFACTURE_JOB_CAPABILITY_NAME
 from VibeCADNativeManufactureInspect import validate_job as validate_job_direct
 from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot
 from VibeCADNativeManufactureState import (
@@ -45,7 +46,15 @@ from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
 
 
-OPERATIONS = ("read_job", "validate_job", "inspect_toolpath", "detect_loop")
+INSPECT_OPERATIONS = (
+    "list_setups",
+    "search_setup_options",
+    "read_job",
+    "validate_job",
+    "inspect_toolpath",
+    "detect_loop",
+)
+JOB_OPERATIONS = ("create_job", "update_setup")
 
 
 def _events(rounds: int = 16) -> None:
@@ -79,10 +88,10 @@ def _commit(document, label: str, action):
     return value
 
 
-def _fixture(document):
+def _fixture(document, stem: str):
     def create_model():
-        model = document.addObject("Part::Feature", "CamModel")
-        model.Label = "CAM inspection model"
+        model = document.addObject("Part::Feature", f"{stem}CamModel")
+        model.Label = f"{stem} CAM model"
         model.Shape = Part.makeBox(40.0, 30.0, 12.0)
         document.publishProvisionalTimelineOperationBlock(model, (), ())
         return model
@@ -91,14 +100,17 @@ def _fixture(document):
 
     job = _commit(
         document,
-        "Create CAM inspection Job",
-        lambda: PathJob.Create("InspectionJob", [model]),
+        f"Create {stem} CAM Job",
+        lambda: PathJob.Create(f"{stem}InspectionJob", [model]),
     )
     job.PostProcessor = "grbl"
 
     def create_operation():
-        operation = document.addObject("Path::Feature", "InspectionOperation")
-        operation.Label = "Paged inspection path"
+        operation = document.addObject(
+            "Path::Feature",
+            f"{stem}InspectionOperation",
+        )
+        operation.Label = f"{stem} inspection path"
         if "Active" not in operation.PropertiesList:
             operation.addProperty("App::PropertyBool", "Active")
         operation.Active = True
@@ -140,10 +152,14 @@ def _selection() -> tuple:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_INSPECT_CAPABILITY_NAME)
-    assert definition is not None
-    schema = definition.provider_schema(OPERATIONS)
-    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    inspect_definition = registry.definition(MANUFACTURE_INSPECT_CAPABILITY_NAME)
+    job_definition = registry.definition(MANUFACTURE_JOB_CAPABILITY_NAME)
+    assert inspect_definition is not None and job_definition is not None
+    schemas = (
+        inspect_definition.provider_schema(INSPECT_OPERATIONS),
+        job_definition.provider_schema(JOB_OPERATIONS),
+    )
+    encoded = json.dumps(schemas, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.lower()
     assert '"maximum":128' in encoded
     return NativeTurnSnapshot.from_provider_surface(
@@ -151,8 +167,11 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_INSPECT_CAPABILITY_NAME,),
-            schemas=(schema,),
+            tool_names=(
+                MANUFACTURE_INSPECT_CAPABILITY_NAME,
+                MANUFACTURE_JOB_CAPABILITY_NAME,
+            ),
+            schemas=schemas,
             human_only_action_ids=(),
             missing_definition_names=(),
             missing_implementation_names=(),
@@ -218,7 +237,8 @@ def _run() -> None:
             "read_job",
             "ExactCamJobGraphAndState",
         )
-        model, job, operation = _fixture(document)
+        model, job, operation = _fixture(document, "Primary")
+        second_model, second_job, second_operation = _fixture(document, "Secondary")
         document.saveAs(str(save_path))
         _events(8)
 
@@ -255,11 +275,16 @@ def _run() -> None:
         )
         call_index = 0
 
-        def call(arguments: dict, *, succeeds: bool = True) -> dict:
+        def call(
+            arguments: dict,
+            *,
+            tool_name: str = MANUFACTURE_INSPECT_CAPABILITY_NAME,
+            succeeds: bool = True,
+        ) -> dict:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_INSPECT_CAPABILITY_NAME,
+                tool_name,
                 json.dumps(arguments, separators=(",", ":")),
                 f"native-manufacture-inspect-{call_index}",
             )
@@ -269,18 +294,34 @@ def _run() -> None:
         initial_job = job_state(job)
         initial_operation = operation_state(operation)
         initial_model = candidate_model_state(model)
+        second_job_state = job_state(second_job)
+        second_operation_state = operation_state(second_operation)
+        second_model_state = candidate_model_state(second_model)
         direct_validation = validate_job_direct(document, _target(initial_job))
         assert direct_validation["validation"]["job"]["object_name"] == job.Name
-        snapshot = build_manufacture_snapshot(document)
-        assert snapshot["job_count"] == 1
-        assert snapshot["jobs"][0]["state_sha256"] == initial_job["state_sha256"]
-        assert snapshot["active_job_resolution"] == "only_job"
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(job)
+        snapshot = build_manufacture_snapshot(
+            document,
+            selection=read_current_selection(document),
+        )
+        assert snapshot["job_count"] == 2
+        assert {
+            item["object_name"]: item["state_sha256"]
+            for item in snapshot["jobs"]
+        } == {
+            job.Name: initial_job["state_sha256"],
+            second_job.Name: second_job_state["state_sha256"],
+        }
+        assert snapshot["active_job_resolution"] == "selection"
         active_job = snapshot["active_job"]
         assert active_job["object_name"] == job.Name
         assert active_job["state_sha256"] == initial_job["state_sha256"]
         assert active_job["stock"]["present"] is True
         assert active_job["stock"]["valid_solid"] is True
         assert active_job["machine"]["configured"] is False
+        assert active_job["configuration"]["fixtures"] == ["G54"]
+        assert active_job["configuration"]["postprocessor"] == "grbl"
         assert [item["object_name"] for item in active_job["tools"]] == [
             controller.Name for controller in job.Tools.Group
         ]
@@ -303,10 +344,11 @@ def _run() -> None:
             active_job["readiness"],
             sort_keys=True,
         ).lower()
-        assert [item["object_name"] for item in snapshot["model_candidates"]] == [
-            model.Name
-        ], snapshot["model_candidates"]
-        assert snapshot["model_candidates"][0]["state_sha256"] == initial_model[
+        model_candidates = {
+            item["object_name"]: item for item in snapshot["model_candidates"]
+        }
+        assert set(model_candidates) == {model.Name, second_model.Name}
+        assert model_candidates[model.Name]["state_sha256"] == initial_model[
             "state_sha256"
         ]
 
@@ -416,18 +458,107 @@ def _run() -> None:
         assert job_state(job)["state_sha256"] == initial_job["state_sha256"]
         assert operation_state(operation)["state_sha256"] == initial_operation["state_sha256"]
 
+        assert job_state(job)["state_sha256"] == initial_job["state_sha256"]
+        Gui.Selection.clearSelection()
+        multi_snapshot = build_manufacture_snapshot(
+            document,
+            selection={"items": []},
+        )
+        assert multi_snapshot["job_count"] == 2
+        assert multi_snapshot["active_job"] is None
+        assert multi_snapshot["active_job_resolution"] == "choose_job"
+        setup_states = {
+            item["object_name"]: item for item in multi_snapshot["jobs"]
+        }
+        assert set(setup_states) == {job.Name, second_job.Name}
+        assert setup_states[job.Name]["readiness"]["simulation"]["ready"] is True
+        assert (
+            setup_states[second_job.Name]["readiness"]["simulation"]["ready"]
+            is True
+        )
+        catalog = call(
+            {
+                "operation": "list_setups",
+                "query": "secondary",
+                "offset": 0,
+                "page_size": 1,
+            }
+        )["setups"]
+        assert catalog["total"] == 1
+        assert catalog["items"][0]["object_name"] == second_job.Name
+        assert catalog["items"][0]["state_sha256"] == second_job_state[
+            "state_sha256"
+        ], {
+            "initial": second_job_state,
+            "catalog": catalog["items"][0],
+            "current": job_state(second_job),
+        }
+        postprocessors = call(
+            {
+                "operation": "search_setup_options",
+                "category": "postprocessor",
+                "query": "",
+                "offset": 0,
+                "page_size": 128,
+            }
+        )["setup_options"]
+        assert postprocessors["category"] == "postprocessor"
+        assert "grbl" in postprocessors["values"]
+        Gui.Selection.addSelection(second_operation)
+        selected_second = build_manufacture_snapshot(
+            document,
+            selection=read_current_selection(document),
+        )
+        assert selected_second["active_job_resolution"] == "selection"
+        assert selected_second["active_job"]["object_name"] == second_job.Name
+        first_before_setup_edit = job_state(job)
+        selected_before_setup_edit = _selection()
+        updated_setup = call(
+            {
+                "operation": "update_setup",
+                "target": _target(second_job_state),
+                "changes": {
+                    "label": "Secondary finish setup",
+                    "description": "Independent second-side finishing setup.",
+                    "fixtures": ["G55"],
+                    "split_output": True,
+                    "output_order": "Tool",
+                    "geometry_tolerance_mm": 0.005,
+                },
+            },
+            tool_name=MANUFACTURE_JOB_CAPABILITY_NAME,
+        )
+        assert updated_setup["configuration"]["label"] == (
+            "Secondary finish setup"
+        )
+        assert updated_setup["configuration"]["fixtures"] == ["G55"]
+        assert updated_setup["configuration"]["output_order"] == "Tool"
+        assert job_state(job)["state_sha256"] == first_before_setup_edit[
+            "state_sha256"
+        ]
+        assert _selection() == selected_before_setup_edit
+        second_job_state = updated_setup["job"]
+
         document.save()
         job_name = job.Name
         operation_name = operation.Name
         model_name = model.Name
+        second_job_name = second_job.Name
+        second_operation_name = second_operation.Name
+        second_model_name = second_model.Name
         document_name = document.Name
         App.closeDocument(document_name)
         document = App.openDocument(str(save_path))
         reopened_job = document.getObject(job_name)
         reopened_operation = document.getObject(operation_name)
         reopened_model = document.getObject(model_name)
+        reopened_second_job = document.getObject(second_job_name)
+        reopened_second_operation = document.getObject(second_operation_name)
+        reopened_second_model = document.getObject(second_model_name)
         assert reopened_job is not None and reopened_operation is not None
         assert reopened_model is not None
+        assert reopened_second_job is not None and reopened_second_operation is not None
+        assert reopened_second_model is not None
         reopened_job_state = job_state(reopened_job)
         reopened_operation_state = operation_state(reopened_operation)
         reopened_model_state = candidate_model_state(reopened_model)
@@ -443,12 +574,26 @@ def _run() -> None:
             "before": initial_model,
             "after": reopened_model_state,
         }
+        assert job_state(reopened_second_job)["state_sha256"] == second_job_state[
+            "state_sha256"
+        ]
+        assert operation_state(reopened_second_operation)["state_sha256"] == (
+            second_operation_state["state_sha256"]
+        )
+        assert candidate_model_state(reopened_second_model)["state_sha256"] == (
+            second_model_state["state_sha256"]
+        )
 
         original_path = reopened_operation.Path
         try:
             reopened_operation.Path = CamPath.Path()
             assert document.recompute(None, True, True) is not False
-            invalid_snapshot = build_manufacture_snapshot(document)
+            Gui.Selection.clearSelection()
+            Gui.Selection.addSelection(reopened_operation)
+            invalid_snapshot = build_manufacture_snapshot(
+                document,
+                selection=read_current_selection(document),
+            )
             invalid_active = invalid_snapshot["active_job"]
             assert invalid_active["ordered_operations"][0]["toolpath_valid"] is False
             assert invalid_active["ordered_operations"][0]["toolpath_issue"] == (
@@ -467,7 +612,9 @@ def _run() -> None:
             "tools=true ordered_operations=true toolpath_validity=true "
             "simulation_readiness=true post_readiness=true low_noise=true "
             "invalid_toolpath_reason=true "
-            "stale_rejection=true read_only=true reopen=true",
+            "stale_rejection=true read_only=true multi_setup=true "
+            "explicit_scope=true setup_catalog=true setup_options=true "
+            "setup_edit=true reopen=true",
             flush=True,
         )
         exit_code = 0

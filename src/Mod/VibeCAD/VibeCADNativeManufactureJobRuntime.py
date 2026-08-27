@@ -16,6 +16,11 @@ from VibeCADNativeManufactureJob import (
     preflight_job_create,
     verify_created_job,
 )
+from VibeCADNativeManufactureSetupEdit import (
+    prepare_setup_update,
+    update_setup_configuration,
+    verify_setup_update,
+)
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
@@ -29,6 +34,7 @@ _CREATE_FIELDS = frozenset(
         "expected_job_count",
     }
 )
+_UPDATE_FIELDS = frozenset({"target", "changes"})
 
 
 class NativeManufactureJobRuntime:
@@ -45,10 +51,11 @@ class NativeManufactureJobRuntime:
     ) -> dict[str, Any]:
         operation, values = strict_variant_arguments(
             arguments,
-            {"create_job": _CREATE_FIELDS},
+            {
+                "create_job": _CREATE_FIELDS,
+                "update_setup": _UPDATE_FIELDS,
+            },
         )
-        if operation != "create_job":
-            raise RuntimeError("The requested CAM Job operation is unavailable.")
         context = self._context
         context.guard()
         if not isinstance(ticket, NativeCallTicket):
@@ -56,6 +63,17 @@ class NativeManufactureJobRuntime:
         current = context.state.current_revision(context.document_uid)
         if current != ticket.expected_revision:
             raise NativeRevisionConflict(ticket.expected_revision, current)
+        if operation == "update_setup":
+            prepared = prepare_setup_update(context.document, **values)
+            return run_immediate_mutation(
+                context,
+                ticket=ticket,
+                transaction_name="Edit Native CAM Setup",
+                mutate=partial(update_setup_configuration, prepared=prepared),
+                verify=verify_setup_update,
+            )
+        if operation != "create_job":
+            raise RuntimeError("The requested CAM Job operation is unavailable.")
         raw_models = values["models"]
         prepared = preflight_job_create(
             context.document,

@@ -34,6 +34,7 @@ import Path.Base.Util as PathUtil
 import Path.GuiInit as PathGuiInit
 import Path.Main.Gui.JobDlg as PathJobDlg
 import Path.Main.Job as PathJob
+import Path.Main.JobSetup as PathJobSetup
 import Path.Main.Stock as PathStock
 import Path.Tool.Gui.Controller as PathToolControllerGui
 import PathScripts.PathUtils as PathUtils
@@ -1309,25 +1310,21 @@ class TaskPanel:
     def getFields(self):
         """sets properties in the object to match the form"""
         if self.obj:
-            self.obj.PostProcessor = str(self.form.postProcessor.currentText())
-            self.obj.PostProcessorArgs = str(self.form.postProcessorArguments.displayText())
             self.obj.PostProcessorOutputFile = str(self.form.postProcessorOutputFile.text())
-
-            self.obj.Label = str(self.form.jobLabel.text())
-            self.obj.Description = str(self.form.jobDescription.toPlainText())
             self.obj.Operations.Group = [
                 self.form.operationsList.item(i).data(self.DataObject)
                 for i in range(self.form.operationsList.count())
             ]
+            split_output = bool(getattr(self.obj, "SplitOutput", False))
+            output_order = str(getattr(self.obj, "OrderOutputBy", "Fixture"))
+            fixtures = list(getattr(self.obj, "Fixtures", ()) or ())
             try:
-                self.obj.SplitOutput = self.form.splitOutput.isChecked()
-                self.obj.OrderOutputBy = str(self.form.orderBy.currentData())
-
-                flist = []
+                split_output = self.form.splitOutput.isChecked()
+                output_order = str(self.form.orderBy.currentData())
+                fixtures = []
                 for i in range(self.form.wcslist.count()):
                     if self.form.wcslist.item(i).checkState() == QtCore.Qt.CheckState.Checked:
-                        flist.append(self.form.wcslist.item(i).text())
-                self.obj.Fixtures = flist
+                        fixtures.append(self.form.wcslist.item(i).text())
             except Exception as e:
                 Path.Log.debug(e)
                 FreeCAD.Console.PrintWarning(
@@ -1336,11 +1333,23 @@ class TaskPanel:
 
             self.updateTooltips()
             self.stockEdit.getFields(self.obj)
-
-            self.obj.Proxy.execute(self.obj)
-
-        self.setupGlobal.getFields()
-        self.setupOps.getFields()
+            self.setupGlobal.getFields()
+            self.setupOps.getFields()
+            PathJobSetup.apply_setup_configuration(
+                self.obj,
+                {
+                    "label": str(self.form.jobLabel.text()),
+                    "description": str(self.form.jobDescription.toPlainText()),
+                    "machine": str(getattr(self.obj, "Machine", "") or ""),
+                    "postprocessor": str(self.form.postProcessor.currentText()),
+                    "postprocessor_args": str(
+                        self.form.postProcessorArguments.displayText()
+                    ),
+                    "fixtures": fixtures,
+                    "split_output": split_output,
+                    "output_order": output_order,
+                },
+            )
 
     def selectComboBoxText(self, widget, text):
         """selectInComboBox(name, combo) ...
@@ -1801,7 +1810,11 @@ class TaskPanel:
         if not hasattr(self.obj, "Machine"):
             return
         text = self.form.jobMachine.currentText()
-        self.obj.Machine = text if text and text != "<any>" else ""
+        PathJobSetup.apply_setup_configuration(
+            self.obj,
+            {"machine": text if text and text != "<any>" else ""},
+            recompute=False,
+        )
 
     def newMachine(self):
         """Open the Machine Editor to create a new machine, then refresh the combo."""

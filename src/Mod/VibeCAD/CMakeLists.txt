@@ -674,7 +674,10 @@ set(VibeCAD_Scripts
     VibeCADNativeManufactureSurface.py
     VibeCADNativeManufactureWaterline.py
     VibeCADNativeManufactureReadiness.py
+    VibeCADNativeManufactureProviderScope.py
+    VibeCADNativeManufactureProviderState.py
     VibeCADNativeManufactureSnapshot.py
+    VibeCADNativeManufactureSetupEdit.py
     VibeCADNativeManufactureSlot.py
     VibeCADNativeManufactureSimpleCopy.py
     VibeCADNativeManufactureStartPoint.py
@@ -1330,6 +1333,8 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_manufacture_template_gui_integration.py
         vibecad_tests/test_native_manufacture_camotics.py
         vibecad_tests/test_native_manufacture_post.py
+    vibecad_tests/test_native_manufacture_provider_scope.py
+    vibecad_tests/test_path_job_setup_service.py
         vibecad_tests/test_native_manufacture_template.py
     vibecad_tests/native_manufacture_operation_array_gui_integration.py
     vibecad_tests/native_manufacture_array_dressup_gui_integration.py

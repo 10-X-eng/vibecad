@@ -42,6 +42,7 @@ _MODEL_TARGET = _closed(
     },
     ("object_name", "expected_state_sha256"),
 )
+_JOB_TARGET = _MODEL_TARGET
 _MODEL_INPUT = _closed(
     {
         "target": _MODEL_TARGET,
@@ -68,6 +69,54 @@ _TEMPLATE = {
             ("kind", "template_id", "expected_content_sha256"),
         ),
     ]
+}
+_FIXTURES = (
+    "G54",
+    "G55",
+    "G56",
+    "G57",
+    "G58",
+    "G59",
+    "G59.1",
+    "G59.2",
+    "G59.3",
+    "G59.4",
+    "G59.5",
+    "G59.6",
+    "G59.7",
+    "G59.8",
+    "G59.9",
+)
+_SETUP_CHANGES = {
+    "type": "object",
+    "properties": {
+        "label": LABEL_SCHEMA,
+        "description": {"type": "string", "maxLength": 4096},
+        "machine": {"type": "string", "maxLength": 160},
+        "postprocessor": {
+            "type": "string",
+            "pattern": r"^$|^[A-Za-z][A-Za-z0-9_]*$",
+            "maxLength": 160,
+        },
+        "postprocessor_args": {"type": "string", "maxLength": 4096},
+        "fixtures": {
+            "type": "array",
+            "items": {"type": "string", "enum": list(_FIXTURES)},
+            "maxItems": len(_FIXTURES),
+            "uniqueItems": True,
+        },
+        "split_output": {"type": "boolean"},
+        "output_order": {
+            "type": "string",
+            "enum": ["Fixture", "Tool", "Operation"],
+        },
+        "geometry_tolerance_mm": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+        },
+    },
+    "minProperties": 1,
+    "additionalProperties": False,
 }
 
 
@@ -116,6 +165,26 @@ def manufacture_job_capability_definition() -> NativeCapabilityDefinition:
                         "expected_job_count",
                     ),
                 ),
+            ),
+            NativeCapabilityVariant(
+                operation="update_setup",
+                description=(
+                    "Update authored machine, postprocessor, work offsets, output, "
+                    "identity, or tolerance fields on one exact CAM setup."
+                ),
+                action_ids=frozenset({"CAM_Job"}),
+                surface_ids=frozenset({"manufacture"}),
+                exact_target_type="ExactCamJobAndSetupChanges",
+                transaction_behavior="document",
+                background_required=False,
+                parameters=_closed(
+                    {
+                        "target": _JOB_TARGET,
+                        "changes": _SETUP_CHANGES,
+                    },
+                    ("target", "changes"),
+                ),
+                provider_supplemental=True,
             ),
         ),
     )
