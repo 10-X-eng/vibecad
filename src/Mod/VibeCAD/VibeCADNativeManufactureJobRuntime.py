@@ -50,9 +50,6 @@ class NativeManufactureJobRuntime:
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
         self._creation_state_sha256 = capture_job_creation_environment().state_sha256
-        self._job_count = sum(
-            1 for obj in tuple(context.document.Objects) if is_job(obj)
-        )
 
     def mutate_job(
         self,
@@ -129,7 +126,11 @@ class NativeManufactureJobRuntime:
                     else {"kind": "none"}
                 ),
                 expected_creation_state_sha256=self._creation_state_sha256,
-                expected_job_count=self._job_count,
+                expected_job_count=sum(
+                    1
+                    for obj in tuple(context.document.Objects)
+                    if is_job(obj)
+                ),
             ),
         )
         return run_immediate_mutation(
