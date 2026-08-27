@@ -46,6 +46,7 @@ set(Import_Scripts
     stepZ.py
     cadzip.py
     cad_geometry.py
+    fusion_ogs.py
     importFusion.py
     importJT.py
 )

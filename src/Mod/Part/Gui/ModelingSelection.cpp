@@ -1778,6 +1778,25 @@ void ModelingTaskAttempt::commit()
     d->complete = true;
     d->ownsAttempt = false;
     d->publishMacroLines();
+
+    // A retained modeling command replaces its visible inputs with one
+    // semantic root. Keep the GUI selection consistent with that durable
+    // result so hidden inputs cannot remain as stale targets for the next
+    // command (notably Delete). Limit the change to this document; selections
+    // in other open documents are independent user state.
+    if (Gui::Application::Instance) {
+        auto* semanticRoot =
+            d->document->getObjectByID(semanticResultIds.back());
+        if (semanticRoot && semanticRoot->getNameInDocument()) {
+            Gui::SelectionLogDisabler selectionLogDisabler(true);
+            auto& selection = Gui::Selection();
+            selection.clearSelection(d->document->getName());
+            selection.addSelection(
+                d->document->getName(),
+                semanticRoot->getNameInDocument()
+            );
+        }
+    }
 }
 
 }  // namespace PartGui

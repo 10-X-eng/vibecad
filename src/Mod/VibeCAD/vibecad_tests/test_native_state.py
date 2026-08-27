@@ -435,6 +435,9 @@ def test_document_observer_filters_presentation_before_revision(
         def invalidate_vibescript_reference_snapshots(self, _obj):
             return None
 
+        def native_document_state(self):
+            return {"native_authority": {"active": False}}
+
     monkeypatch.setattr(gui, "get_service", lambda: Service())
     monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
     obj = SimpleNamespace(
@@ -483,6 +486,9 @@ def test_document_observer_counts_create_and_delete(monkeypatch) -> None:
 
         def note_native_object_deleted(self, obj):
             store.note_structural_change(obj.Document.Uid)
+
+        def native_document_state(self):
+            return {"native_authority": {"active": False}}
 
     monkeypatch.setattr(gui, "get_service", lambda: Service())
     monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)

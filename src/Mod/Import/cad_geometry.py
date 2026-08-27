@@ -25,23 +25,32 @@ def pack_fusion_mesh(triangles: Sequence[Triangle]) -> bytes:
     return bytes(out)
 
 
-def parse_fusion_mesh(data: bytes) -> List[Triangle]:
-    """Decode a Fusion OGS `Fusion_mesh_*` blob into triangles."""
+def parse_fusion_mesh(data: bytes, scale: float = 1.0) -> List[Triangle]:
+    """Decode a Fusion OGS `Fusion_mesh_*` blob into triangles.
+
+    ``scale`` is additive so callers that use this generic parser retain its
+    original raw-coordinate behavior.  The Fusion file importer passes the
+    centimeter-to-millimeter conversion required by FreeCAD.
+    """
     if len(data) < 36:
         return []
     # Prefer pos+normal stride (24 bytes/vertex); fall back to position-only.
     for stride in (24, 12):
-        tris = _triangles_from_stride(data, stride)
+        tris = _triangles_from_stride(data, stride, validate_normals=stride == 24)
         if tris:
-            return tris
+            return scale_triangles(tris, scale)
     return []
 
 
-def _triangles_from_stride(data: bytes, stride: int) -> List[Triangle]:
+def _triangles_from_stride(
+    data: bytes, stride: int, validate_normals: bool = False
+) -> List[Triangle]:
     nvert = len(data) // stride
     if nvert < 3:
         return []
     nvert -= nvert % 3
+    if validate_normals and not _fusion_normals_plausible(data, stride, nvert):
+        return []
     verts: List[Vec3] = []
     for i in range(nvert):
         x, y, z = struct.unpack_from("<fff", data, i * stride)
@@ -55,6 +64,32 @@ def _triangles_from_stride(data: bytes, stride: int) -> List[Triangle]:
             continue
         tris.append((a, b, c))
     return tris
+
+
+def _fusion_normals_plausible(data: bytes, stride: int, nvert: int) -> bool:
+    """Distinguish position+normal records from position-only vertex data."""
+    if stride < 24:
+        return False
+    plausible = 0
+    for i in range(nvert):
+        normal = struct.unpack_from("<fff", data, i * stride + 12)
+        if not _finite(normal):
+            return False
+        magnitude = math.sqrt(sum(component * component for component in normal))
+        if 0.5 <= magnitude <= 1.5:
+            plausible += 1
+    return plausible >= max(1, math.ceil(nvert * 0.75))
+
+
+def scale_triangles(triangles: Sequence[Triangle], scale: float) -> List[Triangle]:
+    """Return *triangles* with every coordinate multiplied by ``scale``."""
+    factor = float(scale)
+    if factor == 1.0:
+        return list(triangles)
+    return [
+        tuple(tuple(component * factor for component in vertex) for vertex in triangle)
+        for triangle in triangles
+    ]  # type: ignore[return-value]
 
 
 def extract_float_triangles(data: bytes) -> List[Triangle]:
@@ -117,7 +152,7 @@ def mesh_facets(triangles: Iterable[Triangle]) -> List[Tuple[float, ...]]:
 
 
 def add_triangles_to_document(doc, triangles: Sequence[Triangle], label: str):
-    """Place mesh and, when possible, a Part Shape/Solid into *doc*.
+    """Place one Part Shape/Solid or fallback Mesh into *doc*.
 
     Returns the Part object when a shape is built, otherwise the Mesh object.
     """
@@ -128,8 +163,6 @@ def add_triangles_to_document(doc, triangles: Sequence[Triangle], label: str):
         raise ValueError("no triangles to import")
     facets = mesh_facets(triangles)
     mesh = Mesh.Mesh(facets)
-    mesh_obj = doc.addObject("Mesh::Feature", _unique(doc, label + "Mesh"))
-    mesh_obj.Mesh = mesh
 
     shape = Part.Shape()
     try:
@@ -141,15 +174,26 @@ def add_triangles_to_document(doc, triangles: Sequence[Triangle], label: str):
         shape = _compound_faces(triangles)
 
     if shape is None or shape.isNull() or not shape.Faces:
+        mesh_obj = doc.addObject("Mesh::Feature", _unique(doc, label + "Mesh"))
+        mesh_obj.Mesh = mesh
         return mesh_obj
 
     try:
         if shape.isClosed():
             solid = Part.Solid(shape)
-            if solid and not solid.isNull() and solid.Volume > 0:
+            if solid and not solid.isNull() and solid.Volume > 0 and solid.isValid():
                 shape = solid
     except Exception:
         pass
+
+    try:
+        valid_shape = shape.isValid()
+    except Exception:
+        valid_shape = False
+    if not valid_shape:
+        mesh_obj = doc.addObject("Mesh::Feature", _unique(doc, label + "Mesh"))
+        mesh_obj.Mesh = mesh
+        return mesh_obj
 
     part_obj = doc.addObject("Part::Feature", _unique(doc, label))
     part_obj.Shape = shape

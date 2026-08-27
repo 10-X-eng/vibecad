@@ -17,10 +17,16 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import time
 import zlib
 from typing import List, Optional, Sequence, Tuple
 
-from cad_geometry import Triangle, add_triangles_to_document, extract_float_triangles
+from cad_geometry import (
+    Triangle,
+    add_triangles_to_document,
+    extract_float_triangles,
+    scale_triangles,
+)
 
 IMPORT_TYPE = "Siemens JT (*.jt *.JT)"
 
@@ -46,8 +52,81 @@ _TRISTRIP_GUID = bytes(
     ]
 )
 _TRISTRIP_GUID_LE = bytes(
-    [0xAB, 0x10, 0xDD, 0x10, 0xC8, 0x2A, 0xD1, 0x11, 0x9B, 0x6B, 0x00, 0x80, 0xC7, 0xBB, 0x59, 0x97]
+    [
+        0xAB,
+        0x10,
+        0xDD,
+        0x10,
+        0xC8,
+        0x2A,
+        0xD1,
+        0x11,
+        0x9B,
+        0x6B,
+        0x00,
+        0x80,
+        0xC7,
+        0xBB,
+        0x59,
+        0x97,
+    ]
 )
+# Geometric Transform Attribute Element.  The bundled fallback does not yet
+# reconstruct the JT Logical Scene Graph, so accepting this element would put
+# otherwise valid tessellation at a silently incorrect placement.
+_TRANSFORM_GUID = bytes(
+    [
+        0x10,
+        0xDD,
+        0x10,
+        0x83,
+        0x2A,
+        0xC8,
+        0x11,
+        0xD1,
+        0x9B,
+        0x6B,
+        0x00,
+        0x80,
+        0xC7,
+        0xBB,
+        0x59,
+        0x97,
+    ]
+)
+_TRANSFORM_GUID_LE = bytes(
+    [
+        0x83,
+        0x10,
+        0xDD,
+        0x10,
+        0xC8,
+        0x2A,
+        0xD1,
+        0x11,
+        0x9B,
+        0x6B,
+        0x00,
+        0x80,
+        0xC7,
+        0xBB,
+        0x59,
+        0x97,
+    ]
+)
+_JT_UNIT_TO_MM = {
+    "millimeters": 1.0,
+    "centimeters": 10.0,
+    "meters": 1000.0,
+    "inches": 25.4,
+    "feet": 304.8,
+    "yards": 914.4,
+    "micrometers": 0.001,
+    "decimeters": 100.0,
+    "kilometers": 1_000_000.0,
+    "mils": 0.0254,
+    "miles": 1_609_344.0,
+}
 
 
 def open(filename):
@@ -56,7 +135,11 @@ def open(filename):
 
     name = os.path.splitext(os.path.basename(filename))[0] or "JT"
     doc = FreeCAD.newDocument(name)
-    insert(filename, doc.Name)
+    try:
+        insert(filename, doc.Name)
+    except Exception:
+        FreeCAD.closeDocument(doc.Name)
+        raise
     return doc
 
 
@@ -93,13 +176,12 @@ def read_jt_triangles(filename: str) -> List[Triangle]:
         data = fh.read()
     if len(data) < 80 or not data[:80].lstrip().startswith(b"Version"):
         raise RuntimeError(f"Not a JT file: {filename}")
+    _validate_supported_jt_features(data)
+    scale = _jt_length_scale_to_mm(data)
     tris = _triangles_from_toc(data)
     if _plausible(tris):
-        return tris
-    fallback = extract_float_triangles(data)
-    if _plausible(fallback):
-        return fallback
-    return tris if tris else fallback
+        return scale_triangles(tris, scale)
+    return []
 
 
 def write_jt_tessellation(path: str, triangles: List[Triangle]) -> None:
@@ -144,6 +226,103 @@ def _plausible(tris: Sequence[Triangle]) -> bool:
     if span <= 0 or span > 1.0e8:
         return False
     return True
+
+
+def _validate_supported_jt_features(data: bytes) -> None:
+    """Reject JT placement data the bundled reader cannot apply safely.
+
+    CAD Exchanger is attempted before this bundled path.  Rejection here is
+    preferable to showing a correctly shaped part in the wrong assembly
+    position.
+    """
+    for blob in _jt_scan_blobs(data):
+        if _TRANSFORM_GUID in blob or _TRANSFORM_GUID_LE in blob:
+            raise RuntimeError(
+                "This JT contains Logical Scene Graph transform attributes. "
+                "The bundled JT reader cannot apply those transforms safely; "
+                "install CAD Exchanger support to import this assembly."
+            )
+
+
+def _jt_length_scale_to_mm(data: bytes) -> float:
+    """Read the standard JT measurement-unit property when it is present.
+
+    Shattered shape-LOD files, including the Siemens fixture, may omit the
+    parent LSG property and historically contain millimeter coordinates.  That
+    compatibility case remains 1:1.  Explicit or mixed units are never ignored.
+    """
+    text_views: List[str] = []
+    for blob in _jt_scan_blobs(data):
+        text_views.append(blob.decode("latin1", "ignore"))
+        if len(blob) >= 2:
+            text_views.append(blob.decode("utf-16-le", "ignore"))
+            text_views.append(blob.decode("utf-16-be", "ignore"))
+    text = "\n".join(text_views)
+    if "JT_PROP_MEASUREMENT_UNITS" not in text.upper():
+        return 1.0
+
+    import re
+
+    units = {
+        unit
+        for unit in _JT_UNIT_TO_MM
+        if re.search(rf"(?<![A-Za-z]){re.escape(unit)}(?![A-Za-z])", text, re.I)
+    }
+    if not units:
+        raise RuntimeError(
+            "The JT model declares measurement units, but the unit value is "
+            "missing or unsupported."
+        )
+    if len(units) != 1:
+        raise RuntimeError(
+            "The JT contains multiple model units; the bundled reader cannot "
+            "apply per-part unit conversions safely."
+        )
+    return _JT_UNIT_TO_MM[units.pop()]
+
+
+def _jt_scan_blobs(data: bytes):
+    """Yield raw and inflated JT segment bytes for capability inspection."""
+    yield data
+    if len(data) < 93:
+        return
+    try:
+        version = data[:80].split(b"\x00", 1)[0].decode("ascii", "ignore")
+        endian = "<" if data[80] == 0 else ">"
+        is_v10 = "10." in version
+        pos = 85 if is_v10 else 81
+        if is_v10:
+            toc_off = struct.unpack_from(endian + "q", data, pos)[0]
+        else:
+            _empty, toc_off = struct.unpack_from(endian + "ii", data, pos)
+        if toc_off <= 0 or toc_off > len(data) - 4:
+            return
+        entry_count = struct.unpack_from(endian + "i", data, toc_off)[0]
+        if entry_count < 0 or entry_count > 100000:
+            return
+        cursor = toc_off + 4
+        for _ in range(entry_count):
+            need = 16 + (20 if is_v10 else 12)
+            if cursor + need > len(data):
+                return
+            if is_v10:
+                off, length, _attrs = struct.unpack_from(
+                    endian + "qqI", data, cursor + 16
+                )
+            else:
+                off, length, _attrs = struct.unpack_from(
+                    endian + "iiI", data, cursor + 16
+                )
+            cursor += need
+            if off < 0 or length <= 0 or off >= len(data):
+                continue
+            segment = data[off : min(len(data), off + length)]
+            yield segment
+            body = _segment_body(segment)
+            if body != segment:
+                yield body
+    except (IndexError, OverflowError, struct.error, ValueError):
+        return
 
 
 class _Cursor:
@@ -197,8 +376,7 @@ class _BitReader:
 
     def _load(self) -> None:
         if self._i >= len(self._words):
-            self._buf = 0
-            return
+            raise EOFError("truncated JT code-text bitstream")
         self._buf = self._words[self._i] & 0xFFFFFFFF
         self._i += 1
         self._loaded = 32
@@ -206,9 +384,7 @@ class _BitReader:
     def read_bit(self) -> int:
         if self._loaded == 0:
             self._load()
-            self._loaded = 31
-        else:
-            self._loaded -= 1
+        self._loaded -= 1
         bit = (self._buf >> 31) & 1
         self._buf = (self._buf << 1) & 0xFFFFFFFF
         return bit
@@ -262,7 +438,7 @@ class _FileBits:
     def read_bit(self) -> int:
         if self._left == 0:
             if self.cur.remaining() < 1:
-                return 0
+                raise EOFError("truncated JT probability-context bitstream")
             self._byte = self.cur.u8()
             self._left = 8
         self._left -= 1
@@ -337,7 +513,9 @@ def _build_huffman(entries: List[dict]) -> Optional[_HuffNode]:
     return heap[0][2]
 
 
-def _decode_huffman(words: Sequence[int], count: int, entries: List[dict], oob: Sequence[int]) -> List[int]:
+def _decode_huffman(
+    words: Sequence[int], count: int, entries: List[dict], oob: Sequence[int]
+) -> List[int]:
     root = _build_huffman(entries)
     if root is None:
         return []
@@ -433,7 +611,9 @@ def _unpack_strip_idx(values: List[int]) -> List[int]:
     return out
 
 
-def _dequantize(codes: Sequence[int], vmin: float, vmax: float, bits: int) -> List[float]:
+def _dequantize(
+    codes: Sequence[int], vmin: float, vmax: float, bits: int
+) -> List[float]:
     if bits <= 0:
         return [
             struct.unpack("<f", struct.pack("<I", c & 0xFFFFFFFF))[0] for c in codes
@@ -470,17 +650,20 @@ def _strips_to_triangles(
     # prim is start indices into the vertex stream / index list
     for p in range(len(prim) - 1):
         start, end = prim[p], prim[p + 1]
-        if end - start < 3:
+        if start < 0 or end < 0 or end - start < 3:
             continue
         off1, off2 = 1, 2
         origin = start
         while origin < end - 2:
             i0, i1, i2 = origin, origin + off1, origin + off2
             if indices is not None:
-                if max(i0, i1, i2) >= len(indices):
+                if min(i0, i1, i2) < 0 or max(i0, i1, i2) >= len(indices):
                     break
                 i0, i1, i2 = indices[i0], indices[i1], indices[i2]
-            tris.append((i0, i1, i2))  # type: ignore[arg-type]
+                if min(i0, i1, i2) >= 0:
+                    tris.append((i0, i1, i2))  # type: ignore[arg-type]
+            else:
+                tris.append((i0, i1, i2))  # type: ignore[arg-type]
             off1, off2 = off2, off1
             origin += 1
     return tris  # type: ignore[return-value]
@@ -491,8 +674,7 @@ def _decode_tristrip_payload(blob: bytes) -> List[Triangle]:
     if idx < 0:
         idx = blob.find(_TRISTRIP_GUID)
         if idx < 0:
-            soup = extract_float_triangles(blob)
-            return soup if _plausible(soup) else []
+            return []
         start = idx + 16
     else:
         start = idx + 16
@@ -621,9 +803,13 @@ def _triangles_from_toc(data: bytes) -> List[Triangle]:
         if cursor + need > len(data):
             break
         if is_v10:
-            off, length, _attribs = struct.unpack_from(endian + "qqI", data, cursor + guid_size)
+            off, length, _attribs = struct.unpack_from(
+                endian + "qqI", data, cursor + guid_size
+            )
         else:
-            off, length, _attribs = struct.unpack_from(endian + "iiI", data, cursor + guid_size)
+            off, length, _attribs = struct.unpack_from(
+                endian + "iiI", data, cursor + guid_size
+            )
         cursor += need
         if off < 0 or length <= 0 or off >= len(data):
             continue
@@ -662,23 +848,35 @@ def _try_cad_exchanger(filename, doc, label) -> bool:
         return False
     with tempfile.TemporaryDirectory(prefix="vibecad-jt-") as tmp:
         out = os.path.join(tmp, "converted.step")
+        deadline = time.monotonic() + 120.0
         commands = [
             [exe, "-i", filename, "-e", out],
             [exe, "-i", filename, "-o", out],
             [exe, filename, out],
         ]
         for cmd in commands:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
+                run_options = {}
+                if os.name == "nt":
+                    run_options["creationflags"] = subprocess.CREATE_NO_WINDOW
                 proc = subprocess.run(
                     cmd,
                     check=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=120,
+                    timeout=remaining,
+                    **run_options,
                 )
             except (OSError, subprocess.TimeoutExpired):
                 continue
-            if proc.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0:
+            if (
+                proc.returncode == 0
+                and os.path.isfile(out)
+                and os.path.getsize(out) > 0
+            ):
                 return _insert_step(out, doc, label)
     return False
 

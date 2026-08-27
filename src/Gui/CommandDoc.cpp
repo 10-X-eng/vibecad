@@ -2398,6 +2398,34 @@ void StdCmdDelete::activated(int iMsg)
                 std::vector<const TimelineDeletePlan*> deletedPlans;
                 std::set<std::pair<App::Document*, long>>
                     actualDeletionKeys;
+                // The confirmation preflight permits a replacement input to
+                // be absent when the user explicitly selected that exact
+                // object for deletion. Preserve that same contract during
+                // post-delete validation. Only identities that are now
+                // genuinely absent count as actual deletions; a selected
+                // object whose ViewProvider refused deletion remains eligible
+                // to be revealed by the deleted history operation.
+                for (const auto& selected : selectedTargets) {
+                    if (selected.subElements.empty()
+                        && !resolveIdentity(selected.identity)) {
+                        actualDeletionKeys.insert(
+                            identityKey(selected.identity)
+                        );
+                    }
+                }
+                // Companion objects are exact, preflight-approved side
+                // effects of a selected deletion. Account for them as well so
+                // a replacement that is deliberately removed through that
+                // shared lifecycle path is not misreported as disappearing.
+                for (const auto& plan : dependentDeletionPlans) {
+                    for (const auto& companion : plan.companions) {
+                        if (!resolveIdentity(companion)) {
+                            actualDeletionKeys.insert(
+                                identityKey(companion)
+                            );
+                        }
+                    }
+                }
                 for (const auto& plan : timelinePlans) {
                     if (resolveIdentity(plan.target)) {
                         throw Base::RuntimeError(

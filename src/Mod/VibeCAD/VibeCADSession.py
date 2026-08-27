@@ -1229,19 +1229,28 @@ def _capture_context_for_provider(
             schemas_for_native_provider_surface,
         )
         from VibeCADNativeCapabilityRegistry import _provider_schema_operations
+        from VibeCADNativeTurn import native_operation_scope_digest
 
         exact_native_schemas = [
             dict(schema) for schema in native_provider_surface.schemas
         ]
-        native_turn_authorization = {
-            "schema_sha256": provider_tool_schema_digest(exact_native_schemas),
-            "operations_by_tool": {
-                str(schema.get("name") or ""): list(operations)
-                for schema in exact_native_schemas
-                if (operations := _provider_schema_operations(schema))
-            },
-        }
         schemas = schemas_for_native_provider_surface(native_provider_surface)
+        operations_by_tool = {
+            str(schema.get("name") or ""): list(operations)
+            for schema in exact_native_schemas
+            if (operations := _provider_schema_operations(schema))
+        }
+        provider_schema_digest = provider_tool_schema_digest(schemas)
+        native_turn_authorization = {
+            # Keep schema_sha256 as a compatibility alias. Both names now
+            # unambiguously refer to the schemas actually sent to the provider.
+            "schema_sha256": provider_schema_digest,
+            "provider_schema_sha256": provider_schema_digest,
+            "operation_scope_sha256": native_operation_scope_digest(
+                operations_by_tool
+            ),
+            "operations_by_tool": operations_by_tool,
+        }
     elif not native_engine:
         schemas = provider_tool_schemas(
             service,

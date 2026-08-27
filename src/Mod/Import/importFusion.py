@@ -9,19 +9,21 @@ is not reconstructed.
 
 from __future__ import annotations
 
-import builtins
+import io
+import json
 import os
 from typing import List, Sequence
 
 from cad_geometry import (
     Triangle,
     add_triangles_to_document,
-    pack_fusion_mesh,
-    parse_fusion_mesh,
+    scale_triangles,
 )
 from cadzip import is_zip, open_zip
+from fusion_ogs import OgsError, pack_ogs_cache, parse_ogs_cache
 
 IMPORT_TYPE = "Autodesk Fusion Design (*.f3d *.F3D *.f3z *.F3Z)"
+FUSION_LENGTH_TO_MM = 10.0
 
 
 def open(filename):
@@ -30,7 +32,11 @@ def open(filename):
 
     name = os.path.splitext(os.path.basename(filename))[0] or "Fusion"
     doc = FreeCAD.newDocument(name)
-    insert(filename, doc.Name)
+    try:
+        insert(filename, doc.Name)
+    except Exception:
+        FreeCAD.closeDocument(doc.Name)
+        raise
     return doc
 
 
@@ -50,6 +56,7 @@ def insert(filename, docname):
     for i, triangles in enumerate(groups):
         part_label = label if len(groups) == 1 else f"{label}_{i + 1}"
         last = add_triangles_to_document(doc, triangles, part_label)
+        _mark_flattened_fusion_import(last, filename, i + 1, len(groups))
     try:
         doc.recompute()
     except Exception:
@@ -69,8 +76,6 @@ def read_fusion_meshes(filename: str) -> List[List[Triangle]]:
 
 
 def _read_f3z(path: str) -> List[List[Triangle]]:
-    import tempfile
-
     groups: List[List[Triangle]] = []
     with open_zip(path) as zf:
         inner = [
@@ -81,32 +86,57 @@ def _read_f3z(path: str) -> List[List[Triangle]]:
         if not inner:
             # Some .f3z files are themselves a Fusion document zip.
             return _read_f3d(path)
-        with tempfile.TemporaryDirectory(prefix="vibecad-f3z-") as tmp:
-            for name in inner:
-                dest = os.path.join(tmp, os.path.basename(name) or "part.f3d")
-                with builtins.open(dest, "wb") as fh:
-                    fh.write(zf.read(name))
-                groups.extend(_read_f3d(dest))
+        for name in _f3z_root_members(zf, inner):
+            with open_zip_bytes(zf.read(name)) as inner_archive:
+                groups.extend(_read_f3d_archive(inner_archive, f"{path}:{name}"))
     return groups
 
 
 def _read_f3d(path: str) -> List[List[Triangle]]:
     if not is_zip(path):
         raise RuntimeError(f"Fusion file is not a ZIP archive: {path}")
-    groups: List[List[Triangle]] = []
     with open_zip(path) as zf:
-        mesh_names = [
-            n
-            for n in zf.namelist()
-            if _is_ogs_mesh_name(n)
-        ]
-        mesh_names.sort()
-        for name in mesh_names:
-            data = zf.read(name)
-            tris = parse_fusion_mesh(data)
-            if tris:
-                groups.append(tris)
-    return groups
+        return _read_f3d_archive(zf, path)
+
+
+def _read_f3d_archive(zf, source: str) -> List[List[Triangle]]:
+    names = zf.namelist()
+    worlds = sorted(
+        name
+        for name in names
+        if os.path.basename(name) == "world"
+        and "/ogs.blobfolder/ogs/defaultscene/" in name.lower().replace("\\", "/")
+    )
+    mesh_names = [name for name in names if _is_ogs_mesh_name(name)]
+    if mesh_names and not worlds:
+        raise RuntimeError(
+            f"Fusion graphics cache in '{source}' has mesh data but no OGS world; "
+            "refusing to guess its indexed geometry."
+        )
+
+    groups: List[List[Triangle]] = []
+    for world_name in worlds:
+        scene = os.path.dirname(world_name).replace("\\", "/") + "/"
+        blobs = sorted(
+            name for name in mesh_names if name.replace("\\", "/").startswith(scene)
+        )
+        if len(blobs) != 1:
+            raise RuntimeError(
+                f"Fusion OGS scene in '{source}' references {len(blobs)} mesh blobs; "
+                "only one fully validated blob is currently supported."
+            )
+        try:
+            scene_groups = parse_ogs_cache(
+                zf.read(world_name),
+                zf.read(blobs[0]),
+                scale=FUSION_LENGTH_TO_MM,
+            )
+        except OgsError as exc:
+            raise RuntimeError(
+                f"Invalid Fusion OGS cache in '{source}': {exc}"
+            ) from exc
+        groups.extend(scene_groups)
+    return _deduplicate_groups(groups)
 
 
 def _is_ogs_mesh_name(name: str) -> bool:
@@ -120,13 +150,8 @@ def write_f3d(path: str, triangles: Sequence[Triangle]) -> None:
     """Write a STORE-compressed Fusion-layout archive with one OGS mesh."""
     import zipfile
 
-    mesh = pack_fusion_mesh(list(triangles))
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
-        zf.writestr("Manifest.dat", b"FusionDocument")
-        zf.writestr(
-            "FusionAssetName[Active]/OGS.BlobFolder/OGS/DefaultScene/Fusion_mesh_000",
-            mesh,
-        )
+        _write_f3d_members(zf, triangles)
 
 
 def write_f3z(path: str, parts: Sequence[Sequence[Triangle]]) -> None:
@@ -144,13 +169,82 @@ def write_f3z(path: str, parts: Sequence[Sequence[Triangle]]) -> None:
 def write_f3d_fp(fp, triangles: Sequence[Triangle]) -> None:
     import zipfile
 
-    mesh = pack_fusion_mesh(list(triangles))
     with zipfile.ZipFile(fp, "w", compression=zipfile.ZIP_STORED) as zf:
-        zf.writestr("Manifest.dat", b"FusionDocument")
-        zf.writestr(
-            "FusionAssetName[Active]/OGS.BlobFolder/OGS/DefaultScene/Fusion_mesh_000",
-            mesh,
+        _write_f3d_members(zf, triangles)
+
+
+def _write_f3d_members(zf, triangles: Sequence[Triangle]) -> None:
+    stored = scale_triangles(triangles, 1.0 / FUSION_LENGTH_TO_MM)
+    world, mesh = pack_ogs_cache(stored)
+    scene = "FusionAssetName[Active]/OGS.BlobFolder/OGS/DefaultScene/"
+    zf.writestr("Manifest.dat", b"FusionDocument")
+    zf.writestr(scene + "world", world)
+    zf.writestr(scene + "Fusion_mesh_000", mesh)
+
+
+def _f3z_root_members(zf, inner: Sequence[str]) -> List[str]:
+    manifests = {name.lower(): name for name in zf.namelist()}
+    manifest_name = manifests.get("manifest.json")
+    if manifest_name:
+        try:
+            root = json.loads(zf.read(manifest_name).decode("utf-8"))["root"]
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+            root = None
+        if isinstance(root, str):
+            normalized = root.replace("\\", "/").lower()
+            matches = [
+                name for name in inner if name.replace("\\", "/").lower() == normalized
+            ]
+            if len(matches) == 1:
+                return matches
+            raise RuntimeError(f"Fusion assembly root '{root}' is missing or ambiguous")
+    return list(inner)
+
+
+def open_zip_bytes(data: bytes):
+    """Open an embedded .f3d after cadzip enabled method-93 support."""
+    import zipfile
+
+    return zipfile.ZipFile(io.BytesIO(data))
+
+
+def _deduplicate_groups(groups: Sequence[Sequence[Triangle]]) -> List[List[Triangle]]:
+    unique: List[List[Triangle]] = []
+    seen = set()
+    for group in groups:
+        signature = tuple(
+            sorted(
+                tuple(
+                    sorted(
+                        tuple(round(value, 7) for value in vertex)
+                        for vertex in triangle
+                    )
+                )
+                for triangle in group
+            )
         )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        unique.append(list(group))
+    return unique
+
+
+def _mark_flattened_fusion_import(obj, filename, index: int, count: int) -> None:
+    try:
+        obj.addProperty("App::PropertyString", "FusionImportMode", "Import")
+        obj.FusionImportMode = (
+            "Flattened current display snapshot (no editable Fusion history)"
+        )
+        obj.addProperty("App::PropertyString", "FusionSourceFile", "Import")
+        obj.FusionSourceFile = os.path.abspath(os.fspath(filename))
+        obj.addProperty("App::PropertyString", "FusionBody", "Import")
+        obj.FusionBody = f"{index} of {count}"
+        obj.setEditorMode("FusionImportMode", 1)
+        obj.setEditorMode("FusionSourceFile", 1)
+        obj.setEditorMode("FusionBody", 1)
+    except Exception:
+        pass
 
 
 def _document(docname):
