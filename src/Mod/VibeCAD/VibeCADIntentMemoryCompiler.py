@@ -24,6 +24,7 @@ from VibeCADProvider import (
     ProviderUnavailable,
     _capture_outbound_request,
     _clear_inherited_sdk_modules,
+    _gemini_forced_tool_completion,
     _json_safe,
     _run_provider_subprocess,
     _send_child_error,
@@ -137,6 +138,40 @@ def _anthropic_compiler_child_main(
         conn.send({"type": "done", "final_output": "", "raw": _json_safe(update)})
     except BaseException as exc:
         _send_child_error(conn, "Anthropic Intent Memory compiler", exc)
+    finally:
+        conn.close()
+
+
+def _gemini_compiler_child_main(
+    conn,
+    prompt: str,
+    context: dict[str, Any],
+    model: str,
+    api_key: str | None,
+    _reasoning_effort: str | None,
+    timeout_seconds: float | None,
+    _max_turns: int | None,
+    clear_inherited_modules: bool,
+    base_url: str | None = None,
+) -> None:
+    try:
+        if clear_inherited_modules:
+            _clear_inherited_sdk_modules()
+        update = _gemini_forced_tool_completion(
+            prompt=prompt,
+            context=context,
+            model=model,
+            api_key=api_key,
+            reasoning_effort=None,
+            timeout_seconds=timeout_seconds,
+            base_url=base_url,
+            instructions=COMPILER_INSTRUCTIONS,
+            tool_schema=compiler_tool_schema(),
+            operation_label="Intent Memory compiler",
+        )
+        conn.send({"type": "done", "final_output": "", "raw": update})
+    except BaseException as exc:
+        _send_child_error(conn, "Google Gemini Intent Memory compiler", exc)
     finally:
         conn.close()
 
@@ -391,7 +426,13 @@ def compile_intent_memory_update(
 ) -> dict[str, Any]:
     """Run one isolated, forced-tool compiler request and return its arguments."""
     clean_provider = str(provider or "").strip().lower()
-    if clean_provider not in {"openai", "anthropic", "chatgpt", "grok"}:
+    if clean_provider not in {
+        "openai",
+        "anthropic",
+        "chatgpt",
+        "grok",
+        "gemini",
+    }:
         raise ValueError(f"Unsupported Intent Memory provider: {provider!r}.")
     if not uncovered_turns:
         raise ValueError("Intent Memory compiler requires at least one uncovered turn.")
@@ -427,7 +468,11 @@ def compile_intent_memory_update(
         base_url=base_url,
         cancellation_check=cancellation_check,
         progress_callback=progress_callback,
-        child_main=_anthropic_compiler_child_main,
+        child_main=(
+            _gemini_compiler_child_main
+            if clean_provider == "gemini"
+            else _anthropic_compiler_child_main
+        ),
         provider_label="VibeCAD Intent Memory compiler",
     )
     if not isinstance(result.raw, dict):

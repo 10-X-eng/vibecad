@@ -1529,6 +1529,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_native_assembly_export.py
         vibecad_tests/test_native_assembly_fastener.py
         vibecad_tests/test_native_input.py
+        vibecad_tests/test_gemini_provider.py
         vibecad_tests/test_grok_oauth.py
         vibecad_tests/test_agent_control.py
         vibecad_tests/test_agent_control_grok_bot.py

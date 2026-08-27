@@ -20,6 +20,7 @@ import time
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from VibeCADAuth import DEFAULT_GEMINI_API_BASE
 from VibeCADDebug import capture_provider_request
 from VibeCADModelingSurface import (
     is_model_assembly_workbench,
@@ -1550,6 +1551,58 @@ class CodexProvider(BaseProvider):
                 client.close()
 
 
+class GeminiProvider(BaseProvider):
+    """Google Gemini adapter over its OpenAI-compatible Chat Completions API."""
+
+    def __init__(
+        self,
+        model: str = "gemini-flash-latest",
+        api_key: str | None = None,
+        reasoning_effort: str = "high",
+        timeout_seconds: float | None = None,
+        max_turns: int | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        self.model = model
+        self.api_key = api_key
+        self.reasoning_effort = reasoning_effort
+        self.timeout_seconds = timeout_seconds
+        self.max_turns = max_turns
+        self.base_url = base_url or DEFAULT_GEMINI_API_BASE
+
+    def run(
+        self,
+        prompt: str,
+        context: dict[str, Any],
+        tool_runner: ToolRunner | None = None,
+        cancellation_check: CancellationCheck | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ProviderResult:
+        try:
+            return _run_provider_subprocess(
+                prompt=prompt,
+                context=context,
+                tool_runner=tool_runner,
+                model=self.model,
+                api_key=self.api_key,
+                reasoning_effort=self.reasoning_effort,
+                timeout_seconds=self.timeout_seconds,
+                max_turns=self.max_turns,
+                base_url=self.base_url,
+                cancellation_check=cancellation_check,
+                progress_callback=progress_callback,
+                child_main=_gemini_child_main,
+                provider_label="Google Gemini provider",
+            )
+        except TimeoutError as exc:
+            if self.timeout_seconds and self.timeout_seconds > 0:
+                raise ProviderUnavailable(
+                    "Google Gemini provider timed out after "
+                    f"{self.timeout_seconds:g} seconds."
+                ) from exc
+            raise
+
+
 class AnthropicProvider(BaseProvider):
     """Native Anthropic Messages API adapter.
 
@@ -2451,6 +2504,20 @@ def _anthropic_tool_definition(schema: dict[str, Any]) -> dict[str, Any]:
         "name": _provider_function_name(tool_name),
         "description": str(schema.get("description") or ""),
         "input_schema": _provider_tool_parameters(schema),
+    }
+
+
+def _gemini_tool_definition(schema: dict[str, Any]) -> dict[str, Any]:
+    tool_name = str(schema.get("name") or "").strip()
+    if not tool_name:
+        raise ValueError("Provider tool schema is missing name.")
+    return {
+        "type": "function",
+        "function": {
+            "name": _provider_function_name(tool_name),
+            "description": str(schema.get("description") or ""),
+            "parameters": _provider_tool_parameters(schema),
+        },
     }
 
 
@@ -3819,6 +3886,29 @@ def _context_image_delivery_notes(context: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _gemini_user_content(
+    prompt: str, context: dict[str, Any]
+) -> str | list[dict[str, Any]]:
+    blocks = _context_image_blocks(context)
+    delivery_notes = _context_image_delivery_notes(context)
+    if not blocks and not delivery_notes:
+        return prompt
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for note in delivery_notes:
+        content.append({"type": "text", "text": note})
+    for label_text, mime_type, image_data in blocks:
+        content.append({"type": "text", "text": label_text})
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{mime_type};base64,{image_data}",
+                },
+            }
+        )
+    return content
+
+
 def _anthropic_user_content(
     prompt: str, context: dict[str, Any]
 ) -> str | list[dict[str, Any]]:
@@ -4554,6 +4644,417 @@ def _anthropic_compaction_resume_message(
     )
 
 
+def _gemini_tool_call_extra_content(tool_call: Any) -> dict[str, Any] | None:
+    direct = getattr(tool_call, "extra_content", None)
+    if isinstance(direct, dict) and direct:
+        return _json_safe(direct)
+    model_extra = getattr(tool_call, "model_extra", None)
+    if isinstance(model_extra, dict):
+        nested = model_extra.get("extra_content")
+        if isinstance(nested, dict) and nested:
+            return _json_safe(nested)
+    payload = _object_payload(tool_call)
+    nested = payload.get("extra_content")
+    if isinstance(nested, dict) and nested:
+        return _json_safe(nested)
+    return None
+
+
+def _gemini_forced_tool_completion(
+    *,
+    prompt: str,
+    context: dict[str, Any],
+    model: str,
+    api_key: str | None,
+    reasoning_effort: str | None,
+    timeout_seconds: float | None,
+    base_url: str | None,
+    instructions: str,
+    tool_schema: dict[str, Any],
+    operation_label: str,
+) -> dict[str, Any]:
+    if not str(api_key or "").strip():
+        raise ProviderUnavailable("No Google Gemini API key is configured.")
+    import openai
+
+    definition = _gemini_tool_definition(tool_schema)
+    function_name = str(definition["function"]["name"])
+    request: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": prompt},
+        ],
+        "tools": [definition],
+        "tool_choice": "required",
+    }
+    if reasoning_effort:
+        request["reasoning_effort"] = reasoning_effort
+    endpoint = base_url or DEFAULT_GEMINI_API_BASE
+    client_kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": endpoint,
+        "max_retries": 2,
+    }
+    if timeout_seconds is not None and timeout_seconds > 0:
+        client_kwargs["timeout"] = timeout_seconds
+    _capture_outbound_request(
+        context,
+        provider="gemini",
+        sdk_call=f"OpenAI.chat.completions.create.{operation_label}",
+        turn=1,
+        request=request,
+        base_url=endpoint,
+    )
+    client = openai.OpenAI(**client_kwargs)
+    try:
+        response = client.chat.completions.create(**request)
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+    choices = list(getattr(response, "choices", None) or [])
+    message = getattr(choices[0], "message", None) if choices else None
+    calls = list(getattr(message, "tool_calls", None) or [])
+    if len(calls) != 1:
+        raise RuntimeError(
+            f"Google Gemini {operation_label} did not return exactly one "
+            "structured function call."
+        )
+    function = getattr(calls[0], "function", None)
+    if str(getattr(function, "name", None) or "") != function_name:
+        raise RuntimeError(f"Google Gemini {operation_label} called the wrong function.")
+    arguments_json = str(getattr(function, "arguments", None) or "")
+    try:
+        arguments = json.loads(arguments_json)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Google Gemini {operation_label} returned invalid function arguments."
+        ) from exc
+    if not isinstance(arguments, dict):
+        raise RuntimeError(
+            f"Google Gemini {operation_label} function arguments were not an object."
+        )
+    return _json_safe(arguments)
+
+
+def _gemini_child_main(
+    conn,
+    prompt: str,
+    context: dict[str, Any],
+    model: str,
+    api_key: str | None,
+    reasoning_effort: str | None,
+    timeout_seconds: float | None,
+    max_turns: int | None,
+    clear_inherited_modules: bool,
+    base_url: str | None = None,
+) -> None:
+    try:
+        if clear_inherited_modules:
+            _clear_inherited_sdk_modules()
+        import openai
+    except Exception as exc:
+        _send_child_error(
+            conn,
+            "Google Gemini SDK initialization",
+            ProviderUnavailable(
+                "Install the bundled 'openai' package and configure Gemini "
+                f"authentication. ({exc})"
+            ),
+        )
+        conn.close()
+        return
+
+    try:
+        live_context = dict(context)
+
+        def build_tool_surface(
+            surface_context: dict[str, Any],
+        ) -> tuple[dict[str, str], list[dict[str, Any]]]:
+            _validate_provider_wire_surface(surface_context)
+            by_name: dict[str, str] = {}
+            definitions: list[dict[str, Any]] = []
+            for index, schema in enumerate(
+                surface_context.get("provider_tool_schemas") or []
+            ):
+                if not isinstance(schema, dict):
+                    raise ValueError(f"Provider tool schema {index} must be an object.")
+                tool_name = str(schema.get("name") or "").strip()
+                if not tool_name:
+                    raise ValueError(f"Provider tool schema {index} is missing name.")
+                definition = _gemini_tool_definition(schema)
+                function_name = str(definition["function"]["name"])
+                if function_name in by_name:
+                    raise ValueError(
+                        f"Duplicate provider function name: {function_name}"
+                    )
+                by_name[function_name] = tool_name
+                definitions.append(definition)
+            return by_name, definitions
+
+        tools_by_name, tool_definitions = build_tool_surface(live_context)
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": _provider_instructions(live_context),
+            },
+            {
+                "role": "user",
+                "content": _gemini_user_content(
+                    prompt, _model_visible_context(live_context)
+                ),
+            },
+        ]
+
+        client_kwargs: dict[str, Any] = {
+            "base_url": base_url or DEFAULT_GEMINI_API_BASE,
+            "max_retries": 2,
+        }
+        if api_key:
+            client_kwargs["api_key"] = api_key
+        if timeout_seconds is not None and timeout_seconds > 0:
+            client_kwargs["timeout"] = timeout_seconds
+        client = openai.OpenAI(**client_kwargs)
+
+        turn = 1
+        while max_turns is None or max_turns <= 0 or turn <= max_turns:
+            sdk_request: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+            }
+            if tool_definitions:
+                sdk_request["tools"] = tool_definitions
+            if reasoning_effort:
+                sdk_request["reasoning_effort"] = reasoning_effort
+            _capture_outbound_request(
+                live_context,
+                provider="gemini",
+                sdk_call="OpenAI.chat.completions.create",
+                turn=turn,
+                request=sdk_request,
+                base_url=str(client_kwargs["base_url"]),
+            )
+            _send_child_progress(
+                conn,
+                {
+                    "event": "gemini_request_started",
+                    "turn": turn,
+                    "model": model,
+                    "message_count": len(messages),
+                    "tool_count": len(tool_definitions),
+                },
+            )
+
+            stream = client.chat.completions.create(**sdk_request)
+            text_parts: list[str] = []
+            streamed_calls: dict[int, dict[str, Any]] = {}
+            delta_batcher = _ProviderStreamDeltaBatcher(
+                lambda event: _send_child_progress(conn, event),
+                provider="Google Gemini",
+                turn=turn,
+            )
+            chunk_count = 0
+            finish_reason = ""
+            for chunk in stream:
+                chunk_count += 1
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                finish_reason = str(
+                    getattr(choice, "finish_reason", None) or finish_reason
+                )
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                content_delta = getattr(delta, "content", None)
+                if content_delta:
+                    clean_delta = str(content_delta)
+                    text_parts.append(clean_delta)
+                    delta_batcher.append("provider_text_delta", clean_delta)
+                for fallback_index, tool_delta in enumerate(
+                    getattr(delta, "tool_calls", None) or []
+                ):
+                    raw_index = getattr(tool_delta, "index", fallback_index)
+                    try:
+                        call_index = int(raw_index)
+                    except (TypeError, ValueError):
+                        call_index = fallback_index
+                    accumulated = streamed_calls.setdefault(
+                        call_index,
+                        {
+                            "id": "",
+                            "type": "function",
+                            "name": "",
+                            "arguments": "",
+                        },
+                    )
+                    call_id = str(getattr(tool_delta, "id", None) or "")
+                    if call_id:
+                        accumulated["id"] = call_id
+                    call_type = str(getattr(tool_delta, "type", None) or "")
+                    if call_type:
+                        accumulated["type"] = call_type
+                    function = getattr(tool_delta, "function", None)
+                    function_name = str(getattr(function, "name", None) or "")
+                    if function_name:
+                        if accumulated["name"] and accumulated["name"] != function_name:
+                            accumulated["name"] += function_name
+                        else:
+                            accumulated["name"] = function_name
+                    arguments_delta = str(
+                        getattr(function, "arguments", None) or ""
+                    )
+                    if arguments_delta:
+                        if (
+                            str(accumulated["arguments"]).strip() == "{}"
+                            and arguments_delta.strip() != "{}"
+                        ):
+                            accumulated["arguments"] = ""
+                        accumulated["arguments"] += arguments_delta
+                    extra_content = _gemini_tool_call_extra_content(tool_delta)
+                    if extra_content:
+                        prior_extra = accumulated.get("extra_content")
+                        if isinstance(prior_extra, dict):
+                            accumulated["extra_content"] = {
+                                **prior_extra,
+                                **extra_content,
+                            }
+                        else:
+                            accumulated["extra_content"] = extra_content
+            delta_batcher.flush()
+            _send_child_progress(
+                conn,
+                {
+                    "event": "gemini_stream_completed",
+                    "turn": turn,
+                    "chunk_count": chunk_count,
+                    "finish_reason": finish_reason,
+                },
+            )
+
+            response_text = "".join(text_parts).strip()
+            if not streamed_calls:
+                if not response_text:
+                    raise RuntimeError(
+                        "Google Gemini completed the turn without any user-visible "
+                        f"text (finish_reason={finish_reason or 'unknown'})."
+                    )
+                conn.send(
+                    {
+                        "type": "done",
+                        "final_output": response_text,
+                        "raw": None,
+                    }
+                )
+                return
+
+            assistant_tool_calls: list[dict[str, Any]] = []
+            for call_index in sorted(streamed_calls):
+                accumulated = streamed_calls[call_index]
+                call_id = str(accumulated.get("id") or "").strip()
+                function_name = str(accumulated.get("name") or "").strip()
+                if not call_id or not function_name:
+                    raise RuntimeError(
+                        "Google Gemini streamed an incomplete function call "
+                        f"at index {call_index}."
+                    )
+                arguments_json = str(accumulated.get("arguments") or "{}")
+                tool_call: dict[str, Any] = {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": function_name,
+                        "arguments": arguments_json,
+                    },
+                }
+                extra_content = accumulated.get("extra_content")
+                if isinstance(extra_content, dict) and extra_content:
+                    tool_call["extra_content"] = extra_content
+                assistant_tool_calls.append(tool_call)
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": response_text or None,
+                    "tool_calls": assistant_tool_calls,
+                }
+            )
+
+            for tool_call in assistant_tool_calls:
+                function = tool_call["function"]
+                function_name = str(function["name"])
+                tool_name = tools_by_name.get(function_name)
+                updated_context = None
+                if tool_name is None:
+                    result: Any = {
+                        "ok": False,
+                        "error": f"Unknown VibeCAD tool: {function_name}",
+                    }
+                else:
+                    conn.send(
+                        {
+                            "type": "tool",
+                            "tool_name": tool_name,
+                            "arguments_json": str(function["arguments"]),
+                            "provider_call_id": str(tool_call["id"]),
+                        }
+                    )
+                    bridge = conn.recv()
+                    if bridge.get("type") != "tool_result":
+                        raise RuntimeError("Invalid VibeCAD tool bridge response.")
+                    result = bridge.get("result")
+                    if not isinstance(result, dict):
+                        result = {
+                            "ok": False,
+                            "error": "VibeCAD tool returned no structured result.",
+                        }
+                    updated_context = bridge.get("context")
+                    if bridge.get("turn_transition") is True:
+                        conn.send(
+                            {
+                                "type": "done",
+                                "final_output": "",
+                                "raw": {"cad_transition": True},
+                            }
+                        )
+                        return
+                if isinstance(updated_context, dict):
+                    live_context = updated_context
+                    tools_by_name, tool_definitions = build_tool_surface(live_context)
+                    messages[0]["content"] = _provider_instructions(live_context)
+                state_after = _provider_state_after_tool(
+                    live_context,
+                    result if isinstance(result, dict) else None,
+                )
+                if isinstance(result, dict) and state_after:
+                    result["vibecad_state_after"] = state_after
+                visible_result = (
+                    _provider_visible_tool_result(result, tool_name=tool_name or "")
+                    if isinstance(result, dict)
+                    else result
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(tool_call["id"]),
+                        "content": json.dumps(_json_safe(visible_result)),
+                    }
+                )
+            turn += 1
+        conn.send(
+            {
+                "type": "error",
+                "error": "Google Gemini provider turn limit reached.",
+            }
+        )
+    except BaseException as exc:
+        _send_child_error(conn, "Google Gemini provider", exc)
+    finally:
+        conn.close()
+
+
 def _anthropic_child_main(
     conn,
     prompt: str,
@@ -5050,7 +5551,13 @@ def _clear_inherited_sdk_modules() -> None:
             or name.startswith("pydantic.")
             or name == "anthropic"
             or name.startswith("anthropic.")
+            or name == "openai"
+            or name.startswith("openai.")
             or name == "httpx"
             or name.startswith("httpx.")
+            or name == "httpx2"
+            or name.startswith("httpx2.")
+            or name == "httpcore2"
+            or name.startswith("httpcore2.")
         ):
             sys.modules.pop(name, None)

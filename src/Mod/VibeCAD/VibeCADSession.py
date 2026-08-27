@@ -22,6 +22,7 @@ from VibeCADProvider import (
     AnthropicProvider,
     BaseProvider,
     CodexProvider,
+    GeminiProvider,
     OfflineProvider,
     ProviderUnavailable,
     _model_visible_context,
@@ -610,6 +611,13 @@ def choose_provider(
                 else service.provider_model()
             ),
         )
+    if provider_name == "gemini":
+        return GeminiProvider(
+            model=service.provider_model(),
+            api_key=service.provider_api_key(),
+            reasoning_effort=service.provider_reasoning_effort(),
+            base_url=service.provider_base_url(),
+        )
     raise ProviderUnavailable(f"Unsupported provider: {provider_name}")
 
 
@@ -623,6 +631,10 @@ def provider_execution_identity(provider: BaseProvider) -> dict[str, Any]:
     elif isinstance(provider, AnthropicProvider):
         provider_id = "anthropic"
         provider_label = "Anthropic"
+        fallback_allowed = False
+    elif isinstance(provider, GeminiProvider):
+        provider_id = "gemini"
+        provider_label = "Google Gemini"
         fallback_allowed = False
     elif isinstance(provider, OfflineProvider):
         provider_id = "offline"
@@ -6108,6 +6120,8 @@ def rebuild_intent_memory(
     )
     if isinstance(active_provider, AnthropicProvider):
         provider_id = "anthropic"
+    elif isinstance(active_provider, GeminiProvider):
+        provider_id = "gemini"
     elif isinstance(active_provider, CodexProvider):
         provider_id = active_provider.provider_id
     else:
