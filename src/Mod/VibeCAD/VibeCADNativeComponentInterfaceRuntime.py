@@ -22,9 +22,19 @@ from VibeCADNativeState import NativeCallTicket
 _FIELDS = frozenset(
     {"component", "lcs", "name", "kind", "allowed_joints", "compatibility"}
 )
-_FIELDS_WITH_FIT = _FIELDS | {"fit"}
-_FIELDS_WITH_JOINT_PARAMETERS = _FIELDS | {"joint_parameters"}
-_FIELDS_WITH_OPTIONALS = _FIELDS | {"fit", "joint_parameters"}
+_FIELD_VARIANTS = tuple(
+    frozenset(_FIELDS | subset)
+    for subset in (
+        {"fit", "joint_parameters", "coupling_parameters"},
+        {"fit", "joint_parameters"},
+        {"fit", "coupling_parameters"},
+        {"joint_parameters", "coupling_parameters"},
+        {"fit"},
+        {"joint_parameters"},
+        {"coupling_parameters"},
+        set(),
+    )
+)
 
 
 class NativeComponentInterfaceRuntime:
@@ -54,12 +64,7 @@ class NativeComponentInterfaceRuntime:
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
         error = None
-        for fields in (
-            _FIELDS_WITH_OPTIONALS,
-            _FIELDS_WITH_FIT,
-            _FIELDS_WITH_JOINT_PARAMETERS,
-            _FIELDS,
-        ):
+        for fields in _FIELD_VARIANTS:
             try:
                 _operation, values = strict_variant_arguments(
                     arguments, {"publish_interface": fields}

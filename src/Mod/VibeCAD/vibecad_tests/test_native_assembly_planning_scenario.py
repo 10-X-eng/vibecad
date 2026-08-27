@@ -25,7 +25,7 @@ def _identified(kind: str, **values):
     )
 
 
-def _fixture(monkeypatch):
+def _fixture(monkeypatch, *, coupling_parameters=None, ground_first=False):
     document = Obj(Objects=[])
     assembly = _identified(
         "assembly", Name="Assembly", ID=1, Document=document, Group=[]
@@ -50,6 +50,13 @@ def _fixture(monkeypatch):
     monkeypatch.setattr(scenario_reader, "assembly_components", lambda value: (first, second))
     monkeypatch.setattr(scenario_reader, "require_joint_group", lambda value: joint_group)
     monkeypatch.setattr(scenario_reader, "active_regular_joints", lambda value: tuple(value.Group))
+    monkeypatch.setattr(
+        scenario_reader,
+        "active_grounded_joints",
+        lambda value: (
+            (Obj(ObjectToGround=first),) if ground_first else ()
+        ),
+    )
 
     definitions = {
         first: ("MountA", "shaft"),
@@ -63,8 +70,18 @@ def _fixture(monkeypatch):
                 "selection": {"type": "frame", "native_lcs": name},
                 "connector": {
                     "kind": kind,
-                    "allowed_joints": ["revolute"],
+                    "allowed_joints": [
+                        "revolute",
+                        *(
+                            list(coupling_parameters["values"])
+                            if component is second and coupling_parameters else []
+                        ),
+                    ],
                     "compatibility": "mount-01",
+                    **(
+                        {"coupling_parameters": coupling_parameters}
+                        if component is second and coupling_parameters else {}
+                    ),
                 },
                 "resolved": {
                     "geometry_binding": {"status": "current"},
@@ -111,6 +128,61 @@ def test_public_facade_lazily_reaches_live_reader(monkeypatch) -> None:
     )
 
     assert result["extraction"]["source"] == "human-active-native-assembly"
+
+
+def test_projects_explicit_coupling_values_only_for_unique_moving_occurrence(
+    monkeypatch,
+) -> None:
+    declaration = {
+        "schema": "vibecad-interface-coupling-parameters-v1",
+        "values": {"gears": {"pitch_radius_mm": 18.0}},
+    }
+    document, assembly, _joint = _fixture(
+        monkeypatch,
+        coupling_parameters=declaration,
+        ground_first=True,
+    )
+
+    result = scenario_reader.read_live_planning_scenario(
+        document, active_reader=lambda value: assembly
+    )
+
+    second_occurrence = next(
+        value for value in result["occurrences"] if value["object_name"] == "Second"
+    )
+    assert result["joints"][0]["moving_occurrence_id"] == second_occurrence["persistent_id"]
+    assert result["joints"][0]["coupling_parameters"] == declaration
+    assert result["extraction"]["coupling_declarations_extracted"] is True
+
+
+def test_marks_exact_live_coupling_dependencies_as_already_realized(
+    monkeypatch,
+) -> None:
+    first = _identified("joint", Name="FirstMotion", JointType="Revolute")
+    second = _identified("joint", Name="SecondMotion", JointType="Revolute")
+    coupling = _identified("joint", Name="ExistingGears", JointType="Gears")
+    records = {
+        "FirstMotion": {"persistent_id": first.VibeCADAssemblyPersistentIdentity},
+        "SecondMotion": {"persistent_id": second.VibeCADAssemblyPersistentIdentity},
+    }
+    monkeypatch.setattr(
+        scenario_reader,
+        "gears_dependency_summary",
+        lambda joint, active: {
+            "first_revolute_joint": {"object_name": "FirstMotion"},
+            "second_revolute_joint": {"object_name": "SecondMotion"},
+        },
+    )
+
+    scenario_reader._mark_realized_couplings(
+        (first, second, coupling), records
+    )
+
+    assert records["FirstMotion"]["realized_couplings"] == [{
+        "coupling_kind": "gears",
+        "other_joint_id": second.VibeCADAssemblyPersistentIdentity,
+        "coupling_joint_id": coupling.VibeCADAssemblyPersistentIdentity,
+    }]
 
 
 def test_reports_element_joint_as_omitted_without_inventing_interface(monkeypatch) -> None:

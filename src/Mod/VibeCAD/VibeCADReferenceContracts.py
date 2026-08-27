@@ -29,10 +29,12 @@ PROP_NATIVE_INTERFACE_ALLOWED_JOINTS = "VibeCADInterfaceAllowedJoints"
 PROP_NATIVE_INTERFACE_COMPATIBILITY = "VibeCADInterfaceCompatibility"
 PROP_NATIVE_INTERFACE_FIT = "VibeCADInterfaceFit"
 PROP_NATIVE_INTERFACE_JOINT_PARAMETERS = "VibeCADInterfaceJointParameters"
+PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS = "VibeCADInterfaceCouplingParameters"
 PROP_NATIVE_INTERFACE_GEOMETRY = "VibeCADInterfaceGeometryBinding"
 INTERFACE_GEOMETRY_SCHEMA = "vibecad-interface-geometry-binding-v1"
 INTERFACE_FIT_SCHEMA = "vibecad-interface-fit-v1"
 INTERFACE_JOINT_PARAMETERS_SCHEMA = "vibecad-interface-joint-parameters-v1"
+INTERFACE_COUPLING_PARAMETERS_SCHEMA = "vibecad-interface-coupling-parameters-v1"
 INTERFACE_FIT_CLASSES = frozenset({
     "bearing", "clearance", "custom", "interference", "threaded", "transition",
 })
@@ -72,6 +74,62 @@ class NativeInterfaceSpec:
     compatibility: str
     fit: dict[str, Any] | None = None
     joint_parameters: dict[str, Any] | None = None
+    coupling_parameters: dict[str, Any] | None = None
+
+
+def normalize_interface_coupling_parameters(value: Any) -> dict[str, Any] | None:
+    """Normalize explicit per-family coupling intent without geometric inference."""
+
+    if value in (None, {}):
+        return None
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"schema", "values"}
+        or value.get("schema") != INTERFACE_COUPLING_PARAMETERS_SCHEMA
+        or not isinstance(value.get("values"), Mapping)
+    ):
+        raise ReferenceContractError(
+            "Interface coupling parameters use an unsupported contract."
+        )
+    normalized: dict[str, dict[str, float]] = {}
+    contracts = {
+        "rack_pinion": ("pitch_radius_mm", False),
+        "screw": ("lead_mm", True),
+        "gears": ("pitch_radius_mm", True),
+        "belt": ("pitch_radius_mm", True),
+    }
+    for kind, raw in value["values"].items():
+        contract = contracts.get(str(kind))
+        if contract is None or not isinstance(raw, Mapping):
+            raise ReferenceContractError(
+                "Interface coupling parameters contain an unsupported coupling."
+            )
+        field, required = contract
+        if set(raw) not in ({field}, set()) or (required and set(raw) != {field}):
+            qualifier = "only" if required else "at most"
+            raise ReferenceContractError(
+                f"Interface {kind} parameters must contain {qualifier} {field}."
+            )
+        values: dict[str, float] = {}
+        if field in raw:
+            number = raw[field]
+            if isinstance(number, bool) or not isinstance(number, (int, float)):
+                raise ReferenceContractError(
+                    f"Interface {field} must be a finite positive number."
+                )
+            number = float(number)
+            if not math.isfinite(number) or not 0.0 < number <= 1_000_000.0:
+                raise ReferenceContractError(
+                    f"Interface {field} is outside the supported positive range."
+                )
+            values[field] = number
+        normalized[str(kind)] = values
+    if not normalized:
+        raise ReferenceContractError("Interface coupling parameters cannot be empty.")
+    return {
+        "schema": INTERFACE_COUPLING_PARAMETERS_SCHEMA,
+        "values": {kind: normalized[kind] for kind in sorted(normalized)},
+    }
 
 
 def normalize_interface_joint_parameters(value: Any) -> dict[str, Any] | None:
@@ -395,6 +453,17 @@ def native_interface_definitions(component: Any) -> dict[str, dict[str, Any]]:
                 )
             except (ValueError, ReferenceContractError):
                 continue
+        coupling_parameters = None
+        raw_coupling_parameters = str(
+            getattr(lcs, PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS, "") or ""
+        ).strip()
+        if raw_coupling_parameters:
+            try:
+                coupling_parameters = normalize_interface_coupling_parameters(
+                    json.loads(raw_coupling_parameters)
+                )
+            except (ValueError, ReferenceContractError):
+                continue
         connector = {
             "kind": kind,
             **({"allowed_joints": list(allowed)} if allowed else {}),
@@ -403,6 +472,10 @@ def native_interface_definitions(component: Any) -> dict[str, dict[str, Any]]:
             **(
                 {"joint_parameters": joint_parameters}
                 if joint_parameters is not None else {}
+            ),
+            **(
+                {"coupling_parameters": coupling_parameters}
+                if coupling_parameters is not None else {}
             ),
         }
         definitions[name] = {
@@ -432,6 +505,7 @@ def prepare_native_interface(
     compatibility: str = "",
     fit: Mapping[str, Any] | None = None,
     joint_parameters: Mapping[str, Any] | None = None,
+    coupling_parameters: Mapping[str, Any] | None = None,
 ) -> NativeInterfaceSpec:
     """Validate and normalize one exact native component-interface request."""
 
@@ -443,6 +517,9 @@ def prepare_native_interface(
     clean_compatibility = str(compatibility or "").strip()
     clean_fit = normalize_interface_fit(fit)
     clean_joint_parameters = normalize_interface_joint_parameters(joint_parameters)
+    clean_coupling_parameters = normalize_interface_coupling_parameters(
+        coupling_parameters
+    )
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", clean_name):
         raise ReferenceContractError("Interface name is not a stable identifier.")
     if clean_kind not in NATIVE_INTERFACE_KINDS:
@@ -460,6 +537,12 @@ def prepare_native_interface(
     ):
         raise ReferenceContractError(
             "Interface joint parameters must target an explicitly allowed joint."
+        )
+    if clean_coupling_parameters is not None and any(
+        kind not in clean_joints for kind in clean_coupling_parameters["values"]
+    ):
+        raise ReferenceContractError(
+            "Interface coupling parameters must target an explicitly allowed joint."
         )
     if clean_compatibility and not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", clean_compatibility
@@ -493,6 +576,7 @@ def prepare_native_interface(
         clean_compatibility,
         clean_fit,
         clean_joint_parameters,
+        clean_coupling_parameters,
     )
 
 
@@ -506,6 +590,7 @@ def publish_native_interface(
     compatibility: str = "",
     fit: Mapping[str, Any] | None = None,
     joint_parameters: Mapping[str, Any] | None = None,
+    coupling_parameters: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Publish one exact existing LCS as a reusable component connector."""
 
@@ -518,6 +603,7 @@ def publish_native_interface(
         compatibility=compatibility,
         fit=fit,
         joint_parameters=joint_parameters,
+        coupling_parameters=coupling_parameters,
     )
     for property_type, property_name, description in (
         ("App::PropertyBool", PROP_NATIVE_INTERFACE, "Marks this LCS as a component interface."),
@@ -527,6 +613,7 @@ def publish_native_interface(
         ("App::PropertyString", PROP_NATIVE_INTERFACE_COMPATIBILITY, "Exact connector compatibility token."),
         ("App::PropertyString", PROP_NATIVE_INTERFACE_FIT, "Versioned explicit engineering fit JSON."),
         ("App::PropertyString", PROP_NATIVE_INTERFACE_JOINT_PARAMETERS, "Versioned explicit relation-inference parameters JSON."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS, "Versioned explicit coupling-inference parameters JSON."),
         ("App::PropertyString", PROP_NATIVE_INTERFACE_GEOMETRY, "Canonical LCS support binding and shape evidence."),
     ):
         if property_name not in set(getattr(lcs, "PropertiesList", []) or []):
@@ -555,6 +642,16 @@ def publish_native_interface(
         PROP_NATIVE_INTERFACE_JOINT_PARAMETERS,
         "" if spec.joint_parameters is None else json.dumps(
             spec.joint_parameters,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+    setattr(
+        lcs,
+        PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS,
+        "" if spec.coupling_parameters is None else json.dumps(
+            spec.coupling_parameters,
             ensure_ascii=True,
             sort_keys=True,
             separators=(",", ":"),

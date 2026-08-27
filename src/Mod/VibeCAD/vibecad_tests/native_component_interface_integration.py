@@ -544,9 +544,13 @@ def _run() -> None:
             native_lcs,
             name="MountFrame",
             kind="frame",
-            joints=("fixed",),
+            joints=("fixed", "gears"),
             compatibility="mount-v2",
         )
+        updated_arguments["coupling_parameters"] = {
+            "schema": "vibecad-interface-coupling-parameters-v1",
+            "values": {"gears": {"pitch_radius_mm": 24.0}},
+        }
         response = native_call(updated_arguments)
         updated = _assert_response(
             document,
@@ -556,6 +560,9 @@ def _run() -> None:
             "MountFrame",
         )
         assert "MountAxis" not in native_interface_definitions(native_body)
+        assert updated["connector"]["coupling_parameters"] == (
+            updated_arguments["coupling_parameters"]
+        )
         _assert_snapshot(document, native_body, native_lcs, "MountFrame")
 
         document.undo()

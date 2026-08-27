@@ -22,6 +22,7 @@ from VibeCADReferenceContracts import (
     PROP_NATIVE_INTERFACE,
     PROP_NATIVE_INTERFACE_ALLOWED_JOINTS,
     PROP_NATIVE_INTERFACE_COMPATIBILITY,
+    PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS,
     PROP_NATIVE_INTERFACE_FIT,
     PROP_NATIVE_INTERFACE_JOINT_PARAMETERS,
     PROP_NATIVE_INTERFACE_GEOMETRY,
@@ -44,6 +45,7 @@ _INTERFACE_PROPERTIES = (
     PROP_NATIVE_INTERFACE_COMPATIBILITY,
     PROP_NATIVE_INTERFACE_FIT,
     PROP_NATIVE_INTERFACE_JOINT_PARAMETERS,
+    PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS,
     PROP_NATIVE_INTERFACE_GEOMETRY,
 )
 _LCS_TYPES = (
@@ -180,6 +182,10 @@ def _desired_connector(spec: NativeInterfaceSpec) -> dict[str, Any]:
             {"joint_parameters": dict(spec.joint_parameters)}
             if spec.joint_parameters is not None else {}
         ),
+        **(
+            {"coupling_parameters": dict(spec.coupling_parameters)}
+            if spec.coupling_parameters is not None else {}
+        ),
     }
 
 
@@ -217,7 +223,7 @@ def prepare_component_interface(
         "compatibility",
     } <= set(values) or set(values) - {
         "component", "lcs", "name", "kind", "allowed_joints", "compatibility",
-        "fit", "joint_parameters",
+        "fit", "joint_parameters", "coupling_parameters",
     }:
         raise NativeComponentInterfaceError(
             "A component-interface publication is invalid."
@@ -245,6 +251,7 @@ def prepare_component_interface(
             compatibility=values["compatibility"],
             fit=values.get("fit"),
             joint_parameters=values.get("joint_parameters"),
+            coupling_parameters=values.get("coupling_parameters"),
         )
     except (ReferenceContractError, TypeError, ValueError) as exc:
         raise NativeComponentInterfaceError(str(exc)) from exc
@@ -286,6 +293,7 @@ def publish_component_interface(
             compatibility=prepared.spec.compatibility,
             fit=prepared.spec.fit,
             joint_parameters=prepared.spec.joint_parameters,
+            coupling_parameters=prepared.spec.coupling_parameters,
         )
         if current != prepared.spec:
             raise NativeComponentInterfaceError(
@@ -300,6 +308,7 @@ def publish_component_interface(
             compatibility=current.compatibility,
             fit=current.fit,
             joint_parameters=current.joint_parameters,
+            coupling_parameters=current.coupling_parameters,
         )
         assign_persistent_identity(lcs, "interface")
     except NativeComponentInterfaceError:
@@ -360,6 +369,10 @@ def verify_component_interface(
         != spec.compatibility
         or str(getattr(lcs, PROP_NATIVE_INTERFACE_FIT, "") or "")
         != ("" if spec.fit is None else json.dumps(spec.fit, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+        or str(getattr(lcs, PROP_NATIVE_INTERFACE_JOINT_PARAMETERS, "") or "")
+        != ("" if spec.joint_parameters is None else json.dumps(spec.joint_parameters, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+        or str(getattr(lcs, PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS, "") or "")
+        != ("" if spec.coupling_parameters is None else json.dumps(spec.coupling_parameters, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
     ):
         raise NativeComponentInterfaceError(
             "The component interface failed its exact publication postcondition."
@@ -374,6 +387,16 @@ def verify_component_interface(
             "allowed_joints": list(spec.allowed_joints),
             "compatibility": spec.compatibility,
             "fit": None if spec.fit is None else dict(spec.fit),
+            "joint_parameters": (
+                None
+                if spec.joint_parameters is None
+                else dict(spec.joint_parameters)
+            ),
+            "coupling_parameters": (
+                None
+                if spec.coupling_parameters is None
+                else dict(spec.coupling_parameters)
+            ),
             "geometry_binding": dict(resolved.get("geometry_binding") or {}),
             "origin_mm": list(frame["origin_mm"]),
             "axis_direction": list(frame["axis_direction"]),

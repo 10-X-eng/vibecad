@@ -14,6 +14,7 @@ from vibescript_assembly_api import JOINT_TYPES
 from VibeCADReferenceContracts import (
     INTERFACE_FIT_CLASSES,
     INTERFACE_FIT_SCHEMA,
+    INTERFACE_COUPLING_PARAMETERS_SCHEMA,
     INTERFACE_JOINT_PARAMETERS_SCHEMA,
 )
 
@@ -93,6 +94,71 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
             "required": ["schema", "values"],
             "additionalProperties": False,
         },
+        "coupling_parameters": {
+            "type": "object",
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "enum": [INTERFACE_COUPLING_PARAMETERS_SCHEMA],
+                },
+                "values": {
+                    "type": "object",
+                    "properties": {
+                        "rack_pinion": {
+                            "type": "object",
+                            "properties": {
+                                "pitch_radius_mm": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 1000000,
+                                }
+                            },
+                            "additionalProperties": False,
+                        },
+                        "screw": {
+                            "type": "object",
+                            "properties": {
+                                "lead_mm": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 1000000,
+                                }
+                            },
+                            "required": ["lead_mm"],
+                            "additionalProperties": False,
+                        },
+                        "gears": {
+                            "type": "object",
+                            "properties": {
+                                "pitch_radius_mm": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 1000000,
+                                }
+                            },
+                            "required": ["pitch_radius_mm"],
+                            "additionalProperties": False,
+                        },
+                        "belt": {
+                            "type": "object",
+                            "properties": {
+                                "pitch_radius_mm": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 1000000,
+                                }
+                            },
+                            "required": ["pitch_radius_mm"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "minProperties": 1,
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["schema", "values"],
+            "additionalProperties": False,
+        },
     }
     return NativeCapabilityDefinition(
         name=COMPONENT_INTERFACE_CAPABILITY_NAME,
@@ -109,7 +175,12 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=parameters_schema(
                     fields,
-                    tuple(key for key in fields if key not in {"fit", "joint_parameters"}),
+                    tuple(
+                        key for key in fields
+                        if key not in {
+                            "fit", "joint_parameters", "coupling_parameters"
+                        }
+                    ),
                 ),
             ),
         ),

@@ -224,6 +224,36 @@ def test_coupling_proposals_refuse_missing_mismatched_or_invalid_evidence() -> N
     source = _coupling_scenario("gears")
     source["joints"][1]["moving_occurrence_id"] = "occ.missing"
     assert propose_couplings(source)["status"] == "no-candidate"
+    source = _coupling_scenario("gears")
+    source["joints"][1]["moving_occurrence_id"] = "occ.arm"
+    assert propose_couplings(source)["status"] == "no-candidate"
+
+
+def test_coupling_proposals_accept_versioned_per_family_interface_declarations() -> None:
+    source = _coupling_scenario("gears")
+    for joint, radius in zip(source["joints"], (20.0, 40.0), strict=True):
+        joint["coupling_parameters"] = {
+            "schema": "vibecad-interface-coupling-parameters-v1",
+            "values": {"gears": {"pitch_radius_mm": radius}},
+        }
+
+    result = propose_couplings(source)
+
+    assert result["status"] == "proposed"
+    assert sorted(result["candidates"][0]["parameters"].values()) == [20.0, 40.0]
+
+
+def test_coupling_proposals_suppress_an_exact_already_realized_pair() -> None:
+    source = _coupling_scenario("gears")
+    source["joints"][0]["realized_couplings"] = [{
+        "coupling_kind": "gears",
+        "other_joint_id": "joint.revolute",
+        "coupling_joint_id": "joint.existing-gears",
+    }]
+
+    result = propose_couplings(source)
+
+    assert result["status"] == "no-candidate"
 
 
 def test_coupling_acceptance_revalidates_and_requires_owner_receipt() -> None:

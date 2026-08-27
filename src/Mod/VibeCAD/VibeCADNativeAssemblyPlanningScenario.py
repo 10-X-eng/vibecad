@@ -7,12 +7,17 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from tool_impl.assembly_planning import AssemblyPlanningError, SCENARIO_SCHEMA, normalize_scenario
+from VibeCADNativeAssemblyBeltJoint import belt_dependency_summary
 from VibeCADNativeAssemblyComponents import assembly_components
+from VibeCADNativeAssemblyGearJoint import gears_dependency_summary
+from VibeCADNativeAssemblyGrounding import active_grounded_joints
 from VibeCADNativeAssemblyIdentity import (
     NativeAssemblyIdentityError,
     read_persistent_identity,
 )
 from VibeCADNativeAssemblyJointGraph import active_regular_joints, require_joint_group
+from VibeCADNativeAssemblyRackPinionJoint import rack_pinion_dependency_summary
+from VibeCADNativeAssemblyScrewJoint import screw_dependency_summary
 from VibeCADNativeAssemblyState import read_active_assembly, same_assembly
 import VibeCADReferenceContracts as reference_contracts
 
@@ -62,7 +67,9 @@ def _interface_records(component: Any, occurrence_id: str) -> tuple[list[dict[st
             "kind": str(connector.get("kind") or ""),
             "allowed_joints": list(connector.get("allowed_joints") or ()),
         }
-        for key in ("compatibility", "fit", "joint_parameters"):
+        for key in (
+            "compatibility", "fit", "joint_parameters", "coupling_parameters"
+        ):
             if key in connector:
                 record[key] = connector[key]
         geometry_binding = resolved.get("geometry_binding")
@@ -91,7 +98,13 @@ def _endpoint_interface(reference: Any, paths_by_component: dict[int, dict[str, 
         return None
 
 
-def _joint_record(joint: Any, paths_by_component: dict[int, dict[str, str]]) -> dict[str, Any] | None:
+def _joint_record(
+    joint: Any,
+    paths_by_component: dict[int, dict[str, str]],
+    interface_records: dict[str, dict[str, Any]],
+    occurrence_ids: dict[int, str],
+    grounded_components: set[int],
+) -> dict[str, Any] | None:
     endpoints = [
         _endpoint_interface(getattr(joint, f"Reference{side}", None), paths_by_component)
         for side in (1, 2)
@@ -101,11 +114,87 @@ def _joint_record(joint: Any, paths_by_component: dict[int, dict[str, str]]) -> 
     joint_type = str(getattr(joint, "JointType", "") or "").strip()
     if not joint_type:
         return None
-    return {
+    record = {
         "persistent_id": _identity(joint, "joint"),
         "joint_kind": joint_type.lower(),
         "interface_ids": endpoints,
     }
+    references = [getattr(joint, f"Reference{side}", None) for side in (1, 2)]
+    components = [
+        value[0] if value is not None and len(value) == 2 else None
+        for value in references
+    ]
+    moving = [
+        index for index, component in enumerate(components)
+        if component is not None and id(component) not in grounded_components
+    ]
+    if joint_type in {"Slider", "Revolute"} and len(moving) == 1:
+        index = moving[0]
+        occurrence_id = occurrence_ids.get(id(components[index]))
+        interface = interface_records.get(str(endpoints[index]))
+        if occurrence_id is not None:
+            record["moving_occurrence_id"] = occurrence_id
+        if isinstance(interface, dict) and isinstance(
+            interface.get("coupling_parameters"), dict
+        ):
+            record["coupling_parameters"] = dict(
+                interface["coupling_parameters"]
+            )
+    return record
+
+
+def _dependency_names(summary: dict[str, Any], keys: tuple[str, str]) -> tuple[str, str] | None:
+    values = []
+    for key in keys:
+        value = summary.get(key)
+        if not isinstance(value, dict) or not str(value.get("object_name") or ""):
+            return None
+        values.append(str(value["object_name"]))
+    return values[0], values[1]
+
+
+def _mark_realized_couplings(
+    active_joints: tuple[Any, ...],
+    records_by_name: dict[str, dict[str, Any]],
+) -> None:
+    contracts = {
+        "RackPinion": (
+            "rack_pinion", rack_pinion_dependency_summary,
+            ("rack_slider_joint", "pinion_revolute_joint"),
+        ),
+        "Screw": (
+            "screw", screw_dependency_summary,
+            ("slider_joint", "screw_revolute_joint"),
+        ),
+        "Gears": (
+            "gears", gears_dependency_summary,
+            ("first_revolute_joint", "second_revolute_joint"),
+        ),
+        "Belt": (
+            "belt", belt_dependency_summary,
+            ("first_revolute_joint", "second_revolute_joint"),
+        ),
+    }
+    for coupling in active_joints:
+        contract = contracts.get(str(getattr(coupling, "JointType", "") or ""))
+        if contract is None:
+            continue
+        kind, reader, keys = contract
+        summary = reader(coupling, active_joints)
+        if not isinstance(summary, dict):
+            continue
+        names = _dependency_names(summary, keys)
+        if names is None or any(name not in records_by_name for name in names):
+            continue
+        coupling_id = _identity(coupling, "joint")
+        first_id = records_by_name[names[0]]["persistent_id"]
+        second_id = records_by_name[names[1]]["persistent_id"]
+        for name, other_id in ((names[0], second_id), (names[1], first_id)):
+            records_by_name[name].setdefault("realized_couplings", []).append({
+                "coupling_kind": kind,
+                "other_joint_id": other_id,
+                "coupling_joint_id": coupling_id,
+            })
 
 
 def read_live_planning_scenario(
@@ -123,25 +212,45 @@ def read_live_planning_scenario(
     assembly_id = _identity(assembly, "assembly")
     occurrences: list[dict[str, Any]] = []
     interfaces: list[dict[str, Any]] = []
+    interface_records: dict[str, dict[str, Any]] = {}
     paths_by_component: dict[int, dict[str, str]] = {}
+    occurrence_ids: dict[int, str] = {}
     for component in assembly_components(assembly):
         occurrence_id = _identity(component, "occurrence")
         occurrences.append({
             "persistent_id": occurrence_id,
             "object_name": str(getattr(component, "Name", "") or ""),
         })
+        occurrence_ids[id(component)] = occurrence_id
         records, paths = _interface_records(component, occurrence_id)
         interfaces.extend(records)
+        interface_records.update(
+            {record["persistent_id"]: record for record in records}
+        )
         paths_by_component[id(component)] = paths
 
     joint_group = require_joint_group(assembly)
+    grounded_components = {
+        id(getattr(joint, "ObjectToGround", None))
+        for joint in active_grounded_joints(joint_group)
+        if getattr(joint, "ObjectToGround", None) is not None
+    }
+    active_joints = tuple(active_regular_joints(joint_group))
     joints: list[dict[str, Any]] = []
+    records_by_name: dict[str, dict[str, Any]] = {}
     omitted: list[dict[str, str]] = []
     omitted_count = 0
-    for joint in active_regular_joints(joint_group):
-        record = _joint_record(joint, paths_by_component)
+    for joint in active_joints:
+        record = _joint_record(
+            joint,
+            paths_by_component,
+            interface_records,
+            occurrence_ids,
+            grounded_components,
+        )
         if record is not None:
             joints.append(record)
+            records_by_name[str(getattr(joint, "Name", "") or "")] = record
             continue
         omitted_count += 1
         if len(omitted) < MAX_OMITTED_JOINTS:
@@ -150,6 +259,7 @@ def read_live_planning_scenario(
                 "joint_type": str(getattr(joint, "JointType", "") or ""),
                 "reason": "connector-not-bound-to-two-distinct-published-interfaces",
             })
+    _mark_realized_couplings(active_joints, records_by_name)
 
     guard()
     if not same_assembly(assembly, active_reader(document)):
@@ -171,6 +281,8 @@ def read_live_planning_scenario(
         "omitted_joint_count": omitted_count,
         "omitted_joints": omitted,
         "omitted_joints_truncated": omitted_count > len(omitted),
-        "coupling_declarations_extracted": False,
+        "coupling_declarations_extracted": any(
+            "coupling_parameters" in joint for joint in joints
+        ),
     }
     return normalized

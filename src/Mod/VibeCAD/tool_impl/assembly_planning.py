@@ -274,6 +274,39 @@ def _positive_parameter(value: Any, field: str) -> float | None:
     return number if math.isfinite(number) and 0.0 < number <= 1_000_000.0 else None
 
 
+def _coupling_parameter_values(value: Any, kind: str) -> Mapping[str, Any] | None:
+    """Read the additive versioned declaration while retaining the v1 flat input."""
+
+    if not isinstance(value, Mapping):
+        return None
+    if value.get("schema") == "vibecad-interface-coupling-parameters-v1":
+        values = value.get("values")
+        selected = values.get(kind) if isinstance(values, Mapping) else None
+        return selected if isinstance(selected, Mapping) else None
+    return value
+
+
+def _already_realized(
+    kind: str,
+    first: Mapping[str, Any],
+    second: Mapping[str, Any],
+) -> bool:
+    first_id = str(first.get("persistent_id") or "")
+    second_id = str(second.get("persistent_id") or "")
+    for source, other_id in ((first, second_id), (second, first_id)):
+        values = source.get("realized_couplings")
+        if not isinstance(values, list):
+            continue
+        if any(
+            isinstance(value, Mapping)
+            and value.get("coupling_kind") == kind
+            and value.get("other_joint_id") == other_id
+            for value in values
+        ):
+            return True
+    return False
+
+
 def _coupling_candidate(
     revision: str,
     kind: str,
@@ -291,8 +324,10 @@ def _coupling_candidate(
     }
     if joint_kinds != requirements[kind]:
         return None
-    first_values = first.get("coupling_parameters")
-    second_values = second.get("coupling_parameters")
+    if _already_realized(kind, first, second):
+        return None
+    first_values = _coupling_parameter_values(first.get("coupling_parameters"), kind)
+    second_values = _coupling_parameter_values(second.get("coupling_parameters"), kind)
     if not isinstance(first_values, Mapping) or not isinstance(second_values, Mapping):
         return None
     parameters: dict[str, float]
@@ -329,6 +364,8 @@ def _coupling_candidate(
         str(second.get("moving_occurrence_id") or ""),
     ]
     if any(_ID.fullmatch(value) is None for value in component_ids):
+        return None
+    if component_ids[0] == component_ids[1]:
         return None
     return {
         "proposal_id": _canonical_hash([revision, kind, joint_ids, component_ids, parameters])[:24],

@@ -24,6 +24,7 @@ from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADReferenceContracts import (
     INTERFACE_FIT_SCHEMA,
+    INTERFACE_COUPLING_PARAMETERS_SCHEMA,
     INTERFACE_JOINT_PARAMETERS_SCHEMA,
 )
 from VibeCADReferenceContracts import (
@@ -126,7 +127,9 @@ def test_component_interface_contract_is_exact_and_ribbon_scoped() -> None:
     assert branch["properties"]["lcs"]["required"] == ["object_name"]
     assert branch["properties"]["allowed_joints"]["uniqueItems"] is True
     assert "fit" not in branch["required"]
+    assert "coupling_parameters" not in branch["required"]
     assert branch["properties"]["fit"]["properties"]["schema"]["enum"] == [INTERFACE_FIT_SCHEMA]
+    assert branch["properties"]["coupling_parameters"]["properties"]["schema"]["enum"] == [INTERFACE_COUPLING_PARAMETERS_SCHEMA]
     assert set(branch["properties"]["kind"]["enum"]) >= {
         "axis", "bearing_face", "bearing_seat", "bolt_pattern", "bore",
         "electrical_connector", "fixture", "fluid_port", "frame",
@@ -187,7 +190,7 @@ def test_component_interface_preflight_resolves_and_normalizes_exact_targets() -
     assert prepared.spec.kind == "axis"
     assert prepared.spec.allowed_joints == ("revolute", "fixed")
     assert prepared.spec.compatibility == "mount-v1"
-    assert prepared.initial_state == ((False, None),) * 8
+    assert prepared.initial_state == ((False, None),) * 9
 
 
 def test_component_interface_fit_is_optional_versioned_and_separate_from_compatibility() -> None:
@@ -230,6 +233,55 @@ def test_component_interface_parameters_must_target_an_allowed_relation() -> Non
     }
 
     with pytest.raises(NativeComponentInterfaceError, match="explicitly allowed"):
+        prepare_component_interface(document, values)
+
+
+def test_component_interface_carries_explicit_versioned_coupling_parameters() -> None:
+    document = _Document()
+    values = {key: value for key, value in _arguments().items() if key != "operation"}
+    values["allowed_joints"] = ["gears"]
+    values["coupling_parameters"] = {
+        "schema": INTERFACE_COUPLING_PARAMETERS_SCHEMA,
+        "values": {"gears": {"pitch_radius_mm": 24.0}},
+    }
+
+    spec = prepare_component_interface(document, values).spec
+
+    assert spec.coupling_parameters == values["coupling_parameters"]
+
+
+@pytest.mark.parametrize(
+    "parameters, message",
+    (
+        (
+            {"schema": INTERFACE_COUPLING_PARAMETERS_SCHEMA, "values": {}},
+            "cannot be empty",
+        ),
+        (
+            {
+                "schema": INTERFACE_COUPLING_PARAMETERS_SCHEMA,
+                "values": {"gears": {"pitch_radius_mm": 0.0}},
+            },
+            "positive range",
+        ),
+        (
+            {
+                "schema": INTERFACE_COUPLING_PARAMETERS_SCHEMA,
+                "values": {"screw": {}},
+            },
+            "only lead_mm",
+        ),
+    ),
+)
+def test_component_interface_rejects_invalid_coupling_parameters(
+    parameters: dict, message: str
+) -> None:
+    document = _Document()
+    values = {key: value for key, value in _arguments().items() if key != "operation"}
+    values["allowed_joints"] = ["gears", "screw"]
+    values["coupling_parameters"] = parameters
+
+    with pytest.raises(NativeComponentInterfaceError, match=message):
         prepare_component_interface(document, values)
 
 
@@ -460,6 +512,38 @@ def test_component_interface_runtime_accepts_additive_joint_parameters(monkeypat
             object()
             if target_document is document and target_values == values
             else pytest.fail("joint parameters did not reach exact preflight")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "run_immediate_mutation",
+        lambda context, **kwargs: captured.update(context=context, **kwargs)
+        or {"routed": True},
+    )
+
+    assert runtime.publish_interface(
+        arguments,
+        ticket=state.begin_call(document.Uid, "component.interface"),
+    ) == {"routed": True}
+
+
+def test_component_interface_runtime_accepts_additive_coupling_parameters(monkeypatch) -> None:
+    runtime, state, document = _runtime()
+    captured = {}
+    arguments = _arguments()
+    arguments["allowed_joints"] = ["belt"]
+    arguments["coupling_parameters"] = {
+        "schema": INTERFACE_COUPLING_PARAMETERS_SCHEMA,
+        "values": {"belt": {"pitch_radius_mm": 18.0}},
+    }
+    values = {key: value for key, value in arguments.items() if key != "operation"}
+    monkeypatch.setattr(
+        runtime_module,
+        "prepare_component_interface",
+        lambda target_document, target_values: (
+            object()
+            if target_document is document and target_values == values
+            else pytest.fail("coupling parameters did not reach exact preflight")
         ),
     )
     monkeypatch.setattr(

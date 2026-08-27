@@ -5264,7 +5264,10 @@ class PublishComponentInterfaceCommand(_BaseCommand):
         document = component.Document
         transaction_open = False
         try:
-            from VibeCADReferenceContracts import publish_native_interface
+            from VibeCADReferenceContracts import (
+                native_interface_definitions,
+                publish_native_interface,
+            )
 
             fit = None
             if fit_combo.currentText() != "none":
@@ -5284,6 +5287,17 @@ class PublishComponentInterfaceCommand(_BaseCommand):
                     fit["minimum_clearance_mm"] = float(minimum)
                     fit["maximum_clearance_mm"] = float(maximum)
 
+            retained_parameters = {}
+            for definition in native_interface_definitions(component).values():
+                selection = dict(definition.get("selection") or {})
+                if selection.get("native_lcs") != str(lcs.Name):
+                    continue
+                connector = dict(definition.get("connector") or {})
+                for key in ("joint_parameters", "coupling_parameters"):
+                    if key in connector:
+                        retained_parameters[key] = connector[key]
+                break
+
             document.openTransaction("Publish component interface")
             transaction_open = True
             publish_native_interface(
@@ -5294,6 +5308,7 @@ class PublishComponentInterfaceCommand(_BaseCommand):
                 allowed_joints=[item.text() for item in joints.selectedItems()],
                 compatibility=compatibility_edit.text(),
                 fit=fit,
+                **retained_parameters,
             )
             document.recompute()
             document.commitTransaction()
