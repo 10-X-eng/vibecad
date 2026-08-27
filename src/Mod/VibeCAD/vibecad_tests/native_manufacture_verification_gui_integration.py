@@ -53,7 +53,8 @@ def _run() -> None:
             [
                 CamPath.Command("G0", {"X": 24.0, "Y": 16.0, "Z": 10.0}),
                 CamPath.Command("G1", {"X": 24.0, "Y": 16.0, "Z": 4.0}),
-                CamPath.Command("G0", {"X": 24.0, "Y": 16.0, "Z": 10.0}),
+                CamPath.Command("G0", {"X": -10.0, "Y": 16.0, "Z": 4.0}),
+                CamPath.Command("G0", {"X": -10.0, "Y": 16.0, "Z": 10.0}),
             ]
         )
         job.Proxy.addOperation(operation)
@@ -84,14 +85,27 @@ def _run() -> None:
         assert worker_threads and worker_threads[0] != threading.get_ident()
         assert protected["checked"] is True
         assert protected["collision"] is True
-        assert protected["collision_command_count"] == 1
+        assert protected["collision_command_count"] == 2
         assert protected["collisions_truncated"] is False
-        assert len(protected["collisions"]) == 1
-        collision = protected["collisions"][0]
+        assert len(protected["collisions"]) == 2
+        collision = next(
+            value for value in protected["collisions"] if value["rapid"] is False
+        )
         assert collision["operation"] == operation.Name
         assert collision["command"] == "G1"
         assert collision["volume_mm3"] > 0.0
         assert collision["bounds_mm"] is not None
+        rapid = prepared.verification["rapid_clearance"]
+        assert rapid["protected_model_checked"] is True
+        assert rapid["protected_model_collision"] is True
+        assert rapid["collision_command_count"] == 1
+        assert len(rapid["collisions"]) == 1
+        assert rapid["collisions"][0]["command"] == "G0"
+        assert rapid["current_stock_checked"] is False
+        cycle_time = prepared.verification["cycle_time"]
+        assert cycle_time["complete"] is False
+        assert cycle_time["missing_operations"] == [operation.Name]
+        assert "cycle_time" in prepared.verification["unavailable_checks"]
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_VERIFICATION_GUI_OK "

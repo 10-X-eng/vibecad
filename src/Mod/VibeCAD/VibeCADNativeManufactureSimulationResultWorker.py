@@ -231,6 +231,8 @@ def execute_native_simulation(
         executed = 0
         collision_count = 0
         collision_records = []
+        rapid_collision_count = 0
+        rapid_collision_records = []
         maximum_collision_records = 32
         total_sources = max(1, frozen.source_command_count)
         for run_index, run in enumerate(frozen.runs):
@@ -266,36 +268,39 @@ def execute_native_simulation(
             first_cycle = True
 
             def apply(command: Any, source_index: int, *, rapid: bool) -> None:
-                nonlocal position, executed, collision_count
+                nonlocal position, executed, collision_count, rapid_collision_count
                 _cancel(cancelled)
-                if not rapid:
-                    try:
-                        sweep, _end = NativeSimulation._swept_tool(
-                            _tool_proxy(run),
-                            command,
-                            FreeCAD.Vector(position.Base),
-                        )
-                    except Exception as exc:
-                        raise NativeManufactureError(
-                            f"CAM operation {run.operation_name!r} command "
-                            f"{source_index} could not be verified: {exc}",
-                            error_code="NATIVE_MANUFACTURE_VERIFICATION_FAILED",
-                        ) from exc
-                    if sweep is not None:
-                        overlap = sweep.common(protected_model)
-                        volume = float(overlap.Volume) if not overlap.isNull() else 0.0
-                        if volume > 1.0e-7:
-                            collision_count += 1
-                            if len(collision_records) < maximum_collision_records:
-                                collision_records.append(
-                                    {
-                                        "operation": run.operation_name,
-                                        "command_index": source_index,
-                                        "command": canonical_simulation_command(command.Name),
-                                        "volume_mm3": round(volume, 9),
-                                        "bounds_mm": _collision_bounds(overlap),
-                                    }
-                                )
+                try:
+                    sweep, _end = NativeSimulation._swept_tool(
+                        _tool_proxy(run),
+                        command,
+                        FreeCAD.Vector(position.Base),
+                    )
+                except Exception as exc:
+                    raise NativeManufactureError(
+                        f"CAM operation {run.operation_name!r} command "
+                        f"{source_index} could not be verified: {exc}",
+                        error_code="NATIVE_MANUFACTURE_VERIFICATION_FAILED",
+                    ) from exc
+                if sweep is not None:
+                    overlap = sweep.common(protected_model)
+                    volume = float(overlap.Volume) if not overlap.isNull() else 0.0
+                    if volume > 1.0e-7:
+                        collision_count += 1
+                        record = {
+                            "operation": run.operation_name,
+                            "command_index": source_index,
+                            "command": canonical_simulation_command(command.Name),
+                            "rapid": rapid,
+                            "volume_mm3": round(volume, 9),
+                            "bounds_mm": _collision_bounds(overlap),
+                        }
+                        if len(collision_records) < maximum_collision_records:
+                            collision_records.append(record)
+                        if rapid:
+                            rapid_collision_count += 1
+                            if len(rapid_collision_records) < maximum_collision_records:
+                                rapid_collision_records.append(record)
                 position = simulator.ApplyCommand(position, command)
                 executed += 1
 
@@ -378,6 +383,28 @@ def execute_native_simulation(
                 "NATIVE_MANUFACTURE_SIMULATION_RESULT_INVALID",
             )
         progress(89, "Prepared retained material result")
+        cycle_time_operations = [
+            {
+                "operation": run.operation_name,
+                "seconds": run.cycle_time_seconds,
+                "rapid_speed_fallback": run.cycle_time_rapid_fallback,
+            }
+            for run in frozen.runs
+            if run.cycle_time_seconds is not None
+        ]
+        missing_cycle_time = [
+            run.operation_name
+            for run in frozen.runs
+            if run.cycle_time_seconds is None
+        ]
+        unavailable_checks = [
+            "holder_collision",
+            "fixture_collision",
+            "rapid_clearance_current_stock",
+            "machine_travel",
+        ]
+        if missing_cycle_time:
+            unavailable_checks.append("cycle_time")
         verification = {
             "protected_model": {
                 "checked": True,
@@ -386,13 +413,26 @@ def execute_native_simulation(
                 "collisions": collision_records,
                 "collisions_truncated": collision_count > len(collision_records),
             },
-            "unavailable_checks": [
-                "holder_collision",
-                "fixture_collision",
-                "rapid_clearance",
-                "machine_travel",
-                "cycle_time",
-            ],
+            "rapid_clearance": {
+                "protected_model_checked": True,
+                "protected_model_collision": rapid_collision_count > 0,
+                "collision_command_count": rapid_collision_count,
+                "collisions": rapid_collision_records,
+                "collisions_truncated": rapid_collision_count
+                > len(rapid_collision_records),
+                "current_stock_checked": False,
+            },
+            "cycle_time": {
+                "complete": not missing_cycle_time,
+                "method": "CAM Path estimates from setup feeds and rapids",
+                "total_seconds": round(
+                    sum(float(value["seconds"]) for value in cycle_time_operations),
+                    6,
+                ),
+                "operations": cycle_time_operations,
+                "missing_operations": missing_cycle_time,
+            },
+            "unavailable_checks": unavailable_checks,
         }
         return PreparedNativeSimulation(
             frozen=frozen,

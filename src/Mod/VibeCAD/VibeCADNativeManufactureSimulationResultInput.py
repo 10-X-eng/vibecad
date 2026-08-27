@@ -230,6 +230,57 @@ def _tool_sweep_parameters(tool: Any) -> tuple[str, tuple[tuple[str, float], ...
     return shape_id, tuple(values)
 
 
+def _published_cycle_time_seconds(operation: Any) -> float | None:
+    value = str(getattr(operation, "CycleTime", "") or "").strip()
+    parts = value.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        hours, minutes, seconds = (float(part) for part in parts)
+    except (TypeError, ValueError):
+        return None
+    if (
+        any(not math.isfinite(part) or part < 0.0 for part in (hours, minutes, seconds))
+        or minutes >= 60.0
+        or seconds >= 60.0
+    ):
+        return None
+    total = hours * 3600.0 + minutes * 60.0 + seconds
+    return round(total, 6)
+
+
+def _cycle_time_estimate(operation: Any, controller: Any) -> tuple[float | None, bool]:
+    published = _published_cycle_time_seconds(operation)
+    if published is not None and published > 0.0:
+        return published, False
+    try:
+        horizontal_feed = float(controller.HorizFeed.Value)
+        vertical_feed = float(controller.VertFeed.Value)
+        horizontal_rapid = float(controller.HorizRapid.Value)
+        vertical_rapid = float(controller.VertRapid.Value)
+    except (AttributeError, TypeError, ValueError):
+        return None, False
+    values = (horizontal_feed, vertical_feed, horizontal_rapid, vertical_rapid)
+    if any(not math.isfinite(value) or value < 0.0 for value in values):
+        return None, False
+    if horizontal_feed <= 0.0 or vertical_feed <= 0.0:
+        return None, False
+    try:
+        seconds = float(
+            operation.Path.getCycleTime(
+                horizontal_feed,
+                vertical_feed,
+                horizontal_rapid,
+                vertical_rapid,
+            )
+        )
+    except Exception:
+        return None, False
+    if not math.isfinite(seconds) or seconds < 0.0:
+        return None, False
+    return round(seconds, 6), horizontal_rapid == 0.0 or vertical_rapid == 0.0
+
+
 def _simulation_resolutions(stock_shape: Any, quality: int) -> tuple[float, float, float]:
     box = stock_shape.BoundBox
     maximum_xy = max(float(box.XLength), float(box.YLength))
@@ -390,6 +441,10 @@ def preflight_native_simulation(
                 "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
             )
         tool_shape_id, tool_parameters = _tool_sweep_parameters(tool)
+        cycle_time_seconds, cycle_time_rapid_fallback = _cycle_time_estimate(
+            operation,
+            controller,
+        )
         runs.append(
             FrozenSimulationRun(
                 operation=operation,
@@ -403,6 +458,8 @@ def preflight_native_simulation(
                 diameter_mm=diameter,
                 tool_shape_id=tool_shape_id,
                 tool_parameters=tool_parameters,
+                cycle_time_seconds=cycle_time_seconds,
+                cycle_time_rapid_fallback=cycle_time_rapid_fallback,
             )
         )
 

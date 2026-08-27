@@ -150,13 +150,13 @@ def _set_provenance(result: Any, prepared: PreparedNativeSimulation) -> None:
         result,
         "App::PropertyBool",
         "SimulationProtectedModelCollision",
-        "Whether a cutting sweep entered protected model volume",
+        "Whether a cutting or rapid tool sweep entered protected model volume",
     )
     _add_read_only_property(
         result,
         "App::PropertyInteger",
         "SimulationCollisionCommandCount",
-        "Cutting commands that entered protected model volume",
+        "Motion commands whose tool sweep entered protected model volume",
     )
     _add_read_only_property(
         result,

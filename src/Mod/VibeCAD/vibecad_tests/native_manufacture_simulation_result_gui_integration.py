@@ -202,10 +202,15 @@ def _create_fixture(document, prefix: str):
     assert job is not None and job.Tools.Group
     document.openTransaction(f"Create {prefix} retained simulation Profile")
     try:
+        controller = job.Tools.Group[0]
+        controller.HorizFeed = 300.0
+        controller.VertFeed = 120.0
+        controller.HorizRapid = 1800.0
+        controller.VertRapid = 900.0
         operation = PathProfile.Create(
             f"{prefix}Profile",
             parentJob=job,
-            toolController=job.Tools.Group[0],
+            toolController=controller,
         )
         operation.Proxy.addBase(operation, model, _top_face_name(model))
         operation.Label = f"{prefix} Profile operation"
@@ -339,12 +344,32 @@ def _assert_retained_result(document, result, job, operation, quality: int) -> N
         "collisions": [],
         "collisions_truncated": False,
     }
+    assert verification["rapid_clearance"] == {
+        "protected_model_checked": True,
+        "protected_model_collision": False,
+        "collision_command_count": 0,
+        "collisions": [],
+        "collisions_truncated": False,
+        "current_stock_checked": False,
+    }
+    cycle_time = verification["cycle_time"]
+    assert cycle_time["complete"] is True, cycle_time
+    assert cycle_time["method"] == "CAM Path estimates from setup feeds and rapids"
+    assert cycle_time["total_seconds"] > 0.0
+    assert cycle_time["operations"] == [
+        {
+            "operation": operation.Name,
+            "seconds": cycle_time["total_seconds"],
+            "rapid_speed_fallback": False,
+        }
+    ]
     assert {
         "holder_collision",
         "fixture_collision",
-        "rapid_clearance",
         "machine_travel",
+        "rapid_clearance_current_stock",
     }.issubset(verification["unavailable_checks"])
+    assert "cycle_time" not in verification["unavailable_checks"]
     assert result.VibeCADTimelineRole == "operation"
     assert getattr(result, "VibeCADTimelineOwner", None) is None
     assert not tuple(getattr(result, "VibeCADTimelineReplacedInputs", ()) or ())

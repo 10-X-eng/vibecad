@@ -48,6 +48,8 @@ class FrozenSimulationRun:
     diameter_mm: float
     tool_shape_id: str = ""
     tool_parameters: tuple[tuple[str, float], ...] = ()
+    cycle_time_seconds: float | None = None
+    cycle_time_rapid_fallback: bool = False
 
 
 @dataclass(frozen=True, slots=True)
