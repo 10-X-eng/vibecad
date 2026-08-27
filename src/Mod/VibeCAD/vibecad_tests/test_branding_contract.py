@@ -1158,6 +1158,44 @@ def test_vibecad_removes_theme_and_preference_pack_escape_hatches() -> None:
     assert "Theme_thumbnail_classic.png" not in start_cmake + start_resources
 
 
+def test_analyze_engineering_shell_has_matching_light_and_dark_contracts() -> None:
+    browser = _source("src/Mod/VibeCAD/VibeCADAnalyzeResultsGui.py")
+    integration = _source(
+        "src/Mod/VibeCAD/vibecad_tests/analyze_study_setup_gui_integration.py"
+    )
+    styles = (
+        _source("src/Gui/Stylesheets/VibeDark.qss"),
+        _source("src/Gui/Stylesheets/VibeLight.qss"),
+    )
+    required_names = (
+        "VibeCADEngineeringResultsPanel",
+        "VibeCADEngineeringPerformanceCard",
+        "VibeCADEngineeringComparisonCard",
+    )
+    for name in required_names:
+        assert name in browser
+        assert name in integration
+    assert all(
+        "VibeCADEngineeringResultsPanel" in stylesheet
+        for stylesheet in styles
+    )
+    assert 'setProperty("vibeEngineeringSurface", True)' in browser
+    assert browser.count('setProperty("vibeResultCard", True)') == 3
+    assert all('vibeResultCard="true"' in stylesheet for stylesheet in styles)
+
+    # EVS-01 wraps the existing owner; it must not remove or rename the public
+    # OpenFOAM presentation controls while introducing the inert shell.
+    for existing_control in (
+        "VibeCADAnalyzeResultSelector",
+        "VibeCADAnalyzeShowPressure",
+        "VibeCADAnalyzeShowVelocity",
+        "VibeCADAnalyzeShowTurbulence",
+        "VibeCADAnalyzeMeasureFlow",
+        "VibeCADAnalyzeCompareFlow",
+    ):
+        assert existing_control in browser
+
+
 def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
     ribbon = _source("src/Gui/VibeCADRibbon.cpp")
     startup = _source("src/Gui/StartupProcess.cpp")

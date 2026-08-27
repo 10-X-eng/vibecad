@@ -1913,3 +1913,37 @@ QToolButton#VibeCADRibbonPageMore {
   min-height: 50px;
   padding: 2px 6px;
   color: #364454; }
+
+/* Engineering Experience: Analyze-hosted presentation shell. */
+QGroupBox#VibeCADEngineeringResultsPanel {
+  margin-top: 14px;
+  padding: 10px 8px 8px 8px;
+  background-color: #f5f9fc;
+  border: 1px solid #cbdbe7;
+  border-radius: 8px; }
+
+QGroupBox#VibeCADEngineeringResultsPanel::title {
+  subcontrol-origin: margin;
+  left: 10px;
+  padding: 0px 5px;
+  color: #087b94;
+  font-weight: 600; }
+
+QGroupBox#VibeCADEngineeringResultsPanel QLabel[vibeResultCard="true"],
+QGroupBox#VibeCADEngineeringResultsPanel QGroupBox[vibeResultCard="true"] {
+  padding: 7px;
+  color: #1d3342;
+  background-color: #ffffff;
+  border: 1px solid #d2dfe8;
+  border-radius: 7px; }
+
+QGroupBox#VibeCADEngineeringResultsPanel QGroupBox[vibeResultCard="true"]::title {
+  subcontrol-origin: margin;
+  left: 9px;
+  padding: 0px 4px;
+  color: #40596a;
+  font-weight: 600; }
+
+QGroupBox#VibeCADEngineeringResultsPanel QComboBox:focus,
+QGroupBox#VibeCADEngineeringResultsPanel QPushButton:focus {
+  border-color: #0b8faa; }

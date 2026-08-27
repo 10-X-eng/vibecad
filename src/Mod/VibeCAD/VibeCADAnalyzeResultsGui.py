@@ -23,6 +23,9 @@ def _vector_text(values: Any) -> str:
 class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
     def __init__(self, parent: Any = None) -> None:
         super().__init__("Results", parent)
+        self.setObjectName("VibeCADEngineeringResultsPanel")
+        self.setProperty("vibeEngineeringSurface", True)
+        self.setAccessibleName("Engineering results")
         self._document = None
         self._summaries: dict[str, dict[str, Any]] = {}
         layout = QtWidgets.QVBoxLayout(self)
@@ -34,6 +37,8 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
 
         self.summary_label = QtWidgets.QLabel("Run a study to view results.")
         self.summary_label.setObjectName("VibeCADAnalyzeResultSummary")
+        self.summary_label.setProperty("vibeResultCard", True)
+        self.summary_label.setAccessibleName("Selected engineering result summary")
         self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
 
@@ -69,6 +74,8 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         layout.addLayout(actions)
 
         performance = QtWidgets.QGroupBox("Flow Performance")
+        performance.setObjectName("VibeCADEngineeringPerformanceCard")
+        performance.setProperty("vibeResultCard", True)
         performance_layout = QtWidgets.QFormLayout(performance)
         self.upstream_combo = QtWidgets.QComboBox()
         self.upstream_combo.setObjectName("VibeCADAnalyzeFlowUpstream")
@@ -90,6 +97,8 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         layout.addWidget(performance)
 
         comparison = QtWidgets.QGroupBox("Compare Flow")
+        comparison.setObjectName("VibeCADEngineeringComparisonCard")
+        comparison.setProperty("vibeResultCard", True)
         comparison_layout = QtWidgets.QFormLayout(comparison)
         self.compare_result_combo = QtWidgets.QComboBox()
         self.compare_result_combo.setObjectName("VibeCADAnalyzeCompareResult")

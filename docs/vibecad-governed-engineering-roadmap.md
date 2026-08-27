@@ -1046,6 +1046,13 @@ execute, recover, schedule, rank, select, publish or export. These foundations
 do not close their X milestones: real adapters, Qt views, GUI/accessibility,
 fault/restart scenarios and installed application acceptance remain.
 
+The first EVS-01 slice styles the existing Analyze Results browser as the
+accessible Engineering presentation shell in both supported themes and leaves
+its result selector, pressure/velocity/turbulence presentation, passage
+measurement and flow-comparison routes intact. This is a presentation-only X1
+increment; it does not yet provide the cross-domain shell, field adapters,
+durable activity UI or installed GUI acceptance required for X1/X2 closure.
+
 The shared shell may be designed early, but no durable activity, workflow,
 candidate, interface, sequence, service, or Robot behavior is faked ahead of
 its dependency. Exact owners, initial files, visual examples, and acceptance

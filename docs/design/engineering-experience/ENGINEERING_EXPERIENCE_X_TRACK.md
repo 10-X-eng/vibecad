@@ -36,9 +36,12 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
   identities, findings, artifacts, provenance and opaque domain payload, expose
   execution/verification/currentness/publication as independent axes, and
   declare an inert no-authority surface. Cross-domain fixtures cover Native,
-  FEM, Aero, Manufacture, Assembly and Robot. Remaining X1 work is integration
-  with real domain result adapters and the Qt Engineering dock, GUI/accessibility
-  tests, and installed application acceptance.
+  FEM, Aero, Manufacture, Assembly and Robot. EVS-01 now gives the existing
+  Analyze Results browser an accessible Engineering-shell identity and matching
+  light/dark result-card styling while retaining every existing OpenFOAM
+  control and presentation route. Remaining X1 work is real domain result
+  adapters, the broader contextual Qt shell and field/result views,
+  accessibility coverage, and installed application acceptance.
 - **X2: partial durable-view foundation.** The installed facade projects
   validated G2 records, attempts, artifacts, currentness evaluations,
   publication evidence and restart dispositions with exact Analysis identity

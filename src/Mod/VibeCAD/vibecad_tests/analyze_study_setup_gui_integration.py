@@ -123,6 +123,27 @@ def _run() -> None:
         widget = dock.widget()
         assert isinstance(widget, StudySetupWidget)
         assert widget.apply_button.isVisible()
+        assert (
+            widget.results_browser.objectName()
+            == "VibeCADEngineeringResultsPanel"
+        )
+        assert widget.results_browser.property("vibeEngineeringSurface") is True
+        assert (
+            widget.results_browser.summary_label.property("vibeResultCard")
+            is True
+        )
+        assert (
+            widget.results_browser.findChild(
+                QtWidgets.QGroupBox, "VibeCADEngineeringPerformanceCard"
+            )
+            is not None
+        )
+        assert (
+            widget.results_browser.findChild(
+                QtWidgets.QGroupBox, "VibeCADEngineeringComparisonCard"
+            )
+            is not None
+        )
         assert widget.results_browser.result_combo.count() == 0
         assert widget.geometry_browser.source_combo.count() == 2
         assert widget.geometry_browser.face_table.topLevelItemCount() == 6
