@@ -13,6 +13,7 @@ from tool_impl.analysis_persistence import (
     AnalysisStoreBusy,
     DurableRuntimeLifecycle,
     new_job_record,
+    restart_disposition_for_record,
 )
 
 __all__ = (
@@ -26,4 +27,5 @@ __all__ = (
     "AnalysisStoreBusy",
     "DurableRuntimeLifecycle",
     "new_job_record",
+    "restart_disposition_for_record",
 )

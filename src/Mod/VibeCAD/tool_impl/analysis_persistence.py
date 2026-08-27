@@ -95,6 +95,35 @@ def new_job_record(
     return record
 
 
+def restart_disposition_for_record(record: Mapping[str, Any]) -> dict[str, str]:
+    """Classify one already-read durable snapshot without reopening its file."""
+
+    if not isinstance(record, Mapping):
+        raise AnalysisPersistenceError("Analysis metadata must be an object")
+    analysis_id = _clean_id(record.get("analysis_id"), "analysis_id")
+    state = record.get("state")
+    if state not in KNOWN_STATES:
+        raise AnalysisPersistenceError("Unknown Analysis lifecycle state")
+    attempts = record.get("attempts")
+    if not isinstance(attempts, list):
+        raise AnalysisPersistenceError("Analysis attempts must be a list")
+    if state in TERMINAL_STATES:
+        action = "terminal"
+    elif state == "running_remote" and any(
+        str(item.get("provider_job_id") or "").strip()
+        for item in attempts
+        if isinstance(item, Mapping)
+    ):
+        action = "reconnect_remote"
+    elif state in {"prepared", "running_local"}:
+        action = "mark_interrupted"
+    elif state == "publishing":
+        action = "publication_outcome_unknown"
+    else:
+        action = f"resume_{state}"
+    return {"analysis_id": analysis_id, "state": state, "action": action}
+
+
 class AnalysisMetadataStore:
     """One-writer JSON store with atomic replace, backup, and fault points."""
 
@@ -249,23 +278,7 @@ class AnalysisMetadataStore:
             return deepcopy(candidate)
 
     def restart_disposition(self, analysis_id: str) -> dict[str, str]:
-        record = self.load(analysis_id)
-        state = record["state"]
-        if state in TERMINAL_STATES:
-            action = "terminal"
-        elif state == "running_remote" and any(
-            str(item.get("provider_job_id") or "").strip()
-            for item in record["attempts"]
-            if isinstance(item, Mapping)
-        ):
-            action = "reconnect_remote"
-        elif state in {"prepared", "running_local"}:
-            action = "mark_interrupted"
-        elif state == "publishing":
-            action = "publication_outcome_unknown"
-        else:
-            action = f"resume_{state}"
-        return {"analysis_id": record["analysis_id"], "state": state, "action": action}
+        return restart_disposition_for_record(self.load(analysis_id))
 
     def begin_attempt(
         self,

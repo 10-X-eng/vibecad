@@ -163,6 +163,13 @@ def _run() -> None:
         assert not widget.results_browser.open_chart_button.isEnabled()
         assert (
             widget.results_browser.findChild(
+                QtWidgets.QGroupBox, "VibeCADEngineeringActivityCard"
+            )
+            is not None
+        )
+        assert widget.results_browser.activity_table.topLevelItemCount() == 1
+        assert (
+            widget.results_browser.findChild(
                 QtWidgets.QGroupBox, "VibeCADEngineeringPerformanceCard"
             )
             is not None

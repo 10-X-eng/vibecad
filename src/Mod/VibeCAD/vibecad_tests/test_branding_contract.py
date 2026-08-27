@@ -1172,6 +1172,7 @@ def test_analyze_engineering_shell_has_matching_light_and_dark_contracts() -> No
         "VibeCADEngineeringFieldsCard",
         "VibeCADEngineeringStatusCard",
         "VibeCADEngineeringChartsCard",
+        "VibeCADEngineeringActivityCard",
         "VibeCADEngineeringPerformanceCard",
         "VibeCADEngineeringComparisonCard",
     )
@@ -1185,7 +1186,7 @@ def test_analyze_engineering_shell_has_matching_light_and_dark_contracts() -> No
     assert 'setProperty("vibeEngineeringSurface", True)' in browser
     assert "VibeCADEngineeringDeformationScale" in browser
     assert "VibeCADEngineeringDeformationScale" in integration
-    assert browser.count('setProperty("vibeResultCard", True)') == 6
+    assert browser.count('setProperty("vibeResultCard", True)') == 7
     assert all('vibeResultCard="true"' in stylesheet for stylesheet in styles)
 
     # EVS-01 wraps the existing owner; it must not remove or rename the public

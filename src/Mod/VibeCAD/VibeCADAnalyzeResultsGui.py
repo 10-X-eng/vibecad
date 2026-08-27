@@ -16,6 +16,7 @@ from VibeCADEngineeringChartSeries import (
     chart_series_from_analysis,
     chart_series_from_visualization,
 )
+from VibeCADEngineeringActivity import discover_engineering_activity
 from VibeCADEngineeringFieldAdapters import presentation_from_result_state
 
 
@@ -36,6 +37,8 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self._presentations: dict[str, Any] = {}
         self._summaries: dict[str, dict[str, Any]] = {}
         self._charts: dict[str, Any] = {}
+        self._activity: dict[str, Any] | None = None
+        self._activity_error = ""
         layout = QtWidgets.QVBoxLayout(self)
 
         self.result_combo = QtWidgets.QComboBox()
@@ -108,6 +111,21 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self.open_chart_button.setEnabled(False)
         charts_layout.addWidget(self.open_chart_button)
         layout.addWidget(charts)
+
+        activity = QtWidgets.QGroupBox("Analysis Activity")
+        activity.setObjectName("VibeCADEngineeringActivityCard")
+        activity.setProperty("vibeResultCard", True)
+        activity_layout = QtWidgets.QVBoxLayout(activity)
+        self.activity_table = QtWidgets.QTreeWidget()
+        self.activity_table.setObjectName("VibeCADEngineeringActivity")
+        self.activity_table.setAccessibleName("Durable Analysis and workflow activity")
+        self.activity_table.setHeaderLabels(
+            ("Kind", "Identity", "State", "Attempts", "Artifacts", "Updated")
+        )
+        self.activity_table.setRootIsDecorated(False)
+        self.activity_table.setAlternatingRowColors(True)
+        activity_layout.addWidget(self.activity_table)
+        layout.addWidget(activity)
 
         status = QtWidgets.QGroupBox("Governed State")
         status.setObjectName("VibeCADEngineeringStatusCard")
@@ -316,6 +334,53 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "Engineering Chart", str(exc))
 
+    def _render_activity(self) -> None:
+        self.activity_table.clear()
+        if self._activity_error:
+            item = QtWidgets.QTreeWidgetItem(
+                ("Unavailable", "Durable activity", "Read failed", "—", "—", "—")
+            )
+            item.setToolTip(0, self._activity_error)
+            self.activity_table.addTopLevelItem(item)
+        elif self._activity is None or not (
+            self._activity["analyses"] or self._activity["workflows"]
+        ):
+            self.activity_table.addTopLevelItem(
+                QtWidgets.QTreeWidgetItem(
+                    ("Activity", "No durable records", "Unavailable", "0", "0", "—")
+                )
+            )
+        else:
+            for activity in self._activity["analyses"]:
+                self.activity_table.addTopLevelItem(
+                    QtWidgets.QTreeWidgetItem(
+                        (
+                            "Analysis",
+                            str(activity["analysis_id"]),
+                            str(activity["state"]).replace("_", " ").title(),
+                            str(activity["attempt_count"]),
+                            str(activity["artifact_count"]),
+                            str(activity.get("updated_at") or "Unavailable"),
+                        )
+                    )
+                )
+            for workflow in self._activity["workflows"]:
+                attempts = sum(node["attempt_count"] for node in workflow["nodes"])
+                self.activity_table.addTopLevelItem(
+                    QtWidgets.QTreeWidgetItem(
+                        (
+                            "Workflow",
+                            str(workflow["run_id"]),
+                            str(workflow["state"]).replace("_", " ").title(),
+                            str(attempts),
+                            "—",
+                            str(workflow.get("updated_at") or "Unavailable"),
+                        )
+                    )
+                )
+        for column in range(self.activity_table.columnCount()):
+            self.activity_table.resizeColumnToContents(column)
+
     def refresh(self, document: Any, analysis: Any) -> None:
         previous = str(self.result_combo.currentData() or "")
         previous_candidate = str(self.compare_result_combo.currentData() or "")
@@ -324,6 +389,13 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self._presentations = {}
         self._summaries = {}
         self._charts = {}
+        self._activity = None
+        self._activity_error = ""
+        if document is not None:
+            try:
+                self._activity = discover_engineering_activity(str(document.Uid))
+            except Exception as exc:
+                self._activity_error = str(exc)
         if document is not None and analysis is not None:
             for chart in chart_series_from_analysis(analysis):
                 self._charts[chart.series_id] = chart
@@ -365,6 +437,7 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self.result_combo.blockSignals(False)
         self.compare_result_combo.blockSignals(False)
         self._render_charts()
+        self._render_activity()
         self._render()
 
     def _selected(self) -> tuple[Any | None, dict[str, Any] | None]:

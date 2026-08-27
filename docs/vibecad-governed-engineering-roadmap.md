@@ -1293,6 +1293,13 @@ installed GUI evidence remain.
    association. Those associations, governed G1/G2/G5 series and installed GUI
    acceptance remain. Do not fabricate data or grant scheduling, ranking,
    selection, mutation or publication authority.
+
+   The first EVS-08 increment uses the exact-identity G2/G5 discovery path to
+   show durable Analysis and workflow identities, lifecycle state,
+   attempt/artifact counts and owner timestamps for the active document. Empty
+   discovery and read failures are explicit, and the projection carries no
+   recovery, scheduling, retry or publication authority. Detailed records,
+   event-driven refresh and installed GUI acceptance remain.
 6. **Continue G-track closure in dependency order:** complete G2/G5 acceptance,
    G7 stale/restart/installed behavior, and the current G8/G9 Assembly
    identity/interface/inference acceptance. Advance X3/X4 and X7-X12 only from

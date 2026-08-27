@@ -162,7 +162,12 @@ workbench or authority layer. The implementation sequence is:
    attempts, artifacts, recovery/publication state and G5 workflow nodes to
    the shell. Progress and counters come only from durable owners. The G2/G5
    stores now provide bounded fail-closed discovery by exact document and
-   Analysis identities; shell presentation and installed acceptance remain.
+   Analysis identities. **Partial owner-backed dashboard:** the Analyze shell
+   now projects and displays exact durable Analysis/workflow identities,
+   lifecycle state, attempt/artifact counts and timestamps for the active
+   document. Empty and failed discovery remain explicit. Detailed attempt,
+   artifact, recovery/publication and node views, live refresh and installed
+   acceptance remain.
 9. **EVS-09 — result comparison (X6).** Present baseline/candidate metrics and
    field differences only when exact comparable sources and the owning
    ranking/result contracts exist; selection and publication remain gated.
