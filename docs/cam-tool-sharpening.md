@@ -329,8 +329,10 @@ comparison, not implementation instructions.
   Pocket, completed interactive simulation, posted NC, and saved successfully with
   five failed calls. One was a reasonable optional Pocket label and is now
   accepted. The other four were inconsistent retries on schemas Qwen had already
-  used successfully; Terra validation remains required before changing those
-  complete-replacement contracts.
+  used successfully. Terra/high then completed the same prompt with zero failed
+  calls: exact ToolBit and controller updates, machine and post setup, labeled
+  Pocket, drilling, retained-stock simulation, validation, posting, save, and
+  reopen evidence with two active valid operations.
 
 ## Reusable benchmark corpus
 
