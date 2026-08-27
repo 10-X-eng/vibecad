@@ -237,6 +237,13 @@ The Engineering Experience pivot was incorporated after PR #100 reached a
 checked boundary; it does not retroactively alter the historical audit or claim
 that the north-star UI exists.
 
+The same pivot source and north-star image were resupplied on 2026-08-27 after
+fork PR #121 reached its review boundary. Their hashes match the already
+preserved repository copies exactly. This reconfirms, rather than replaces, the
+X-track direction. EVS-01 through EVS-09 are now the active Analyze delivery
+slices inside the X-track specification, dependency-bound to G1/G2/G5/G6 and
+the existing domain presentation owners; they do not replace X0-X12.
+
 Fork PRs #101 through #105 preserve the Engineering Experience source pivot,
 add the common projection facade, project durable Analysis/workflow/optimization
 records, bind the first Manufacture post-evidence seam to exact G2/G5 records,
@@ -1212,26 +1219,28 @@ Stop the affected tranche and resolve explicitly if:
 
 Keep the first changes small, reversible, and source-bound:
 
-1. **X0 source/design inventory:** preserve the pivot source and north-star
-   image with hashes; define component, color, workspace, ownership and
-   dependency rules. No capability claim from the image.
-2. **X1 common presentation contracts:** project the implemented G1 envelope
-   and independent status axes through bounded, domain-preserving view models
-   and cross-domain fixtures. No duplicate result model.
-3. **X2 durable activity UI:** connect the implemented G2 metadata, artifact,
-   publication and restart projection to Qt while leaving unintegrated domain
-   wiring visibly partial.
-4. **X5/X6 Qt slices:** connect the implemented durable workflow and
-   governed-optimization projections; do not schedule, rank, select or mutate
-   from the UI.
-5. **G7 + X7 Manufacture integration:** attach one existing expensive detached
-   Manufacture path to exact G2/G5 identities and display Manufacture-owned
-   evidence without replacing Job/Post/CAMotics behavior.
-6. **G8 reconciliation + X8 shell:** reconcile live Assembly identity/interface/
-   mechanism state and design the overlay boundary before inference.
-7. **Then** close remote provider, preview evidence, Manufacture, Assembly,
-   inference, sequencing, service, Robot projection and their dependency-bound
-   X slices in the graph order above.
+1. **EVS-01 / X1 shell:** extend the existing themes and land the inert,
+   Analyze-hosted Engineering shell without moving or removing current FEM,
+   VTK or OpenFOAM behavior.
+2. **EVS-02 / X1 field registry:** adapt real legacy FEM, VTK and OpenFOAM
+   metadata into bounded canonical field descriptors with semantic, unit,
+   association, components and range; retain arrays and physics payloads with
+   their owners.
+3. **EVS-03 and EVS-04 / X1 results and presentation:** add real result cards,
+   field selection and independent execution/verification/currentness/
+   publication state, then route selection through existing viewport
+   presentation owners.
+4. **EVS-05 and EVS-06 / X1 scientific view controls:** add truthful legends,
+   validated colormaps, deformation and scoped Technical/Analysis presets as
+   presentation state only.
+5. **EVS-07 through EVS-09 / X2/X5/X6:** connect real chart series, durable
+   Analysis activity/workflow state and exact comparable-result projections.
+   Do not fabricate data or grant scheduling, ranking, selection, mutation or
+   publication authority.
+6. **Continue G-track closure in dependency order:** complete G2/G5 acceptance,
+   G7 stale/restart/installed behavior, and the current G8/G9 Assembly
+   identity/interface/inference acceptance. Advance X3/X4 and X7-X12 only from
+   the corresponding authoritative contracts.
 
 No tranche claims a later milestone because it introduces an interface the
 later milestone may eventually consume.

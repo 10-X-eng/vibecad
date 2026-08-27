@@ -91,20 +91,50 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
 
 ## First PR-sized implementation sequence
 
-1. Complete X1 real domain adapters and the non-authoritative shared shell over
-   the already-landed common engineering envelope.
-2. Connect the X2 durable activity/artifact/publication projection to the Qt
-   activity views; leave unintegrated durability visibly partial.
-3. Connect the X5 workflow projection to the Qt graph/activity views.
-4. Connect the X6 candidate/ranking projection to the Qt Compare view.
-5. Wire the G7 post runtime to durable G2/G5 records and the X7 evidence
-   projection and the same owner-preserving CAMotics/simulation path.
-   Manufacture does not receive a disconnected generic result UI. Next prove
-   restart/stale reconciliation and the installed Native GUI behavior.
-6. Advance X3/X4 and X8-X12 only with their owning G closure slices.
+The 2026-08-27 pivot makes the Analyze workspace the next visible product
+surface. The supplied EVS-01 through EVS-09 labels are retained as PR-sized
+Analyze delivery slices nested inside the canonical X-track; they are not a
+replacement roadmap. EVS is not a new solver, result owner, renderer,
+workbench or authority layer. The implementation sequence is:
 
-This order reflects the current repository, where G1, the G2 core, G4 census,
-G5 core and G6 core exist but remain partial at their real integration gates.
+1. **EVS-01 — design system and inert Analyze shell (X0/X1).** Extend the
+   existing light/dark themes with semantic engineering selectors and create
+   the non-authoritative contextual shell. Preserve every current Analyze and
+   OpenFOAM action. No solver or presentation behavior changes.
+2. **EVS-02 — bounded field registry and real adapters (X1).** Add canonical
+   field descriptors and adapters over the existing legacy FEM, VTK and
+   OpenFOAM state readers. Preserve domain payloads and arrays with their
+   owners. Prove semantic, unit, association, component and range mapping with
+   structural, flow and thermal fixtures plus installed imports.
+3. **EVS-03 — unified Results browser (X1/X2).** Put field selection, result
+   cards, independent status axes, bounded metrics and provenance into the
+   shared shell while retaining all current OpenFOAM controls and behavior.
+4. **EVS-04 — owner-routed viewport presentation (X1).** Route structural and
+   flow field selection through the existing FEM/VTK/domain presentation
+   owners. Never copy field arrays or create a second scientific renderer.
+5. **EVS-05 — legend and colormap view state (X1).** Add named units, exact
+   min/max, auto/manual/clamped range and a validated colormap registry.
+   Palette choice remains presentation state and cannot alter engineering
+   values, verdicts or currentness.
+6. **EVS-06 — deformation and scoped technical presets (X1).** Expose existing
+   deformation scale, mesh-edge and undeformed-outline capabilities through
+   scoped VibeCAD view state; do not globally rewrite user preferences.
+7. **EVS-07 — engineering charts (X1/X5/X6).** Reuse the existing table,
+   histogram and line-plot owners for real convergence, history and comparison
+   series with declared axes/units. No cosmetic data.
+8. **EVS-08 — durable Analysis activity dashboard (X2/X5).** Connect exact G2
+   attempts, artifacts, recovery/publication state and G5 workflow nodes to
+   the shell. Progress and counters come only from durable owners.
+9. **EVS-09 — result comparison (X6).** Present baseline/candidate metrics and
+   field differences only when exact comparable sources and the owning
+   ranking/result contracts exist; selection and publication remain gated.
+
+EVS-01 through EVS-09 are individually reviewable and must retain compatibility
+with the existing Analyze UI. X3/X4, X7 and X8-X12 continue in parallel or
+afterward only with their owning G slices. In particular, the current G8/G9
+Assembly stack supplies identity, interface, semantic-geometry, live-scenario
+and explicit coupling-evidence foundations; it does not authorize fabricated
+Assembly overlays or mark X8/X9 complete.
 
 ## Shared invariants
 

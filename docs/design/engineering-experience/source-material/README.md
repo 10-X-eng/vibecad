@@ -9,8 +9,12 @@ requirements and not evidence that the depicted capabilities exist.
 | `ENGINEERING_EXPERIENCE_PIVOT_SOURCE.txt` | `a9ae31b34b0db6703f477e6d8c3ead830210f2a998efa9e094eec325596c8324` | Verbatim planning/reconciliation conversation supplied on 2026-08-26 |
 | `VIBECAD_ENGINEERING_NORTH_STAR.png` | `d05c8c8ed8a0bbb82e36fd8196adc756d40395ffa0aeebd23ce7e106fc37dfcb` | Visual north star supplied on 2026-08-26 |
 
+The same text and image were supplied again on 2026-08-27 after fork PR #121
+reached its review boundary. A fresh byte-for-byte check produced the same two
+hashes above. This second intake therefore reconfirms the existing preserved
+sources; it does not create a competing copy or a newer design authority.
+
 The canonical interpretation is in
 [`ENGINEERING_EXPERIENCE_X_TRACK.md`](../ENGINEERING_EXPERIENCE_X_TRACK.md).
 Current executable source and the canonical governed-engineering roadmap win
 whenever the source material conflicts with repository reality.
-
