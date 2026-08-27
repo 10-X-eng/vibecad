@@ -88,6 +88,11 @@ def test_workflow_discovery_retains_current_and_prior_analysis_links(tmp_path) -
     assert store.find_by_analysis_ids(["analysis-first"])[0]["run_id"] == "run-2"
     assert store.find_by_analysis_ids(["analysis-retry"])[0]["run_id"] == "run-2"
     assert store.find_by_analysis_ids(["unrelated"]) == ()
+    resolved, missing = store.find_by_run_ids(["run-2", "run-missing"])
+    assert [record["run_id"] for record in resolved] == ["run-2"]
+    assert missing == ("run-missing",)
+    with pytest.raises(WorkflowRunError, match="unique"):
+        store.find_by_run_ids(["run-2", "run-2"])
 
 
 def test_upstream_eligibility_rejects_stale_failed_and_unpublished(tmp_path) -> None:

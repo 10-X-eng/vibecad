@@ -375,6 +375,7 @@ def test_optimization_projection_consumes_store_ranking_without_selecting(tmp_pa
 
     selected = next(item for item in projected["candidates"] if item["candidate_id"] == candidate_id)
     assert selected["rank"] == 1
+    assert selected["workflow_run_ids"] == ["workflow-1"]
     assert selected["mutation_proposal"] == before["candidates"][candidate_id]["mutation_proposal"]
     assert projected["selection"] is None
     assert projected["publication"] is None

@@ -623,6 +623,7 @@ def project_optimization_run(
             "state": candidate.get("state"),
             "currentness": candidate.get("currentness"),
             "workflow_run_id": candidate.get("workflow_run_id"),
+            "workflow_run_ids": candidate.get("workflow_run_ids") or [],
             "workflow_attempt_count": len(candidate.get("workflow_run_ids") or []),
             "metrics": candidate.get("metrics"),
             "findings": candidate.get("findings"),

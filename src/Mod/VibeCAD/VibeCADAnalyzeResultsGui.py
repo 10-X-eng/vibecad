@@ -627,6 +627,50 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
                         f"Mutation proposal retained by owner: "
                         f"{bool(candidate.get('mutation_proposal'))}",
                     )
+                    for workflow_ref in candidate.get("workflow_provenance") or []:
+                        workflow = workflow_ref.get("workflow")
+                        if workflow is None:
+                            workflow_state = "Unresolved"
+                            workflow_evidence = "No durable G5 record found"
+                        else:
+                            workflow_state = str(workflow.get("state") or "Unavailable")
+                            workflow_evidence = (
+                                f"{workflow.get('workflow_id')} · "
+                                f"{len(workflow.get('nodes') or [])} nodes · "
+                                f"definition {workflow.get('definition_sha256')}"
+                            )
+                        workflow_item = QtWidgets.QTreeWidgetItem(
+                            (
+                                "Workflow",
+                                str(workflow_ref["run_id"]),
+                                "Active" if workflow_ref.get("active") else "Prior",
+                                workflow_state.replace("_", " ").title(),
+                                "Exact" if workflow_ref.get("resolved") else "Unavailable",
+                                workflow_evidence,
+                            )
+                        )
+                        if workflow is not None:
+                            for node in workflow.get("nodes") or []:
+                                workflow_item.addChild(
+                                    QtWidgets.QTreeWidgetItem(
+                                        (
+                                            "Workflow Node",
+                                            str(node.get("node_id") or "Unavailable"),
+                                            "—",
+                                            str(node.get("state") or "Unavailable")
+                                            .replace("_", " ")
+                                            .title(),
+                                            "Exact",
+                                            f"{node.get('attempt_count', 0)} attempts"
+                                            + (
+                                                f" · Analysis {node['analysis_id']}"
+                                                if node.get("analysis_id")
+                                                else ""
+                                            ),
+                                        )
+                                    )
+                                )
+                        candidate_item.addChild(workflow_item)
                     for name, value in sorted(
                         (candidate.get("values") or {}).items()
                     ):

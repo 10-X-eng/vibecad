@@ -14,6 +14,8 @@ from VibeCADGovernedOptimization import (
     OptimizationError,
     OptimizationRunStore,
 )
+from VibeCADAnalysisContracts import CanonicalJson
+from VibeCADAnalysisWorkflow import WorkflowDefinition, WorkflowNode, WorkflowRunStore
 
 
 def _definition(document_uid: str) -> OptimizationDefinition:
@@ -46,6 +48,21 @@ def test_discovers_exact_document_runs_with_owner_ranking(tmp_path: Path) -> Non
         metrics={"mass": "1.25"},
     )
     store.create(_definition("document-other"), "run-other")
+    workflow_store = WorkflowRunStore(tmp_path / "workflows")
+    workflow_store.create(
+        WorkflowDefinition(
+            "candidate-evaluation",
+            "1",
+            (
+                WorkflowNode(
+                    "solve", "fem", "adapter.solve", (), ("result",),
+                    condition=CanonicalJson.from_value({"all": []}),
+                ),
+            ),
+            (),
+        ),
+        "workflow-1",
+    )
 
     projected = discover_engineering_optimization(
         "document-current", root=tmp_path
@@ -58,7 +75,35 @@ def test_discovers_exact_document_runs_with_owner_ranking(tmp_path: Path) -> Non
     ]
     assert ranked[0]["candidate_id"] == candidate
     assert ranked[0]["rank"] == 1
+    assert ranked[0]["workflow_run_ids"] == ["workflow-1"]
+    assert ranked[0]["workflow_provenance"][0]["resolved"] is True
+    assert ranked[0]["workflow_provenance"][0]["active"] is True
+    assert ranked[0]["workflow_provenance"][0]["workflow"]["workflow_id"] == (
+        "candidate-evaluation"
+    )
+    assert ranked[0]["unresolved_workflow_run_ids"] == []
     assert set(projected["authority"].values()) == {False}
+
+
+def test_discovery_marks_missing_workflow_provenance_unresolved(tmp_path: Path) -> None:
+    store = OptimizationRunStore(tmp_path / "optimization")
+    created = store.create(_definition("document-current"), "run-current")
+    candidate = next(iter(created["candidates"]))
+    store.start_candidate("run-current", candidate, workflow_run_id="missing-workflow")
+
+    projected = discover_engineering_optimization("document-current", root=tmp_path)
+    selected = next(
+        item for item in projected["runs"][0]["candidates"]
+        if item["candidate_id"] == candidate
+    )
+
+    assert selected["workflow_provenance"] == [{
+        "run_id": "missing-workflow",
+        "active": True,
+        "resolved": False,
+        "workflow": None,
+    }]
+    assert selected["unresolved_workflow_run_ids"] == ["missing-workflow"]
 
 
 def test_discovery_fails_closed_on_filename_or_definition_drift(

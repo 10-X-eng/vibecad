@@ -65,9 +65,11 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
 - **X6: partial optimization-view foundation.** Validated G6 run records and
   the store's precomputed ranking are projected together, including inert
   mutation proposals, metrics, findings, constraints, currentness, selection
-  and publication evidence. The projection cannot rank, select, mutate or
-  publish. Compare UI, provenance branches and restart/staleness GUI acceptance
-  remain.
+  and publication evidence. Every persisted candidate workflow-run identity is
+  now retained and resolved to its exact durable G5 projection when present;
+  missing references remain explicitly unresolved. The projection cannot rank,
+  select, mutate or publish. Mutation-owner provenance, restart/staleness GUI
+  acceptance and installed acceptance remain.
 - **X7: partial Manufacture evidence foundation.** A bounded projection now
   accepts only the existing Native Manufacture post owner's committed output.
   The post runtime now creates its exact durable G2 Analysis attempt and
@@ -189,8 +191,11 @@ workbench or authority layer. The implementation sequence is:
    mesh-object identity where present. Current result owners do not expose a
    topology digest or per-array content identities, so matching mesh names or
    point/cell counts cannot authorize pointwise subtraction. Shared-mesh
-   pointwise comparison, restart/staleness GUI acceptance and installed GUI
-   acceptance remain.
+   pointwise comparison remains. Optimization candidates now expose each exact
+   persisted G5 workflow-run branch, including full read-only workflow state for
+   resolved records and explicit unresolved identities when no durable owner
+   record exists. Mutation-owner provenance, restart/staleness GUI acceptance
+   and installed GUI acceptance remain.
 
 EVS-01 through EVS-09 are individually reviewable and must retain compatibility
 with the existing Analyze UI. X3/X4, X7 and X8-X12 continue in parallel or

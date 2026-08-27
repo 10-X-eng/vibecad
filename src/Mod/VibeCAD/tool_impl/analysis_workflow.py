@@ -403,6 +403,24 @@ class WorkflowRunStore:
                 matches.append(record)
         return tuple(matches)
 
+    def find_by_run_ids(
+        self, run_ids: tuple[str, ...] | list[str]
+    ) -> tuple[tuple[dict[str, Any], ...], tuple[str, ...]]:
+        """Resolve exact run identities and report genuinely absent records."""
+
+        if not isinstance(run_ids, (tuple, list)) or len(run_ids) > 4096:
+            raise WorkflowRunError("run_ids exceed their bounded discovery limit.")
+        identities = tuple(_safe_id(value, "run_id") for value in run_ids)
+        if len(identities) != len(set(identities)):
+            raise WorkflowRunError("run_ids must be unique.")
+        if not identities:
+            return (), ()
+        records = {record["run_id"]: record for record in self.list_records()}
+        return (
+            tuple(records[identity] for identity in identities if identity in records),
+            tuple(identity for identity in identities if identity not in records),
+        )
+
     def _update(self, run_id: str, mutator) -> dict[str, Any]:
         with self._writer():
             record = self.load(run_id)
