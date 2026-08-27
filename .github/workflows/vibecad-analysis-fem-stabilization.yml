@@ -36,7 +36,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install test runner
-        run: python -m pip install --disable-pip-version-check pytest
+        run: python -m pip install --disable-pip-version-check pytest jsonschema
 
       - name: Run FEM parity and process-tree stabilization tests
         run: >-
