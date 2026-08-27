@@ -672,17 +672,21 @@ def test_solver_snapshot_is_materialized_only_inside_owned_workspace(
     assert frozen.solver_name == "Solver"
 
 
-def test_human_and_ai_solver_entrypoints_do_not_call_synchronous_case_builder() -> None:
+def test_default_human_and_ai_solver_entrypoints_use_extracted_snapshot_pipeline() -> None:
     root = Path(__file__).resolve().parents[1]
     human = (root / "VibeCADAnalyzeSolverGui.py").read_text(encoding="utf-8")
     ai = (root / "VibeCADNativeAnalyzeSolverExecutionRuntime.py").read_text(
         encoding="utf-8"
     )
 
-    for source in (human, ai):
-        assert "capture_solver_execution_request" in source
-        assert "prepare_solver_execution_request" not in source
-        assert "execute_frozen_solver_execution" in source
+    assert "capture_solver_execution_request" in human
+    assert "prepare_solver_execution_request" not in human
+    assert "execute_frozen_solver_execution" in human
+    assert "current_fem_execution_route" in ai
+    assert "ANALYSIS_RUNTIME_FEM" in ai
+    assert "LEGACY_FEM_EXECUTION" in ai
+    assert "capture_solver_execution_request" in ai
+    assert "execute_frozen_solver_execution" in ai
 
 
 def test_human_solver_progress_is_mirrored_to_the_status_bar(

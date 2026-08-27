@@ -320,7 +320,7 @@ Remaining program obligations:
 
 **Status: Partial.**
 
-Multiple host-runtime correctness slices have landed and dedicated regression tests exist. The FEM compatibility and known-difference report is now frozen against the v2 executable oracle, but the named stabilization interval still lacks the complete cross-platform repeated stress, leak/orphan, document-lifecycle, installed-solver, and rollback evidence.
+Multiple host-runtime correctness slices have landed and dedicated regression tests exist. The FEM compatibility and known-difference report is frozen against the v2 executable oracle. Gate G7 is now covered by a temporary internal, context-local route that defaults to `analysis_runtime_fem`, can exercise `legacy_fem_execution` without a public or durable setting, captures the route at submission, and restores it automatically. The route tests cover success, cancellation, failure, cleanup, and stale-document refusal; the v2 oracle, installed Windows A/B publication gate, and compatibility-facade checks prove the associated execution, CAD-state, save/reopen, and old-API invariants. The named stabilization interval still lacks the complete cross-platform repeated stress, leak/orphan, document-lifecycle, and installed physical-solver evidence.
 
 Remaining exit criteria:
 

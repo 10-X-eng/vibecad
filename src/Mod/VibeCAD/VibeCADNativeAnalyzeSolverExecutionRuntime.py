@@ -6,6 +6,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from analysis_fem_execution_route import (
+    ANALYSIS_RUNTIME_FEM,
+    LEGACY_FEM_EXECUTION,
+    current_fem_execution_route,
+)
+import VibeCADNativeAnalyzeSolverExecution as legacy_solver_execution
 from tool_impl.analysis_fem_adapter import (
     adopt_isolated_solver_execution,
     commit_solver_execution,
@@ -56,49 +62,95 @@ class NativeAnalyzeSolverExecutionRuntime:
                 "Background FEM solver execution is unavailable in this session.",
                 error_code="NATIVE_ANALYZE_SOLVER_BACKGROUND_UNAVAILABLE",
             )
-        captured = capture_solver_execution_request(
-            context.document,
-            context.document_uid,
-            **values,
-        )
-        workspace = create_solver_execution_workspace()
+        execution_route = current_fem_execution_route()
+        workspace = None
+        request = None
 
-        def prepare(cancelled: Any, progress: Any) -> Any:
-            progress(3, "Capturing exact FEM document")
-            materialized = dispatcher(
-                lambda: materialize_solver_execution_snapshot(
-                    context.document,
-                    captured,
-                    workspace,
+        if execution_route == LEGACY_FEM_EXECUTION:
+            request = legacy_solver_execution.prepare_solver_execution_request(
+                context.document,
+                context.document_uid,
+                **values,
+            )
+
+            def prepare(cancelled: Any, progress: Any) -> Any:
+                return legacy_solver_execution.run_solver_execution(
+                    request,
+                    cancelled=cancelled,
+                    progress=progress,
                 )
-            )
-            progress(5, "Authenticating exact FEM document snapshot")
-            frozen = freeze_solver_execution_snapshot(materialized)
-            prepared = execute_frozen_solver_execution(
-                frozen,
-                cancelled=cancelled,
-                progress=progress,
-            )
-            return adopt_isolated_solver_execution(
-                prepared,
-                document_uid=context.document_uid,
-            )
 
-        def validate() -> None:
-            context.guard()
-            validate_captured_solver_execution(context.document, captured)
+            def validate() -> None:
+                context.guard()
+
+            mutate = lambda document, prepared: (
+                legacy_solver_execution.commit_solver_execution(document, prepared)
+            )
+            verify = legacy_solver_execution.verify_solver_execution
+            target_kind = str(request.target.kind)
+
+            def cleanup_route() -> None:
+                legacy_solver_execution.discard_solver_execution_request(request)
+
+        elif execution_route == ANALYSIS_RUNTIME_FEM:
+            captured = capture_solver_execution_request(
+                context.document,
+                context.document_uid,
+                **values,
+            )
+            workspace = create_solver_execution_workspace()
+
+            def prepare(cancelled: Any, progress: Any) -> Any:
+                progress(3, "Capturing exact FEM document")
+                materialized = dispatcher(
+                    lambda: materialize_solver_execution_snapshot(
+                        context.document,
+                        captured,
+                        workspace,
+                    )
+                )
+                progress(5, "Authenticating exact FEM document snapshot")
+                frozen = freeze_solver_execution_snapshot(materialized)
+                prepared = execute_frozen_solver_execution(
+                    frozen,
+                    cancelled=cancelled,
+                    progress=progress,
+                )
+                return adopt_isolated_solver_execution(
+                    prepared,
+                    document_uid=context.document_uid,
+                )
+
+            def validate() -> None:
+                context.guard()
+                validate_captured_solver_execution(context.document, captured)
+
+            mutate = lambda document, prepared: commit_solver_execution(
+                document, prepared
+            )
+            verify = verify_solver_execution
+            target_kind = str(captured.target.kind)
+
+            def cleanup_route() -> None:
+                workspace.cleanup()
+
+        else:  # The route helper validates this invariant; fail closed if corrupted.
+            raise NativeAnalyzeError(
+                "The internal FEM execution route is invalid.",
+                error_code="NATIVE_ANALYZE_SOLVER_ROUTE_INVALID",
+            )
 
         def commit(prepared: Any) -> Mapping[str, Any]:
             return run_immediate_mutation(
                 context,
                 ticket=ticket,
-                transaction_name=(f"Import {captured.target.kind.title()} FEM Results"),
-                mutate=lambda document: commit_solver_execution(document, prepared),
-                verify=verify_solver_execution,
+                transaction_name=(f"Import {target_kind.title()} FEM Results"),
+                mutate=lambda document: mutate(document, prepared),
+                verify=verify,
             )
 
         def cleanup(_prepared: Any) -> None:
-            workspace.cleanup()
+            cleanup_route()
             context.state.cancel_mutation(ticket)
 
         try:
@@ -114,13 +166,13 @@ class NativeAnalyzeSolverExecutionRuntime:
                 changes_document=True,
             )
         except NativeBackgroundError as exc:
-            workspace.cleanup()
+            cleanup_route()
             raise NativeAnalyzeError(
                 str(exc),
                 error_code="NATIVE_ANALYZE_SOLVER_QUEUE_FAILED",
             ) from exc
         except Exception:
-            workspace.cleanup()
+            cleanup_route()
             raise
         try:
             def watch_status() -> None:
@@ -133,7 +185,7 @@ class NativeAnalyzeSolverExecutionRuntime:
                 watch_solver_job(
                     manager,
                     str(snapshot.job_id),
-                    str(captured.target.kind),
+                    target_kind,
                 )
 
             dispatcher(watch_status)
