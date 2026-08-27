@@ -30,6 +30,7 @@ PUBLIC_GOVERNED_RUNTIME_MODULES = (
     "VibeCADNativeAssemblyIdentity.py",
     "VibeCADAssemblyPlanning.py",
     "VibeCADNativeAssemblyPlanning.py",
+    "VibeCADNativeAssemblyPlanningScenario.py",
     "VibeCADNativeAssemblyProposalDecision.py",
     "VibeCADNativeManufactureGovernance.py",
     "VibeCADNativeManufactureCamoticsRuntime.py",
