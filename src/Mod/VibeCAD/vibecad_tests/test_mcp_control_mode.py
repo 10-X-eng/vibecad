@@ -82,6 +82,10 @@ def test_mcp_wire_surface_rejects_ambiguous_names() -> None:
         mcp_wire_tool_schemas(schemas)
 
 
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="AF_UNIX sockets are unavailable on this host",
+)
 def test_mcp_ipc_address_rejects_live_owner_and_removes_stale_socket(
     tmp_path: Path,
 ) -> None:
