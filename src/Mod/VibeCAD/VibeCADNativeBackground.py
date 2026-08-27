@@ -77,6 +77,7 @@ DocumentThreadDispatcher = Callable[[Callable[[], Any]], Any]
 CommitValidator = Callable[[], Any]
 DiagnosticSink = Callable[[str, Exception], str | None]
 CleanupHandler = Callable[[Any | None], None]
+DocumentChangeResolver = Callable[[Mapping[str, Any]], bool]
 
 
 def _canonical_result(result: Mapping[str, Any]) -> str:
@@ -173,6 +174,7 @@ class NativeBackgroundManager:
         finalize_message: str | None = None,
         cleanup: CleanupHandler | None = None,
         changes_document: bool = False,
+        document_change_resolver: DocumentChangeResolver | None = None,
     ) -> NativeBackgroundSnapshot:
         uid = str(document_uid or "").strip()
         capability = str(capability_name or "").strip()
@@ -194,6 +196,8 @@ class NativeBackgroundManager:
             raise TypeError("Native background cleanup must be callable")
         if type(changes_document) is not bool:
             raise TypeError("changes_document must be a boolean")
+        if document_change_resolver is not None and not callable(document_change_resolver):
+            raise TypeError("document_change_resolver must be callable or None")
         clean_finalize_message = str(finalize_message or "").strip()
         if len(clean_finalize_message) > MAX_PROGRESS_MESSAGE_CHARS:
             raise NativeBackgroundError(
@@ -243,6 +247,7 @@ class NativeBackgroundManager:
                 dispatch_to_document_thread,
                 clean_finalize_message,
                 cleanup,
+                document_change_resolver,
             ),
             name=f"VibeCADNative-{job.job_id[:8]}",
             daemon=True,
@@ -259,6 +264,7 @@ class NativeBackgroundManager:
         dispatch_to_document_thread: DocumentThreadDispatcher,
         finalize_message: str,
         cleanup: CleanupHandler | None,
+        document_change_resolver: DocumentChangeResolver | None,
     ) -> None:
         prepared = None
         try:
@@ -298,6 +304,14 @@ class NativeBackgroundManager:
                 return commit(prepared)
 
             result = dispatch_to_document_thread(apply)
+            if document_change_resolver is not None:
+                resolved_change = document_change_resolver(result)
+                if type(resolved_change) is not bool:
+                    raise NativeBackgroundError(
+                        "A background document-change resolver must return a boolean."
+                    )
+                with self._lock:
+                    job.changes_document = resolved_change
             encoded = _canonical_result(result)
             with self._lock:
                 job.result_json = encoded

@@ -45,14 +45,22 @@ Curvature::Curvature()
         App::Prop_ReadOnly,
         "Number of computed per-vertex curvature samples"
     );
+    ADD_PROPERTY_TYPE(
+        UpdateFromSource,
+        (true),
+        "Curvature",
+        App::Prop_None,
+        "Recalculate samples when the linked Mesh changes"
+    );
 }
 
 short Curvature::mustExecute() const
 {
-    if (Source.isTouched()) {
+    if (UpdateFromSource.isTouched()) {
         return 1;
     }
-    if (Source.getValue() && Source.getValue()->isTouched()) {
+    if (UpdateFromSource.getValue()
+        && (Source.isTouched() || (Source.getValue() && Source.getValue()->isTouched()))) {
         return 1;
     }
     return 0;
@@ -60,6 +68,16 @@ short Curvature::mustExecute() const
 
 App::DocumentObjectExecReturn* Curvature::execute()
 {
+    if (!UpdateFromSource.getValue()) {
+        const int count = CurvInfo.getSize();
+        SampleCount.setValue(count);
+        if (count < 1) {
+            return new App::DocumentObjectExecReturn(
+                "Cached curvature requires at least one accepted sample."
+            );
+        }
+        return App::DocumentObject::StdReturn;
+    }
     Mesh::Feature* pcFeat = dynamic_cast<Mesh::Feature*>(Source.getValue());
     if (!pcFeat || pcFeat->isError()) {
         return new App::DocumentObjectExecReturn("No mesh object attached.");

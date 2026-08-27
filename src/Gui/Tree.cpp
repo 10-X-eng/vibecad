@@ -5718,6 +5718,17 @@ void DocumentItem::rebuildModelBrowser()
         return object ? objectKey(object) : std::string("$document");
     };
 
+    auto isMeshesGroup = [](const App::DocumentObject* object) {
+        if (!object
+            || !object->hasExtension(App::GroupExtension::getExtensionClassTypeId())) {
+            return false;
+        }
+        const auto* role = dynamic_cast<const App::PropertyString*>(
+            object->getPropertyByName("VibeCADTreeRole")
+        );
+        return role && std::string_view(role->getValue()) == "meshes";
+    };
+
     auto logicalItem = [&](App::DocumentObject* object, DocumentObjectItem* fallback) {
         if (!object) {
             // A virtual category may visually place a document-root object
@@ -6133,9 +6144,15 @@ void DocumentItem::rebuildModelBrowser()
                 || (groupEntry.component
                     && groupEntry.component->getTypeId().getName()
                         == std::string_view("Assembly::AssemblyObject")));
+        const bool meshesGroup = isMeshesGroup(groupEntry.object);
         for (const auto* child : children) {
             if (child->role == Role::Group) {
                 renderGroup(*child, groupItem, groupItem);
+                continue;
+            }
+            if (meshesGroup && child->role != Role::Internal
+                && !child->publishedImplementation && !child->bodyRepresentation) {
+                renderObject(*child, groupItem, groupItem);
                 continue;
             }
             // Bodies, Sketches, Parameters, References, and loose Geometry are
@@ -6429,6 +6446,19 @@ void DocumentItem::rebuildModelBrowser()
             sketches
         );
 
+        const auto meshGroups = filterBucket(
+            findBucket(
+                entriesByComponentRole,
+                RoleContextKey {componentEntry.object, Role::Group}
+            ),
+            [&](const Entry& entry) {
+                return !entry.group && isMeshesGroup(entry.object);
+            }
+        );
+        for (const auto* group : meshGroups) {
+            renderGroup(*group, componentItem, componentItem);
+        }
+
         renderAnalyze(componentItem, componentItem, componentEntry.object);
         renderDrawings(componentItem, componentItem, componentEntry.object);
 
@@ -6437,8 +6467,8 @@ void DocumentItem::rebuildModelBrowser()
                 entriesByComponentRole,
                 RoleContextKey {componentEntry.object, Role::History}
             ),
-            [](const Entry& entry) {
-                return !entry.body;
+            [&](const Entry& entry) {
+                return !entry.body && !isMeshesGroup(entry.group);
             }
         );
         renderCategory(
@@ -6507,8 +6537,8 @@ void DocumentItem::rebuildModelBrowser()
                 entriesByComponentRole,
                 RoleContextKey {componentEntry.object, Role::Group}
             ),
-            [](const Entry& entry) {
-                return !entry.group;
+            [&](const Entry& entry) {
+                return !entry.group && !isMeshesGroup(entry.object);
             }
         );
         const bool assemblyComponent = componentEntry.object
@@ -6607,13 +6637,23 @@ void DocumentItem::rebuildModelBrowser()
         rootSketches
     );
 
+    const auto rootMeshGroups = filterBucket(
+        findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Group}),
+        [&](const Entry& entry) {
+            return !entry.group && isMeshesGroup(entry.object);
+        }
+    );
+    for (const auto* group : rootMeshGroups) {
+        renderGroup(*group, this, nullptr);
+    }
+
     renderAnalyze(this, nullptr, nullptr);
     renderDrawings(this, nullptr, nullptr);
 
     const auto rootOperations = filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::History}),
-        [](const Entry& entry) {
-            return !entry.body;
+        [&](const Entry& entry) {
+            return !entry.body && !isMeshesGroup(entry.group);
         }
     );
     renderCategory(
@@ -6685,8 +6725,8 @@ void DocumentItem::rebuildModelBrowser()
 
     const auto rootGroups = filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Group}),
-        [](const Entry& entry) {
-            return !entry.group;
+        [&](const Entry& entry) {
+            return !entry.group && !isMeshesGroup(entry.object);
         }
     );
     if (!rootGroups.empty()) {

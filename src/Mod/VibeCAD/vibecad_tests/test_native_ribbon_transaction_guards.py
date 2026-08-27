@@ -403,16 +403,19 @@ def test_inspection_tasks_close_only_their_exact_locked_transactions() -> None:
     visual = (_REPOSITORY / "src/Mod/Inspection/Gui/VisualInspection.cpp").read_text(
         encoding="utf-8"
     )
+    visual_gui = (
+        _REPOSITORY / "src/Mod/VibeCAD/VibeCADInspectionComparisonGui.py"
+    ).read_text(encoding="utf-8")
     assert "targetDocumentName" in visual
-    assert "Gui::ExactTransaction" in visual
-    assert "transaction->commit()" in visual
-    assert "transaction->abort()" in visual
+    assert 'callMemberFunction("start_visual_inspection"' in visual
+    assert "Gui::ExactTransaction" not in visual
     assert "document->lockTransaction()" not in visual
-    assert visual.index("transaction->commit()") < visual.index("QDialog::accept()")
-    assert visual.index("transaction->commit()") < visual.rindex(
-        "recordAcceptedVisualInspection("
+    assert "run_human_mutation(" in visual_gui
+    assert "manager.submit(" in visual_gui
+    assert "changes_document=True" in visual_gui
+    assert visual.index('callMemberFunction("start_visual_inspection"') < visual.index(
+        "QDialog::accept()"
     )
-    assert "macroManager()" in visual
 
     modeling = (_REPOSITORY / "src/Mod/Part/Gui/ModelingSelection.cpp").read_text(
         encoding="utf-8"

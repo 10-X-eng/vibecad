@@ -51,6 +51,7 @@
 #include <Mod/Mesh/App/Core/Elements.h>
 #include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/MeshFeature.h>
+#include <Mod/Mesh/Gui/BackgroundMeshSegmentation.h>
 #include <Mod/Mesh/Gui/CommandGuard.h>
 #include <Mod/Part/App/FaceMakerCheese.h>
 #include <Mod/Part/App/FeaturePartSpline.h>
@@ -832,13 +833,6 @@ CmdSegmentationFromComponents::CmdSegmentationFromComponents()
 
 void CmdSegmentationFromComponents::activated(int)
 {
-    struct Component
-    {
-        Mesh::Feature* source;
-        std::vector<long> facets;
-        std::size_t index;
-    };
-
     auto* document = ReverseEngineeringGui::OperationSupport::cleanActiveDocument();
     auto selected = getSelection().getObjectsOfType<Mesh::Feature>();
     if (!ReverseEngineeringGui::OperationSupport::areUsableSources(asDocumentObjects(selected), document)
@@ -847,71 +841,11 @@ void CmdSegmentationFromComponents::activated(int)
     }
 
     try {
-        std::vector<Component> components;
-        std::vector<App::DocumentObject*> splitSources;
-        for (auto* source : selected) {
-            const auto sourceComponents = source->Mesh.getValue().getComponents();
-            if (sourceComponents.size() <= 1) {
-                continue;
-            }
-            splitSources.push_back(source);
-            for (std::size_t index = 0; index < sourceComponents.size(); ++index) {
-                if (sourceComponents[index].empty()) {
-                    throw Base::RuntimeError("A connected component did not contain any facets");
-                }
-                components.push_back({
-                    source,
-                    {
-                        sourceComponents[index].begin(),
-                        sourceComponents[index].end(),
-                    },
-                    index,
-                });
-            }
-        }
-        if (components.empty()) {
-            return;
-        }
-
-        Gui::ExactTransaction mutation(
-            *document,
-            QT_TRANSLATE_NOOP("Command", "Segment mesh components")
+        MeshGui::startBackgroundMeshSegmentation(
+            selected,
+            "segmentation_from_components",
+            R"({"result_label_prefix":"Component"})"
         );
-        std::vector<App::DocumentObject*> outputs;
-        outputs.reserve(components.size());
-        for (const auto& component : components) {
-            auto* result = document->addObject<Mesh::FacetSubset>("Segment");
-            result->Label.setValue(
-                component.source->Label.getStrValue() + " Component "
-                + std::to_string(component.index + 1)
-            );
-            result->Source.setValue(component.source);
-            result->FacetIndices.setValues(component.facets);
-            result->AcceptedTopology.setValue(component.source->Mesh.getValue());
-            result->SelectionKind.setValue("Connected component");
-            outputs.push_back(result);
-        }
-
-        document->recompute();
-        if (std::ranges::any_of(outputs, [](const App::DocumentObject* output) {
-                const auto* segment = freecad_cast<const Mesh::FacetSubset*>(output);
-                return !segment || segment->isError() || segment->Mesh.getValue().countFacets() == 0;
-            })) {
-            throw Base::RuntimeError("Connected-component segmentation produced an invalid result");
-        }
-
-        ReverseEngineeringGui::OperationSupport::publishOutputGroup(
-            *document,
-            splitSources,
-            outputs,
-            "Segments",
-            "Mesh Components",
-            "Segment connected components",
-            true
-        );
-        document->recompute();
-        ReverseEngineeringGui::OperationSupport::commit(mutation);
-        updateActive();
     }
     catch (const Base::Exception& error) {
         showOperationError(QObject::tr("Segment Mesh Components"), error);
@@ -942,13 +876,6 @@ CmdMeshBoundary::CmdMeshBoundary()
 
 void CmdMeshBoundary::activated(int)
 {
-    struct BoundaryResult
-    {
-        Mesh::Feature* source;
-        TopoDS_Shape shape;
-        bool isFace;
-    };
-
     auto* document = ReverseEngineeringGui::OperationSupport::cleanActiveDocument();
     auto sources = Gui::Selection().getObjectsOfType<Mesh::Feature>();
     auto sourceObjects = asDocumentObjects(sources);
@@ -958,78 +885,11 @@ void CmdMeshBoundary::activated(int)
     }
 
     try {
-        std::vector<BoundaryResult> boundaries;
-        boundaries.reserve(sources.size());
-        for (auto* source : sources) {
-            const Mesh::MeshObject& mesh = source->Mesh.getValue();
-            std::list<std::vector<Base::Vector3f>> borders;
-            MeshCore::MeshAlgorithm(mesh.getKernel()).GetMeshBorders(borders);
-
-            BRep_Builder builder;
-            TopoDS_Compound compound;
-            builder.MakeCompound(compound);
-            std::vector<TopoDS_Wire> wires;
-            for (const auto& border : borders) {
-                if (border.size() < 2) {
-                    continue;
-                }
-                BRepBuilderAPI_MakePolygon polygon;
-                for (auto point = border.rbegin(); point != border.rend(); ++point) {
-                    polygon.Add(gp_Pnt(point->x, point->y, point->z));
-                }
-                if (polygon.IsDone()) {
-                    const TopoDS_Wire wire = polygon.Wire();
-                    builder.Add(compound, wire);
-                    wires.push_back(wire);
-                }
-            }
-            if (wires.empty()) {
-                throw Base::ValueError("The selected mesh has no open boundary");
-            }
-
-            TopoDS_Shape result;
-            try {
-                result = Part::FaceMakerCheese::makeFace(wires);
-            }
-            catch (const Standard_Failure&) {
-            }
-            const bool isFace = !result.IsNull();
-            if (!isFace) {
-                result = compound;
-            }
-            if (result.IsNull()) {
-                throw Base::RuntimeError("The selected mesh boundary could not be converted");
-            }
-            boundaries.push_back({source, result, isFace});
-        }
-
-        Gui::ExactTransaction mutation(*document, QT_TRANSLATE_NOOP("Command", "Create mesh boundary"));
-        std::vector<Part::Feature*> outputs;
-        outputs.reserve(boundaries.size());
-        for (const auto& boundary : boundaries) {
-            auto* output = document->addObject<Part::Feature>(
-                boundary.isFace ? "FaceFromMesh" : "WireFromMesh"
-            );
-            output->Label.setValue(
-                boundary.source->Label.getStrValue()
-                + (boundary.isFace ? " Boundary Face" : " Boundary")
-            );
-            output->Shape.setValue(boundary.shape);
-            ReverseEngineeringGui::OperationSupport::setSource(*output, *boundary.source);
-            outputs.push_back(output);
-        }
-        ReverseEngineeringGui::OperationSupport::publishSourcePreserving(
-            *document,
-            sourceObjects,
-            asDocumentObjects(outputs),
-            "MeshBoundaries",
-            "Mesh Boundaries",
-            "Create mesh boundaries"
+        MeshGui::startBackgroundMeshSegmentation(
+            sources,
+            "mesh_boundary",
+            R"({"make_faces_when_closed":true})"
         );
-        document->recompute();
-        validatePartOutputs(outputs);
-        ReverseEngineeringGui::OperationSupport::commit(mutation);
-        updateActive();
     }
     catch (const Base::Exception& error) {
         showOperationError(QObject::tr("Create Mesh Boundary"), error);

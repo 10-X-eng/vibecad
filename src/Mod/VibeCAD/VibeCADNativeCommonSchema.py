@@ -339,7 +339,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
             _variant(
                 "inspection_result",
                 "Read statistics from one Inspection result.",
-                ("Inspection_VisualInspection",),
+                ("Inspection_InspectElement",),
                 parameters=_parameters(
                     {"targets": _targets(_object_ref(), minimum=1, maximum=1)},
                     ("targets",),

@@ -4,17 +4,21 @@ These tests intentionally specify the current VibeCAD human-tool behavior.
 They do not inherit historical FreeCAD task/transaction assumptions.
 """
 
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import time
 
 import FreeCAD as App
 import FreeCADGui as Gui
 import Mesh
+import MeshGui
 import MeshPart  # noqa: F401 - registers native MeshPart object types
 import Part
 import PartDesign  # noqa: F401 - registers native Body/Feature types
 from PySide import QtCore, QtGui
+from VibeCADCore import get_service
 
 
 SHIPPED_COMMANDS = {
@@ -332,13 +336,24 @@ class TestVibeCADMeshSourceContracts(unittest.TestCase):
             import_start,
         )
         import_body = mesh_text[import_start:import_end]
-        self.assertIn("importer.loadWithResults(", import_body)
-        self.assertIn(
-            'recordedCommand = "Mesh.insert(',
-            import_body,
-        )
+        self.assertIn('PyImport_ImportModule("VibeCADMeshImportGui")', import_body)
+        self.assertIn('callMemberFunction("start_mesh_imports"', import_body)
+        self.assertIn('"*.3mf"', import_body)
+        self.assertNotIn("importer.loadWithResults(", import_body)
+        self.assertNotIn("Gui::ExactTransaction", import_body)
+        self.assertIn("VibeCADMeshImportGui.start_mesh_imports", import_body)
         self.assertNotIn("document->getObjects()", import_body)
         self.assertNotIn("initialObjectIds", import_body)
+
+        export_start = mesh_text.index("void CmdMeshExport::activated(")
+        export_end = mesh_text.index(
+            "\nbool CmdMeshExport::isActive()",
+            export_start,
+        )
+        export_body = mesh_text[export_start:export_end]
+        self.assertIn('PyImport_ImportModule("VibeCADMeshExportGui")', export_body)
+        self.assertIn('callMemberFunction("start_mesh_export"', export_body)
+        self.assertNotIn("vp->exportMesh(", export_body)
 
         tessellation_text = tessellation_source.read_text(encoding="utf-8")
         process_start = tessellation_text.index(
@@ -350,16 +365,15 @@ class TestVibeCADMeshSourceContracts(unittest.TestCase):
         )
         process_body = tessellation_text[process_start:process_end]
         self.assertIn(
-            "doc->addObject<MeshPart::MeshFromShape>",
+            'PyImport_ImportModule("VibeCADMeshTessellationGui")',
             process_body,
         )
-        self.assertIn("result->Source.setValue(", process_body)
-        self.assertIn("result->Method.setValue(method)", process_body)
-        self.assertIn("doc->recompute()", process_body)
         self.assertIn(
-            "MeshGui::createSourcePreservingOutputGroup(",
+            'callMemberFunction("start_shape_tessellations"',
             process_body,
         )
+        self.assertNotIn("doc->addObject<MeshPart::MeshFromShape>", process_body)
+        self.assertNotIn("doc->recompute()", process_body)
         self.assertNotIn(
             "Gui::Command::runDocumentObjectCommand(",
             process_body,
@@ -390,6 +404,9 @@ class TestVibeCADMeshSourceContracts(unittest.TestCase):
         flattening = self._native_source(
             Path("MeshPart") / "Gui" / "MeshFlatteningCommand.py"
         )
+        conversion_gui = self._native_source(
+            Path("VibeCAD") / "VibeCADMeshConversionGui.py"
+        )
         if not all(
             (
                 mesh_operations,
@@ -399,6 +416,7 @@ class TestVibeCADMeshSourceContracts(unittest.TestCase):
                 cross_sections,
                 curve,
                 flattening,
+                conversion_gui,
             )
         ):
             self.skipTest(
@@ -456,17 +474,24 @@ class TestVibeCADMeshSourceContracts(unittest.TestCase):
 
         meshpart_command_text = meshpart_command.read_text(encoding="utf-8")
         self.assertIn(
-            "addObject<MeshPart::ShapeFromMesh>",
+            'callMemberFunction(\n        "start_mesh_conversions"',
             meshpart_command_text,
         )
+        conversion_gui_text = conversion_gui.read_text(encoding="utf-8")
         self.assertIn(
-            "addObject<MeshPart::SectionByPlane>",
-            meshpart_command_text,
+            "commit_mesh_conversion(document, prepared, publish=False)",
+            conversion_gui_text,
         )
         self.assertIn(
-            "addObject<MeshPart::CrossSections>",
-            cross_sections.read_text(encoding="utf-8"),
+            "MeshGui.publishSourcePreservingOutputs(",
+            conversion_gui_text,
         )
+        self.assertIn("run_mesh_conversion(", conversion_gui_text)
+        self.assertIn("MeshGui::startBackgroundMeshCut(", meshpart_command_text)
+        self.assertIn('"section_by_plane"', meshpart_command_text)
+        cross_sections_text = cross_sections.read_text(encoding="utf-8")
+        self.assertIn("MeshGui::startBackgroundMeshCut(", cross_sections_text)
+        self.assertIn('"cross_sections"', cross_sections_text)
         curve_text = curve.read_text(encoding="utf-8")
         self.assertIn(
             "addObject<MeshPart::CurveOnMesh>",
@@ -495,6 +520,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self.mesh.Mesh = _tetrahedron()
         self.second_mesh = self.document.addObject("Mesh::Feature", "SecondaryMesh")
         self.second_mesh.Mesh = _tetrahedron(3.0)
+        self.meshes_group = MeshGui.ensureMeshesGroup(self.document.Name)
         self.shape = self.document.addObject("Part::Feature", "SourceShape")
         self.shape.Shape = Part.makeBox(10.0, 8.0, 6.0)
         self.plane = self.document.addObject("Part::Plane", "CutPlane")
@@ -535,6 +561,415 @@ class TestVibeCADRibbonTools(unittest.TestCase):
                 25,
             )
 
+    def test_compiled_projected_polygon_edit_preserves_both_exact_regions(self):
+        source = Mesh.Mesh(
+            [
+                (App.Vector(-0.9, -0.8, 0.0), App.Vector(-0.1, -0.8, 0.0), App.Vector(-0.1, 0.8, 0.0)),
+                (App.Vector(-0.9, -0.8, 0.0), App.Vector(-0.1, 0.8, 0.0), App.Vector(-0.9, 0.8, 0.0)),
+                (App.Vector(0.1, -0.8, 0.0), App.Vector(0.9, -0.8, 0.0), App.Vector(0.9, 0.8, 0.0)),
+                (App.Vector(0.1, -0.8, 0.0), App.Vector(0.9, 0.8, 0.0), App.Vector(0.1, 0.8, 0.0)),
+            ]
+        )
+        projection = [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+        polygon = [(0.0, 0.0), (0.49, 0.0), (0.49, 1.0), (0.0, 1.0)]
+
+        inside, outside = Mesh.projectedPolygonEdit(
+            source,
+            polygon,
+            projection,
+            "cut",
+            ("inside", "outside"),
+        )
+
+        self.assertEqual(inside.CountFacets, 2)
+        self.assertEqual(outside.CountFacets, 2)
+        self.assertNotEqual(
+            Mesh.geometrySha256(inside),
+            Mesh.geometrySha256(outside),
+        )
+
+        trimmed_inside, trimmed_outside = Mesh.projectedPolygonEdit(
+            source,
+            polygon,
+            projection,
+            "trim",
+            ("inside", "outside"),
+        )
+        self.assertEqual(trimmed_inside.CountFacets, 2)
+        self.assertEqual(trimmed_outside.CountFacets, 2)
+        self.assertNotEqual(
+            Mesh.geometrySha256(trimmed_inside),
+            Mesh.geometrySha256(source),
+        )
+        self.assertNotEqual(
+            Mesh.geometrySha256(trimmed_outside),
+            Mesh.geometrySha256(source),
+        )
+        self.assertNotEqual(
+            Mesh.geometrySha256(trimmed_inside),
+            Mesh.geometrySha256(trimmed_outside),
+        )
+
+    def test_compiled_mesh_snapshot_has_stable_geometry_and_revision(self):
+        revision_before = Mesh.propertyRevision(self.mesh.Mesh)
+        snapshot, digest = Mesh.snapshotWithSha256(self.mesh.Mesh)
+
+        self.mesh.Mesh = _tetrahedron(40.0)
+        revision_after = Mesh.propertyRevision(self.mesh.Mesh)
+
+        self.assertGreater(revision_after, revision_before)
+        self.assertEqual(digest, Mesh.geometrySha256(snapshot))
+        self.assertNotEqual(digest, Mesh.geometrySha256(self.mesh.Mesh))
+        self.assertEqual(snapshot.CountFacets, 4)
+
+    def test_mesh_target_preflight_defers_geometry_snapshot_to_background(self):
+        from VibeCADNativeMeshState import mesh_object_state
+        from VibeCADNativeMeshTargets import prepare_mesh_target
+
+        state = mesh_object_state(self.mesh)
+        original_digest = Mesh.geometrySha256
+
+        def reject_ui_digest(_mesh):
+            raise AssertionError("Mesh preflight hashed geometry on the document thread")
+
+        Mesh.geometrySha256 = reject_ui_digest
+        try:
+            target = prepare_mesh_target(
+                self.document,
+                str(self.document.Uid),
+                {
+                    "object_name": str(self.mesh.Name),
+                    "expected_state_sha256": str(state["state_sha256"]),
+                },
+                require_label=False,
+            )
+        finally:
+            Mesh.geometrySha256 = original_digest
+
+        self.assertEqual(
+            state["geometry_revision"],
+            Mesh.propertyRevision(self.mesh.Mesh),
+        )
+        self.assertEqual(target.source_geometry_revision, state["geometry_revision"])
+        self.assertEqual(target.source_geometry_sha256, "")
+        self.assertIs(target.source_mesh, self.mesh.Mesh)
+
+    def test_background_mesh_snapshot_rebinds_exact_prepared_targets(self):
+        from VibeCADNativeMeshModify import PreparedMeshModification
+        from VibeCADNativeMeshState import mesh_object_state
+        from VibeCADNativeMeshTargets import (
+            prepare_mesh_target,
+            rebind_prepared_mesh_targets,
+            snapshot_mesh_targets,
+        )
+
+        state = mesh_object_state(self.mesh)
+        target = prepare_mesh_target(
+            self.document,
+            str(self.document.Uid),
+            {
+                "object_name": str(self.mesh.Name),
+                "expected_state_sha256": str(state["state_sha256"]),
+            },
+            require_label=False,
+        )
+        prepared = PreparedMeshModification("harmonize_normals", (target,), {})
+
+        exact_targets, snapshots = snapshot_mesh_targets(prepared.targets)
+        exact_prepared = rebind_prepared_mesh_targets(prepared, exact_targets)
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(
+            exact_prepared.targets[0].source_geometry_sha256,
+            Mesh.geometrySha256(snapshots[0]),
+        )
+        self.assertEqual(snapshots[0].CountFacets, target.topology["facets"])
+        self.assertIs(exact_prepared.targets[0].source, target.source)
+        self.assertIs(exact_prepared.targets[0].source_mesh, target.source_mesh)
+
+    def test_mesh_job_request_creation_never_copies_on_document_thread(self):
+        from dataclasses import replace
+        from VibeCADMeshModificationJob import make_request
+        from VibeCADNativeMeshModify import PreparedMeshModification
+        from VibeCADNativeMeshState import mesh_object_state
+        from VibeCADNativeMeshTargets import prepare_mesh_target
+
+        class CopyTrap:
+            @property
+            def Mesh(self):
+                raise AssertionError("A Mesh job copied geometry before background dispatch")
+
+        state = mesh_object_state(self.mesh)
+        target = prepare_mesh_target(
+            self.document,
+            str(self.document.Uid),
+            {
+                "object_name": str(self.mesh.Name),
+                "expected_state_sha256": str(state["state_sha256"]),
+            },
+            require_label=False,
+        )
+        deferred = replace(target, source=CopyTrap())
+        request = make_request(
+            PreparedMeshModification("harmonize_normals", (deferred,), {})
+        )
+
+        self.assertEqual(request.detached_meshes, (target.source_mesh,))
+
+    def test_viewport_polygon_cut_publishes_verified_split_in_background(self):
+        self.mesh.Mesh = Mesh.Mesh(
+            [
+                (
+                    App.Vector(-0.9, -0.8, 0.0),
+                    App.Vector(-0.1, -0.8, 0.0),
+                    App.Vector(-0.1, 0.8, 0.0),
+                ),
+                (
+                    App.Vector(-0.9, -0.8, 0.0),
+                    App.Vector(-0.1, 0.8, 0.0),
+                    App.Vector(-0.9, 0.8, 0.0),
+                ),
+                (
+                    App.Vector(0.1, -0.8, 0.0),
+                    App.Vector(0.9, -0.8, 0.0),
+                    App.Vector(0.9, 0.8, 0.0),
+                ),
+                (
+                    App.Vector(0.1, -0.8, 0.0),
+                    App.Vector(0.9, 0.8, 0.0),
+                    App.Vector(0.1, 0.8, 0.0),
+                ),
+            ]
+        )
+        self.document.recompute()
+        from VibeCADMeshCutGui import start_mesh_cut
+        from VibeCADNativeMeshState import mesh_object_state
+
+        before = tuple(self.document.Objects)
+        started = time.monotonic()
+        job_id = start_mesh_cut(
+            "viewport_cut",
+            json.dumps(
+                {
+                    "document": self.document.Name,
+                    "targets": [self.mesh.Name],
+                    "polygon": [[0.0, 0.0], [0.49, 0.0], [0.49, 1.0], [0.0, 1.0]],
+                    "projection_matrix": [
+                        1.0, 0.0, 0.0, 0.0,
+                        0.0, 1.0, 0.0, 0.0,
+                        0.0, 0.0, 1.0, 0.0,
+                        0.0, 0.0, 0.0, 1.0,
+                    ],
+                    "mode": "split",
+                    "expected_state_sha256": mesh_object_state(self.mesh)[
+                        "state_sha256"
+                    ],
+                }
+            ),
+        )
+        self.assertTrue(job_id)
+        self.assertLess(time.monotonic() - started, 0.25)
+
+        snapshot = self._wait_for_mesh_cut(capability="mesh.cut.viewport_cut.human")
+        self.assertEqual(snapshot.job_id, job_id)
+        created = [obj for obj in self.document.Objects if obj not in before]
+        controller = next(obj for obj in created if obj.TypeId == "Mesh::OutputGroup")
+        results = [obj for obj in created if obj.TypeId == "Mesh::StoredEdit"]
+        self.assertEqual(len(results), 2)
+        self.assertEqual(tuple(controller.Sources), (self.mesh,))
+        self.assertEqual(tuple(controller.Group), tuple(results))
+        self.assertEqual({result.Mesh.CountFacets for result in results}, {2})
+        self.assertEqual({result.Source for result in results}, {self.mesh})
+        self.assertEqual(
+            {result.VibeCADTimelineOwner for result in results},
+            {controller},
+        )
+        meshes = self.document.getObject("Meshes")
+        self.assertIsNotNone(meshes)
+        self.assertIn(controller, meshes.Group)
+        self.assertTrue(all(result not in meshes.Group for result in results))
+        self.assertFalse(self.mesh.Visibility)
+
+    def _wait_for_mesh_conversion(self, timeout=30.0):
+        manager = get_service().native_background_manager()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self._process_events(2)
+            snapshot = manager.latest_document_snapshot(
+                str(self.document.Uid),
+                capability_prefix="mesh.convert.human",
+            )
+            if snapshot is not None and snapshot.terminal:
+                self.assertEqual(snapshot.phase, "completed", snapshot.error)
+                return snapshot
+            time.sleep(0.01)
+        self.fail("Background Mesh conversion did not finish")
+
+    def _wait_for_mesh_tessellation(self, timeout=60.0):
+        manager = get_service().native_background_manager()
+        consumed = getattr(self, "_last_mesh_tessellation_job_id", "")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self._process_events(2)
+            snapshot = manager.latest_document_snapshot(
+                str(self.document.Uid),
+                capability_prefix="mesh.convert.shape_to_mesh.human",
+            )
+            if (
+                snapshot is not None
+                and str(snapshot.job_id) != consumed
+                and snapshot.terminal
+            ):
+                self.assertEqual(snapshot.phase, "completed", snapshot.error)
+                self._last_mesh_tessellation_job_id = str(snapshot.job_id)
+                return snapshot
+            time.sleep(0.01)
+        self.fail("Background Mesh From Shape did not finish")
+
+    def _wait_for_mesh_import(self, timeout=60.0):
+        manager = get_service().native_background_manager()
+        consumed = getattr(self, "_last_mesh_import_job_id", "")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self._process_events(2)
+            snapshot = manager.latest_document_snapshot(
+                str(self.document.Uid),
+                capability_prefix="mesh.io.import_mesh.human",
+            )
+            if (
+                snapshot is not None
+                and str(snapshot.job_id) != consumed
+                and snapshot.terminal
+            ):
+                self.assertEqual(snapshot.phase, "completed", snapshot.error)
+                self._last_mesh_import_job_id = str(snapshot.job_id)
+                return snapshot
+            time.sleep(0.01)
+        self.fail("Background Mesh import did not finish")
+
+    def _wait_for_mesh_boolean(
+        self,
+        document=None,
+        *,
+        expected_phase="completed",
+        timeout=60.0,
+    ):
+        target_document = document or self.document
+        manager = get_service().native_background_manager()
+        consumed = getattr(self, "_last_mesh_boolean_job_id", "")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self._process_events(2)
+            snapshot = manager.latest_document_snapshot(
+                str(target_document.Uid),
+                capability_prefix="mesh.boolean.human",
+            )
+            if (
+                snapshot is not None
+                and str(snapshot.job_id) != consumed
+                and snapshot.terminal
+            ):
+                self.assertEqual(snapshot.phase, expected_phase, snapshot.error)
+                self._last_mesh_boolean_job_id = str(snapshot.job_id)
+                return snapshot
+            time.sleep(0.01)
+        self.fail("Background Mesh boolean did not finish")
+
+    def _wait_for_mesh_cut(self, *, capability="mesh.cut.", timeout=60.0):
+        manager = get_service().native_background_manager()
+        consumed = getattr(self, "_last_mesh_cut_job_id", "")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self._process_events(2)
+            snapshot = manager.latest_document_snapshot(
+                str(self.document.Uid),
+                capability_prefix=capability,
+            )
+            if (
+                snapshot is not None
+                and str(snapshot.job_id) != consumed
+                and snapshot.terminal
+            ):
+                self.assertEqual(snapshot.phase, "completed", snapshot.error)
+                self._last_mesh_cut_job_id = str(snapshot.job_id)
+                return snapshot
+            time.sleep(0.01)
+        self.fail("Background Mesh cut did not finish")
+
+    def _wait_for_mesh_curvature(self, timeout=60.0):
+        manager = get_service().native_background_manager()
+        consumed = getattr(self, "_last_mesh_curvature_job_id", "")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self._process_events(2)
+            snapshot = manager.latest_document_snapshot(
+                str(self.document.Uid),
+                capability_prefix="mesh.curvature.vertex_curvature.human",
+            )
+            if (
+                snapshot is not None
+                and str(snapshot.job_id) != consumed
+                and snapshot.terminal
+            ):
+                self.assertEqual(snapshot.phase, "completed", snapshot.error)
+                self._last_mesh_curvature_job_id = str(snapshot.job_id)
+                return snapshot
+            time.sleep(0.01)
+        self.fail("Background Mesh curvature did not finish")
+
+    def _wait_for_mesh_job(
+        self,
+        capability_prefix,
+        *,
+        document=None,
+        expected_phase="completed",
+        timeout=60.0,
+    ):
+        target_document = document or self.document
+        manager = get_service().native_background_manager()
+        consumed = getattr(self, "_consumed_mesh_jobs", {})
+        key = (str(target_document.Uid), capability_prefix)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self._process_events(2)
+            snapshot = manager.latest_document_snapshot(
+                key[0],
+                capability_prefix=capability_prefix,
+            )
+            if (
+                snapshot is not None
+                and str(snapshot.job_id) != consumed.get(key, "")
+                and snapshot.terminal
+            ):
+                self.assertEqual(snapshot.phase, expected_phase, snapshot.error)
+                consumed[key] = str(snapshot.job_id)
+                self._consumed_mesh_jobs = consumed
+                title = (
+                    "Mesh Segmentation"
+                    if capability_prefix.startswith("mesh.segment.")
+                    else "Mesh"
+                )
+                while time.monotonic() < deadline:
+                    self._process_events(2)
+                    if not any(
+                        isinstance(widget, QtGui.QProgressDialog)
+                        and widget.isVisible()
+                        and widget.windowTitle() == title
+                        for widget in QtGui.QApplication.topLevelWidgets()
+                    ):
+                        break
+                    time.sleep(0.01)
+                else:
+                    self.fail(f"Background {capability_prefix} UI did not close")
+                return snapshot
+            time.sleep(0.01)
+        self.fail(f"Background {capability_prefix} job did not finish")
+
     def _select(self, *objects):
         Gui.Selection.clearSelection()
         for obj in objects:
@@ -572,7 +1007,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         feature.Mesh = mesh
 
     def _accept_input_dialog(self, value, integer=False):
-        attempts = {"remaining": 100}
+        attempts = {"remaining": 20000}
 
         def accept():
             for widget in QtGui.QApplication.topLevelWidgets():
@@ -592,12 +1027,16 @@ class TestVibeCADRibbonTools(unittest.TestCase):
 
         QtCore.QTimer.singleShot(0, accept)
 
-    def _accept_modal_dialog(self, _object_name):
+    def _accept_modal_dialog(self, _object_name, checked_texts=()):
         attempts = {"remaining": 1000}
+        checked_texts = set(checked_texts)
 
         def accept():
             widget = QtGui.QApplication.activeModalWidget()
             if isinstance(widget, QtGui.QDialog) and widget.isVisible():
+                for checkbox in widget.findChildren(QtGui.QCheckBox):
+                    if checkbox.text() in checked_texts:
+                        checkbox.setChecked(True)
                 button_box = widget.findChild(QtGui.QDialogButtonBox)
                 button = (
                     button_box.button(QtGui.QDialogButtonBox.Ok) if button_box else None
@@ -1072,7 +1511,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         objects_before = tuple(self.document.Objects)
         undo_before = self.document.UndoCount
         Gui.runCommand("Mesh_FlipNormals", 0)
-        self._process_events()
+        self._wait_for_mesh_job("mesh.modify.flip_normals.human")
         created = [
             obj
             for obj in self.document.Objects
@@ -1151,7 +1590,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self._select(source)
         self._accept_input_dialog(3, integer=True)
         Gui.runCommand("Mesh_FillupHoles", 0)
-        self._process_events(8)
+        self._wait_for_mesh_job("mesh.modify.fill_holes.human")
 
         created = [
             obj
@@ -1422,7 +1861,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         objects_before = tuple(self.document.Objects)
         undo_before = self.document.UndoCount
         Gui.runCommand("Mesh_Merge", 0)
-        self._process_events(10)
+        self._wait_for_mesh_job("mesh.segment.merge.human")
         created = [
             obj
             for obj in self.document.Objects
@@ -1533,13 +1972,9 @@ class TestVibeCADRibbonTools(unittest.TestCase):
                 App.Vector(0.0, 12.0, 0.0),
                 App.Rotation(),
             )
-            self.second_mesh.Placement = App.Placement(
-                App.Vector(30.0, 0.0, 0.0),
-                App.Rotation(),
-            )
             reopened.recompute()
             self.assertTrue(reopened_result.isValid())
-            self.assertNotEqual(
+            self.assertEqual(
                 self._mesh_points(reopened_result),
                 points_before,
             )
@@ -1548,13 +1983,20 @@ class TestVibeCADRibbonTools(unittest.TestCase):
                 12.0,
             )
 
+            self.second_mesh.Placement = App.Placement(
+                App.Vector(30.0, 0.0, 0.0),
+                App.Rotation(),
+            )
+            reopened.recompute()
+            self.assertFalse(reopened_result.isValid())
+            self.assertTrue(reopened_result.AcceptedSourcesStale)
+            self.assertEqual(reopened_result.Mesh.CountFacets, 0)
+            self.assertIn("rerun the merge", reopened_result.getStatusString())
+
             self.mesh.Mesh = _open_tetrahedron()
             reopened.recompute()
-            self.assertTrue(reopened_result.isValid())
-            self.assertEqual(
-                reopened_result.Mesh.CountFacets,
-                self.mesh.Mesh.CountFacets + self.second_mesh.Mesh.CountFacets,
-            )
+            self.assertFalse(reopened_result.isValid())
+            self.assertEqual(reopened_result.Mesh.CountFacets, 0)
 
             Gui.Selection.clearSelection()
             Gui.Selection.addSelection(reopened_result)
@@ -1589,7 +2031,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         objects_before = tuple(self.document.Objects)
 
         Gui.runCommand("Mesh_Merge", 0)
-        self._process_events(10)
+        self._wait_for_mesh_job("mesh.segment.merge.human")
         created = [
             obj
             for obj in self.document.Objects
@@ -1669,7 +2111,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
 
             self.assertTrue(Gui.isCommandActive(command_name), command_name)
             Gui.runCommand(command_name, 0)
-            self._process_events(10)
+            self._wait_for_mesh_boolean()
 
             created = [
                 obj for obj in self.document.Objects if obj not in objects_before
@@ -1677,6 +2119,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
             self.assertEqual(len(created), 1, command_name)
             result = created[0]
             self.assertEqual(result.TypeId, "MeshPart::Boolean")
+            self.assertFalse(result.UpdateFromSource)
             self.assertIs(result.Source1, first)
             self.assertIs(result.Source2, second)
             self.assertEqual(result.Operation, operation)
@@ -1740,7 +2183,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
             self.assertTrue(first.ViewObject.Visibility)
             self.assertTrue(second.ViewObject.Visibility)
             self.assertTrue(redone.Suppressed)
-            self.assertEqual(redone.Mesh.CountFacets, 0)
+            self.assertGreater(redone.Mesh.CountFacets, 0)
             self.assertIs(redone.Source1, first)
             self.assertIs(redone.Source2, second)
 
@@ -1792,10 +2235,17 @@ class TestVibeCADRibbonTools(unittest.TestCase):
 
             self._select(first, second)
             Gui.runCommand(command_name, 0)
-            self._process_events(10)
-            created = [obj for obj in document.Objects if obj not in objects_before]
+            self._wait_for_mesh_boolean(document)
+            created = [
+                obj
+                for obj in document.Objects
+                if obj not in objects_before and obj.TypeId == "MeshPart::Boolean"
+            ]
             self.assertEqual(len(created), 1, command_name)
             result = created[0]
+            meshes = document.getObject("Meshes")
+            self.assertIsNotNone(meshes)
+            self.assertIn(result, meshes.Group)
             result_name = result.Name
             self.assertEqual(result.TypeId, "MeshPart::Boolean")
             self.assertEqual(result.Operation, operation)
@@ -1893,11 +2343,15 @@ class TestVibeCADRibbonTools(unittest.TestCase):
             App.Rotation(App.Vector(0.0, 0.0, 1.0), 90.0),
         )
         self.document.recompute()
-        self._select(first, second)
-        objects_before = tuple(self.document.Objects)
-        Gui.runCommand("Mesh_Union", 0)
-        self._process_events(10)
-        result = next(obj for obj in self.document.Objects if obj not in objects_before)
+        result = self.document.addObject(
+            "MeshPart::Boolean",
+            "EditableParametricUnion",
+        )
+        result.Source1 = first
+        result.Source2 = second
+        result.Operation = "Union"
+        self.document.recompute()
+        self.assertTrue(result.UpdateFromSource)
         self.assertAlmostEqual(
             abs(result.Mesh.Volume),
             483.0,
@@ -2184,7 +2638,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         undo_before = self.document.UndoCount
         self._click_message_button("OK")
         Gui.runCommand("Mesh_Intersection", 0)
-        self._process_events(8)
+        self._wait_for_mesh_boolean(expected_phase="failed")
         self.assertEqual(tuple(self.document.Objects), objects_before)
         self.assertEqual(self.document.UndoCount, undo_before)
         self.assertTrue(solid.ViewObject.Visibility)
@@ -2192,7 +2646,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
 
         self._select(solid, far)
         Gui.runCommand("Mesh_Difference", 0)
-        self._process_events(8)
+        self._wait_for_mesh_boolean()
         difference = next(
             obj for obj in self.document.Objects if obj not in objects_before
         )
@@ -2220,7 +2674,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         objects_before = tuple(self.document.Objects)
         undo_before = self.document.UndoCount
         Gui.runCommand("Mesh_Difference", 0)
-        self._process_events(8)
+        self._wait_for_mesh_boolean()
         created = [obj for obj in self.document.Objects if obj not in objects_before]
         self.assertEqual(len(created), 1)
         result = created[0]
@@ -2242,7 +2696,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self._select(cutter, large)
         self._click_message_button("OK")
         Gui.runCommand("Mesh_Difference", 0)
-        self._process_events(8)
+        self._wait_for_mesh_boolean(expected_phase="failed")
         self.assertEqual(tuple(self.document.Objects), objects_before)
         self.assertEqual(self.document.UndoCount, undo_before)
         self.assertTrue(large.ViewObject.Visibility)
@@ -2352,7 +2806,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         undo_before = self.document.UndoCount
         self._click_message_button("OK")
         Gui.runCommand("Mesh_Union", 0)
-        self._process_events(5)
+        self._wait_for_mesh_boolean(expected_phase="failed")
         self.assertEqual(tuple(self.document.Objects), objects_before)
         self.assertEqual(self.document.UndoCount, undo_before)
         self.assertTrue(open_mesh.ViewObject.Visibility)
@@ -2419,7 +2873,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         undo_before = self.document.UndoCount
         self._click_message_button("OK")
         Gui.runCommand("Mesh_Union", 0)
-        self._process_events(8)
+        self._wait_for_mesh_boolean(expected_phase="failed")
         self.assertEqual(tuple(self.document.Objects), objects_before)
         self.assertEqual(self.document.UndoCount, undo_before)
         self.assertTrue(invalid_source.ViewObject.Visibility)
@@ -2495,7 +2949,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         button = self._task_button(QtGui.QDialogButtonBox.Ok)
         self.assertIsNotNone(button)
         button.click()
-        self._process_events(8)
+        self._wait_for_mesh_job("mesh.modify.smooth.human")
         self.assertFalse(Gui.Control.activeDialog())
         self.assertFalse(self.document.HasPendingTransaction)
         self.assertEqual(self.document.UndoCount, undo_before + 1)
@@ -2529,9 +2983,19 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         create.click()
         self._process_events(8)
         created = [obj for obj in self.document.Objects if obj not in objects_before]
-        self.assertEqual(len(created), 1)
-        self.assertTrue(created[0].TypeId.startswith("Mesh::"))
+        meshes = self.document.getObject("Meshes")
+        self.assertIs(meshes, self.meshes_group)
+        self.assertEqual(meshes.TypeId, "App::DocumentObjectGroup")
+        self.assertEqual(meshes.Label, "Meshes")
+        results = [obj for obj in created if obj.TypeId.startswith("Mesh::")]
+        self.assertEqual(len(results), 1)
+        self.assertIn(results[0], meshes.Group)
+        self.assertTrue(all(obj.TypeId.startswith("Mesh::") for obj in meshes.Group))
         self.assertEqual(self.document.UndoCount, undo_before + 1)
+        self.assertFalse(self.document.HasPendingTransaction)
+        self.document.undo()
+        self.assertIs(self.document.getObject("Meshes"), self.meshes_group)
+        self.assertNotIn(results[0], self.meshes_group.Group)
         self.assertFalse(self.document.HasPendingTransaction)
         dialog.close()
 
@@ -2613,7 +3077,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
                 dialog_preferences.SetBool("DontUseNativeDialog", True)
                 self._accept_open_files_dialog((source_path,))
                 Gui.runCommand("Mesh_Import", 0)
-                self._process_events(15)
+                self._wait_for_mesh_import()
             finally:
                 App.removeDocumentObserver(observer)
                 dialog_preferences.SetBool(
@@ -2673,7 +3137,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
             try:
                 self._accept_open_files_dialog(source_paths)
                 Gui.runCommand("Mesh_Import", 0)
-                self._process_events(15)
+                self._wait_for_mesh_import()
             finally:
                 dialog_preferences.SetBool(
                     "DontUseNativeDialog",
@@ -2784,7 +3248,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
             button = self._task_button(QtGui.QDialogButtonBox.Ok)
             self.assertIsNotNone(button)
             button.click()
-            self._process_events(10)
+            self._wait_for_mesh_tessellation()
         finally:
             App.removeDocumentObserver(observer)
 
@@ -2843,7 +3307,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         button = self._task_button(QtGui.QDialogButtonBox.Ok)
         self.assertIsNotNone(button)
         button.click()
-        self._process_events(10)
+        self._wait_for_mesh_tessellation()
 
         self.assertFalse(Gui.Control.activeDialog())
         created = [
@@ -2872,7 +3336,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self.document.recompute()
         self.assertTrue(result.isValid())
         updated_xs = [point.Vector.x for point in result.Mesh.Points]
-        self.assertGreater(max(updated_xs), 23.0)
+        self.assertEqual(updated_xs, xs)
 
     def test_tessellation_batch_is_one_source_preserving_history_step(self):
         far_shape = self.document.addObject(
@@ -2902,7 +3366,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         button = self._task_button(QtGui.QDialogButtonBox.Ok)
         self.assertIsNotNone(button)
         button.click()
-        self._process_events(12)
+        self._wait_for_mesh_tessellation()
 
         self.assertFalse(Gui.Control.activeDialog())
         created = [obj for obj in self.document.Objects if obj not in objects_before]
@@ -3004,7 +3468,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         button = self._task_button(QtGui.QDialogButtonBox.Ok)
         self.assertIsNotNone(button)
         button.click()
-        self._process_events(10)
+        self._wait_for_mesh_job("mesh.modify.smooth.human")
         self.assertFalse(Gui.Control.activeDialog())
 
         created = [
@@ -3038,24 +3502,23 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         objects_before = tuple(self.document.Objects)
         undo_before = self.document.UndoCount
         Gui.runCommand("Mesh_SplitComponents", 0)
-        self._process_events()
+        self._wait_for_mesh_job("mesh.segment.split_components.human")
         self.assertEqual(tuple(self.document.Objects), objects_before)
         self.assertEqual(self.document.UndoCount, undo_before)
 
         Gui.runCommand("Mesh_HarmonizeNormals", 0)
-        self._process_events()
+        self._wait_for_mesh_job("mesh.modify.harmonize_normals.human")
         self.assertEqual(tuple(self.document.Objects), objects_before)
         self.assertEqual(self.document.UndoCount, undo_before)
 
         self._accept_input_dialog(3, integer=True)
         Gui.runCommand("Mesh_FillupHoles", 0)
-        self._process_events(5)
+        self._wait_for_mesh_job("mesh.modify.fill_holes.human")
         self.assertEqual(tuple(self.document.Objects), objects_before)
         self.assertEqual(self.document.UndoCount, undo_before)
 
         self._accept_input_dialog(1.0)
         Gui.runCommand("Mesh_Scale", 0)
-        self._process_events(5)
         self.assertEqual(tuple(self.document.Objects), objects_before)
         self.assertEqual(self.document.UndoCount, undo_before)
 
@@ -3069,7 +3532,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         undo_before = self.document.UndoCount
         self._select(self.mesh)
         Gui.runCommand("Mesh_SplitComponents", 0)
-        self._process_events(8)
+        self._wait_for_mesh_job("mesh.segment.split_components.human")
 
         created = [obj for obj in self.document.Objects if obj not in objects_before]
         self.assertEqual(len(created), 3)
@@ -3239,10 +3702,13 @@ class TestVibeCADRibbonTools(unittest.TestCase):
             self.mesh.Mesh = accepted_source
             reopened.recompute()
             self.assertTrue(
-                all(result.isValid() for result in reopened_results)
+                all(not result.isValid() for result in reopened_results)
             )
             self.assertTrue(
-                all(result.Mesh.CountFacets == 4 for result in reopened_results)
+                all(result.Mesh.CountFacets == 0 for result in reopened_results)
+            )
+            self.assertTrue(
+                all(result.AcceptedSourceStale for result in reopened_results)
             )
 
             reopened_results[0].Visibility = False
@@ -3268,7 +3734,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self._select(self.mesh)
         self._accept_input_dialog(2.0)
         Gui.runCommand("Mesh_Scale", 0)
-        self._process_events(8)
+        self._wait_for_mesh_job("mesh.modify.scale.human")
 
         created = [
             obj
@@ -3302,7 +3768,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self._select(self.mesh)
         self._accept_input_dialog(2.0)
         Gui.runCommand("Mesh_Scale", 0)
-        self._process_events(10)
+        self._wait_for_mesh_job("mesh.modify.scale.human")
         result = next(
             obj for obj in self.document.Objects if obj.TypeId == "Mesh::Scale"
         )
@@ -4028,7 +4494,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         button = self._task_button(QtGui.QDialogButtonBox.Ok)
         self.assertIsNotNone(button)
         button.click()
-        self._process_events(12)
+        self._wait_for_mesh_job("mesh.modify.decimate.human")
 
         self.assertFalse(Gui.Control.activeDialog())
         created = [
@@ -4056,12 +4522,24 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self._select(self.mesh)
         objects_before = tuple(self.document.Objects)
         undo_before = self.document.UndoCount
+        started = time.monotonic()
         Gui.runCommand("Mesh_VertexCurvature", 0)
-        self._process_events(8)
+        self.assertLess(time.monotonic() - started, 0.25)
+        progress = [
+            widget
+            for widget in QtGui.QApplication.topLevelWidgets()
+            if isinstance(widget, QtGui.QProgressDialog)
+            and widget.isVisible()
+            and widget.windowTitle() == "Mesh Curvature"
+        ]
+        self.assertEqual(len(progress), 1)
+        self.assertEqual(progress[0].windowModality(), QtCore.Qt.NonModal)
+        self._wait_for_mesh_curvature()
         created = [obj for obj in self.document.Objects if obj not in objects_before]
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0].TypeId, "Mesh::Curvature")
         self.assertIs(created[0].Source, self.mesh)
+        self.assertFalse(created[0].UpdateFromSource)
         self.assertEqual(created[0].VibeCADTimelineRole, "operation")
         self.assertFalse(any(obj.TypeId == "Mesh::OutputGroup" for obj in created))
         self.assertEqual(
@@ -4075,7 +4553,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         undo_before = self.document.UndoCount
         self._select(self.mesh, self.second_mesh)
         Gui.runCommand("Mesh_VertexCurvature", 0)
-        self._process_events(10)
+        self._wait_for_mesh_curvature()
 
         created = [obj for obj in self.document.Objects if obj not in objects_before]
         controller, results = self._assert_source_preserving_multi_result(
@@ -4110,7 +4588,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         undo_before = self.document.UndoCount
         self._accept_modal_dialog("MeshPart_ShapeFromMesh")
         Gui.runCommand("MeshPart_ShapeFromMesh", 0)
-        self._process_events(8)
+        self._wait_for_mesh_conversion()
 
         created = [obj for obj in self.document.Objects if obj not in objects_before]
         self.assertEqual(len(created), 1)
@@ -4119,8 +4597,12 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self.assertIs(result.Source, self.mesh)
         self.assertAlmostEqual(result.Tolerance, 0.1)
         self.assertFalse(result.SewShape)
+        self.assertFalse(result.MakeSolid)
+        self.assertFalse(result.UpdateFromSource)
         self.assertFalse(result.Shape.isNull())
         self.assertTrue(result.Shape.isValid())
+        self.assertFalse(result.Visibility)
+        self.assertTrue(self.mesh.Visibility)
         self.assertEqual(result.VibeCADTimelineRole, "operation")
         self.assertFalse(any(obj.TypeId == "Mesh::OutputGroup" for obj in created))
         self.assertEqual(self.document.UndoCount, undo_before + 1)
@@ -4128,7 +4610,39 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self.mesh.Mesh = _tetrahedron(40.0)
         self.document.recompute()
         self.assertTrue(result.isValid())
-        self.assertGreater(result.Shape.BoundBox.XMin, 39.0)
+        self.assertLess(result.Shape.BoundBox.XMin, 1.0)
+
+    def test_shape_from_mesh_builds_one_valid_solid_when_requested(self):
+        self.mesh.Placement = App.Placement(
+            App.Vector(12.0, 18.0, 24.0),
+            App.Rotation(),
+        )
+        self.document.recompute()
+        self._select(self.mesh)
+        objects_before = tuple(self.document.Objects)
+        undo_before = self.document.UndoCount
+        self._accept_modal_dialog(
+            "MeshPart_ShapeFromMesh",
+            checked_texts=("Build solid volumes",),
+        )
+        Gui.runCommand("MeshPart_ShapeFromMesh", 0)
+        self._wait_for_mesh_conversion()
+
+        created = [obj for obj in self.document.Objects if obj not in objects_before]
+        self.assertEqual(len(created), 1)
+        result = created[0]
+        self.assertEqual(result.TypeId, "MeshPart::ShapeFromMesh")
+        self.assertIs(result.Source, self.mesh)
+        self.assertTrue(result.SewShape)
+        self.assertTrue(result.MakeSolid)
+        self.assertFalse(result.UpdateFromSource)
+        self.assertEqual(result.Shape.ShapeType, "Solid")
+        self.assertEqual(len(result.Shape.Solids), 1)
+        self.assertAlmostEqual(abs(result.Shape.Volume), 56.0, delta=1.0e-6)
+        self.assertAlmostEqual(result.Shape.BoundBox.XMin, 12.0, delta=1.0e-7)
+        self.assertAlmostEqual(result.Shape.BoundBox.YMin, 18.0, delta=1.0e-7)
+        self.assertAlmostEqual(result.Shape.BoundBox.ZMin, 24.0, delta=1.0e-7)
+        self.assertEqual(self.document.UndoCount, undo_before + 1)
 
     def test_shape_from_mesh_batch_is_one_durable_history_step(self):
         objects_before = tuple(self.document.Objects)
@@ -4136,7 +4650,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self._select(self.mesh, self.second_mesh)
         self._accept_modal_dialog("MeshPart_ShapeFromMesh")
         Gui.runCommand("MeshPart_ShapeFromMesh", 0)
-        self._process_events(12)
+        self._wait_for_mesh_conversion()
 
         created = [obj for obj in self.document.Objects if obj not in objects_before]
         controller, results = self._assert_source_preserving_multi_result(
@@ -4156,6 +4670,9 @@ class TestVibeCADRibbonTools(unittest.TestCase):
                 for result in results
             )
         )
+        self.assertTrue(all(not result.Visibility for result in results))
+        self.assertTrue(self.mesh.Visibility)
+        self.assertTrue(self.second_mesh.Visibility)
         self.assertEqual(self.document.UndoCount, undo_before + 1)
 
         self._timeline_button("VibeCADFeatureTimelinePrevious").click()
@@ -4170,7 +4687,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self.assertFalse(controller.Suppressed)
         self.assertTrue(self.mesh.Visibility)
         self.assertTrue(self.second_mesh.Visibility)
-        self.assertTrue(all(result.Visibility for result in results))
+        self.assertTrue(all(not result.Visibility for result in results))
 
         controller_name = controller.Name
         result_names = tuple(result.Name for result in results)
@@ -4222,6 +4739,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
                 )
                 self.assertFalse(result.Shape.isNull())
                 self.assertTrue(result.Shape.isValid())
+                self.assertFalse(result.Visibility)
             reopened.recompute()
             self.assertTrue(reopened_controller.isValid())
 
@@ -4392,7 +4910,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         undo_before = self.document.UndoCount
         self._click_message_button("Split")
         Gui.runCommand("Mesh_TrimByPlane", 0)
-        self._process_events(10)
+        self._wait_for_mesh_cut(capability="mesh.cut.trim_by_plane.human")
 
         created = [
             obj
@@ -4550,7 +5068,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         objects_before = tuple(self.document.Objects)
         undo_before = self.document.UndoCount
         Gui.runCommand("Mesh_SectionByPlane", 0)
-        self._process_events(8)
+        self._wait_for_mesh_cut(capability="mesh.cut.section_by_plane.human")
 
         created = [obj for obj in self.document.Objects if obj not in objects_before]
         self.assertEqual(len(created), 1)
@@ -4565,6 +5083,8 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self.assertFalse(any(obj.TypeId == "Mesh::OutputGroup" for obj in created))
         self.assertEqual(self.document.UndoCount, undo_before + 1)
 
+        self.assertFalse(result.UpdateFromSource)
+        result.UpdateFromSource = True
         self.plane.Placement = App.Placement(
             App.Vector(0.0, 0.0, 3.0),
             App.Rotation(),
@@ -4592,7 +5112,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         undo_before = self.document.UndoCount
         self._select(self.mesh, self.plane)
         Gui.runCommand("Mesh_SectionByPlane", 0)
-        self._process_events(10)
+        self._wait_for_mesh_cut(capability="mesh.cut.section_by_plane.human")
 
         created = [obj for obj in self.document.Objects if obj not in objects_before]
         self.assertEqual(len(created), 1)
@@ -4616,7 +5136,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         button = self._task_button(QtGui.QDialogButtonBox.Ok)
         self.assertIsNotNone(button)
         button.click()
-        self._process_events(12)
+        self._wait_for_mesh_cut(capability="mesh.cut.cross_sections.human")
 
         self.assertFalse(Gui.Control.activeDialog())
         created = [obj for obj in self.document.Objects if obj not in objects_before]
@@ -4631,6 +5151,8 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self.assertFalse(any(obj.TypeId == "Mesh::OutputGroup" for obj in created))
         self.assertEqual(self.document.UndoCount, undo_before + 1)
 
+        self.assertFalse(result.UpdateFromSource)
+        result.UpdateFromSource = True
         result.PlanePositions = [1.0]
         self.document.recompute()
         self.assertTrue(result.isValid())
@@ -4652,7 +5174,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         button = self._task_button(QtGui.QDialogButtonBox.Ok)
         self.assertIsNotNone(button)
         button.click()
-        self._process_events(15)
+        self._wait_for_mesh_cut(capability="mesh.cut.cross_sections.human")
 
         self.assertFalse(Gui.Control.activeDialog())
         created = [obj for obj in self.document.Objects if obj not in objects_before]
@@ -4693,7 +5215,10 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         delete = self._task_button(QtGui.QDialogButtonBox.Ok)
         self.assertIsNotNone(delete)
         delete.click()
-        self._process_events(10)
+        self._wait_for_mesh_job(
+            "mesh.modify.remove_components.human",
+            document=other,
+        )
 
         source = other.getObject("Target")
         self.assertIsNotNone(source)
@@ -4812,7 +5337,12 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         button = self._task_button(QtGui.QDialogButtonBox.Ok)
         self.assertIsNotNone(button)
         button.click()
-        self._process_events(20)
+        operation = (
+            "mesh_segmentation"
+            if command_name == "Mesh_Segmentation"
+            else "segmentation_best_fit"
+        )
+        self._wait_for_mesh_job(f"mesh.segment.{operation}.human")
         self.assertFalse(Gui.Control.activeDialog())
 
         created = [obj for obj in self.document.Objects if obj not in objects_before]

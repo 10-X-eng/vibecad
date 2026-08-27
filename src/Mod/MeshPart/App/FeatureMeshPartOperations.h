@@ -18,11 +18,10 @@ namespace MeshPart
 {
 
 /**
- * Recomputable tessellation of one exact shape or selected subshape.
+ * Persisted result of a process-isolated shape tessellation.
  *
- * The source link and meshing settings are persisted on the result. A shape
- * edit therefore rebuilds the mesh instead of leaving an accepted snapshot
- * in the document history.
+ * Recompute validates the prepared mesh only. BREP traversal and tessellation
+ * belong to the background Mesh From Shape workflow, never document execute.
  */
 class MeshPartExport MeshFromShape: public Mesh::Feature
 {
@@ -63,6 +62,7 @@ public:
     App::PropertyIntegerConstraint GmshTimeoutSeconds;
     App::PropertyString CachedGmshSourceBrep;
     Mesh::PropertyMeshKernel CachedGmshResult;
+    App::PropertyBool UpdateFromSource;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
@@ -87,6 +87,8 @@ public:
     App::PropertyLink Source;
     App::PropertyLength Tolerance;
     App::PropertyBool SewShape;
+    App::PropertyBool MakeSolid;
+    App::PropertyBool UpdateFromSource;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
@@ -111,6 +113,7 @@ public:
     App::PropertyLink Plane;
     App::PropertyLength MinimumLength;
     App::PropertyBool ConnectEdges;
+    App::PropertyBool UpdateFromSource;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
@@ -138,6 +141,7 @@ public:
     App::PropertyFloatList PlanePositions;
     App::PropertyLength Epsilon;
     App::PropertyBool ConnectEdges;
+    App::PropertyBool UpdateFromSource;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
@@ -163,6 +167,7 @@ public:
     App::PropertyIntegerList FacetIndices;
     Mesh::PropertyMeshKernel AcceptedTopology;
     App::PropertyBool MakeFaces;
+    App::PropertyBool UpdateFromSource;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;

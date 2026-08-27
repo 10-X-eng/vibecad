@@ -168,11 +168,6 @@ def test_native_domain_helpers_normalize_existing_history_metadata():
             "void MeshGui::markMeshTimelineReplacement(",
             "std::vector<Mesh::Feature*> MeshGui::createParametricMeshFilters(",
         ),
-        "Inspection": _cpp_function(
-            "src/Mod/Inspection/Gui/VisualInspection.cpp",
-            "App::Property* ensureTimelineProperty(",
-            "void markTimelineReplacedInputs(",
-        ),
     }
 
     for domain, helper in helpers.items():
@@ -573,10 +568,9 @@ def test_targeted_domain_gui_builds_stage_their_runtime_python():
 
 
 def test_multi_output_replacements_publish_before_hiding_existing_inputs():
-    inspection = _cpp_function(
-        "src/Mod/Inspection/Gui/VisualInspection.cpp",
-        "void VisualInspection::accept()",
-        '#include "moc_VisualInspection.cpp"',
+    inspection = _python_function(
+        "src/Mod/VibeCAD/VibeCADNativeInspectionCompare.py",
+        "commit_inspection_comparisons",
     )
     erase_elements = _cpp_function(
         "src/Mod/Fem/Gui/TaskCreateElementSet.cpp",
@@ -584,13 +578,10 @@ def test_multi_output_replacements_publish_before_hiding_existing_inputs():
         "bool TaskCreateElementSet::publishWorkingMesh(",
     )
 
-    inspection_publish = inspection.index("timeline->publishProvisionalOperationBlock(")
-    inspection_hide = inspection.index(
-        "view->Visibility.setValue(false)",
-        inspection_publish,
-    )
+    inspection_publish = inspection.index("publishProvisionalTimelineOperationBlock(")
+    inspection_hide = inspection.index("source.Visibility = False", inspection_publish)
     assert inspection_publish < inspection_hide
-    assert "view->Visibility.setValue(false)" not in inspection[:inspection_publish]
+    assert "source.Visibility = False" not in inspection[:inspection_publish]
 
     erase_restore = erase_elements.index(
         "sourceViewProvider->Visibility.setValue(true)"

@@ -12,6 +12,21 @@ from VibeCADNativeCapabilityRegistry import (
 
 
 MESH_MODIFY_CAPABILITY_NAME = "mesh.modify"
+MESH_REPAIR_CAPABILITY_NAME = "mesh.repair"
+MESH_FILL_HOLES_CAPABILITY_NAME = "mesh.fill_holes"
+MESH_SMOOTH_CAPABILITY_NAME = "mesh.smooth"
+MESH_REMESH_CAPABILITY_NAME = "mesh.remesh"
+MESH_DECIMATE_CAPABILITY_NAME = "mesh.decimate"
+MESH_SCALE_CAPABILITY_NAME = "mesh.scale"
+MESH_MODIFY_CAPABILITY_NAMES = (
+    MESH_MODIFY_CAPABILITY_NAME,
+    MESH_REPAIR_CAPABILITY_NAME,
+    MESH_FILL_HOLES_CAPABILITY_NAME,
+    MESH_SMOOTH_CAPABILITY_NAME,
+    MESH_REMESH_CAPABILITY_NAME,
+    MESH_DECIMATE_CAPABILITY_NAME,
+    MESH_SCALE_CAPABILITY_NAME,
+)
 _OBJECT_NAME = {
     "type": "string",
     "minLength": 1,
@@ -41,6 +56,12 @@ _TARGETS = {
     "items": _TARGET,
     "minItems": 1,
     "maxItems": 32,
+}
+_ONE_TARGET = {
+    "type": "array",
+    "items": _TARGET,
+    "minItems": 1,
+    "maxItems": 1,
 }
 _POINT_SELECTION = {
     "oneOf": [
@@ -98,7 +119,7 @@ _SMOOTH_TARGET = {
         "label": _LABEL,
         "selection": _POINT_SELECTION,
     },
-    "required": ["object_name", "expected_state_sha256", "label", "selection"],
+    "required": ["object_name", "expected_state_sha256", "label"],
     "additionalProperties": False,
 }
 _SMOOTH_TARGETS = {
@@ -211,6 +232,81 @@ _DECIMATE_SETTINGS = {
     ]
 }
 
+_SMOOTH_FOCUSED_PARAMETERS = _closed(
+    {
+        "targets": _SMOOTH_TARGETS,
+        "method": {
+            "type": "string",
+            "enum": ["taubin", "laplace", "median"],
+        },
+        "iterations": {"type": "integer", "minimum": 1, "maximum": 10_000},
+        "lambda": {"type": "number", "minimum": -10.0, "maximum": 10.0},
+        "mu": {"type": "number", "minimum": -10.0, "maximum": 10.0},
+    },
+    ("targets", "method", "iterations"),
+)
+_DECIMATE_FOCUSED_PARAMETERS = _closed(
+    {
+        "targets": _TARGETS,
+        "mode": {
+            "type": "string",
+            "enum": ["target_facets", "percentage"],
+        },
+        "target_facet_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2_147_483_647,
+        },
+        "reduction_percent": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "exclusiveMaximum": 100.0,
+        },
+        "tolerance_mm": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1_000_000.0,
+        },
+    },
+    ("targets", "mode"),
+)
+_REPAIR_FOCUSED_PARAMETERS = _closed(
+    {
+        "targets": _TARGETS,
+        "defects": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "non_uniform_orientation",
+                    "duplicated_facets",
+                    "duplicated_points",
+                    "non_manifold_edges",
+                    "non_manifold_points",
+                    "facet_indices_out_of_range",
+                    "point_indices_out_of_range",
+                    "corrupted_facets",
+                    "invalid_neighbourhood",
+                    "degenerated_facets",
+                    "self_intersections",
+                    "surface_folds",
+                    "boundary_folds",
+                ],
+            },
+            "minItems": 1,
+            "maxItems": 13,
+            "uniqueItems": True,
+        },
+        "max_iterations": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 1,
+        },
+    },
+    ("targets", "defects"),
+)
+
 
 def _variant(
     operation: str,
@@ -218,7 +314,7 @@ def _variant(
     action_id: str,
     parameters: dict,
     *,
-    background: bool = False,
+    background: bool = True,
 ) -> NativeCapabilityVariant:
     return NativeCapabilityVariant(
         operation=operation,
@@ -265,9 +361,10 @@ def mesh_modify_capability_definition() -> NativeCapabilityDefinition:
                             "type": "integer",
                             "minimum": 3,
                             "maximum": 10_000,
+                            "default": 3,
                         },
                     },
-                    ("targets", "maximum_boundary_edges"),
+                    ("targets",),
                 ),
             ),
             _variant(
@@ -276,7 +373,7 @@ def mesh_modify_capability_definition() -> NativeCapabilityDefinition:
                 "Mesh_FillInteractiveHole",
                 _closed(
                     {
-                        "target": _TARGET,
+                        "targets": _ONE_TARGET,
                         "seed_facet_index": _INDEX,
                         "refinement_level": {
                             "type": "integer",
@@ -284,7 +381,7 @@ def mesh_modify_capability_definition() -> NativeCapabilityDefinition:
                             "maximum": 10,
                         },
                     },
-                    ("target", "seed_facet_index", "refinement_level"),
+                    ("targets", "seed_facet_index", "refinement_level"),
                 ),
             ),
             _variant(
@@ -293,7 +390,7 @@ def mesh_modify_capability_definition() -> NativeCapabilityDefinition:
                 "Mesh_AddFacet",
                 _closed(
                     {
-                        "target": _TARGET,
+                        "targets": _ONE_TARGET,
                         "point_indices": {
                             "type": "array",
                             "items": _INDEX,
@@ -302,7 +399,7 @@ def mesh_modify_capability_definition() -> NativeCapabilityDefinition:
                             "uniqueItems": True,
                         },
                     },
-                    ("target", "point_indices"),
+                    ("targets", "point_indices"),
                 ),
             ),
             _variant(
@@ -310,8 +407,8 @@ def mesh_modify_capability_definition() -> NativeCapabilityDefinition:
                 "Remove exact connected components by size or IDs returned by Mesh inspection.",
                 "Mesh_RemoveComponents",
                 _closed(
-                    {"target": _TARGET, "selection": _COMPONENT_SELECTION},
-                    ("target", "selection"),
+                    {"targets": _ONE_TARGET, "selection": _COMPONENT_SELECTION},
+                    ("targets", "selection"),
                 ),
             ),
             _variant(
@@ -325,11 +422,11 @@ def mesh_modify_capability_definition() -> NativeCapabilityDefinition:
             ),
             _variant(
                 "gmsh_remesh",
-                "Run Gmsh away from the UI thread using the human-configured executable.",
+                "Remesh one exact Mesh with the configured Gmsh surface mesher.",
                 "Mesh_RemeshGmsh",
                 _closed(
                     {
-                        "target": _TARGET,
+                        "targets": _ONE_TARGET,
                         "algorithm": {
                             "type": "string",
                             "enum": [
@@ -362,15 +459,15 @@ def mesh_modify_capability_definition() -> NativeCapabilityDefinition:
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 86_400,
+                            "default": 300,
                         },
                     },
                     (
-                        "target",
+                        "targets",
                         "algorithm",
                         "minimum_element_size_mm",
                         "maximum_element_size_mm",
                         "surface_angle_degrees",
-                        "timeout_seconds",
                     ),
                 ),
                 background=True,
@@ -409,4 +506,102 @@ def register_mesh_modify_capability_definition(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_definition(mesh_modify_capability_definition())
+    modify = mesh_modify_capability_definition()
+    registry.register_definition(modify)
+    variants = {variant.operation: variant for variant in modify.variants}
+    registry.register_definition(
+        NativeCapabilityDefinition(
+            name=MESH_REPAIR_CAPABILITY_NAME,
+            description="Repair exact nonzero defect names returned by Mesh inspection.",
+            primary_classification="mutation",
+            variants=(
+                NativeCapabilityVariant(
+                    operation="repair",
+                    description="Repair selected inspected defects on 1 to 32 exact Meshes.",
+                    action_ids=frozenset({"Mesh_HarmonizeNormals"}),
+                    surface_ids=frozenset({"mesh"}),
+                    exact_target_type="ExactCurrentHistoryMeshState",
+                    transaction_behavior="background",
+                    background_required=True,
+                    parameters=_REPAIR_FOCUSED_PARAMETERS,
+                ),
+            ),
+        )
+    )
+    fill_holes = variants["fill_holes"]
+    registry.register_definition(
+        NativeCapabilityDefinition(
+            name=MESH_FILL_HOLES_CAPABILITY_NAME,
+            description="Fill Mesh boundary loops up to an explicit edge count.",
+            primary_classification="mutation",
+            variants=(
+                NativeCapabilityVariant(
+                    operation=fill_holes.operation,
+                    description=fill_holes.description,
+                    action_ids=fill_holes.action_ids,
+                    surface_ids=fill_holes.surface_ids,
+                    exact_target_type=fill_holes.exact_target_type,
+                    transaction_behavior=fill_holes.transaction_behavior,
+                    background_required=fill_holes.background_required,
+                    parameters=_closed(
+                        {
+                            "targets": _TARGETS,
+                            "maximum_boundary_edges": {
+                                "type": "integer",
+                                "minimum": 3,
+                                "maximum": 10_000,
+                            },
+                        },
+                        ("targets", "maximum_boundary_edges"),
+                    ),
+                ),
+            ),
+        )
+    )
+    for name, description, operation, focused_parameters in (
+        (
+            MESH_SMOOTH_CAPABILITY_NAME,
+            "Smooth exact Mesh vertices with Taubin, Laplace, or median filtering.",
+            "smooth",
+            _SMOOTH_FOCUSED_PARAMETERS,
+        ),
+        (
+            MESH_REMESH_CAPABILITY_NAME,
+            "Rebuild one exact Mesh surface with the configured Gmsh mesher.",
+            "gmsh_remesh",
+            None,
+        ),
+        (
+            MESH_DECIMATE_CAPABILITY_NAME,
+            "Reduce exact Mesh facet counts by target count or percentage.",
+            "decimate",
+            _DECIMATE_FOCUSED_PARAMETERS,
+        ),
+        (
+            MESH_SCALE_CAPABILITY_NAME,
+            "Scale exact Mesh coordinates uniformly about the local origin.",
+            "scale",
+            None,
+        ),
+    ):
+        variant = variants[operation]
+        if focused_parameters is not None:
+            variant = NativeCapabilityVariant(
+                operation=variant.operation,
+                description=variant.description,
+                action_ids=variant.action_ids,
+                surface_ids=variant.surface_ids,
+                exact_target_type=variant.exact_target_type,
+                transaction_behavior=variant.transaction_behavior,
+                background_required=variant.background_required,
+                parameters=focused_parameters,
+                provider_supplemental=variant.provider_supplemental,
+            )
+        registry.register_definition(
+            NativeCapabilityDefinition(
+                name=name,
+                description=description,
+                primary_classification="mutation",
+                variants=(variant,),
+            )
+        )

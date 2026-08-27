@@ -716,6 +716,12 @@ set(VibeCAD_Scripts
     VibeCADNativeManufactureToolOutputSchema.py
     VibeCADNativeMeasure.py
     VibeCADNativeMeshSnapshot.py
+    VibeCADNativeInspectionCompareSchema.py
+    VibeCADNativeInspectionCompare.py
+    VibeCADNativeInspectionCompareBindings.py
+    VibeCADNativeInspectionCompareRuntime.py
+    VibeCADInspectionComparisonChild.py
+    VibeCADInspectionComparisonGui.py
     VibeCADNativeMeshState.py
     VibeCADNativeMeshTargets.py
     VibeCADNativeMeshErrors.py
@@ -723,7 +729,17 @@ set(VibeCAD_Scripts
     VibeCADNativeMeshBooleanBindings.py
     VibeCADNativeMeshBooleanRuntime.py
     VibeCADNativeMeshBooleanSchema.py
+    VibeCADIsolatedMeshWorker.py
+    VibeCADMeshBooleanChild.py
+    VibeCADMeshBooleanGui.py
+    VibeCADMeshBooleanJob.py
     VibeCADNativeMeshConvert.py
+    VibeCADMeshConversionChild.py
+    VibeCADMeshConversionGui.py
+    VibeCADMeshConversionJob.py
+    VibeCADMeshTessellationChild.py
+    VibeCADMeshTessellationGui.py
+    VibeCADMeshTessellationJob.py
     VibeCADNativeMeshConvertBindings.py
     VibeCADNativeMeshConvertRuntime.py
     VibeCADNativeMeshConvertSchema.py
@@ -731,9 +747,22 @@ set(VibeCAD_Scripts
     VibeCADNativeMeshCurvatureBindings.py
     VibeCADNativeMeshCurvatureRuntime.py
     VibeCADNativeMeshCurvatureSchema.py
+    VibeCADMeshCurvatureChild.py
+    VibeCADMeshCurvatureGui.py
+    VibeCADMeshCurvatureJob.py
     VibeCADNativeMeshExportBindings.py
+    VibeCADNativeMeshExport.py
+    VibeCADMeshExportGui.py
     VibeCADNativeMeshExportRuntime.py
     VibeCADNativeMeshExportSchema.py
+    VibeCADMeshImportGui.py
+    VibeCADMeshModificationChild.py
+    VibeCADMeshModificationGui.py
+    VibeCADMeshModificationJob.py
+    VibeCADMeshModificationOperation.py
+    VibeCADMeshSegmentationChild.py
+    VibeCADMeshSegmentationGui.py
+    VibeCADMeshSegmentationJob.py
     VibeCADNativeMeshImport.py
     VibeCADNativeMeshComponents.py
     VibeCADNativeMeshGmsh.py
@@ -752,8 +781,12 @@ set(VibeCAD_Scripts
     VibeCADNativeMeshCutBindings.py
     VibeCADNativeMeshCutRuntime.py
     VibeCADNativeMeshCutSchema.py
+    VibeCADMeshCutChild.py
+    VibeCADMeshCutGui.py
+    VibeCADMeshCutJob.py
     VibeCADNativeMeshPlane.py
     VibeCADNativeMeshPolygon.py
+    VibeCADNativeMeshViewportPolygon.py
     VibeCADNativeMeshPointsBindings.py
     VibeCADNativeMeshPointsRuntime.py
     VibeCADNativeMeshPointsSchema.py
@@ -1386,6 +1419,14 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_parameters_gui_integration.py
     vibecad_tests/native_mesh_io_gui_integration.py
     vibecad_tests/native_mesh_convert_gui_integration.py
+    vibecad_tests/native_inspection_compare_gui_integration.py
+    vibecad_tests/mesh_tessellation_gui_integration.py
+    vibecad_tests/mesh_tessellation_gmsh_gui_integration.py
+    vibecad_tests/mesh_tessellation_command_gui_integration.py
+    vibecad_tests/mesh_import_command_gui_integration.py
+    vibecad_tests/mesh_export_command_gui_integration.py
+    vibecad_tests/mesh_modify_command_gui_integration.py
+    vibecad_tests/mesh_segment_command_gui_integration.py
     vibecad_tests/native_mesh_modify_gui_integration.py
     vibecad_tests/native_mesh_modify_gui_support.py
     vibecad_tests/native_mesh_boolean_cut_gui_integration.py
@@ -1393,6 +1434,11 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_mesh_analyze_gui_integration.py
     vibecad_tests/native_mesh_points_gui_integration.py
     vibecad_tests/native_mesh_reverse_gui_integration.py
+    vibecad_tests/mesh_acceptance.py
+    vibecad_tests/test_mesh_acceptance.py
+    vibecad_tests/test_native_mesh_boolean_background.py
+    vibecad_tests/test_native_mesh_io.py
+    vibecad_tests/test_native_mesh_tessellation_background.py
     vibecad_tests/gui_api_thread_guard_integration.py
     vibecad_tests/native_provider_thread_gui_integration.py
     vibecad_tests/native_codex_thread_gui_integration.py

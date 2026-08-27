@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import traceback
 
 import FreeCAD as App
@@ -19,7 +20,11 @@ import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeMeshSegmentSchema import MESH_SEGMENT_CAPABILITY_NAME
+from VibeCADNativeMeshSegmentSchema import (
+    MESH_COMBINE_CAPABILITY_NAME,
+    MESH_SEGMENT_CAPABILITY_NAME,
+    MESH_SEPARATE_CAPABILITY_NAME,
+)
 from VibeCADNativeMeshSnapshot import build_mesh_snapshot
 from VibeCADNativeMeshState import mesh_object_state
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -33,8 +38,6 @@ from native_mesh_modify_gui_support import add_source, open_tetrahedron, tetrahe
 
 
 OPERATIONS = (
-    "merge",
-    "split_components",
     "mesh_segmentation",
     "segmentation_best_fit",
     "reverse_segmentation",
@@ -67,15 +70,24 @@ def _select_mesh_ribbon(main_window):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MESH_SEGMENT_CAPABILITY_NAME)
-    assert definition is not None
+    names = (
+        MESH_SEGMENT_CAPABILITY_NAME,
+        MESH_COMBINE_CAPABILITY_NAME,
+        MESH_SEPARATE_CAPABILITY_NAME,
+    )
+    definitions = tuple(registry.definition(name) for name in names)
+    assert all(definitions)
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MESH_SEGMENT_CAPABILITY_NAME,),
-            schemas=(definition.provider_schema(OPERATIONS),),
+            tool_names=names,
+            schemas=(
+                definitions[0].provider_schema(OPERATIONS),
+                definitions[1].provider_schema(("merge",)),
+                definitions[2].provider_schema(("split_components",)),
+            ),
             human_only_action_ids=(),
             missing_definition_names=(),
             missing_implementation_names=(),
@@ -114,6 +126,20 @@ def _run() -> None:
         VibeGui._ensure_document_thread_invoker()
         VibeGui._connect_document_observer()
         controller, surface = _select_mesh_ribbon(Gui.getMainWindow())
+        merge_a = add_source(document, "MergeA", tetrahedron())
+        merge_b = add_source(document, "MergeB", tetrahedron(15.0))
+        split_source = add_source(document, "SplitSource", two_components())
+        curvature_source = add_source(document, "CurvatureSource", _flat_patch(50.0))
+        best_fit_source = add_source(
+            document,
+            "BestFitSource",
+            Mesh.createBox(10.0, 10.0, 10.0),
+        )
+        reverse_source = add_source(document, "ReverseSource", _flat_patch(80.0))
+        manual_source = add_source(document, "ManualSource", open_tetrahedron(110.0))
+        components_source = add_source(document, "ComponentsSource", two_components())
+        boundary_source = add_source(document, "BoundarySource", open_tetrahedron(150.0))
+        _process_events(8)
         frozen = NativeSurfaceSnapshot.from_surface(surface)
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -135,6 +161,8 @@ def _run() -> None:
             active_document=lambda: App.ActiveDocument,
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
+            background_manager=service.native_background_manager(),
+            document_thread_dispatch=VibeGui._dispatch_to_document_thread,
         )
         dispatcher = NativeTurnDispatcher(
             document=document,
@@ -147,61 +175,78 @@ def _run() -> None:
         )
         call_number = 0
 
-        def call(arguments: dict, *, succeeds: bool = True) -> dict:
+        def call(
+            arguments: dict,
+            *,
+            capability: str = MESH_SEGMENT_CAPABILITY_NAME,
+            succeeds: bool = True,
+        ) -> dict:
             nonlocal call_number
             call_number += 1
             response = dispatcher.call(
-                MESH_SEGMENT_CAPABILITY_NAME,
+                capability,
                 json.dumps(arguments, separators=(",", ":")),
                 f"native-mesh-segment-{call_number}",
             )
             assert response.get("ok") is succeeds, response
             return response
 
-        merge_a = add_source(document, "MergeA", tetrahedron())
-        merge_b = add_source(document, "MergeB", tetrahedron(15.0))
-        split_source = add_source(document, "SplitSource", two_components())
-        curvature_source = add_source(document, "CurvatureSource", _flat_patch(50.0))
-        best_fit_source = add_source(document, "BestFitSource", Mesh.createBox(10.0, 10.0, 10.0))
-        reverse_source = add_source(document, "ReverseSource", _flat_patch(80.0))
-        manual_source = add_source(document, "ManualSource", open_tetrahedron(110.0))
-        components_source = add_source(document, "ComponentsSource", two_components())
-        boundary_source = add_source(document, "BoundarySource", open_tetrahedron(150.0))
+        def call_background_segment(
+            arguments: dict,
+            *,
+            capability: str = MESH_SEGMENT_CAPABILITY_NAME,
+            timeout_seconds: float = 30.0,
+        ) -> dict:
+            started = time.monotonic()
+            queued = call(arguments, capability=capability)
+            assert time.monotonic() - started < 0.25, queued
+            job_id = queued["job"]["job_id"]
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
+                _process_events(2)
+                current = context.background_manager.snapshot(job_id)
+                if current.terminal:
+                    break
+                time.sleep(0.01)
+            current = context.background_manager.snapshot(job_id)
+            assert current.phase == "completed", current.error
+            assert current.changes_document is True
+            assert isinstance(current.result, dict)
+            return current.result
 
         stale = call(
             {
-                "operation": "split_components",
                 "target": {
                     "object_name": split_source.Name,
                     "expected_state_sha256": "0" * 64,
                 },
                 "result_label_prefix": "Stale Component",
             },
+            capability=MESH_SEPARATE_CAPABILITY_NAME,
             succeeds=False,
         )
         assert stale["error_code"] == "NATIVE_MESH_STATE_STALE"
 
         responses = []
         responses.append(
-            call(
+            call_background_segment(
                 {
-                    "operation": "merge",
                     "sources": [_exact(merge_a), _exact(merge_b)],
                     "result_label": "Merged Exact Mesh",
-                }
+                },
+                capability=MESH_COMBINE_CAPABILITY_NAME,
             )
         )
         responses.append(
-            call(
+            call_background_segment(
                 {
-                    "operation": "split_components",
                     "target": _exact(split_source),
-                    "result_label_prefix": "Split Component",
-                }
+                },
+                capability=MESH_SEPARATE_CAPABILITY_NAME,
             )
         )
         responses.append(
-            call(
+            call_background_segment(
                 {
                     "operation": "mesh_segmentation",
                     "target": _exact(curvature_source),
@@ -218,7 +263,7 @@ def _run() -> None:
             )
         )
         responses.append(
-            call(
+            call_background_segment(
                 {
                     "operation": "segmentation_best_fit",
                     "target": _exact(best_fit_source),
@@ -234,7 +279,7 @@ def _run() -> None:
             )
         )
         responses.append(
-            call(
+            call_background_segment(
                 {
                     "operation": "reverse_segmentation",
                     "target": _exact(reverse_source),
@@ -249,9 +294,32 @@ def _run() -> None:
             )
         )
 
+        responses.append(
+            call_background_segment(
+                {
+                    "operation": "segmentation_from_components",
+                    "targets": [_exact(components_source)],
+                    "result_label_prefix": "Component Segment",
+                }
+            )
+        )
+        boundary = call_background_segment(
+            {
+                "operation": "mesh_boundary",
+                "targets": [
+                    {**_exact(boundary_source), "label": "Linked Boundary Face"}
+                ],
+                "make_faces_when_closed": True,
+            }
+        )
+        responses.append(boundary)
+        boundary_object = document.getObject(boundary["results"][0]["object_name"])
+        assert boundary_object.TypeId == "MeshPart::Boundary"
+        assert len(boundary_object.Shape.Edges) > 0
+
         before_manual = {obj.Name for obj in document.Objects}
         undo_before_manual = document.UndoCount
-        manual = call(
+        manual = call_background_segment(
             {
                 "operation": "segmentation_manual",
                 "target": _exact(manual_source),
@@ -272,29 +340,6 @@ def _run() -> None:
         _process_events(8)
         assert all(document.getObject(name) is not None for name in manual_names)
         responses.append(manual)
-
-        responses.append(
-            call(
-                {
-                    "operation": "segmentation_from_components",
-                    "targets": [_exact(components_source)],
-                    "result_label_prefix": "Component Segment",
-                }
-            )
-        )
-        boundary = call(
-            {
-                "operation": "mesh_boundary",
-                "targets": [
-                    {**_exact(boundary_source), "label": "Linked Boundary Face"}
-                ],
-                "make_faces_when_closed": True,
-            }
-        )
-        responses.append(boundary)
-        boundary_object = document.getObject(boundary["results"][0]["object_name"])
-        assert boundary_object.TypeId == "MeshPart::Boundary"
-        assert len(boundary_object.Shape.Edges) > 0
 
         snapshot = build_mesh_snapshot(document)
         assert snapshot["counts"]["mesh_part"] >= 2

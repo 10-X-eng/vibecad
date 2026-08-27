@@ -48,7 +48,11 @@ class NativeMeshInspectRuntime:
         self._context = context
 
     def inspect(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _VARIANTS)
+        operation, values = strict_variant_arguments(
+            arguments,
+            _VARIANTS,
+            defaults={"evaluation": {"degeneration_mode": "strict"}},
+        )
         self._context.guard()
         if operation == "evaluation":
             return self._start_evaluation(values)

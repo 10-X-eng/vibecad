@@ -156,8 +156,8 @@ def _variant(
         action_ids=frozenset({action_id}),
         surface_ids=frozenset({"mesh"}),
         exact_target_type="ExactCurrentHistoryMeshAndModelSpaceCut",
-        transaction_behavior="document",
-        background_required=False,
+        transaction_behavior="background",
+        background_required=True,
         parameters=parameters,
     )
 

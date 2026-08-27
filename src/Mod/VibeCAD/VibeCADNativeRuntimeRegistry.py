@@ -149,6 +149,8 @@ from VibeCADNativeAssemblyStructureBindings import (
 )
 from VibeCADNativeAssemblyStructureRuntime import NativeAssemblyStructureRuntime
 from VibeCADNativeCommonBindings import common_runtime_bindings
+from VibeCADNativeInspectionCompareBindings import inspection_compare_runtime_bindings
+from VibeCADNativeInspectionCompareRuntime import NativeInspectionCompareRuntime
 from VibeCADNativeCommonRuntime import NativeCommonRuntime
 from VibeCADNativeWorkspaceBindings import workspace_runtime_bindings
 from VibeCADNativeWorkspaceRuntime import NativeWorkspaceRuntime
@@ -476,6 +478,7 @@ def build_native_runtime_bindings(
     analyze_post_function = NativeAnalyzePostFunctionRuntime(context)
     analyze_visualization = NativeAnalyzeVisualizationRuntime(context)
     common = NativeCommonRuntime(context=context)
+    inspection_compare = NativeInspectionCompareRuntime(context)
     workspace = NativeWorkspaceRuntime(context)
     background = NativeBackgroundRuntime(context)
     mesh_convert = NativeMeshConvertRuntime(context)
@@ -620,6 +623,7 @@ def build_native_runtime_bindings(
         **analyze_visualization_runtime_bindings(analyze_visualization),
         **aero_solve_runtime_bindings(aero_solve),
         **common_runtime_bindings(common),
+        **inspection_compare_runtime_bindings(inspection_compare),
         **workspace_runtime_bindings(workspace),
         **native_background_runtime_bindings(background),
         **mesh_convert_runtime_bindings(mesh_convert),

@@ -23,6 +23,8 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
 
 #include <QButtonGroup>
 #include <QDialogButtonBox>
@@ -33,12 +35,13 @@
 #include <Gui/Command.h>
 #include <Gui/ExactTransaction.h>
 #include <Gui/Selection/Selection.h>
-#include <Gui/WaitCursor.h>
+#include <Base/Interpreter.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 #include <Mod/Mesh/App/FeatureMeshOperations.h>
 #include <Mod/Mesh/App/Core/Smoothing.h>
 
 #include "DlgSmoothing.h"
+#include "BackgroundMeshModification.h"
 #include "CommandGuard.h"
 #include "ParametricMeshFilter.h"
 #include "ui_DlgSmoothing.h"
@@ -201,8 +204,6 @@ bool TaskSmoothing::accept()
         meshes.push_back(mesh);
     }
 
-    Gui::WaitCursor wc;
-
     App::Document* document = meshes.front()->getDocument();
     if (!MeshGui::hasCleanNativeMutationBoundary(document)
         || std::ranges::any_of(meshes, [document](const Mesh::Feature* object) {
@@ -212,7 +213,7 @@ bool TaskSmoothing::accept()
         return false;
     }
 
-    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
+    std::vector<MeshGui::BackgroundMeshModificationTarget> operations;
     operations.reserve(meshes.size());
     for (auto* mesh : meshes) {
         std::vector<Mesh::FacetIndex> selectedFacets;
@@ -225,48 +226,45 @@ bool TaskSmoothing::accept()
             }
         }
         std::vector<long> persistedPoints(selectedPoints.begin(), selectedPoints.end());
-        int method = 0;
-        if (widget->method() == MeshGui::DlgSmoothing::Laplace) {
-            method = 1;
-        }
-        else if (widget->method() == MeshGui::DlgSmoothing::MedianFilter) {
-            method = 2;
-        }
-        const int iterations = widget->iterations();
-        const double lambda = widget->lambdaStep();
-        const double mu = widget->microStep();
         operations.push_back(
-            MeshGui::ParametricMeshFilterTarget {
+            MeshGui::BackgroundMeshModificationTarget {
                 mesh,
-                [mesh, method, iterations, lambda, mu, points = std::move(persistedPoints)](
-                    App::DocumentObject& object
-                ) {
-                    auto& smoothing = static_cast<Mesh::Smoothing&>(object);
-                    smoothing.Method.setValue(method);
-                    smoothing.Iterations.setValue(iterations);
-                    smoothing.Lambda.setValue(lambda);
-                    smoothing.Mu.setValue(mu);
-                    smoothing.PointIndices.setValues(points);
-                    if (!points.empty()) {
-                        smoothing.SelectionSource.setValue(mesh->Mesh.getValue());
-                    }
-                },
+                "Smooth Mesh",
+                std::move(persistedPoints),
+                {},
             }
         );
     }
 
     try {
-        MeshGui::createParametricMeshFilters(
-            *document,
+        const char* method = "taubin";
+        if (widget->method() == MeshGui::DlgSmoothing::Laplace) {
+            method = "laplace";
+        }
+        else if (widget->method() == MeshGui::DlgSmoothing::MedianFilter) {
+            method = "median";
+        }
+        std::ostringstream arguments;
+        arguments << "{\"settings\":{\"method\":\"" << method
+                  << "\",\"iterations\":" << widget->iterations();
+        if (widget->method() != MeshGui::DlgSmoothing::MedianFilter) {
+            arguments << ",\"lambda\":" << std::setprecision(17) << widget->lambdaStep();
+        }
+        if (widget->method() == MeshGui::DlgSmoothing::Taubin) {
+            arguments << ",\"mu\":" << std::setprecision(17) << widget->microStep();
+        }
+        arguments << "}}";
+        MeshGui::startBackgroundMeshModification(
             operations,
-            MeshGui::ParametricMeshFilterSpec {
-                "Mesh::Smoothing",
-                "Smoothing",
-                "Smooth Mesh",
-                QT_TRANSLATE_NOOP("Command", "Mesh Smoothing"),
-            }
+            "smooth",
+            arguments.str()
         );
         return true;
+    }
+    catch (const Py::Exception&) {
+        Base::PyException error;
+        Base::Console().error("Mesh smoothing failed: %s\n", error.what());
+        return false;
     }
     catch (const Base::Exception& error) {
         Base::Console().error("Mesh smoothing failed: %s\n", error.what());

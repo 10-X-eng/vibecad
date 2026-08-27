@@ -22,6 +22,7 @@ from VibeCADNativeTargets import object_identity, object_reference
 @dataclass(frozen=True, slots=True)
 class PreparedMeshCurvature:
     targets: tuple[PreparedMeshTarget, ...]
+    accepted_artifacts: tuple[bytes, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +53,10 @@ def create_mesh_curvature(
             error_code="NATIVE_MESH_STATE_STALE",
         )
     import MeshGui
+    import Mesh
+
+    if len(prepared.accepted_artifacts) != len(prepared.targets):
+        raise NativeMeshError("The accepted curvature artifacts are incomplete.")
 
     results = []
     for target in prepared.targets:
@@ -61,6 +66,8 @@ def create_mesh_curvature(
             raise NativeMeshError("The retained Mesh curvature object could not be created.")
         result.Label = target.label
         result.Source = target.source
+        Mesh.applyCurvatureArtifact(result, prepared.accepted_artifacts[len(results)])
+        result.UpdateFromSource = False
         results.append(result)
     controller = MeshGui.publishSourcePreservingOutputs(
         document.Name,
@@ -99,6 +106,7 @@ def verify_mesh_curvature(
             not is_live(document, result)
             or not result.isValid()
             or result.Source is not target.source
+            or bool(result.UpdateFromSource)
             or int(result.SampleCount) != int(target.topology.get("points", 0) or 0)
         ):
             raise NativeMeshError(
@@ -135,6 +143,7 @@ def verify_mesh_curvature(
             error_code="NATIVE_MESH_CURVATURE_POSTCONDITION_FAILED",
         )
     result = {
+        "updates_from_source": False,
         "results": [
             {
                 **object_reference(value),

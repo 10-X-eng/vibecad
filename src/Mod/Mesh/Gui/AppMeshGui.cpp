@@ -41,6 +41,7 @@
 #include <Base/PyObjectBase.h>
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentObjectGroup.h>
 #include <App/DocumentObjectPy.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -109,6 +110,11 @@ public:
             "publishReplacingOperation",
             &Module::publishReplacingOperation,
             "Publish one linked operation which replaces several exact Mesh sources."
+        );
+        add_varargs_method(
+            "ensureMeshesGroup",
+            &Module::ensureMeshesGroup,
+            "Place otherwise unowned Mesh objects in the document's Meshes folder."
         );
         add_varargs_method(
             "isNativeMeshInputActive",
@@ -687,6 +693,21 @@ private:
         }
         auto* object = static_cast<App::DocumentObjectPy*>(pythonObject)->getDocumentObjectPtr();
         return Py::Boolean(MeshGui::isNativeMeshInputActive(object));
+    }
+
+    Py::Object ensureMeshesGroup(const Py::Tuple& args)
+    {
+        char* documentName {};
+        if (!PyArg_ParseTuple(args.ptr(), "s", &documentName)) {
+            throw Py::Exception();
+        }
+        Gui::requireMainThread("MeshGui.ensureMeshesGroup");
+        auto* document = App::GetApplication().getDocument(documentName);
+        if (!document) {
+            throw Py::RuntimeError("The exact Mesh document is no longer open.");
+        }
+        auto* group = MeshGui::ensureMeshesGroup(*document);
+        return group ? Py::asObject(group->getPyObject()) : Py::None();
     }
 
     Py::Object publishStandaloneOutputs(const Py::Tuple& args)

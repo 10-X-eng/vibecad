@@ -11,7 +11,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
 )
 from VibeCADNativeMeshModifyRuntime import NativeMeshModifyRuntime
-from VibeCADNativeMeshModifySchema import MESH_MODIFY_CAPABILITY_NAME
+from VibeCADNativeMeshModifySchema import MESH_MODIFY_CAPABILITY_NAMES
 
 
 def _execute(call: Any) -> Mapping[str, Any]:
@@ -29,12 +29,13 @@ def register_mesh_modify_capability_implementation(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_implementation(
-        NativeCapabilityImplementation(MESH_MODIFY_CAPABILITY_NAME, _execute)
-    )
+    for name in MESH_MODIFY_CAPABILITY_NAMES:
+        registry.register_implementation(
+            NativeCapabilityImplementation(name, _execute)
+        )
 
 
 def mesh_modify_runtime_bindings(runtime: NativeMeshModifyRuntime) -> dict[str, Any]:
     if not isinstance(runtime, NativeMeshModifyRuntime):
         raise TypeError("runtime must be a NativeMeshModifyRuntime")
-    return {MESH_MODIFY_CAPABILITY_NAME: runtime}
+    return {name: runtime for name in MESH_MODIFY_CAPABILITY_NAMES}

@@ -6,11 +6,14 @@
 #include <iterator>
 #include <ranges>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 
 #include <App/Document.h>
+#include <App/DocumentObjectGroup.h>
 #include <App/DocumentTimeline.h>
 #include <App/GeoFeature.h>
+#include <App/GeoFeatureGroupExtension.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <Base/Exception.h>
@@ -32,6 +35,21 @@ enum class OutputInputMode
     SourcePreserving = 1,
     Standalone = 2,
 };
+
+constexpr auto MeshesGroupName = "Meshes";
+constexpr auto MeshesGroupRoleProperty = "VibeCADTreeRole";
+constexpr auto MeshesGroupRole = "meshes";
+
+bool isMeshesGroup(const App::DocumentObjectGroup* group)
+{
+    if (!group) {
+        return false;
+    }
+    const auto* role = dynamic_cast<const App::PropertyString*>(
+        group->getPropertyByName(MeshesGroupRoleProperty)
+    );
+    return role && std::string_view(role->getValue()) == MeshesGroupRole;
+}
 
 bool sameMeshState(const Mesh::MeshObject& first, const Mesh::MeshObject& second)
 {
@@ -242,6 +260,56 @@ void finalizeOutputTimelineBlock(
 }
 
 }  // namespace
+
+App::DocumentObjectGroup* MeshGui::ensureMeshesGroup(App::Document& document)
+{
+    App::DocumentObjectGroup* group = nullptr;
+    for (auto* candidate : document.getObjectsOfType<App::DocumentObjectGroup>()) {
+        if (isMeshesGroup(candidate)) {
+            group = candidate;
+            break;
+        }
+    }
+    if (!group) {
+        const std::string name = document.getUniqueObjectName(MeshesGroupName);
+        group = document.addObject<App::DocumentObjectGroup>(name.c_str());
+        if (!group) {
+            throw Base::RuntimeError("The Meshes tree folder could not be created");
+        }
+        group->Label.setValue(MeshesGroupName);
+        auto* role = dynamic_cast<App::PropertyString*>(group->addDynamicProperty(
+            "App::PropertyString",
+            MeshesGroupRoleProperty,
+            "Tree",
+            "Document tree domain",
+            static_cast<App::PropertyType>(App::Prop_ReadOnly | App::Prop_NoRecompute),
+            true,
+            true
+        ));
+        if (!role) {
+            throw Base::RuntimeError("The Meshes tree folder has an invalid role property");
+        }
+        role->setValue(MeshesGroupRole);
+        role->setStatus(App::Property::Hidden, true);
+        role->setStatus(App::Property::LockDynamic, true);
+        role->setStatus(App::Property::NoRecompute, true);
+    }
+
+    std::vector<App::DocumentObject*> unownedMeshes;
+    for (auto* mesh : document.getObjectsOfType<Mesh::Feature>()) {
+        if (!mesh || App::GroupExtension::getGroupOfObject(mesh)
+            || App::GeoFeatureGroupExtension::getGroupOfObject(mesh)) {
+            continue;
+        }
+        unownedMeshes.push_back(mesh);
+    }
+    const auto added = group->addObjects(unownedMeshes);
+    if (added.size() != unownedMeshes.size()) {
+        throw Base::RuntimeError("The Meshes tree folder could not own every ungrouped Mesh");
+    }
+    group->purgeTouched();
+    return group;
+}
 
 void MeshGui::markMeshTimelineResource(App::DocumentObject& resource, App::DocumentObject& owner)
 {
@@ -470,6 +538,7 @@ std::vector<Mesh::Feature*> MeshGui::createParametricMeshFilters(
             finalizeOutputTimelineBlock(document, {result}, nullptr);
         }
     }
+    ensureMeshesGroup(document);
 
     for (const auto& target : targets) {
         if (auto* sourceView = Gui::Application::Instance->getViewProvider(target.source)) {
@@ -569,6 +638,7 @@ std::vector<Mesh::Feature*> MeshGui::createStoredMeshEdits(
             finalizeOutputTimelineBlock(document, {result}, nullptr);
         }
     }
+    ensureMeshesGroup(document);
 
     for (const auto& target : targets) {
         if (auto* sourceView = Gui::Application::Instance->getViewProvider(target.source)) {
@@ -646,6 +716,7 @@ Mesh::OutputGroup* MeshGui::createSourcePreservingOutputGroup(
             outputs,
             nullptr
         );
+        ensureMeshesGroup(document);
         return nullptr;
     }
 
@@ -663,6 +734,7 @@ Mesh::OutputGroup* MeshGui::createSourcePreservingOutputGroup(
     if (group->Mesh.getValue().countFacets() != 0) {
         throw Base::RuntimeError("A source-preserving output group must not publish bypass geometry");
     }
+    ensureMeshesGroup(document);
     return group;
 }
 
@@ -752,6 +824,7 @@ Mesh::OutputGroup* MeshGui::createReplacingOutputGroup(
             sourceView->setVisible(false);
         }
     }
+    ensureMeshesGroup(document);
     return group;
 }
 
@@ -810,6 +883,7 @@ void MeshGui::createReplacingOperation(
             sourceView->setVisible(false);
         }
     }
+    ensureMeshesGroup(document);
 }
 
 Mesh::OutputGroup* MeshGui::createStandaloneOutputGroup(
@@ -842,6 +916,7 @@ Mesh::OutputGroup* MeshGui::createStandaloneOutputGroup(
             outputs,
             nullptr
         );
+        ensureMeshesGroup(document);
         return nullptr;
     }
 
@@ -854,5 +929,6 @@ Mesh::OutputGroup* MeshGui::createStandaloneOutputGroup(
     if (group->Mesh.getValue().countFacets() != 0) {
         throw Base::RuntimeError("A standalone output group must not publish bypass geometry");
     }
+    ensureMeshesGroup(document);
     return group;
 }

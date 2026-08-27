@@ -124,11 +124,13 @@ using namespace MeshPartGui;
 namespace
 {
 
-bool sameMeshState(const Mesh::MeshObject& first, const Mesh::MeshObject& second)
+const char* meshStateDifference(const Mesh::MeshObject& first, const Mesh::MeshObject& second)
 {
-    if (first.getTransform() != second.getTransform()
-        || first.countSegments() != second.countSegments()) {
-        return false;
+    if (first.getTransform() != second.getTransform()) {
+        return "the source Mesh placement changed";
+    }
+    if (first.countSegments() != second.countSegments()) {
+        return "the source Mesh segment count changed";
     }
 
     const auto& firstKernel = first.getKernel();
@@ -137,9 +139,16 @@ bool sameMeshState(const Mesh::MeshObject& first, const Mesh::MeshObject& second
     const auto& secondPoints = secondKernel.GetPoints();
     const auto& firstFacets = firstKernel.GetFacets();
     const auto& secondFacets = secondKernel.GetFacets();
-    if (firstPoints.size() != secondPoints.size() || firstFacets.size() != secondFacets.size()
-        || !std::ranges::equal(firstPoints, secondPoints)
-        || !std::ranges::equal(
+    if (firstPoints.size() != secondPoints.size()) {
+        return "the source Mesh point count changed";
+    }
+    if (firstFacets.size() != secondFacets.size()) {
+        return "the source Mesh facet count changed";
+    }
+    if (!std::ranges::equal(firstPoints, secondPoints)) {
+        return "the source Mesh point coordinates changed";
+    }
+    if (!std::ranges::equal(
             firstFacets,
             secondFacets,
             [](const MeshCore::MeshFacet& left, const MeshCore::MeshFacet& right) {
@@ -148,15 +157,33 @@ bool sameMeshState(const Mesh::MeshObject& first, const Mesh::MeshObject& second
                     && left._aulPoints[2] == right._aulPoints[2];
             }
         )) {
-        return false;
+        return "the source Mesh facet topology changed";
     }
 
     for (unsigned long index = 0; index < first.countSegments(); ++index) {
         if (first.getSegment(index).getIndices() != second.getSegment(index).getIndices()) {
-            return false;
+            return "the source Mesh segment membership changed";
         }
     }
-    return true;
+    return nullptr;
+}
+
+const char* sourceIssue(
+    const Mesh::Feature* source,
+    const App::Document* document,
+    const Mesh::MeshObject* acceptedMesh = nullptr
+)
+{
+    if (!source) {
+        return "the source no longer exists";
+    }
+    if (source->getDocument() != document) {
+        return "the source document changed";
+    }
+    if (!MeshGui::isNativeMeshInputActive(source)) {
+        return "the source is no longer active";
+    }
+    return acceptedMesh ? meshStateDifference(source->Mesh.getValue(), *acceptedMesh) : nullptr;
 }
 
 std::optional<Base::Vector3d> sourceLocalDirection(
@@ -486,18 +513,24 @@ void CurveOnMeshHandler::onCreate()
     App::Document* document = d_ptr->document ? **d_ptr->document : nullptr;
     auto* viewProvider = d_ptr->mesh ? d_ptr->mesh->get() : nullptr;
     auto* source = viewProvider ? viewProvider->getObject<Mesh::Feature>() : nullptr;
-    if (!source || source->getDocument() != document || !MeshGui::isNativeMeshInputActive(source)
-        || !sameMeshState(source->Mesh.getValue(), d_ptr->sourceMesh)) {
-        Base::Console().warning("Curve on mesh was cancelled because its source mesh "
-                                "changed\n");
+    if (const char* issue = sourceIssue(source, document, &d_ptr->sourceMesh)) {
+        Base::Console().warning("Curve on Mesh was cancelled because %s.\n", issue);
         d_ptr->clearTarget();
         return;
     }
 
-    if (d_ptr->pickedPoints.size() < 2
-        || d_ptr->projectionDirections.size()
-            != (d_ptr->wireClosed ? d_ptr->pickedPoints.size() : d_ptr->pickedPoints.size() - 1)
-        || !MeshGui::hasCleanNativeMutationBoundary(document)) {
+    if (d_ptr->pickedPoints.size() < 2) {
+        Base::Console().warning("Curve on Mesh needs at least two anchors.\n");
+        return;
+    }
+    const std::size_t expectedDirections = d_ptr->wireClosed ? d_ptr->pickedPoints.size()
+                                                             : d_ptr->pickedPoints.size() - 1;
+    if (d_ptr->projectionDirections.size() != expectedDirections) {
+        Base::Console().warning("Curve on Mesh has an incomplete projected segment.\n");
+        return;
+    }
+    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
+        Base::Console().warning("Finish the current document operation before creating the curve.\n");
         return;
     }
 
@@ -626,6 +659,9 @@ void CurveOnMeshHandler::enableCallback(Gui::View3DInventor* v)
         view3d->addEventCallback(SoEvent::getClassTypeId(), Private::vertexCallback, this);
         view3d->addViewProvider(d_ptr->curve);
         view3d->setEditing(true);
+        view3d->setRedirectToSceneGraphEnabled(true);
+        view3d->setRedirectToSceneGraph(true);
+        view3d->setSelectionEnabled(false);
 
         view3d->setEditingCursor(d_ptr->editcursor);
 
@@ -638,6 +674,9 @@ void CurveOnMeshHandler::disableCallback()
     if (d_ptr->viewer) {
         Gui::View3DInventorViewer* view3d = d_ptr->viewer->getViewer();
         view3d->setEditing(false);
+        view3d->setRedirectToSceneGraph(false);
+        view3d->setRedirectToSceneGraphEnabled(false);
+        view3d->setSelectionEnabled(true);
         view3d->removeViewProvider(d_ptr->curve);
         view3d->removeEventCallback(SoEvent::getClassTypeId(), Private::vertexCallback, this);
     }
@@ -710,8 +749,11 @@ void CurveOnMeshHandler::Private::vertexCallback(void* ud, SoEventCallback* cb)
                             ? **self->d_ptr->document
                             : nullptr;
                         auto* pickedSource = mesh->getObject<Mesh::Feature>();
-                        if (!pickedSource || pickedSource->getDocument() != targetDocument
-                            || !MeshGui::isNativeMeshInputActive(pickedSource)) {
+                        if (const char* issue = sourceIssue(pickedSource, targetDocument)) {
+                            Base::Console().warning(
+                                "Curve on Mesh discarded its target because %s.\n",
+                                issue
+                            );
                             self->d_ptr->clearTarget();
                             return;
                         }
@@ -720,11 +762,13 @@ void CurveOnMeshHandler::Private::vertexCallback(void* ud, SoEventCallback* cb)
                             // get the mesh and build a grid
                             auto* target = self->d_ptr->mesh ? self->d_ptr->mesh->get() : nullptr;
                             auto* source = target ? target->getObject<Mesh::Feature>() : nullptr;
-                            if (source
-                                && (source->getDocument() != targetDocument
-                                    || !MeshGui::isNativeMeshInputActive(source)
-                                    || !sameMeshState(source->Mesh.getValue(), self->d_ptr->sourceMesh)
-                                )) {
+                            if (const char* issue = source
+                                    ? sourceIssue(source, targetDocument, &self->d_ptr->sourceMesh)
+                                    : nullptr) {
+                                Base::Console().warning(
+                                    "Curve on Mesh discarded its target because %s.\n",
+                                    issue
+                                );
                                 self->d_ptr->clearTarget();
                                 target = nullptr;
                             }

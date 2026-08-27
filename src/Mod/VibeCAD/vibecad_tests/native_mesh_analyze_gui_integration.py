@@ -175,6 +175,15 @@ def _run() -> None:
 
         source = add_source(document, "AnalyzeSource", Mesh.createSphere(8.0, 36))
         _process_events(8)
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         uid = str(document.Uid)
         read_revision = state.current_revision(uid)
         read_undo_count = int(document.UndoCount)
@@ -190,7 +199,7 @@ def _run() -> None:
             },
             succeeds=False,
         )
-        assert stale["error_code"] == "NATIVE_MESH_STATE_STALE"
+        assert stale["error_code"] == "NATIVE_MESH_STATE_STALE", stale
 
         exact = _exact(source)
         facets = call(
@@ -262,19 +271,33 @@ def _run() -> None:
             "non_uniform_orientation",
             "point_indices_out_of_range",
             "self_intersections",
-            "surface_fold_overs",
             "surface_folds",
         }
+        assert isinstance(report["geometric_observations"], dict)
         assert state.current_revision(uid) == read_revision
         assert int(document.UndoCount) == read_undo_count
 
-        curvature = call(
+        started = time.monotonic()
+        curvature_queued = call(
             MESH_CURVATURE_CAPABILITY_NAME,
             {
                 "operation": "vertex_curvature",
                 "targets": [{**exact, "label": "Analyzed Vertex Curvature"}],
             },
         )
+        assert time.monotonic() - started < 0.25, curvature_queued
+        assert isinstance(curvature_queued.get("job"), dict), curvature_queued
+        curvature_job_id = curvature_queued["job"]["job_id"]
+        deadline = time.monotonic() + 120.0
+        while time.monotonic() < deadline:
+            _process_events(2)
+            curvature_snapshot = context.background_manager.snapshot(curvature_job_id)
+            if curvature_snapshot.terminal:
+                break
+            time.sleep(0.01)
+        curvature_snapshot = context.background_manager.snapshot(curvature_job_id)
+        assert curvature_snapshot.phase == "completed", curvature_snapshot.error
+        curvature = dict(curvature_snapshot.result or {})
         assert int(document.UndoCount) == read_undo_count + 1
         assert curvature["receipt"]["revision_after"] == read_revision + 1
         curvature_name = curvature["results"][0]["object_name"]

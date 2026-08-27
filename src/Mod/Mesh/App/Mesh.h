@@ -26,7 +26,10 @@
 
 #include <list>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <set>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -120,6 +123,12 @@ public:
 
     MeshObject& operator=(const MeshObject&);
     MeshObject& operator=(MeshObject&&);
+
+    /** Return one immutable deep copy while document-property writers are excluded. */
+    std::unique_ptr<MeshObject> snapshot() const;
+
+    /** Internal write guard used by PropertyMeshKernel document mutations. */
+    std::unique_lock<std::shared_mutex> acquireMutationLock();
 
     /** @name Subelement management */
     //@{
@@ -495,6 +504,7 @@ private:
     Base::Matrix4D _Mtrx;
     MeshCore::MeshKernel _kernel;
     std::vector<Segment> _segments;
+    mutable std::shared_mutex _snapshotMutex;
     static const float Epsilon;
 };
 

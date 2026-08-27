@@ -4,72 +4,32 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-import re
 from typing import Any, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeBackground import NativeBackgroundError
 from VibeCADNativeMeshErrors import NativeMeshError
-from VibeCADNativeMeshState import mesh_object_state
+from VibeCADNativeMeshExport import (
+    MESH_EXPORT_FORMAT_SUFFIXES,
+    capture_mesh_export,
+    mesh_export_request,
+    mesh_export_source_still_exact,
+    prepare_mesh_export,
+    provider_mesh_export_format,
+)
 from VibeCADNativePointIO import (
     POINT_OUTPUT_SUFFIXES,
     point_output_request,
     publish_point_export,
 )
 from VibeCADNativePointTargets import point_target_still_exact, prepare_point_target
-from VibeCADNativeOutput import (
-    NativeOutputError,
-    NativeOutputRequest,
-    publish_authorized_output,
-)
+from VibeCADNativeOutput import NativeOutputError
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
 from VibeCADNativeTargets import NativeObjectRef, resolve_object
 
 
-MAX_MESH_EXPORT_BYTES = 16 * 1024 * 1024 * 1024
-_FORMAT_SUFFIX = {
-    "binary_stl": ".stl",
-    "ascii_stl": ".ast",
-    "binary_mesh": ".bms",
-    "obj": ".obj",
-    "off": ".off",
-    "ply": ".ply",
-    "nastran": ".bdf",
-}
-
-
-def _target_ref(document_uid: str, value: Any) -> NativeObjectRef:
-    if not isinstance(value, Mapping) or set(value) != {"object_name"}:
-        raise NativeMeshError("target must contain one exact object_name.")
-    try:
-        return NativeObjectRef(document_uid, str(value["object_name"]))
-    except Exception as exc:
-        raise NativeMeshError("target.object_name must identify one exact Mesh.") from exc
-
-
-def _count(value: Any, field: str) -> int:
-    if type(value) is not int or not 0 <= value <= 2_147_483_647:
-        raise NativeMeshError(f"{field} must be one non-negative integer.")
-    return value
-
-
-def _suggested_name(label: str, suffix: str) -> str:
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", label.strip()).strip("._-")
-    return f"{(stem or 'mesh')[:120]}{suffix}"
-
-
-def _request(label: str, format_name: str) -> NativeOutputRequest:
-    suffix = _FORMAT_SUFFIX[format_name]
-    return NativeOutputRequest(
-        purpose="export_mesh",
-        title="Export Mesh",
-        suggested_file_name=_suggested_name(label, suffix),
-        allowed_suffixes=(suffix,),
-        name_filter=f"{format_name.replace('_', ' ').title()} (*{suffix})",
-        maximum_bytes=MAX_MESH_EXPORT_BYTES,
-    )
+_FORMAT_SUFFIX = MESH_EXPORT_FORMAT_SUFFIXES
 
 
 def _job_summary(snapshot: Any) -> dict[str, Any]:
@@ -98,13 +58,7 @@ class NativeMeshExportRuntime:
             arguments,
             {
                 "export_mesh": frozenset(
-                    {
-                        "target",
-                        "expected_state_sha256",
-                        "expected_point_count",
-                        "expected_facet_count",
-                        "format",
-                    }
+                    {"target", "format"}
                 ),
                 "export_point_cloud": frozenset(
                     {
@@ -130,43 +84,24 @@ class NativeMeshExportRuntime:
                 "Background human-authorized Mesh export is unavailable in this session.",
                 error_code="NATIVE_MESH_EXPORT_UNAVAILABLE",
             )
-        reference = _target_ref(context.document_uid, values["target"])
-        expected_state = str(values["expected_state_sha256"])
-        expected_points = _count(values["expected_point_count"], "expected_point_count")
-        expected_facets = _count(values["expected_facet_count"], "expected_facet_count")
-        format_name = str(values["format"])
-        if format_name not in _FORMAT_SUFFIX:
-            raise NativeMeshError("The requested Mesh export format is unavailable.")
-
+        target = values["target"]
+        if not isinstance(target, Mapping) or set(target) != {
+            "object_name",
+            "expected_state_sha256",
+        }:
+            raise NativeMeshError(
+                "target must contain one object_name and expected_state_sha256."
+            )
+        reference = NativeObjectRef(context.document_uid, str(target["object_name"]))
         obj = resolve_object(context.document, reference, expected_types=("Mesh::Feature",))
-        import MeshGui
-
-        if not bool(MeshGui.isNativeMeshInputActive(obj)):
-            raise NativeMeshError(
-                "The exact Mesh is not active at the current History position.",
-                error_code="NATIVE_MESH_HISTORY_TARGET_INACTIVE",
-            )
-        state = mesh_object_state(obj)
-        topology = dict(state.get("topology") or {})
-        if (
-            state.get("state_sha256") != expected_state
-            or topology.get("points") != expected_points
-            or topology.get("facets") != expected_facets
-        ):
-            raise NativeMeshError(
-                "The exact Mesh changed after the provider read its state.",
-                error_code="NATIVE_MESH_STATE_STALE",
-                repair={
-                    "target": {"object_name": reference.object_name},
-                    "current_state_sha256": state.get("state_sha256"),
-                    "current_topology": topology,
-                },
-            )
-        if expected_facets < 1:
-            raise NativeMeshError("The exact Mesh has no facets to export.")
-        detached = obj.Mesh.copy()
-        label = str(getattr(obj, "Label", "") or reference.object_name)
-        request = _request(label, format_name)
+        format_value = provider_mesh_export_format(values["format"])
+        captured = capture_mesh_export(
+            context.document,
+            obj,
+            expected_state_sha256=str(target["expected_state_sha256"]),
+            format_value=format_value,
+        )
+        request = mesh_export_request(captured.label, format_value)
         try:
             authorization = authorizer(request)
         except NativeOutputError as exc:
@@ -179,60 +114,21 @@ class NativeMeshExportRuntime:
 
         def validate_source() -> None:
             context.guard()
-            current = resolve_object(
-                context.document,
-                reference,
-                expected_types=("Mesh::Feature",),
-            )
-            if (
-                not bool(MeshGui.isNativeMeshInputActive(current))
-                or mesh_object_state(current).get("state_sha256") != expected_state
-            ):
+            if not mesh_export_source_still_exact(context.document, captured):
                 raise NativeMeshError(
                     "The exact Mesh changed before output publication.",
                     error_code="NATIVE_MESH_STATE_STALE",
                 )
 
         def prepare(cancelled: Any, progress: Any) -> Mapping[str, Any]:
-            if cancelled():
-                from VibeCADNativeBackground import NativeBackgroundCancelled
-
-                raise NativeBackgroundCancelled()
-            progress(10, "Writing detached mesh data")
-
-            def writer(path: str) -> None:
-                detached.write(Filename=path)
-
-            def validator(path: Path) -> None:
-                if cancelled():
-                    from VibeCADNativeBackground import NativeBackgroundCancelled
-
-                    raise NativeBackgroundCancelled()
-                import Mesh
-
-                check = Mesh.read(str(path))
-                if int(getattr(check, "CountFacets", 0) or 0) < 1:
-                    raise NativeMeshError("The generated Mesh output has no facets.")
-
-            artifact = publish_authorized_output(
+            return prepare_mesh_export(
+                captured,
                 request,
                 authorization,
-                writer=writer,
+                cancelled=cancelled,
+                progress=progress,
                 guard=lambda: dispatcher(validate_source),
-                validator=validator,
-                temporary_suffix=_FORMAT_SUFFIX[format_name],
             )
-            progress(90, "Mesh output verified and published")
-            return {
-                "output": artifact.summary(),
-                "format": format_name,
-                "source": {
-                    "object_name": reference.object_name,
-                    "state_sha256": expected_state,
-                    "points": expected_points,
-                    "facets": expected_facets,
-                },
-            }
 
         try:
             snapshot = manager.submit(
