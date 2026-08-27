@@ -25,6 +25,32 @@ from VibeCADNativeSnapshot import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _plain_python_model_host_contract(monkeypatch):
+    """Keep snapshot unit tests independent of the embedded FreeCAD host.
+
+    The production readiness helper remains strict and is covered by its
+    focused host integration suite.  These tests exercise snapshot composition
+    and bounding, so they provide a deterministic result at that host boundary.
+    """
+
+    monkeypatch.setattr(
+        model_snapshot_module,
+        "sketch_readiness",
+        lambda _document, _target: {
+            "fully_constrained": False,
+            "profile": {
+                "wire_count": 1,
+                "closed_wire_count": 1,
+                "open_wire_count": 0,
+            },
+            "valid": True,
+            "surface_feature_ready": True,
+            "solid_feature_ready": True,
+        },
+    )
+
+
 class _Object:
     def __init__(self, document, name: str, type_id: str):
         self.Document = document
@@ -128,6 +154,7 @@ def _document() -> _Document:
 
     sheet = document.add("Parameters", "Spreadsheet::Sheet")
     sheet.getNonEmptyCells = lambda: ["A1", "B2"]
+    sheet.getContents = lambda cell: "10 mm" if cell == "A1" else "20 mm"
     sheet.getAlias = lambda cell: "width" if cell == "A1" else ""
     feature.ExpressionEngine = [("Length", "Parameters.width")]
     return document
@@ -389,6 +416,12 @@ def test_each_surface_builds_only_its_live_domain(
                     "next_offset": None,
                 }
             ),
+        )
+    if surface_id == "drawing":
+        monkeypatch.setattr(
+            drawing_snapshot_module,
+            "build_drawing_snapshot",
+            lambda _document, **_options: {"kind": "drawing"},
         )
     selection = {
         "document_uid": "document-a",
@@ -744,7 +777,7 @@ def test_model_snapshot_exposes_exact_editable_standard_fastener_definition(
                 "length_mm": 10.0,
                 "model_thread": False,
                 "left_handed": False,
-                "options": {},
+                "catalog_option_overrides": {},
             },
         }
     ]

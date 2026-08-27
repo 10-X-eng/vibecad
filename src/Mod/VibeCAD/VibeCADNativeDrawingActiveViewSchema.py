@@ -114,6 +114,11 @@ def drawing_active_view_capability_definition() -> NativeCapabilityDefinition:
             "viewport on one exact Drawing page."
         ),
         primary_classification="mutation",
+        # This private closed-path operation is routed by its explicit operation
+        # name even though it currently has only one variant.  Preserve that
+        # discriminator so future variants remain additive and callers never
+        # have to change the request shape.
+        preserve_operation_discriminator=True,
         variants=(
             NativeCapabilityVariant(
                 operation="create_active_view",

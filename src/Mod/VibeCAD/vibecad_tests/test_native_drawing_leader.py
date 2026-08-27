@@ -124,9 +124,20 @@ def test_leader_host_plan_preserves_complete_typed_state() -> None:
         "owner_transform",
         "symbols",
         "behavior",
-        "line",
     ):
         assert normalized[field] == raw[field]
+    assert normalized["line"] == {
+        "line_width_mm": 0.35,
+        "line_style": "continuous",
+        # App::PropertyColor persists eight-bit channels, so host state must be
+        # compared at the same durable precision rather than to arbitrary input
+        # floats that cannot survive save/reopen unchanged.
+        "color_rgb": {
+            "red": round(26 / 255, 12),
+            "green": round(51 / 255, 12),
+            "blue": round(77 / 255, 12),
+        },
+    }
 
 
 @pytest.mark.parametrize(
