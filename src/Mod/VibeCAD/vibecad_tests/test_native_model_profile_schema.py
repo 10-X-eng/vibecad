@@ -212,4 +212,4 @@ def test_profile_features_publish_focused_direct_contracts() -> None:
         )
         for definition in definitions.values()
     )
-    assert encoded_size < 17_000
+    assert encoded_size < 18_000

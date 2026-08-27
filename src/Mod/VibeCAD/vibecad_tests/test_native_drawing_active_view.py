@@ -49,6 +49,7 @@ def test_active_view_is_one_closed_path_private_operation() -> None:
     branch = _branch(schema, variant.operation)
     assert branch["additionalProperties"] is False
     assert branch["required"] == [
+        "operation",
         "label",
         "page",
         "viewport",

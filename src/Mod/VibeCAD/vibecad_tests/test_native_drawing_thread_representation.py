@@ -19,7 +19,6 @@ from VibeCADNativeDrawingThreadRepresentationState import (
     normalize_thread_bottom_host_plans,
     normalize_thread_side_host_plan,
 )
-from vibecad_tests.schema_test_helpers import exact_provider_branches
 
 
 MOD_ROOT = Path(__file__).resolve().parents[2]
@@ -114,15 +113,13 @@ def _bottom_plans(kind: str, *, created: bool = False) -> list[dict]:
 def test_thread_schema_has_four_closed_action_specific_branches() -> None:
     definition = drawing_thread_representation_capability_definition()
     schema = definition.provider_schema(DRAWING_THREAD_REPRESENTATION_OPERATIONS)
-    by_operation = exact_provider_branches(
-        definition, DRAWING_THREAD_REPRESENTATION_OPERATIONS
-    )
+    branches = schema["parameters"]["oneOf"]
 
     assert definition.name == DRAWING_THREAD_REPRESENTATION_CAPABILITY_NAME
-    assert "oneOf" not in schema["parameters"]
-    assert schema["parameters"]["properties"]["operation"]["enum"] == list(
-        DRAWING_THREAD_REPRESENTATION_OPERATIONS
-    )
+    assert len(branches) == 4
+    by_operation = {
+        branch["properties"]["operation"]["const"]: branch for branch in branches
+    }
     assert tuple(by_operation) == DRAWING_THREAD_REPRESENTATION_OPERATIONS
     for operation in ("create_hole_side", "create_bolt_side"):
         branch = by_operation[operation]

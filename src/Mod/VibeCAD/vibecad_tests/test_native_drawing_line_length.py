@@ -16,7 +16,14 @@ from VibeCADNativeDrawingLineLengthSchema import (
     drawing_line_length_capability_definition,
     register_drawing_line_length_capability_definition,
 )
-from vibecad_tests.schema_test_helpers import exact_provider_branches
+
+
+def _branch(schema: dict, operation: str) -> dict:
+    return next(
+        branch
+        for branch in schema["parameters"]["oneOf"]
+        if branch["properties"]["operation"].get("const") == operation
+    )
 
 
 def test_line_length_schema_is_closed_exact_explicit_and_bounded() -> None:
@@ -25,16 +32,10 @@ def test_line_length_schema_is_closed_exact_explicit_and_bounded() -> None:
 
     assert DRAWING_LINE_LENGTH_OPERATIONS == ("extend", "shorten", "read_view")
     assert definition.primary_classification == "mutation"
-    assert "oneOf" not in schema["parameters"]
-    assert schema["parameters"]["properties"]["operation"]["enum"] == [
-        "extend",
-        "shorten",
-        "read_view",
-    ]
-    branches = exact_provider_branches(definition, DRAWING_LINE_LENGTH_OPERATIONS)
+    assert len(schema["parameters"]["oneOf"]) == 3
 
     for operation in ("extend", "shorten"):
-        branch = branches[operation]
+        branch = _branch(schema, operation)
         assert branch["additionalProperties"] is False
         target = branch["properties"]["target"]
         assert target["additionalProperties"] is False
@@ -47,7 +48,7 @@ def test_line_length_schema_is_closed_exact_explicit_and_bounded() -> None:
         assert delta["minimum"] == 0.000001
         assert delta["maximum"] == 1_000_000.0
 
-    read_branch = branches["read_view"]
+    read_branch = _branch(schema, "read_view")
     assert read_branch["properties"]["offset"]["maximum"] == 512
     assert read_branch["properties"]["page_size"]["maximum"] == 48
 

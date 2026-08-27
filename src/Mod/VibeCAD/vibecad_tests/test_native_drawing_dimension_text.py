@@ -18,7 +18,6 @@ from VibeCADNativeDrawingDimensionTextState import (
     NativeDrawingDimensionTextStateError,
     normalize_dimension_text_host_plans,
 )
-from vibecad_tests.schema_test_helpers import exact_provider_branches
 
 
 MOD_ROOT = Path(__file__).resolve().parents[2]
@@ -49,15 +48,13 @@ def _plan(
 def test_dimension_text_schema_has_six_closed_exact_branches() -> None:
     definition = drawing_dimension_text_capability_definition()
     schema = definition.provider_schema(DRAWING_DIMENSION_TEXT_OPERATIONS)
-    by_operation = exact_provider_branches(
-        definition, DRAWING_DIMENSION_TEXT_OPERATIONS
-    )
+    branches = schema["parameters"]["oneOf"]
+    by_operation = {
+        branch["properties"]["operation"]["const"]: branch
+        for branch in branches
+    }
 
     assert definition.name == DRAWING_DIMENSION_TEXT_CAPABILITY_NAME
-    assert "oneOf" not in schema["parameters"]
-    assert schema["parameters"]["properties"]["operation"]["enum"] == list(
-        DRAWING_DIMENSION_TEXT_OPERATIONS
-    )
     assert tuple(by_operation) == DRAWING_DIMENSION_TEXT_OPERATIONS
     for operation, branch in by_operation.items():
         expected = ["operation", "page", "dimensions"]
