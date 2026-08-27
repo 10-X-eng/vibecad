@@ -702,6 +702,7 @@ set(VibeCAD_Scripts
     VibeCADNativeManufacturePostChild.py
     VibeCADNativeManufacturePostConfiguration.py
     VibeCADNativeManufacturePostInput.py
+    VibeCADNativeManufactureGovernance.py
     VibeCADNativeManufacturePostRuntime.py
     VibeCADNativeManufacturePostSchema.py
     VibeCADNativeManufacturePostWorker.py

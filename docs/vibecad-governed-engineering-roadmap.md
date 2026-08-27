@@ -310,7 +310,7 @@ behavior while it waits for host persistence/workflows.
 | G4 — authority policy and preview evidence | F, G | **Partial** | The executable registry-bound census classifies all current operations; add bounded domain preview evidence where justified and prove authoritative installed/runtime integration. |
 | G5 — workflow DAG | H | **Partial** | The bounded durable DAG, scheduler, restart, cancellation, retry, and publish-once core is implemented; wire real G2 jobs/domain adapters and prove installed/runtime and real five-stage FEM acceptance. |
 | G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
-| G7 — Manufacture runtime integration | J | **Partial evidence foundation** | Existing post output can be projected only with exact G2 attempt/G5 node linkage while preserving Job/post/output hashes and `not_proven_toolpath`; runtime record wiring, CAMotics/simulation, A/B, stale/restart and installed closure remain. |
+| G7 — Manufacture runtime integration | J | **Partial runtime integration** | Existing post output now creates exact durable G2 Analysis and single-node G5 workflow records, pinned output evidence, path-free human authorization evidence and X7 linkage while preserving `not_proven_toolpath`; CAMotics/simulation, A/B, stale/restart and installed closure remain. |
 | G8 — Assembly consolidation | K, L, N | **Partial evidence projection** | Existing native simulation-state hash and solver diagnostics project without a second graph; stable identities, interfaces, continuous motion, flexible/closed-loop/contact, fit and Part Design gates remain. |
 | G9 — joint inference | M | **Design-ready** | Bounded interface extraction/classification, ranked compatibility evidence, explicit accept/reject, no direct authoritative mutation. |
 | G10 — assembly sequencing | O | **Design-ready** | Insertion/access/fastener/precedence model, bounded solver, collision/currentness evidence, sampled-versus-continuous verdicts. |
@@ -662,14 +662,23 @@ stale-source tests, installed packaging, and at least one real bounded
 Manufacture workflow that publishes once without changing untouched domain
 behavior.
 
-The first G7/X7 evidence seam is implemented in
-`tool_impl/engineering_experience.py`: it accepts the existing Native
-Manufacture post owner's committed result only when a validated Manufacture G2
-record contains the exact provider attempt and a validated G5 node references
-that Analysis identity. It preserves Job, postprocessor, machine and output
-hash evidence, requires unchanged document/history/selection/visibility state,
-and refuses any claim above `not_proven_toolpath`. This does not yet wire the
-runtime to create those durable records and therefore does not close G7 or X7.
+The first G7/X7 runtime seam is implemented by
+`VibeCADNativeManufactureGovernance.py`, the existing Native Manufacture post
+runtime and `tool_impl/engineering_experience.py`. Each accepted post request
+derives four bounded hashes from the already-frozen CAM input, then the existing
+background manager advances one durable Manufacture Analysis record and one
+single-node workflow run. Human-authorized output descriptors are pinned as
+evidence; intent and authorization metadata deliberately omit destination
+paths. The committed result carries exact Analysis, workflow, node and attempt
+references, and projection refuses mismatched records or outputs absent from
+the durable artifact set. Job, postprocessor, machine and output hashes,
+unchanged document/history/selection/visibility state and the
+`not_proven_toolpath` ceiling remain owned by Manufacture.
+
+This closes runtime record creation for CAM post only. G7 remains partial until
+CAMotics/simulation use the same owner-preserving evidence path, restart and
+stale-source reconciliation are proven, existing behavior passes A/B GUI
+acceptance, and installed packaging is exercised.
 
 ### G8 — Assembly state, interface, and validation consolidation
 

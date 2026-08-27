@@ -14,7 +14,7 @@ import pytest
 
 VIBECAD_DIR = Path(__file__).resolve().parents[1]
 CMAKE_LISTS = VIBECAD_DIR / "CMakeLists.txt"
-PUBLIC_ANALYSIS_FACADES = (
+PUBLIC_GOVERNED_RUNTIME_MODULES = (
     "VibeCADAnalysisRuntime.py",
     "VibeCADAnalysisContracts.py",
     "VibeCADAnalysisArtifacts.py",
@@ -27,6 +27,8 @@ PUBLIC_ANALYSIS_FACADES = (
     "VibeCADNativeAuthorityPolicy.py",
     "VibeCADAnalysisWorkflow.py",
     "VibeCADGovernedOptimization.py",
+    "VibeCADNativeManufactureGovernance.py",
+    "VibeCADNativeManufacturePostRuntime.py",
 )
 PACKAGED_TREE_ENVIRONMENT = (
     ("VIBECAD_BUILD_MODULE_DIR", "CMake build tree"),
@@ -100,8 +102,12 @@ def _assert_isolated_facade_imports(module_dir: Path, deployment: str) -> None:
     module_dir = module_dir.resolve()
     assert module_dir.is_dir(), f"Missing {deployment} module directory: {module_dir}"
 
-    missing = [name for name in PUBLIC_ANALYSIS_FACADES if not (module_dir / name).is_file()]
-    assert missing == [], f"{deployment} omitted public Analysis facades: {missing}"
+    missing = [
+        name
+        for name in PUBLIC_GOVERNED_RUNTIME_MODULES
+        if not (module_dir / name).is_file()
+    ]
+    assert missing == [], f"{deployment} omitted governed runtime modules: {missing}"
     assert (module_dir / "tool_impl").is_dir(), (
         f"{deployment} omitted the installed tool_impl package: {module_dir}"
     )
@@ -140,7 +146,7 @@ print(json.dumps(loaded, sort_keys=True))
             "-c",
             probe,
             str(module_dir),
-            json.dumps(PUBLIC_ANALYSIS_FACADES),
+            json.dumps(PUBLIC_GOVERNED_RUNTIME_MODULES),
         ],
         cwd=module_dir.parent,
         env=environment,
@@ -155,15 +161,17 @@ print(json.dumps(loaded, sort_keys=True))
     )
     loaded = json.loads(completed.stdout)
     assert set(loaded) == {
-        name.removesuffix(".py") for name in PUBLIC_ANALYSIS_FACADES
+        name.removesuffix(".py") for name in PUBLIC_GOVERNED_RUNTIME_MODULES
     }
 
 
-def test_public_analysis_facades_are_registered_for_copy_and_install() -> None:
+def test_public_governed_runtime_modules_are_registered_for_copy_and_install() -> None:
     registered = _registered_vibecad_scripts()
-    missing = [name for name in PUBLIC_ANALYSIS_FACADES if name not in registered]
+    missing = [
+        name for name in PUBLIC_GOVERNED_RUNTIME_MODULES if name not in registered
+    ]
     assert missing == [], (
-        "Public Analysis facades must be registered in VibeCAD_Scripts so CMake "
+        "Public governed runtime modules must be registered in VibeCAD_Scripts so CMake "
         f"copies and installs them; missing: {missing}"
     )
 
@@ -182,7 +190,7 @@ def test_vibecad_python_install_rules_retain_the_default_component() -> None:
 
 
 @pytest.mark.parametrize(("environment_name", "deployment"), PACKAGED_TREE_ENVIRONMENT)
-def test_public_analysis_facades_import_from_isolated_packaged_tree(
+def test_public_governed_runtime_modules_import_from_isolated_packaged_tree(
     environment_name: str,
     deployment: str,
 ) -> None:

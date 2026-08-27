@@ -210,6 +210,42 @@ def test_artifact_tombstone_is_idempotent_and_evidence_aware(tmp_path: Path) -> 
         store.tombstone_artifact("analysis-1", "f" * 64)
 
 
+def test_publication_evidence_is_write_once_and_path_free(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    _advance(store, "publishing", [])
+    intent = {"kind": "human_authorized_output", "output_count": 1}
+    authorization = {
+        "kind": "human_selected_destination",
+        "destination_paths_persisted": False,
+    }
+
+    recorded = store.record_publication_evidence(
+        "analysis-1", intent=intent, authorization=authorization
+    )
+
+    assert recorded["publication"] == {
+        "intent": intent,
+        "authorization": authorization,
+        "receipt": None,
+    }
+    assert store.record_publication_evidence(
+        "analysis-1", intent=intent, authorization=authorization
+    ) == recorded
+    with pytest.raises(AnalysisPersistenceError, match="cannot change"):
+        store.record_publication_evidence(
+            "analysis-1",
+            intent={**intent, "output_count": 2},
+            authorization=authorization,
+        )
+    with pytest.raises(AnalysisPersistenceError, match="exceeds"):
+        store.record_publication_evidence(
+            "analysis-1",
+            intent={"oversized": "x" * (64 * 1024)},
+            authorization=authorization,
+        )
+
+
 @pytest.mark.parametrize(
     ("fault_point", "durable_state"),
     (

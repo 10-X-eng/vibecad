@@ -410,6 +410,22 @@ def project_manufacture_post_evidence(
         raise AnalysisContractError("Manufacture provider attempt is not in the Analysis record.")
     if not any(node["analysis_id"] == activity["analysis_id"] for node in workflow["nodes"]):
         raise AnalysisContractError("Manufacture Analysis is not bound to the workflow run.")
+    governance = source.get("governance")
+    if governance is not None:
+        if not isinstance(governance, Mapping):
+            raise AnalysisContractError("Manufacture governance references are invalid.")
+        expected_governance = {
+            "analysis_id": activity["analysis_id"],
+            "workflow_run_id": workflow["run_id"],
+            "provider_attempt_id": attempt_id,
+        }
+        if any(
+            str(governance.get(name) or "") != value
+            for name, value in expected_governance.items()
+        ):
+            raise AnalysisContractError(
+                "Manufacture governance references do not match evidence."
+            )
     required = ("operation", "job", "postprocessor", "outputs", "output_count",
                 "total_size_bytes", "document_unchanged", "history_unchanged",
                 "selection_unchanged", "visibility_unchanged", "claim_ceiling",
@@ -449,6 +465,16 @@ def project_manufacture_post_evidence(
             raise AnalysisContractError("Manufacture output digests must be unique.")
         digests.add(digest)
         total += size
+    if governance is not None:
+        admitted = {
+            str(item.get("sha256") or "").lower()
+            for item in activity["artifacts"]
+            if isinstance(item, Mapping)
+        }
+        if not digests <= admitted:
+            raise AnalysisContractError(
+                "Manufacture output is absent from durable artifacts."
+            )
     if source["total_size_bytes"] != total:
         raise AnalysisContractError("Manufacture output byte total does not match its evidence.")
     unchanged = {name: source[name] for name in (

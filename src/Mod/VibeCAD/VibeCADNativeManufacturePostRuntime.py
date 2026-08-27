@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeBackground import NativeBackgroundError
 from VibeCADNativeManufactureErrors import NativeManufactureError
+from VibeCADNativeManufactureGovernance import create_manufacture_post_governance
 from VibeCADNativeManufacturePostInput import (
     cleanup_post,
     preflight_post,
@@ -80,6 +81,7 @@ class NativeManufacturePostRuntime:
                 job=values["job"],
                 operations=values["operations"],
             )
+        governance = create_manufacture_post_governance(frozen)
 
         def guard() -> None:
             context.guard()
@@ -154,7 +156,7 @@ class NativeManufacturePostRuntime:
                         strict=True,
                     )
                 ]
-            return stamp_cam_post_unproven(result)
+            return governance.record_result(stamp_cam_post_unproven(result))
 
         try:
             snapshot = manager.submit(
@@ -166,6 +168,7 @@ class NativeManufacturePostRuntime:
                 dispatch_to_document_thread=dispatcher,
                 finalize_message="Requesting human CAM output destinations",
                 cleanup=lambda _prepared: cleanup_post(frozen),
+                durable_lifecycle=governance,
             )
         except NativeBackgroundError as exc:
             cleanup_post(frozen)
@@ -179,6 +182,7 @@ class NativeManufacturePostRuntime:
         return stamp_cam_post_unproven(
             {
                 "job": _job_summary(snapshot),
+                "governance": governance.references(),
                 "next": {
                     "tool": "native.job",
                     "operation": "status",

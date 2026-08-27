@@ -57,11 +57,14 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
   publish. Compare UI, provenance branches and restart/staleness GUI acceptance
   remain.
 - **X7: partial Manufacture evidence foundation.** A bounded projection now
-  accepts only the existing Native Manufacture post owner's committed output,
-  validates its exact G2 Analysis attempt and G5 workflow-node linkage, retains
-  Job/postprocessor/output hashes and unchanged-document evidence, and enforces
-  `not_proven_toolpath`. It cannot choose destinations, write files, mutate the
-  Job, or certify manufacturability. Runtime record wiring, CAMotics/simulation
+  accepts only the existing Native Manufacture post owner's committed output.
+  The post runtime now creates its exact durable G2 Analysis attempt and
+  single-node G5 workflow run, pins authorized output descriptors, records
+  path-free human authorization evidence and returns exact projection
+  references. The projection rejects mismatched identities and unadmitted
+  artifacts, retains Job/postprocessor/output hashes and unchanged-document
+  evidence, and enforces `not_proven_toolpath`. It cannot choose destinations,
+  write files, mutate the Job, or certify manufacturability. CAMotics/simulation
   projections, Qt pages, A/B behavior, stale/restart and installed acceptance
   remain.
 - **X8: partial Assembly evidence foundation.** The Native Assembly simulation

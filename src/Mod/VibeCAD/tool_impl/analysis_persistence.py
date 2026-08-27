@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterator, Mapping
 
 
 ANALYSIS_METADATA_SCHEMA_VERSION = 1
+MAX_PUBLICATION_EVIDENCE_BYTES = 64 * 1024
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
 KNOWN_STATES = frozenset({
     "prepared", "running_local", "running_remote", "collecting", "verifying",
@@ -310,6 +311,69 @@ class AnalysisMetadataStore:
             candidate = deepcopy(current)
             candidate["artifacts"].append(artifact)
             self._append_metadata_event(candidate, "artifact_admitted")
+            candidate = self._validate(candidate)
+            self._write_atomic(self._path(analysis_id), candidate, backup=True)
+            return deepcopy(candidate)
+
+    def record_publication_evidence(
+        self,
+        analysis_id: str,
+        *,
+        intent: Mapping[str, Any],
+        authorization: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist bounded publication intent/authorization before terminal receipt."""
+
+        try:
+            encoded_intent = json.dumps(
+                dict(intent), sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
+            encoded_authorization = json.dumps(
+                dict(authorization),
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise AnalysisPersistenceError(
+                "Publication evidence must be bounded JSON objects"
+            ) from exc
+        if (
+            len(encoded_intent.encode("utf-8")) > MAX_PUBLICATION_EVIDENCE_BYTES
+            or len(encoded_authorization.encode("utf-8"))
+            > MAX_PUBLICATION_EVIDENCE_BYTES
+        ):
+            raise AnalysisPersistenceError("Publication evidence exceeds its bound")
+        clean_intent = json.loads(encoded_intent)
+        clean_authorization = json.loads(encoded_authorization)
+        with self._writer():
+            current = self.load(analysis_id)
+            if current["state"] != "publishing":
+                raise AnalysisPersistenceError(
+                    "Publication evidence requires the publishing state"
+                )
+            publication = deepcopy(current["publication"])
+            if publication["receipt"] is not None:
+                raise AnalysisPersistenceError(
+                    "Published Analysis evidence cannot be rewritten"
+                )
+            if (
+                publication["intent"] is not None
+                or publication["authorization"] is not None
+            ):
+                if (
+                    publication["intent"] == clean_intent
+                    and publication["authorization"] == clean_authorization
+                ):
+                    return current
+                raise AnalysisPersistenceError(
+                    "Publication intent or authorization cannot change"
+                )
+            publication["intent"] = clean_intent
+            publication["authorization"] = clean_authorization
+            candidate = deepcopy(current)
+            candidate["publication"] = publication
+            self._append_metadata_event(candidate, "publication_evidence_recorded")
             candidate = self._validate(candidate)
             self._write_atomic(self._path(analysis_id), candidate, backup=True)
             return deepcopy(candidate)
