@@ -34,6 +34,13 @@ class PreparedSolverTarget:
     solver: Any
     kind: str
     expected_state_sha256: str
+    object_name: str = ""
+
+    def __post_init__(self) -> None:
+        name = str(self.object_name or getattr(self.solver, "Name", "") or "").strip()
+        if not name:
+            raise NativeAnalyzeError("The prepared FEM solver has no stable object name.")
+        object.__setattr__(self, "object_name", name)
 
 
 def _digest(value: Mapping[str, Any]) -> str:

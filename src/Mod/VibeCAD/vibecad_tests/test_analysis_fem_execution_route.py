@@ -345,3 +345,111 @@ def test_both_routes_refuse_publication_after_document_switch(
         match="exact Native document is no longer active",
     ):
         manager.submission["validate_before_commit"]()
+
+
+def test_analysis_route_rebinds_exact_reopened_source_before_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _Manager()
+    context, active, _state = _context(manager)
+    captured = SimpleNamespace(target=SimpleNamespace(kind="calculix"))
+    rebound_captured = SimpleNamespace(target=SimpleNamespace(kind="calculix"))
+    workspace = SimpleNamespace(cleanup=lambda: None)
+    completed = object()
+    rebound_completed = object()
+    validated: list[tuple[object, object]] = []
+    committed: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        solver_runtime,
+        "capture_solver_execution_request",
+        lambda *_args, **_kwargs: captured,
+    )
+    monkeypatch.setattr(
+        solver_runtime,
+        "create_solver_execution_workspace",
+        lambda: workspace,
+    )
+    monkeypatch.setattr(
+        solver_runtime,
+        "rebind_captured_solver_execution",
+        lambda document, uid, value: (
+            rebound_captured
+            if uid == "doc-fem-route" and value is captured
+            else pytest.fail("unexpected captured-request rebind")
+        ),
+    )
+    monkeypatch.setattr(
+        solver_runtime,
+        "validate_captured_solver_execution",
+        lambda document, value: validated.append((document, value)),
+    )
+    monkeypatch.setattr(
+        solver_runtime,
+        "rebind_completed_solver_execution",
+        lambda document, value: (
+            rebound_completed
+            if value is completed
+            else pytest.fail("unexpected completed-result rebind")
+        ),
+    )
+    monkeypatch.setattr(
+        solver_runtime,
+        "commit_solver_execution",
+        lambda document, value: committed.append((document, value)) or object(),
+    )
+    monkeypatch.setattr(solver_runtime, "verify_solver_execution", lambda *_args: {})
+    monkeypatch.setattr(
+        solver_runtime,
+        "run_immediate_mutation",
+        lambda rebound_context, *, mutate, **_kwargs: mutate(
+            rebound_context.document
+        ),
+    )
+
+    solver_runtime.NativeAnalyzeSolverExecutionRuntime(context).execute(
+        _arguments(), ticket=_ticket()
+    )
+    reopened = _Document("doc-fem-route")
+    active[0] = reopened
+
+    assert manager.submission is not None
+    manager.submission["validate_before_commit"]()
+    manager.submission["commit"](completed)
+
+    assert validated == [(reopened, rebound_captured)]
+    assert committed == [(reopened, rebound_completed)]
+
+
+def test_analysis_route_refuses_closed_or_same_name_replacement_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _Manager()
+    context, active, _state = _context(manager)
+    captured = SimpleNamespace(target=SimpleNamespace(kind="calculix"))
+    monkeypatch.setattr(
+        solver_runtime,
+        "capture_solver_execution_request",
+        lambda *_args, **_kwargs: captured,
+    )
+    monkeypatch.setattr(
+        solver_runtime,
+        "create_solver_execution_workspace",
+        lambda: SimpleNamespace(cleanup=lambda: None),
+    )
+    monkeypatch.setattr(
+        solver_runtime,
+        "rebind_captured_solver_execution",
+        lambda *_args: pytest.fail("a replacement source must not be rebound"),
+    )
+    solver_runtime.NativeAnalyzeSolverExecutionRuntime(context).execute(
+        _arguments(), ticket=_ticket()
+    )
+
+    assert manager.submission is not None
+    active[0] = None
+    with pytest.raises(NativeRuntimeContextError, match="no longer active"):
+        manager.submission["validate_before_commit"]()
+
+    active[0] = _Document("same-name-different-uid")
+    with pytest.raises(NativeRuntimeContextError, match="no longer active"):
+        manager.submission["validate_before_commit"]()

@@ -10,7 +10,7 @@ state until later migration stages move orchestration and publication ownership.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -273,6 +273,22 @@ def adopt_isolated_solver_execution(
         ),
         legacy_prepared=prepared,
     )
+
+
+def rebind_completed_solver_execution(
+    document: Any,
+    prepared: CompletedFEMSolverExecution,
+) -> CompletedFEMSolverExecution:
+    """Rebind only transient FEM objects to the exact reopened source document."""
+
+    if not isinstance(prepared, CompletedFEMSolverExecution):
+        raise TypeError("prepared must be CompletedFEMSolverExecution")
+    rebound = _legacy.rebind_prepared_solver_execution(
+        document,
+        prepared.analysis.source_document_uid,
+        prepared.legacy_prepared,
+    )
+    return replace(prepared, legacy_prepared=rebound)
 
 
 def prepare_solver_execution_request(
