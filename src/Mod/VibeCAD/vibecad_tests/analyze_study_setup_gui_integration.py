@@ -147,6 +147,14 @@ def _run() -> None:
         assert widget.results_browser.field_combo.count() == 0
         assert (
             widget.results_browser.findChild(
+                QtWidgets.QDoubleSpinBox,
+                "VibeCADEngineeringDeformationScale",
+            )
+            is widget.results_browser.deformation_scale
+        )
+        assert not widget.results_browser.deformation_scale.isEnabled()
+        assert (
+            widget.results_browser.findChild(
                 QtWidgets.QGroupBox, "VibeCADEngineeringPerformanceCard"
             )
             is not None
@@ -298,6 +306,7 @@ def _run() -> None:
         assert widget.results_browser.field_combo.count() >= 2
         assert widget.results_browser.field_table.topLevelItemCount() >= 2
         assert widget.results_browser.show_field_button.isEnabled()
+        assert not widget.results_browser.deformation_scale.isEnabled()
         field_units = {
             widget.results_browser.field_table.topLevelItem(index).text(3)
             for index in range(

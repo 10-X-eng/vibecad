@@ -1182,6 +1182,8 @@ def test_analyze_engineering_shell_has_matching_light_and_dark_contracts() -> No
         for stylesheet in styles
     )
     assert 'setProperty("vibeEngineeringSurface", True)' in browser
+    assert "VibeCADEngineeringDeformationScale" in browser
+    assert "VibeCADEngineeringDeformationScale" in integration
     assert browser.count('setProperty("vibeResultCard", True)') == 5
     assert all('vibeResultCard="true"' in stylesheet for stylesheet in styles)
 

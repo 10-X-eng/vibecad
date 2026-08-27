@@ -1274,6 +1274,13 @@ Keep the first changes small, reversible, and source-bound:
    presentation state only. The bounded state contract is present; next add
    owner-capability-aware controls and scoped application without global
    preference changes.
+
+The first EVS-06 owner-capability increment exposes bounded deformation scale
+only when the selected object is a legacy FEM result. The value is passed to
+the existing `femresult.resultpresentation` validation/application path; VTK and
+flow results keep the control disabled because their current owners do not
+advertise that capability. Mesh-edge/undeformed controls, scoped presets and
+installed GUI evidence remain.
 5. **EVS-07 through EVS-09 / X2/X5/X6:** connect real chart series, durable
    Analysis activity/workflow state and exact comparable-result projections.
    Do not fabricate data or grant scheduling, ranking, selection, mutation or

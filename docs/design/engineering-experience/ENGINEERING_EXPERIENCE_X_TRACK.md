@@ -145,8 +145,10 @@ workbench or authority layer. The implementation sequence is:
 6. **EVS-06 — deformation and scoped technical presets (X1).** Expose existing
    deformation scale, mesh-edge and undeformed-outline capabilities through
    scoped VibeCAD view state; do not globally rewrite user preferences. The
-   bounded per-view state exists; owner-specific application and preset UX
-   remain.
+   bounded per-view state exists and the Analyze browser exposes deformation
+   scale only for legacy FEM results whose existing Fem presenter owns that
+   capability. Mesh-edge/undeformed controls, scoped presets and installed GUI
+   acceptance remain.
 7. **EVS-07 — engineering charts (X1/X5/X6).** Reuse the existing table,
    histogram and line-plot owners for real convergence, history and comparison
    series with declared axes/units. No cosmetic data.

@@ -68,6 +68,20 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self.show_field_button.setObjectName("VibeCADEngineeringShowField")
         self.show_field_button.clicked.connect(self._show_selected_field)
         fields_layout.addWidget(self.show_field_button)
+        deformation = QtWidgets.QHBoxLayout()
+        deformation.addWidget(QtWidgets.QLabel("Deformation scale"))
+        self.deformation_scale = QtWidgets.QDoubleSpinBox()
+        self.deformation_scale.setObjectName("VibeCADEngineeringDeformationScale")
+        self.deformation_scale.setAccessibleName("Engineering deformation scale")
+        self.deformation_scale.setRange(0.0, 1_000_000.0)
+        self.deformation_scale.setDecimals(3)
+        self.deformation_scale.setValue(1.0)
+        self.deformation_scale.setEnabled(False)
+        self.deformation_scale.setToolTip(
+            "Available only when the selected result's existing presenter supports deformation."
+        )
+        deformation.addWidget(self.deformation_scale)
+        fields_layout.addLayout(deformation)
         layout.addWidget(fields)
 
         status = QtWidgets.QGroupBox("Governed State")
@@ -194,6 +208,7 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         presentation = self._presentations.get(name)
         if presentation is None:
             self.show_field_button.setEnabled(False)
+            self.deformation_scale.setEnabled(False)
             return
         for field in presentation.fields:
             self.field_combo.addItem(field.label, field.field_id)
@@ -215,6 +230,8 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         if self.field_table.topLevelItemCount():
             self.field_table.setCurrentItem(self.field_table.topLevelItem(0))
         self.show_field_button.setEnabled(bool(presentation.fields))
+        state = self._states.get(name, {})
+        self.deformation_scale.setEnabled(state.get("result_kind") == "result")
 
     def refresh(self, document: Any, analysis: Any) -> None:
         previous = str(self.result_combo.currentData() or "")
@@ -514,7 +531,9 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
                     "The selected engineering result changed; refresh before display."
                 )
             if current["result_kind"] == "result":
-                self._show_legacy_field(result, selected.semantic)
+                self._show_legacy_field(
+                    result, selected.semantic, self.deformation_scale.value()
+                )
                 return
             if name not in self._summaries:
                 self._show_vtk_field(result, selected.field_id, selected.components)
@@ -534,7 +553,7 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
             self._show_field(flow_field)
 
     @staticmethod
-    def _show_legacy_field(result: Any, semantic: str) -> None:
+    def _show_legacy_field(result: Any, semantic: str, deformation_scale: float) -> None:
         field = {
             "displacement.magnitude": "displacement_magnitude",
             "stress.von_mises": "von_mises_stress",
@@ -554,7 +573,9 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
             restore_result_presentation,
         )
 
-        prepared = prepare_result_presentation(result, field, 1.0, True)
+        prepared = prepare_result_presentation(
+            result, field, deformation_scale, True
+        )
         try:
             applied = apply_result_presentation(prepared)
             if applied.get("field") != field or applied.get("visible") is not True:
