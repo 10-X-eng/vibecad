@@ -88,11 +88,12 @@ def _selection() -> tuple:
 def _turn(surface, registry) -> NativeTurnSnapshot:
     definition = registry.definition(MANUFACTURE_JOB_CAPABILITY_NAME)
     assert definition is not None
-    schema = definition.provider_schema(("create_job",))
+    schema = definition.provider_schema(("create_job_from_template",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.lower()
     assert "replace_in_history" in encoded
-    assert "expected_creation_state_sha256" in encoded
+    assert "expected_creation_state_sha256" not in encoded
+    assert "expected_job_count" not in encoded
     assert "expected_content_sha256" in encoded
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
@@ -115,7 +116,7 @@ def _arguments(snapshot: dict, *, label: str = "Native production Job") -> dict:
         item for item in snapshot["job_creation"]["templates"] if item["is_default"]
     )
     return {
-        "operation": "create_job",
+        "operation": "create_job_from_template",
         "label": label,
         "models": [
             {
@@ -134,10 +135,6 @@ def _arguments(snapshot: dict, *, label: str = "Native production Job") -> dict:
             "template_id": template["template_id"],
             "expected_content_sha256": template["content_sha256"],
         },
-        "expected_creation_state_sha256": snapshot["job_creation"][
-            "state_sha256"
-        ],
-        "expected_job_count": snapshot["job_count"],
     }
 
 
@@ -289,10 +286,13 @@ def _run() -> None:
         undo_before = int(document.UndoCount)
         arguments = _arguments(snapshot)
 
-        stale_environment = dict(arguments)
-        stale_environment["expected_creation_state_sha256"] = "0" * 64
-        stale = call(stale_environment, succeeds=False)
+        template_preferences.SetString(CamPreferences.DefaultJobTemplate, "")
+        stale = call(arguments, succeeds=False)
         assert stale["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE", stale
+        template_preferences.SetString(
+            CamPreferences.DefaultJobTemplate,
+            str(template_path),
+        )
         assert int(document.UndoCount) == undo_before
         assert tuple(obj.Name for obj in document.Objects) == initial_names
 

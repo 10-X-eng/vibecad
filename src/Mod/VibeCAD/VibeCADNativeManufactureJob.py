@@ -90,9 +90,9 @@ def _digest(value: Any, noun: str) -> str:
 
 
 def _job_count(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 128:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise NativeManufactureError(
-            "expected_job_count must be an integer from 0 through 128.",
+            "expected_job_count must be a nonnegative integer.",
             error_code="NATIVE_ARGUMENTS_INVALID",
         )
     return value

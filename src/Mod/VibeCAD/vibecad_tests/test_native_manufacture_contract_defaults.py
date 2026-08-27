@@ -18,11 +18,24 @@ def _branch(definition, operation: str) -> dict:
     return definition.provider_schema((operation,))["parameters"]["oneOf"][0]
 
 
-def test_create_job_does_not_require_an_explicit_no_template_sentinel() -> None:
-    branch = _branch(manufacture_job_capability_definition(), "create_job")
+def test_create_job_does_not_echo_host_state_or_template_sentinels() -> None:
+    definition = manufacture_job_capability_definition()
+    branch = _branch(definition, "create_job")
+    template_branch = _branch(definition, "create_job_from_template")
 
-    assert "template" in branch["properties"]
-    assert "template" not in branch["required"]
+    assert set(branch["properties"]) == {"operation", "label", "models"}
+    assert set(branch["required"]) == {"label", "models"}
+    assert set(template_branch["properties"]) == {
+        "operation",
+        "label",
+        "models",
+        "template",
+    }
+    assert set(template_branch["required"]) == {
+        "label",
+        "models",
+        "template",
+    }
 
 
 def test_catalog_and_setup_reads_default_to_the_first_bounded_page() -> None:

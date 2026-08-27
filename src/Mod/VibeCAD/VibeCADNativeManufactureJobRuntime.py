@@ -16,6 +16,8 @@ from VibeCADNativeManufactureJob import (
     preflight_job_create,
     verify_created_job,
 )
+from VibeCADNativeManufactureJobState import capture_job_creation_environment
+from VibeCADNativeManufactureState import is_job
 from VibeCADNativeManufactureSetupEdit import (
     prepare_setup_update,
     update_setup_configuration,
@@ -35,15 +37,8 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
 
-_CREATE_FIELDS = frozenset(
-    {
-        "label",
-        "models",
-        "template",
-        "expected_creation_state_sha256",
-        "expected_job_count",
-    }
-)
+_CREATE_FIELDS = frozenset({"label", "models"})
+_CREATE_TEMPLATE_FIELDS = frozenset({"label", "models", "template"})
 _UPDATE_FIELDS = frozenset({"target", "changes"})
 _STOCK_FIELDS = frozenset({"target", "stock"})
 _WORKPIECE_FIELDS = frozenset({"target", "frame", "include_stock"})
@@ -54,6 +49,10 @@ class NativeManufactureJobRuntime:
         if not isinstance(context, NativeRuntimeContext):
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
+        self._creation_state_sha256 = capture_job_creation_environment().state_sha256
+        self._job_count = sum(
+            1 for obj in tuple(context.document.Objects) if is_job(obj)
+        )
 
     def mutate_job(
         self,
@@ -65,11 +64,11 @@ class NativeManufactureJobRuntime:
             arguments,
             {
                 "create_job": _CREATE_FIELDS,
+                "create_job_from_template": _CREATE_TEMPLATE_FIELDS,
                 "configure_stock": _STOCK_FIELDS,
                 "orient_workpiece": _WORKPIECE_FIELDS,
                 "update_setup": _UPDATE_FIELDS,
             },
-            defaults={"create_job": {"template": {"kind": "none"}}},
         )
         context = self._context
         context.guard()
@@ -105,7 +104,7 @@ class NativeManufactureJobRuntime:
                 mutate=partial(orient_workpiece, prepared=prepared),
                 verify=verify_workpiece_orientation,
             )
-        if operation != "create_job":
+        if operation not in {"create_job", "create_job_from_template"}:
             raise RuntimeError("The requested CAM Job operation is unavailable.")
         raw_models = values["models"]
         prepared = preflight_job_create(
@@ -119,11 +118,13 @@ class NativeManufactureJobRuntime:
                     )
                     for item in raw_models
                 ),
-                template=values["template"],
-                expected_creation_state_sha256=values[
-                    "expected_creation_state_sha256"
-                ],
-                expected_job_count=values["expected_job_count"],
+                template=(
+                    values["template"]
+                    if operation == "create_job_from_template"
+                    else {"kind": "none"}
+                ),
+                expected_creation_state_sha256=self._creation_state_sha256,
+                expected_job_count=self._job_count,
             ),
         )
         return run_immediate_mutation(

@@ -7,6 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import VibeCADNativeManufactureState as manufacture_state
+from VibeCADNativeManufactureJob import _job_count
 
 
 def _document(*objects):
@@ -66,3 +67,7 @@ def test_other_setup_snapshot_detects_replaced_job_identity(monkeypatch):
     document.getObject = lambda name: replacement if name == "SetupOne" else None
 
     assert not manufacture_state.other_job_states_are_current(document, frozen)
+
+
+def test_job_inventory_count_has_no_product_setup_cap() -> None:
+    assert _job_count(10_000) == 10_000

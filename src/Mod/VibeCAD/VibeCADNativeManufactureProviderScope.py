@@ -153,7 +153,7 @@ def _operation_scope(
     result: dict[str, tuple[str, ...]] = {}
     job = available_by_tool.get("manufacture.job")
     if job is not None:
-        allowed = {"create_job"}
+        allowed = {"create_job", "create_job_from_template"}
         if has_setup:
             allowed.update(
                 {"configure_stock", "orient_workpiece", "update_setup"}

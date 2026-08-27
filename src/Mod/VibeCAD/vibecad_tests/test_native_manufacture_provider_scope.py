@@ -387,6 +387,7 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
     assert no_tool_operations["manufacture.job"] == {
         "configure_stock",
         "create_job",
+        "create_job_from_template",
         "orient_workpiece",
         "update_setup",
     }
@@ -413,6 +414,7 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
     assert with_tool_operations["manufacture.job"] == {
         "configure_stock",
         "create_job",
+        "create_job_from_template",
         "orient_workpiece",
         "update_setup",
     }
