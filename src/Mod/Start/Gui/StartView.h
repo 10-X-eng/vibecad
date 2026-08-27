@@ -96,6 +96,8 @@ protected:
     void showOnStartupChanged(bool checked);
     void openFirstStartClicked();
     void firstStartWidgetDismissed();
+    void openVibeCADPreferences();
+    void openVibeCADAssistant();
 
     QString fileCardStyle() const;
 
@@ -111,9 +113,13 @@ private:
     Start::ExamplesModel _examplesModel;
     Start::CustomFolderModel _customFolderModel;
     QLabel* _newFileLabel;
+    QLabel* _heroTitleLabel;
+    QLabel* _heroDescriptionLabel;
     QLabel* _examplesLabel;
     QLabel* _recentFilesLabel;
     QLabel* _customFolderLabel;
+    QPushButton* _configureAI;
+    QPushButton* _openAssistant;
     QPushButton* _openFirstStart;
     QCheckBox* _showOnStartupCheckBox;
 

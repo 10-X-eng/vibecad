@@ -33,16 +33,20 @@ namespace StartGui
 FileCardView::FileCardView(QWidget* parent)
     : QListView(parent)
 {
-    QSizePolicy sizePolicy(QSizePolicy::Policy::MinimumExpanding, QSizePolicy::Policy::MinimumExpanding);
+    QSizePolicy sizePolicy(QSizePolicy::Policy::Expanding, QSizePolicy::Policy::Preferred);
     sizePolicy.setHeightForWidth(true);
     setSizePolicy(sizePolicy);
     setHorizontalScrollBarPolicy(Qt::ScrollBarPolicy::ScrollBarAlwaysOff);
-    setVerticalScrollBarPolicy(Qt::ScrollBarPolicy::ScrollBarAsNeeded);
+    setVerticalScrollBarPolicy(Qt::ScrollBarPolicy::ScrollBarAlwaysOff);
+    setFrameShape(QFrame::NoFrame);
+    setEditTriggers(QAbstractItemView::NoEditTriggers);
+    setSelectionMode(QAbstractItemView::SingleSelection);
     setViewMode(QListView::ViewMode::IconMode);
     setFlow(QListView::Flow::LeftToRight);
     setResizeMode(QListView::ResizeMode::Adjust);
     setUniformItemSizes(true);
     setMouseTracking(true);
+    setCursor(Qt::PointingHandCursor);
 
     auto hGrp = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Mod/Start"
