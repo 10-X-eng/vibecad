@@ -1879,14 +1879,12 @@ _EXACT_TARGET_TYPE_OVERRIDES = {
     "Spreadsheet_StyleUnderline": "ExactParametersRange",
     "CAM_Job": "ExactCurrentCamModelsAndCreationEnvironment",
     "CAM_Profile": "ExactCamJobProfileGeometryControllerAndParameters",
-    "CAM_Pocket_Shape": (
-        "ExactCamJobPocketGeometryControllerExtensionsAndParameters"
-    ),
-    "CAM_MillFacing": "ExactCamJobStockControllerAndFacingParameters",
+    "CAM_Pocket_Shape": "ExactCamJobPocketGeometryAndController",
+    "CAM_MillFacing": "ExactCamJobStockAndController",
     "CAM_Helix": "ExactCamJobHoleFeaturesControllerAndHelixParameters",
     "CAM_Adaptive": "ExactCamJobAdaptiveRegionsControllerExtensionsAndParameters",
     "CAM_Slot": "ExactCamJobSlotPathControllerAndParameters",
-    "CAM_Drilling": "ExactCamJobHoleTargetsControllerAndDrillingParameters",
+    "CAM_Drilling": "ExactCamJobDrillableGeometryAndController",
     "CAM_ThreadMilling": "ExactCamJobHoleFeaturesControllerAndThreadDefinition",
     "CAM_Engrave": "ExactCamJobEngraveGeometryControllerAndParameters",
     "CAM_Deburr": "ExactCamJobDeburrFeaturesControllerAndParameters",

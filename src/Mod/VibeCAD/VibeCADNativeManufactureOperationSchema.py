@@ -136,6 +136,19 @@ _POCKET_GEOMETRY = _closed(
     },
     ("kind", "items"),
 )
+_FEATURE_SELECTION = {
+    "type": "array",
+    "items": _closed(
+        {
+            "model": _EXACT_TARGET,
+            "subelements": _SUBELEMENTS,
+        },
+        ("model", "subelements"),
+    ),
+    "minItems": 1,
+    "maxItems": 32,
+    "description": "Exact model Faces or Edges to machine.",
+}
 _PROFILE_SETTINGS = _closed(
     {
         "direction": {
@@ -1823,41 +1836,23 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="pocket_shape",
                 description=(
-                    "Clear planar pockets from selected Faces or Edges, with optional "
-                    "edge extensions."
+                    "Clear exact planar Faces or closed Edge loops using the setup defaults."
                 ),
                 action_ids=frozenset({"CAM_Pocket_Shape"}),
                 surface_ids=frozenset({"manufacture"}),
-                exact_target_type=(
-                    "ExactCamJobPocketGeometryControllerExtensionsAndParameters"
-                ),
+                exact_target_type="ExactCamJobPocketGeometryAndController",
                 transaction_behavior="document",
                 background_required=False,
                 parameters=_closed(
                     {
-                        "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
-                        "geometry": _POCKET_GEOMETRY,
-                        "pocket": _POCKET_SETTINGS,
-                        "depths": _POCKET_DEPTHS,
-                        "heights": _HEIGHTS,
-                        "extensions": _POCKET_EXTENSIONS,
-                        "coolant": {
-                            "type": "string",
-                            "enum": ["none", "flood", "mist"],
-                        },
+                        "geometry": _FEATURE_SELECTION,
                     },
                     (
-                        "label",
                         "job",
                         "tool_controller",
                         "geometry",
-                        "pocket",
-                        "depths",
-                        "heights",
-                        "extensions",
-                        "coolant",
                     ),
                 ),
             ),
@@ -2013,36 +2008,21 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="mill_facing",
                 description=(
-                    "Face the setup stock to a flat depth."
+                    "Face the exact setup stock using its machining defaults."
                 ),
                 action_ids=frozenset({"CAM_MillFacing"}),
                 surface_ids=frozenset({"manufacture"}),
-                exact_target_type="ExactCamJobStockControllerAndFacingParameters",
+                exact_target_type="ExactCamJobStockAndController",
                 transaction_behavior="document",
                 background_required=False,
                 parameters=_closed(
                     {
-                        "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
-                        "facing": _FACING_SETTINGS,
-                        "depths": _DEPTHS,
-                        "heights": _HEIGHTS,
-                        "linking": _LINKING_SETTINGS,
-                        "coolant": {
-                            "type": "string",
-                            "enum": ["none", "flood", "mist"],
-                        },
                     },
                     (
-                        "label",
                         "job",
                         "tool_controller",
-                        "facing",
-                        "depths",
-                        "heights",
-                        "linking",
-                        "coolant",
                     ),
                 ),
             ),
@@ -2164,40 +2144,23 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="drilling",
                 description=(
-                    "Drill or tap selected circular features and explicit XY locations."
+                    "Drill exact circular Faces or Edges using the setup defaults."
                 ),
                 action_ids=frozenset({"CAM_Drilling"}),
                 surface_ids=frozenset({"manufacture"}),
-                exact_target_type=(
-                    "ExactCamJobHoleTargetsControllerAndDrillingParameters"
-                ),
+                exact_target_type="ExactCamJobDrillableGeometryAndController",
                 transaction_behavior="document",
                 background_required=False,
                 parameters=_closed(
                     {
-                        "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
-                        "targets": _DRILL_TARGETS,
-                        "process": _DRILL_PROCESS,
-                        "depths": _DRILL_DEPTHS,
-                        "heights": _HEIGHTS,
-                        "linking": _LINKING_SETTINGS,
-                        "coolant": {
-                            "type": "string",
-                            "enum": ["none", "flood", "mist"],
-                        },
+                        "geometry": _FEATURE_SELECTION,
                     },
                     (
-                        "label",
                         "job",
                         "tool_controller",
-                        "targets",
-                        "process",
-                        "depths",
-                        "heights",
-                        "linking",
-                        "coolant",
+                        "geometry",
                     ),
                 ),
             ),

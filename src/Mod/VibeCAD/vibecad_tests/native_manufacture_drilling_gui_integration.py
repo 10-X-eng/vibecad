@@ -186,23 +186,14 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     schema = definition.provider_schema(("drilling",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.lower()
-    for field in (
-        "feature_groups",
-        "locations_mm",
-        "enabled",
-        "automatic",
-        "manual",
-        "drilling",
-        "tapping",
-        "standard",
-        "peck",
-        "dwell",
-        "feed_retract",
-        "depth_extension",
-        "keep_tool_down",
-        "collision_clearance_mm",
-    ):
-        assert field in encoded
+    branch = schema["parameters"]["oneOf"][0]
+    assert set(branch["properties"]) == {
+        "operation",
+        "job",
+        "tool_controller",
+        "geometry",
+    }
+    assert set(branch["required"]) == {"job", "tool_controller", "geometry"}
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
@@ -232,106 +223,19 @@ def _model_target(state: dict, model) -> dict:
     return _target(model_state)
 
 
-def _common(job, controller, *, label: str, targets: dict, process: dict) -> dict:
+def _drill_arguments(model, job, controller, left_face: str, right_face: str) -> dict:
     state = job_state(job)
     return {
         "operation": "drilling",
-        "label": label,
         "job": _target(state),
         "tool_controller": _controller_target(state, controller),
-        "targets": targets,
-        "process": process,
-        "depths": {"start_depth_mm": 12.0, "final_depth_mm": 2.0},
-        "heights": {"safe_height_mm": 14.0, "clearance_height_mm": 17.0},
-        "linking": {
-            "strategy": "clearance_height",
-            "collision_clearance_mm": 0.4,
-        },
-        "coolant": "none",
+        "geometry": [
+            {
+                "model": _model_target(state, model),
+                "subelements": [left_face, right_face],
+            }
+        ],
     }
-
-
-def _drill_arguments(model, job, controller, left_face: str, right_face: str) -> dict:
-    state = job_state(job)
-    arguments = _common(
-        job,
-        controller,
-        label="Native peck Drilling",
-        targets={
-            "feature_groups": [
-                {
-                    "model": _model_target(state, model),
-                    "features": [
-                        {"subelement": left_face, "enabled": True},
-                        {"subelement": right_face, "enabled": False},
-                    ],
-                }
-            ],
-            "locations_mm": [{"x_mm": 25.0, "y_mm": 8.0}],
-            "sorting": "manual",
-        },
-        process={
-            "kind": "drilling",
-            "cycle": {"kind": "peck", "depth_mm": 2.0, "chip_break": True},
-            "depth_extension": "drill_tip",
-            "keep_tool_down": True,
-        },
-    )
-    arguments["linking"] = {
-        "strategy": "tool_diameter",
-        "collision_clearance_mm": 0.4,
-    }
-    arguments["coolant"] = "mist"
-    return arguments
-
-
-def _tap_arguments(model, job, controller, right_face: str) -> dict:
-    state = job_state(job)
-    arguments = _common(
-        job,
-        controller,
-        label="Native dwell Tapping",
-        targets={
-            "feature_groups": [
-                {
-                    "model": _model_target(state, model),
-                    "features": [{"subelement": right_face, "enabled": True}],
-                }
-            ],
-            "locations_mm": [],
-            "sorting": "automatic",
-        },
-        process={
-            "kind": "tapping",
-            "cycle": {"kind": "dwell", "time_seconds": 0.4},
-            "depth_extension": "none",
-            "keep_tool_down": False,
-        },
-    )
-    arguments["coolant"] = "flood"
-    return arguments
-
-
-def _feed_arguments(job, controller) -> dict:
-    return _common(
-        job,
-        controller,
-        label="Native location feed-retract Drilling",
-        targets={
-            "feature_groups": [],
-            "locations_mm": [
-                {"x_mm": 10.0, "y_mm": 8.0},
-                {"x_mm": 40.0, "y_mm": 8.0},
-            ],
-            "sorting": "automatic",
-        },
-        process={
-            "kind": "drilling",
-            "cycle": {"kind": "feed_retract"},
-            "depth_extension": "none",
-            "keep_tool_down": False,
-        },
-    )
 
 
 def _job_resource(job, model):
@@ -349,11 +253,7 @@ def _assert_operation(
     job,
     operation,
     *,
-    label: str,
     expected_base: tuple,
-    expected_locations: tuple,
-    strategy: str,
-    cycle_command: str,
     cycle_count: int,
     diagnostics_required: bool = True,
 ) -> None:
@@ -365,21 +265,16 @@ def _assert_operation(
     if hasattr(operation.ViewObject.Proxy, "deleteOnReject"):
         assert operation.ViewObject.Proxy.deleteOnReject is False
     assert tuple(operation.Base) == expected_base
-    assert tuple(
-        tuple(round(float(getattr(point, axis)), 9) for axis in ("x", "y", "z"))
-        for point in operation.Locations
-    ) == expected_locations
-    assert operation.Label == label
-    assert operation.Strategy == strategy
-    assert round(operation.StartDepth.getValueAs("mm"), 9) == 12.0
-    assert round(operation.FinalDepth.getValueAs("mm"), 9) == 2.0
-    assert round(operation.SafeHeight.getValueAs("mm"), 9) == 14.0
-    assert round(operation.ClearanceHeight.getValueAs("mm"), 9) == 17.0
+    assert tuple(operation.Locations) == ()
+    assert operation.Label
+    assert operation.Strategy == "Drilling"
+    expressions = {str(name) for name, _expression in operation.ExpressionEngine}
+    assert {"StartDepth", "FinalDepth", "SafeHeight", "ClearanceHeight"} <= expressions
     assert operation.AddTipLength is False
     assert operation.UseEndPoint is False
     assert tuple(document.VibeCADTimeline.Operations).count(operation) == 1
     commands = tuple(operation.Path.Commands)
-    assert sum(command.Name == cycle_command for command in commands) == cycle_count
+    assert sum(command.Name == "G81" for command in commands) == cycle_count
     if diagnostics_required:
         diagnostics = operation.Proxy.getGenerationDiagnostics(operation)
         assert diagnostics["status"] == "succeeded", diagnostics
@@ -413,13 +308,12 @@ def _run() -> None:
         ) == (
             MANUFACTURE_OPERATION_CAPABILITY_NAME,
             "drilling",
-            "ExactCamJobHoleTargetsControllerAndDrillingParameters",
+            "ExactCamJobDrillableGeometryAndController",
             True,
             False,
         )
 
-        model, job, drill_controller, tap_controller = _create_model_and_job(document)
-        default_controller = job.Tools.Group[0]
+        model, job, drill_controller, _tap_controller = _create_model_and_job(document)
         left_face, right_face = _hole_faces(model)
         model_resource = _job_resource(job, model)
         initial_names = tuple(obj.Name for obj in document.Objects)
@@ -486,34 +380,10 @@ def _run() -> None:
         )
 
         stale = json.loads(json.dumps(drill_arguments))
-        stale["targets"]["feature_groups"][0]["model"][
-            "expected_state_sha256"
-        ] = "0" * 64
+        stale["geometry"][0]["model"]["expected_state_sha256"] = "0" * 64
         stale_result = call(stale, succeeds=False)
         assert stale_result["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE"
         assert tuple(obj.Name for obj in document.Objects) == initial_names
-        assert int(document.UndoCount) == undo_before
-
-        duplicate = json.loads(json.dumps(drill_arguments))
-        duplicate["targets"]["locations_mm"] = [{"x_mm": 14.0, "y_mm": 20.0}]
-        duplicate_result = call(duplicate, succeeds=False)
-        assert duplicate_result["error_code"] == "NATIVE_ARGUMENTS_INVALID"
-        assert "same XY center" in duplicate_result["error"]
-        assert tuple(obj.Name for obj in document.Objects) == initial_names
-        assert int(document.UndoCount) == undo_before
-
-        invalid_tap = _tap_arguments(
-            model,
-            job,
-            default_controller,
-            right_face,
-        )
-        invalid_tap_result = call(invalid_tap, succeeds=False)
-        assert invalid_tap_result["error_code"] == "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID"
-        assert "positive Pitch" in invalid_tap_result["error"]
-        assert tuple(obj.Name for obj in document.Objects) == initial_names
-        assert tuple(job.Operations.Group) == initial_operations
-        assert tuple(document.VibeCADTimeline.Operations) == initial_timeline
         assert int(document.UndoCount) == undo_before
 
         drill_result = call(drill_arguments)
@@ -525,155 +395,57 @@ def _run() -> None:
             document,
             job,
             drill_operation,
-            label="Native peck Drilling",
             expected_base=((model_resource, (left_face, right_face)),),
-            expected_locations=((25.0, 8.0, 0.0),),
-            strategy="Drilling",
-            cycle_command="G73",
             cycle_count=2,
         )
-        assert drill_operation.SortingMode == "Manual"
-        assert drill_operation.PeckEnabled is True
-        assert round(drill_operation.PeckDepth.getValueAs("mm"), 9) == 2.0
-        assert drill_operation.ChipBreakEnabled is True
+        assert drill_operation.SortingMode == "Automatic"
+        assert drill_operation.PeckEnabled is False
         assert drill_operation.DwellEnabled is False
         assert drill_operation.FeedRetractEnabled is False
-        assert drill_operation.ExtraOffset == "Drill Tip"
-        assert drill_operation.KeepToolDown is True
-        assert drill_operation.CollisionAvoidanceStrategy == "Tool Diameter"
-        assert drill_operation.CoolantMode == "Mist"
-        assert tuple(drill_operation.Disabled) == (
-            f"{model_resource.Name}.{right_face}",
-        )
+        assert drill_operation.ExtraOffset == "None"
+        assert drill_operation.KeepToolDown is False
+        assert tuple(drill_operation.Disabled) == ()
         assert drill_result["drilling"]["enabled_target_count"] == 2
-        assert drill_result["drilling"]["cycle_command"] == "G73"
-        assert drill_result["drilling"]["geometry"]["kind"] == "hole_targets"
-        drill_state = operation_state(drill_operation)
-
-        tap_arguments = _tap_arguments(
-            model,
-            job,
-            tap_controller,
-            right_face,
-        )
-        tap_result = call(tap_arguments)
-        _events(12)
-        tap_name = tap_result["drilling"]["object_name"]
-        tap_operation = document.getObject(tap_name)
-        assert tap_operation is not None
-        _assert_operation(
-            document,
-            job,
-            tap_operation,
-            label="Native dwell Tapping",
-            expected_base=((model_resource, (right_face,)),),
-            expected_locations=(),
-            strategy="Tapping",
-            cycle_command="G84",
-            cycle_count=1,
-        )
-        assert tap_operation.SortingMode == "Automatic"
-        assert tap_operation.PeckEnabled is False
-        assert tap_operation.DwellEnabled is True
-        assert round(float(tap_operation.DwellTime), 9) == 0.4
-        assert tap_operation.FeedRetractEnabled is False
-        assert tap_operation.ExtraOffset == "None"
-        assert tap_operation.CoolantMode == "Flood"
-        tap_commands = tuple(command.Name for command in tap_operation.Path.Commands)
-        assert "M8" in tap_commands and "M9" in tap_commands
-        assert tap_result["drilling"]["cycle_command"] == "G84"
-        tap_state = operation_state(tap_operation)
-
-        feed_arguments = _feed_arguments(job, drill_controller)
-        feed_result = call(feed_arguments)
-        _events(12)
-        feed_name = feed_result["drilling"]["object_name"]
-        feed_operation = document.getObject(feed_name)
-        assert feed_operation is not None
-        _assert_operation(
-            document,
-            job,
-            feed_operation,
-            label="Native location feed-retract Drilling",
-            expected_base=(),
-            expected_locations=((10.0, 8.0, 0.0), (40.0, 8.0, 0.0)),
-            strategy="Drilling",
-            cycle_command="G85",
-            cycle_count=2,
-        )
-        assert feed_operation.FeedRetractEnabled is True
-        assert feed_result["drilling"]["geometry"] == {
-            "kind": "hole_targets",
-            "features": [],
-            "locations_mm": [
-                {"x_mm": 10.0, "y_mm": 8.0},
-                {"x_mm": 40.0, "y_mm": 8.0},
+        assert drill_result["drilling"]["cycle_command"] == "G81"
+        assert drill_result["drilling"]["geometry"] == {
+            "kind": "subelements",
+            "items": [
+                {
+                    "object_name": model.Name,
+                    "subelements": [left_face, right_face],
+                }
             ],
         }
-        assert feed_result["drilling"]["cutting_command_count"] == 2
-        assert feed_result["job"]["operation_count"] == len(initial_operations) + 3
-        assert int(document.UndoCount) == undo_before + 3
-        assert state_store.current_revision(context.document_uid) == revision_before + 3
+        assert drill_result["drilling"]["parameters"]["source"] == "setup_defaults"
+        assert drill_result["drilling"]["cutting_command_count"] == 0
+        assert drill_result["job"]["operation_count"] == len(initial_operations) + 1
+        assert int(document.UndoCount) == undo_before + 1
+        assert state_store.current_revision(context.document_uid) == revision_before + 1
         assert _selection() == selection_before
         assert not Gui.Control.activeDialog()
-        feed_state = operation_state(feed_operation)
+        drill_state = operation_state(drill_operation)
 
-        for expected_name in (feed_name, tap_name, drill_name):
-            document.undo()
-            _events(12)
-            assert document.getObject(expected_name) is None
+        document.undo()
+        _events(12)
+        assert document.getObject(drill_name) is None
         assert tuple(job.Operations.Group) == initial_operations
         assert tuple(document.VibeCADTimeline.Operations) == initial_timeline
 
-        for _index in range(3):
-            document.redo()
-            _events(12)
+        document.redo()
+        _events(12)
         model = document.getObject("DrillingGateModel")
         job = document.getObject("DrillingJob")
         model_resource = _job_resource(job, model)
         drill_operation = document.getObject(drill_name)
-        tap_operation = document.getObject(tap_name)
-        feed_operation = document.getObject(feed_name)
-        assert all(
-            value is not None
-            for value in (model, job, drill_operation, tap_operation, feed_operation)
-        )
+        assert model is not None and job is not None and drill_operation is not None
         _assert_operation(
             document,
             job,
             drill_operation,
-            label="Native peck Drilling",
             expected_base=((model_resource, (left_face, right_face)),),
-            expected_locations=((25.0, 8.0, 0.0),),
-            strategy="Drilling",
-            cycle_command="G73",
-            cycle_count=2,
-        )
-        _assert_operation(
-            document,
-            job,
-            tap_operation,
-            label="Native dwell Tapping",
-            expected_base=((model_resource, (right_face,)),),
-            expected_locations=(),
-            strategy="Tapping",
-            cycle_command="G84",
-            cycle_count=1,
-        )
-        _assert_operation(
-            document,
-            job,
-            feed_operation,
-            label="Native location feed-retract Drilling",
-            expected_base=(),
-            expected_locations=((10.0, 8.0, 0.0), (40.0, 8.0, 0.0)),
-            strategy="Drilling",
-            cycle_command="G85",
             cycle_count=2,
         )
         assert operation_state(drill_operation)["state_sha256"] == drill_state["state_sha256"]
-        assert operation_state(tap_operation)["state_sha256"] == tap_state["state_sha256"]
-        assert operation_state(feed_operation)["state_sha256"] == feed_state["state_sha256"]
 
         document.saveAs(str(save_path))
         App.closeDocument(document.Name)
@@ -682,56 +454,20 @@ def _run() -> None:
         job = document.getObject("DrillingJob")
         model_resource = _job_resource(job, model)
         drill_operation = document.getObject(drill_name)
-        tap_operation = document.getObject(tap_name)
-        feed_operation = document.getObject(feed_name)
-        assert all(
-            value is not None
-            for value in (model, job, drill_operation, tap_operation, feed_operation)
-        )
+        assert model is not None and job is not None and drill_operation is not None
         _assert_operation(
             document,
             job,
             drill_operation,
-            label="Native peck Drilling",
             expected_base=((model_resource, (left_face, right_face)),),
-            expected_locations=((25.0, 8.0, 0.0),),
-            strategy="Drilling",
-            cycle_command="G73",
-            cycle_count=2,
-            diagnostics_required=False,
-        )
-        _assert_operation(
-            document,
-            job,
-            tap_operation,
-            label="Native dwell Tapping",
-            expected_base=((model_resource, (right_face,)),),
-            expected_locations=(),
-            strategy="Tapping",
-            cycle_command="G84",
-            cycle_count=1,
-            diagnostics_required=False,
-        )
-        _assert_operation(
-            document,
-            job,
-            feed_operation,
-            label="Native location feed-retract Drilling",
-            expected_base=(),
-            expected_locations=((10.0, 8.0, 0.0), (40.0, 8.0, 0.0)),
-            strategy="Drilling",
-            cycle_command="G85",
             cycle_count=2,
             diagnostics_required=False,
         )
         assert operation_state(drill_operation)["state_sha256"] == drill_state["state_sha256"]
-        assert operation_state(tap_operation)["state_sha256"] == tap_state["state_sha256"]
-        assert operation_state(feed_operation)["state_sha256"] == feed_state["state_sha256"]
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_DRILLING_GUI_OK "
-            "exact_targets=true feature_enablement=true locations=true drilling=true "
-            "tapping=true cycles=true parameters=true linking=true coolant=true "
+            "exact_targets=true defaults=true drilling=true cycles=true "
             "toolpath=true history=true rollback=true undo=true redo=true reopen=true",
             flush=True,
         )

@@ -45,13 +45,14 @@ _MODEL_TARGET = _closed(
 _JOB_TARGET = _MODEL_TARGET
 _MODEL_INPUT = _closed(
     {
-        "target": _MODEL_TARGET,
+        "object_name": _OBJECT_NAME,
+        "expected_state_sha256": _SHA256,
         "replace_in_history": {
             "type": "boolean",
             "description": "Turn-start Job replacement policy for this model.",
         },
     },
-    ("target", "replace_in_history"),
+    ("object_name", "expected_state_sha256", "replace_in_history"),
 )
 _TEMPLATE = {
     "default": {"kind": "none"},

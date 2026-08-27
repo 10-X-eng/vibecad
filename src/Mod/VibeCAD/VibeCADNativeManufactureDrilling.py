@@ -116,6 +116,20 @@ class PreparedDrillingCreate:
     spindle_direction: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class DrillingDefaultsSpec:
+    job: Mapping[str, Any]
+    tool_controller: Mapping[str, Any]
+    geometry: tuple[Mapping[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedDrillingDefaults:
+    boundary: PreparedOperationBoundary
+    features: tuple[PreparedDrillingFeature, ...]
+    tool_diameter_mm: float
+
+
 def _error(message: str, code: str = "NATIVE_ARGUMENTS_INVALID") -> None:
     raise NativeManufactureError(message, error_code=code)
 
@@ -564,6 +578,48 @@ def preflight_drilling_create(
     )
 
 
+def preflight_drilling_defaults(
+    document: Any,
+    spec: DrillingDefaultsSpec,
+) -> PreparedDrillingDefaults:
+    """Freeze exact drillable geometry while retaining setup-owned defaults."""
+
+    if not isinstance(spec, DrillingDefaultsSpec):
+        raise TypeError("spec must be a DrillingDefaultsSpec")
+    groups = tuple(
+        RequestedFeatureGroup(
+            model=dict(item["model"]),
+            features=tuple((str(name), True) for name in item["subelements"]),
+        )
+        for item in spec.geometry
+    )
+    boundary = preflight_operation_boundary(
+        document,
+        noun="Drilling",
+        job_target=spec.job,
+        tool_controller_target=spec.tool_controller,
+        geometry={"kind": "subelements", "items": list(spec.geometry)},
+        allowed_subelement_types=frozenset({"Face", "Edge"}),
+        allow_entire_job=False,
+    )
+    features = _prepare_features(boundary, groups)
+    _validate_distinct_targets(features, ())
+    try:
+        diameter = _quantity_value(boundary.controller.Tool.Diameter, "mm")
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        diameter = 0.0
+    if not math.isfinite(diameter) or diameter <= 0.0:
+        _error(
+            "Drilling requires a tool controller with positive tool diameter.",
+            "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
+        )
+    return PreparedDrillingDefaults(
+        boundary=boundary,
+        features=features,
+        tool_diameter_mm=round(diameter, 9),
+    )
+
+
 def _cycle_payload(parameters: DrillingParameters) -> dict[str, Any]:
     cycle: dict[str, Any] = {"kind": parameters.cycle_kind}
     if parameters.cycle_kind == "peck":
@@ -683,6 +739,31 @@ def create_drilling(
         payload={"parameters": _parameter_payload(prepared)},
     )
     return extend_native_operation_draft(draft, drilling_prepared=prepared)
+
+
+def create_drilling_defaults(
+    document: Any,
+    *,
+    prepared: PreparedDrillingDefaults,
+) -> NativeMutationDraft:
+    """Create Drilling with the same setup-owned defaults as the human command."""
+
+    if not isinstance(prepared, PreparedDrillingDefaults):
+        raise TypeError("prepared must be a PreparedDrillingDefaults")
+    import Path.Op.Drilling as PathDrilling
+    import Path.Op.Gui.Drilling as PathDrillingGui
+
+    draft = create_native_operation(
+        document,
+        prepared=prepared.boundary,
+        internal_name="Drilling",
+        operation_factory=PathDrilling.Create,
+        provider_factory=PathDrillingGui.PathOpGui.ViewProvider,
+        provider_resource=PathDrillingGui.Command.res,
+        configure=lambda _operation: None,
+        payload={"parameters": {"source": "setup_defaults"}},
+    )
+    return extend_native_operation_draft(draft, drilling_defaults=prepared)
 
 
 def _expression(operation: Any, property_name: str) -> Any:
@@ -869,5 +950,61 @@ def verify_created_drilling(
         result_key="drilling",
         assert_settings=partial(_assert_drilling_settings, prepared=prepared),
         additional_verify=partial(_drilling_result, prepared=prepared),
+        minimum_cutting_commands=0,
+    )
+
+
+def _default_drilling_result(
+    operation: Any,
+    _payload: Mapping[str, Any],
+    *,
+    prepared: PreparedDrillingDefaults,
+) -> Mapping[str, Any]:
+    commands = tuple(getattr(operation.Path, "Commands", ()) or ())
+    cycles = tuple(
+        command
+        for command in commands
+        if str(getattr(command, "Name", "")) in _CYCLE_COMMANDS
+    )
+    if len(cycles) != len(prepared.features) or any(
+        str(command.Name) != "G81" for command in cycles
+    ):
+        raise NativeManufactureError(
+            "The default Drilling operation did not produce one standard cycle per target.",
+            error_code="NATIVE_MANUFACTURE_DRILLING_POSTCONDITION_FAILED",
+            repair={
+                "expected_cycle_count": len(prepared.features),
+                "actual_cycle_count": len(cycles),
+                "actual_commands": [str(command.Name) for command in cycles],
+            },
+        )
+    return {
+        "parameters": {
+            "source": "setup_defaults",
+            "strategy": str(operation.Strategy),
+            "sorting": str(operation.SortingMode),
+            "start_depth_mm": quantity_mm(operation, "StartDepth"),
+            "final_depth_mm": quantity_mm(operation, "FinalDepth"),
+            "safe_height_mm": quantity_mm(operation, "SafeHeight"),
+            "clearance_height_mm": quantity_mm(operation, "ClearanceHeight"),
+            "coolant": str(operation.CoolantMode),
+        },
+        "enabled_target_count": len(prepared.features),
+        "cycle_command": "G81",
+        "tool_diameter_mm": prepared.tool_diameter_mm,
+    }
+
+
+def verify_created_drilling_defaults(
+    document: Any,
+    draft: NativeMutationDraft,
+) -> dict[str, Any]:
+    prepared: PreparedDrillingDefaults = draft.value["drilling_defaults"]
+    return verify_native_operation(
+        document,
+        draft,
+        result_key="drilling",
+        assert_settings=lambda _operation, _payload: None,
+        additional_verify=partial(_default_drilling_result, prepared=prepared),
         minimum_cutting_commands=0,
     )

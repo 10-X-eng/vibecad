@@ -8,6 +8,9 @@ from VibeCADNativeManufactureInspectSchema import (
     manufacture_inspect_capability_definition,
 )
 from VibeCADNativeManufactureJobSchema import manufacture_job_capability_definition
+from VibeCADNativeManufactureOperationSchema import (
+    manufacture_operation_capability_definition,
+)
 from VibeCADNativeManufactureToolSchema import (
     manufacture_tool_catalog_capability_definition,
     manufacture_tool_capability_definition,
@@ -35,6 +38,17 @@ def test_create_job_does_not_echo_host_state_or_template_sentinels() -> None:
         "label",
         "models",
         "template",
+    }
+    model = branch["properties"]["models"]["items"]
+    assert set(model["properties"]) == {
+        "object_name",
+        "expected_state_sha256",
+        "replace_in_history",
+    }
+    assert set(model["required"]) == {
+        "object_name",
+        "expected_state_sha256",
+        "replace_in_history",
     }
 
 
@@ -85,3 +99,32 @@ def test_model_geometry_read_is_exact_paged_and_drilling_aware() -> None:
         for variant in definition.variants
         if variant.operation == "read_model_geometry"
     ).background_required is True
+
+
+def test_common_milling_operations_inherit_setup_defaults() -> None:
+    definition = manufacture_operation_capability_definition()
+    facing = _branch(definition, "mill_facing")
+    pocket = _branch(definition, "pocket_shape")
+    drilling = _branch(definition, "drilling")
+
+    assert set(facing["properties"]) == {
+        "operation",
+        "job",
+        "tool_controller",
+    }
+    assert set(facing["required"]) == {"job", "tool_controller"}
+    for branch in (pocket, drilling):
+        assert set(branch["properties"]) == {
+            "operation",
+            "job",
+            "tool_controller",
+            "geometry",
+        }
+        assert set(branch["required"]) == {
+            "job",
+            "tool_controller",
+            "geometry",
+        }
+        geometry = branch["properties"]["geometry"]
+        assert geometry["type"] == "array"
+        assert set(geometry["items"]["required"]) == {"model", "subelements"}

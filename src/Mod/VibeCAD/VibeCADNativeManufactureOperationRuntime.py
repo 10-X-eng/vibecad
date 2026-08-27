@@ -22,10 +22,10 @@ from VibeCADNativeManufactureArray import (
     verify_created_array,
 )
 from VibeCADNativeManufactureDrilling import (
-    DrillingCreateSpec,
-    create_drilling,
-    preflight_drilling_create,
-    verify_created_drilling,
+    DrillingDefaultsSpec,
+    create_drilling_defaults,
+    preflight_drilling_defaults,
+    verify_created_drilling_defaults,
 )
 from VibeCADNativeManufactureDeburr import (
     DeburrCreateSpec,
@@ -46,10 +46,10 @@ from VibeCADNativeManufactureHelix import (
     verify_created_helix,
 )
 from VibeCADNativeManufactureMillFacing import (
-    MillFacingCreateSpec,
-    create_mill_facing,
-    preflight_mill_facing_create,
-    verify_created_mill_facing,
+    MillFacingDefaultsSpec,
+    create_mill_facing_defaults,
+    preflight_mill_facing_defaults,
+    verify_created_mill_facing_defaults,
 )
 from VibeCADNativeManufactureProfile import (
     ProfileCreateSpec,
@@ -94,10 +94,10 @@ from VibeCADNativeManufacturePocket3D import (
     verify_created_pocket_3d,
 )
 from VibeCADNativeManufacturePocketShape import (
-    PocketShapeCreateSpec,
-    create_pocket_shape,
-    preflight_pocket_shape_create,
-    verify_created_pocket_shape,
+    PocketShapeDefaultsSpec,
+    create_pocket_shape_defaults,
+    preflight_pocket_shape_defaults,
+    verify_created_pocket_shape_defaults,
 )
 from VibeCADNativeManufactureSurface import (
     SurfaceCreateSpec,
@@ -135,15 +135,9 @@ _PROFILE_FIELDS = frozenset(
 )
 _POCKET_SHAPE_FIELDS = frozenset(
     {
-        "label",
         "job",
         "tool_controller",
         "geometry",
-        "pocket",
-        "depths",
-        "heights",
-        "extensions",
-        "coolant",
     }
 )
 _POCKET_3D_FIELDS = frozenset(
@@ -195,14 +189,8 @@ _ROTARY_SURFACE_FIELDS = frozenset(
 )
 _MILL_FACING_FIELDS = frozenset(
     {
-        "label",
         "job",
         "tool_controller",
-        "facing",
-        "depths",
-        "heights",
-        "linking",
-        "coolant",
     }
 )
 _HELIX_FIELDS = frozenset(
@@ -245,15 +233,9 @@ _SLOT_FIELDS = frozenset(
 )
 _DRILLING_FIELDS = frozenset(
     {
-        "label",
         "job",
         "tool_controller",
-        "targets",
-        "process",
-        "depths",
-        "heights",
-        "linking",
-        "coolant",
+        "geometry",
     }
 )
 _THREAD_MILLING_FIELDS = frozenset(
@@ -393,23 +375,17 @@ class NativeManufactureOperationRuntime:
             mutate = partial(create_profile, prepared=prepared)
             verify = verify_created_profile
         elif operation == "pocket_shape":
-            prepared = preflight_pocket_shape_create(
+            prepared = preflight_pocket_shape_defaults(
                 context.document,
-                PocketShapeCreateSpec(
-                    label=values["label"],
+                PocketShapeDefaultsSpec(
                     job=values["job"],
                     tool_controller=values["tool_controller"],
-                    geometry=values["geometry"],
-                    pocket=values["pocket"],
-                    depths=values["depths"],
-                    heights=values["heights"],
-                    extensions=values["extensions"],
-                    coolant=values["coolant"],
+                    geometry=tuple(values["geometry"]),
                 ),
             )
             transaction_name = "Create Native CAM Pocket Shape"
-            mutate = partial(create_pocket_shape, prepared=prepared)
-            verify = verify_created_pocket_shape
+            mutate = partial(create_pocket_shape_defaults, prepared=prepared)
+            verify = verify_created_pocket_shape_defaults
         elif operation == "pocket_3d":
             prepared = preflight_pocket_3d_create(
                 context.document,
@@ -478,22 +454,16 @@ class NativeManufactureOperationRuntime:
             mutate = partial(create_rotary_surface, prepared=prepared)
             verify = verify_created_rotary_surface
         elif operation == "mill_facing":
-            prepared = preflight_mill_facing_create(
+            prepared = preflight_mill_facing_defaults(
                 context.document,
-                MillFacingCreateSpec(
-                    label=values["label"],
+                MillFacingDefaultsSpec(
                     job=values["job"],
                     tool_controller=values["tool_controller"],
-                    facing=values["facing"],
-                    depths=values["depths"],
-                    heights=values["heights"],
-                    linking=values["linking"],
-                    coolant=values["coolant"],
                 ),
             )
             transaction_name = "Create Native CAM Mill Facing"
-            mutate = partial(create_mill_facing, prepared=prepared)
-            verify = verify_created_mill_facing
+            mutate = partial(create_mill_facing_defaults, prepared=prepared)
+            verify = verify_created_mill_facing_defaults
         elif operation == "helix":
             prepared = preflight_helix_create(
                 context.document,
@@ -548,23 +518,17 @@ class NativeManufactureOperationRuntime:
             mutate = partial(create_slot, prepared=prepared)
             verify = verify_created_slot
         elif operation == "drilling":
-            prepared = preflight_drilling_create(
+            prepared = preflight_drilling_defaults(
                 context.document,
-                DrillingCreateSpec(
-                    label=values["label"],
+                DrillingDefaultsSpec(
                     job=values["job"],
                     tool_controller=values["tool_controller"],
-                    targets=values["targets"],
-                    process=values["process"],
-                    depths=values["depths"],
-                    heights=values["heights"],
-                    linking=values["linking"],
-                    coolant=values["coolant"],
+                    geometry=tuple(values["geometry"]),
                 ),
             )
             transaction_name = "Create Native CAM Drilling"
-            mutate = partial(create_drilling, prepared=prepared)
-            verify = verify_created_drilling
+            mutate = partial(create_drilling_defaults, prepared=prepared)
+            verify = verify_created_drilling_defaults
         elif operation == "thread_milling":
             prepared = preflight_thread_milling_create(
                 context.document,

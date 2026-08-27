@@ -113,7 +113,12 @@ class NativeManufactureJobRuntime:
                 label=values["label"],
                 models=tuple(
                     JobModelInput(
-                        target=item["target"],
+                        target={
+                            "object_name": item["object_name"],
+                            "expected_state_sha256": item[
+                                "expected_state_sha256"
+                            ],
+                        },
                         replace_in_history=item["replace_in_history"],
                     )
                     for item in raw_models

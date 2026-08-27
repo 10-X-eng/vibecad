@@ -101,6 +101,18 @@ class PreparedPocketShapeCreate:
     extensions: PreparedFeatureExtensions
 
 
+@dataclass(frozen=True, slots=True)
+class PocketShapeDefaultsSpec:
+    job: Mapping[str, Any]
+    tool_controller: Mapping[str, Any]
+    geometry: tuple[Mapping[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedPocketShapeDefaults:
+    boundary: PreparedOperationBoundary
+
+
 def _error(message: str, code: str = "NATIVE_ARGUMENTS_INVALID") -> None:
     raise NativeManufactureError(message, error_code=code)
 
@@ -256,6 +268,27 @@ def preflight_pocket_shape_create(
     )
 
 
+def preflight_pocket_shape_defaults(
+    document: Any,
+    spec: PocketShapeDefaultsSpec,
+) -> PreparedPocketShapeDefaults:
+    """Freeze exact pocket geometry while retaining setup-owned process defaults."""
+
+    if not isinstance(spec, PocketShapeDefaultsSpec):
+        raise TypeError("spec must be a PocketShapeDefaultsSpec")
+    boundary = preflight_operation_boundary(
+        document,
+        noun="Pocket Shape",
+        job_target=spec.job,
+        tool_controller_target=spec.tool_controller,
+        geometry={"kind": "subelements", "items": list(spec.geometry)},
+        allowed_subelement_types=frozenset({"Face", "Edge"}),
+        allow_entire_job=False,
+    )
+    validate_pocket_feature_geometry(boundary, noun="Pocket Shape")
+    return PreparedPocketShapeDefaults(boundary=boundary)
+
+
 def _parameter_payload(prepared: PreparedPocketShapeCreate) -> dict[str, Any]:
     parameters = prepared.parameters
     pattern: dict[str, Any] = {"kind": parameters.pattern}
@@ -348,6 +381,31 @@ def create_pocket_shape(
         payload={"parameters": _parameter_payload(prepared)},
     )
     return extend_native_operation_draft(draft, pocket_prepared=prepared)
+
+
+def create_pocket_shape_defaults(
+    document: Any,
+    *,
+    prepared: PreparedPocketShapeDefaults,
+) -> NativeMutationDraft:
+    """Create Pocket Shape with the same defaults as the human command."""
+
+    if not isinstance(prepared, PreparedPocketShapeDefaults):
+        raise TypeError("prepared must be a PreparedPocketShapeDefaults")
+    import Path.Op.PocketShape as PathPocketShape
+    import Path.Op.Gui.PocketShape as PathPocketShapeGui
+
+    draft = create_native_operation(
+        document,
+        prepared=prepared.boundary,
+        internal_name="Pocket Shape",
+        operation_factory=PathPocketShape.Create,
+        provider_factory=PathPocketShapeGui.PathOpGui.ViewProvider,
+        provider_resource=PathPocketShapeGui.Command.res,
+        configure=lambda _operation: None,
+        payload={"parameters": {"source": "setup_defaults"}},
+    )
+    return extend_native_operation_draft(draft, pocket_defaults=prepared)
 
 
 def _expression(operation: Any, property_name: str) -> Any:
@@ -459,4 +517,38 @@ def verify_created_pocket_shape(
         assert_settings=partial(_assert_pocket_settings, prepared=prepared),
         additional_verify=partial(_extension_result, prepared=prepared),
         minimum_cutting_commands=minimum_cutting,
+    )
+
+
+def _default_pocket_result(
+    operation: Any,
+    _payload: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    return {
+        "parameters": {
+            "source": "setup_defaults",
+            "cut_mode": str(operation.CutMode),
+            "pattern": str(operation.ClearingPattern),
+            "stepover_percent": int(operation.StepOver),
+            "material_allowance_mm": quantity_mm(operation, "ExtraOffset"),
+            "start_depth_mm": quantity_mm(operation, "StartDepth"),
+            "final_depth_mm": quantity_mm(operation, "FinalDepth"),
+            "step_down_mm": quantity_mm(operation, "StepDown"),
+            "safe_height_mm": quantity_mm(operation, "SafeHeight"),
+            "clearance_height_mm": quantity_mm(operation, "ClearanceHeight"),
+            "coolant": str(operation.CoolantMode),
+        }
+    }
+
+
+def verify_created_pocket_shape_defaults(
+    document: Any,
+    draft: NativeMutationDraft,
+) -> dict[str, Any]:
+    return verify_native_operation(
+        document,
+        draft,
+        result_key="pocket_shape",
+        assert_settings=lambda _operation, _payload: None,
+        additional_verify=_default_pocket_result,
     )

@@ -327,7 +327,7 @@ def test_inspection_operations_follow_exact_setup_content() -> None:
             projected.schemas[projected.tool_names.index("manufacture.inspect")]
         )
 
-    assert operations(blank) == {"list_setups", "read_thread_catalog"}
+    assert operations(blank) == {"list_setups"}
     assert operations(configured) == {
         "list_setups",
         "search_setup_options",

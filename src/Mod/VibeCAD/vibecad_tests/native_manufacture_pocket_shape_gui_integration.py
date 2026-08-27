@@ -18,7 +18,6 @@ from PySide import QtCore, QtWidgets
 import Path.Base.Util as PathUtil
 import Path.Main.Gui.Job as PathJobGui
 import Path.Main.Job as PathJob
-import Path.Op.FeatureExtension as FeatureExtensions
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
@@ -127,16 +126,14 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     schema = definition.provider_schema(("pocket_shape",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.lower()
-    for field in (
+    branch = schema["parameters"]["oneOf"][0]
+    assert set(branch["properties"]) == {
+        "operation",
+        "job",
         "tool_controller",
-        "subelements",
-        "stepover_percent",
-        "finish_step_mm",
-        "default_length_mm",
-        "extend_corners",
-    ):
-        assert field in encoded
-    assert "entire_job" not in encoded
+        "geometry",
+    }
+    assert set(branch["required"]) == {"job", "tool_controller", "geometry"}
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
@@ -152,7 +149,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     )
 
 
-def _arguments(model, job, face_name: str, edge_name: str) -> dict:
+def _arguments(model, job, face_name: str) -> dict:
     state = job_state(job)
     controller = state["tools"][0]
     job_model = next(
@@ -161,50 +158,14 @@ def _arguments(model, job, face_name: str, edge_name: str) -> dict:
     model_target = _target(job_model)
     return {
         "operation": "pocket_shape",
-        "label": "Native top Pocket Shape",
         "job": _target(state),
         "tool_controller": _target(controller),
-        "geometry": {
-            "kind": "subelements",
-            "items": [
-                {
-                    "model": model_target,
-                    "subelements": [face_name],
-                }
-            ],
-        },
-        "pocket": {
-            "cut_mode": "climb",
-            "pattern": {"kind": "line", "angle_degrees": 30.0},
-            "stepover_percent": 45,
-            "material_allowance_mm": 0.2,
-            "ignore_holes": False,
-            "minimize_travel": False,
-            "rest_machining": False,
-        },
-        "depths": {
-            "start_depth_mm": 10.0,
-            "final_depth_mm": 2.0,
-            "step_down_mm": 2.0,
-            "finish_step_mm": 0.5,
-        },
-        "heights": {
-            "safe_height_mm": 12.0,
-            "clearance_height_mm": 15.0,
-        },
-        "extensions": {
-            "kind": "explicit",
-            "default_length_mm": 3.0,
-            "extend_corners": False,
-            "items": [
-                {
-                    "model": model_target,
-                    "feature": face_name,
-                    "edges": [edge_name],
-                }
-            ],
-        },
-        "coolant": "mist",
+        "geometry": [
+            {
+                "model": model_target,
+                "subelements": [face_name],
+            }
+        ],
     }
 
 
@@ -214,7 +175,6 @@ def _assert_pocket_graph(
     operation,
     model,
     face_name: str,
-    edge_name: str,
     *,
     diagnostics_required: bool = True,
 ) -> None:
@@ -227,27 +187,24 @@ def _assert_pocket_graph(
         assert operation.ViewObject.Proxy.deleteOnReject is False
     assert tuple(operation.Base) == ((job.Model.Group[0], (face_name,)),)
     assert job.Proxy.baseObject(job, operation.Base[0][0]) is model
-    assert operation.Label == "Native top Pocket Shape"
-    assert operation.CutMode == "Climb"
-    assert operation.ClearingPattern == "Line"
-    assert round(float(operation.Angle), 9) == 30.0
-    assert int(operation.StepOver) == 45
-    assert round(operation.ExtraOffset.getValueAs("mm"), 9) == 0.2
-    assert operation.UseOutline is False
-    assert operation.MinTravel is False
-    assert operation.UseRestMachining is False
-    assert operation.UseStartPoint is False
-    assert operation.StartAt == "Center"
-    assert operation.SortingMode == "Automatic"
-    assert operation.ForceMaxStepOver is False
-    assert operation.SplitArcs is False
-    assert operation.CoolantMode == "Mist"
-    assert round(operation.FinishDepth.getValueAs("mm"), 9) == 0.5
-    assert round(operation.ExtensionLengthDefault.getValueAs("mm"), 9) == 3.0
-    assert operation.ExtensionCorners is False
-    assert FeatureExtensions.readObjExtensionFeature(operation) == [
-        (job.Model.Group[0].Name, face_name, edge_name)
-    ]
+    assert operation.Label
+    assert operation.CutMode in {"Climb", "Conventional"}
+    assert operation.ClearingPattern in {
+        "Offset",
+        "ZigZag",
+        "ZigZagOffset",
+        "Line",
+        "Grid",
+    }
+    assert 1 <= int(operation.StepOver) <= 100
+    expressions = {str(name) for name, _expression in operation.ExpressionEngine}
+    assert {
+        "StartDepth",
+        "FinalDepth",
+        "StepDown",
+        "SafeHeight",
+        "ClearanceHeight",
+    } <= expressions
     assert tuple(document.VibeCADTimeline.Operations)[-1] is operation
     commands = tuple(operation.Path.Commands)
     assert any(command.Name in {"G1", "G2", "G3"} for command in commands)
@@ -284,17 +241,17 @@ def _run() -> None:
         ) == (
             MANUFACTURE_OPERATION_CAPABILITY_NAME,
             "pocket_shape",
-            "ExactCamJobPocketGeometryControllerExtensionsAndParameters",
+            "ExactCamJobPocketGeometryAndController",
             True,
             False,
         )
 
         model, job = _create_model_and_job(document)
-        face_name, edge_name = _top_face_and_edge(model)
+        face_name, _edge_name = _top_face_and_edge(model)
         initial_names = tuple(obj.Name for obj in document.Objects)
         initial_operations = tuple(job.Operations.Group)
         initial_timeline = tuple(document.VibeCADTimeline.Operations)
-        arguments = _arguments(model, job, face_name, edge_name)
+        arguments = _arguments(model, job, face_name)
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -347,21 +304,12 @@ def _run() -> None:
         undo_before = int(document.UndoCount)
 
         stale = json.loads(json.dumps(arguments))
-        stale["geometry"]["items"][0]["model"]["expected_state_sha256"] = "0" * 64
+        stale["geometry"][0]["model"]["expected_state_sha256"] = "0" * 64
         stale_result = call(stale, succeeds=False)
         assert stale_result["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE"
         assert tuple(obj.Name for obj in document.Objects) == initial_names
         assert tuple(job.Operations.Group) == initial_operations
         assert tuple(document.VibeCADTimeline.Operations) == initial_timeline
-        assert int(document.UndoCount) == undo_before
-
-        invalid = json.loads(json.dumps(arguments))
-        invalid["pocket"]["minimize_travel"] = True
-        invalid_result = call(invalid, succeeds=False)
-        assert invalid_result["error_code"] == "NATIVE_ARGUMENTS_INVALID"
-        assert "start point" in invalid_result["error"].lower()
-        assert tuple(obj.Name for obj in document.Objects) == initial_names
-        assert tuple(job.Operations.Group) == initial_operations
         assert int(document.UndoCount) == undo_before
 
         result = call(arguments)
@@ -375,25 +323,12 @@ def _run() -> None:
             operation,
             model,
             face_name,
-            edge_name,
         )
         assert result["pocket_shape"]["geometry"] == {
             "kind": "subelements",
             "items": [{"object_name": model.Name, "subelements": [face_name]}],
         }
-        assert result["pocket_shape"]["extensions"] == {
-            "kind": "explicit",
-            "count": 1,
-            "default_length_mm": 3.0,
-            "extend_corners": False,
-            "items": [
-                {
-                    "object_name": model.Name,
-                    "feature": face_name,
-                    "edges": [edge_name],
-                }
-            ],
-        }
+        assert result["pocket_shape"]["parameters"]["source"] == "setup_defaults"
         assert result["pocket_shape"]["cutting_command_count"] >= 1
         assert result["job"]["operation_count"] == len(initial_operations) + 1
         assert [item["object_name"] for item in result["receipt"]["created"]] == [
@@ -424,7 +359,6 @@ def _run() -> None:
             operation,
             model,
             face_name,
-            edge_name,
         )
         assert operation_state(operation)["state_sha256"] == created_state["state_sha256"]
 
@@ -441,7 +375,6 @@ def _run() -> None:
             operation,
             model,
             face_name,
-            edge_name,
             diagnostics_required=False,
         )
         assert operation_state(operation)["state_sha256"] == created_state["state_sha256"]

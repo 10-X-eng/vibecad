@@ -94,6 +94,20 @@ class PreparedMillFacingCreate:
     stock_top_face_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class MillFacingDefaultsSpec:
+    job: Mapping[str, Any]
+    tool_controller: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedMillFacingDefaults:
+    boundary: PreparedOperationBoundary
+    stock: Any
+    stock_shape_sha256: str
+    stock_top_face_sha256: str
+
+
 def _error(message: str, code: str = "NATIVE_ARGUMENTS_INVALID") -> None:
     raise NativeManufactureError(message, error_code=code)
 
@@ -290,6 +304,45 @@ def preflight_mill_facing_create(
     )
 
 
+def preflight_mill_facing_defaults(
+    document: Any,
+    spec: MillFacingDefaultsSpec,
+) -> PreparedMillFacingDefaults:
+    """Freeze the stock and setup resources used by a default Facing operation."""
+
+    if not isinstance(spec, MillFacingDefaultsSpec):
+        raise TypeError("spec must be a MillFacingDefaultsSpec")
+    boundary = preflight_operation_boundary(
+        document,
+        noun="Mill Facing",
+        job_target=spec.job,
+        tool_controller_target=spec.tool_controller,
+        geometry={"kind": "entire_job"},
+        allowed_subelement_types=frozenset({"Face", "Edge"}),
+        allow_entire_job=True,
+    )
+    stock = getattr(boundary.job, "Stock", None)
+    stock_shape = getattr(stock, "Shape", None)
+    if (
+        stock is None
+        or getattr(stock, "Document", None) is not document
+        or document.getObject(str(getattr(stock, "Name", ""))) is not stock
+        or stock_shape is None
+        or bool(getattr(stock_shape, "isNull", lambda: True)())
+    ):
+        _error(
+            "Mill Facing requires valid current stock owned by the exact CAM Job.",
+            "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
+        )
+    top_face = _stock_top_face(stock)
+    return PreparedMillFacingDefaults(
+        boundary=boundary,
+        stock=stock,
+        stock_shape_sha256=shape_sha256(stock_shape, "CAM Job stock"),
+        stock_top_face_sha256=shape_sha256(top_face, "CAM Job stock top face"),
+    )
+
+
 def _assert_stock_current(prepared: PreparedMillFacingCreate) -> None:
     stock = prepared.stock
     document = prepared.boundary.job.Document
@@ -404,6 +457,31 @@ def create_mill_facing(
     return extend_native_operation_draft(draft, facing_prepared=prepared)
 
 
+def create_mill_facing_defaults(
+    document: Any,
+    *,
+    prepared: PreparedMillFacingDefaults,
+) -> NativeMutationDraft:
+    """Create Facing with the same setup-owned defaults as the human command."""
+
+    if not isinstance(prepared, PreparedMillFacingDefaults):
+        raise TypeError("prepared must be a PreparedMillFacingDefaults")
+    import Path.Op.MillFacing as PathMillFacing
+    import Path.Op.Gui.MillFacing as PathMillFacingGui
+
+    draft = create_native_operation(
+        document,
+        prepared=prepared.boundary,
+        internal_name="MillFacing",
+        operation_factory=PathMillFacing.Create,
+        provider_factory=PathMillFacingGui.PathOpGui.ViewProvider,
+        provider_resource=PathMillFacingGui.Command.res,
+        configure=lambda _operation: None,
+        payload={"parameters": {"source": "setup_defaults"}},
+    )
+    return extend_native_operation_draft(draft, facing_defaults=prepared)
+
+
 def _expression(operation: Any, property_name: str) -> Any:
     getter = getattr(operation, "getExpression", None)
     return getter(property_name) if callable(getter) else None
@@ -510,4 +588,58 @@ def verify_created_mill_facing(
         result_key="mill_facing",
         assert_settings=partial(_assert_facing_settings, prepared=prepared),
         additional_verify=partial(_verify_stock, prepared=prepared),
+    )
+
+
+def _default_facing_result(
+    operation: Any,
+    _payload: Mapping[str, Any],
+    *,
+    prepared: PreparedMillFacingDefaults,
+) -> Mapping[str, Any]:
+    stock = prepared.stock
+    stock_shape = getattr(stock, "Shape", None)
+    if (
+        getattr(stock, "Document", None) is not operation.Document
+        or getattr(prepared.boundary.job, "Stock", None) is not stock
+        or stock_shape is None
+        or shape_sha256(stock_shape, "CAM Job stock") != prepared.stock_shape_sha256
+        or shape_sha256(_stock_top_face(stock), "CAM Job stock top face")
+        != prepared.stock_top_face_sha256
+    ):
+        _error(
+            "CAM Job stock changed during Mill Facing creation.",
+            "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",
+        )
+    return {
+        "stock": {
+            "object_name": str(stock.Name),
+            "shape_sha256": prepared.stock_shape_sha256,
+        },
+        "parameters": {
+            "source": "setup_defaults",
+            "cut_mode": str(operation.CutMode),
+            "pattern": str(operation.ClearingPattern),
+            "stepover_percent": int(operation.StepOver),
+            "start_depth_mm": quantity_mm(operation, "StartDepth"),
+            "final_depth_mm": quantity_mm(operation, "FinalDepth"),
+            "step_down_mm": quantity_mm(operation, "StepDown"),
+            "safe_height_mm": quantity_mm(operation, "SafeHeight"),
+            "clearance_height_mm": quantity_mm(operation, "ClearanceHeight"),
+            "coolant": str(operation.CoolantMode),
+        },
+    }
+
+
+def verify_created_mill_facing_defaults(
+    document: Any,
+    draft: NativeMutationDraft,
+) -> dict[str, Any]:
+    prepared: PreparedMillFacingDefaults = draft.value["facing_defaults"]
+    return verify_native_operation(
+        document,
+        draft,
+        result_key="mill_facing",
+        assert_settings=lambda _operation, _payload: None,
+        additional_verify=partial(_default_facing_result, prepared=prepared),
     )

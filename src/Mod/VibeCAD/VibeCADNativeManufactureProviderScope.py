@@ -164,9 +164,11 @@ def _operation_scope(
 
     inspect = available_by_tool.get("manufacture.inspect")
     if inspect is not None:
-        allowed = {"list_setups", "read_thread_catalog"}
+        allowed = {"list_setups"}
         if has_setup:
             allowed.update({"read_job", "search_setup_options", "validate_job"})
+        if tool_count:
+            allowed.add("read_thread_catalog")
         if model_count:
             allowed.update({"detect_loop", "read_model_geometry"})
         if operation_count:
