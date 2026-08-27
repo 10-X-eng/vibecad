@@ -27,6 +27,10 @@ from VibeCADNativeManufactureFocusedOperationSchema import (
     MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES,
     manufacture_focused_operation_capability_definitions,
 )
+from VibeCADNativeManufactureFocusedModifySchema import (
+    MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES,
+    manufacture_focused_modify_capability_definitions,
+)
 from VibeCADNativeManufactureProgramSchema import (
     manufacture_program_capability_definition,
 )
@@ -66,6 +70,7 @@ _AVAILABLE = (
     *MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES.values(),
     "manufacture.program",
     "manufacture.modify",
+    *set(MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES.values()),
     "manufacture.probe",
     "manufacture.template",
     "manufacture.simulation",
@@ -246,7 +251,8 @@ def test_valid_paths_add_correction_simulation_and_post_without_hiding_setup_too
         "manufacture.tool",
         "manufacture.operation",
         "manufacture.program",
-        "manufacture.modify",
+        "manufacture.operations",
+        "manufacture.dressup",
         "manufacture.simulation",
         "manufacture.simulation_result",
         "manufacture.camotics",
@@ -269,7 +275,8 @@ def test_unselected_independent_setups_keep_explicit_target_lifecycle_available(
         "manufacture.tool",
         "manufacture.operation",
         "manufacture.program",
-        "manufacture.modify",
+        "manufacture.operations",
+        "manufacture.dressup",
         "manufacture.simulation",
     } <= names
     assert "manufacture.post" not in names
@@ -351,6 +358,7 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
         *manufacture_focused_operation_capability_definitions(),
         manufacture_program_capability_definition(),
         manufacture_modify_capability_definition(),
+        *manufacture_focused_modify_capability_definitions(),
     )
     registry, surface = _definition_surface(definitions)
     no_tool = _job("SetupI", tools=0, operations=0)
@@ -433,8 +441,12 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
         "update_setup",
     }
     assert "manufacture.modify" not in projected_with_tool.tool_names
+    assert "manufacture.operations" not in projected_with_tool.tool_names
+    assert "manufacture.dressup" not in projected_with_tool.tool_names
 
-    assert "manufacture.modify" in projected_with_path.tool_names
+    assert "manufacture.modify" not in projected_with_path.tool_names
+    assert "manufacture.operations" in projected_with_path.tool_names
+    assert "manufacture.dressup" in projected_with_path.tool_names
     assert {
         "set_start_point",
         "array",

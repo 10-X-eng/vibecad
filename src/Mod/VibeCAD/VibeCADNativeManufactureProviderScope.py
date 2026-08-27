@@ -162,7 +162,11 @@ def manufacture_provider_tool_names(
     if any(int(setup["counts"]["operations"]) > 0 for setup in setups):
         allowed.update(
             _OPERATION_EDITS
-            | {"manufacture.modify", "manufacture.toolpath"}
+            | {
+                "manufacture.operations",
+                "manufacture.dressup",
+                "manufacture.toolpath",
+            }
         )
     if any(_readiness_ready(setup, "simulation") for setup in setups):
         allowed.update(

@@ -215,6 +215,32 @@ def test_cam_inspection_commands_resolve_to_focused_tools() -> None:
         for command_id, plan in plans.items()
     } == expected
 
+
+def test_cam_operation_edit_commands_resolve_by_intent() -> None:
+    expected = {
+        "CAM_OpActiveToggle": ("manufacture.operations", "set_active"),
+        "CAM_OperationCopy": ("manufacture.operations", "copy_operations"),
+        "CAM_DressupArray": ("manufacture.dressup", "array_dressup"),
+        "CAM_DressupZCorrect": ("manufacture.dressup", "z_correct_dressup"),
+    }
+    plans = {
+        command_id: _plan(
+            "manufacture",
+            "Modify",
+            RibbonAction(
+                command_id=command_id,
+                label=command_id,
+                available=True,
+                kind="command",
+            ),
+        )
+        for command_id in expected
+    }
+    assert {
+        command_id: (plan.capability_family, plan.operation_variant)
+        for command_id, plan in plans.items()
+    } == expected
+
 def test_drawing_page_actions_resolve_to_four_exact_variants() -> None:
     expected = {
         "TechDraw_PageDefault": (

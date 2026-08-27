@@ -460,6 +460,12 @@ from VibeCADNativeManufactureModifyBindings import (
 from VibeCADNativeManufactureModifySchema import (
     register_manufacture_modify_capability_definition,
 )
+from VibeCADNativeManufactureFocusedModifyBindings import (
+    register_manufacture_focused_modify_capability_implementations,
+)
+from VibeCADNativeManufactureFocusedModifySchema import (
+    register_manufacture_focused_modify_capability_definitions,
+)
 from VibeCADNativeManufactureProgramBindings import (
     register_manufacture_program_capability_implementation,
 )
@@ -953,6 +959,8 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_manufacture_area_capability_implementation(registry)
     register_manufacture_modify_capability_definition(registry)
     register_manufacture_modify_capability_implementation(registry)
+    register_manufacture_focused_modify_capability_definitions(registry)
+    register_manufacture_focused_modify_capability_implementations(registry)
     register_manufacture_program_capability_definition(registry)
     register_manufacture_program_capability_implementation(registry)
     register_manufacture_probe_capability_definition(registry)

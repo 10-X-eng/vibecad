@@ -25,7 +25,10 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeManufactureModifySchema import MANUFACTURE_MODIFY_CAPABILITY_NAME
+from VibeCADNativeManufactureFocusedModifySchema import (
+    MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES,
+)
+
 from VibeCADNativeManufactureState import (
     job_state,
     operation_reference_state,
@@ -38,6 +41,9 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CAPABILITY_NAME = MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES["axis_map_dressup"]
 
 
 _MAPPINGS = ("x_to_a", "y_to_a", "x_to_b", "y_to_b", "x_to_c", "y_to_c")
@@ -105,7 +111,7 @@ def _arguments(
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_MODIFY_CAPABILITY_NAME)
+    definition = registry.definition(CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(("axis_map_dressup",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
@@ -128,7 +134,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_MODIFY_CAPABILITY_NAME,),
+            tool_names=(CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -229,7 +235,7 @@ def _run() -> None:
             plan.classification.human_only,
         )
         assert actual_plan == (
-            MANUFACTURE_MODIFY_CAPABILITY_NAME,
+            CAPABILITY_NAME,
             "axis_map_dressup",
             "ExactCamJobOperationAndAxisMapParameters",
             True,
@@ -290,7 +296,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_MODIFY_CAPABILITY_NAME,
+                CAPABILITY_NAME,
                 json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-axis-map-{call_index}",
             )
@@ -382,6 +388,19 @@ def _run() -> None:
         first_output = document.getObject(first_output_name)
         assert first_output.Base is sources[0]
 
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        ledger.begin_run("native-manufacture-axis-map-gui-after-redo")
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
+
         conflict_before = tuple(document.Objects)
         conflict = call(
             _arguments(job, sources[1], "y_to_a", radius_mm=13.0),
@@ -420,6 +439,18 @@ def _run() -> None:
         future_index = tuple(timeline.Operations).index(future)
         _move_timeline_to(document, future_index)
         marker_before = int(timeline.Position)
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        ledger.begin_run("native-manufacture-axis-map-gui-at-marker")
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         marker_result = call(
             _arguments(
                 job,
@@ -442,6 +473,18 @@ def _run() -> None:
         assert end_button is not None
         end_button.click()
         _events(12)
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        ledger.begin_run("native-manufacture-axis-map-gui-at-end")
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         final_result = call(
             _arguments(
                 job,

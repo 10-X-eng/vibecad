@@ -10,6 +10,9 @@ from VibeCADNativeManufactureInspectSchema import (
 from VibeCADNativeManufactureFocusedInspectSchema import (
     manufacture_focused_inspect_capability_definitions,
 )
+from VibeCADNativeManufactureFocusedModifySchema import (
+    manufacture_focused_modify_capability_definitions,
+)
 from VibeCADNativeManufactureJobSchema import manufacture_job_capability_definition
 from VibeCADNativeManufactureOperationSchema import (
     manufacture_operation_capability_definition,
@@ -160,6 +163,31 @@ def test_cam_inspection_reads_publish_as_focused_tools() -> None:
     branch = schema["parameters"]["oneOf"][0]
     assert set(branch["required"]) == {"target", "elements"}
     assert "operation" not in branch["properties"]
+
+
+def test_cam_operation_edits_publish_as_two_intent_tools() -> None:
+    definitions = {
+        definition.name: definition
+        for definition in manufacture_focused_modify_capability_definitions()
+    }
+    assert {
+        name: tuple(variant.operation for variant in definition.variants)
+        for name, definition in definitions.items()
+    } == {
+        "manufacture.operations": ("set_active", "copy_operations"),
+        "manufacture.dressup": (
+            "array_dressup",
+            "axis_map_dressup",
+            "dogbone_dressup",
+            "drag_knife_dressup",
+            "lead_in_out_dressup",
+            "path_boundary_dressup",
+            "mirror_dressup",
+            "ramp_entry_dressup",
+            "tag_dressup",
+            "z_correct_dressup",
+        ),
+    }
 
 
 def test_common_milling_operations_inherit_setup_defaults() -> None:

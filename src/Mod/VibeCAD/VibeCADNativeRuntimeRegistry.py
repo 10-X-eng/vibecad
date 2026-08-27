@@ -198,6 +198,9 @@ from VibeCADNativeManufactureAreaRuntime import NativeManufactureAreaRuntime
 from VibeCADNativeManufactureModifyBindings import (
     manufacture_modify_runtime_bindings,
 )
+from VibeCADNativeManufactureFocusedModifyBindings import (
+    manufacture_focused_modify_runtime_bindings,
+)
 from VibeCADNativeManufactureModifyRuntime import NativeManufactureModifyRuntime
 from VibeCADNativeManufactureProgramBindings import (
     manufacture_program_runtime_bindings,
@@ -679,6 +682,7 @@ def build_native_runtime_bindings(
         **manufacture_job_runtime_bindings(manufacture_job),
         **manufacture_area_runtime_bindings(manufacture_area),
         **manufacture_modify_runtime_bindings(manufacture_modify),
+        **manufacture_focused_modify_runtime_bindings(manufacture_modify),
         **manufacture_program_runtime_bindings(manufacture_program),
         **manufacture_probe_runtime_bindings(manufacture_probe),
         **manufacture_property_bag_runtime_bindings(manufacture_property_bag),
