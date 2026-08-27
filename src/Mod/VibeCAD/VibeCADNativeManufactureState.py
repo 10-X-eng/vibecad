@@ -1108,12 +1108,17 @@ def _resolve_target(
         )
     current = state_reader(obj)
     if current.get("state_sha256") != expected:
+        current_target = {
+            "object_name": name,
+            "expected_state_sha256": current.get("state_sha256"),
+        }
         raise NativeManufactureError(
             f"The exact {noun} target changed after turn start.",
             error_code="NATIVE_MANUFACTURE_STATE_STALE",
             repair={
                 "object_name": name,
                 "current_state_sha256": current.get("state_sha256"),
+                "target": current_target,
             },
         )
     return obj, current

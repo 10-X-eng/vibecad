@@ -36,7 +36,7 @@ from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
 
 _READ_VARIANTS = {
-    "list_tools": frozenset({"offset", "page_size"}),
+    "list_tools": frozenset({"query", "offset", "page_size"}),
     "read_tool": frozenset({"catalog_tool"}),
 }
 _MUTATION_VARIANTS = {
@@ -76,7 +76,9 @@ class NativeManufactureToolCatalogRuntime:
         operation, values = strict_variant_arguments(
             arguments,
             _READ_VARIANTS,
-            defaults={"list_tools": {"offset": 0, "page_size": 32}},
+            defaults={
+                "list_tools": {"query": "", "offset": 0, "page_size": 32}
+            },
         )
         self._context.guard(allow_owned_cam_simulation=True)
         if operation == "list_tools":
@@ -87,7 +89,11 @@ class NativeManufactureToolCatalogRuntime:
                     error_code="NATIVE_MANUFACTURE_TOOL_CATALOG_STALE",
                     repair={"current_catalog_state_sha256": catalog.state_sha256},
                 )
-            return catalog.page(values["offset"], values["page_size"])
+            return catalog.page(
+                values["offset"],
+                values["page_size"],
+                query=values["query"],
+            )
         target = values["catalog_tool"]
         catalog, record = resolve_catalog_record(
             target["catalog_id"],

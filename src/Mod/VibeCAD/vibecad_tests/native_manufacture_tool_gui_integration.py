@@ -326,10 +326,25 @@ def _run() -> None:
             {
                 "operation": "list_tools",
                 "offset": 0,
-                "page_size": 64,
+                "page_size": 128,
             },
         )
         assert listing["state_sha256"] == catalog_snapshot["state_sha256"]
+        searched = call(
+            MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
+            {
+                "operation": "list_tools",
+                "query": "drill",
+                "offset": 0,
+                "page_size": 8,
+            },
+        )
+        assert searched["count"] >= 1
+        assert searched["query"] == "drill"
+        assert all(
+            "drill" in f"{item['label']} {item['shape_type']}".casefold()
+            for item in searched["items"]
+        )
         selected = next(
             (item for item in listing["items"] if item["shape_type"].lower() == "bullnose"),
             listing["items"][0],
@@ -698,7 +713,8 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_TOOL_GUI_OK "
-            "catalog=true exact_targets=true human_default_create=true controller_create=true "
+            "catalog=true catalog_search=true paging_128=true exact_targets=true "
+            "human_default_create=true controller_create=true "
             "controller_update=true tool_properties=true stable_resource_graph=true "
             "save=true save_as=true path_private=true output_read_only=true "
             "rollback=true undo=true redo=true reopen=true",

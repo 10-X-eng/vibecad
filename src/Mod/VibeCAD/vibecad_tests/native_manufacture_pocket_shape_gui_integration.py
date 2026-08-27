@@ -99,6 +99,40 @@ def _create_model_and_job(document):
     return model, _commit(document, "Create Pocket gate Job", create_job)
 
 
+def _create_bracket_model_and_job(document):
+    def create_model():
+        shape = Part.makeBox(60.0, 40.0, 12.0).cut(
+            Part.makeBox(32.0, 18.0, 7.0, App.Vector(14.0, 11.0, 6.0))
+        )
+        for x_mm, y_mm in ((8.0, 8.0), (52.0, 8.0), (8.0, 32.0), (52.0, 32.0)):
+            shape = shape.cut(
+                Part.makeCylinder(2.5, 14.0, App.Vector(x_mm, y_mm, -1.0))
+            )
+        model = document.addObject("Part::Feature", "BracketModel")
+        model.Label = "Three-axis bracket model"
+        model.Shape = shape.removeSplitter()
+        document.publishProvisionalTimelineOperationBlock(model, (), ())
+        return model
+
+    model = _commit(document, "Create bracket model", create_model)
+
+    def create_job():
+        job = PathJob.Create("BracketJob", [model], templateFile=None)
+        provider = PathJobGui.ViewProvider(job.ViewObject)
+        job.ViewObject.Proxy = provider
+        job.ViewObject.addExtension("Gui::ViewProviderGroupExtensionPython")
+        provider.setupEditVisibility(job)
+        try:
+            provider.syncTimelineReplacedInputs(job)
+        finally:
+            provider.resetEditVisibility(job)
+        provider.applyAcceptedReplacementVisibilityTransition(job)
+        provider.deleteOnReject = False
+        return job
+
+    return model, _commit(document, "Create bracket Job", create_job)
+
+
 def _selection() -> tuple:
     return tuple(
         (item.Object.Name, tuple(item.SubElementNames))
@@ -121,6 +155,16 @@ def _top_face_and_edge(model) -> tuple[str, str]:
                 if any(edge.isSame(candidate) for candidate in face.OuterWire.Edges):
                     return f"Face{face_index}", f"Edge{edge_index}"
     raise AssertionError("The gate model has no exact top face and boundary edge")
+
+
+def _horizontal_face_at(model, z_mm: float) -> str:
+    for face_index, face in enumerate(model.Shape.Faces, start=1):
+        if face.Vertexes and all(
+            abs(float(vertex.Point.z) - z_mm) <= 1e-9
+            for vertex in face.Vertexes
+        ):
+            return f"Face{face_index}"
+    raise AssertionError(f"The model has no horizontal face at Z={z_mm}")
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
@@ -179,6 +223,7 @@ def _assert_pocket_graph(
     face_name: str,
     *,
     diagnostics_required: bool = True,
+    timeline_last: bool = True,
 ) -> None:
     assert operation is job.Operations.Group[-1]
     assert operation.VibeCADTimelineRole == "operation"
@@ -207,7 +252,8 @@ def _assert_pocket_graph(
         "SafeHeight",
         "ClearanceHeight",
     } <= expressions
-    assert tuple(document.VibeCADTimeline.Operations)[-1] is operation
+    if timeline_last:
+        assert tuple(document.VibeCADTimeline.Operations)[-1] is operation
     commands = tuple(operation.Path.Commands)
     assert any(command.Name in {"G1", "G2", "G3"} for command in commands)
     if diagnostics_required:
@@ -249,6 +295,9 @@ def _run() -> None:
         )
 
         model, job = _create_model_and_job(document)
+        bracket, bracket_job = _create_bracket_model_and_job(document)
+        bracket_face = _horizontal_face_at(bracket, 6.0)
+        bracket_shape_before = bracket.Shape.exportBrepToString()
         face_name, _edge_name = _top_face_and_edge(model)
         initial_names = tuple(obj.Name for obj in document.Objects)
         initial_operations = tuple(job.Operations.Group)
@@ -306,9 +355,10 @@ def _run() -> None:
         undo_before = int(document.UndoCount)
 
         stale = json.loads(json.dumps(arguments))
-        stale["geometry"][0]["model"]["expected_state_sha256"] = "0" * 64
+        stale["job"]["expected_state_sha256"] = "0" * 64
         stale_result = call(stale, succeeds=False)
         assert stale_result["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE"
+        assert stale_result["repair"]["target"] == _target(job_state(job))
         assert tuple(obj.Name for obj in document.Objects) == initial_names
         assert tuple(job.Operations.Group) == initial_operations
         assert tuple(document.VibeCADTimeline.Operations) == initial_timeline
@@ -343,6 +393,21 @@ def _run() -> None:
         assert not Gui.Control.activeDialog()
         created_state = operation_state(operation)
 
+        bracket_result = call(_arguments(bracket, bracket_job, bracket_face))
+        bracket_operation_name = bracket_result["pocket_shape"]["object_name"]
+        assert bracket_result["pocket_shape"]["geometry"] == {
+            "kind": "subelements",
+            "items": [
+                {"object_name": bracket.Name, "subelements": [bracket_face]}
+            ],
+        }
+        assert bracket.Shape.exportBrepToString() == bracket_shape_before
+
+        document.undo()
+        _events(12)
+        assert document.getObject(bracket_operation_name) is None
+        assert document.getObject(operation_name) is operation
+
         document.undo()
         _events(12)
         assert document.getObject(operation_name) is None
@@ -364,6 +429,10 @@ def _run() -> None:
         )
         assert operation_state(operation)["state_sha256"] == created_state["state_sha256"]
 
+        document.redo()
+        _events(12)
+        assert document.getObject(bracket_operation_name) is not None
+
         document.saveAs(str(save_path))
         App.closeDocument(document.Name)
         document = App.openDocument(str(save_path))
@@ -378,13 +447,15 @@ def _run() -> None:
             model,
             face_name,
             diagnostics_required=False,
+            timeline_last=False,
         )
         assert operation_state(operation)["state_sha256"] == created_state["state_sha256"]
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_POCKET_SHAPE_GUI_OK "
             "exact_targets=true geometry=true extensions=true parameters=true "
-            "toolpath=true history=true rollback=true undo=true redo=true reopen=true",
+            "toolpath=true recessed_pocket=true multi_setup=true repair_target=true "
+            "history=true rollback=true undo=true redo=true reopen=true",
             flush=True,
         )
         exit_code = 0

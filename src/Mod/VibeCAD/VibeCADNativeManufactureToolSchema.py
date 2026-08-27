@@ -173,10 +173,16 @@ def manufacture_tool_catalog_capability_definition() -> NativeCapabilityDefiniti
                             "maximum": 100_000_000,
                             "default": 0,
                         },
+                        "query": {
+                            "type": "string",
+                            "maxLength": 80,
+                            "default": "",
+                            "description": "Case-insensitive tool label or type; spaces and punctuation are ignored.",
+                        },
                         "page_size": {
                             "type": "integer",
                             "minimum": 1,
-                            "maximum": 64,
+                            "maximum": 128,
                             "default": 32,
                         },
                     },

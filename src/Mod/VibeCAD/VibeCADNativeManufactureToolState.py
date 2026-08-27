@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from VibeCADNativeManufactureErrors import NativeManufactureError
 
 
-MAX_TOOL_CATALOG_PAGE_SIZE = 64
+MAX_TOOL_CATALOG_PAGE_SIZE = 128
 MAX_TOOL_CATALOG_ITEMS = 4096
 MAX_TOOL_ASSET_BYTES = 2 * 1024 * 1024
 MAX_TOOL_PROPERTIES = 64
@@ -266,7 +266,13 @@ class ToolCatalogState:
     state_sha256: str
     records: tuple[ToolCatalogRecord, ...]
 
-    def page(self, offset: int, page_size: int) -> dict[str, Any]:
+    def page(
+        self,
+        offset: int,
+        page_size: int,
+        *,
+        query: str = "",
+    ) -> dict[str, Any]:
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise NativeManufactureError(
                 "offset must be a non-negative integer.",
@@ -278,16 +284,39 @@ class ToolCatalogState:
             or not 1 <= page_size <= MAX_TOOL_CATALOG_PAGE_SIZE
         ):
             raise NativeManufactureError(
-                "page_size must be an integer from 1 through 64.",
+                "page_size must be an integer from 1 through 128.",
                 error_code="NATIVE_ARGUMENTS_INVALID",
             )
-        page = self.records[offset : offset + page_size]
+        clean_query = str(query or "").strip()
+        if len(clean_query) > 80:
+            raise NativeManufactureError(
+                "query must contain at most 80 characters.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+            )
+        needle = re.sub(r"[^a-z0-9]+", "", clean_query.casefold())
+        records = (
+            tuple(
+                record
+                for record in self.records
+                if needle
+                in re.sub(
+                    r"[^a-z0-9]+",
+                    "",
+                    f"{record.label} {record.shape_type}".casefold(),
+                )
+            )
+            if needle
+            else self.records
+        )
+        page = records[offset : offset + page_size]
         return {
             "state_sha256": self.state_sha256,
-            "count": len(self.records),
+            "catalog_count": len(self.records),
+            "count": len(records),
+            "query": clean_query,
             "offset": offset,
             "items": [record.summary() for record in page],
-            "next_offset": offset + len(page) if offset + len(page) < len(self.records) else None,
+            "next_offset": offset + len(page) if offset + len(page) < len(records) else None,
         }
 
 
