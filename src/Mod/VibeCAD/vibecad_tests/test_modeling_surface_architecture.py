@@ -219,6 +219,8 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         "vibescript.read_api",
         "vibescript.read_geometry",
         "vibescript.read_placement",
+        "vibescript.create_part",
+        "vibescript.create_assembly",
         "vibescript.create_program",
         "vibescript.build_program",
         "vibescript.edit_source",
@@ -281,6 +283,8 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         is True
     )
     for write_name in (
+        "vibescript.create_part",
+        "vibescript.create_assembly",
         "vibescript.create_program",
         "vibescript.edit_source",
         "vibescript.set_inputs",
@@ -292,7 +296,15 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
     for workbench in USER_WORKBENCHES:
         pack = domains.get_vibescript_pack(workbench)
         assert pack is not None
-        assert set(pack.provider_tool_names) == set(universal)
+        expected_provider_names = set(universal)
+        if pack.domain in {"partdesign", "assembly"}:
+            expected_provider_names.remove("vibescript.create_program")
+        else:
+            expected_provider_names -= {
+                "vibescript.create_part",
+                "vibescript.create_assembly",
+            }
+        assert set(pack.provider_tool_names) == expected_provider_names
         specs = {
             spec["name"].rsplit(".", 1)[-1]: spec
             for spec in domains.domain_tool_specs(pack)
@@ -482,7 +494,7 @@ def test_every_domain_description_is_copy_ready_for_the_operating_model() -> Non
         assert grouped_names == list(dict.fromkeys(grouped_names))
         assert set(grouped_names) == set(pack.api_exports)
         assert "redundan" in json.dumps(description).lower()
-        assert len(json.dumps(description, separators=(",", ":")).encode()) < 48_000
+        assert len(json.dumps(description, separators=(",", ":")).encode()) < 54_000
 
         handoffs = json.dumps(description["workbench_handoffs"]).lower()
         assert "active workbench determines the available api" in handoffs
@@ -1219,7 +1231,7 @@ def test_native_tool_runner_reports_document_thread_duration(
     monkeypatch.setattr(
         session,
         "_live_provider_surface_state",
-        lambda _service, _mode: {
+        lambda _service, _mode="build": {
             "workbench": "PartDesignWorkbench",
             "engine": "native",
             "surface_id": "native-test",
@@ -1418,7 +1430,7 @@ def test_provider_tool_runner_authorizes_a_failed_source_created_in_the_same_tur
     monkeypatch.setattr(
         session,
         "_live_provider_surface_state",
-        lambda _service, _mode: {
+        lambda _service, _mode="build": {
             "workbench": "PartDesignWorkbench",
             "engine": "vibescript",
             "surface_id": "vibescript-partdesign-v2",
@@ -2495,7 +2507,7 @@ def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -
     assert index["tools"]["read_api"] == "vibescript.read_api"
     assert index["tools"]["read_geometry"] == "vibescript.read_geometry"
     assert index["tools"]["read_placement"] == "vibescript.read_placement"
-    assert index["tools"]["create_program"] == "vibescript.create_program"
+    assert index["tools"]["create_program"] == "vibescript.create_part"
     assert index["tools"]["edit_source"] == "vibescript.edit_source"
     assert index["tools"]["set_inputs"] == "vibescript.set_inputs"
     assert index["tools"]["reconfigure_program"] == ("vibescript.reconfigure_program")
@@ -3137,6 +3149,7 @@ def test_component_inventory_removes_generated_carrier_names() -> None:
             "label": "FixedBase",
             "kind": "definition",
             "reference": reference,
+            "occurrence_key": "FixedBase",
         }
     ]
 
@@ -3571,9 +3584,14 @@ def test_part_api_is_explicit_documented_and_generated_from_the_runtime() -> Non
     )
     assert selection["join_touching_faces_or_shells"] == "api.sew"
     assert selection["remove_redundant_boolean_splitters"] == "api.refine"
-    assert "one helix operation" in selection["redundancy_contract"]
-    assert "one projection operation" in selection["redundancy_contract"]
-    assert "There are no model-facing" in selection["redundancy_contract"]
+    assert "api.helix(representation=...)" in selection["redundancy_contract"]
+    assert "api.project(mode=...)" in selection["redundancy_contract"]
+    assert "api.transform for translation/rotation/scale" in selection[
+        "redundancy_contract"
+    ]
+    assert "one n-ary api.fuse/api.cut/api.common/api.general_fuse" in selection[
+        "redundancy_contract"
+    ]
     assert description["composition_contract"]["construction_order"][-1].startswith(
         "Return only semantic publication outputs"
     )
@@ -6747,6 +6765,7 @@ def test_domain_api_graph_and_worker_inputs_are_deeply_immutable() -> None:
             document_objects=[],
             inputs={"dimensions": [2, 3, 4]},
             api=api,
+            expected_output_names=[],
             max_operations=1_000,
             max_seconds=1.0,
         )
@@ -6761,6 +6780,7 @@ def test_domain_api_graph_and_worker_inputs_are_deeply_immutable() -> None:
             document_objects=[],
             inputs={},
             api=api,
+            expected_output_names=["Body"],
             max_operations=1_000,
             max_seconds=1.0,
         )
@@ -6783,6 +6803,7 @@ def test_source_operation_budget_excludes_trusted_domain_api_frames() -> None:
         document_objects=[],
         inputs={},
         api=TrustedAPI(),
+        expected_output_names=["Value"],
         max_operations=10,
         max_seconds=1.0,
     )
@@ -6801,6 +6822,7 @@ def test_source_operation_budget_excludes_trusted_domain_api_frames() -> None:
             document_objects=[],
             inputs={},
             api=TrustedAPI(),
+            expected_output_names=["Value"],
             max_operations=10,
             max_seconds=1.0,
         )

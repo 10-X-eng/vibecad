@@ -1282,6 +1282,7 @@ def test_unsaved_run_prompt_reaches_provider_and_includes_active_thread_once(
                 "model_selection": "explicit",
                 "reasoning_effort": "xhigh",
                 "model_fallback_allowed": False,
+                "interaction_mode": "build",
             }
         },
     }
