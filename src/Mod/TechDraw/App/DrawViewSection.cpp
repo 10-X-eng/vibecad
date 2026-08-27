@@ -455,6 +455,12 @@ bool DrawViewSection::restorePrecomputedSection()
     return true;
 }
 
+bool DrawViewSection::restorePrecomputedState()
+{
+    return DrawViewPart::restorePrecomputedState()
+        && restorePrecomputedSection();
+}
+
 short DrawViewSection::mustExecute() const
 {
     if (isRestoring()) {

@@ -1,0 +1,1619 @@
+Yes. The earlier plan can be turned into a real implementation program, and the current codebase already gives us a surprisingly strong starting point.
+The most important discovery from the repository is this:
+We do not need to invent the “engineering visualization” backend from scratch.
+VibeCAD already has a modern dark design system, a dedicated Analyze ribbon/domain, exact FEM/post-processing state inspection, real pressure/velocity/turbulence presentation for OpenFOAM, generic result-field discovery with units/ranges, legacy FEM result presentation, and table/histogram/line-plot creation.
+
+The roadmap should therefore be: unify and elevate what already exists into a first-class VibeCAD Engineering Visualization System.
+VibeCAD Engineering Visualization System
+Codebase-backed implementation roadmap
+1. What already exists today
+A. The visual shell is already much closer than it appears
+src/Gui/Stylesheets/VibeDark.qss is not a crude inherited FreeCAD theme. It is already a 57 KB VibeCAD-specific dark design system with explicit design tokens for surfaces, borders, text, accent states, rounded panels, modern controls, semantic status colors, menus, toolbars and inputs. Its current palette already defines deep chrome #0e1116, panel surfaces #171c23, raised cards #1d242d, blue accent #4dabf7, muted text, success green, warning orange, and error red. 
+That means our job is refinement and domain-specific extension, not “make a theme from scratch.”
+B. The ribbon already has an explicit Analyze domain
+src/Gui/VibeCADRibbon.cpp defines VibeCAD as nine primary surfaces:
+Model
+Assemble
+Mesh
+Analyze
+Manufacture
+Drawing
+Parameters
+Aero
+3D Print
+Analyze maps directly to FemWorkbench, and the ribbon already exposes FEM/VTK build-feature awareness. 
+So the visualization system should belong to the existing Analyze surface. We should not invent a separate “Visualization workbench.”
+2. The colors in the generated image can represent real data
+Your interpretation was correct.
+The red/yellow/green/blue fields should not be decorative.
+They should represent actual scalar or vector engineering quantities.
+VibeCAD already knows about many of them.
+The current result-state code recognizes legacy FEM semantics including:
+displacement
+displacement magnitude
+von Mises stress
+maximum principal stress
+middle principal stress
+minimum principal stress
+maximum shear stress
+equivalent plastic strain
+temperature
+mass flow rate
+network pressure
+and the VTK side already recognizes units for fields such as:
+stress                  MPa / Pa
+displacement            mm / m
+pressure                Pa
+velocity                m/s
+turbulent kinetic energy m²/s²
+temperature             K
+temperature flux        W/m²
+current density         A/m²
+electric field          V/m
+magnetic flux density   T
+nodal force             N
+It also extracts point/cell arrays, component counts, tuple counts and numeric ranges directly from VTK datasets. 
+That means a generic field browser is already technically feasible.
+3. Real result presentation already exists
+For traditional FEM results, VibeCADNativeAnalyzePresentation.py already calls FreeCAD's femresult.resultpresentation machinery and supports:
+- selecting a field;
+- choosing deformation scale;
+- showing/hiding the result;
+- validating available fields;
+- rejecting stale state;
+- restoring previous presentation if application fails.
+That is exactly the backend we need for:
+Von Mises Stress
+Displacement
+Temperature
+Principal Stress
+The roadmap should wrap and elevate that capability rather than replace it.
+4. CFD already has the first version of the dashboard
+This is particularly important.
+VibeCADAnalyzeResultsGui.py already implements a human-facing results panel for flow studies.
+Today it already contains:
+- a result selector;
+- summary text;
+- boundary table;
+- Show Pressure;
+- Show Velocity;
+- Show Turbulence;
+- upstream/downstream selection;
+- passage measurement;
+- flow comparison;
+- pressure range;
+- maximum velocity;
+- convergence status;
+- turbulence model;
+- pressure drop;
+- volumetric flow;
+- mass flow;
+- continuity error;
+- effective flow area;
+- discharge coefficient.
+So the generated graphic is not some unrelated fantasy UI.
+We already have a primitive version of the right-hand engineering dashboard.
+The work is to generalize it from:
+OpenFOAM-specific form controls
+into:
+Unified VibeCAD Engineering Results Browser
+5. Charts already exist too
+The Native Analyze system already has code for creating real:
+- tables;
+- histograms;
+- line plots.
+It supports:
+- linear/log axes;
+- legends;
+- configurable legend location;
+- axis labels;
+- grid;
+- histogram bins;
+- cumulative histograms;
+- bar/step styles;
+- field extraction;
+- exact analysis ownership;
+- stale-state validation.
+Therefore the “Performance” graph from the promotional image is also not a new rendering technology requirement.
+We already have chart-generating primitives.
+6. Target architecture
+I would define one new platform subsystem:
+VibeCAD Engineering Visualization System (EVS)
+Not a solver.
+Not another post-processing engine.
+A presentation/orchestration layer over existing result systems.
+The flow becomes:
+Solver / Analysis Runtime
+        ↓
+Published Engineering Result
+        ↓
+Result State Adapter
+        ↓
+Engineering Field Registry
+        ↓
+Visualization Controller
+        ↓
+┌───────────────────────────────┐
+│ Viewport Field Presentation   │
+│ Result Cards                  │
+│ Legend / Scale                │
+│ Charts                        │
+│ Metrics                       │
+│ Comparisons                   │
+└───────────────────────────────┘
+7. New canonical abstractions
+7.1 EngineeringField
+Add:
+@dataclass(frozen=True)
+class EngineeringField:
+    field_id: str
+    label: str
+    semantic: str
+    association: str       # point | cell | object
+    components: int
+    unit: str | None
+    minimum: float | None
+    maximum: float | None
+    presentation: str      # scalar | vector | tensor
+Example:
+EngineeringField(
+    field_id="vonMises",
+    label="Von Mises Stress",
+    semantic="stress.von_mises",
+    association="point",
+    components=1,
+    unit="MPa",
+    minimum=12.4,
+    maximum=347.8,
+    presentation="scalar",
+)
+This should be built from the result information that VibeCADNativeAnalyzeResultState.py already extracts. 
+7.2 EngineeringResultView
+@dataclass
+class EngineeringResultView:
+    source_object: str
+    source_state_sha256: str
+    selected_field: str
+    colormap: str
+    range_mode: str
+    range_min: float | None
+    range_max: float | None
+    deformation_scale: float
+    show_mesh_edges: bool
+    show_legend: bool
+    show_undeformed: bool
+This is UI state, not solver state.
+7.3 EngineeringMetric
+For the cards:
+EngineeringMetric(
+    id="max_stress",
+    label="Maximum Stress",
+    value=347.8,
+    unit="MPa",
+    severity="warning",
+)
+Example CFD metrics:
+Pressure Drop      142 Pa
+Maximum Velocity   24.1 m/s
+Mass Flow          0.084 kg/s
+Continuity Error   0.31 %
+Cd                 0.72
+Much of this data is already calculated in the current flow results browser. 
+8. Phase 0 — Freeze the visual reference
+Before code changes, turn the promotional image into an explicit design target.
+Create:
+docs/design/engineering-visualization/
+    VISUAL_TARGET.md
+    COMPONENT_MAP.md
+    COLOR_SYSTEM.md
+    ANALYSIS_WORKSPACE_SPEC.md
+Define exactly what the screenshot means.
+For example:
+Red/orange      = high scalar result
+Green/cyan      = medium result
+Blue            = low result
+
+Cyan wireframe  = CAD/model emphasis
+Bright cyan     = selection / active technical state
+Green status    = valid/current/converged
+Amber           = warning
+Red             = error/stale/invalid
+This prevents “looks cool” from becoming the design specification.
+Acceptance
+The reference screenshot is decomposed into:
+- shell;
+- ribbon;
+- tree;
+- viewport;
+- engineering cards;
+- legend;
+- charts;
+- runtime status.
+No ambiguous UI element remains.
+9. Phase 1 — Visual system refinement
+This is the first visible improvement.
+Existing owner
+src/Gui/Stylesheets/VibeDark.qss
+src/Gui/Stylesheets/VibeLight.qss
+src/Gui/VibeCADRibbon.cpp
+The theme already has the right structural palette. 
+Work package V1 — Extend design tokens
+Keep current base colors but add visualization-specific tokens.
+Conceptually:
+--engineering-cyan
+--engineering-blue
+--engineering-green
+--engineering-amber
+--engineering-red
+
+--result-card-bg
+--result-card-border
+--result-card-active
+--viewport-grid
+--viewport-edge
+Do not randomly replace the whole theme with neon.
+The generated image works because 90% is dark neutral and 10% is saturated signal color.
+V2 — Analyze-specific widget styling
+Use Qt object names already present:
+VibeCADAnalyzeResultSelector
+VibeCADAnalyzeResultSummary
+VibeCADAnalyzeFlowBoundaries
+VibeCADAnalyzeShowPressure
+VibeCADAnalyzeShowVelocity
+VibeCADAnalyzeShowTurbulence
+VibeCADAnalyzeFlowPerformance
+Those object names exist today. 
+Add QSS selectors such as:
+#VibeCADEngineeringResultsPanel {
+    background: #101720;
+}
+
+QFrame[vibeResultCard="true"] {
+    background: #141d27;
+    border: 1px solid #263746;
+    border-radius: 10px;
+}
+
+QFrame[vibeResultCardActive="true"] {
+    border: 1px solid #00cfe8;
+}
+Acceptance
+Analyze panel visually reads as a cohesive VibeCAD subsystem rather than a generic Qt form.
+10. Phase 2 — Unified Results Browser
+Today the flow results panel is domain-specific.
+Replace the conceptual hierarchy:
+AnalyzeResultsBrowser
+    └─ OpenFOAM result handling
+with:
+EngineeringResultsBrowser
+    ├─ Result source selector
+    ├─ Field selector
+    ├─ Result cards
+    ├─ Legend controls
+    ├─ Deformation controls
+    ├─ Metrics
+    └─ Domain extensions
+Do not delete the OpenFOAM browser initially.
+Refactor it underneath the generic shell.
+11. Proposed files
+Add:
+src/Mod/VibeCAD/
+    VibeCADEngineeringField.py
+    VibeCADEngineeringResultAdapter.py
+    VibeCADEngineeringVisualizationState.py
+    VibeCADEngineeringVisualizationGui.py
+    VibeCADEngineeringColorMap.py
+Adapters:
+VibeCADLegacyFemResultAdapter.py
+VibeCADVtkResultAdapter.py
+VibeCADOpenFoamResultAdapter.py
+The point is not duplication.
+These should translate existing state into one GUI model.
+12. Result adapter examples
+Legacy CalculiX / Elmer result
+Input from current code:
+vonMises
+DisplacementLengths
+Temperature
+Adapter output:
+{
+  "fields": [
+    {
+      "id": "vonMises",
+      "semantic": "stress.von_mises",
+      "unit": "MPa",
+      "range": [12.4, 347.8]
+    },
+    {
+      "id": "DisplacementLengths",
+      "semantic": "displacement.magnitude",
+      "unit": "mm",
+      "range": [0, 1.24]
+    }
+  ]
+}
+OpenFOAM
+Current data already exposes:
+Pressure
+Velocity
+Turbulent Kinetic Energy
+The generic browser presents those fields exactly the same way as structural fields.
+13. Phase 3 — Result cards
+This is where the UI starts resembling the generated image.
+Right side:
+┌────────────────────────────┐
+│ Von Mises Stress           │
+│ MAX               347 MPa  │
+│ ███████████████████████    │
+│ min 12.4         max 347   │
+└────────────────────────────┘
+
+┌────────────────────────────┐
+│ Displacement               │
+│ MAX                1.24 mm │
+│ ███████████████████████    │
+└────────────────────────────┘
+Each card should contain:
+- field label;
+- unit;
+- min;
+- max;
+- current range;
+- tiny preview color gradient;
+- current/valid/stale state;
+- click-to-display.
+Example
+Clicking Von Mises Stress:
+selected_field = stress.von_mises
+        ↓
+presentation controller
+        ↓
+present_legacy_result(...)
+        ↓
+viewport recolored
+The backend call is already implemented for legacy results. 
+14. Phase 4 — Color map registry
+Create a formal registry.
+ColorMapDefinition(
+    id="turbo",
+    label="Turbo",
+    category="sequential",
+)
+
+ColorMapDefinition(
+    id="blue_red",
+    label="Blue → Red",
+    category="sequential",
+)
+
+ColorMapDefinition(
+    id="diverging",
+    label="Blue / White / Red",
+    category="diverging",
+)
+Recommended defaults:
+Semantic	Default
+stress magnitude	Turbo
+displacement magnitude	Viridis
+pressure magnitude	Turbo
+signed pressure	Blue–White–Red
+temperature	Inferno
+velocity	Viridis
+safety factor	inverted severity
+signed displacement	diverging
+
+
+Important rule:
+Colormap is presentation. Unit/range/field values are engineering state.
+Never encode physics into the visual palette.
+15. Phase 5 — Legend system
+Add one reusable viewport legend.
+Example:
+Von Mises Stress
+MPa
+
+347.8  █ RED
+       █
+250    █
+       █
+175    █
+       █
+80     █
+       █
+12.4   █ BLUE
+Controls:
+Auto Range        [✓]
+Clamp Range       [ ]
+Min               [12.4]
+Max               [347.8]
+Log Scale         [ ]
+Requirements
+Legend must display:
+- exact field name;
+- exact unit;
+- min;
+- max;
+- range mode;
+- scientific notation where appropriate.
+No unlabeled rainbow graphics.
+16. Phase 6 — Deformation visualization
+Current legacy result presentation already accepts deformation scale. 
+Expose that properly:
+Deformation
+[ Off | True Scale | 1× | 5× | 10× | Custom ]
+Add:
+☑ Undeformed outline
+Then a bracket can show:
+- deformed color surface;
+- cyan/gray undeformed wireframe.
+That would look almost exactly like the generated image and provide real engineering context.
+17. Phase 7 — Technical viewport preset
+Introduce VibeCAD-specific viewport presets:
+Design
+Technical
+Analysis
+Presentation
+Technical
+dark graphite body
+thin cyan-gray edges
+visible origin/grid
+high contrast selection
+Analysis
+result field surface
+optional mesh edges
+legend
+deformed shape
+undeformed outline
+Presentation
+smooth shaded
+minimal grid
+clean background
+reduced overlays
+This likely requires changes partly in:
+src/Gui/
+and partly via ViewObject presentation preferences.
+Do not globally mutate every user's FreeCAD preferences without a scoped VibeCAD preset.
+18. Phase 8 — Charts panel
+Current Native Analyze already supports real line plots, histograms and tables. 
+Use that architecture for a right-side dashboard card:
+Performance
+──────────────
+Residuals
+Pressure Drop
+Velocity
+Mass Flow
+Convergence
+For CFD:
+iteration → residual
+iteration → pressure loss
+For optimization:
+candidate → objective
+candidate → mass
+candidate → max stress
+For transient simulation:
+time → displacement
+time → temperature
+19. Phase 9 — Solver status card
+The generated image has:
+Analysis Runtime
+Shared Runtime
+Active Jobs 12
+We should not fake that either.
+The current Analysis Runtime already exposes job phase/progress/result/error information.
+Create:
+Analysis Runtime
+────────────────
+Running       1
+Queued        0
+Completed     7
+
+Current job
+CalculiX Static
+65%
+Solving
+Status semantics:
+green = completed/current
+blue  = running
+amber = warning/stale
+red   = failed
+gray  = cancelled
+20. Phase 10 — Currentness and evidence UI
+This is where VibeCAD can outperform a normal FEM UI.
+Every result card should visibly show:
+CURRENT
+STALE
+UNVERIFIED
+FAILED
+because VibeCAD already has exact-state/currentness architecture.
+Example:
+Von Mises Stress
+347.8 MPa
+● CURRENT
+If geometry changes:
+Von Mises Stress
+347.8 MPa
+⚠ STALE — geometry changed
+The stale result can remain viewable.
+It simply cannot pretend to represent the current model.
+21. Phase 11 — Unified structural + CFD result panel
+At this point, one browser handles both.
+Structural study
+Fields
+• Von Mises Stress
+• Displacement
+• Principal Stress
+• Plastic Strain
+• Temperature
+Flow study
+Fields
+• Pressure
+• Velocity
+• Turbulent Kinetic Energy
+Same cards.
+Same legend.
+Same field controller.
+Different domain adapters.
+22. Phase 12 — Thermal and electromagnetic
+This is already anticipated by the field-state code.
+Units and semantics already recognize:
+Temperature
+Heat Flux
+Electric Field
+Current Density
+Magnetic Field Strength
+Magnetic Flux Density
+So EVS should not hard-code "mechanical and CFD."
+It should be field-driven from day one.
+23. Phase 13 — Engineering comparison
+The current flow UI already compares two result sets and reports differences in:
+- EFA;
+- Cd;
+- flow;
+- Δp.
+Generalize this.
+Example structural comparison:
+Baseline       Candidate
+
+Mass
+420 g          365 g       -13.1%
+
+Max Stress
+221 MPa        249 MPa     +12.7%
+
+Max Disp.
+0.84 mm        0.92 mm     +9.5%
+Viewport modes:
+Baseline
+Candidate
+Difference
+This becomes very powerful for optimization.
+24. Phase 14 — Field thumbnails
+This is one of the largest visual-quality improvements.
+Each result card can optionally show a small thumbnail:
+┌──────────────────────────┐
+│ Von Mises Stress         │
+│                          │
+│    [small stress view]   │
+│                          │
+│ 12 MPa → 347 MPa         │
+└──────────────────────────┘
+Do not recompute the solver.
+Render a lightweight snapshot of already-published result state.
+Cache by:
+result_state_sha256
+field
+range
+colormap
+camera
+25. Phase 15 — engineering field selector
+Instead of buttons:
+Show Pressure
+Show Velocity
+Show Turbulence
+which exist today, 
+move toward:
+Field
+[ Pressure ▼ ]
+with categories:
+Structural
+  Von Mises Stress
+  Principal Stress
+  Displacement
+
+Fluid
+  Pressure
+  Velocity
+  Turbulence
+
+Thermal
+  Temperature
+  Heat Flux
+Domain filters hide irrelevant fields.
+26. Exact implementation sequence
+I would implement this in nine PR-sized tranches.
+EVS-01 — Design system + shell
+Files:
+VibeDark.qss
+VibeLight.qss
+docs/design/engineering-visualization/*
+Deliver:
+- result card styling;
+- engineering semantic colors;
+- Analyze panel styling.
+No solver behavior changes.
+EVS-02 — Field registry
+Files:
+VibeCADEngineeringField.py
+VibeCADEngineeringResultAdapter.py
+VibeCADNativeAnalyzeResultState.py
+Deliver:
+list_fields(result)
+with canonical semantics, units and ranges.
+Acceptance fixtures:
+CalculiX
+OpenFOAM
+thermal VTK
+EVS-03 — Unified results browser
+Files:
+VibeCADEngineeringVisualizationGui.py
+VibeCADAnalyzeResultsGui.py
+Deliver:
+- field dropdown;
+- result cards;
+- current/stale state;
+- metric summaries.
+Keep current OpenFOAM features.
+EVS-04 — Viewport scalar presentation
+Integrate:
+present_legacy_result()
+present_flow_result()
+behind one:
+present_engineering_field(...)
+Acceptance:
+- select Von Mises;
+- viewport changes;
+- select Pressure;
+- viewport changes.
+EVS-05 — Legend and colormaps
+Deliver:
+- color scale;
+- units;
+- auto/manual range;
+- colormap registry.
+EVS-06 — Deformation + technical view
+Deliver:
+- displacement warp;
+- deformation factor;
+- undeformed overlay;
+- Technical/Analysis presets.
+EVS-07 — Engineering charts
+Reuse existing line/histogram/table machinery. 
+Deliver:
+- convergence;
+- result history;
+- performance plots.
+EVS-08 — Analysis runtime dashboard
+Deliver:
+- current job;
+- progress;
+- status;
+- stale/publication state;
+- artifacts.
+EVS-09 — result comparison
+Deliver:
+- baseline/candidate comparison;
+- metric deltas;
+- field differences.
+27. Tests
+This needs far more than screenshot testing.
+Contract tests
+field semantic mapping
+unit mapping
+range extraction
+color map validity
+result-state hashes
+GUI tests
+Assert object names:
+VibeCADEngineeringResultsPanel
+VibeCADEngineeringFieldSelector
+VibeCADEngineeringLegend
+VibeCADEngineeringMetricCard
+Integration tests
+Structural fixture
+Bracket:
+max stress ≈ known fixture result
+field available
+unit = MPa
+range valid
+CFD fixture
+Duct:
+pressure exists
+velocity exists
+pressure drop matches stored fixture
+stale-state test
+solve
+show result
+change geometry
+result becomes STALE
+no automatic false-current display
+28. Golden demo models
+The roadmap should ship canonical demonstration projects.
+tests/visualization/fixtures/
+    cantilever_beam/
+    mounting_bracket/
+    pressure_duct/
+    thermal_plate/
+Expected visual fields:
+Cantilever
+Displacement
+Von Mises
+Bracket
+Von Mises
+Principal stress
+Duct
+Pressure
+Velocity
+TKE
+Thermal plate
+Temperature
+Heat flux
+29. Performance constraints
+The UI must never freeze because someone clicked a field.
+Targets:
+Result field switch        < 150 ms for ordinary result
+Panel refresh               < 100 ms
+Cached thumbnail            < 50 ms
+Legend update               immediate
+Large dataset visualization asynchronous if needed
+The field registry should not copy huge VTK arrays into Python.
+Current result-state code already summarizes arrays rather than serializing every point, which is exactly the pattern to retain. 
+30. What not to do
+Do not build our own scientific renderer
+FreeCAD/FEM/VTK already own that.
+Do not make the generated image the truth
+The data must drive the UI.
+Do not hard-code one rainbow
+Use semantic colormap policies.
+Do not make OpenFOAM the generic architecture
+It should become one adapter.
+Do not make the Analysis Runtime know UI
+Runtime produces state/results.
+EVS renders them.
+Do not duplicate the existing result-presentation path
+Wrap it.
+31. What the final UI should actually do
+You open a bracket study.
+The right side says:
+STRUCTURAL ANALYSIS
+Current • Converged
+
+Von Mises Stress
+347.8 MPa MAX
+12.4 MPa MIN
+
+Displacement
+1.24 mm MAX
+
+Safety Factor
+1.81 MIN
+Click Von Mises Stress.
+The model becomes:
+blue → cyan → green → yellow → red
+with:
+MPa legend
+347.8 max
+12.4 min
+Click Displacement.
+The model changes field and optionally deforms 10×.
+Click:
+Undeformed Overlay ✓
+and the original shape appears in cyan wireframe around the displaced model.
+That is essentially the X image.
+32. CFD example
+You run a duct.
+VibeCAD already computes the data needed for much of this. 
+The right side becomes:
+FLOW ANALYSIS
+Current • Converged
+k-omega SST
+
+Pressure
+101.2–101.8 kPa
+
+Velocity
+24.1 m/s MAX
+
+Pressure Drop
+142 Pa
+
+Mass Flow
+0.084 kg/s
+
+Cd
+0.72
+
+Continuity Error
+0.31%
+Click Pressure → pressure field.
+Click Velocity → velocity magnitude.
+Click Performance → real chart.
+33. What would make VibeCAD genuinely better than the picture
+The picture only shows pretty analysis.
+The actual system can do something stronger:
+FIELD: Von Mises Stress
+347.8 MPa
+
+SOURCE
+CalculiX
+
+INPUT STATE
+e37af2...
+
+RESULT
+current
+
+SOLVER
+completed
+
+VERIFICATION
+converged
+
+DOCUMENT
+revision 142
+That is where the work we've already done on governed engineering state becomes incredibly valuable.
+The visualization isn't just attractive.
+It is traceable.
+34. Definition of done
+The Engineering Visualization System is complete when:
+A user can select any supported published engineering result, see its real fields and units, choose a field, display that field directly on the 3D model using a scientifically meaningful color map, inspect its numeric range and key metrics, visualize deformation where relevant, create charts from the field data, compare result sets, and immediately tell whether the displayed result is current, stale, converged, or invalid—all within a VibeCAD-native Analyze workspace whose visual quality matches the application's modern dark design system.
+
+That is the roadmap I would put into the repo.
+And I would explicitly make the promotional image the visual north star, while making the existing code—not the image—the authority for what the colors and numbers mean.
+
+
+
+
+ 
+
+
+
+
+
+You didnt read the repos own road map. thats the direction its heading. I believe much of it needs to land in code first but you can see enough from the map to reconcile this plan youre making
+
+
+
+
+
+
+
+
+
+
+
+
+
+Worked for 31s
+
+You’re right. The repo’s canonical roadmap materially changes how this visualization work should be sequenced.
+The corrected conclusion is:
+The visualization system should not become a separate parallel “EVS roadmap.” It should become the visible human-facing projection of G1–G8 as those governed engineering capabilities land.
+
+The repo already says current executable source wins over papers, the canonical roadmap owns cross-domain sequencing, and domain owners retain their semantics. It also explicitly forbids creating duplicate result, publication, Assembly, Manufacture, Robot, preview, or provider architectures. 
+That means a lot of what I proposed is still good—but the order and ownership must change.
+Corrected relationship to the canonical roadmap
+The existing dependency chain is:
+G0 live reconciliation
+        ↓
+G1 common identity / result / finding / provenance
+        ↓
+G2 durable jobs / artifacts / recovery / publication
+        ↓
+G3 remote provider
+
+G1 → G4 authority / preview evidence
+G1 + G2 → G5 workflow DAG
+G4 + G5 → G6 optimization
+
+G2 + G5 → G7 Manufacture integration
+
+G0 → G8 Assembly consolidation
+        ↓
+G9 joint inference
+        ↓
+G10 sequencing
+        ↓
+G11 service
+        ↓
+G12 Robot projection
+That dependency graph is already canonical. 
+The GUI should grow with that graph, not ahead of it.
+The major correction to my visualization proposal
+I previously proposed things like:
+EngineeringField
+EngineeringResultView
+EngineeringMetric
+EngineeringFieldRegistry
+as though we should create those now as a standalone visualization subsystem.
+That is too early.
+The roadmap already says G1 is where the common result envelope, finding envelope, provenance graph and descriptor model are defined. It specifically requires a common result to carry immutable identity, domain, adapter/provider attempt, status, dependency identity, artifacts, metrics, findings, provenance, currentness and publication state. 
+Therefore:
+EngineeringField should not be the foundational result model.
+Instead:
+G1 Common Result
+      │
+      ├── bounded summary metrics
+      ├── findings
+      ├── artifacts
+      ├── provenance reference
+      ├── currentness
+      └── publication state
+              ↓
+      domain result payload
+              ↓
+      visualizable field projection
+A field is a projection of a result, not the result itself.
+That distinction is crucial.
+What can land immediately
+There is still useful GUI work that does not violate the roadmap.
+VIS-0 — Visual shell only
+This can happen now.
+It touches presentation but creates no new engineering authority.
+Existing owners:
+src/Gui/Stylesheets/VibeDark.qss
+src/Gui/Stylesheets/VibeLight.qss
+src/Gui/VibeCADRibbon.cpp
+The current dark theme already has a coherent 2026 design system with explicit palette tokens, semantic success/warning/error styling, rounded panels and modern widget states. 
+So we can improve:
+- Analyze-specific cards;
+- panel spacing;
+- cyan technical emphasis;
+- tree/ribbon polish;
+- result-card appearance;
+- chart styling;
+- technical viewport chrome;
+- status indicators.
+But at this stage the cards should consume existing domain state only.
+No new “universal result architecture.”
+Example
+We can make today's OpenFOAM panel prettier immediately because it already owns real:
+- pressure;
+- velocity;
+- turbulence;
+- pressure drop;
+- mass flow;
+- Cd;
+- continuity;
+- convergence.
+That's presentation of real existing state.
+Safe.
+G1 is the real start of the unified engineering dashboard
+This is the first major architectural dependency.
+G1 requires the common:
+- typed identities;
+- result envelope;
+- finding envelope;
+- provenance graph;
+- immutable descriptor.
+Once G1 exists, the GUI gets a much stronger substrate.
+Instead of inventing:
+EngineeringMetric(...)
+the GUI should consume something closer to:
+ResultEnvelope
+    result_id
+    domain
+    source_identity
+    status
+    metrics[]
+    findings[]
+    currentness
+    publication_state
+    provenance_ref
+    artifact_descriptors[]
+Then VibeCAD can render:
+STRUCTURAL ANALYSIS
+────────────────────────
+
+Von Mises
+347.8 MPa
+
+Displacement
+1.24 mm
+
+● CURRENT
+✓ VERIFIED
+✓ PUBLISHED
+with those status labels coming from real G1 semantics.
+Very important: the roadmap already gives us the missing status dimensions
+My earlier proposed result cards had:
+CURRENT
+STALE
+FAILED
+But the roadmap is more precise.
+It explicitly says these are independent axes:
+- result status;
+- verification verdict;
+- currentness;
+- publication state.
+So a professional result card should actually represent all four.
+For example:
+Von Mises Stress
+347.8 MPa MAX
+
+Execution       SUCCEEDED
+Verification    PASS
+Currentness     CURRENT
+Publication     PUBLISHED
+Or:
+Von Mises Stress
+347.8 MPa MAX
+
+Execution       SUCCEEDED
+Verification    PASS
+Currentness     STALE
+Publication     HISTORICAL
+That is significantly better than the marketing screenshot.
+G1 also fixes the meaning of the colors around results
+The roadmap already says findings have:
+- stable finding ID;
+- taxonomy/rule;
+- severity/verdict;
+- evidence;
+- currentness;
+- remediation;
+- claim ceiling.
+Therefore UI semantic color needs two completely different systems.
+Scientific color
+Represents field magnitude:
+blue → cyan → green → yellow → red
+for things like stress or pressure.
+Governance/status color
+Represents state:
+green  = verified/current
+blue   = active/running
+amber  = warning/stale/indeterminate
+red    = failed/blocking
+gray   = unavailable/historical/cancelled
+These must never be conflated.
+A red stress region does not automatically mean an engineering failure.
+That might simply mean “highest value in this range.”
+This should become a formal visual rule.
+G2 must land before the GUI presents a durable job center
+This is another place my previous roadmap got ahead of the code.
+Today the Analysis Runtime is still bounded and in-memory.
+The canonical roadmap explicitly says G2 owns:
+- durable analysis identity;
+- attempts;
+- provider job IDs;
+- lifecycle events;
+- immutable artifacts;
+- retention;
+- currentness decisions;
+- publication receipts;
+- crash recovery;
+- replay-safe publication.
+Therefore the screenshot-style panel:
+Analysis Runtime
+Active Jobs 12
+should not become a full durable job dashboard before G2.
+Before G2 we can display:
+Current session
+Running 1
+Completed 3
+truthfully.
+After G2 we can display:
+ANALYSIS ACTIVITY
+
+Bracket Static 01
+Attempt 3
+Running • 68%
+
+Duct CFD
+Completed
+Result current
+Published
+
+Thermal Plate
+Interrupted
+Recoverable: No
+because that information will then be durable.
+G2 is also where result thumbnails become trustworthy
+I proposed cached thumbnails like:
+result_state_sha256
+field
+range
+colormap
+camera
+The canonical roadmap provides a stronger basis.
+G2 requires immutable artifact descriptors and verified storage. 
+So a thumbnail should eventually be:
+VisualizationArtifact
+    descriptor
+    result_id
+    result_currentness_at_render
+    field_ref
+    colormap
+    range
+    camera
+Not a loose PNG somewhere in a cache.
+That is a much stronger system.
+G4 governs preview visualization
+This is especially important.
+The roadmap says G4 is not "put previews everywhere."
+It is a full operation policy census.
+Every operation must be classified as one of:
+read only
+presentation/view
+safe immediate mutation
+preview required
+explicit confirmation required
+human-authorized export
+external side effect
+privileged compatibility execution
+So the flashy preview system should grow from G4 evidence, not merely CAD display code.
+The preview should eventually look like this
+Suppose AI proposes a fillet.
+Today we can already do preview/apply.
+G4 expands the evidence.
+The UI could show:
+PROPOSED CHANGE
+────────────────────
+
+Operation
+Fillet
+
+Targets
+Edge12
+Edge13
+Edge18
+Edge21
+
+Radius
+4.0 mm
+
+Affected objects
+Body
+
+Revision
+142 → proposed 143
+
+Geometry preview
+[viewport]
+
+Evidence
+✓ targets still exist
+✓ Body remains valid
+✓ no unrelated objects affected
+
+[ Reject ]     [ Apply ]
+This is exactly aligned with the roadmap's proposed preview evidence:
+- affected identities;
+- before/after expectations;
+- parameter/dependency diffs;
+- transient geometry;
+- interference/toolpath/output summaries;
+- cost/resource estimates;
+- claim ceilings.
+That is where the GUI becomes genuinely exceptional.
+G5 changes what the Analysis workspace should become
+My earlier dashboard was still too solver-centric.
+G5 defines durable workflow DAGs.
+The first canonical benchmark is already:
+geometry preparation
+        ↓
+mesh
+        ↓
+solve
+        ↓
+postprocess
+        ↓
+verify
+with recovery and failure injection. 
+That should become visible.
+Instead of a generic progress bar:
+ANALYSIS WORKFLOW
+
+✓ Geometry Preparation
+✓ Mesh
+● Solve                     67%
+○ Postprocess
+○ Verify
+After failure:
+✓ Geometry Preparation
+✓ Mesh
+✕ Solve
+
+Failure
+SOLVER_EXECUTION_FAILED
+
+Postprocess
+BLOCKED
+
+Verify
+BLOCKED
+That is an enormously better engineering UX.
+And it is directly backed by G5.
+G6 is where the generated “performance chart” really becomes powerful
+The roadmap defines optimization as a composition of governed design mutation and workflow evaluation.
+Every candidate becomes an immutable provenance branch with:
+- proposed mutation;
+- inputs;
+- jobs;
+- metrics;
+- findings;
+- rank.
+So the future GUI can become:
+OPTIMIZATION
+────────────────────────
+
+Candidate   Mass     Stress     Disp.    Rank
+A           420 g    210 MPa    .82 mm    4
+B           384 g    232 MPa    .88 mm    2
+C           365 g    249 MPa    .92 mm    1
+D           352 g    301 MPa    1.14 mm   ✕
+Click candidate C:
+[ geometry ]
+[ stress field ]
+[ displacement ]
+[ findings ]
+[ provenance ]
+That is where the kind of right-side analytic interface in the promotional image becomes not only beautiful, but incredibly useful.
+G7 means Manufacture gets the same visual language
+The roadmap explicitly says existing Manufacture/CAM remains authoritative and only expensive detached work may use G2/G5. 
+Therefore do not make a generic "manufacturing result engine."
+Use the same dashboard presentation components over Manufacture-owned state.
+Example:
+MANUFACTURE
+────────────────────────
+
+Toolpath
+✓ Generated
+
+Simulation
+✓ Complete
+
+Stock remaining
+12.4 %
+
+Estimated time
+18m 42s
+
+Collision
+✓ None observed
+
+Post output
+SHA256 verified
+
+Publication
+CURRENT
+The GUI shell can be shared.
+The semantics stay with Manufacture.
+G8 fundamentally changes the non-analysis side of this visual plan
+The repo roadmap shows VibeCAD is heading far beyond "CAD + FEA."
+G8 says existing Assembly owns:
+- occurrences;
+- joints;
+- connector references;
+- simulation;
+- playback;
+- BOM;
+- fasteners;
+- mechanism checks.
+And it will expand into:
+- stable interface identities;
+- shafts;
+- bores;
+- planar mates;
+- bolt patterns;
+- threads;
+- bearings;
+- fluid ports;
+- electrical connectors;
+- continuous motion evidence;
+- flexible assemblies;
+- clearance/contact evidence.
+Therefore the visual system must be designed from the beginning for more than scalar fields.
+It must support engineering overlays.
+Example: Assembly interface visualization
+Instead of stress colors:
+shaft interface       cyan ring
+bore interface        blue ring
+thread interface      violet
+planar mate           translucent plane
+fluid port            green marker
+electrical connector  yellow marker
+Select an interface:
+INTERFACE
+────────────────────
+
+Type
+Bearing Seat
+
+Diameter
+20.000 mm
+
+Axis
+X+
+
+Tolerance
+H7
+
+Compatible with
+Bearing_6204.InnerRace
+
+Evidence
+✓ diameter compatible
+✓ axis aligned
+⚠ axial retention undefined
+This is directly aligned with G8.
+G9 visualization
+Joint inference is explicitly propose only. 
+So the UI becomes:
+JOINT CANDIDATES
+
+1. Revolute
+   confidence 0.94
+   [cyan connector overlays]
+
+2. Cylindrical
+   confidence 0.71
+
+3. Fixed
+   confidence 0.32
+Click candidate:
+geometry evidence
+interface evidence
+compatibility evidence
+
+[ Reject ] [ Accept ]
+No joint silently appears.
+That is G9 rendered visually.
+G10 visualization
+Once sequencing lands:
+ASSEMBLY SEQUENCE
+
+01 Insert shaft
+02 Install bearing
+03 Seat bearing
+04 Install retaining ring
+05 Attach housing
+06 Install M6 bolts
+Viewport:
+current component     cyan
+completed             muted
+next component        green
+blocked/interference  red
+And motion evidence can show:
+Sampled motion
+Continuous verified
+Indeterminate region
+Collision interval
+This is much more important to architect for now than a generic "results viewer."
+G11 service UI
+The same visualization language later supports:
+SERVICE TARGET
+Motor
+
+Required removal:
+1 Cover
+2 Connector
+3 Mount bolts
+4 Motor
+
+Minimum removal set: 4 parts
+
+Access
+✓ Tool clearance
+
+Uncertainty
+⚠ Cable routing not modeled
+G12 Robot projection UI
+And then:
+ROBOT TASK
+────────────────────
+
+Action
+Insert
+
+Part
+Bearing_6204
+
+Approach
++X
+
+Insertion
++X 22.0 mm
+
+Tool
+Gripper_A
+
+Force limit
+120 N
+
+Tolerance
+±0.05 mm
+
+Assembly step
+#03
+
+Robot validation
+PENDING
+Again: same polished dashboard language, but Robot remains authoritative.
+So the real visualization roadmap is not EVS-01 → EVS-09
+The corrected roadmap is a cross-cutting UI track attached to G0–G12.
+I would call it:
+VibeCAD Engineering Experience Layer — X-track
+Not a new owner.
+A presentation track.
+Something like:
+Canonical milestone	Experience work
+G0	X0 design inventory + current GUI map
+G1	X1 common result/finding/provenance presentation
+G2	X2 durable job/activity/artifact UI
+G3	X3 remote execution state UI
+G4	X4 governed preview/evidence UI
+G5	X5 workflow graph/progress UI
+G6	X6 optimization/candidate comparison UI
+G7	X7 Manufacture execution/evidence UI
+G8	X8 Assembly interfaces/mechanism evidence UI
+G9	X9 joint-candidate visualization
+G10	X10 assembly sequence visualization
+G11	X11 service/disassembly visualization
+G12	X12 Robot task projection/validation UI
+
+
+That is much more consistent with where VibeCAD is actually going.
+What should land in code first
+You were exactly right about this.
+There are three categories.
+Can land now
+These are presentation-only and do not preempt architecture:
+- VibeDark refinement;
+- card design;
+- Analyze panel layout;
+- viewport visual presets;
+- scientific colormap definitions;
+- domain-specific display improvements using existing results;
+- current OpenFOAM panel modernization;
+- current legacy FEM field selector modernization.
+Should wait for G1
+Do not finalize these until G1 contracts exist:
+- cross-domain result cards;
+- universal status model;
+- common findings UI;
+- provenance inspector;
+- common result IDs;
+- generic cross-domain metric model.
+Because G1 is supposed to define those semantics.
+Should wait for G2
+Do not pretend these are durable before G2:
+- job history;
+- recovered jobs;
+- persistent activity center;
+- artifact browser;
+- durable thumbnails;
+- publication history;
+- restart/recovery timeline.
+Should wait for G5
+Do not build a fake workflow UI until workflow state is authoritative:
+- DAG graph;
+- node progression;
+- node retries;
+- dependency visualization;
+- workflow history.
+Should wait for G6
+- candidate dashboard;
+- Pareto charts;
+- optimization ranking;
+- candidate comparison.
+Should wait for G8+
+- general interface overlays;
+- inferred joints;
+- sequence visualization;
+- maintenance planning;
+- robot task visualization.
+But we should design the GUI shell for all of it now
+This is the part we should not defer.
+We know the target.
+Therefore the UI architecture should support it from the beginning.
+The right side should probably become a contextual engineering dock with interchangeable pages:
+┌─────────────────────────────┐
+│ ENGINEERING                 │
+├─────────────────────────────┤
+│ Overview                    │
+│ Results                     │
+│ Findings                    │
+│ Activity                    │
+│ Provenance                  │
+│ Workflow                    │
+│ Compare                     │
+└─────────────────────────────┘
+And domain extensions:
+Analyze
+    Results
+    Fields
+    Convergence
+
+Assembly
+    Interfaces
+    Joints
+    Motion
+    Sequence
+
+Manufacture
+    Toolpath
+    Simulation
+    Output
+
+Robot
+    Tasks
+    Frames
+    Validation
+Same visual system.
+Different owners.
+That is the right architecture.
+The viewport also needs to become multi-overlay, not merely field-colored
+The north-star image showed only one class of visualization.
+The roadmap requires much more.
+The viewport should eventually support composable layers:
+BaseGeometryLayer
+SelectionLayer
+EngineeringFieldLayer
+MeshLayer
+InterfaceLayer
+FindingLayer
+PreviewLayer
+MotionLayer
+SequenceLayer
+AnnotationLayer
+Not necessarily those exact class names—but those conceptual layers.
+Example:
+Base model
++
+Von Mises field
++
+undeformed outline
++
+finding marker
++
+selected bolt interface
+Or:
+Assembly
++
+joint axes
++
+collision volume
++
+motion sweep
++
+next-sequence component
+This is what we should engineer toward.
+The generated image actually understates the destination
+Once reconciled with the canonical roadmap, the target becomes much more significant.
+It is not:
+"Make VibeCAD look like a slick FEA program."
+
+It is:
+Build a coherent visual language for governed engineering state across CAD, Analysis, workflow execution, optimization, Manufacture, Assembly, service, and robotics.
+
+And because the roadmap already requires machine-checkable:
+- identity;
+- provenance;
+- currentness;
+- findings;
+- claim ceilings;
+- publication state;
+the GUI can expose things conventional CAD/CAE packages often bury.
+The final interface could let someone click literally any result and answer:
+WHAT is this?
+WHERE did it come from?
+WHAT source revision produced it?
+WHICH computation produced it?
+IS it still current?
+WAS it verified?
+WAS it published?
+WHAT evidence supports it?
+WHAT claim can we make from it?
+while still looking like the promotional image.
+That is the reconciled direction.
+The next planning artifact should therefore not be another independent visualization roadmap. It should be an X0–X12 Engineering Experience track attached directly to the canonical G0–G12 roadmap, with exact file owners, prerequisites, acceptance gates and visual examples for every milestone.

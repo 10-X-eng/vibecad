@@ -11,7 +11,15 @@ import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
 
 from VibeCADNativeAnalyzeFlowPresentation import present_flow_result
-from VibeCADNativeAnalyzeResultState import openfoam_flow_summary_state
+from VibeCADNativeAnalyzeResultState import result_state
+from VibeCADEngineeringChartSeries import (
+    chart_series_from_analysis,
+    chart_series_from_visualization,
+)
+from VibeCADEngineeringActivity import discover_engineering_activity
+from VibeCADEngineeringOptimization import discover_engineering_optimization
+from VibeCADEngineeringFieldAdapters import presentation_from_result_state
+from VibeCADEngineeringExperience import compare_domain_presentations
 
 
 def _vector_text(values: Any) -> str:
@@ -23,8 +31,18 @@ def _vector_text(values: Any) -> str:
 class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
     def __init__(self, parent: Any = None) -> None:
         super().__init__("Results", parent)
+        self.setObjectName("VibeCADEngineeringResultsPanel")
+        self.setProperty("vibeEngineeringSurface", True)
+        self.setAccessibleName("Engineering results")
         self._document = None
+        self._states: dict[str, dict[str, Any]] = {}
+        self._presentations: dict[str, Any] = {}
         self._summaries: dict[str, dict[str, Any]] = {}
+        self._charts: dict[str, Any] = {}
+        self._activity: dict[str, Any] | None = None
+        self._activity_error = ""
+        self._optimization: dict[str, Any] | None = None
+        self._optimization_error = ""
         layout = QtWidgets.QVBoxLayout(self)
 
         self.result_combo = QtWidgets.QComboBox()
@@ -34,8 +52,115 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
 
         self.summary_label = QtWidgets.QLabel("Run a study to view results.")
         self.summary_label.setObjectName("VibeCADAnalyzeResultSummary")
+        self.summary_label.setProperty("vibeResultCard", True)
+        self.summary_label.setAccessibleName("Selected engineering result summary")
         self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
+
+        fields = QtWidgets.QGroupBox("Fields")
+        fields.setObjectName("VibeCADEngineeringFieldsCard")
+        fields.setProperty("vibeResultCard", True)
+        fields_layout = QtWidgets.QVBoxLayout(fields)
+        self.field_combo = QtWidgets.QComboBox()
+        self.field_combo.setObjectName("VibeCADEngineeringFieldSelector")
+        self.field_combo.setAccessibleName("Engineering result field")
+        fields_layout.addWidget(self.field_combo)
+        self.field_table = QtWidgets.QTreeWidget()
+        self.field_table.setObjectName("VibeCADEngineeringFieldCards")
+        self.field_table.setAccessibleName("Available engineering result fields")
+        self.field_table.setHeaderLabels(
+            ("Field", "Minimum", "Maximum", "Unit", "Location", "Type")
+        )
+        self.field_table.setRootIsDecorated(False)
+        self.field_table.setAlternatingRowColors(True)
+        self.field_table.setMinimumHeight(120)
+        self.field_table.currentItemChanged.connect(self._field_item_changed)
+        fields_layout.addWidget(self.field_table)
+        self.show_field_button = QtWidgets.QPushButton("Show Selected Field")
+        self.show_field_button.setObjectName("VibeCADEngineeringShowField")
+        self.show_field_button.clicked.connect(self._show_selected_field)
+        fields_layout.addWidget(self.show_field_button)
+        deformation = QtWidgets.QHBoxLayout()
+        deformation.addWidget(QtWidgets.QLabel("Deformation scale"))
+        self.deformation_scale = QtWidgets.QDoubleSpinBox()
+        self.deformation_scale.setObjectName("VibeCADEngineeringDeformationScale")
+        self.deformation_scale.setAccessibleName("Engineering deformation scale")
+        self.deformation_scale.setRange(0.0, 1_000_000.0)
+        self.deformation_scale.setDecimals(3)
+        self.deformation_scale.setValue(1.0)
+        self.deformation_scale.setEnabled(False)
+        self.deformation_scale.setToolTip(
+            "Available only when the selected result's existing presenter supports deformation."
+        )
+        deformation.addWidget(self.deformation_scale)
+        fields_layout.addLayout(deformation)
+        layout.addWidget(fields)
+
+        charts = QtWidgets.QGroupBox("Engineering Charts")
+        charts.setObjectName("VibeCADEngineeringChartsCard")
+        charts.setProperty("vibeResultCard", True)
+        charts_layout = QtWidgets.QVBoxLayout(charts)
+        self.chart_table = QtWidgets.QTreeWidget()
+        self.chart_table.setObjectName("VibeCADEngineeringChartSeries")
+        self.chart_table.setAccessibleName("Available owner-rendered engineering charts")
+        self.chart_table.setHeaderLabels(
+            ("Chart", "Type", "Samples", "X axis", "Y axis", "Units")
+        )
+        self.chart_table.setRootIsDecorated(False)
+        self.chart_table.setAlternatingRowColors(True)
+        charts_layout.addWidget(self.chart_table)
+        self.open_chart_button = QtWidgets.QPushButton("Open Selected Chart")
+        self.open_chart_button.setObjectName("VibeCADEngineeringOpenChart")
+        self.open_chart_button.clicked.connect(self._open_selected_chart)
+        self.open_chart_button.setEnabled(False)
+        charts_layout.addWidget(self.open_chart_button)
+        layout.addWidget(charts)
+
+        activity = QtWidgets.QGroupBox("Analysis Activity")
+        activity.setObjectName("VibeCADEngineeringActivityCard")
+        activity.setProperty("vibeResultCard", True)
+        activity_layout = QtWidgets.QVBoxLayout(activity)
+        self.activity_table = QtWidgets.QTreeWidget()
+        self.activity_table.setObjectName("VibeCADEngineeringActivity")
+        self.activity_table.setAccessibleName("Durable Analysis and workflow activity")
+        self.activity_table.setHeaderLabels(
+            ("Kind", "Identity", "State", "Attempts", "Artifacts", "Updated")
+        )
+        self.activity_table.setRootIsDecorated(True)
+        self.activity_table.setAlternatingRowColors(True)
+        activity_layout.addWidget(self.activity_table)
+        layout.addWidget(activity)
+
+        optimization = QtWidgets.QGroupBox("Optimization Runs")
+        optimization.setObjectName("VibeCADEngineeringOptimizationCard")
+        optimization.setProperty("vibeResultCard", True)
+        optimization_layout = QtWidgets.QVBoxLayout(optimization)
+        self.optimization_table = QtWidgets.QTreeWidget()
+        self.optimization_table.setObjectName("VibeCADEngineeringOptimization")
+        self.optimization_table.setAccessibleName(
+            "Durable owner-ranked optimization runs"
+        )
+        self.optimization_table.setHeaderLabels(
+            ("Kind", "Identity", "Rank", "State", "Currentness", "Evidence")
+        )
+        self.optimization_table.setRootIsDecorated(True)
+        self.optimization_table.setAlternatingRowColors(True)
+        optimization_layout.addWidget(self.optimization_table)
+        layout.addWidget(optimization)
+
+        status = QtWidgets.QGroupBox("Governed State")
+        status.setObjectName("VibeCADEngineeringStatusCard")
+        status.setProperty("vibeResultCard", True)
+        status_layout = QtWidgets.QFormLayout(status)
+        self.status_labels = {}
+        for axis in ("Execution", "Verification", "Currentness", "Publication"):
+            label = QtWidgets.QLabel("Unavailable")
+            label.setObjectName(f"VibeCADEngineering{axis}State")
+            label.setProperty("vibeGovernanceRole", "historical")
+            label.setAccessibleName(f"{axis} state")
+            self.status_labels[axis.lower()] = label
+            status_layout.addRow(axis, label)
+        layout.addWidget(status)
 
         self.boundary_table = QtWidgets.QTreeWidget()
         self.boundary_table.setObjectName("VibeCADAnalyzeFlowBoundaries")
@@ -69,6 +194,8 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         layout.addLayout(actions)
 
         performance = QtWidgets.QGroupBox("Flow Performance")
+        performance.setObjectName("VibeCADEngineeringPerformanceCard")
+        performance.setProperty("vibeResultCard", True)
         performance_layout = QtWidgets.QFormLayout(performance)
         self.upstream_combo = QtWidgets.QComboBox()
         self.upstream_combo.setObjectName("VibeCADAnalyzeFlowUpstream")
@@ -89,7 +216,36 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         performance_layout.addRow(self.performance_label)
         layout.addWidget(performance)
 
-        comparison = QtWidgets.QGroupBox("Compare Flow")
+        engineering_comparison = QtWidgets.QGroupBox("Compare Results")
+        engineering_comparison.setObjectName("VibeCADEngineeringResultComparisonCard")
+        engineering_comparison.setProperty("vibeResultCard", True)
+        engineering_comparison_layout = QtWidgets.QVBoxLayout(engineering_comparison)
+        self.engineering_compare_combo = QtWidgets.QComboBox()
+        self.engineering_compare_combo.setObjectName(
+            "VibeCADEngineeringComparisonCandidate"
+        )
+        self.engineering_compare_combo.currentIndexChanged.connect(
+            self._render_engineering_comparison
+        )
+        engineering_comparison_layout.addWidget(self.engineering_compare_combo)
+        self.engineering_comparison_table = QtWidgets.QTreeWidget()
+        self.engineering_comparison_table.setObjectName(
+            "VibeCADEngineeringComparisonDifferences"
+        )
+        self.engineering_comparison_table.setHeaderLabels(
+            ("Kind", "Quantity", "Baseline", "Candidate", "Difference", "Unit")
+        )
+        self.engineering_comparison_table.setRootIsDecorated(False)
+        self.engineering_comparison_table.setAlternatingRowColors(True)
+        engineering_comparison_layout.addWidget(self.engineering_comparison_table)
+        self.engineering_comparison_note = QtWidgets.QLabel()
+        self.engineering_comparison_note.setWordWrap(True)
+        engineering_comparison_layout.addWidget(self.engineering_comparison_note)
+        layout.addWidget(engineering_comparison)
+
+        comparison = QtWidgets.QGroupBox("Compare Flow Passage")
+        comparison.setObjectName("VibeCADEngineeringComparisonCard")
+        comparison.setProperty("vibeResultCard", True)
         comparison_layout = QtWidgets.QFormLayout(comparison)
         self.compare_result_combo = QtWidgets.QComboBox()
         self.compare_result_combo.setObjectName("VibeCADAnalyzeCompareResult")
@@ -125,27 +281,504 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self.measure_button.setEnabled(enabled)
         self.compare_button.setEnabled(enabled and len(self._summaries) >= 2)
 
+    @staticmethod
+    def _field_number(value: Any) -> str:
+        return "Unavailable" if value is None else f"{float(value):.6g}"
+
+    def _field_item_changed(self, current: Any, _previous: Any) -> None:
+        if current is None:
+            return
+        field_id = str(current.data(0, QtCore.Qt.UserRole) or "")
+        index = self.field_combo.findData(field_id)
+        if index >= 0:
+            self.field_combo.setCurrentIndex(index)
+
+    def _render_engineering(self, name: str) -> None:
+        self.field_combo.clear()
+        self.field_table.clear()
+        presentation = self._presentations.get(name)
+        if presentation is None:
+            self.show_field_button.setEnabled(False)
+            self.deformation_scale.setEnabled(False)
+            return
+        for field in presentation.fields:
+            self.field_combo.addItem(field.label, field.field_id)
+            item = QtWidgets.QTreeWidgetItem(
+                (
+                    field.label,
+                    self._field_number(field.minimum),
+                    self._field_number(field.maximum),
+                    field.unit or "Unavailable",
+                    field.association.title(),
+                    field.presentation.title(),
+                )
+            )
+            item.setData(0, QtCore.Qt.UserRole, field.field_id)
+            item.setToolTip(0, field.semantic)
+            self.field_table.addTopLevelItem(item)
+        for column in range(self.field_table.columnCount()):
+            self.field_table.resizeColumnToContents(column)
+        if self.field_table.topLevelItemCount():
+            self.field_table.setCurrentItem(self.field_table.topLevelItem(0))
+        self.show_field_button.setEnabled(bool(presentation.fields))
+        state = self._states.get(name, {})
+        self.deformation_scale.setEnabled(state.get("result_kind") == "result")
+
+    def _render_charts(self) -> None:
+        previous = ""
+        current = self.chart_table.currentItem()
+        if current is not None:
+            previous = str(current.data(0, QtCore.Qt.UserRole) or "")
+        self.chart_table.clear()
+        selected = None
+        for chart in self._charts.values():
+            x_axis = chart.x_axis
+            x_text = "Unavailable" if x_axis is None else x_axis.label
+            y_text = ", ".join(axis.label for axis in chart.y_axes) or "Unavailable"
+            units = []
+            if x_axis is not None:
+                units.append(f"X: {x_axis.unit or 'Unavailable'}")
+            if chart.y_axes:
+                y_units = sorted({axis.unit or "Unavailable" for axis in chart.y_axes})
+                units.append("Y: " + ", ".join(y_units))
+            item = QtWidgets.QTreeWidgetItem(
+                (
+                    chart.label,
+                    chart.kind.replace("_", " ").title(),
+                    str(chart.row_count),
+                    x_text,
+                    y_text,
+                    " · ".join(units) or "Unavailable",
+                )
+            )
+            item.setData(0, QtCore.Qt.UserRole, chart.series_id)
+            self.chart_table.addTopLevelItem(item)
+            if chart.series_id == previous:
+                selected = item
+        if selected is None and self.chart_table.topLevelItemCount():
+            selected = self.chart_table.topLevelItem(0)
+        if selected is not None:
+            self.chart_table.setCurrentItem(selected)
+        for column in range(self.chart_table.columnCount()):
+            self.chart_table.resizeColumnToContents(column)
+        self.open_chart_button.setEnabled(bool(self._charts))
+
+    def _open_selected_chart(self) -> None:
+        item = self.chart_table.currentItem()
+        name = str(item.data(0, QtCore.Qt.UserRole) or "") if item is not None else ""
+        expected = self._charts.get(name)
+        owner = self._document.getObject(name) if self._document is not None else None
+        try:
+            if expected is None or owner is None:
+                raise RuntimeError("The selected chart owner is no longer available.")
+            current = chart_series_from_visualization(owner)
+            if current.owner_state_sha256 != expected.owner_state_sha256:
+                raise RuntimeError("The selected chart changed; refresh before opening it.")
+            presenter = getattr(getattr(owner, "ViewObject", None), "Proxy", None)
+            show = getattr(presenter, "show_visualization", None)
+            if not callable(show):
+                raise RuntimeError("The selected chart owner has no rendering action.")
+            show()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Engineering Chart", str(exc))
+
+    def _render_activity(self) -> None:
+        self.activity_table.clear()
+        if self._activity_error:
+            item = QtWidgets.QTreeWidgetItem(
+                ("Unavailable", "Durable activity", "Read failed", "—", "—", "—")
+            )
+            item.setToolTip(0, self._activity_error)
+            self.activity_table.addTopLevelItem(item)
+        elif self._activity is None or not (
+            self._activity["analyses"] or self._activity["workflows"]
+        ):
+            self.activity_table.addTopLevelItem(
+                QtWidgets.QTreeWidgetItem(
+                    ("Activity", "No durable records", "Unavailable", "0", "0", "—")
+                )
+            )
+        else:
+            for activity in self._activity["analyses"]:
+                analysis_item = QtWidgets.QTreeWidgetItem(
+                    (
+                        "Analysis",
+                        str(activity["analysis_id"]),
+                        str(activity["state"]).replace("_", " ").title(),
+                        str(activity["attempt_count"]),
+                        str(activity["artifact_count"]),
+                        str(activity.get("updated_at") or "Unavailable"),
+                    )
+                )
+                analysis_item.setToolTip(
+                    1,
+                    f"Domain: {activity['domain']} · Adapter: {activity['adapter_id']}",
+                )
+                for attempt in activity["attempts"]:
+                    provider_job_id = str(attempt.get("provider_job_id") or "")
+                    attempt_item = QtWidgets.QTreeWidgetItem(
+                        (
+                            "Attempt",
+                            f"#{attempt['attempt']} · {attempt['provider_id']}",
+                            str(attempt.get("terminal_reason") or "Started").replace(
+                                "_", " "
+                            ).title(),
+                            "—",
+                            "—",
+                            str(attempt.get("started_at") or "Unavailable"),
+                        )
+                    )
+                    attempt_item.setToolTip(
+                        1,
+                        f"Provider kind: {attempt['provider_kind']}"
+                        + (f" · Provider job: {provider_job_id}" if provider_job_id else ""),
+                    )
+                    analysis_item.addChild(attempt_item)
+                for artifact in activity["artifacts"]:
+                    if artifact.get("tombstoned_at"):
+                        artifact_state = "Tombstoned"
+                    elif artifact.get("pinned"):
+                        artifact_state = "Pinned"
+                    elif artifact.get("cleanup_eligible"):
+                        artifact_state = "Cleanup Eligible"
+                    else:
+                        artifact_state = "Retained"
+                    artifact_item = QtWidgets.QTreeWidgetItem(
+                        (
+                            "Artifact",
+                            str(artifact["sha256"]),
+                            artifact_state,
+                            "—",
+                            str(artifact.get("role") or "Admitted"),
+                            str(artifact.get("tombstoned_at") or "Unavailable"),
+                        )
+                    )
+                    if artifact.get("byte_count") is not None:
+                        artifact_item.setToolTip(
+                            1, f"Recorded byte count: {artifact['byte_count']}"
+                        )
+                    analysis_item.addChild(artifact_item)
+                disposition = activity.get("restart_disposition")
+                if disposition is not None:
+                    analysis_item.addChild(
+                        QtWidgets.QTreeWidgetItem(
+                            (
+                                "Restart",
+                                str(disposition["analysis_id"]),
+                                str(disposition["action"]).replace("_", " ").title(),
+                                "—",
+                                "—",
+                                "—",
+                            )
+                        )
+                    )
+                for evaluation in activity["currentness_evaluations"]:
+                    currentness_item = QtWidgets.QTreeWidgetItem(
+                        (
+                            "Currentness",
+                            str(evaluation.get("evaluation_id") or "Recorded evaluation"),
+                            str(evaluation.get("state") or evaluation.get("status") or "Recorded")
+                            .replace("_", " ")
+                            .title(),
+                            "—",
+                            "—",
+                            str(evaluation.get("evaluated_at") or "Unavailable"),
+                        )
+                    )
+                    analysis_item.addChild(currentness_item)
+                for axis, recorded in activity["publication_axes"].items():
+                    analysis_item.addChild(
+                        QtWidgets.QTreeWidgetItem(
+                            (
+                                "Publication",
+                                axis.replace("_recorded", "").replace("_", " ").title(),
+                                "Recorded" if recorded else "Not Recorded",
+                                "—",
+                                "—",
+                                "—",
+                            )
+                        )
+                    )
+                analysis_item.setExpanded(True)
+                self.activity_table.addTopLevelItem(analysis_item)
+            for workflow in self._activity["workflows"]:
+                attempts = sum(node["attempt_count"] for node in workflow["nodes"])
+                workflow_item = QtWidgets.QTreeWidgetItem(
+                    (
+                        "Workflow",
+                        str(workflow["run_id"]),
+                        str(workflow["state"]).replace("_", " ").title(),
+                        str(attempts),
+                        "—",
+                        str(workflow.get("updated_at") or "Unavailable"),
+                    )
+                )
+                workflow_item.setToolTip(
+                    1,
+                    f"Definition: {workflow['workflow_id']} v{workflow['workflow_version']}"
+                    f" · SHA-256: {workflow['definition_sha256']}",
+                )
+                for node in workflow["nodes"]:
+                    node_item = QtWidgets.QTreeWidgetItem(
+                        (
+                            "Workflow Node",
+                            str(node["node_id"]),
+                            str(node.get("state") or "Unavailable")
+                            .replace("_", " ")
+                            .title(),
+                            str(node["attempt_count"]),
+                            "—",
+                            "—",
+                        )
+                    )
+                    details = []
+                    if node.get("analysis_id"):
+                        details.append(f"Analysis: {node['analysis_id']}")
+                    if node.get("publication_receipt_id"):
+                        details.append(
+                            f"Publication receipt: {node['publication_receipt_id']}"
+                        )
+                    if details:
+                        node_item.setToolTip(1, " · ".join(details))
+                    workflow_item.addChild(node_item)
+                workflow_item.setExpanded(True)
+                self.activity_table.addTopLevelItem(workflow_item)
+        for column in range(self.activity_table.columnCount()):
+            self.activity_table.resizeColumnToContents(column)
+
+    def _render_optimization(self) -> None:
+        self.optimization_table.clear()
+        if self._optimization_error:
+            item = QtWidgets.QTreeWidgetItem(
+                ("Unavailable", "Durable optimization", "—", "Read Failed", "—", "—")
+            )
+            item.setToolTip(0, self._optimization_error)
+            self.optimization_table.addTopLevelItem(item)
+        elif self._optimization is None or not self._optimization["runs"]:
+            self.optimization_table.addTopLevelItem(
+                QtWidgets.QTreeWidgetItem(
+                    ("Optimization", "No durable runs", "—", "Unavailable", "—", "—")
+                )
+            )
+        else:
+            for run in self._optimization["runs"]:
+                selection = run.get("selection")
+                publication = run.get("publication")
+                evidence = (
+                    ("Selected" if selection else "Not Selected")
+                    + " · "
+                    + ("Published" if publication else "Not Published")
+                )
+                run_item = QtWidgets.QTreeWidgetItem(
+                    (
+                        "Run",
+                        str(run["run_id"]),
+                        "—",
+                        "Recorded",
+                        "—",
+                        evidence,
+                    )
+                )
+                run_item.setToolTip(
+                    1,
+                    f"Definition SHA-256: {run['definition_sha256']} · "
+                    f"Source SHA-256: {run['source_sha256']}"
+                    + (
+                        f" · Selected candidate: {selection['candidate_id']}"
+                        if selection
+                        else ""
+                    )
+                    + (
+                        f" · Publication receipt: "
+                        f"{publication['publication_receipt_id']}"
+                        if publication
+                        else ""
+                    ),
+                )
+                ordered = sorted(
+                    run["candidates"],
+                    key=lambda item: (
+                        item["rank"] is None,
+                        item["rank"] if item["rank"] is not None else 0,
+                        item["candidate_id"],
+                    ),
+                )
+                for candidate in ordered:
+                    metrics = candidate.get("metrics") or {}
+                    failures = candidate.get("constraint_failures") or []
+                    candidate_item = QtWidgets.QTreeWidgetItem(
+                        (
+                            "Candidate",
+                            str(candidate["candidate_id"]),
+                            "Excluded" if candidate["rank"] is None else str(candidate["rank"]),
+                            str(candidate.get("state") or "Unavailable")
+                            .replace("_", " ")
+                            .title(),
+                            str(candidate.get("currentness") or "Unavailable")
+                            .replace("_", " ")
+                            .title(),
+                            f"{len(metrics)} metrics · {len(failures)} constraint failures",
+                        )
+                    )
+                    candidate_item.setToolTip(
+                        1,
+                        f"Candidate SHA-256: {candidate['candidate_sha256']} · "
+                        f"Workflow attempts: {candidate['workflow_attempt_count']} · "
+                        f"Mutation proposal retained by owner: "
+                        f"{bool(candidate.get('mutation_proposal'))}",
+                    )
+                    for workflow_ref in candidate.get("workflow_provenance") or []:
+                        workflow = workflow_ref.get("workflow")
+                        if workflow is None:
+                            workflow_state = "Unresolved"
+                            workflow_evidence = "No durable G5 record found"
+                        else:
+                            workflow_state = str(workflow.get("state") or "Unavailable")
+                            workflow_evidence = (
+                                f"{workflow.get('workflow_id')} · "
+                                f"{len(workflow.get('nodes') or [])} nodes · "
+                                f"definition {workflow.get('definition_sha256')}"
+                            )
+                        workflow_item = QtWidgets.QTreeWidgetItem(
+                            (
+                                "Workflow",
+                                str(workflow_ref["run_id"]),
+                                "Active" if workflow_ref.get("active") else "Prior",
+                                workflow_state.replace("_", " ").title(),
+                                "Exact" if workflow_ref.get("resolved") else "Unavailable",
+                                workflow_evidence,
+                            )
+                        )
+                        if workflow is not None:
+                            for node in workflow.get("nodes") or []:
+                                workflow_item.addChild(
+                                    QtWidgets.QTreeWidgetItem(
+                                        (
+                                            "Workflow Node",
+                                            str(node.get("node_id") or "Unavailable"),
+                                            "—",
+                                            str(node.get("state") or "Unavailable")
+                                            .replace("_", " ")
+                                            .title(),
+                                            "Exact",
+                                            f"{node.get('attempt_count', 0)} attempts"
+                                            + (
+                                                f" · Analysis {node['analysis_id']}"
+                                                if node.get("analysis_id")
+                                                else ""
+                                            ),
+                                        )
+                                    )
+                                )
+                        candidate_item.addChild(workflow_item)
+                    for name, value in sorted(
+                        (candidate.get("values") or {}).items()
+                    ):
+                        candidate_item.addChild(
+                            QtWidgets.QTreeWidgetItem(
+                                ("Variable", str(name), "—", str(value), "—", "Owner proposal")
+                            )
+                        )
+                    for name, value in sorted(metrics.items()):
+                        candidate_item.addChild(
+                            QtWidgets.QTreeWidgetItem(
+                                ("Metric", str(name), "—", str(value), "—", "Recorded")
+                            )
+                        )
+                    for failure in failures:
+                        candidate_item.addChild(
+                            QtWidgets.QTreeWidgetItem(
+                                (
+                                    "Constraint",
+                                    str(failure),
+                                    "—",
+                                    "Failed",
+                                    str(candidate.get("currentness") or "Unavailable").title(),
+                                    "Owner ranking",
+                                )
+                            )
+                        )
+                    for finding in candidate.get("findings") or []:
+                        finding_name = (
+                            finding.get("code")
+                            or finding.get("finding_id")
+                            or finding.get("message")
+                            or "Recorded finding"
+                            if isinstance(finding, dict)
+                            else str(finding)
+                        )
+                        candidate_item.addChild(
+                            QtWidgets.QTreeWidgetItem(
+                                ("Finding", str(finding_name), "—", "Recorded", "—", "Owner evidence")
+                            )
+                        )
+                    run_item.addChild(candidate_item)
+                run_item.setExpanded(True)
+                self.optimization_table.addTopLevelItem(run_item)
+        for column in range(self.optimization_table.columnCount()):
+            self.optimization_table.resizeColumnToContents(column)
+
     def refresh(self, document: Any, analysis: Any) -> None:
         previous = str(self.result_combo.currentData() or "")
         previous_candidate = str(self.compare_result_combo.currentData() or "")
+        previous_engineering_candidate = str(
+            self.engineering_compare_combo.currentData() or ""
+        )
         self._document = document
+        self._states = {}
+        self._presentations = {}
         self._summaries = {}
+        self._charts = {}
+        self._activity = None
+        self._activity_error = ""
+        self._optimization = None
+        self._optimization_error = ""
+        if document is not None:
+            try:
+                self._activity = discover_engineering_activity(str(document.Uid))
+            except Exception as exc:
+                self._activity_error = str(exc)
+            try:
+                self._optimization = discover_engineering_optimization(
+                    str(document.Uid)
+                )
+            except Exception as exc:
+                self._optimization_error = str(exc)
         if document is not None and analysis is not None:
+            for chart in chart_series_from_analysis(analysis):
+                self._charts[chart.series_id] = chart
             for member in tuple(getattr(analysis, "Group", ()) or ()):
                 try:
-                    summary = openfoam_flow_summary_state(member)
+                    state = result_state(member)
                 except Exception:
                     continue
-                if summary is not None:
-                    self._summaries[str(member.Name)] = summary
+                name = str(member.Name)
+                try:
+                    presentation = presentation_from_result_state(
+                        state, title=str(member.Label)
+                    )
+                except Exception:
+                    continue
+                self._states[name] = state
+                self._presentations[name] = presentation
+                summary = state.get("flow")
+                if isinstance(summary, dict):
+                    self._summaries[name] = summary
         self.result_combo.blockSignals(True)
         self.compare_result_combo.blockSignals(True)
+        self.engineering_compare_combo.blockSignals(True)
         self.result_combo.clear()
         self.compare_result_combo.clear()
-        for name in self._summaries:
+        self.engineering_compare_combo.clear()
+        for name in self._states:
             result = document.getObject(name)
             self.result_combo.addItem(str(result.Label), name)
+        for name in self._summaries:
+            result = document.getObject(name)
             self.compare_result_combo.addItem(str(result.Label), name)
+        for name in self._presentations:
+            result = document.getObject(name)
+            self.engineering_compare_combo.addItem(str(result.Label), name)
         index = self.result_combo.findData(previous)
         if index >= 0:
             self.result_combo.setCurrentIndex(index)
@@ -154,9 +787,108 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
             self.compare_result_combo.setCurrentIndex(candidate_index)
         elif self.compare_result_combo.count() > 1:
             self.compare_result_combo.setCurrentIndex(1)
+        engineering_candidate_index = self.engineering_compare_combo.findData(
+            previous_engineering_candidate
+        )
+        if engineering_candidate_index >= 0:
+            self.engineering_compare_combo.setCurrentIndex(engineering_candidate_index)
+        elif self.engineering_compare_combo.count() > 1:
+            self.engineering_compare_combo.setCurrentIndex(1)
         self.result_combo.blockSignals(False)
         self.compare_result_combo.blockSignals(False)
+        self.engineering_compare_combo.blockSignals(False)
+        self._render_charts()
+        self._render_activity()
+        self._render_optimization()
         self._render()
+
+    @staticmethod
+    def _comparison_number(value: Any) -> str:
+        return "Unavailable" if value is None else f"{float(value):.6g}"
+
+    def _render_engineering_comparison(self, _index: int = -1) -> None:
+        self.engineering_comparison_table.clear()
+        self.engineering_comparison_note.clear()
+        baseline_name = str(self.result_combo.currentData() or "")
+        candidate_name = str(self.engineering_compare_combo.currentData() or "")
+        baseline = self._presentations.get(baseline_name)
+        candidate = self._presentations.get(candidate_name)
+        if baseline is None or candidate is None or baseline_name == candidate_name:
+            self.engineering_comparison_note.setText(
+                "Choose a different result with exact comparable quantities."
+            )
+            return
+        try:
+            comparison = compare_domain_presentations(baseline, candidate)
+        except Exception as exc:
+            self.engineering_comparison_note.setText(str(exc))
+            return
+        provenance = comparison["provenance"]
+        for key, label in (
+            ("analysis_owners", "Analysis Owners"),
+            ("post_pipeline_owners", "Post-pipeline Owners"),
+            ("timeline_owner_chain", "Timeline Owner Chain"),
+        ):
+            baseline_owners = provenance["baseline"][key]
+            candidate_owners = provenance["candidate"][key]
+            if baseline_owners or candidate_owners:
+                self.engineering_comparison_table.addTopLevelItem(
+                    QtWidgets.QTreeWidgetItem(
+                        (
+                            "Provenance",
+                            label,
+                            " → ".join(str(item) for item in baseline_owners) or "Unavailable",
+                            " → ".join(str(item) for item in candidate_owners) or "Unavailable",
+                            "Not Numeric",
+                            "—",
+                        )
+                    )
+                )
+        if (
+            provenance["baseline"]["mesh_object_name"]
+            or provenance["candidate"]["mesh_object_name"]
+        ):
+            self.engineering_comparison_table.addTopLevelItem(
+                QtWidgets.QTreeWidgetItem(
+                    (
+                        "Provenance",
+                        "Mesh Object",
+                        str(provenance["baseline"]["mesh_object_name"] or "Unavailable"),
+                        str(provenance["candidate"]["mesh_object_name"] or "Unavailable"),
+                        "Identity Only",
+                        "—",
+                    )
+                )
+            )
+        for metric in comparison["metric_differences"]:
+            self.engineering_comparison_table.addTopLevelItem(
+                QtWidgets.QTreeWidgetItem((
+                    "Metric", metric["label"],
+                    self._comparison_number(metric["baseline"]),
+                    self._comparison_number(metric["candidate"]),
+                    self._comparison_number(metric["delta"]), metric["unit"],
+                ))
+            )
+        for field in comparison["field_extrema_differences"]:
+            for bound in ("minimum", "maximum"):
+                self.engineering_comparison_table.addTopLevelItem(
+                    QtWidgets.QTreeWidgetItem((
+                        "Field Extrema", f"{field['label']} {bound.title()}",
+                        self._comparison_number(field[f"baseline_{bound}"]),
+                        self._comparison_number(field[f"candidate_{bound}"]),
+                        self._comparison_number(field[f"{bound}_delta"]),
+                        field["unit"] or "Unavailable",
+                    ))
+                )
+        count = comparison["comparison_count"]
+        self.engineering_comparison_note.setText(
+            f"{count} exact comparable quantity group{'s' if count != 1 else ''}. "
+            "Owner provenance is shown where recorded. Field differences are "
+            "extrema-only; pointwise differences require shared topology and "
+            "array content identities, which these owners do not currently expose."
+        )
+        for column in range(self.engineering_comparison_table.columnCount()):
+            self.engineering_comparison_table.resizeColumnToContents(column)
 
     def _selected(self) -> tuple[Any | None, dict[str, Any] | None]:
         name = str(self.result_combo.currentData() or "")
@@ -165,6 +897,10 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
 
     def _render(self, _index: int = -1) -> None:
         _result, summary = self._selected()
+        name = str(self.result_combo.currentData() or "")
+        state = self._states.get(name)
+        self._render_engineering(name)
+        self._render_engineering_comparison()
         self.boundary_table.clear()
         previous_boundaries = (
             str(self.upstream_combo.currentData() or ""),
@@ -179,8 +915,18 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
             combo.clear()
         self.performance_label.clear()
         self.comparison_label.clear()
-        if summary is None:
+        if state is None:
             self.summary_label.setText("Run a study to view results.")
+            self._set_enabled(False)
+            return
+        if summary is None:
+            field_count = len(self._presentations[name].fields)
+            self.summary_label.setText(
+                f"{state.get('result_kind', 'Engineering')} result · "
+                f"{field_count} available field{'s' if field_count != 1 else ''} · "
+                "governed execution, verification, currentness and publication "
+                "state unavailable"
+            )
             self._set_enabled(False)
             return
         pressure = summary["pressure_range_pa"]
@@ -374,3 +1120,114 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
                 "Flow Results",
                 str(exc),
             )
+
+    def _show_selected_field(self) -> None:
+        result, _summary = self._selected()
+        name = str(self.result_combo.currentData() or "")
+        frozen_state = self._states.get(name)
+        field_id = str(self.field_combo.currentData() or "")
+        presentation = self._presentations.get(name)
+        if result is None or frozen_state is None or presentation is None:
+            return
+        selected = next(
+            (field for field in presentation.fields if field.field_id == field_id),
+            None,
+        )
+        if selected is None:
+            return
+        try:
+            current = result_state(result)
+            if current["state_sha256"] != frozen_state["state_sha256"]:
+                raise RuntimeError(
+                    "The selected engineering result changed; refresh before display."
+                )
+            if current["result_kind"] == "result":
+                self._show_legacy_field(
+                    result, selected.semantic, self.deformation_scale.value()
+                )
+                return
+            if name not in self._summaries:
+                self._show_vtk_field(result, selected.field_id, selected.components)
+                return
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                Gui.getMainWindow(), "Engineering Results", str(exc)
+            )
+            return
+        flow_field = {
+            "pressure": "pressure",
+            "velocity.vector": "velocity",
+            "velocity.magnitude": "velocity",
+            "turbulence.kinetic_energy": "turbulent_kinetic_energy",
+        }.get(selected.semantic)
+        if flow_field is not None:
+            self._show_field(flow_field)
+
+    @staticmethod
+    def _show_legacy_field(result: Any, semantic: str, deformation_scale: float) -> None:
+        field = {
+            "displacement.magnitude": "displacement_magnitude",
+            "stress.von_mises": "von_mises_stress",
+            "stress.principal.maximum": "maximum_principal_stress",
+            "stress.principal.minimum": "minimum_principal_stress",
+            "stress.shear.maximum": "maximum_shear_stress",
+            "strain.plastic.equivalent": "equivalent_plastic_strain",
+            "temperature": "temperature",
+            "flow.mass_rate": "mass_flow_rate",
+            "pressure.network": "network_pressure",
+        }.get(semantic)
+        if field is None:
+            raise RuntimeError("The legacy FEM presentation owner does not support this field.")
+        from femresult.resultpresentation import (
+            apply_result_presentation,
+            prepare_result_presentation,
+            restore_result_presentation,
+        )
+
+        prepared = prepare_result_presentation(
+            result, field, deformation_scale, True
+        )
+        try:
+            applied = apply_result_presentation(prepared)
+            if applied.get("field") != field or applied.get("visible") is not True:
+                raise RuntimeError("The legacy FEM presentation was not retained.")
+        except Exception:
+            restore_result_presentation(prepared)
+            raise
+
+    @staticmethod
+    def _show_vtk_field(result: Any, field_id: str, components: int) -> None:
+        if ":" in field_id:
+            raise RuntimeError(
+                "The VTK presentation owner cannot distinguish same-named point and cell fields."
+            )
+        field_name = field_id
+        view = getattr(result, "ViewObject", None)
+        if view is None:
+            raise RuntimeError("The VTK result has no presentation object.")
+        available = tuple(view.getEnumerationsOfProperty("Field") or ())
+        if field_name not in available:
+            raise RuntimeError("The VTK presentation owner does not expose this field.")
+        previous = {
+            "field": str(getattr(view, "Field", "")),
+            "component": str(getattr(view, "Component", "")),
+            "visible": bool(getattr(view, "Visibility", False)),
+        }
+        try:
+            view.Field = field_name
+            available_components = tuple(
+                view.getEnumerationsOfProperty("Component") or ()
+            )
+            if components > 1 and "Magnitude" in available_components:
+                view.Component = "Magnitude"
+            view.Visibility = True
+            if str(view.Field) != field_name or bool(view.Visibility) is not True:
+                raise RuntimeError("The VTK presentation was not retained.")
+        except Exception:
+            view.Field = previous["field"]
+            if previous["component"] in tuple(
+                view.getEnumerationsOfProperty("Component") or ()
+            ):
+                view.Component = previous["component"]
+            view.Visibility = previous["visible"]
+            raise

@@ -65,6 +65,8 @@ SET(MeshPart_SRCS
     MeshAlgos.h
     MeshBoolean.cpp
     MeshBoolean.h
+    MeshSolidShape.cpp
+    MeshSolidShape.h
     Mesher.cpp
     Mesher.h
     PreCompiled.h

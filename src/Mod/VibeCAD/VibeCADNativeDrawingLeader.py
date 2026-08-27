@@ -119,7 +119,8 @@ def _finite(
             f"Drawing leader {noun} is outside its documented range.",
             error_code,
         )
-    return round(result, 12)
+    rounded = round(result, 12)
+    return 0.0 if rounded == 0.0 else rounded
 
 
 def _boolean(value: Any, noun: str, error_code: str) -> bool:
@@ -289,7 +290,27 @@ def _line(
     }
 
 
-def _spec(operation: str, values: Mapping[str, Any]) -> DrawingLeaderSpec:
+def _requested_style(
+    value: Any,
+    defaults: Mapping[str, Any],
+    fields: frozenset[str],
+    noun: str,
+) -> dict[str, Any]:
+    if value is None:
+        return dict(defaults)
+    if not isinstance(value, Mapping) or not set(value) <= fields:
+        _error(
+            f"Drawing leader {noun} fields are invalid.",
+            "NATIVE_DRAWING_LEADER_PARAMETERS_INVALID",
+        )
+    return {**defaults, **value}
+
+
+def _spec(
+    operation: str,
+    values: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+) -> DrawingLeaderSpec:
     label = str(values["label"] or "")
     if label != label.strip() or not 1 <= len(label) <= 160:
         _error(
@@ -300,9 +321,30 @@ def _spec(operation: str, values: Mapping[str, Any]) -> DrawingLeaderSpec:
         operation=operation,
         points=_points(values["points_on_page_mm"], "page points"),
         label=label,
-        symbols=_symbols(values["symbols"]),
-        behavior=_behavior(values["behavior"]),
-        line=_line(values["line"]),
+        symbols=_symbols(
+            _requested_style(
+                values.get("symbols"),
+                defaults["symbols"],
+                frozenset({"start", "end"}),
+                "symbol",
+            )
+        ),
+        behavior=_behavior(
+            _requested_style(
+                values.get("behavior"),
+                defaults["behavior"],
+                frozenset({"scalable", "auto_horizontal", "rotates_with_owner"}),
+                "behavior",
+            )
+        ),
+        line=_line(
+            _requested_style(
+                values.get("line"),
+                defaults["line"],
+                frozenset({"line_width_mm", "line_style", "color_rgb"}),
+                "line",
+            )
+        ),
     )
 
 
@@ -546,7 +588,6 @@ def _host_plan(
             "NATIVE_DRAWING_LEADER_GEOMETRY_INVALID",
             repair={
                 "accepted_points": "2 through 64 distinct consecutive points inside the exact page",
-                "read_operation": "read_leader_defaults",
             },
         )
     leader = raw.get("leader") if apply and isinstance(raw, Mapping) else None
@@ -585,7 +626,7 @@ def prepare_drawing_leader(
     operation: str,
     values: Mapping[str, Any],
 ) -> PreparedDrawingLeader:
-    spec = _spec(operation, values)
+    spec = _spec(operation, values, drawing_leader_defaults_state())
     target = _target(
         document,
         page_target=values["page"],
@@ -762,6 +803,11 @@ def verify_drawing_leader(
     if page_state["view_count"] != target.page_state_before["view_count"] + 1:
         _postcondition("The Drawing page did not retain the new Leader Line.")
     return {
+        "page": {
+            "object_name": page_state["object_name"],
+            "state_sha256": page_state["state_sha256"],
+            "view_count": page_state["view_count"],
+        },
         "leader": state,
         "next": {
             "tool": "inspect.query",

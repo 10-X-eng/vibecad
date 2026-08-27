@@ -51,6 +51,11 @@ class NativeRuntimeContext:
         compare=False,
     )
     run_id: str | None = field(default=None, repr=False, compare=False)
+    scoped_capability_prefix: str | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     document_uid: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -74,6 +79,13 @@ class NativeRuntimeContext:
             self.document_thread_dispatch
         ):
             raise TypeError("Native document-thread dispatcher must be callable")
+        if self.scoped_capability_prefix is not None:
+            clean_prefix = str(self.scoped_capability_prefix).strip()
+            if not clean_prefix:
+                raise TypeError(
+                    "scoped_capability_prefix must be non-empty when provided"
+                )
+            object.__setattr__(self, "scoped_capability_prefix", clean_prefix)
         if self.run_id is not None:
             clean_run_id = str(self.run_id).strip()
             if not clean_run_id:

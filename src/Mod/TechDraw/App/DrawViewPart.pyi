@@ -67,6 +67,10 @@ class DrawViewPart(DrawView):
         """
         ...
 
+    def restorePrecomputedState(self) -> Any:
+        """Restore the persisted projection into this view."""
+        ...
+
     def getHiddenEdges(self) -> Any:
         """
         getHiddenEdges([conventionalCoords]) - get the hidden edges in the View as Part::TopoShapeEdges.  Edges are returned

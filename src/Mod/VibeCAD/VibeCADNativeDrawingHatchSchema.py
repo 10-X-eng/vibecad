@@ -73,9 +73,8 @@ _FACE = _closed(
             "pattern": r"^Face(?:0|[1-9][0-9]*)$",
             "maxLength": 32,
         },
-        "expected_element_state_sha256": _SHA256,
     },
-    ("subelement", "expected_element_state_sha256"),
+    ("subelement",),
 )
 _OFFSET = _closed(
     {

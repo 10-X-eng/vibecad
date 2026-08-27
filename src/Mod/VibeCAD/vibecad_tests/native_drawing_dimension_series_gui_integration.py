@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Compiled-GUI lifecycle gate for Native Drawing dimension series and inference."""
+"""Compiled-GUI lifecycle gate for Native Drawing dimension series."""
 
 from __future__ import annotations
 
@@ -21,10 +21,6 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeDrawingDimensionInferenceSchema import (
-    DRAWING_DIMENSION_INFERENCE_CAPABILITY_NAME,
-    DRAWING_DIMENSION_INFERENCE_OPERATIONS,
-)
 from VibeCADNativeDrawingDimensionSeriesSchema import (
     DRAWING_DIMENSION_SERIES_CAPABILITY_NAME,
     DRAWING_DIMENSION_SERIES_OPERATIONS,
@@ -149,10 +145,7 @@ def _create_fixture(document):
 
 
 def _target(element: dict) -> dict[str, str]:
-    return {
-        "subelement": element["name"],
-        "expected_element_state_sha256": element["element_state_sha256"],
-    }
+    return {"subelement": element["name"]}
 
 
 def _targets(page, view) -> tuple[dict, dict, dict]:
@@ -216,18 +209,12 @@ def _series_vertices(projection: dict, direction: str) -> tuple[dict, dict, dict
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
+    definition = registry.definition(DRAWING_DIMENSION_SERIES_CAPABILITY_NAME)
+    assert definition is not None
     definitions = (
-        (
-            registry.definition(DRAWING_DIMENSION_SERIES_CAPABILITY_NAME),
-            DRAWING_DIMENSION_SERIES_OPERATIONS,
-        ),
-        (
-            registry.definition(DRAWING_DIMENSION_INFERENCE_CAPABILITY_NAME),
-            DRAWING_DIMENSION_INFERENCE_OPERATIONS,
-        ),
+        (definition, DRAWING_DIMENSION_SERIES_OPERATIONS),
     )
     schemas = tuple(definition.provider_schema(operations) for definition, operations in definitions)
-    assert all(definition is not None for definition, _operations in definitions)
     assert len(json.dumps(schemas, separators=(",", ":")).encode()) < 16 * 1024
     assert "unknown" not in json.dumps(schemas, sort_keys=True).casefold()
     return NativeTurnSnapshot.from_provider_surface(
@@ -237,7 +224,6 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             unavailable_reason="",
             tool_names=(
                 DRAWING_DIMENSION_SERIES_CAPABILITY_NAME,
-                DRAWING_DIMENSION_INFERENCE_CAPABILITY_NAME,
             ),
             schemas=schemas,
             human_only_action_ids=(),
@@ -263,16 +249,8 @@ def _run() -> None:
             plan.command_id: plan
             for plan in resolve_native_action_inventory(surface).plans
         }
-        infer_plan = plans["TechDraw_Dimension"]
-        assert (
-            infer_plan.capability_family,
-            infer_plan.operation_variant,
-            infer_plan.exact_target_type,
-        ) == (
-            DRAWING_DIMENSION_INFERENCE_CAPABILITY_NAME,
-            "infer",
-            "ExactDrawingElementsWithUnambiguousDimensionSemantics",
-        )
+        assert plans["TechDraw_Dimension"].classification.human_only
+        assert plans["TechDraw_Dimension"].implementation_status == "human_only"
         for command_id, (operation, exact_target) in _SERIES_ACTIONS.items():
             plan = plans[command_id]
             assert (
@@ -424,51 +402,6 @@ def _run() -> None:
             assert group is not None and len(tuple(group.Group or ())) == 2
             assert all(value.VibeCADTimelineOwner is group for value in group.Group)
 
-        page_target, view_target, projection = _targets(page, view)
-        face = next(
-            item for item in projection["elements"] if item["element_type"] == "face"
-        )
-        inferred = call(
-            DRAWING_DIMENSION_INFERENCE_CAPABILITY_NAME,
-            {
-                "operation": "infer",
-                "label": "Inferred Area",
-                "page": page_target,
-                "view": view_target,
-                "label_position_in_view_mm": {"x_mm": 0.0, "y_mm": 32.0},
-                "elements": [_target(face)],
-            },
-        )
-        assert inferred["operation"] == "create_area"
-        assert inferred["dimension"]["dimension_type"] == "Area"
-        inferred_name = inferred["dimension"]["object_name"]
-
-        page_target, view_target, projection = _targets(page, view)
-        ambiguous_vertices = _series_vertices(projection, "oblique")
-        rejected = call(
-            DRAWING_DIMENSION_INFERENCE_CAPABILITY_NAME,
-            {
-                "operation": "infer",
-                "label": "Ambiguous Dimension",
-                "page": page_target,
-                "view": view_target,
-                "label_position_in_view_mm": {"x_mm": 0.0, "y_mm": 0.0},
-                "elements": [_target(vertex) for vertex in ambiguous_vertices],
-            },
-            succeeds=False,
-        )
-        assert rejected["error_code"] == "NATIVE_DRAWING_DIMENSION_INFERENCE_AMBIGUOUS"
-        candidates = rejected["repair"]["candidates"]
-        assert any(
-            candidate["capability"] == DRAWING_DIMENSION_SERIES_CAPABILITY_NAME
-            and candidate["operation"] == "create_oblique_chain"
-            for candidate in candidates
-        )
-        assert any(
-            candidate["operation"] == "create_three_point_angle"
-            for candidate in candidates
-        )
-
         # A failed oblique postcondition must restore objects and carrier geometry.
         assert last_arguments is not None
         page_target, view_target, projection = _targets(page, view)
@@ -537,9 +470,6 @@ def _run() -> None:
         }
         document.undo()
         _events(12)
-        assert document.getObject(inferred_name) is None
-        document.undo()
-        _events(12)
         assert document.getObject(last_group_name) is None
         document.redo()
         _events(12)
@@ -549,10 +479,6 @@ def _run() -> None:
             value.Name: drawing_dimension_state(value)["state_sha256"]
             for value in restored_group.Group
         } == last_states
-        document.redo()
-        _events(12)
-        assert document.getObject(inferred_name) is not None
-
         document.recompute()
         document.saveAs(str(save_path))
         names = {"source": source.Name, "page": page.Name, "view": view.Name}
@@ -576,7 +502,6 @@ def _run() -> None:
             "operations=" + ",".join(DRAWING_DIMENSION_SERIES_OPERATIONS) + " "
             "human_oracle=true shared_builder=true exact_targets=true "
             "history_group=true owned_dimensions=true carrier_geometry=true "
-            "inference=true ambiguity_refusal=true candidate_guidance=true "
             "selection=true visibility=true rollback=true undo=true redo=true "
             "reopen=true low_noise=true no_task=true",
             flush=True,

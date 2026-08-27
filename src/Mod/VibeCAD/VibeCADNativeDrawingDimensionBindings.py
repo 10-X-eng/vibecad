@@ -11,7 +11,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
 )
 from VibeCADNativeDrawingDimensionRuntime import NativeDrawingDimensionRuntime
-from VibeCADNativeDrawingDimensionSchema import DRAWING_DIMENSION_CAPABILITY_NAME
+from VibeCADNativeDrawingDimensionSchema import DRAWING_DIMENSION_CAPABILITY_NAMES
 
 
 def _execute(call: Any) -> Mapping[str, Any]:
@@ -29,9 +29,10 @@ def register_drawing_dimension_capability_implementation(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_implementation(
-        NativeCapabilityImplementation(DRAWING_DIMENSION_CAPABILITY_NAME, _execute)
-    )
+    for name in DRAWING_DIMENSION_CAPABILITY_NAMES:
+        registry.register_implementation(
+            NativeCapabilityImplementation(name, _execute)
+        )
 
 
 def drawing_dimension_runtime_bindings(
@@ -39,4 +40,4 @@ def drawing_dimension_runtime_bindings(
 ) -> dict[str, Any]:
     if not isinstance(runtime, NativeDrawingDimensionRuntime):
         raise TypeError("runtime must be a NativeDrawingDimensionRuntime")
-    return {DRAWING_DIMENSION_CAPABILITY_NAME: runtime}
+    return {name: runtime for name in DRAWING_DIMENSION_CAPABILITY_NAMES}

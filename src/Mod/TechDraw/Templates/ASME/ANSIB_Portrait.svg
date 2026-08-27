@@ -10,7 +10,12 @@
    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
    xmlns:cc="http://creativecommons.org/ns#"
    xmlns:dc="http://purl.org/dc/elements/1.1/"
-   xmlns:freecad="http://www.freecad.org/wiki/index.php?title=Svg_Namespace">
+   xmlns:freecad="https://www.freecad.org/wiki/index.php?title=Svg_Namespace"
+   freecad:drawable-x-mm="18.575"
+   freecad:drawable-y-mm="18.575"
+   freecad:drawable-width-mm="242.25"
+   freecad:drawable-height-mm="346.805"
+   freecad:drawable-clearance-mm="7">
   <defs
      id="defs1" />
   <metadata
@@ -551,4 +556,5 @@
        id="tspan3780-0"
        x="226.52933"
        y="411.65485">Sheet n of m</tspan></text>
+ <text id="unit_system_data_field" x="176" y="412.65485" fill="#000000" font-family="sans-serif" font-size="3.24px" text-anchor="middle" freecad:editable="unit_system" freecad:autofill="units"><tspan>in</tspan></text>
 </svg>

@@ -94,7 +94,7 @@ def _intersection_targets(values: Mapping[str, Any]) -> tuple[Mapping[str, Any],
     for item in targets:
         exact = exact_drawing_mapping(
             item,
-            frozenset({"subelement", "expected_element_state_sha256"}),
+            frozenset({"subelement"}),
             "intersection source",
             family="cosmetic vertex",
             error_code="NATIVE_DRAWING_COSMETIC_VERTEX_PARAMETERS_INVALID",
@@ -120,7 +120,7 @@ def _offset_target(
 ) -> tuple[tuple[Mapping[str, Any], ...], dict[str, float]]:
     exact = exact_drawing_mapping(
         values["source_vertex"],
-        frozenset({"subelement", "expected_element_state_sha256"}),
+        frozenset({"subelement"}),
         "offset source",
         family="cosmetic vertex",
         error_code="NATIVE_DRAWING_COSMETIC_VERTEX_PARAMETERS_INVALID",
@@ -163,7 +163,7 @@ def _derived_edge_targets(
     for item in targets:
         exact = exact_drawing_mapping(
             item,
-            frozenset({"subelement", "expected_element_state_sha256"}),
+            frozenset({"subelement"}),
             f"{noun} source",
             family="cosmetic vertex",
             error_code="NATIVE_DRAWING_COSMETIC_VERTEX_PARAMETERS_INVALID",
@@ -313,7 +313,7 @@ def _validate_host(
                     ),
                 }[spec.operation],
                 "requested_subelements": list(spec.source_names),
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if (

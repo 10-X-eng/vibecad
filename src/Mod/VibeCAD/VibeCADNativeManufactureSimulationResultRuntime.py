@@ -10,6 +10,7 @@ from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeBackground import NativeBackgroundError
 from VibeCADNativeImmediate import run_immediate_mutation
 from VibeCADNativeManufactureErrors import NativeManufactureError
+from VibeCADNativeManufactureGovernance import create_manufacture_evidence_governance
 from VibeCADNativeManufactureSimulationResult import (
     create_native_simulation_result,
     verify_native_simulation_result,
@@ -65,6 +66,12 @@ class NativeManufactureSimulationResultRuntime:
                 error_code="NATIVE_MANUFACTURE_SIMULATION_UNAVAILABLE",
             )
         frozen = preflight_native_simulation(context.document, **values)
+        governance = create_manufacture_evidence_governance(
+            frozen,
+            adapter_id="native.manufacture.simulation_result.native",
+            operation="simulation_result.native",
+            evidence_kind="retained_simulation",
+        )
 
         def prepare(cancelled: Any, progress: Any) -> Any:
             return execute_native_simulation(
@@ -81,7 +88,7 @@ class NativeManufactureSimulationResultRuntime:
             validate_native_simulation(context.document, frozen)
 
         def commit(prepared: Any) -> Mapping[str, Any]:
-            return run_immediate_mutation(
+            result = run_immediate_mutation(
                 context,
                 ticket=ticket,
                 transaction_name="Create CAM Simulation Result",
@@ -91,6 +98,7 @@ class NativeManufactureSimulationResultRuntime:
                 ),
                 verify=verify_native_simulation_result,
             )
+            return governance.record_result(result)
 
         try:
             snapshot = manager.submit(
@@ -101,6 +109,7 @@ class NativeManufactureSimulationResultRuntime:
                 commit=commit,
                 dispatch_to_document_thread=dispatcher,
                 finalize_message="Committing retained CAM material result",
+                durable_lifecycle=governance,
             )
         except NativeBackgroundError as exc:
             raise NativeManufactureError(
@@ -109,6 +118,7 @@ class NativeManufactureSimulationResultRuntime:
             ) from exc
         return {
             "job": _job_summary(snapshot),
+            "governance": governance.references(),
             "next": {
                 "tool": "native.job",
                 "operation": "status",

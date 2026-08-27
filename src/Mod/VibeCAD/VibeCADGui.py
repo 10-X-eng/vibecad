@@ -36,6 +36,7 @@ from VibeCADSession import (
     _format_document_delta,
     normalize_interaction_mode,
     prewarm_analyze_context,
+    prewarm_drawing_context,
     rebuild_intent_memory,
     run_native_surface_continuation,
     run_prompt,
@@ -1863,6 +1864,9 @@ _ANALYZE_CONTEXT_STATUS_EVENTS = frozenset(
         "analyze_context_cache_hit",
         "analyze_context_progress",
         "analyze_context_ready",
+        "drawing_context_cache_hit",
+        "drawing_context_progress",
+        "drawing_context_ready",
     }
 )
 
@@ -1878,7 +1882,11 @@ def _show_analyze_context_application_status(
         return
     try:
         status_bar = Gui.getMainWindow().statusBar()
-        timeout = 5000 if event_name != "analyze_context_progress" else 0
+        timeout = (
+            0
+            if event_name in {"analyze_context_progress", "drawing_context_progress"}
+            else 5000
+        )
         status_bar.showMessage(str(text or "").strip(), timeout)
     except Exception:
         # The assistant status line remains the fallback for headless tests and
@@ -1925,6 +1933,12 @@ def _format_progress_event(event: dict[str, Any]) -> str:
     if name in {"analyze_context_cache_hit", "analyze_context_ready"}:
         revision = int(event.get("structural_revision", 0) or 0)
         return f"Analyze context is ready for document revision {revision}."
+    if name == "drawing_context_progress":
+        message = str(event.get("message") or "").strip()
+        return message or "Reading Drawing sources..."
+    if name in {"drawing_context_cache_hit", "drawing_context_ready"}:
+        revision = int(event.get("structural_revision", 0) or 0)
+        return f"Drawing context is ready for document revision {revision}."
     if name == "provider_subprocess_started":
         return f"{event.get('provider', 'Provider')} process started" + (
             f" | pid {event.get('pid')}" if event.get("pid") else ""
@@ -2139,6 +2153,9 @@ _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
     "analyze_context_cache_hit",
     "analyze_context_progress",
     "analyze_context_ready",
+    "drawing_context_cache_hit",
+    "drawing_context_progress",
+    "drawing_context_ready",
     "context_build_completed",
     "context_build_started",
     "document_recompute_waiting",
@@ -3091,11 +3108,16 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
     for trace in reversed(list(getattr(response, "tool_trace", ()) or ())):
         tool_name = trace.get("tool_name") if isinstance(trace, dict) else None
         result = trace.get("result")
-        if not isinstance(result, dict) or result.get("ok") is not True:
+        if not isinstance(result, dict):
             continue
         if result.get("next_turn_required") is not True:
             continue
         provider_surface_changed = result.get("provider_surface_changed") is True
+        if result.get("ok") is not True and not (
+            provider_surface_changed
+            and result.get("error_code") == "NATIVE_SURFACE_CHANGED"
+        ):
+            continue
         if provider_surface_changed:
             next_surface = str(result.get("next_surface") or "").strip()
             from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
@@ -3885,6 +3907,83 @@ def _recompute_pending_document_geometry(document: Any) -> bool:
     return not unresolved
 
 
+def _recompute_pending_document_geometry_slice(
+    document: Any,
+) -> tuple[bool, bool]:
+    """Recompute one restored object and report whether more work remains."""
+
+    if _document_recompute_active(document):
+        return False, True
+    pending = _pending_document_objects(document)
+    if not pending:
+        unresolved = _document_geometry_problems(document, [])
+        if unresolved:
+            _warn(
+                "VibeCAD restored document contains invalid geometry: "
+                + ", ".join(unresolved)
+            )
+        return False, False
+
+    target = pending[0]
+    try:
+        document.recompute([target], True, True)
+    except Exception as exc:
+        _warn(
+            "VibeCAD restored-document recompute failed for "
+            f"{str(getattr(target, 'Name', '')) or 'pending geometry'}: {exc}"
+        )
+        return False, False
+
+    unresolved = _document_geometry_problems(document, [target])
+    if unresolved:
+        _warn(
+            "VibeCAD restored-document recompute left invalid geometry: "
+            + ", ".join(unresolved)
+        )
+        return False, False
+    return True, bool(_pending_document_objects(document))
+
+
+def _restore_precomputed_projection_slice(
+    document: Any,
+    attempted: set[str],
+) -> tuple[bool, bool]:
+    """Hydrate one persisted TechDraw projection after document open."""
+
+    candidates = []
+    for obj in list(getattr(document, "Objects", []) or []):
+        object_name = str(getattr(obj, "Name", "") or "")
+        restore = getattr(obj, "restorePrecomputedState", None)
+        source_state = str(
+            getattr(obj, "PrecomputedProjectionSourceState", "") or ""
+        )
+        if (
+            object_name
+            and object_name not in attempted
+            and callable(restore)
+            and source_state
+        ):
+            candidates.append((object_name, obj, restore))
+    if not candidates:
+        return False, False
+
+    object_name, obj, restore = candidates[0]
+    attempted.add(object_name)
+    try:
+        restored = bool(restore())
+        if restored:
+            purge_touched = getattr(obj, "purgeTouched", None)
+            if callable(purge_touched):
+                purge_touched()
+    except Exception as exc:
+        _warn(
+            "VibeCAD restored projection could not be prepared for "
+            f"{object_name}: {exc}"
+        )
+        restored = False
+    return restored, len(candidates) > 1
+
+
 def _restore_partdesign_history_rendering(document: Any) -> bool:
     """Restore independent Body-output and history visibility after open."""
 
@@ -4051,6 +4150,8 @@ def _schedule_document_render_after_restore(document: Any) -> None:
         presentation_changed = False
         resource_migration_complete = False
         modified_state_captured = False
+        geometry_recomputed_any = False
+        restored_projection_names: set[str] = set()
         was_modified = None
 
         def finish_refresh() -> None:
@@ -4102,6 +4203,7 @@ def _schedule_document_render_after_restore(document: Any) -> None:
         def render_when_stable() -> None:
             nonlocal presentation_complete, presentation_changed
             nonlocal resource_migration_complete
+            nonlocal geometry_recomputed_any
             live_document = _live_document_for_storage_key(
                 document_key,
                 document_name,
@@ -4145,14 +4247,36 @@ def _schedule_document_render_after_restore(document: Any) -> None:
                 defer_until_stable(render_when_stable)
                 return
 
-            geometry_recomputed = _recompute_pending_document_geometry(live_document)
-            if not geometry_recomputed and _document_recompute_active(live_document):
+            projection_restored, projections_remaining = (
+                _restore_precomputed_projection_slice(
+                    live_document,
+                    restored_projection_names,
+                )
+            )
+            geometry_recomputed_any = (
+                geometry_recomputed_any or projection_restored
+            )
+            restore_modified_state(live_document)
+            if projections_remaining:
+                QtCore.QTimer.singleShot(0, render_when_stable)
+                return
+
+            geometry_recomputed, geometry_remaining = (
+                _recompute_pending_document_geometry_slice(live_document)
+            )
+            geometry_recomputed_any = geometry_recomputed_any or geometry_recomputed
+            if _document_recompute_active(live_document):
                 defer_until_stable(render_when_stable)
                 return
-            if presentation_changed and not geometry_recomputed:
-                _redraw_document_view(live_document)
             restore_modified_state(live_document)
-            if presentation_changed or geometry_recomputed:
+            if geometry_remaining:
+                QtCore.QTimer.singleShot(0, render_when_stable)
+                return
+            if presentation_changed and not geometry_recomputed_any:
+                _redraw_document_view(live_document)
+            elif geometry_recomputed_any:
+                _redraw_document_view(live_document)
+            if presentation_changed or geometry_recomputed_any:
                 QtCore.QTimer.singleShot(0, redraw_when_stable)
                 return
             finish_refresh()
@@ -4233,6 +4357,14 @@ def _move_saved_document_conversation(doc: Any, filepath: str) -> None:
     document_key = _document_storage_key(doc)
     snapshot = _document_save_conversations.pop(document_key, None) or {}
     reference_snapshot = _document_save_references.pop(document_key, None) or {}
+    current_file = str(getattr(doc, "FileName", "") or "").strip()
+    target_file = str(filepath or "").strip()
+    if not current_file or not target_file:
+        return
+    if Path(current_file).expanduser().resolve() != Path(
+        target_file
+    ).expanduser().resolve():
+        return
     conversation_store_path = str(snapshot.get("store_path") or "").strip()
     temporary_project_root = str(
         snapshot.get("temporary_project_root") or ""
@@ -4416,6 +4548,25 @@ def _schedule_native_surface_continuation(event: dict[str, Any]) -> None:
 
 
 class _VibeCADGuiDocumentObserver:
+    def slotChangedObject(self, view_provider, property_name) -> None:
+        if str(property_name or "") != "Visibility":
+            return
+        is_restoring = getattr(App, "isRestoring", None)
+        if callable(is_restoring) and bool(is_restoring()):
+            return
+        try:
+            obj = getattr(view_provider, "Object", None)
+            document = getattr(obj, "Document", None)
+            if document is not None and bool(getattr(document, "Restoring", False)):
+                return
+            if str(getattr(document, "Uid", "") or "").strip():
+                get_service().note_native_object_property_change(
+                    obj,
+                    "Visibility",
+                )
+        except Exception as exc:
+            _warn(f"VibeCAD visibility observer failed: {exc}")
+
     def slotResetEdit(self, view_provider) -> None:
         try:
             event = _sketch_close_continuation_controller.consume_reset_edit(
@@ -4826,7 +4977,7 @@ def show_assistant_for_active_workbench() -> None:
 
 
 def _schedule_analyze_context_prewarm() -> None:
-    """Warm Analyze provider state without occupying Qt or Native CAD jobs."""
+    """Warm responsive Native provider state without occupying Qt."""
 
     global _analyze_context_prewarm_thread
     with _analyze_context_prewarm_lock:
@@ -4858,18 +5009,35 @@ def _schedule_analyze_context_prewarm() -> None:
                     _dispatch_to_document_thread,
                     progress_callback=progress,
                 )
+                prewarm_drawing_context(
+                    get_service(),
+                    _dispatch_to_document_thread,
+                    progress_callback=progress,
+                )
             except Exception as exc:
                 from VibeCADNativeAnalyzeContext import (
                     AnalyzeContextCancelled,
                     AnalyzeContextStale,
                 )
+                from VibeCADNativeDrawingContext import (
+                    DrawingContextCancelled,
+                    DrawingContextStale,
+                )
 
-                if not isinstance(exc, (AnalyzeContextCancelled, AnalyzeContextStale)):
-                    _warn(f"VibeCAD Analyze context prewarm failed: {exc}")
+                if not isinstance(
+                    exc,
+                    (
+                        AnalyzeContextCancelled,
+                        AnalyzeContextStale,
+                        DrawingContextCancelled,
+                        DrawingContextStale,
+                    ),
+                ):
+                    _warn(f"VibeCAD Native context prewarm failed: {exc}")
 
         _analyze_context_prewarm_thread = threading.Thread(
             target=run,
-            name="VibeCAD-Analyze-context-prewarm",
+            name="VibeCAD-Native-context-prewarm",
             daemon=True,
         )
         _analyze_context_prewarm_thread.start()
@@ -5051,7 +5219,12 @@ class PublishComponentInterfaceCommand(_BaseCommand):
         name_edit = QtWidgets.QLineEdit(dialog)
         name_edit.setPlaceholderText("RotationAxis")
         kind_combo = QtWidgets.QComboBox(dialog)
-        kind_combo.addItems(["axis", "plane", "point", "frame"])
+        kind_combo.addItems([
+            "axis", "bearing_face", "bearing_seat", "bolt_pattern", "bore",
+            "electrical_connector", "fixture", "fluid_port", "frame",
+            "mounting_pattern", "plane", "planar_mate", "point", "shaft",
+            "shaft_seat", "thread", "thread_axis", "tool",
+        ])
         joints = QtWidgets.QListWidget(dialog)
         joints.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
         joints.setMaximumHeight(150)
@@ -5059,10 +5232,25 @@ class PublishComponentInterfaceCommand(_BaseCommand):
             joints.addItem(str(joint))
         compatibility_edit = QtWidgets.QLineEdit(dialog)
         compatibility_edit.setPlaceholderText("Optional exact mating token")
+        fit_combo = QtWidgets.QComboBox(dialog)
+        fit_combo.addItems([
+            "none", "bearing", "clearance", "custom", "interference",
+            "threaded", "transition",
+        ])
+        fit_designation_edit = QtWidgets.QLineEdit(dialog)
+        fit_designation_edit.setPlaceholderText("Optional standard/designation, e.g. H7/g6")
+        fit_minimum_edit = QtWidgets.QLineEdit(dialog)
+        fit_minimum_edit.setPlaceholderText("Optional minimum clearance in mm")
+        fit_maximum_edit = QtWidgets.QLineEdit(dialog)
+        fit_maximum_edit.setPlaceholderText("Optional maximum clearance in mm")
         layout.addRow("Name", name_edit)
         layout.addRow("Kind", kind_combo)
         layout.addRow("Allowed joints", joints)
         layout.addRow("Compatibility", compatibility_edit)
+        layout.addRow("Engineering fit", fit_combo)
+        layout.addRow("Fit designation", fit_designation_edit)
+        layout.addRow("Minimum clearance", fit_minimum_edit)
+        layout.addRow("Maximum clearance", fit_maximum_edit)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
             parent=dialog,
@@ -5076,7 +5264,39 @@ class PublishComponentInterfaceCommand(_BaseCommand):
         document = component.Document
         transaction_open = False
         try:
-            from VibeCADReferenceContracts import publish_native_interface
+            from VibeCADReferenceContracts import (
+                native_interface_definitions,
+                publish_native_interface,
+            )
+
+            fit = None
+            if fit_combo.currentText() != "none":
+                fit = {
+                    "schema": "vibecad-interface-fit-v1",
+                    "fit_class": fit_combo.currentText(),
+                }
+                if fit_designation_edit.text().strip():
+                    fit["designation"] = fit_designation_edit.text().strip()
+                minimum = fit_minimum_edit.text().strip()
+                maximum = fit_maximum_edit.text().strip()
+                if bool(minimum) != bool(maximum):
+                    raise ValueError(
+                        "Minimum and maximum fit clearance must be supplied together."
+                    )
+                if minimum:
+                    fit["minimum_clearance_mm"] = float(minimum)
+                    fit["maximum_clearance_mm"] = float(maximum)
+
+            retained_parameters = {}
+            for definition in native_interface_definitions(component).values():
+                selection = dict(definition.get("selection") or {})
+                if selection.get("native_lcs") != str(lcs.Name):
+                    continue
+                connector = dict(definition.get("connector") or {})
+                for key in ("joint_parameters", "coupling_parameters"):
+                    if key in connector:
+                        retained_parameters[key] = connector[key]
+                break
 
             document.openTransaction("Publish component interface")
             transaction_open = True
@@ -5087,6 +5307,8 @@ class PublishComponentInterfaceCommand(_BaseCommand):
                 kind=kind_combo.currentText(),
                 allowed_joints=[item.text() for item in joints.selectedItems()],
                 compatibility=compatibility_edit.text(),
+                fit=fit,
+                **retained_parameters,
             )
             document.recompute()
             document.commitTransaction()
@@ -5107,7 +5329,7 @@ class OpenAssistantCommand(_BaseCommand):
     pixmap = ICON_OPEN_ASSISTANT
 
     def Activated(self) -> None:
-        _show_panel()
+        open_assistant()
 
 
 class OpenPreferencesCommand(_BaseCommand):
@@ -5116,9 +5338,8 @@ class OpenPreferencesCommand(_BaseCommand):
     pixmap = ICON_MARK
 
     def Activated(self) -> None:
-        ensure_preferences_registered()
         try:
-            Gui.showPreferencesByName("VibeCAD", "VibeCAD")
+            open_preferences()
         except Exception as exc:
             _show_panel(f"VibeCAD preferences could not be opened: {exc}")
 
@@ -5296,6 +5517,19 @@ def ensure_preferences_registered() -> None:
     )
     Gui.addPreferencePage(VibeCADPreferences.VibeCADDebugPreferencesPage, "VibeCAD")
     _preferences_registered = True
+
+
+def open_preferences(page_name: str = "VibeCAD") -> None:
+    """Open VibeCAD Preferences without depending on command dispatch state."""
+
+    ensure_preferences_registered()
+    Gui.showPreferencesByName("VibeCAD", str(page_name or "VibeCAD"))
+
+
+def open_assistant() -> None:
+    """Open the assistant without depending on command dispatch state."""
+
+    _show_panel()
 
 
 def ensure_commands_registered() -> None:

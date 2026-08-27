@@ -9,6 +9,8 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeDrawingErrors import NativeDrawingError
+from VibeCADNativeDrawingHistory import require_drawing_source_history_usable
+from VibeCADNativeDrawingDimensionSupport import drawing_position_within_page_bounds
 from VibeCADNativeDrawingState import drawing_page_state, is_drawing_page
 from VibeCADNativeDrawingViewState import (
     DRAWING_VIEW_ORIENTATIONS,
@@ -16,6 +18,7 @@ from VibeCADNativeDrawingViewState import (
     drawing_view_state,
     is_part_drawing_view,
 )
+from VibeCADNativeGeometrySources import drawing_source_exclusion_reason
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity, read_current_selection, resolve_object
 
@@ -116,25 +119,40 @@ def _spec(values: Mapping[str, Any]) -> StandardViewSpec:
             "Drawing view position requires only x_mm and y_mm.",
             error_code="NATIVE_DRAWING_VIEW_PARAMETERS_INVALID",
         )
-    scale_value = values["scale"]
-    if not isinstance(scale_value, Mapping):
-        raise NativeDrawingError(
-            "Drawing view scale requires an exact page or custom choice.",
-            error_code="NATIVE_DRAWING_VIEW_PARAMETERS_INVALID",
-        )
-    scale_kind = str(scale_value.get("kind") or "")
-    if scale_kind == "page" and set(scale_value) == {"kind"}:
+    scale_value = values.get("scale", "page")
+    if scale_value == "page":
+        scale_kind = "page"
         scale = None
-    elif scale_kind == "custom" and set(scale_value) == {"kind", "value"}:
+    elif (
+        isinstance(scale_value, Mapping)
+        and set(scale_value) == {"kind"}
+        and scale_value["kind"] == "page"
+    ):
+        scale_kind = "page"
+        scale = None
+    elif (
+        isinstance(scale_value, Mapping)
+        and set(scale_value) == {"kind", "value"}
+        and scale_value["kind"] == "custom"
+    ):
+        scale_kind = "custom"
         scale = _finite(
             scale_value["value"],
             name="Drawing view scale",
             minimum=1.0e-12,
             maximum=1_000.0,
         )
+    elif type(scale_value) in {int, float}:
+        scale_kind = "custom"
+        scale = _finite(
+            scale_value,
+            name="Drawing view scale",
+            minimum=1.0e-12,
+            maximum=1_000.0,
+        )
     else:
         raise NativeDrawingError(
-            "Drawing view scale must be exactly page or custom with value.",
+            "Drawing view scale must select page or a positive custom value.",
             error_code="NATIVE_DRAWING_VIEW_PARAMETERS_INVALID",
         )
     line_style = str(values["line_style"] or "")
@@ -173,10 +191,27 @@ def _require_usable(document: Any, obj: Any, noun: str) -> None:
         )
 
 
+def _require_source_in_drawing_scope(document: Any, source: Any) -> None:
+    reason = drawing_source_exclusion_reason(document, source)
+    if reason is None:
+        return
+    if reason == "analysis_artifact":
+        raise NativeDrawingError(
+            f"Analysis artifact {source.Name!r} cannot be used as Drawing geometry.",
+            error_code="NATIVE_DRAWING_VIEW_SOURCE_ANALYSIS_ARTIFACT",
+        )
+    raise NativeDrawingError(
+        f"Drawing source {source.Name!r} is hidden from the Drawing workspace.",
+        error_code="NATIVE_DRAWING_VIEW_SOURCE_HIDDEN",
+        repair={"object_name": str(source.Name), "unhide_before_retry": True},
+    )
+
+
 def prepare_standard_view_create(
     document: Any,
     *,
     values: Mapping[str, Any],
+    validate_position: bool = True,
 ) -> PreparedStandardView:
     spec = _spec(values)
     page_target = values["page"]
@@ -196,6 +231,13 @@ def prepare_standard_view_create(
             repair={"current_state_sha256": page_state["state_sha256"]},
         )
     _require_usable(document, page, "Drawing page")
+    if validate_position:
+        drawing_position_within_page_bounds(
+            page,
+            {"x_mm": spec.x_mm, "y_mm": spec.y_mm},
+            noun="view",
+            error_code="NATIVE_DRAWING_VIEW_POSITION_INVALID",
+        )
     source_targets = tuple(values["sources"])
     names = tuple(str(target["object_name"]) for target in source_targets)
     if len(names) != len(set(names)):
@@ -213,7 +255,8 @@ def prepare_standard_view_create(
                 "object_name": target["object_name"],
             },
         )
-        _require_usable(document, source, "Drawing source")
+        _require_source_in_drawing_scope(document, source)
+        require_drawing_source_history_usable(document, source)
         try:
             state = drawing_source_state(source)
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
@@ -285,6 +328,7 @@ def validate_prepared_standard_view(
                 f"Drawing source {expected['object_name']!r} is no longer available.",
                 error_code="NATIVE_DRAWING_VIEW_SOURCE_STALE",
             )
+        _require_source_in_drawing_scope(document, current_source)
         current = drawing_source_state(current_source)
         if current["state_sha256"] != expected["state_sha256"]:
             raise NativeDrawingError(

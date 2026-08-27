@@ -92,11 +92,62 @@ Start page
   background-color: transparent;
   border: none; }
 
+QWidget#VibeCADStartContent {
+  background-color: transparent; }
+
+QFrame#VibeCADStartHero {
+  color: #e8edf2;
+  background-color: #1b2938;
+  border: 1px solid #2e4b66;
+  border-radius: 14px; }
+
+QLabel#VibeCADStartBrandTitle,
+QLabel#VibeCADFirstStartTitle {
+  color: #f3f7fb;
+  font-size: 26px;
+  font-weight: 700; }
+
+QLabel#VibeCADStartBrandDescription,
+QLabel#VibeCADFirstStartDescription,
+QLabel#VibeCADAISetupDescription {
+  color: #aab7c4;
+  font-size: 14px; }
+
+QLabel#VibeCADStartSectionTitle,
+QLabel#VibeCADFirstStartSectionTitle,
+QLabel#VibeCADAISetupTitle {
+  color: #edf3f8;
+  font-size: 18px;
+  font-weight: 650; }
+
+QFrame#VibeCADAISetupCard {
+  background-color: #202b37;
+  border: 1px solid #334252;
+  border-radius: 12px; }
+
+#StartView QPushButton[vibeStartPrimary="true"] {
+  color: #08111b;
+  background-color: #74c0fc;
+  border: 1px solid #4dabf7;
+  border-radius: 7px;
+  padding: 7px 14px; }
+  #StartView QPushButton[vibeStartPrimary="true"]:hover {
+    background-color: #91cdfd;
+    border-color: #74c0fc; }
+  #StartView QPushButton[vibeStartPrimary="true"]:pressed {
+    background-color: #4dabf7; }
+
+#StartView QListView {
+  background-color: transparent;
+  border: none;
+  outline: none; }
+
 QWidget#CreateNewRow {
   background-color: transparent;
   padding: 2px; }
 
-QPushButton#newFileButton {
+QPushButton#newFileButton,
+StartGui--NewFileButton {
   min-width: 180px;
   max-width: 180px;
   min-height: 76px;
@@ -104,16 +155,20 @@ QPushButton#newFileButton {
   background-color: #1d242d;
   border: 1px solid #29313c;
   border-radius: 8px; }
-  QPushButton#newFileButton:hover {
+  QPushButton#newFileButton:hover,
+  StartGui--NewFileButton:hover {
     background-color: #232b35;
     border-color: #39434f; }
-  QPushButton#newFileButton:pressed {
+  QPushButton#newFileButton:pressed,
+  StartGui--NewFileButton:pressed {
     color: #ffffff;
     background-color: #283140;
     border-color: #4dabf7; }
-  QPushButton#newFileButton:focus {
+  QPushButton#newFileButton:focus,
+  StartGui--NewFileButton:focus {
     border-color: #4dabf7; }
-  QPushButton#newFileButton QLabel {
+  QPushButton#newFileButton QLabel,
+  StartGui--NewFileButton QLabel {
     color: #e8edf2;
     background-color: transparent; }
 
@@ -1896,3 +1951,37 @@ QToolButton#VibeCADRibbonPageMore {
   min-height: 50px;
   padding: 2px 6px;
   color: #c7d0da; }
+
+/* Engineering Experience: Analyze-hosted presentation shell. */
+QGroupBox#VibeCADEngineeringResultsPanel {
+  margin-top: 14px;
+  padding: 10px 8px 8px 8px;
+  background-color: #101720;
+  border: 1px solid #263746;
+  border-radius: 8px; }
+
+QGroupBox#VibeCADEngineeringResultsPanel::title {
+  subcontrol-origin: margin;
+  left: 10px;
+  padding: 0px 5px;
+  color: #8edff0;
+  font-weight: 600; }
+
+QGroupBox#VibeCADEngineeringResultsPanel QLabel[vibeResultCard="true"],
+QGroupBox#VibeCADEngineeringResultsPanel QGroupBox[vibeResultCard="true"] {
+  padding: 7px;
+  color: #dce8f2;
+  background-color: #141d27;
+  border: 1px solid #263746;
+  border-radius: 7px; }
+
+QGroupBox#VibeCADEngineeringResultsPanel QGroupBox[vibeResultCard="true"]::title {
+  subcontrol-origin: margin;
+  left: 9px;
+  padding: 0px 4px;
+  color: #b8c8d6;
+  font-weight: 600; }
+
+QGroupBox#VibeCADEngineeringResultsPanel QComboBox:focus,
+QGroupBox#VibeCADEngineeringResultsPanel QPushButton:focus {
+  border-color: #00b8d4; }

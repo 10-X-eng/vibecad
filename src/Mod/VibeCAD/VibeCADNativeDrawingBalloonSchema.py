@@ -130,9 +130,8 @@ def drawing_balloon_capability_definition() -> NativeCapabilityDefinition:
                     "pattern": r"^(?:Edge|Vertex)(?:0|[1-9][0-9]*)$",
                     "maxLength": 32,
                 },
-                "expected_element_state_sha256": _SHA256,
             },
-            ("subelement", "expected_element_state_sha256"),
+            ("subelement",),
         ),
         "bubble_offset_in_view_mm": bubble_offset,
     }
@@ -202,7 +201,7 @@ def drawing_balloon_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="create",
                 description=(
-                    "Create one hash-pinned projected Balloon with explicit text and placement."
+                    "Create one exact projected Balloon with explicit text and placement."
                 ),
                 action_ids=action_ids,
                 surface_ids=frozenset({"drawing"}),

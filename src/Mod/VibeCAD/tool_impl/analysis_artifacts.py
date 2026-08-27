@@ -6,13 +6,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
+import os
 from pathlib import Path
+import shutil
+import stat
+import tarfile
+from typing import Iterable
+import zipfile
 
 
 DEFAULT_MAXIMUM_FILES = 4096
 DEFAULT_MAXIMUM_BYTES = 4 * 1024 * 1024 * 1024
 STREAM_BLOCK_BYTES = 1024 * 1024
 FEM_COMPAT_DIGEST_ALGORITHM = "vibecad-fem-directory-sha256-v1"
+ARTIFACT_MANIFEST_VERSION = "vibecad-analysis-artifacts-v1"
 
 
 class AnalysisArtifactError(RuntimeError):
@@ -26,7 +34,10 @@ class AnalysisArtifactError(RuntimeError):
         relative_path: str = "",
     ) -> None:
         clean_reason = str(reason or "").strip()
-        if clean_reason not in {"empty", "bounds", "unsafe_symlink", "read_failed"}:
+        if clean_reason not in {
+            "empty", "bounds", "unsafe_symlink", "unsafe_path", "unsafe_archive",
+            "hash_mismatch", "read_failed", "invalid_manifest",
+        }:
             raise ValueError("Unsupported Analysis artifact failure reason.")
         self.reason = clean_reason
         self.relative_path = str(relative_path or "").strip()
@@ -48,6 +59,213 @@ class SealedDirectory:
     file_count: int
     total_bytes: int
     digest_algorithm: str = FEM_COMPAT_DIGEST_ALGORITHM
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactDescriptor:
+    """Compact, immutable identity for one external Analysis artifact."""
+
+    role: str
+    logical_name: str
+    media_type: str
+    relative_path: str
+    byte_count: int
+    sha256: str
+    producer_id: str
+    job_id: str
+    provider_id: str
+    solver_id: str
+    source_correlation: str
+    exactness_class: str
+    created_at: str
+
+    def __post_init__(self) -> None:
+        for field in (
+            "role", "logical_name", "media_type", "relative_path", "producer_id",
+            "job_id", "provider_id", "solver_id", "source_correlation",
+            "exactness_class", "created_at",
+        ):
+            if not str(getattr(self, field) or "").strip():
+                raise ValueError(f"{field} must be non-empty")
+        clean_path = _safe_relative_path(self.relative_path)
+        object.__setattr__(self, "relative_path", clean_path)
+        if type(self.byte_count) is not int or self.byte_count < 0:
+            raise ValueError("byte_count must be a non-negative integer")
+        digest = str(self.sha256 or "").lower()
+        if len(digest) != 64 or any(value not in "0123456789abcdef" for value in digest):
+            raise ValueError("sha256 must be a lowercase SHA-256 digest")
+        object.__setattr__(self, "sha256", digest)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactManifest:
+    version: str
+    artifacts: tuple[ArtifactDescriptor, ...]
+
+    def __post_init__(self) -> None:
+        if self.version != ARTIFACT_MANIFEST_VERSION:
+            raise ValueError("Unsupported artifact manifest version")
+        artifacts = tuple(self.artifacts)
+        if not artifacts:
+            raise ValueError("Artifact manifest must not be empty")
+        paths = tuple(item.relative_path for item in artifacts)
+        if len(paths) != len(set(paths)):
+            raise ValueError("Artifact manifest paths must be unique")
+        object.__setattr__(self, "artifacts", artifacts)
+
+    def canonical_json(self) -> str:
+        return json.dumps(
+            {"version": self.version, "artifacts": [
+                {field: getattr(item, field) for field in item.__dataclass_fields__}
+                for item in self.artifacts
+            ]}, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        )
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
+
+
+def _safe_relative_path(value: str) -> str:
+    raw = str(value or "").replace("\\", "/").strip()
+    candidate = Path(raw)
+    if (
+        not raw or raw.startswith("/") or candidate.is_absolute()
+        or any(part in {"", ".", ".."} for part in raw.split("/"))
+        or (len(raw) > 1 and raw[1] == ":")
+    ):
+        raise AnalysisArtifactError("unsafe_path", "Artifact path is not safely relative.", relative_path=raw)
+    return raw
+
+
+def _file_sha256(path: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(STREAM_BLOCK_BYTES), b""):
+                total += len(block)
+                digest.update(block)
+    except Exception as exc:
+        raise AnalysisArtifactError("read_failed", "An Analysis artifact could not be read.", relative_path=path.name) from exc
+    return digest.hexdigest(), total
+
+
+def seal_artifact(
+    path: str | Path, *, root: str | Path, role: str, logical_name: str,
+    media_type: str, producer_id: str, job_id: str, provider_id: str,
+    solver_id: str, source_correlation: str, exactness_class: str, created_at: str,
+    maximum_bytes: int = DEFAULT_MAXIMUM_BYTES,
+) -> ArtifactDescriptor:
+    """Seal one regular file without trusting its name, reported size, or hash."""
+    file_path = Path(path)
+    base = Path(root)
+    try:
+        relative = _safe_relative_path(file_path.relative_to(base).as_posix())
+    except ValueError as exc:
+        raise AnalysisArtifactError("unsafe_path", "Artifact escaped its declared root.") from exc
+    if file_path.is_symlink():
+        raise AnalysisArtifactError("unsafe_symlink", "Artifact is a symbolic link.", relative_path=relative)
+    if not file_path.is_file():
+        raise AnalysisArtifactError("read_failed", "Artifact is not a regular file.", relative_path=relative)
+    digest, byte_count = _file_sha256(file_path)
+    if byte_count > _positive_integer(maximum_bytes, "maximum_bytes"):
+        raise AnalysisArtifactError("bounds", "Artifact exceeds its configured byte bound.", relative_path=relative)
+    return ArtifactDescriptor(
+        role, logical_name, media_type, relative, byte_count, digest, producer_id,
+        job_id, provider_id, solver_id, source_correlation, exactness_class, created_at,
+    )
+
+
+def verify_artifact(path: str | Path, descriptor: ArtifactDescriptor) -> None:
+    digest, byte_count = _file_sha256(Path(path))
+    if digest != descriptor.sha256 or byte_count != descriptor.byte_count:
+        raise AnalysisArtifactError("hash_mismatch", "Artifact content does not match its immutable descriptor.", relative_path=descriptor.relative_path)
+
+
+def validate_archive(path: str | Path, *, maximum_files: int = DEFAULT_MAXIMUM_FILES, maximum_bytes: int = DEFAULT_MAXIMUM_BYTES) -> None:
+    """Validate ZIP/TAR members before any caller extracts an untrusted bundle."""
+    max_files = _positive_integer(maximum_files, "maximum_files")
+    max_bytes = _positive_integer(maximum_bytes, "maximum_bytes")
+    archive = Path(path)
+    count = total = 0
+    try:
+        if zipfile.is_zipfile(archive):
+            with zipfile.ZipFile(archive) as bundle:
+                members = [
+                    (
+                        item.filename,
+                        item.file_size,
+                        stat.S_ISLNK((item.external_attr >> 16) & 0xFFFF),
+                    )
+                    for item in bundle.infolist()
+                    if not item.is_dir()
+                ]
+        elif tarfile.is_tarfile(archive):
+            with tarfile.open(archive) as bundle:
+                members = [
+                    (item.name, item.size, item.issym() or item.islnk())
+                    for item in bundle.getmembers()
+                    if not item.isdir()
+                ]
+        else:
+            raise AnalysisArtifactError("unsafe_archive", "Unsupported or invalid Analysis archive.")
+        for name, size, is_link in members:
+            relative = _safe_relative_path(name)
+            if is_link:
+                raise AnalysisArtifactError("unsafe_archive", "Archive contains a link member.", relative_path=relative)
+            count += 1
+            total += size
+            if count > max_files or total > max_bytes:
+                raise AnalysisArtifactError("bounds", "Archive exceeds configured expansion bounds.", relative_path=relative)
+    except AnalysisArtifactError:
+        raise
+    except Exception as exc:
+        raise AnalysisArtifactError("unsafe_archive", "Analysis archive could not be safely inspected.") from exc
+
+
+class ContentAddressedArtifactStore:
+    """Atomic immutable admission and evidence-aware, idempotent cleanup."""
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+
+    def path_for(self, sha256: str) -> Path:
+        digest = str(sha256 or "").lower()
+        if len(digest) != 64 or any(value not in "0123456789abcdef" for value in digest):
+            raise ValueError("sha256 must be a lowercase SHA-256 digest")
+        return self.root / digest[:2] / digest[2:]
+
+    def admit(self, source: str | Path, descriptor: ArtifactDescriptor) -> Path:
+        source_path = Path(source)
+        verify_artifact(source_path, descriptor)
+        destination = self.path_for(descriptor.sha256)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            verify_artifact(destination, descriptor)
+            return destination
+        temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+        try:
+            shutil.copyfile(source_path, temporary)
+            verify_artifact(temporary, descriptor)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return destination
+
+    def cleanup(self, sha256: str, *, protected_sha256: Iterable[str] = ()) -> bool:
+        digest = str(sha256 or "").lower()
+        if digest in {str(item).lower() for item in protected_sha256}:
+            return False
+        path = self.path_for(digest)
+        if not path.exists():
+            return False
+        path.unlink()
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+        return True
 
 
 def _positive_integer(value: int, field: str) -> int:

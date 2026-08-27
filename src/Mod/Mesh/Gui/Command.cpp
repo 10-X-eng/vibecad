@@ -31,16 +31,17 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <iomanip>
 #include <iterator>
 #include <map>
 #include <limits>
 #include <string>
+#include <sstream>
 #include <unordered_map>
 #include <vector>
 
 #include <QApplication>
 #include <QPointer>
-#include <qfileinfo.h>
 #include <qinputdialog.h>
 #include <qmessagebox.h>
 #include <qstringlist.h>
@@ -78,15 +79,17 @@
 #include <Mod/Mesh/App/Core/Triangulation.h>
 #include <Mod/Mesh/App/FeatureMeshCurvature.h>
 #include <Mod/Mesh/App/FeatureMeshOperations.h>
-#include <Mod/Mesh/App/Importer.h>
 #include <Mod/Mesh/App/MeshFeature.h>
 
 #include "DlgDecimating.h"
+#include "BackgroundMeshCurvature.h"
+#include "BackgroundMeshModification.h"
 #include "DlgEvaluateMeshImp.h"
 #include "DlgRegularSolidImp.h"
 #include "DlgSmoothing.h"
 #include "MeshEditor.h"
 #include "CommandGuard.h"
+#include "BackgroundMeshSegmentation.h"
 #include "ParametricMeshFilter.h"
 #include "RemeshGmsh.h"
 #include "RemoveComponents.h"
@@ -201,51 +204,32 @@ void runNativeMeshBoolean(
     const char* dialogTitle
 )
 {
+    (void)document;
+    (void)transactionName;
     try {
-        Base::Interpreter().loadModule("MeshPart");
-        Gui::WaitCursor wait;
-        Gui::ExactTransaction mutation(document, transactionName);
-        const std::string uniqueName = document.getUniqueObjectName(objectName);
-        auto* resultObject = document.addObject("MeshPart::Boolean", uniqueName.c_str());
-        auto* result = freecad_cast<Mesh::Feature*>(resultObject);
-        if (!result) {
-            throw Base::RuntimeError("The parametric mesh boolean object could not be created.");
+        Base::PyGILStateLocker lock;
+        Py::List pythonSources;
+        for (auto* source : sources) {
+            pythonSources.append(Py::asObject(source->getPyObject()));
         }
-        auto* source1 = freecad_cast<App::PropertyLink*>(result->getPropertyByName("Source1"));
-        auto* source2 = freecad_cast<App::PropertyLink*>(result->getPropertyByName("Source2"));
-        auto* operationProperty = freecad_cast<App::PropertyEnumeration*>(
-            result->getPropertyByName("Operation")
+        PyObject* imported = PyImport_ImportModule("VibeCADMeshBooleanGui");
+        if (!imported) {
+            throw Py::Exception();
+        }
+        Py::Module module(imported, true);
+        module.callMemberFunction("start_mesh_boolean", Py::TupleN(
+            pythonSources,
+            Py::String(operation),
+            Py::String(objectName)
+        ));
+    }
+    catch (const Py::Exception&) {
+        Base::PyException error;
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            qApp->translate(translationContext, dialogTitle),
+            QString::fromUtf8(error.what())
         );
-        if (!source1 || !source2 || !operationProperty) {
-            throw Base::RuntimeError("The parametric mesh boolean type has an invalid property "
-                                     "contract.");
-        }
-        source1->setValue(sources.front());
-        source2->setValue(sources.back());
-        operationProperty->setValue(operation);
-
-        if (!result->recomputeFeature() || result->isError()) {
-            throw Base::RuntimeError(result->getStatusString());
-        }
-        if (result->Mesh.getValue().countFacets() == 0 || !result->Mesh.getValue().isSolid()) {
-            throw Base::RuntimeError("The mesh boolean did not produce a non-empty closed solid.");
-        }
-
-        std::vector<App::DocumentObject*> replacedInputs;
-        replacedInputs.reserve(sources.size());
-        for (auto* source : sources) {
-            auto* view = Gui::Application::Instance->getViewProvider(source);
-            if (view && view->isVisible()) {
-                replacedInputs.push_back(source);
-            }
-        }
-        MeshGui::markMeshTimelineReplacement(*result, replacedInputs);
-        for (auto* source : sources) {
-            if (auto* view = Gui::Application::Instance->getViewProvider(source)) {
-                view->setVisible(false);
-            }
-        }
-        commitExactMutation(mutation);
     }
     catch (const Base::Exception& error) {
         QMessageBox::warning(
@@ -270,35 +254,33 @@ void runNativeMeshBoolean(
     }
 }
 
-void runParametricMeshFilter(
-    App::Document& document,
+void runBackgroundMeshModification(
     const std::vector<App::DocumentObject*>& sources,
-    const char* typeName,
-    const char* objectName,
+    const char* operation,
     const char* objectLabel,
-    const char* transactionName,
-    const char* dialogTitle,
-    const std::function<void(App::DocumentObject&)>& configure = {}
+    const std::string& argumentsJson,
+    const char* dialogTitle
 )
 {
     try {
-        std::vector<MeshGui::ParametricMeshFilterTarget> targets;
+        std::vector<MeshGui::BackgroundMeshModificationTarget> targets;
         targets.reserve(sources.size());
         for (auto* source : sources) {
-            targets.push_back(MeshGui::ParametricMeshFilterTarget {
+            targets.push_back(MeshGui::BackgroundMeshModificationTarget {
                 freecad_cast<Mesh::Feature*>(source),
-                configure,
+                objectLabel,
+                {},
+                {},
             });
         }
-        MeshGui::createParametricMeshFilters(
-            document,
-            targets,
-            MeshGui::ParametricMeshFilterSpec {
-                typeName,
-                objectName,
-                objectLabel,
-                transactionName,
-            }
+        MeshGui::startBackgroundMeshModification(targets, operation, argumentsJson);
+    }
+    catch (const Py::Exception&) {
+        Base::PyException error;
+        QMessageBox::warning(
+            Gui::getMainWindow(),
+            QString::fromUtf8(dialogTitle),
+            QString::fromUtf8(error.what())
         );
     }
     catch (const Base::Exception& error) {
@@ -306,20 +288,6 @@ void runParametricMeshFilter(
             Gui::getMainWindow(),
             QString::fromUtf8(dialogTitle),
             QString::fromUtf8(error.what())
-        );
-    }
-    catch (const std::exception& error) {
-        QMessageBox::warning(
-            Gui::getMainWindow(),
-            QString::fromUtf8(dialogTitle),
-            QString::fromUtf8(error.what())
-        );
-    }
-    catch (...) {
-        QMessageBox::warning(
-            Gui::getMainWindow(),
-            QString::fromUtf8(dialogTitle),
-            qApp->translate("Mesh", "The parametric mesh operation failed unexpectedly.")
         );
     }
 }
@@ -489,7 +457,7 @@ void CmdMeshImport::activated(int)
 
     const Gui::FileDialog::FilterList filter {
         {QObject::tr("All Mesh Files"),
-         {"*.stl", "*.ast", "*.bms", "*.obj", "*.off", "*.iv", "*.ply", "*.nas", "*.bdf"}},
+         {"*.stl", "*.ast", "*.bms", "*.obj", "*.off", "*.iv", "*.ply", "*.nas", "*.bdf", "*.3mf"}},
         {QObject::tr("Binary STL"), {"*.stl"}},
         {QObject::tr("ASCII STL"), {"*.ast"}},
         {QObject::tr("Binary Mesh"), {"*.bms"}},
@@ -498,6 +466,7 @@ void CmdMeshImport::activated(int)
         {QObject::tr("Inventor V2.1 ASCII"), {"*.iv"}},
         {QObject::tr("Stanford Polygon"), {"*.ply"}},
         {QStringLiteral("NASTRAN"), {"*.nas", "*.bdf"}},
+        {QStringLiteral("3MF"), {"*.3mf"}},
         Gui::FileDialog::Filter::AllFiles(),
     };
 
@@ -514,51 +483,43 @@ void CmdMeshImport::activated(int)
     }
 
     try {
-        Gui::ExactTransaction mutation(*document, QT_TRANSLATE_NOOP("Command", "Import Mesh"));
-        std::vector<App::DocumentObject*> outputs;
-        Mesh::Importer importer(document);
-        doCommand(Doc, "import Mesh");
-        for (const auto& it : fn) {
-            std::string unicodepath = Base::Tools::escapedUnicodeFromUtf8(it.toUtf8().data());
-            unicodepath = Base::Tools::escapeEncodeFilename(unicodepath);
-            const std::string recordedCommand = "Mesh.insert(u\"" + unicodepath + "\", \""
-                + document->getName() + "\")";
-            Gui::Application::Instance->macroManager()->addLine(
-                Gui::MacroManager::App,
-                recordedCommand.c_str()
-            );
-
-            auto imported = importer.loadWithResults(it.toUtf8().toStdString());
-            if (imported.empty()) {
-                throw Base::RuntimeError("The selected file did not contain an importable mesh");
-            }
-            for (auto* mesh : imported) {
-                if (!mesh || !document->containsObject(mesh) || mesh->getDocument() != document) {
-                    throw Base::RuntimeError("Mesh import returned an invalid result identity");
-                }
-                if (mesh->Mesh.getValue().countFacets() == 0) {
-                    throw Base::RuntimeError("The selected file produced an empty mesh");
-                }
-                outputs.push_back(mesh);
-            }
+        Base::PyGILStateLocker lock;
+        Py::List pythonPaths;
+        for (const auto& path : fn) {
+            pythonPaths.append(Py::String(path.toUtf8().constData()));
         }
-        std::vector<std::string> importedFiles;
-        importedFiles.reserve(fn.size());
-        std::ranges::transform(fn, std::back_inserter(importedFiles), [](const QString& fileName) {
-            return QFileInfo(fileName).fileName().toUtf8().toStdString();
-        });
-        MeshGui::createStandaloneOutputGroup(
-            *document,
-            outputs,
-            importedFiles,
-            "ImportedMeshes",
-            "Imported Meshes",
-            "Import meshes"
+        PyObject* imported = PyImport_ImportModule("VibeCADMeshImportGui");
+        if (!imported) {
+            throw Py::Exception();
+        }
+        Py::Module module(imported, true);
+        module.callMemberFunction("start_mesh_imports", Py::TupleN(
+            Py::asObject(document->getPyObject()),
+            pythonPaths
+        ));
+        std::string recordedCommand = "VibeCADMeshImportGui.start_mesh_imports(App.getDocument(\""
+            + std::string(document->getName()) + "\"), [";
+        for (qsizetype index = 0; index < fn.size(); ++index) {
+            if (index > 0) {
+                recordedCommand += ", ";
+            }
+            std::string unicodePath
+                = Base::Tools::escapedUnicodeFromUtf8(fn[index].toUtf8().constData());
+            unicodePath = Base::Tools::escapeEncodeFilename(unicodePath);
+            recordedCommand += "u\"" + unicodePath + "\"";
+        }
+        recordedCommand += "])";
+        Gui::Application::Instance->macroManager()->addLine(
+            Gui::MacroManager::App,
+            "import VibeCADMeshImportGui"
         );
-        document->recompute();
-        commitExactMutation(mutation);
+        Gui::Application::Instance->macroManager()->addLine(
+            Gui::MacroManager::App,
+            recordedCommand.c_str()
+        );
     }
-    catch (const Base::Exception& error) {
+    catch (const Py::Exception&) {
+        Base::PyException error;
         QMessageBox::warning(
             Gui::getMainWindow(),
             QObject::tr("Import Mesh"),
@@ -647,11 +608,42 @@ void CmdMeshExport::activated(int)
             extension = ext[formatIndex].second;
         }
 
-        MeshGui::ViewProviderMesh* vp = dynamic_cast<MeshGui::ViewProviderMesh*>(
-            Gui::Application::Instance->getViewProvider(mesh)
-        );
-        if (vp) {
-            vp->exportMesh((const char*)fn.toUtf8(), (const char*)extension);
+        try {
+            Base::PyGILStateLocker lock;
+            PyObject* imported = PyImport_ImportModule("VibeCADMeshExportGui");
+            if (!imported) {
+                throw Py::Exception();
+            }
+            Py::Module module(imported, true);
+            module.callMemberFunction("start_mesh_export", Py::TupleN(
+                Py::asObject(mesh->getPyObject()),
+                Py::String(fn.toUtf8().constData()),
+                Py::String(extension.constData())
+            ));
+            std::string unicodePath
+                = Base::Tools::escapedUnicodeFromUtf8(fn.toUtf8().constData());
+            unicodePath = Base::Tools::escapeEncodeFilename(unicodePath);
+            const std::string recordedCommand
+                = "VibeCADMeshExportGui.start_mesh_export(App.getDocument(\""
+                + std::string(document->getName()) + "\").getObject(\""
+                + std::string(mesh->getNameInDocument()) + "\"), u\"" + unicodePath
+                + "\", \"" + extension.constData() + "\")";
+            Gui::Application::Instance->macroManager()->addLine(
+                Gui::MacroManager::App,
+                "import VibeCADMeshExportGui"
+            );
+            Gui::Application::Instance->macroManager()->addLine(
+                Gui::MacroManager::App,
+                recordedCommand.c_str()
+            );
+        }
+        catch (const Py::Exception&) {
+            Base::PyException error;
+            QMessageBox::warning(
+                Gui::getMainWindow(),
+                QObject::tr("Export Mesh"),
+                QString::fromUtf8(error.what())
+            );
         }
     }
 }
@@ -851,46 +843,16 @@ void CmdMeshVertexCurvature::activated(int)
     if (meshes.empty() || !allObjectsBelongTo(meshes, document) || !allMeshesNonEmpty(meshes)) {
         return;
     }
-    Gui::ExactTransaction mutation(*document, QT_TRANSLATE_NOOP("Command", "Mesh VertexCurvature"));
-    std::vector<std::pair<Mesh::Curvature*, Mesh::Feature*>> results;
-    results.reserve(meshes.size());
-    for (auto* object : meshes) {
-        auto* source = static_cast<Mesh::Feature*>(object);
-        std::string fName = source->getNameInDocument();
-        fName += "_Curvature";
-        fName = document->getUniqueObjectName(fName);
-
-        auto* result = document->addObject<Mesh::Curvature>(fName.c_str());
-        if (auto* group = App::DocumentObjectGroup::getGroupOfObject(source)) {
-            if (auto* extension = group->getExtensionByType<App::GroupExtension>()) {
-                extension->addObject(result);
-            }
-        }
-        result->Source.setValue(source);
-        results.emplace_back(result, source);
-    }
-
-    document->recompute();
-    for (const auto& [result, source] : results) {
-        if (!result || result->isError() || result->Source.getValue() != source
-            || result->CurvInfo.getSize() != static_cast<int>(source->Mesh.getValue().countPoints())) {
-            throw Base::RuntimeError("Curvature calculation did not produce a valid result");
-        }
-    }
-    std::vector<App::DocumentObject*> outputs;
-    outputs.reserve(results.size());
-    std::ranges::transform(results, std::back_inserter(outputs), [](const auto& result) {
-        return result.first;
-    });
-    MeshGui::createSourcePreservingOutputGroup(
-        *document,
+    std::vector<Mesh::Feature*> sources;
+    sources.reserve(meshes.size());
+    std::ranges::transform(
         meshes,
-        outputs,
-        "MeshCurvatureResults",
-        "Mesh Curvature",
-        "Calculate mesh curvature"
+        std::back_inserter(sources),
+        [](App::DocumentObject* object) {
+            return static_cast<Mesh::Feature*>(object);
+        }
     );
-    commitExactMutation(mutation);
+    MeshGui::startBackgroundMeshCurvature(sources);
 }
 
 bool CmdMeshVertexCurvature::isActive()
@@ -1786,25 +1748,11 @@ void CmdMeshHarmonizeNormals::activated(int)
         return;
     }
 
-    std::vector<App::DocumentObject*> sources;
-    sources.reserve(meshes.size());
-    for (auto* object : meshes) {
-        auto* feature = static_cast<Mesh::Feature*>(object);
-        if (feature->Mesh.getValue().countNonUniformOrientedFacets() != 0) {
-            sources.push_back(feature);
-        }
-    }
-    if (sources.empty()) {
-        return;
-    }
-
-    runParametricMeshFilter(
-        *document,
-        sources,
-        "Mesh::HarmonizeNormals",
-        "HarmonizedNormals",
+    runBackgroundMeshModification(
+        meshes,
+        "harmonize_normals",
         QT_TRANSLATE_NOOP("Mesh", "Harmonized Normals"),
-        QT_TRANSLATE_NOOP("Command", "Harmonize mesh normals"),
+        "{}",
         QT_TRANSLATE_NOOP("Mesh", "Harmonize Normals")
     );
 }
@@ -1846,13 +1794,11 @@ void CmdMeshFlipNormals::activated(int)
         return;
     }
 
-    runParametricMeshFilter(
-        *document,
+    runBackgroundMeshModification(
         meshes,
-        "Mesh::FlipNormals",
-        "FlippedNormals",
+        "flip_normals",
         QT_TRANSLATE_NOOP("Mesh", "Flipped Normals"),
-        QT_TRANSLATE_NOOP("Command", "Flip mesh normals"),
+        "{}",
         QT_TRANSLATE_NOOP("Mesh", "Flip Normals")
     );
 }
@@ -2016,44 +1962,22 @@ void CmdMeshFillupHoles::activated(int)
     }
 
     std::vector<App::DocumentObject*> sources;
+    sources.reserve(targets.size());
     for (const auto& target : targets) {
         auto* feature = target.get<Mesh::Feature>();
         if (!feature || feature->getDocument() != document
             || !MeshGui::isNativeMeshInputActive(feature)) {
             return;
         }
-        Mesh::MeshObject filled = feature->Mesh.getValue();
-        const unsigned long before = filled.countFacets();
-        MeshCore::FlatTriangulator triangulator;
-        triangulator.SetVerifier(new MeshCore::TriangulationVerifierV2);
-        filled.fillupHoles(static_cast<unsigned long>(FillupHolesOfLength), 0, triangulator);
-        if (filled.countFacets() > before) {
-            sources.push_back(feature);
-        }
-    }
-    if (sources.empty()) {
-        return;
+        sources.push_back(feature);
     }
 
-    runParametricMeshFilter(
-        *document,
+    runBackgroundMeshModification(
         sources,
-        "Mesh::FillHoles",
-        "FilledHoles",
+        "fill_holes",
         QT_TRANSLATE_NOOP("Mesh", "Filled Holes"),
-        QT_TRANSLATE_NOOP("Command", "Fill up holes"),
-        QT_TRANSLATE_NOOP("Mesh", "Fill Holes"),
-        [FillupHolesOfLength](App::DocumentObject& object) {
-            auto* length = freecad_cast<App::PropertyInteger*>(
-                object.getPropertyByName("FillupHolesOfLength")
-            );
-            auto* method = freecad_cast<App::PropertyEnumeration*>(object.getPropertyByName("Method"));
-            if (!length || !method) {
-                throw Base::RuntimeError("The native fill-holes properties are unavailable");
-            }
-            length->setValue(FillupHolesOfLength);
-            method->setValue(1);
-        }
+        "{\"maximum_boundary_edges\":" + std::to_string(FillupHolesOfLength) + "}",
+        QT_TRANSLATE_NOOP("Mesh", "Fill Holes")
     );
 }
 
@@ -2224,34 +2148,21 @@ void CmdMeshMerge::activated(int)
         return;
     }
 
-    std::vector<App::DocumentObject*> replacedInputs;
-    replacedInputs.reserve(objs.size());
-    for (auto* source : objs) {
-        auto* view = Gui::Application::Instance->getViewProvider(source);
-        if (view && view->isVisible()) {
-            replacedInputs.push_back(source);
-        }
-    }
-
     try {
-        Gui::WaitCursor wait;
-        Gui::ExactTransaction mutation(*pcDoc, QT_TRANSLATE_NOOP("Command", "Mesh merge"));
-        const std::string name = pcDoc->getUniqueObjectName("MeshMerge");
-        auto* result = pcDoc->addObject<Mesh::Merge>(name.c_str());
-        result->Label.setValue(QT_TRANSLATE_NOOP("App::Property", "Merged mesh"));
-        result->Sources.setValues(objs);
-        if (!result->recomputeFeature() || result->isError()
-            || result->Mesh.getValue().countFacets() == 0) {
-            throw Base::RuntimeError(result->getStatusString());
-        }
-
-        MeshGui::markMeshTimelineReplacement(*result, replacedInputs);
-        for (auto* source : objs) {
-            if (auto* view = Gui::Application::Instance->getViewProvider(source)) {
-                view->setVisible(false);
+        std::vector<Mesh::Feature*> sources;
+        sources.reserve(objs.size());
+        std::ranges::transform(
+            objs,
+            std::back_inserter(sources),
+            [](App::DocumentObject* object) {
+                return static_cast<Mesh::Feature*>(object);
             }
-        }
-        commitExactMutation(mutation);
+        );
+        MeshGui::startBackgroundMeshSegmentation(
+            sources,
+            "merge",
+            R"({"result_label":"Merged mesh"})"
+        );
     }
     catch (const Base::Exception& error) {
         QMessageBox::warning(
@@ -2317,44 +2228,10 @@ void CmdMeshSplitComponents::activated(int)
     }
 
     auto* source = static_cast<Mesh::Feature*>(objs.front());
-    const MeshObject& mesh = source->Mesh.getValue();
-    const std::vector<std::vector<Mesh::FacetIndex>> components = mesh.getComponents();
-    if (components.size() <= 1) {
-        return;
-    }
-
-    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
-    operations.reserve(components.size());
-    for (const auto& component : components) {
-        if (component.empty()) {
-            return;
-        }
-        std::vector<long> indices(component.begin(), component.end());
-        operations.push_back(MeshGui::ParametricMeshFilterTarget {
-            source,
-            [source, indices = std::move(indices)](App::DocumentObject& object) {
-                auto& subset = static_cast<Mesh::FacetSubset&>(object);
-                subset.FacetIndices.setValues(indices);
-                subset.AcceptedTopology.setValue(source->Mesh.getValue());
-                subset.SelectionKind.setValue("Connected component");
-            },
-        });
-    }
-    MeshGui::createParametricMeshFilters(
-        *pcDoc,
-        operations,
-        MeshGui::ParametricMeshFilterSpec {
-            "Mesh::FacetSubset",
-            "Component",
-            "Mesh Component",
-            QT_TRANSLATE_NOOP("Command", "Mesh split"),
-            true,
-            true,
-            true,
-            "SplitComponents",
-            "Split Mesh Components",
-            "Split connected components",
-        }
+    MeshGui::startBackgroundMeshSegmentation(
+        {source},
+        "split_components",
+        R"({"result_label_prefix":"Component"})"
     );
 }
 
@@ -2425,51 +2302,20 @@ void CmdMeshScale::activated(int)
             || !MeshGui::isNativeMeshInputActive(feature)) {
             return;
         }
-        const MeshObject& mesh = feature->Mesh.getValue();
-        if (mesh.countFacets() == 0) {
-            return;
-        }
-        const double maximumCoordinate = std::numeric_limits<float>::max();
-        const auto& points = mesh.getKernel().GetPoints();
-        const bool finiteResult = std::ranges::all_of(
-            points,
-            [factor, maximumCoordinate](const MeshCore::MeshPoint& point) {
-                return std::ranges::all_of(
-                    std::array<double, 3> {
-                        point.x,
-                        point.y,
-                        point.z,
-                    },
-                    [factor, maximumCoordinate](double coordinate) {
-                        const double scaled = coordinate * factor;
-                        return std::isfinite(scaled) && std::abs(scaled) <= maximumCoordinate;
-                    }
-                );
-            }
-        );
-        if (!finiteResult) {
-            QMessageBox::warning(
-                Gui::getMainWindow(),
-                QObject::tr("Scaling"),
-                QObject::tr("The scaling factor would create invalid "
-                            "mesh coordinates.")
-            );
+        if (feature->Mesh.getValue().countFacets() == 0) {
             return;
         }
         sources.push_back(feature);
     }
 
-    runParametricMeshFilter(
-        *document,
+    std::ostringstream arguments;
+    arguments << "{\"factor\":" << std::setprecision(17) << factor << "}";
+    runBackgroundMeshModification(
         sources,
-        "Mesh::Scale",
-        "Scale",
+        "scale",
         "Scale Mesh",
-        QT_TRANSLATE_NOOP("Command", "Mesh scale"),
-        "Mesh Scale",
-        [factor](App::DocumentObject& object) {
-            static_cast<Mesh::Scale&>(object).Factor.setValue(factor);
-        }
+        arguments.str(),
+        "Mesh Scale"
     );
 }
 

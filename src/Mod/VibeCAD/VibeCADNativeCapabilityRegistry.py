@@ -215,10 +215,36 @@ def _serialized_schema(value: Mapping[str, Any]) -> str:
     )
 
 
+def _provider_without_internal_state_fields(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_provider_without_internal_state_fields(item) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    result = {
+        str(key): _provider_without_internal_state_fields(item)
+        for key, item in value.items()
+    }
+    properties = result.get("properties")
+    if isinstance(properties, dict):
+        internal = {
+            name
+            for name in properties
+            if name.startswith("expected_") and name.endswith("sha256")
+        }
+        for name in internal:
+            properties.pop(name, None)
+        required = result.get("required")
+        if isinstance(required, list):
+            result["required"] = [name for name in required if name not in internal]
+    return result
+
+
 def provider_visible_native_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
     """Publish one compact provider schema while retaining exact dispatch validation."""
 
     projected = json.loads(_serialized_schema(schema))
+    if str(projected.get("name") or "").startswith("drawing."):
+        projected = _provider_without_internal_state_fields(projected)
     parameters = projected.get("parameters")
     branches = parameters.get("oneOf") if isinstance(parameters, Mapping) else None
     if (
@@ -687,6 +713,7 @@ class NativeCapabilityDefinition:
     primary_classification: str
     variants: tuple[NativeCapabilityVariant, ...]
     preserve_operation_branches: bool = False
+    preserve_operation_discriminator: bool = False
 
     def __post_init__(self) -> None:
         if not _CAPABILITY_NAME.fullmatch(self.name):
@@ -709,6 +736,10 @@ class NativeCapabilityDefinition:
             raise NativeCapabilityRegistryError(
                 f"Capability {self.name!r} has invalid branch-preservation state."
             )
+        if type(self.preserve_operation_discriminator) is not bool:
+            raise NativeCapabilityRegistryError(
+                f"Capability {self.name!r} has invalid discriminator-preservation state."
+            )
         operations = [variant.operation for variant in self.variants]
         if len(operations) != len(set(operations)):
             raise NativeCapabilityRegistryError(
@@ -728,7 +759,9 @@ class NativeCapabilityDefinition:
         ordered = tuple(dict.fromkeys(required_operations))
         branches = tuple(
             variants[operation].provider_parameters(
-                require_operation=len(ordered) != 1,
+                require_operation=(
+                    len(ordered) != 1 or self.preserve_operation_discriminator
+                ),
             )
             for operation in ordered
         )
@@ -931,6 +964,26 @@ def _provider_schema_operations(schema: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _authorized_provider_schema_operations(
+    schema: Mapping[str, Any],
+    definition: NativeCapabilityDefinition,
+) -> tuple[str, ...]:
+    """Recover the exact authorized variants, including a focused singleton schema."""
+
+    operations = _provider_schema_operations(schema)
+    if operations:
+        return operations
+    matches = tuple(
+        variant.operation
+        for variant in definition.variants
+        if provider_visible_native_schema(
+            definition.provider_schema((variant.operation,))
+        )
+        == schema
+    )
+    return matches if len(matches) == 1 else ()
+
+
 def project_native_provider_operations(
     surface: NativeProviderSurface,
     registry: NativeCapabilityRegistry,
@@ -957,15 +1010,15 @@ def project_native_provider_operations(
         operations = tuple(dict.fromkeys(str(value) for value in requested if value))
         if not operations:
             continue
-        allowed = set(_provider_schema_operations(schema))
-        if not set(operations) <= allowed:
-            raise NativeCapabilityRegistryError(
-                f"Projected operations for {name!r} exceed its authorized surface."
-            )
         definition = registry.definition(name)
         if definition is None:
             raise NativeCapabilityRegistryError(
                 f"Projected Native capability {name!r} has no definition."
+            )
+        allowed = set(_authorized_provider_schema_operations(schema, definition))
+        if not set(operations) <= allowed:
+            raise NativeCapabilityRegistryError(
+                f"Projected operations for {name!r} exceed its authorized surface."
             )
         names.append(name)
         schemas.append(definition.provider_schema(operations))

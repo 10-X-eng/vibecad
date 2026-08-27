@@ -78,9 +78,13 @@ def mesh_inspect_capability_definition() -> NativeCapabilityDefinition:
                         "degeneration_mode": {
                             "type": "string",
                             "enum": ["strict", "mesh_tolerance"],
+                            "description": (
+                                "Omit for exact zero-area detection; use mesh_tolerance "
+                                "to include near-degenerate facets at the Mesh tolerance."
+                            ),
                         },
                     },
-                    ("target", "degeneration_mode"),
+                    ("target",),
                 ),
             ),
             NativeCapabilityVariant(

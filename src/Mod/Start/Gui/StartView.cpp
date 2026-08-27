@@ -26,6 +26,8 @@
 #include <QCheckBox>
 #include <QFrame>
 #include <QGridLayout>
+#include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QListView>
 #include <QMdiSubWindow>
@@ -65,14 +67,22 @@ TYPESYSTEM_SOURCE_ABSTRACT(StartGui::StartView, Gui::MDIView)  // NOLINT
 
 StartView::StartView(QWidget* parent)
     : Gui::MDIView(nullptr, parent)
-    , _contents(new QStackedWidget(parent))
+    , _contents(new QStackedWidget(this))
     , _newFileLabel {nullptr}
+    , _heroTitleLabel {nullptr}
+    , _heroDescriptionLabel {nullptr}
     , _examplesLabel {nullptr}
     , _recentFilesLabel {nullptr}
     , _customFolderLabel {nullptr}
+    , _configureAI {nullptr}
+    , _openAssistant {nullptr}
     , _showOnStartupCheckBox {nullptr}
 {
     setObjectName(QLatin1String("StartView"));
+    // Start is a full-width document surface. The permanent model browser is
+    // useful for CAD views, but would otherwise sit invisibly above the left
+    // side of this page and intercept its first card in every section.
+    setProperty("vibecadUsesModelBrowser", false);
     auto hGrp = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Mod/Start"
     );
@@ -94,15 +104,29 @@ StartView::StartView(QWidget* parent)
 
     auto firstStartRegion = gsl::owner<QHBoxLayout*>(new QHBoxLayout(firstStartScrollWidget));
     firstStartRegion->setAlignment(Qt::AlignCenter);
-    auto firstStartWidget = gsl::owner<FirstStartWidget*>(new FirstStartWidget(this));
+    auto firstStartWidget = gsl::owner<FirstStartWidget*>(new FirstStartWidget(firstStartScrollWidget));
     connect(firstStartWidget, &FirstStartWidget::dismissed, this, &StartView::firstStartWidgetDismissed);
+    connect(
+        firstStartWidget,
+        &FirstStartWidget::configureAIRequested,
+        this,
+        &StartView::openVibeCADPreferences
+    );
+    connect(
+        firstStartWidget,
+        &FirstStartWidget::openAssistantRequested,
+        this,
+        &StartView::openVibeCADAssistant
+    );
     firstStartRegion->addWidget(firstStartWidget);
     _contents->addWidget(firstStartScrollArea);
 
     // Documents page
     auto documentsWidget = gsl::owner<QWidget*>(new QWidget());
+    documentsWidget->setObjectName(QLatin1String("VibeCADStartDocuments"));
     _contents->addWidget(documentsWidget);
     auto documentsMainLayout = gsl::owner<QVBoxLayout*>(new QVBoxLayout());
+    documentsMainLayout->setContentsMargins(0, 0, 0, 0);
     documentsWidget->setLayout(documentsMainLayout);
     auto documentsScrollArea = gsl::owner<QScrollArea*>(new QScrollArea());
     documentsScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarPolicy::ScrollBarAsNeeded);
@@ -110,13 +134,70 @@ StartView::StartView(QWidget* parent)
     auto documentsScrollWidget = gsl::owner<QWidget*>(new QWidget(documentsScrollArea));
     documentsScrollArea->setWidget(documentsScrollWidget);
     documentsScrollArea->setWidgetResizable(true);
-    auto documentsContentLayout = gsl::owner<QVBoxLayout*>(new QVBoxLayout(documentsScrollWidget));
+
+    auto documentsViewportLayout = gsl::owner<QHBoxLayout*>(new QHBoxLayout(documentsScrollWidget));
+    documentsViewportLayout->setContentsMargins(28, 24, 28, 24);
+    auto documentsContentWidget = gsl::owner<QWidget*>(new QWidget(documentsScrollWidget));
+    documentsContentWidget->setObjectName(QLatin1String("VibeCADStartContent"));
+    documentsContentWidget->setMaximumWidth(1440);
+    documentsContentWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    documentsViewportLayout->addStretch();
+    documentsViewportLayout->addWidget(documentsContentWidget, 1);
+    documentsViewportLayout->addStretch();
+
+    auto documentsContentLayout = gsl::owner<QVBoxLayout*>(new QVBoxLayout(documentsContentWidget));
+    documentsContentLayout->setContentsMargins(0, 0, 0, 0);
     documentsContentLayout->setSizeConstraint(QLayout::SizeConstraint::SetMinAndMaxSize);
 
+    auto hero = gsl::owner<QFrame*>(new QFrame(documentsContentWidget));
+    hero->setObjectName(QLatin1String("VibeCADStartHero"));
+    auto heroLayout = gsl::owner<QVBoxLayout*>(new QVBoxLayout(hero));
+    heroLayout->setContentsMargins(24, 22, 24, 22);
+    heroLayout->setSpacing(18);
+
+    auto heroTopLayout = gsl::owner<QHBoxLayout*>(new QHBoxLayout);
+    heroTopLayout->setSpacing(18);
+
+    auto heroMark = gsl::owner<QLabel*>(new QLabel(hero));
+    heroMark->setObjectName(QLatin1String("VibeCADStartHeroMark"));
+    heroMark->setPixmap(QIcon(QLatin1String(":/icons/vibecad.svg")).pixmap(68, 68));
+    heroMark->setFixedSize(68, 68);
+    heroTopLayout->addWidget(heroMark, 0, Qt::AlignTop);
+
+    auto heroTextLayout = gsl::owner<QVBoxLayout*>(new QVBoxLayout);
+    heroTextLayout->setSpacing(4);
+    _heroTitleLabel = gsl::owner<QLabel*>(new QLabel(hero));
+    _heroTitleLabel->setObjectName(QLatin1String("VibeCADStartBrandTitle"));
+    heroTextLayout->addWidget(_heroTitleLabel);
+    _heroDescriptionLabel = gsl::owner<QLabel*>(new QLabel(hero));
+    _heroDescriptionLabel->setObjectName(QLatin1String("VibeCADStartBrandDescription"));
+    _heroDescriptionLabel->setWordWrap(true);
+    heroTextLayout->addWidget(_heroDescriptionLabel);
+    heroTopLayout->addLayout(heroTextLayout, 1);
+    heroLayout->addLayout(heroTopLayout);
+
+    auto heroActions = gsl::owner<QHBoxLayout*>(new QHBoxLayout);
+    heroActions->addStretch();
+    _configureAI = gsl::owner<QPushButton*>(new QPushButton(hero));
+    _configureAI->setObjectName(QLatin1String("VibeCADStartConfigureAI"));
+    _configureAI->setIcon(QIcon(QLatin1String(":/icons/preferences-general.svg")));
+    connect(_configureAI, &QPushButton::clicked, this, &StartView::openVibeCADPreferences);
+    heroActions->addWidget(_configureAI);
+
+    _openAssistant = gsl::owner<QPushButton*>(new QPushButton(hero));
+    _openAssistant->setObjectName(QLatin1String("VibeCADStartOpenAssistant"));
+    _openAssistant->setProperty("vibeStartPrimary", true);
+    _openAssistant->setIcon(QIcon(QLatin1String(":/icons/vibecad.svg")));
+    connect(_openAssistant, &QPushButton::clicked, this, &StartView::openVibeCADAssistant);
+    heroActions->addWidget(_openAssistant);
+    heroLayout->addLayout(heroActions);
+    documentsContentLayout->addWidget(hero);
+
     _newFileLabel = gsl::owner<QLabel*>(new QLabel());
+    _newFileLabel->setObjectName(QLatin1String("VibeCADStartSectionTitle"));
     documentsContentLayout->addWidget(_newFileLabel);
 
-    auto createNewRow = gsl::owner<QWidget*>(new QWidget);
+    auto createNewRow = gsl::owner<QWidget*>(new QWidget(documentsContentWidget));
     auto flowLayout = gsl::owner<FlowLayout*>(new FlowLayout);
 
     // Reset margins of layout to provide consistent spacing
@@ -130,15 +211,19 @@ StartView::StartView(QWidget* parent)
     configureNewFileButtons(flowLayout);
 
     _recentFilesLabel = gsl::owner<QLabel*>(new QLabel());
+    _recentFilesLabel->setObjectName(QLatin1String("VibeCADStartSectionTitle"));
     documentsContentLayout->addWidget(_recentFilesLabel);
-    auto recentFilesListWidget = gsl::owner<FileCardView*>(new FileCardView(_contents));
+    auto recentFilesListWidget = gsl::owner<FileCardView*>(new FileCardView(documentsContentWidget));
+    recentFilesListWidget->setObjectName(QLatin1String("RecentFilesList"));
     connect(recentFilesListWidget, &QListView::clicked, this, &StartView::fileCardSelected);
     documentsContentLayout->addWidget(recentFilesListWidget);
 
     FileCardView* customFolderListWidget {};
     if (showCustomFolder) {
-        customFolderListWidget = gsl::owner<FileCardView*>(new FileCardView(_contents));
+        customFolderListWidget = gsl::owner<FileCardView*>(new FileCardView(documentsContentWidget));
+        customFolderListWidget->setObjectName(QLatin1String("CustomFolderList"));
         _customFolderLabel = gsl::owner<QLabel*>(new QLabel());
+        _customFolderLabel->setObjectName(QLatin1String("VibeCADStartSectionTitle"));
         documentsContentLayout->addWidget(_customFolderLabel);
 
         connect(customFolderListWidget, &QListView::clicked, this, &StartView::fileCardSelected);
@@ -147,8 +232,10 @@ StartView::StartView(QWidget* parent)
 
     FileCardView* examplesListWidget {};
     if (showExamples) {
-        examplesListWidget = gsl::owner<FileCardView*>(new FileCardView(_contents));
+        examplesListWidget = gsl::owner<FileCardView*>(new FileCardView(documentsContentWidget));
+        examplesListWidget->setObjectName(QLatin1String("ExamplesList"));
         _examplesLabel = gsl::owner<QLabel*>(new QLabel());
+        _examplesLabel->setObjectName(QLatin1String("VibeCADStartSectionTitle"));
         documentsContentLayout->addWidget(_examplesLabel);
 
         connect(examplesListWidget, &QListView::clicked, this, &StartView::fileCardSelected);
@@ -161,6 +248,7 @@ StartView::StartView(QWidget* parent)
 
     // Documents page footer
     auto footerLayout = gsl::owner<QHBoxLayout*>(new QHBoxLayout());
+    footerLayout->setContentsMargins(24, 8, 24, 10);
     documentsMainLayout->addLayout(footerLayout);
 
     _openFirstStart = gsl::owner<QPushButton*>(new QPushButton());
@@ -191,7 +279,7 @@ StartView::StartView(QWidget* parent)
     }
     configureRecentFilesListWidget(recentFilesListWidget, _recentFilesLabel);
 
-    QTimer::singleShot(2000, [this, recentFilesListWidget]() {
+    QTimer::singleShot(2000, this, [this, recentFilesListWidget]() {
         auto updateFun = [this, recentFilesListWidget]() {
             configureRecentFilesListWidget(recentFilesListWidget, _recentFilesLabel);
         };
@@ -210,27 +298,32 @@ void StartView::configureNewFileButtons(QLayout* layout) const
 {
     auto newEmptyFile = gsl::owner<NewFileButton*>(new NewFileButton(
         {tr("Empty File"),
-         tr("Creates a new empty FreeCAD file"),
+         tr("Creates a new empty VibeCAD document"),
          QLatin1String(":/icons/document-new.svg")}
     ));
+    newEmptyFile->setObjectName(QLatin1String("VibeCADNewFile"));
     auto openFile = gsl::owner<NewFileButton*>(new NewFileButton(
         {tr("Open File"),
          tr("Opens an existing CAD file or 3D model"),
          QLatin1String(":/icons/document-open.svg")}
     ));
+    openFile->setObjectName(QLatin1String("VibeCADOpenFile"));
     auto partDesign = gsl::owner<NewFileButton*>(new NewFileButton(
         {tr("Parametric Body"),
          tr("Creates a body with the Part Design workbench"),
          QLatin1String(":/icons/PartDesignWorkbench.svg")}
     ));
+    partDesign->setObjectName(QLatin1String("VibeCADParametricBody"));
     auto assembly = gsl::owner<NewFileButton*>(new NewFileButton(
         {tr("Assembly"),
          tr("Creates an assembly project"),
          QLatin1String(":/icons/AssemblyWorkbench.svg")}
     ));
+    assembly->setObjectName(QLatin1String("VibeCADAssembly"));
     auto draft = gsl::owner<NewFileButton*>(new NewFileButton(
         {tr("2D Draft"), tr("Creates a 2D Draft document"), QLatin1String(":/icons/DraftWorkbench.svg")}
     ));
+    draft->setObjectName(QLatin1String("VibeCADDraft"));
     // TODO: Ensure all of the required WBs are actually available
     layout->addWidget(partDesign);
     layout->addWidget(assembly);
@@ -249,11 +342,7 @@ void StartView::configureFileCardWidget(QListView* fileCardWidget)
 {
     auto delegate = gsl::owner<FileCardDelegate*>(new FileCardDelegate(fileCardWidget));
     fileCardWidget->setItemDelegate(delegate);
-
-    fileCardWidget->setMinimumWidth(fileCardWidget->parentWidget()->width());
-    //    fileCardWidget->setGridSize(
-    //        fileCardWidget->itemDelegate()->sizeHint(QStyleOptionViewItem(),
-    //                                                 fileCardWidget->model()->index(0, 0)));
+    fileCardWidget->setMinimumWidth(0);
 }
 
 
@@ -418,6 +507,53 @@ void StartView::firstStartWidgetDismissed()
     _contents->setCurrentIndex(1);
 }
 
+void StartView::openVibeCADPreferences()
+{
+    try {
+        // Preferences are an onboarding action, not a document command. Invoke the
+        // dedicated entry point directly so global command-busy state cannot silently
+        // discard the click.
+        Base::Interpreter().runString(
+            "import VibeCADGui; VibeCADGui.open_preferences(\"VibeCAD\")"
+        );
+        return;
+    }
+    catch (Base::PyException& error) {
+        Base::Console().warning(
+            "Could not open VibeCAD Preferences from the Start page: %s\n",
+            error.getMessage().c_str()
+        );
+    }
+
+    QMessageBox::warning(
+        this,
+        tr("VibeCAD setup unavailable"),
+        tr("VibeCAD Preferences could not be opened. The VibeCAD module may not be available in "
+           "this installation.")
+    );
+}
+
+void StartView::openVibeCADAssistant()
+{
+    try {
+        Base::Interpreter().runString("import VibeCADGui; VibeCADGui.open_assistant()");
+        return;
+    }
+    catch (Base::PyException& error) {
+        Base::Console().warning(
+            "Could not open the VibeCAD Assistant from the Start page: %s\n",
+            error.getMessage().c_str()
+        );
+    }
+
+    QMessageBox::warning(
+        this,
+        tr("VibeCAD Assistant unavailable"),
+        tr("The VibeCAD Assistant could not be opened. The VibeCAD module may not be available "
+           "in this installation.")
+    );
+}
+
 void StartView::changeEvent(QEvent* event)
 {
     if (!isInitialized) {
@@ -491,11 +627,19 @@ void StartView::retranslateUi()
     const QLatin1String h1Start("<h1>");
     const QLatin1String h1End("</h1>");
 
-    _newFileLabel->setText(h1Start + tr("New File") + h1End);
+    _heroTitleLabel->setText(tr("Welcome to VibeCAD"));
+    _heroDescriptionLabel->setText(
+        tr("Create, inspect, analyze, manufacture, and document real CAD with an AI collaborator "
+           "at your side.")
+    );
+    _configureAI->setText(tr("AI Settings"));
+    _openAssistant->setText(tr("Open Assistant"));
+
+    _newFileLabel->setText(h1Start + tr("Start a design") + h1End);
     if (_examplesLabel) {
-        _examplesLabel->setText(h1Start + tr("Examples") + h1End);
+        _examplesLabel->setText(h1Start + tr("Explore examples") + h1End);
     }
-    _recentFilesLabel->setText(h1Start + tr("Recent Files") + h1End);
+    _recentFilesLabel->setText(h1Start + tr("Continue working") + h1End);
 
     auto hGrp = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Mod/Start"
@@ -509,7 +653,6 @@ void StartView::retranslateUi()
         _customFolderLabel->setText(h1Start + QString::fromUtf8(customFolder.c_str()) + h1End);
     }
 
-    QString application = QString::fromUtf8(App::Application::Config()["ExeName"].c_str());
-    _openFirstStart->setText(tr("Open First Start Setup"));
+    _openFirstStart->setText(tr("Setup & appearance"));
     _showOnStartupCheckBox->setText(tr("Do not show this Start page again (start with blank screen)"));
 }

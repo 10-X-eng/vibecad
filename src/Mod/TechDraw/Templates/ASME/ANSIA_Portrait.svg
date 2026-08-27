@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg id="svg2" width="215.9mm" height="279.4mm" version="1.1" viewBox="0 0 215.9 279.4" xmlns="http://www.w3.org/2000/svg" xmlns:cc="http://creativecommons.org/ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:freecad="https://www.freecad.org/wiki/index.php?title=Svg_Namespace" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<svg id="svg2" width="215.9mm" height="279.4mm" version="1.1" viewBox="0 0 215.9 279.4" xmlns="http://www.w3.org/2000/svg" xmlns:cc="http://creativecommons.org/ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:freecad="https://www.freecad.org/wiki/index.php?title=Svg_Namespace" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" freecad:drawable-x-mm="16.07" freecad:drawable-y-mm="17.056" freecad:drawable-width-mm="183.87" freecad:drawable-height-mm="197.604"
+   freecad:drawable-clearance-mm="7">
  <!-- ANSIA_Portrait.svg -->
  <!-- Working space 10 10 269 205 -->
  <metadata id="metadata7">
@@ -77,4 +78,5 @@
    <text id="text1079" transform="scale(.98357 1.0167)" x="-9.447072" y="153.89371" color="#000000" style="line-height:0%;text-decoration-line:none;text-indent:0;text-transform:none"><tspan id="tspan1077" x="-9.447072" y="153.89371" font-family="sans-serif" font-size="5.3215px" stroke-width="1px" style="line-height:1.25">B</tspan></text>
   </g>
  </g>
+ <text id="unit_system_data_field" x="117.2" y="261.33893" fill="#000000" font-family="sans-serif" font-size="3.1455px" text-anchor="middle" freecad:editable="unit_system" freecad:autofill="units"><tspan>in</tspan></text>
 </svg>

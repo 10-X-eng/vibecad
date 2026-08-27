@@ -14,6 +14,7 @@ namespace App
 {
 class Document;
 class DocumentObject;
+class DocumentObjectGroup;
 }  // namespace App
 
 namespace Mesh
@@ -24,6 +25,16 @@ class OutputGroup;
 
 namespace MeshGui
 {
+
+/**
+ * Return the document's canonical Meshes folder, creating it when needed,
+ * and place every otherwise unowned Mesh object under it.
+ *
+ * Existing user or operation grouping is preserved. In particular, physical
+ * results owned by a multi-output Mesh operation remain children of that
+ * operation instead of being flattened into the document folder.
+ */
+MeshGuiExport App::DocumentObjectGroup* ensureMeshesGroup(App::Document& document);
 
 struct ParametricMeshFilterSpec
 {

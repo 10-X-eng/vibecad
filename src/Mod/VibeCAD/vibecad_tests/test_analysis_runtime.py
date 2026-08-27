@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import VibeCADAnalysisRuntime as analysis_runtime
 from VibeCADAnalysisRuntime import AnalysisRuntimeManager
+from VibeCADAnalysisPersistence import AnalysisMetadataStore, DurableRuntimeLifecycle
 import VibeCADNativeBackground as native_background
 from VibeCADNativeBackground import NativeBackgroundManager
 from vibecad_tests.test_analysis_facade_packaging import (
@@ -37,6 +39,48 @@ def test_generic_analysis_runtime_executes_prepare_validate_commit_lifecycle() -
     assert completed.phase == "completed"
     assert completed.result == {"committed": True}
     assert calls == ["validate", {"prepared": True}]
+
+
+def test_generic_analysis_runtime_can_resolve_document_change_from_result() -> None:
+    manager = AnalysisRuntimeManager()
+
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="analysis.example",
+        prepare=lambda _cancelled, _progress: {"prepared": True},
+        validate_before_commit=lambda: None,
+        commit=lambda _prepared: {"changed": False},
+        dispatch_to_document_thread=lambda callback: callback(),
+        changes_document=True,
+        document_change_resolver=lambda result: result["changed"],
+    )
+
+    completed = manager.wait(submitted.job_id, 2.0)
+
+    assert completed.phase == "completed"
+    assert completed.document_changed is False
+
+
+def test_generic_analysis_runtime_rejects_non_boolean_document_change() -> None:
+    manager = AnalysisRuntimeManager()
+
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="analysis.example",
+        prepare=lambda _cancelled, _progress: {"prepared": True},
+        validate_before_commit=lambda: None,
+        commit=lambda _prepared: {"changed": "yes"},
+        dispatch_to_document_thread=lambda callback: callback(),
+        document_change_resolver=lambda result: result["changed"],
+    )
+
+    completed = manager.wait(submitted.job_id, 2.0)
+
+    assert completed.phase == "failed"
+    assert completed.error == {
+        "error_code": "ANALYSIS_RUNTIME_FAILED",
+        "message": "The Analysis operation failed before publication.",
+    }
 
 
 def test_native_background_is_a_compatibility_facade_over_analysis_runtime() -> None:
@@ -96,3 +140,75 @@ def test_generic_runtime_keeps_atomic_cancel_commit_ordering() -> None:
 
     assert cancelled.phase == "cancelled"
     assert commits == []
+
+
+def _durable_lifecycle(tmp_path: Path) -> tuple[AnalysisMetadataStore, DurableRuntimeLifecycle]:
+    store = AnalysisMetadataStore(tmp_path)
+    lifecycle = DurableRuntimeLifecycle(
+        store,
+        domain="fem",
+        adapter_id="fixture-adapter",
+        prepared_analysis_sha256="a" * 64,
+        dependency_sha256="b" * 64,
+        input_manifest_sha256="c" * 64,
+        execution_spec_sha256="d" * 64,
+    )
+    return store, lifecycle
+
+
+def test_opt_in_durable_runtime_records_exact_success_lifecycle(tmp_path: Path) -> None:
+    store, lifecycle = _durable_lifecycle(tmp_path)
+    manager = AnalysisRuntimeManager()
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="analysis.example",
+        prepare=lambda _cancelled, _progress: {"ready": True},
+        validate_before_commit=lambda: None,
+        commit=lambda _prepared: {"object": "Result"},
+        dispatch_to_document_thread=lambda callback: callback(),
+        durable_lifecycle=lifecycle,
+    )
+    completed = manager.wait(submitted.job_id, 2.0)
+    record = store.load(submitted.job_id)
+
+    assert completed.phase == "completed"
+    assert record["state"] == "succeeded"
+    assert record["analysis_id"] == submitted.job_id
+    assert record["source_document_uid"] == "document-a"
+    assert [event["state"] for event in record["events"]] == [
+        "prepared", "running_local", "collecting", "verifying",
+        "waiting_to_publish", "publishing", "succeeded",
+    ]
+    assert record["publication"]["receipt"]["compatibility_mode"] == (
+        "legacy_inline_publication"
+    )
+
+
+def test_opt_in_durable_runtime_records_cancel_without_publication(tmp_path: Path) -> None:
+    store, lifecycle = _durable_lifecycle(tmp_path)
+    manager = AnalysisRuntimeManager()
+    entered = threading.Event()
+
+    def prepare(cancelled, _progress):
+        entered.set()
+        while not cancelled():
+            threading.Event().wait(0.01)
+        return None
+
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="analysis.example",
+        prepare=prepare,
+        validate_before_commit=lambda: None,
+        commit=lambda _prepared: {"unexpected": True},
+        dispatch_to_document_thread=lambda callback: callback(),
+        durable_lifecycle=lifecycle,
+    )
+    assert entered.wait(1.0)
+    assert manager.cancel(submitted.job_id)
+    completed = manager.wait(submitted.job_id, 2.0)
+    record = store.load(submitted.job_id)
+
+    assert completed.phase == "cancelled"
+    assert record["state"] == "cancelled"
+    assert record["publication"]["receipt"] is None

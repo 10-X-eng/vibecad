@@ -120,8 +120,59 @@ class StudySetupWidget(QtWidgets.QWidget):
         self._intent: dict[str, Any] = {"declared": False}
         self._runtime_statuses: tuple[dict[str, Any], ...] = ()
         self._assignment_records: dict[str, dict[str, Any]] = {}
+        self._activity_refresh_pending = False
+        self._activity_watcher = QtCore.QFileSystemWatcher(self)
+        self._activity_watcher.setObjectName("VibeCADEngineeringActivityWatcher")
+        self._activity_watcher.directoryChanged.connect(
+            self._schedule_activity_refresh
+        )
+        self._activity_watcher.fileChanged.connect(self._schedule_activity_refresh)
         self._build()
         self.refresh()
+
+    @staticmethod
+    def _activity_watch_candidates() -> tuple[str, ...]:
+        from VibeCADProject import vibecad_data_dir
+
+        data_root = vibecad_data_dir()
+        analysis_root = data_root / "analysis"
+        candidates = (
+            data_root.parent,
+            data_root,
+            analysis_root,
+            analysis_root / "metadata",
+            analysis_root / "metadata" / "records",
+            analysis_root / "workflows",
+            analysis_root / "workflows" / "workflow-runs",
+            analysis_root / "optimization",
+            analysis_root / "optimization" / "optimization-runs",
+        )
+        return tuple(str(path) for path in candidates if path.is_dir())
+
+    def _arm_activity_watcher(self) -> None:
+        expected = set(self._activity_watch_candidates())
+        current = set(self._activity_watcher.directories())
+        removed = sorted(current - expected)
+        added = sorted(expected - current)
+        if removed:
+            self._activity_watcher.removePaths(removed)
+        if added:
+            self._activity_watcher.addPaths(added)
+
+    def _schedule_activity_refresh(self, _path: str = "") -> None:
+        self._arm_activity_watcher()
+        if self._activity_refresh_pending:
+            return
+        self._activity_refresh_pending = True
+        QtCore.QTimer.singleShot(100, self._refresh_activity)
+
+    def _refresh_activity(self) -> None:
+        self._activity_refresh_pending = False
+        self._arm_activity_watcher()
+        if not self.isVisible():
+            return
+        document, analysis = self._document_and_analysis()
+        self.results_browser.refresh(document, analysis)
 
     def _build(self) -> None:
         outer = QtWidgets.QVBoxLayout(self)
@@ -263,6 +314,7 @@ class StudySetupWidget(QtWidgets.QWidget):
         )
 
     def refresh(self) -> None:
+        self._arm_activity_watcher()
         document = _active_document()
         previous = str(self.analysis_combo.currentData() or self._analysis_name)
         selected = (

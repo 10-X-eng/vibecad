@@ -240,10 +240,7 @@ def _geometry(view) -> dict[str, object]:
 
 
 def _target(element: dict) -> dict[str, str]:
-    return {
-        "subelement": element["name"],
-        "expected_element_state_sha256": element["element_state_sha256"],
-    }
+    return {"subelement": element["name"]}
 
 
 def _three_points(vertices: list[dict], offset: int) -> tuple[dict, dict, dict]:
@@ -393,11 +390,13 @@ def _replacement(kind: str, geometry) -> dict:
         return {"kind": kind, "references": [_target(v[1])]}
     if kind in {"radius", "diameter"}:
         index = 1 if kind == "radius" else 0
-        return {
+        result = {
             "kind": kind,
             "edge": _target(c[index]),
-            "allow_approximate": False,
         }
+        if kind == "radius":
+            result["allow_approximate"] = False
+        return result
     if kind == "angle":
         return {
             "kind": kind,
@@ -617,6 +616,9 @@ def _run() -> None:
         assert selected[0]["repair_target"]["object_name"] == broken.Name
         assert selected[0]["repair_target"]["repair_kind"] == "length"
 
+        document.saveAs(str(save_path))
+        _events(24)
+
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
         frozen = turn.surface
@@ -692,6 +694,16 @@ def _run() -> None:
             final = drawing_dimension_repair_state(dimension)
             assert final["repair_kind"] == kind and final["valid"]
             final_hashes[dimension.Name] = final["repair_state_sha256"]
+            if kind == "vertical":
+                revision_before_dimension_save = state_store.current_revision(
+                    str(document.Uid)
+                )
+                document.save()
+                _events(24)
+                assert (
+                    state_store.current_revision(str(document.Uid))
+                    == revision_before_dimension_save
+                )
         assert final_hashes[broken.Name] != first_before
         assert state_store.current_revision(str(document.Uid)) == (
             revision_before + len(_KINDS)
@@ -719,6 +731,17 @@ def _run() -> None:
         _events(12)
         assert drawing_dimension_repair_state(last)["repair_state_sha256"] == last_hash
 
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         no_change = call(
             _arguments(
                 dimensions["length"],
@@ -728,7 +751,7 @@ def _run() -> None:
             ),
             succeeds=False,
         )
-        assert no_change["error_code"] == "NATIVE_DRAWING_NO_CHANGE"
+        assert no_change["error_code"] == "NATIVE_DRAWING_NO_CHANGE", no_change
 
         stale_arguments = _arguments(
             dimensions["horizontal"],
@@ -742,7 +765,7 @@ def _run() -> None:
         old_label = str(dimensions["horizontal"].Label)
         dimensions["horizontal"].Label = old_label + " stale"
         stale = call(stale_arguments, succeeds=False)
-        assert stale["error_code"] == "NATIVE_DRAWING_DIMENSION_REPAIR_STALE"
+        assert stale["error_code"] == "NATIVE_REVISION_CONFLICT", stale
         dimensions["horizontal"].Label = old_label
 
         document.openTransaction("Create repair rollback oracle")
@@ -762,6 +785,17 @@ def _run() -> None:
             App.closeActiveTransaction(True, transaction)
             raise
         App.closeActiveTransaction(False, transaction)
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         rollback_before = drawing_dimension_repair_state(rollback)
         rollback_arguments = _arguments(
             rollback,
@@ -789,7 +823,13 @@ def _run() -> None:
         )
 
         document.recompute()
-        document.saveAs(str(save_path))
+        revision_before_save = state_store.current_revision(str(document.Uid))
+        document.save()
+        _events(24)
+        assert (
+            state_store.current_revision(str(document.Uid))
+            == revision_before_save
+        )
         assert save_path.exists() and save_path.stat().st_size > 0
         document_name = document.Name
         source_name = source.Name

@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -15,6 +18,23 @@ from VibeCADNativeSnapshot import concise_object
 
 MAX_MESH_STATE_SOURCES = 16
 MAX_MESH_STATE_RESOURCES = 32
+
+
+_MESH_OBJECT_STATE_CACHE: ContextVar[dict[int, dict[str, Any]] | None] = ContextVar(
+    "vibecad_mesh_object_state_cache",
+    default=None,
+)
+
+
+@contextmanager
+def mesh_object_state_cache():
+    """Reuse detached mesh/object state during one immutable capture pass."""
+
+    token = _MESH_OBJECT_STATE_CACHE.set({})
+    try:
+        yield
+    finally:
+        _MESH_OBJECT_STATE_CACHE.reset(token)
 
 
 def _finite(value: Any) -> float | None:
@@ -123,6 +143,22 @@ def _shape_counts(shape: Any) -> dict[str, int]:
     return result
 
 
+def _non_null_shape(obj: Any) -> Any | None:
+    try:
+        shape = getattr(obj, "Shape", None)
+    except Exception:
+        return None
+    if shape is None:
+        return None
+    is_null = getattr(shape, "isNull", None)
+    if not callable(is_null):
+        return shape
+    try:
+        return None if bool(is_null()) else shape
+    except Exception:
+        return None
+
+
 def _state_digest(value: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         dict(value),
@@ -141,10 +177,15 @@ def mesh_object_state(obj: Any) -> dict[str, Any]:
     multi-million-facet mesh.
     """
 
+    cache = _MESH_OBJECT_STATE_CACHE.get()
+    cache_key = id(obj)
+    if cache is not None and cache_key in cache:
+        return deepcopy(cache[cache_key])
+
     result = concise_object(obj)
     mesh = getattr(obj, "Mesh", None)
     points = getattr(obj, "Points", None)
-    shape = getattr(obj, "Shape", None)
+    shape = _non_null_shape(obj)
     type_id = str(getattr(obj, "TypeId", "") or "")
     curvature_source = (
         getattr(obj, "Source", None)
@@ -155,10 +196,19 @@ def mesh_object_state(obj: Any) -> dict[str, Any]:
     geometry = mesh if mesh is not None else points if points is not None else shape
     if mesh is not None:
         result["topology"] = _mesh_counts(mesh)
+        try:
+            import Mesh
+
+            result["geometry_revision"] = int(Mesh.propertyRevision(mesh))
+        except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+            pass
     elif points is not None:
         result["topology"] = _point_counts(points)
     elif shape is not None:
         result["topology"] = _shape_counts(shape)
+        shape_type = str(getattr(shape, "ShapeType", "") or "").strip()
+        if shape_type:
+            result["shape_type"] = shape_type
     elif curvature_mesh is not None:
         try:
             sample_count = int(getattr(obj, "SampleCount", 0))
@@ -210,6 +260,8 @@ def mesh_object_state(obj: Any) -> dict[str, Any]:
         if name not in {"label", "state"}
     }
     result["state_sha256"] = _state_digest(digest_source)
+    if cache is not None:
+        cache[cache_key] = deepcopy(result)
     return result
 
 
@@ -231,6 +283,16 @@ def mesh_inventory_digest(objects: list[Mapping[str, Any]]) -> str:
 def mesh_geometry_sha256(mesh: Any) -> str:
     """Hash complete topology, coordinates, and segment membership on demand."""
 
+    try:
+        import Mesh
+    except ImportError:
+        Mesh = None
+    native_digest = getattr(Mesh, "geometrySha256", None) if Mesh is not None else None
+    if callable(native_digest):
+        value = str(native_digest(mesh))
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise RuntimeError("The native Mesh geometry digest is invalid.")
+        return value
     try:
         points, facets = mesh.Topology
         digest = hashlib.sha256()

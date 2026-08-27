@@ -6,6 +6,12 @@ engineering extension
 **Audited baseline:**
 `93500486c1515eac2ee98121e16a96a3038c0299` on 2026-08-26
 
+**Current implementation checkpoint:** the dependency-ordered roadmap stack
+#90 through #135 reaches `c0157d9a6b4a6bc4d54130025ec9dfaf5c7fbbda`
+and was reconciled on 2026-08-27 with `10-X-eng/vibecad@60b8f3fd` for the daily
+fork integration. Milestone status below remains evidence-bounded and does not
+claim full program completion.
+
 ## 1. Purpose
 
 This roadmap turns the Governed Engineering Architecture whitepaper into an
@@ -84,11 +90,19 @@ document does not by itself complete a milestone.
 | Assembly occurrences, connectors, joints, solved placements, kinematic state | Native Assembly and its shared mechanism-evaluation layer | Propose candidates and consume validated graph/evidence |
 | Manufacturing Job, CAM operations, tools, post-processing, simulation | Native Manufacture/CAM domain | Run suitable detached tasks and attach evidence to exact domain state |
 | Robot setup, kinematics, trajectory, simulation, and export | Native Robot domain | Receive verified task intent and perform downstream domain validation |
+| Engineering Experience shell, cards, charts, and overlays | Presentation layer consuming exact G/domain contracts | Render governed state and request owning actions; never infer, mutate, execute, verify, publish, or export |
 | Human approval and authoring mode | Human-selected VibeCAD authority state | Report requirements and wait for the owning authority |
 
 No milestone may create a second canonical Assembly graph, manufacturing Job,
 Robot trajectory stack, preview controller, publication coordinator, solver
 physics selector, or provider-specific CAD mutation API.
+
+The visual north star is a quality and information-architecture target, not
+engineering evidence. Scientific field color and governance/status color are
+independent systems. No screenshot, card, chart, thumbnail, progress indicator,
+or badge may invent a value or strengthen the source claim. The cross-cutting
+[Engineering Experience X-track](design/engineering-experience/ENGINEERING_EXPERIENCE_X_TRACK.md)
+is a presentation projection of G0-G12, not a parallel owner or roadmap.
 
 ### 4.2 Identities are distinct and non-substitutable
 
@@ -217,6 +231,40 @@ found these foundations:
 | Robot | setup, tool shape, home state, trajectory/waypoints/features, simulation, KUKA export | No verified Assembly-step-to-Robot-task projection. |
 | Aero host plan | canonical Steps 8/8A define durable jobs/artifacts/publication before remote compute | Those steps are design-ready, not implemented. |
 
+### Post-baseline implementation reconciliation
+
+The table above remains the historical `93500486c` audit. The current roadmap execution branch was reconciled at `911a4773db5cb0b529b2673b245e729656eea49d` on 2026-08-26 through the dependency-ordered fork PR stack #90 through #95. That stack adds artifact sealing, a four-solver compatibility oracle, process cleanup/redaction hardening, durable metadata and recovery primitives, runtime lifecycle wiring, and an independent publication coordinator. It moves G2 from design-ready to partial; it does not prove G2 closed or attribute those changes to the historical baseline.
+
+Subsequent post-baseline work through fork PR #100 adds truthful roadmap
+reconciliation, common engineering contracts, the Native authority census, the
+durable workflow-DAG core, and governed-optimization contracts. Each remains
+partial at the real domain/runtime/installed acceptance gates stated below.
+The Engineering Experience pivot was incorporated after PR #100 reached a
+checked boundary; it does not retroactively alter the historical audit or claim
+that the north-star UI exists.
+
+The same pivot source and north-star image were resupplied on 2026-08-27 after
+fork PR #121 reached its review boundary. Their hashes match the already
+preserved repository copies exactly. This reconfirms, rather than replaces, the
+X-track direction. EVS-01 through EVS-09 are now the active Analyze delivery
+slices inside the X-track specification, dependency-bound to G1/G2/G5/G6 and
+the existing domain presentation owners; they do not replace X0-X12.
+
+Fork PRs #101 through #105 preserve the Engineering Experience source pivot,
+add the common projection facade, project durable Analysis/workflow/optimization
+records, bind the first Manufacture post-evidence seam to exact G2/G5 records,
+and project bounded Assembly simulation evidence without creating a second
+Assembly graph. These are partial foundations at X0-X8, not completion of the
+corresponding G milestones.
+
+The compatibility-repair tranche immediately after #105 preserves the public
+`manufacture.post` operation discriminator even when provider availability
+narrows to one of its variants, and removes raw workbench/edit activation from
+Native domain modules. Authorized GUI transitions retain their existing
+document-thread and post-state checks but are performed by one installed host
+surface authority owner. This closes those two discovered regressions only; it
+does not complete G7, G8, or the repository-wide acceptance gates.
+
 ## 6. Dependency graph
 
 ```mermaid
@@ -238,6 +286,25 @@ flowchart TD
     G10 --> G11[G11 service and disassembly planning]
     G10 --> G12[G12 Robot task projection]
     G1 --> G12
+    G0 --> X0[X0 target and GUI inventory]
+    G1 --> X1[X1 common engineering presentation]
+    G2 --> X2[X2 durable activity and artifacts]
+    G3 --> X3[X3 remote execution state]
+    G4 --> X4[X4 governed preview evidence]
+    G5 --> X5[X5 workflow visualization]
+    G6 --> X6[X6 optimization comparison]
+    G7 --> X7[X7 Manufacture evidence]
+    G8 --> X8[X8 Assembly evidence]
+    G9 --> X9[X9 joint proposals]
+    G10 --> X10[X10 sequence visualization]
+    G11 --> X11[X11 service visualization]
+    G12 --> X12[X12 Robot task visualization]
+    X0 --> X1 --> X2
+    X1 --> X4
+    X2 --> X3
+    X2 --> X5 --> X6 --> X7
+    X8 --> X9 --> X10 --> X11
+    X10 --> X12
 ```
 
 G4 and G8 may proceed in parallel with G2 because they have independent state
@@ -251,17 +318,18 @@ behavior while it waits for host persistence/workflows.
 | --- | --- | --- | --- |
 | G0 — live reconciliation | prerequisite | **Verified complete for this baseline** | Repeat at the start of every implementation tranche and record drift. |
 | G1 — common engineering contracts | C, D, E | **Partial** | Define versioned identities, result envelope, finding taxonomy/profile, provenance graph, compatibility rules, and cross-domain fixtures. |
-| G2 — durable Analysis and publication | A plus C/E | **Design-ready** | Transactional metadata, immutable artifacts, migration, locking, crash recovery, retention, fresh publication, replay-idempotent receipts. |
+| G2 — durable Analysis and publication | A plus C/E | **Partial** | Complete migrations, application-data/global discovery, reconnect and crash recovery, quota/reference integrity, Native/domain publication wiring, and installed cross-platform acceptance. |
 | G3 — remote provider | B | **Blocked by G2** | One real target, reconnect/cancel/poll/event semantics, credential isolation, verified bundle/output transport, real restart acceptance. |
-| G4 — authority policy and preview evidence | F, G | **Partial** | Census every operation, lock policy ownership, close unclassified consequential paths, add bounded evidence where justified. |
-| G5 — workflow DAG | H | **Design-ready** | Versioned definitions/runs, cycle and bound checks, deterministic scheduling, recovery, cancellation, failure/publication policies. |
-| G6 — optimization | I | **Blocked by G4 and G5** | Governed candidate mutation, variables/objectives/constraints, budgets, deduplication, provenance, ranking, approval/publication gates. |
-| G7 — Manufacture runtime integration | J | **Partial foundation** | Adapt expensive detached Manufacture tasks to G2/G5 without replacing current Jobs, operations, simulation, posts, or exports. |
-| G8 — Assembly consolidation | K, L, N | **Partial** | Extend the existing Assembly owner; close stable identities, interface taxonomy, continuous motion, flexible graphs, fit, evidence, and Part Design facade gates. |
-| G9 — joint inference | M | **Design-ready** | Bounded interface extraction/classification, ranked compatibility evidence, explicit accept/reject, no direct authoritative mutation. |
-| G10 — assembly sequencing | O | **Design-ready** | Insertion/access/fastener/precedence model, bounded solver, collision/currentness evidence, sampled-versus-continuous verdicts. |
-| G11 — service/disassembly | P | **Blocked by G10** | Target/removal constraints, minimum-set objective, verified reverse sequence, uncertainty and service claim ceilings. |
+| G4 — authority policy and preview evidence | F, G | **Partial** | The executable registry-bound census classifies all current operations; add bounded domain preview evidence where justified and prove authoritative installed/runtime integration. |
+| G5 — workflow DAG | H | **Partial** | The bounded durable DAG, scheduler, restart, cancellation, retry, and publish-once core is implemented; wire real G2 jobs/domain adapters and prove installed/runtime and real five-stage FEM acceptance. |
+| G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, publish-once intent, and exact read-only G5 workflow-run provenance are implemented; real mutation-owner execution/G3 integration and installed acceptance remain. |
+| G7 — Manufacture runtime integration | J | **Partial runtime integration** | Post, CAMotics, live GL simulation and retained simulation now create exact durable G2 Analysis/G5 workflow records and bounded X7 evidence while preserving owner-specific claim ceilings; A/B, stale/restart and authoritative installed closure remain. |
+| G8 — Assembly consolidation | K, L, N | **Partial identity/interface/currentness/evidence foundation** | New Native-authored graph objects receive write-once persisted identities; component interfaces expose expanded semantic, fit, versioned explicit relation-parameter, and per-family coupling-parameter contracts plus conservative LCS-support geometry bindings with current/stale/unbound/indeterminate evidence. Exact bound subelements are now classified for axis/plane/point/bore/shaft/bearing/thread semantic families, and explicitly incompatible publication is refused. The existing simulation-state/solver projection remains. Legacy migration, real reopen/rename proof, stable graph revision, richer pattern/port/fixture/tool geometry, topology-stable references beyond conservative whole-support invalidation, catalog fit evaluation, continuous motion, flexible/closed-loop/contact and Part Design gates remain. |
+| G9 — joint inference | M | **Partial live scenario/joint/relation/coupling-decision foundation** | The installed mutation-free planning facade binds deterministic ranked proposals to the exact persisted-identity graph revision and reports ambiguous/no-candidate outcomes. A document-owned reader extracts occurrences and published native interfaces from the human-active Assembly, includes only joints whose exact connector paths resolve to two distinct published interface identities, reports unresolved joints as bounded omissions, and rejects an active Assembly that changes during the read. Versioned interface declarations now carry explicit per-family rack-pinion, screw, belt, and gear parameters into live Slider/Revolute records only when one non-grounded moving occurrence is exact; existing coupling dependencies suppress duplicate proposals. Acceptance revalidates proposals and can delegate fixed/revolute/cylindrical/slider/ball creation, distance/parallel/perpendicular/angle relations, or explicit-contract couplings exactly once through the matching ordinary Native Assembly runtime and receipt path. No numeric value, interface mapping, moving component, or coupling relation is fabricated. Ranked joint proposals reject explicitly incompatible or indeterminate semantic geometry while preserving legacy/unrecorded evidence at a bounded ceiling. Rejections can be recorded in a bounded, append-only, revision-bound Assembly document log; that log deliberately cannot claim acceptance without the mutation receipt. Richer semantic geometry families, provider/UI reachability, real installed-host acceptance and broader adversarial coverage remain. |
+| G10 — assembly sequencing | O | **Partial contract foundation** | The installed bounded planner now validates exact graph currentness and precedence, deterministically enumerates explicit-evidence orders, and separates sampled, continuous, collision, inaccessible, unsupported and indeterminate verdicts; real insertion/access/fastener/fixture/contact extraction, native collision/continuous-motion evidence, durable records and runtime/GUI integration remain. |
+| G11 — service/disassembly | P | **Partial projection foundation; closure blocked by G10** | Current G10 alternatives can now be reversed for explicit targets under protected-component constraints, with a bounded-model-only ceiling and equal-optimum reporting; full removal constraints, fastener/tool/fixture/access and replacement policy, minimum-set search, failed reverse-step verification, durable evidence and runtime/GUI integration remain. |
 | G12 — Robot task projection | Q | **Partial foundation** | Versioned step-to-task contract, frames/units/tool/TCP/force/torque/tolerance, traceability, Robot-domain validation and downstream boundary. |
+| X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; X1/X2/X5/X6/X7/X8 projection foundations partial** | Bounded no-authority common, durable, workflow, optimization, Manufacture-post and Assembly-state projections exist; real wiring, Qt shell/views, remaining domain slices, GUI/accessibility and installed acceptance remain dependency-bound. |
 
 ## 8. Dependency-ordered implementation roadmap
 
@@ -329,10 +397,12 @@ require G2 persistence.
 
 ### G2 — durable Analysis jobs, artifacts, recovery, and publication
 
-**Status: Design-ready.**
+**Status: Partial on the current roadmap execution branch.**
 
 This milestone consolidates VibeCADAero Steps 8 and 8A as a host capability;
 the Aero roadmap remains the detailed compatibility and first-consumer owner.
+
+Implemented post-baseline slices include immutable artifact descriptors and admission, content-addressed storage, protected cleanup, versioned atomic metadata, inter-process locking, legal lifecycle transitions, attempt/provider identity, restart disposition, same-analysis retry, artifact retention metadata, additive runtime lifecycle binding, and an independent publication coordinator with exact identity/currentness/authorization/receipt replay checks. A bounded read-only discovery increment now enumerates validated application-data records and selects them only by exact source document UID; corrupt records and filename/record identity mismatches fail closed instead of disappearing. Remaining closure requirements below continue to apply, especially migration, quota/reference integrity, real provider reconnect, complete crash recovery, real Native document rebind/transaction wiring, domain migration, and authoritative cross-platform packaging acceptance.
 
 Durable metadata must record:
 
@@ -433,8 +503,13 @@ and operational cost. This roadmap does not invent or pre-approve one.
 
 **Status: Partial.**
 
-The current preview store and ten modeling families are a real foundation. The
-next work is a complete operation census, not indiscriminate previewing.
+The current preview store and modeling families are a real foundation. The
+current roadmap execution stack also supplies an executable census projected
+from the production registry: 738 registered variants plus `/v1/prompt` and
+`/v1/run`, with exactly one of the eight policies below and explicit owner,
+currentness, evidence, rollback, and test metadata. The remaining work is
+bounded domain preview evidence and authoritative installed/runtime acceptance,
+not indiscriminate previewing.
 
 For every frozen capability operation, record exactly one primary policy:
 
@@ -475,10 +550,20 @@ Required invariants:
 
 ### G5 — durable workflow DAG
 
-**Status: Design-ready.**
+**Status: Partial on the current roadmap execution branch.**
 
 A workflow references G2 analyses/jobs; it does not embed provider processes or
 live domain objects. Definitions and runs are separate, versioned entities.
+
+The current roadmap execution stack implements bounded validated definitions,
+deterministic topological/ready scheduling, atomic inter-process run metadata,
+node attempts, restart interruption, cancellation and late-completion guards,
+upstream state eligibility, deterministic condition skipping, retry limits,
+publish-once receipts, bounded summaries, and a failure-injected five-stage
+contract benchmark. Read-only discovery now finds validated runs by both current
+and prior node-attempt Analysis identities, without invoking recovery or
+scheduling. Production G2 submission/domain wiring and a real local FEM
+benchmark remain before closure.
 
 One workflow definition contains bounded nodes and edges with:
 
@@ -511,7 +596,7 @@ edge. Remote execution is not required to close the local workflow slice.
 
 ### G6 — governed optimization
 
-**Status: Blocked by G4 and G5.**
+**Status: Partial.**
 
 Optimization composes existing design mutation and workflow evaluation. It is
 not a provider feature and does not gain direct document authority.
@@ -534,6 +619,32 @@ must not silently replace accepted document state. The first acceptance case
 uses a small deterministic design with an independently enumerable search
 space, injected failures, duplicate candidates, restart recovery, and a final
 human-authorized publish-once operation.
+
+Implemented contract foundation:
+
+- `tool_impl/governed_optimization.py` and the installed
+  `VibeCADGovernedOptimization.py` facade bind exact source/workflow identities,
+  typed owner-scoped variables, objectives, constraints, deterministic
+  algorithm identity, and finite candidate/workflow/time/cost/concurrency
+  budgets;
+- `enumerate-v1` normalizes exact decimal values, rejects duplicates, checks the
+  complete search-space bound before evaluation, and creates immutable hashed
+  mutation proposals without document authority;
+- atomic durable run records cover child-workflow references, injected write
+  failure, interruption recovery, and workflow-run budget exhaustion;
+- deterministic ranking keeps constraint feasibility distinct from objectives
+  and explicitly handles failed, cancelled, stale, interrupted, missing-metric,
+  unevaluated, and indeterminate candidates;
+- exact-source human selection and receipt-bound publish-once intent prevent
+  candidate geometry from silently replacing accepted document state; and
+- focused tests independently enumerate the bounded benchmark and packaging
+  tests require the facade in source, build, and installed trees.
+
+Remaining closure criteria are real mutation-owner candidate preparation, G5
+workflow submission/reconnect, measured runtime resource/time/cost accounting,
+G3 publication-coordinator consumption, and the complete acceptance case in an
+installed VibeCAD deployment. See
+[VibeCAD governed optimization](vibecad-governed-optimization.md).
 
 ### G7 — Manufacture runtime integration
 
@@ -565,6 +676,32 @@ Closure requires A/B compatibility for selected current operations, restart and
 stale-source tests, installed packaging, and at least one real bounded
 Manufacture workflow that publishes once without changing untouched domain
 behavior.
+
+The first G7/X7 runtime seam is implemented by
+`VibeCADNativeManufactureGovernance.py`, the existing Native Manufacture post
+runtime and `tool_impl/engineering_experience.py`. Each accepted post request
+derives four bounded hashes from the already-frozen CAM input, then the existing
+background manager advances one durable Manufacture Analysis record and one
+single-node workflow run. Human-authorized output descriptors are pinned as
+evidence; intent and authorization metadata deliberately omit destination
+paths. The committed result carries exact Analysis, workflow, node and attempt
+references, and projection refuses mismatched records or outputs absent from
+the durable artifact set. Job, postprocessor, machine and output hashes,
+unchanged document/history/selection/visibility state and the
+`not_proven_toolpath` ceiling remain owned by Manufacture.
+
+The same owner-preserving seam now covers CAMotics read/launch evidence, live GL
+simulation presentation and retained native material simulation. Each runtime
+derives path-free identities from its frozen Job/operation/settings state,
+admits only its exact program, surface, or retained-Mesh digest, and projects a
+bounded `simulation_evidence_only` claim. A CAMotics surface, opened GL task, or
+retained stock-removal Mesh is explicitly not manufacturability or continuous
+toolpath certification. The public CAMotics `operation` discriminator is also
+retained for installed-client compatibility.
+
+G7 remains partial until restart and stale-source reconciliation are proven,
+existing behavior passes A/B GUI acceptance, and authoritative build/install
+packaging is exercised.
 
 ### G8 — Assembly state, interface, and validation consolidation
 
@@ -601,16 +738,153 @@ Remaining consolidation work:
 - compact Part Design verification facade over the same engine;
 - portable persisted evidence with currentness and claim ceilings.
 
+The Native component-interface contract now accepts the expanded semantic kind
+vocabulary for bearing faces/seats, bores, shafts/seats, threads/axes, planar
+mates, bolt/mounting patterns, fluid ports, electrical connectors, tools and
+fixtures in addition to the original axis/plane/point/frame kinds. The same
+enumeration is exposed by the strict provider schema and human dialog, and its
+descriptor projection supplies only conservative geometry-family defaults.
+This closes vocabulary transport, not the remaining exact-geometry or
+invalidation behavior.
+
+Compatibility identity and engineering fit are now separate public data. The
+legacy `compatibility` token remains unchanged and optional. A second optional
+`vibecad-interface-fit-v1` object records an explicit fit class, optional
+standard/designation, and paired minimum/maximum clearance bounds; it is
+validated, persisted as bounded canonical JSON, exposed by discovery/result
+projection, and editable in the human publication dialog. Existing callers and
+documents without the fit field remain valid and no fit is inferred from
+interface kind, geometry, or proximity. G9 proposal evidence reports
+compatibility-token agreement and fit agreement separately and rejects two
+explicitly contradictory fit declarations. Geometry- and catalog-backed fit
+evaluation remains open.
+
+Native component-interface publication now also persists a
+`vibecad-interface-geometry-binding-v1` snapshot of the LCS map mode, bounded
+support object/subelements, and a conservative SHA-256 of each complete support
+shape. Reads independently recapture that evidence and report `current`,
+`stale`, `unbound`, `indeterminate`, `unrecorded`, or `invalid`; the evidence is
+projected through component discovery and connector descriptors. G9 proposals
+reject stale/invalid bindings before ranking and cannot receive high confidence
+unless both interfaces have current geometry evidence. A free LCS remains a
+valid semantic frame but is explicitly `unbound`, not geometry proof. Because
+whole-support hashing intentionally invalidates on any support-shape change,
+semantic-kind-specific topology validation and finer stable-reference behavior
+remain open.
+
 Closure remains governed by the Assembly specification's release gates and
 owner approval points. This host roadmap must not mark G8 complete merely
 because graph-reading modules exist.
 
+The first G8/X8 projection consumes `AssemblySimulationState.summary()` and
+the existing bounded `solver_diagnostics()` result. It preserves the native
+graph-state hash, counts, eligible-joint summaries and authored simulation
+summaries, exposes no mutation/solve/inference authority, leaves joint,
+sequence and service proposals empty, and fixes the claim ceiling at graph and
+sampled-motion evidence only. This projection alone is not stable persisted
+graph identity, expanded-interface, continuous-motion,
+flexible/closed-loop/contact, or GUI closure.
+
+The first persisted-identity seam is implemented in
+`VibeCADNativeAssemblyIdentity.py`. Existing owning mutations assign one
+versioned UUID to each newly authored Assembly, joint group, occurrence,
+regular joint, and published interface LCS; repeat assignment is idempotent,
+kind changes and partial/malformed identity records are rejected, and connector
+identity is derived from the persisted joint plus its explicit side. The
+simulation-state projection includes these identities when present without
+silently mutating legacy documents during reads. This is an additive identity
+foundation, not save/reopen closure: legacy migration, source-replacement
+semantics, interface-aware graph revision, and real rename/reorder/reopen tests
+remain required before stable graph identity is claimed.
+
 ### G9 — propose-only joint inference
 
-**Status: Design-ready.**
+**Status: Partial live joint/relation/coupling-decision foundation.**
 
 Joint inference reads G8 interfaces and geometry snapshots and returns ranked,
 bounded proposals. It never authors an accepted joint directly.
+
+`VibeCADAssemblyPlanning.py` is now an installed facade over a pure,
+mutation-free planning core. It validates the normalized persisted-identity
+scenario, computes a canonical graph revision independent of input ordering,
+and deterministically ranks only pairs whose explicitly declared allowed-joint
+sets overlap and whose compatibility declarations do not conflict. Results are
+bound to that exact revision, report `proposed`, `ambiguous`, or
+`no-candidate`, and explicitly require a currentness check plus the existing
+Assembly owner for acceptance. This is a contract and deterministic ranking
+foundation only: it does not infer intent from topology, author joints inside
+the planning core, or establish complete supported-family coverage.
+
+The acceptance seam recomputes the canonical proposal set against the live
+scenario, rejects stale, missing, or altered candidates before invoking any
+owner, delegates exactly once to an explicitly supplied Assembly mutation
+owner, requires that owner to return its ordinary mutation receipt, and binds
+that receipt to proposal and graph provenance. An additive Native adapter now
+resolves each occurrence and interface through its persisted identity, verifies
+the graph-bound published interface name and live geometry-currentness status,
+checks that the ordinary call ticket belongs to the current document and the
+matching `assembly.joint` or `assembly.relation` capability. It delegates fixed,
+revolute, cylindrical, slider, or ball creation and distance, parallel,
+perpendicular, or angle relation creation to `NativeAssemblyJointRuntime`. The
+generic injected seam remains compatible. Distance and angle proposals require
+matching finite values from the versioned, explicitly published interface
+parameter contract; disagreement, absence, malformed data, and out-of-range
+values yield no candidate rather than invented intent.
+
+An installed, document-owned Native reader now builds that scenario directly
+from the human-active Assembly. It requires the assembly, every occurrence,
+every published native interface, and every included joint to carry its
+write-once persisted identity; projects interface connector, compatibility,
+fit, relation-parameter, coupling-parameter and geometry-currentness
+declarations; then computes
+the canonical graph revision through the same planning validator. Existing
+joints are included only when both exact Native connector paths resolve to two
+distinct published interface identities. Element-based or otherwise
+unresolved joints are retained in a bounded omission report instead of being
+silently converted into fabricated interfaces. A guard and repeated active-
+Assembly read reject a graph that changes during extraction. For Slider and
+Revolute joints it projects coupling declarations only from the connector on a
+uniquely identified non-grounded moving occurrence. The reader is explicit
+that it performs no mutation.
+
+The additive coupling planner operates over existing graph joints rather than
+misrepresenting couplings as two-interface joints. Rack-pinion and screw require
+an explicit Slider/Revolute pair; belt and gears require two explicit Revolute
+joints. Every proposal is bound to persistent joint and moving-occurrence
+identities and refuses missing, unknown, nonpositive, mismatched, or incomplete
+parameters. Acceptance recomputes the canonical proposal, resolves the exact
+live joint and occurrence identities, and invokes `assembly.coupling` once with
+its ordinary receipt. The versioned native-interface contract can explicitly
+declare rack-pinion pitch radius (optional on the rack side, required on the
+pinion side), matching screw lead, and per-side belt or gear pitch radius. The
+live reader projects those declarations into existing motion-joint records,
+refuses ambiguous moving sides, and recognizes already-realized couplings from
+exact prerequisite connector equality so they are not proposed again. Legacy
+flat planning inputs remain accepted; neither path infers values from labels or
+geometry.
+
+For Native interfaces bound to exact support subelements, the currentness
+record now also carries bounded semantic geometry evidence. Axis, plane, point,
+bore, shaft, bearing and thread families classify only the resolved OCC
+subelement type; publication rejects an explicitly incompatible declaration,
+while unavailable extraction remains `indeterminate` or `unbound`. Joint
+planning refuses incompatible/indeterminate semantic evidence and never
+promotes the older kind-to-geometry fallback into proof. Pattern, fixture,
+port, connector and tool-specific extraction still remain.
+
+Provider/UI reachability for proposal rejection, real installed-host
+acceptance, and broader adversarial fixtures remain runtime work.
+
+The document-owned rejection seam recomputes the exact proposal before writing,
+requires a nonempty reason and actor, and appends a self-hashed record bound to
+the scenario, graph revision, proposal identity, and proposal content hash. It
+fails closed on malformed, oversized, duplicated, or hash-inconsistent saved
+logs; an exact retry is a no-op, while a contradictory same-revision rejection
+is refused. The property is read-only in the editor and the write uses the
+ordinary Native transaction/verification/receipt runner. Successful acceptance
+is intentionally excluded from this log: acceptance evidence is the existing
+Assembly joint mutation receipt, so a document record cannot assert a joint was
+accepted when no joint mutation occurred.
 
 Pipeline:
 
@@ -638,11 +912,22 @@ Required gates:
 
 ### G10 — verified assembly sequencing
 
-**Status: Design-ready.**
+**Status: Partial contract foundation.**
 
 Sequencing consumes a validated G8 graph plus explicitly declared assembly
 constraints. Exploded-view placements are presentation evidence only and do
 not prove a feasible sequence.
+
+The same installed facade now provides a bounded deterministic precedence
+planner over caller-supplied per-occurrence evidence. It rejects stale graph
+revisions, detects cyclic precedence, caps returned alternatives, and preserves
+the distinction between `sampled-clear`, `continuous-pass`, `collision`,
+`inaccessible`, `unsupported`, and `indeterminate`. Its result cannot exceed
+`sampled-or-indeterminate` unless every supplied step is explicitly
+`continuous-pass`. It performs no CAD mutation and does not manufacture
+collision, access, fastener, contact, force, torque, or continuous-motion
+evidence. Native evidence extraction, durable result ownership and acceptance
+remain open.
 
 The sequencing model includes:
 
@@ -672,11 +957,20 @@ Required behavior:
 
 ### G11 — service and disassembly planning
 
-**Status: Blocked by G10.**
+**Status: Partial projection foundation; closure blocked by G10.**
 
 Service planning reverses or modifies the sequencing problem for an explicit
 target and service objective. It reuses the same graph, access, collision,
 fastener, fixture, and evidence owners.
+
+The first projection foundation consumes only a current G10 contract result,
+reverses bounded alternatives for explicit target occurrences, rejects removal
+paths that disturb protected occurrences, minimizes the modeled removed-count
+objective, and reports multiple equal optima. Every result is labeled
+`bounded-model-only`; it is not a universal minimum-removal proof. This does not
+unblock closure because the upstream G10 alternatives still need native
+geometry/access/fastener/contact/continuous-motion evidence and durable runtime
+integration.
 
 Each request declares target components, protected components, allowed damage
 or replacement policy, available tools/fixtures, access boundary, cost metric,
@@ -719,6 +1013,91 @@ and unreachable-task handoff states, current Robot-domain import/validation,
 traceability through trajectory/export, and no direct generation of accepted
 motion from unverified assembly inference.
 
+### X0-X12 — Engineering Experience presentation track
+
+The Engineering Experience layer is the visible, human-facing projection of
+the corresponding G milestone. It does not introduce a visualization
+workbench, universal engineering owner, scientific renderer, shadow document
+graph, scheduler, preview controller, publication path, Manufacture result
+engine, Assembly graph, or Robot task authority.
+
+The user-supplied visual reference and reconciled planning source are preserved
+verbatim and hash-bound under
+[`docs/design/engineering-experience/source-material/`](design/engineering-experience/source-material/README.md).
+They establish a visual north star while executable source and this roadmap
+remain authoritative.
+
+X0 is documented through the visual target, component map, color system, Analyze
+workspace specification, and exact X0-X12 dependency/delivery matrix. Later X
+slices land only with sufficient backing G contracts:
+
+- X1 renders the G1 result/finding/provenance envelope and its independent
+  execution, verification, currentness and publication axes;
+- X2/X3 render durable local/remote attempts, artifacts, recovery and receipts
+  from G2/G3;
+- X4 renders G4 policy-specific preview/evidence without gaining apply
+  authority;
+- X5/X6 render authoritative workflow and optimization state from G5/G6;
+- X7 presents Manufacture-owned Job/toolpath/simulation/output evidence from
+  G7 without a generic CAM owner; and
+- X8-X12 add Assembly interfaces/motion, propose-only joints, sequence,
+  service, and Robot task overlays only as G8-G12 become authoritative.
+
+The X1/X2/X5/X6 projection foundations are implemented in
+`tool_impl/engineering_experience.py` behind the installed
+`VibeCADEngineeringExperience.py` facade. G1 preserves domain payload and
+independent governance axes; G2 consumes exact durable activity, artifact,
+currentness, publication and restart records; G5 summarizes exact workflow
+nodes and attempts; and G6 pairs persisted candidates with the owning store's
+precomputed ranking while keeping mutation proposals inert. None may mutate,
+execute, recover, schedule, rank, select, publish or export. These foundations
+do not close their X milestones: broader Qt views, GUI/accessibility,
+fault/restart scenarios and installed application acceptance remain.
+
+The first EVS-01 slice styles the existing Analyze Results browser as the
+accessible Engineering presentation shell in both supported themes and leaves
+its result selector, pressure/velocity/turbulence presentation, passage
+measurement and flow-comparison routes intact. This is a presentation-only X1
+increment; it does not yet provide the cross-domain shell, field adapters,
+durable activity UI or installed GUI acceptance required for X1/X2 closure.
+
+EVS-02 adds `tool_impl/engineering_field_adapters.py` behind the explicitly
+installed `VibeCADEngineeringFieldAdapters.py` facade. It consumes only bounded
+metadata already emitted by the legacy FEM, VTK and OpenFOAM owners and projects
+semantic, unit, association, component and available-range descriptors. Legacy
+units come from the authoritative Fem mechanical-result presentation; unknown
+units/ranges remain unavailable. It neither imports FreeCAD nor reads/copies
+large arrays, renders fields or changes presentation ownership. Focused
+source-tree and facade-registration tests cover the contract; configured
+build/install-tree execution remains a packaging acceptance gate rather than a
+claimed result of this slice.
+
+The first EVS-03 slice generalizes the existing Analyze result selector from
+OpenFOAM-only discovery to every live legacy FEM or VTK result accepted by the
+Native Analyze result-state owner. It renders bounded field cards with exact
+available ranges, units, association and presentation type, retains all current
+flow controls, and leaves execution/verification/currentness/publication visibly
+unavailable when no G1 envelope is attached. Generic selection routes supported
+flow, legacy FEM and VTK fields through their existing owner surfaces after a
+fresh state-hash check, with rollback or explicit refusal where the owner cannot
+represent the request. It does not attach common provenance/metrics or prove installed GUI
+behavior. Ambiguous same-name point/cell arrays and unsupported legacy fields
+are refused rather than guessed. EVS-03 and EVS-04 therefore remain partial.
+
+The EVS-05/06 contract foundation adds bounded `EngineeringFieldViewState` for
+selected field, validated scientific colormap, auto/manual/clamped range,
+deformation scale, mesh edges, legend and undeformed outline. Automatic mode
+cannot smuggle manual limits; manual/clamped modes require finite ordered
+limits. This state is explicitly presentation-only and currently grants no
+owner capability or application behavior. Owner-specific controls, scoped
+presets and installed GUI acceptance remain before EVS-05/06 completion.
+
+The shared shell may be designed early, but no durable activity, workflow,
+candidate, interface, sequence, service, or Robot behavior is faked ahead of
+its dependency. Exact owners, initial files, visual examples, and acceptance
+gates are canonicalized in the
+[X-track specification](design/engineering-experience/ENGINEERING_EXPERIENCE_X_TRACK.md).
+
 ## 9. Cross-cutting verification matrix
 
 | Area | Required unit/contract evidence | Required integrated evidence |
@@ -735,6 +1114,7 @@ motion from unverified assembly inference.
 | Assembly | identity, graph diagnostics, interface invalidation, motion verdicts | deterministic rigid/flexible/closed-loop/reference mechanisms |
 | Sequencing/service | precedence, access/collision bounds, optimal small fixtures, no-solution cases | verified sequence and service target on real Assembly documents |
 | Robot projection | frames, units, task schema, currentness, unsupported assumptions | Assembly step -> Robot validation -> traceable trajectory/export handoff |
+| Engineering Experience | projection/view-model bounds, independent state axes, semantic color separation, accessibility, no authority | real structural/flow/workflow/optimization/Manufacture/Assembly/Robot state rendered from exact current contracts |
 | Packaging | source/build/installed imports, resource lists, component behavior, upgrades | supported Windows/Linux/macOS package matrix as applicable |
 
 Documentation-only roadmap changes do not require red/green production tests.
@@ -806,6 +1186,17 @@ documentation and tests separately identify `/v1/run` as privileged
 compatibility execution until an approved migration changes it; no claim says
 that every local automation path is dispatcher-only.
 
+### 10.10 Governed Engineering Experience
+
+The Analyze workspace selects a real published structural or flow result,
+displays an exact field through the existing owning presentation path with a
+named unit/range/scale, and separately displays execution, verification,
+currentness and publication state. The same shell renders a real recovered G2
+attempt, G5 workflow progression, G6 candidate comparison and G7 Manufacture
+evidence without creating new authority. Stale source remains visibly
+historical, scientific red is not presented as a failed verdict, and every
+displayed item can reach its exact provenance and claim ceiling.
+
 ## 11. Hazards and forbidden shortcuts
 
 - Do not create a second generic scheduler inside Aero, Manufacture, Assembly,
@@ -828,6 +1219,10 @@ that every local automation path is dispatcher-only.
 - Do not call source-text filtering of Python a security sandbox.
 - Do not replace existing Manufacture, Assembly, component-interface, or Robot
   state with whitepaper greenfield models.
+- Do not treat the Engineering Experience layer or north-star image as an
+  engineering owner, capability proof, scientific renderer, or source of
+  values/status; do not conflate scientific magnitude color with governance
+  state color.
 - Do not treat an exploded view as a verified assembly sequence.
 - Do not treat joint inference as joint acceptance.
 - Do not treat robot task projection as reachability, motion planning,
@@ -870,27 +1265,80 @@ Stop the affected tranche and resolve explicitly if:
 
 Keep the first changes small, reversible, and source-bound:
 
-1. **G1 identity vocabulary:** add internal typed identity and descriptor
-   contracts plus canonical/bounds/non-substitution tests. No persistence.
-2. **G1 result/finding/provenance slice:** wrap one existing FEM result and one
-   Native receipt with domain payload preservation and schema fixtures. No
-   public migration.
-3. **G2 metadata-store spike:** compare the lightest viable transactional local
-   stores under packaging, locking, migration, crash, copy/backup, and
-   corruption tests; record the decision before production integration.
-4. **G4 authority census:** generate and review the complete current operation
-   policy matrix, including `/v1/run`; do not change behavior in the census PR.
-5. **G2 durable job metadata:** persist one local non-public test job lifecycle
-   with fault injection, then add immutable artifacts in a separate tranche.
-6. **G2 publication authority:** add fresh replay-idempotent publication only
-   after recovery is proven, preserving current FEM behavior behind the
-   compatibility boundary.
-7. **G8 Assembly reconciliation:** update the Assembly specification's current
-   status against the live graph/interface/diagnosis implementation before
-   starting inference or sequencing.
-8. **Then** close local workflow, remote provider, Manufacture integration,
-   optimization, inference, sequencing, service, and Robot projection in the
-   dependency order above.
+1. **EVS-01 / X1 shell — implemented:** the inert Analyze-hosted Engineering
+   shell and both theme surfaces are present without moving or removing current
+   FEM, VTK or OpenFOAM behavior. Real installed GUI acceptance remains.
+2. **EVS-02 / X1 field registry — implemented contract slice:** bounded legacy
+   FEM, VTK and OpenFOAM adapters, explicit facade packaging registration and
+   focused contract coverage are present. Actual configured build/install-tree
+   execution remains a packaging acceptance gate.
+3. **EVS-03 and EVS-04 / X1 results and presentation — partial/next:** real
+   cross-result field discovery/cards are present and unsupported governance
+   axes remain explicitly unavailable. Next attach exact G1 envelopes,
+   metrics/provenance, complete owner-supported field routing, and prove the
+   result browser through installed GUI acceptance.
+4. **EVS-05 and EVS-06 / X1 scientific view controls:** add truthful legends,
+   validated colormaps, deformation and scoped Technical/Analysis presets as
+   presentation state only. The bounded state contract is present; next add
+   owner-capability-aware controls and scoped application without global
+   preference changes.
+
+The first EVS-06 owner-capability increment exposes bounded deformation scale
+only when the selected object is a legacy FEM result. The value is passed to
+the existing `femresult.resultpresentation` validation/application path; VTK and
+flow results keep the control disabled because their current owners do not
+advertise that capability. Mesh-edge/undeformed controls, scoped presets and
+installed GUI evidence remain.
+5. **EVS-07 through EVS-09 / X2/X5/X6:** connect real chart series, durable
+   Analysis activity/workflow state and exact comparable-result projections.
+   The first EVS-07 increment now discovers the existing FEM post table,
+   histogram and line-plot owners in the selected Analysis, presents bounded
+   axis/unit/range/sample descriptors, and delegates display to those owners
+   only after a full bounded table-state freshness check. It does not copy
+   scientific value arrays or claim dedicated convergence/history/comparison
+   association. Those associations, governed G1/G2/G5 series and installed GUI
+   acceptance remain. Do not fabricate data or grant scheduling, ranking,
+   selection, mutation or publication authority.
+
+   The first EVS-08 increment uses the exact-identity G2/G5 discovery path to
+   show durable Analysis and workflow identities, lifecycle state,
+   attempt/artifact counts and owner timestamps for the active document. Empty
+   discovery and read failures are explicit. Expandable rows show the bounded
+   attempt, admitted-artifact, restart, currentness, publication-axis and
+   workflow-node details from the same validated snapshots. The projection
+   carries no recovery, scheduling, retry or publication authority. The visible
+   Study Setup surface now re-arms a debounced filesystem-event watcher as
+   durable directories appear and refreshes from the authoritative snapshots
+   after atomic record changes without polling lifecycle state. Installed GUI
+   acceptance remains.
+   The first EVS-09 increment adds exact-source generic result comparison over
+   the normalized presentation owners. Metric deltas require matching IDs,
+   units and qualifiers; field-extrema deltas require matching semantics,
+   association, components, units and presentation. Both owner-state SHA-256
+   identities are mandatory. Pointwise differences remain explicitly
+   unavailable without a shared mesh/array owner, and the projection grants no
+   ranking, selection, mutation, publication or export authority.
+   Exact-document G6 discovery now reconstructs and hash-checks each persisted
+   definition before requesting the owning store's deterministic ranking. The
+   Analyze shell displays ranked and excluded candidates with variables,
+   metrics, findings, constraint failures, workflow attempts and exact
+   selection/publication evidence; it has no independent ranking, acceptance or
+   publication action. Result comparison provenance now carries the recorded
+   Analysis, post-pipeline and timeline
+   owner branches and mesh-object identity. The current result-state contract
+   has no topology digest or per-array content identities; mesh names and
+   point/cell counts are therefore explicitly insufficient for pointwise
+   subtraction. Shared-mesh pointwise comparison, restart/staleness GUI and
+   installed acceptance remain. G6 candidate projections now retain every
+   persisted workflow-run identity, resolve existing records through the
+   durable G5 owner, display the exact workflow state and nodes, and label
+   missing durable references unresolved. This view does not schedule, retry,
+   select, mutate or publish. Mutation-owner execution provenance and real
+   G3 integration remain.
+6. **Continue G-track closure in dependency order:** complete G2/G5 acceptance,
+   G7 stale/restart/installed behavior, and the current G8/G9 Assembly
+   identity/interface/inference acceptance. Advance X3/X4 and X7-X12 only from
+   the corresponding authoritative contracts.
 
 No tranche claims a later milestone because it introduces an interface the
 later milestone may eventually consume.
@@ -915,7 +1363,7 @@ Do not mark a milestone complete from prose, stubs, mocks alone, source-tree
 imports, one platform, one solver exit, screenshots, or a generated status
 report.
 
-## 15. Programs A-Q traceability index
+## 15. Programs A-Q and X-track traceability index
 
 | Original program | Canonical milestone |
 | --- | --- |
@@ -936,3 +1384,4 @@ report.
 | O — Assembly Sequencing | G10 |
 | P — Service and Disassembly | G11 |
 | Q — Robot Task Projection | G12, adapting into current Robot |
+| X0-X12 — Engineering Experience | Presentation projection paired with G0-G12; never a new domain owner |

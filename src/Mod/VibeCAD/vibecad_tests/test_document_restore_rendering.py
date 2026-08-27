@@ -25,6 +25,20 @@ class _Object:
         return ""
 
 
+class _ProjectionObject(_Object):
+    def __init__(self, name: str) -> None:
+        super().__init__(name, ["Touched"])
+        self.PrecomputedProjectionSourceState = "projection-state"
+        self.restore_calls = 0
+
+    def restorePrecomputedState(self) -> bool:
+        self.restore_calls += 1
+        return True
+
+    def purgeTouched(self) -> None:
+        self.State = ["Up-to-date"]
+
+
 class _Timeline:
     def __init__(
         self,
@@ -63,7 +77,7 @@ class _Document:
             None,
         )
 
-    def recompute(self) -> int:
+    def recompute(self, objects=None, *_args) -> int:
         if self.Recomputing:
             self.recursive_recompute_calls += 1
             return 0
@@ -75,7 +89,8 @@ class _Document:
             if hasattr(self, "_gui_document"):
                 self._gui_document.Modified = True
             recomputed = 0
-            for obj in self.Objects:
+            candidates = self.Objects if objects is None else list(objects)
+            for obj in candidates:
                 if "Touched" not in obj.State:
                     continue
                 obj.State = ["Up-to-date"]
@@ -148,6 +163,48 @@ def test_clean_restored_document_is_not_recomputed(monkeypatch) -> None:
 
     assert document.recompute_calls == 0
     assert view.redraw_calls == 0
+
+
+def test_restored_geometry_recompute_is_sliced_per_object(monkeypatch) -> None:
+    first = _Object("FirstPendingFeature", ["Touched"])
+    second = _Object("SecondPendingFeature", ["Touched"])
+    document = _Document([first, second])
+    _install_gui_document(monkeypatch, document)
+
+    assert gui._recompute_pending_document_geometry_slice(document) == (
+        True,
+        True,
+    )
+    assert first.State == ["Up-to-date"]
+    assert second.State == ["Touched"]
+
+    assert gui._recompute_pending_document_geometry_slice(document) == (
+        True,
+        False,
+    )
+    assert second.State == ["Up-to-date"]
+    assert document.recompute_calls == 2
+
+
+def test_restored_projection_hydration_is_sliced_per_view() -> None:
+    first = _ProjectionObject("FirstProjection")
+    second = _ProjectionObject("SecondProjection")
+    document = _Document([first, second])
+    attempted: set[str] = set()
+
+    assert gui._restore_precomputed_projection_slice(document, attempted) == (
+        True,
+        True,
+    )
+    assert first.restore_calls == 1
+    assert second.restore_calls == 0
+
+    assert gui._restore_precomputed_projection_slice(document, attempted) == (
+        True,
+        False,
+    )
+    assert second.restore_calls == 1
+    assert attempted == {"FirstProjection", "SecondProjection"}
 
 
 def test_non_3d_restored_view_flushes_gui_without_redraw_warning(

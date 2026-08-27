@@ -22,6 +22,19 @@ from VibeCADNativeState import NativeCallTicket
 _FIELDS = frozenset(
     {"component", "lcs", "name", "kind", "allowed_joints", "compatibility"}
 )
+_FIELD_VARIANTS = tuple(
+    frozenset(_FIELDS | subset)
+    for subset in (
+        {"fit", "joint_parameters", "coupling_parameters"},
+        {"fit", "joint_parameters"},
+        {"fit", "coupling_parameters"},
+        {"joint_parameters", "coupling_parameters"},
+        {"fit"},
+        {"joint_parameters"},
+        {"coupling_parameters"},
+        set(),
+    )
+)
 
 
 class NativeComponentInterfaceRuntime:
@@ -50,10 +63,19 @@ class NativeComponentInterfaceRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        _operation, values = strict_variant_arguments(
-            arguments,
-            {"publish_interface": _FIELDS},
-        )
+        error = None
+        for fields in _FIELD_VARIANTS:
+            try:
+                _operation, values = strict_variant_arguments(
+                    arguments, {"publish_interface": fields}
+                )
+                break
+            except NativeArgumentError as exc:
+                error = exc
+        else:
+            raise error or NativeArgumentError(
+                "Native capability arguments do not match the selected operation."
+            )
         self._context.guard()
         prepared = prepare_component_interface(self._context.document, values)
         return run_immediate_mutation(

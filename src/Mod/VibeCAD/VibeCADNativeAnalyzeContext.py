@@ -310,25 +310,40 @@ def capture_responsive_analyze_snapshot(
                 "Analyze context preparation was cancelled."
             )
 
-    parts: list[Mapping[str, Any]] = []
-    batch_count = max(1, (len(object_names) + batch_size - 1) // batch_size)
-    for index, offset in enumerate(range(0, len(object_names), batch_size)):
+    detached_parts = request.get("detached_parts")
+    if detached_parts is not None:
+        if not isinstance(detached_parts, list) or any(
+            not isinstance(part, Mapping) for part in detached_parts
+        ):
+            raise AnalyzeContextError("Detached Analyze context is malformed.")
         check_cancelled()
-        names = object_names[offset : offset + batch_size]
-        part = dispatch_to_document_thread(
-            lambda names=names: capture_batch(request, names)
-        )
-        if not isinstance(part, Mapping):
-            raise AnalyzeContextError(
-                "Analyze context batch capture returned no object."
-            )
-        parts.append(dict(part))
+        parts = [deepcopy(dict(part)) for part in detached_parts]
         if progress_callback is not None:
             progress_callback(
-                5 + int(80 * (index + 1) / batch_count),
-                f"Analyzing objects {min(offset + len(names), len(object_names))}"
-                f" of {len(object_names)}",
+                85,
+                f"Analyzing objects {len(object_names)} of {len(object_names)}",
             )
+    else:
+        parts = []
+        batch_count = max(1, (len(object_names) + batch_size - 1) // batch_size)
+        for index, offset in enumerate(range(0, len(object_names), batch_size)):
+            check_cancelled()
+            names = object_names[offset : offset + batch_size]
+            part = dispatch_to_document_thread(
+                lambda names=names: capture_batch(request, names)
+            )
+            if not isinstance(part, Mapping):
+                raise AnalyzeContextError(
+                    "Analyze context batch capture returned no object."
+                )
+            parts.append(dict(part))
+            if progress_callback is not None:
+                progress_callback(
+                    5 + int(80 * (index + 1) / batch_count),
+                    f"Analyzing objects "
+                    f"{min(offset + len(names), len(object_names))}"
+                    f" of {len(object_names)}",
+                )
 
     if postprocess_parts is not None:
         check_cancelled()
@@ -347,7 +362,12 @@ def capture_responsive_analyze_snapshot(
         parts = [dict(part) for part in processed]
 
     check_cancelled()
-    clipping = dispatch_to_document_thread(lambda: capture_clipping(request))
+    detached_clipping = request.get("detached_clipping")
+    clipping = (
+        deepcopy(dict(detached_clipping))
+        if isinstance(detached_clipping, Mapping)
+        else dispatch_to_document_thread(lambda: capture_clipping(request))
+    )
     if not isinstance(clipping, Mapping):
         raise AnalyzeContextError(
             "Analyze clipping capture returned no object."

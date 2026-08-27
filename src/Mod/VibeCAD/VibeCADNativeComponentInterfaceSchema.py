@@ -11,6 +11,12 @@ from VibeCADNativeCapabilityRegistry import (
 )
 from VibeCADNativeDesignSchema import object_reference_schema, parameters_schema
 from vibescript_assembly_api import JOINT_TYPES
+from VibeCADReferenceContracts import (
+    INTERFACE_FIT_CLASSES,
+    INTERFACE_FIT_SCHEMA,
+    INTERFACE_COUPLING_PARAMETERS_SCHEMA,
+    INTERFACE_JOINT_PARAMETERS_SCHEMA,
+)
 
 
 COMPONENT_INTERFACE_CAPABILITY_NAME = "component.interface"
@@ -28,7 +34,12 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
         },
         "kind": {
             "type": "string",
-            "enum": ["axis", "plane", "point", "frame"],
+            "enum": [
+                "axis", "bearing_face", "bearing_seat", "bolt_pattern",
+                "bore", "electrical_connector", "fixture", "fluid_port",
+                "frame", "mounting_pattern", "plane", "planar_mate", "point",
+                "shaft", "shaft_seat", "thread", "thread_axis", "tool",
+            ],
         },
         "allowed_joints": {
             "type": "array",
@@ -40,6 +51,113 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
             "type": "string",
             "maxLength": 128,
             "pattern": r"^(?:|[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$",
+        },
+        "fit": {
+            "type": "object",
+            "properties": {
+                "schema": {"type": "string", "enum": [INTERFACE_FIT_SCHEMA]},
+                "fit_class": {"type": "string", "enum": sorted(INTERFACE_FIT_CLASSES)},
+                "designation": {"type": "string", "maxLength": 96},
+                "minimum_clearance_mm": {"type": "number"},
+                "maximum_clearance_mm": {"type": "number"},
+            },
+            "required": ["schema", "fit_class"],
+            "additionalProperties": False,
+        },
+        "joint_parameters": {
+            "type": "object",
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "enum": [INTERFACE_JOINT_PARAMETERS_SCHEMA],
+                },
+                "values": {
+                    "type": "object",
+                    "properties": {
+                        "distance": {
+                            "type": "object",
+                            "properties": {"distance_mm": {"type": "number"}},
+                            "required": ["distance_mm"],
+                            "additionalProperties": False,
+                        },
+                        "angle": {
+                            "type": "object",
+                            "properties": {"angle_degrees": {"type": "number"}},
+                            "required": ["angle_degrees"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "minProperties": 1,
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["schema", "values"],
+            "additionalProperties": False,
+        },
+        "coupling_parameters": {
+            "type": "object",
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "enum": [INTERFACE_COUPLING_PARAMETERS_SCHEMA],
+                },
+                "values": {
+                    "type": "object",
+                    "properties": {
+                        "rack_pinion": {
+                            "type": "object",
+                            "properties": {
+                                "pitch_radius_mm": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 1000000,
+                                }
+                            },
+                            "additionalProperties": False,
+                        },
+                        "screw": {
+                            "type": "object",
+                            "properties": {
+                                "lead_mm": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 1000000,
+                                }
+                            },
+                            "required": ["lead_mm"],
+                            "additionalProperties": False,
+                        },
+                        "gears": {
+                            "type": "object",
+                            "properties": {
+                                "pitch_radius_mm": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 1000000,
+                                }
+                            },
+                            "required": ["pitch_radius_mm"],
+                            "additionalProperties": False,
+                        },
+                        "belt": {
+                            "type": "object",
+                            "properties": {
+                                "pitch_radius_mm": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 1000000,
+                                }
+                            },
+                            "required": ["pitch_radius_mm"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "minProperties": 1,
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["schema", "values"],
+            "additionalProperties": False,
         },
     }
     return NativeCapabilityDefinition(
@@ -55,7 +173,15 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type="Component + LocalCoordinateSystem",
                 transaction_behavior="document",
                 background_required=False,
-                parameters=parameters_schema(fields, tuple(fields)),
+                parameters=parameters_schema(
+                    fields,
+                    tuple(
+                        key for key in fields
+                        if key not in {
+                            "fit", "joint_parameters", "coupling_parameters"
+                        }
+                    ),
+                ),
             ),
         ),
     )

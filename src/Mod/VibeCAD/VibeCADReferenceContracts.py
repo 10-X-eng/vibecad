@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
+import re
 from typing import Any, Mapping
 
 import VibeCADScriptedPublication as publication
@@ -25,7 +27,37 @@ PROP_NATIVE_INTERFACE_NAME = "VibeCADInterfaceName"
 PROP_NATIVE_INTERFACE_KIND = "VibeCADInterfaceKind"
 PROP_NATIVE_INTERFACE_ALLOWED_JOINTS = "VibeCADInterfaceAllowedJoints"
 PROP_NATIVE_INTERFACE_COMPATIBILITY = "VibeCADInterfaceCompatibility"
-NATIVE_INTERFACE_KINDS = frozenset({"axis", "plane", "point", "frame"})
+PROP_NATIVE_INTERFACE_FIT = "VibeCADInterfaceFit"
+PROP_NATIVE_INTERFACE_JOINT_PARAMETERS = "VibeCADInterfaceJointParameters"
+PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS = "VibeCADInterfaceCouplingParameters"
+PROP_NATIVE_INTERFACE_GEOMETRY = "VibeCADInterfaceGeometryBinding"
+INTERFACE_GEOMETRY_SCHEMA = "vibecad-interface-geometry-binding-v1"
+INTERFACE_FIT_SCHEMA = "vibecad-interface-fit-v1"
+INTERFACE_JOINT_PARAMETERS_SCHEMA = "vibecad-interface-joint-parameters-v1"
+INTERFACE_COUPLING_PARAMETERS_SCHEMA = "vibecad-interface-coupling-parameters-v1"
+INTERFACE_FIT_CLASSES = frozenset({
+    "bearing", "clearance", "custom", "interference", "threaded", "transition",
+})
+NATIVE_INTERFACE_KINDS = frozenset({
+    "axis",
+    "bearing_face",
+    "bearing_seat",
+    "bolt_pattern",
+    "bore",
+    "electrical_connector",
+    "fixture",
+    "fluid_port",
+    "frame",
+    "mounting_pattern",
+    "plane",
+    "planar_mate",
+    "point",
+    "shaft",
+    "shaft_seat",
+    "thread",
+    "thread_axis",
+    "tool",
+})
 
 
 class ReferenceContractError(RuntimeError):
@@ -40,6 +72,316 @@ class NativeInterfaceSpec:
     kind: str
     allowed_joints: tuple[str, ...]
     compatibility: str
+    fit: dict[str, Any] | None = None
+    joint_parameters: dict[str, Any] | None = None
+    coupling_parameters: dict[str, Any] | None = None
+
+
+def normalize_interface_coupling_parameters(value: Any) -> dict[str, Any] | None:
+    """Normalize explicit per-family coupling intent without geometric inference."""
+
+    if value in (None, {}):
+        return None
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"schema", "values"}
+        or value.get("schema") != INTERFACE_COUPLING_PARAMETERS_SCHEMA
+        or not isinstance(value.get("values"), Mapping)
+    ):
+        raise ReferenceContractError(
+            "Interface coupling parameters use an unsupported contract."
+        )
+    normalized: dict[str, dict[str, float]] = {}
+    contracts = {
+        "rack_pinion": ("pitch_radius_mm", False),
+        "screw": ("lead_mm", True),
+        "gears": ("pitch_radius_mm", True),
+        "belt": ("pitch_radius_mm", True),
+    }
+    for kind, raw in value["values"].items():
+        contract = contracts.get(str(kind))
+        if contract is None or not isinstance(raw, Mapping):
+            raise ReferenceContractError(
+                "Interface coupling parameters contain an unsupported coupling."
+            )
+        field, required = contract
+        if set(raw) not in ({field}, set()) or (required and set(raw) != {field}):
+            qualifier = "only" if required else "at most"
+            raise ReferenceContractError(
+                f"Interface {kind} parameters must contain {qualifier} {field}."
+            )
+        values: dict[str, float] = {}
+        if field in raw:
+            number = raw[field]
+            if isinstance(number, bool) or not isinstance(number, (int, float)):
+                raise ReferenceContractError(
+                    f"Interface {field} must be a finite positive number."
+                )
+            number = float(number)
+            if not math.isfinite(number) or not 0.0 < number <= 1_000_000.0:
+                raise ReferenceContractError(
+                    f"Interface {field} is outside the supported positive range."
+                )
+            values[field] = number
+        normalized[str(kind)] = values
+    if not normalized:
+        raise ReferenceContractError("Interface coupling parameters cannot be empty.")
+    return {
+        "schema": INTERFACE_COUPLING_PARAMETERS_SCHEMA,
+        "values": {kind: normalized[kind] for kind in sorted(normalized)},
+    }
+
+
+def normalize_interface_joint_parameters(value: Any) -> dict[str, Any] | None:
+    """Normalize only explicit relation values that planning may carry forward."""
+
+    if value in (None, {}):
+        return None
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"schema", "values"}
+        or value.get("schema") != INTERFACE_JOINT_PARAMETERS_SCHEMA
+        or not isinstance(value.get("values"), Mapping)
+    ):
+        raise ReferenceContractError("Interface joint parameters use an unsupported contract.")
+    normalized: dict[str, dict[str, float]] = {}
+    contracts = {
+        "distance": ("distance_mm", -1_000_000.0, 1_000_000.0),
+        "angle": ("angle_degrees", -360.0, 360.0),
+    }
+    for kind, raw in value["values"].items():
+        contract = contracts.get(str(kind))
+        if contract is None or not isinstance(raw, Mapping):
+            raise ReferenceContractError("Interface joint parameters contain an unsupported relation.")
+        field, minimum, maximum = contract
+        if set(raw) != {field}:
+            raise ReferenceContractError(f"Interface {kind} parameters must contain only {field}.")
+        number = raw[field]
+        if isinstance(number, bool) or not isinstance(number, (int, float)):
+            raise ReferenceContractError(f"Interface {field} must be a finite number.")
+        number = float(number)
+        if not math.isfinite(number) or not minimum <= number <= maximum:
+            raise ReferenceContractError(f"Interface {field} is outside the supported range.")
+        normalized[str(kind)] = {field: number}
+    if not normalized:
+        raise ReferenceContractError("Interface joint parameters cannot be empty.")
+    return {
+        "schema": INTERFACE_JOINT_PARAMETERS_SCHEMA,
+        "values": {kind: normalized[kind] for kind in sorted(normalized)},
+    }
+
+
+def normalize_interface_fit(value: Any) -> dict[str, Any] | None:
+    """Normalize explicit fit semantics; never infer fit from geometry."""
+
+    if value in (None, {}):
+        return None
+    if not isinstance(value, Mapping):
+        raise ReferenceContractError("Interface fit must be an object.")
+    allowed = {
+        "schema", "fit_class", "designation",
+        "minimum_clearance_mm", "maximum_clearance_mm",
+    }
+    if set(value) - allowed or value.get("schema") != INTERFACE_FIT_SCHEMA:
+        raise ReferenceContractError("Interface fit uses an unsupported contract.")
+    fit_class = str(value.get("fit_class") or "").strip().lower()
+    if fit_class not in INTERFACE_FIT_CLASSES:
+        raise ReferenceContractError(
+            f"Interface fit_class must be one of {sorted(INTERFACE_FIT_CLASSES)}."
+        )
+    result: dict[str, Any] = {
+        "schema": INTERFACE_FIT_SCHEMA,
+        "fit_class": fit_class,
+    }
+    designation = str(value.get("designation") or "").strip()
+    if designation:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ./_:+-]{0,95}", designation):
+            raise ReferenceContractError("Interface fit designation is invalid.")
+        result["designation"] = designation
+    bounds = []
+    for field in ("minimum_clearance_mm", "maximum_clearance_mm"):
+        if field not in value:
+            continue
+        number = value[field]
+        if isinstance(number, bool) or not isinstance(number, (int, float)):
+            raise ReferenceContractError(f"Interface {field} must be a finite number.")
+        number = float(number)
+        if not math.isfinite(number):
+            raise ReferenceContractError(f"Interface {field} must be a finite number.")
+        result[field] = number
+        bounds.append(field)
+    if len(bounds) == 1:
+        raise ReferenceContractError("Interface fit clearance bounds must be supplied together.")
+    if len(bounds) == 2 and result["minimum_clearance_mm"] > result["maximum_clearance_mm"]:
+        raise ReferenceContractError("Interface fit clearance bounds are reversed.")
+    return result
+
+
+def _native_support_entries(lcs: Any) -> list[tuple[Any, list[str]]]:
+    raw = getattr(lcs, "AttachmentSupport", None)
+    if not raw:
+        raw = getattr(lcs, "Support", None)
+    if not raw:
+        return []
+    if isinstance(raw, tuple) and len(raw) == 2 and hasattr(raw[0], "Name"):
+        raw = [raw]
+    entries: list[tuple[Any, list[str]]] = []
+    for item in list(raw)[:8]:
+        if not isinstance(item, (tuple, list)) or len(item) != 2 or not hasattr(item[0], "Name"):
+            continue
+        subelements = item[1]
+        if isinstance(subelements, str):
+            subelements = [subelements]
+        entries.append((item[0], sorted(str(value) for value in list(subelements)[:32] if str(value))))
+    return entries
+
+
+_SEMANTIC_GEOMETRY_REQUIREMENTS = {
+    "axis": frozenset({"cylinder", "circle", "line"}),
+    "bearing_face": frozenset({"plane"}),
+    "bearing_seat": frozenset({"cylinder", "circle"}),
+    "bore": frozenset({"cylinder", "circle"}),
+    "plane": frozenset({"plane"}),
+    "planar_mate": frozenset({"plane"}),
+    "point": frozenset({"vertex"}),
+    "shaft": frozenset({"cylinder", "circle"}),
+    "shaft_seat": frozenset({"cylinder", "circle"}),
+    "thread": frozenset({"cylinder", "circle"}),
+    "thread_axis": frozenset({"cylinder", "circle", "line"}),
+}
+
+
+def _native_subelement_geometry(shape: Any, name: str) -> str | None:
+    reader = getattr(shape, "getElement", None)
+    if not callable(reader):
+        return None
+    try:
+        element = reader(name)
+    except Exception:
+        return None
+    shape_type = str(getattr(element, "ShapeType", "") or "").lower()
+    if shape_type == "vertex":
+        return "vertex"
+    geometry = getattr(element, "Surface", None) or getattr(element, "Curve", None)
+    type_id = str(getattr(geometry, "TypeId", "") or "").lower()
+    for token, normalized in (
+        ("cylinder", "cylinder"), ("circle", "circle"),
+        ("plane", "plane"), ("line", "line"), ("sphere", "sphere"),
+    ):
+        if token in type_id:
+            return normalized
+    return None
+
+
+def semantic_interface_geometry_evidence(lcs: Any, kind: str) -> dict[str, Any]:
+    """Classify only explicitly bound subelements against one semantic kind."""
+
+    clean_kind = str(kind or "").strip().lower()
+    expected = _SEMANTIC_GEOMETRY_REQUIREMENTS.get(clean_kind)
+    if expected is None:
+        return {"kind": clean_kind, "status": "not-applicable", "observed": []}
+    entries = _native_support_entries(lcs)
+    if not entries:
+        return {
+            "kind": clean_kind,
+            "status": "unbound",
+            "expected": sorted(expected),
+            "observed": [],
+        }
+    observed = sorted({
+        geometry
+        for source, subelements in entries
+        for name in subelements
+        for geometry in [_native_subelement_geometry(getattr(source, "Shape", None), name)]
+        if geometry is not None
+    })
+    if not observed:
+        status = "indeterminate"
+    elif any(value in expected for value in observed):
+        status = "compatible"
+    else:
+        status = "incompatible"
+    return {
+        "kind": clean_kind,
+        "status": status,
+        "expected": sorted(expected),
+        "observed": observed,
+    }
+
+
+def capture_native_interface_geometry(lcs: Any, *, kind: str = "") -> dict[str, Any]:
+    """Capture conservative LCS support evidence for later invalidation checks."""
+
+    supports = []
+    status = "current"
+    for source, subelements in _native_support_entries(lcs):
+        shape = getattr(source, "Shape", None)
+        export = getattr(shape, "exportBrepToString", None)
+        shape_hash = ""
+        if callable(export):
+            try:
+                shape_hash = hashlib.sha256(str(export()).encode("utf-8")).hexdigest()
+            except Exception:
+                status = "indeterminate"
+        else:
+            status = "indeterminate"
+        supports.append({
+            "object_name": str(source.Name),
+            "subelements": subelements,
+            **({"shape_sha256": shape_hash} if shape_hash else {}),
+        })
+    if not supports:
+        status = "unbound"
+    snapshot = {
+        "schema": INTERFACE_GEOMETRY_SCHEMA,
+        "map_mode": str(getattr(lcs, "MapMode", "") or ""),
+        "supports": supports,
+    }
+    return {
+        **snapshot,
+        "binding_sha256": _interface_geometry_hash(snapshot),
+        "status": status,
+        "semantic_evidence": semantic_interface_geometry_evidence(lcs, kind),
+    }
+
+
+def _interface_geometry_hash(value: Mapping[str, Any]) -> str:
+    payload = {key: value[key] for key in ("schema", "map_mode", "supports") if key in value}
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def native_interface_geometry_currentness(lcs: Any) -> dict[str, Any]:
+    """Compare persisted support evidence with the current LCS support graph."""
+
+    raw = str(getattr(lcs, PROP_NATIVE_INTERFACE_GEOMETRY, "") or "").strip()
+    if not raw:
+        return {"schema": INTERFACE_GEOMETRY_SCHEMA, "status": "unrecorded"}
+    try:
+        recorded = json.loads(raw)
+    except ValueError:
+        return {"schema": INTERFACE_GEOMETRY_SCHEMA, "status": "invalid"}
+    if not isinstance(recorded, Mapping) or recorded.get("schema") != INTERFACE_GEOMETRY_SCHEMA:
+        return {"schema": INTERFACE_GEOMETRY_SCHEMA, "status": "invalid"}
+    kind = str(getattr(lcs, PROP_NATIVE_INTERFACE_KIND, "") or "")
+    live = capture_native_interface_geometry(lcs, kind=kind)
+    recorded_hash = str(recorded.get("binding_sha256") or "")
+    if recorded.get("status") == "unbound" and live["status"] == "unbound":
+        status = "unbound"
+    elif live["status"] == "indeterminate":
+        status = "indeterminate"
+    else:
+        status = "current" if recorded_hash == live["binding_sha256"] else "stale"
+    return {
+        "schema": INTERFACE_GEOMETRY_SCHEMA,
+        "status": status,
+        "recorded_binding_sha256": recorded_hash,
+        "live_binding_sha256": live["binding_sha256"],
+        "map_mode": live["map_mode"],
+        "supports": live["supports"],
+        "semantic_evidence": live["semantic_evidence"],
+    }
 
 
 def is_native_coordinate_system(obj: Any) -> bool:
@@ -93,10 +435,48 @@ def native_interface_definitions(component: Any) -> dict[str, dict[str, Any]]:
         compatibility = str(
             getattr(lcs, PROP_NATIVE_INTERFACE_COMPATIBILITY, "") or ""
         ).strip()
+        fit = None
+        raw_fit = str(getattr(lcs, PROP_NATIVE_INTERFACE_FIT, "") or "").strip()
+        if raw_fit:
+            try:
+                fit = normalize_interface_fit(json.loads(raw_fit))
+            except (ValueError, ReferenceContractError):
+                continue
+        joint_parameters = None
+        raw_parameters = str(
+            getattr(lcs, PROP_NATIVE_INTERFACE_JOINT_PARAMETERS, "") or ""
+        ).strip()
+        if raw_parameters:
+            try:
+                joint_parameters = normalize_interface_joint_parameters(
+                    json.loads(raw_parameters)
+                )
+            except (ValueError, ReferenceContractError):
+                continue
+        coupling_parameters = None
+        raw_coupling_parameters = str(
+            getattr(lcs, PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS, "") or ""
+        ).strip()
+        if raw_coupling_parameters:
+            try:
+                coupling_parameters = normalize_interface_coupling_parameters(
+                    json.loads(raw_coupling_parameters)
+                )
+            except (ValueError, ReferenceContractError):
+                continue
         connector = {
             "kind": kind,
             **({"allowed_joints": list(allowed)} if allowed else {}),
             **({"compatibility": compatibility} if compatibility else {}),
+            **({"fit": fit} if fit is not None else {}),
+            **(
+                {"joint_parameters": joint_parameters}
+                if joint_parameters is not None else {}
+            ),
+            **(
+                {"coupling_parameters": coupling_parameters}
+                if coupling_parameters is not None else {}
+            ),
         }
         definitions[name] = {
             "selection": {
@@ -109,6 +489,7 @@ def native_interface_definitions(component: Any) -> dict[str, dict[str, Any]]:
                 "subelements": [],
                 "geometry": [],
                 "connector_frame": _placement_frame(lcs.Placement),
+                "geometry_binding": native_interface_geometry_currentness(lcs),
             },
         }
     return definitions
@@ -122,16 +503,23 @@ def prepare_native_interface(
     kind: str,
     allowed_joints: list[str] | tuple[str, ...] = (),
     compatibility: str = "",
+    fit: Mapping[str, Any] | None = None,
+    joint_parameters: Mapping[str, Any] | None = None,
+    coupling_parameters: Mapping[str, Any] | None = None,
 ) -> NativeInterfaceSpec:
     """Validate and normalize one exact native component-interface request."""
 
-    import re
     from vibescript_assembly_api import JOINT_TYPES
 
     clean_name = str(name or "").strip()
     clean_kind = str(kind or "").strip().lower()
     clean_joints = [str(value or "").strip().lower() for value in allowed_joints]
     clean_compatibility = str(compatibility or "").strip()
+    clean_fit = normalize_interface_fit(fit)
+    clean_joint_parameters = normalize_interface_joint_parameters(joint_parameters)
+    clean_coupling_parameters = normalize_interface_coupling_parameters(
+        coupling_parameters
+    )
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", clean_name):
         raise ReferenceContractError("Interface name is not a stable identifier.")
     if clean_kind not in NATIVE_INTERFACE_KINDS:
@@ -144,6 +532,18 @@ def prepare_native_interface(
         raise ReferenceContractError(
             f"Allowed joints must be unique values from {list(JOINT_TYPES)}."
         )
+    if clean_joint_parameters is not None and any(
+        kind not in clean_joints for kind in clean_joint_parameters["values"]
+    ):
+        raise ReferenceContractError(
+            "Interface joint parameters must target an explicitly allowed joint."
+        )
+    if clean_coupling_parameters is not None and any(
+        kind not in clean_joints for kind in clean_coupling_parameters["values"]
+    ):
+        raise ReferenceContractError(
+            "Interface coupling parameters must target an explicitly allowed joint."
+        )
     if clean_compatibility and not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", clean_compatibility
     ):
@@ -155,6 +555,11 @@ def prepare_native_interface(
     if lcs not in _direct_component_resources(component):
         raise ReferenceContractError(
             "The selected LCS is not a direct resource of the selected component."
+        )
+    semantic = semantic_interface_geometry_evidence(lcs, clean_kind)
+    if semantic["status"] == "incompatible":
+        raise ReferenceContractError(
+            f"Interface kind {clean_kind!r} is incompatible with its bound geometry."
         )
     for existing_name, definition in native_interface_definitions(component).items():
         native_name = str(
@@ -169,6 +574,9 @@ def prepare_native_interface(
         clean_kind,
         tuple(clean_joints),
         clean_compatibility,
+        clean_fit,
+        clean_joint_parameters,
+        clean_coupling_parameters,
     )
 
 
@@ -180,6 +588,9 @@ def publish_native_interface(
     kind: str,
     allowed_joints: list[str] | tuple[str, ...] = (),
     compatibility: str = "",
+    fit: Mapping[str, Any] | None = None,
+    joint_parameters: Mapping[str, Any] | None = None,
+    coupling_parameters: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Publish one exact existing LCS as a reusable component connector."""
 
@@ -190,6 +601,9 @@ def publish_native_interface(
         kind=kind,
         allowed_joints=allowed_joints,
         compatibility=compatibility,
+        fit=fit,
+        joint_parameters=joint_parameters,
+        coupling_parameters=coupling_parameters,
     )
     for property_type, property_name, description in (
         ("App::PropertyBool", PROP_NATIVE_INTERFACE, "Marks this LCS as a component interface."),
@@ -197,6 +611,10 @@ def publish_native_interface(
         ("App::PropertyString", PROP_NATIVE_INTERFACE_KIND, "Explicit connector kind."),
         ("App::PropertyString", PROP_NATIVE_INTERFACE_ALLOWED_JOINTS, "JSON list of allowed Assembly joint kinds."),
         ("App::PropertyString", PROP_NATIVE_INTERFACE_COMPATIBILITY, "Exact connector compatibility token."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_FIT, "Versioned explicit engineering fit JSON."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_JOINT_PARAMETERS, "Versioned explicit relation-inference parameters JSON."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS, "Versioned explicit coupling-inference parameters JSON."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_GEOMETRY, "Canonical LCS support binding and shape evidence."),
     ):
         if property_name not in set(getattr(lcs, "PropertiesList", []) or []):
             lcs.addProperty(
@@ -214,6 +632,37 @@ def publish_native_interface(
         json.dumps(spec.allowed_joints, ensure_ascii=True, separators=(",", ":")),
     )
     setattr(lcs, PROP_NATIVE_INTERFACE_COMPATIBILITY, spec.compatibility)
+    setattr(
+        lcs,
+        PROP_NATIVE_INTERFACE_FIT,
+        "" if spec.fit is None else json.dumps(spec.fit, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+    )
+    setattr(
+        lcs,
+        PROP_NATIVE_INTERFACE_JOINT_PARAMETERS,
+        "" if spec.joint_parameters is None else json.dumps(
+            spec.joint_parameters,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+    setattr(
+        lcs,
+        PROP_NATIVE_INTERFACE_COUPLING_PARAMETERS,
+        "" if spec.coupling_parameters is None else json.dumps(
+            spec.coupling_parameters,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+    geometry_binding = capture_native_interface_geometry(lcs, kind=spec.kind)
+    setattr(
+        lcs,
+        PROP_NATIVE_INTERFACE_GEOMETRY,
+        json.dumps(geometry_binding, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+    )
     return native_interface_definitions(component)[spec.name]
 
 
@@ -460,6 +909,9 @@ def component_interface_descriptors(
         frame = resolved.get("connector_frame")
         if isinstance(frame, Mapping):
             descriptor["frame"] = dict(frame)
+        geometry_binding = resolved.get("geometry_binding")
+        if isinstance(geometry_binding, Mapping):
+            descriptor["geometry_binding"] = dict(geometry_binding)
         descriptors.append(descriptor)
     return bool(native), descriptors
 
@@ -480,9 +932,23 @@ def connector_interface_record(
     if not geometry or geometry in {"component_frame", "component_origin"}:
         geometry = {
             "axis": "cylinder",
+            "bearing_face": "plane",
+            "bearing_seat": "cylinder",
+            "bolt_pattern": "component_origin",
+            "bore": "cylinder",
+            "electrical_connector": "component_origin",
+            "fixture": "component_origin",
+            "fluid_port": "component_origin",
             "plane": "plane",
+            "planar_mate": "plane",
             "point": "vertex",
             "frame": "component_origin",
+            "mounting_pattern": "component_origin",
+            "shaft": "cylinder",
+            "shaft_seat": "cylinder",
+            "thread": "cylinder",
+            "thread_axis": "cylinder",
+            "tool": "component_origin",
         }.get(kind, "component_origin")
     frame = descriptor.get("frame")
     origin = [0.0, 0.0, 0.0]
@@ -494,7 +960,7 @@ def connector_interface_record(
             origin = [float(value) for value in raw_origin]
         if isinstance(raw_axis, list) and len(raw_axis) == 3:
             axis = [float(value) for value in raw_axis]
-    return {
+    record = {
         "selection": {
             "type": "published_interface",
             "interface_name": name,
@@ -505,6 +971,10 @@ def connector_interface_record(
         "origin_mm": origin,
         "axis": axis,
     }
+    geometry_binding = descriptor.get("geometry_binding")
+    if isinstance(geometry_binding, Mapping):
+        record["geometry_binding"] = dict(geometry_binding)
+    return record
 
 
 def resolve_component_interface(source: Any, interface_name: str) -> dict[str, Any]:

@@ -318,6 +318,15 @@ def _validate_format(dimension: Any, desired: Mapping[str, Any]) -> None:
         )
 
 
+def _apply_display(dimension: Any, display: Mapping[str, Any]) -> None:
+    if display["arbitrary"]:
+        dimension.Arbitrary = True
+        dimension.FormatSpec = display["format_spec"]
+    else:
+        dimension.FormatSpec = display["format_spec"]
+        dimension.Arbitrary = False
+
+
 def prepare_drawing_dimension_edit(
     document: Any,
     *,
@@ -381,8 +390,7 @@ def mutate_drawing_dimension_edit(
     tolerance = desired["tolerance"]
     layout = desired["layout"]
     appearance = desired["appearance"]
-    dimension.FormatSpec = display["format_spec"]
-    dimension.Arbitrary = display["arbitrary"]
+    _apply_display(dimension, display)
     dimension.TheoreticalExact = tolerance["theoretical_exact"]
     dimension.EqualTolerance = tolerance["equal"]
     dimension.OverTolerance = tolerance["over"]

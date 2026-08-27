@@ -9,6 +9,7 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeDrawingErrors import NativeDrawingError
+from VibeCADNativeDrawingHistory import require_drawing_source_history_usable
 from VibeCADNativeDrawingState import drawing_page_state, is_drawing_page
 from VibeCADNativeDrawingView import standard_view_line_flags
 from VibeCADNativeDrawingViewState import (
@@ -326,7 +327,7 @@ def prepare_section_view_create(
         )
     source_states = tuple(drawing_source_state(source) for source in sources)
     for source in sources:
-        _require_usable(document, source, "section source")
+        require_drawing_source_history_usable(document, source, "section source")
     spec = _spec(values, base)
     line_flags = {
         name: bool(base_state["line_visibility"][name])

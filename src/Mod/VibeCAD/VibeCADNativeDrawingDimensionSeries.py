@@ -129,7 +129,7 @@ def _validate_host(view: Any, spec: DrawingDimensionSeriesSpec) -> dict[str, Any
                     if spec.kind == "coordinate"
                     else "the host orders vertices geometrically"
                 ),
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if not isinstance(raw, Mapping) or frozenset(raw) != _HOST_PLAN_KEYS:
@@ -212,13 +212,14 @@ def restore_drawing_dimension_series_after_abort(
     added_vertices = sorted(
         _cosmetic_tags(view, "CosmeticVertexes") - prepared.cosmetic_vertex_tags_before
     )
-    if added_edges or added_vertices:
-        import TechDrawGui
+    import TechDrawGui
 
-        cleaner = getattr(TechDrawGui, "removeDrawingDimensionSeriesCarriers", None)
-        if not callable(cleaner):
-            raise RuntimeError("The Drawing carrier rollback runtime is unavailable.")
-        cleaner(view, added_edges, added_vertices)
+    cleaner = getattr(TechDrawGui, "removeDrawingDimensionSeriesCarriers", None)
+    if not callable(cleaner):
+        raise RuntimeError("The Drawing carrier rollback runtime is unavailable.")
+    # A transaction abort restores the properties before this callback, but
+    # the view's cosmetic caches can still contain the aborted carriers.
+    cleaner(view, added_edges, added_vertices)
     if (
         _cosmetic_tags(view, "CosmeticEdges") != prepared.cosmetic_edge_tags_before
         or _cosmetic_tags(view, "CosmeticVertexes")

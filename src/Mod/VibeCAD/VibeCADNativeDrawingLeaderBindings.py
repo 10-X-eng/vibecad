@@ -11,7 +11,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
 )
 from VibeCADNativeDrawingLeaderRuntime import NativeDrawingLeaderRuntime
-from VibeCADNativeDrawingLeaderSchema import DRAWING_ANNOTATION_CAPABILITY_NAME
+from VibeCADNativeDrawingLeaderSchema import DRAWING_LEADER_CAPABILITY_NAME
 
 
 def _execute(call: Any) -> Mapping[str, Any]:
@@ -30,7 +30,7 @@ def register_drawing_leader_capability_implementation(
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
     registry.register_implementation(
-        NativeCapabilityImplementation(DRAWING_ANNOTATION_CAPABILITY_NAME, _execute)
+        NativeCapabilityImplementation(DRAWING_LEADER_CAPABILITY_NAME, _execute)
     )
 
 
@@ -39,4 +39,4 @@ def drawing_leader_runtime_bindings(
 ) -> dict[str, Any]:
     if not isinstance(runtime, NativeDrawingLeaderRuntime):
         raise TypeError("runtime must be a NativeDrawingLeaderRuntime")
-    return {DRAWING_ANNOTATION_CAPABILITY_NAME: runtime}
+    return {DRAWING_LEADER_CAPABILITY_NAME: runtime}

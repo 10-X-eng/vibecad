@@ -28,6 +28,10 @@
 #include <string>
 #include <vector>
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+
 #include <App/Application.h>
 #include <App/Document.h>
 #include <Base/Console.h>
@@ -39,6 +43,7 @@
 #include <Mod/Mesh/App/MeshFeature.h>
 
 #include "Segmentation.h"
+#include "BackgroundMeshSegmentation.h"
 #include "CommandGuard.h"
 #include "ParametricMeshFilter.h"
 #include "ui_Segmentation.h"
@@ -84,137 +89,56 @@ void Segmentation::accept()
             "The mesh selected for segmentation is no longer active in History"
         );
     }
-    const Mesh::MeshObject* mesh = target->Mesh.getValuePtr();
-    // make a copy because we might smooth the mesh before
-    MeshCore::MeshKernel kernel = mesh->getKernel();
-
-    if (ui->checkBoxSmooth->isChecked()) {
-        MeshCore::LaplaceSmoothing smoother(kernel);
-        smoother.Smooth(ui->smoothSteps->value());
-    }
-
-    MeshCore::MeshSegmentAlgorithm finder(kernel);
-    MeshCore::MeshCurvature meshCurv(kernel);
-    meshCurv.ComputePerVertex();
-
-    std::vector<MeshCore::MeshSurfaceSegmentPtr> segm;
+    QJsonArray surfaces;
     if (ui->groupBoxFree->isChecked()) {
-        segm.emplace_back(
-            std::make_shared<MeshCore::MeshCurvatureFreeformSegment>(
-                meshCurv.GetCurvature(),
-                ui->numFree->value(),
-                ui->tol1Free->value(),
-                ui->tol2Free->value(),
-                ui->crv1Free->value(),
-                ui->crv2Free->value()
-            )
-        );
+        surfaces.append(QJsonObject {
+            {"kind", "freeform"},
+            {"minimum_facets", ui->numFree->value()},
+            {"maximum_curvature_per_mm", ui->crv1Free->value()},
+            {"minimum_curvature_per_mm", ui->crv2Free->value()},
+            {"maximum_curvature_tolerance", ui->tol1Free->value()},
+            {"minimum_curvature_tolerance", ui->tol2Free->value()},
+        });
     }
     if (ui->groupBoxCyl->isChecked()) {
-        segm.emplace_back(
-            std::make_shared<MeshCore::MeshCurvatureCylindricalSegment>(
-                meshCurv.GetCurvature(),
-                ui->numCyl->value(),
-                ui->tol1Cyl->value(),
-                ui->tol2Cyl->value(),
-                ui->crvCyl->value()
-            )
-        );
+        surfaces.append(QJsonObject {
+            {"kind", "cylinder"},
+            {"minimum_facets", ui->numCyl->value()},
+            {"curvature_per_mm", ui->crvCyl->value()},
+            {"flat_curvature_tolerance", ui->tol1Cyl->value()},
+            {"curved_curvature_tolerance", ui->tol2Cyl->value()},
+        });
     }
     if (ui->groupBoxSph->isChecked()) {
-        segm.emplace_back(
-            std::make_shared<MeshCore::MeshCurvatureSphericalSegment>(
-                meshCurv.GetCurvature(),
-                ui->numSph->value(),
-                ui->tolSph->value(),
-                ui->crvSph->value()
-            )
-        );
+        surfaces.append(QJsonObject {
+            {"kind", "sphere"},
+            {"minimum_facets", ui->numSph->value()},
+            {"curvature_per_mm", ui->crvSph->value()},
+            {"curvature_tolerance", ui->tolSph->value()},
+        });
     }
     if (ui->groupBoxPln->isChecked()) {
-        segm.emplace_back(
-            std::make_shared<MeshCore::MeshCurvaturePlanarSegment>(
-                meshCurv.GetCurvature(),
-                ui->numPln->value(),
-                ui->tolPln->value()
-            )
-        );
+        surfaces.append(QJsonObject {
+            {"kind", "plane"},
+            {"minimum_facets", ui->numPln->value()},
+            {"curvature_tolerance", ui->tolPln->value()},
+        });
     }
-    finder.FindSegments(segm);
-
-    struct Result
-    {
-        std::vector<long> facets;
-        std::string type;
+    if (surfaces.isEmpty()) {
+        throw Base::ValueError("Select at least one surface type to segment");
+    }
+    const QJsonObject settings {
+        {"surfaces", surfaces},
+        {
+            "smoothing_steps",
+            ui->checkBoxSmooth->isChecked() ? ui->smoothSteps->value() : 0
+        },
+        {"result_label_prefix", "Mesh Segment"},
     };
-    std::vector<Result> results;
-    for (const auto& segment : segm) {
-        for (const auto& result : segment->GetSegments()) {
-            if (result.empty()) {
-                continue;
-            }
-            results.push_back(
-                {
-                    std::vector<long>(result.begin(), result.end()),
-                    segment->GetType(),
-                }
-            );
-        }
-    }
-    if (results.empty()) {
-        throw Base::RuntimeError("The current settings did not find any mesh segments");
-    }
-
-    App::Document* document = target->getDocument();
-    if (!MeshGui::hasCleanNativeMutationBoundary(document)) {
-        throw Base::RuntimeError("Another document operation is already in progress");
-    }
-    std::vector<std::string> labels;
-    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
-    labels.reserve(results.size());
-    operations.reserve(results.size());
-    for (const auto& result : results) {
-        std::stringstream label;
-        label << "Mesh Segment (" << result.type << ")";
-        labels.push_back(label.str());
-        operations.push_back(
-            MeshGui::ParametricMeshFilterTarget {
-                target,
-                [target,
-                 facets = result.facets,
-                 label = labels.back(),
-                 type = result.type](
-                    App::DocumentObject& object
-                ) {
-                    auto& subset =
-                        static_cast<Mesh::FacetSubset&>(object);
-                    subset.Label.setValue(label);
-                    subset.FacetIndices.setValues(facets);
-                    subset.AcceptedTopology.setValue(
-                        target->Mesh.getValue()
-                    );
-                    subset.SelectionKind.setValue(type);
-                },
-            }
-        );
-    }
-    std::string groupLabel = "Curvature Segments ";
-    groupLabel += target->Label.getValue();
-    MeshGui::createParametricMeshFilters(
-        *document,
-        operations,
-        MeshGui::ParametricMeshFilterSpec {
-            "Mesh::FacetSubset",
-            "Segment",
-            "Mesh Segment",
-            "Segmentation",
-            true,
-            true,
-            true,
-            "CurvatureSegmentation",
-            groupLabel.c_str(),
-            "Curvature segmentation",
-        }
+    MeshGui::startBackgroundMeshSegmentation(
+        {target},
+        "mesh_segmentation",
+        QJsonDocument(settings).toJson(QJsonDocument::Compact).toStdString()
     );
 }
 

@@ -20,6 +20,7 @@ from VibeCADNativeAssemblyComponents import (
     verify_created_part,
     verify_inserted_component,
 )
+from VibeCADNativeAssemblyIdentity import read_persistent_identity
 from VibeCADNativeAssemblySnapshot import build_assembly_snapshot
 from VibeCADNativeAssemblyStructureSchema import (
     assembly_structure_capability_definition,
@@ -56,6 +57,8 @@ class _Object:
         self.Group = []
         self.InListRecursive = []
         self.State = []
+        self.PropertiesList = []
+        self._editor_modes = {}
         self.Placement = _Placement("origin")
         self.LinkedObject = None
         self.Rigid = True
@@ -79,6 +82,12 @@ class _Object:
 
     def recompute(self) -> None:
         return None
+
+    def addProperty(self, _type_id, name, _group, _description):
+        self.PropertiesList.append(name)
+
+    def setEditorMode(self, name, mode):
+        self._editor_modes[name] = mode
 
 
 class _Document:
@@ -216,6 +225,7 @@ def test_regular_component_insert_is_one_exact_operation_without_activation() ->
     assert occurrence.TypeId == "App::Link"
     assert occurrence.LinkedObject is source
     assert occurrence.Placement.isSame(placement, 1.0e-12)
+    assert read_persistent_identity(occurrence, expected_kind="occurrence") is not None
     assert tuple(item.object_name for item in draft.created) == (occurrence.Name,)
 
 

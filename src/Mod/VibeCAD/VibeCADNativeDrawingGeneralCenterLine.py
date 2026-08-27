@@ -42,7 +42,7 @@ _OPERATIONS = {
         2,
     ),
 }
-_TARGET_FIELDS = frozenset({"subelement", "expected_element_state_sha256"})
+_TARGET_FIELDS = frozenset({"subelement"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +141,7 @@ def _validate_host(
             repair={
                 "operation": spec.operation,
                 "requested_subelements": list(spec.source_names),
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     expected_type = _OPERATIONS[spec.operation][2].casefold()

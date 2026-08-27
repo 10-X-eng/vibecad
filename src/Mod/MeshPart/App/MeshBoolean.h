@@ -47,6 +47,7 @@ public:
     App::PropertyLength LinearDeflection;
     App::PropertyFloatConstraint AngularDeflection;
     App::PropertyBool Relative;
+    App::PropertyBool UpdateFromSource;
 
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;

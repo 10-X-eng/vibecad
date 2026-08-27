@@ -19,6 +19,7 @@ from VibeCADNativeDrawingErrors import NativeDrawingError
 from VibeCADNativeDrawingProjectionInput import (
     DRAWING_PROJECTION_PROTOCOL,
     MAX_PROJECTIONS,
+    DrawingProjectionFit,
     FrozenDrawingProjectionBatch,
     validate_frozen_file,
 )
@@ -53,12 +54,32 @@ class PreparedDrawingProjection:
     face_count: int
     visible_edge_count: int
     hidden_edge_count: int
+    bounds: tuple[float, float, float, float] | None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedDrawingProjectionLayout:
+    scale: float
+    positions_mm: tuple[tuple[str, tuple[float, float]], ...]
+    page_bounds_mm: tuple[tuple[str, tuple[float, float, float, float]], ...]
+    page_width_mm: float
+    page_height_mm: float
+    spacing_x_mm: float
+    spacing_y_mm: float
+    drawable_bounds_mm: tuple[float, float, float, float]
+
+    def position(self, view: str) -> tuple[float, float]:
+        return dict(self.positions_mm)[view]
+
+    def page_bounds(self, view: str) -> tuple[float, float, float, float]:
+        return dict(self.page_bounds_mm)[view]
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedDrawingProjectionBatch:
     frozen: FrozenDrawingProjectionBatch = field(repr=False, compare=False)
     projections: tuple[PreparedDrawingProjection, ...]
+    layout: PreparedDrawingProjectionLayout | None
 
     def projection(self, key: str) -> PreparedDrawingProjection:
         matches = tuple(item for item in self.projections if item.key == key)
@@ -259,7 +280,11 @@ def prepared_projection_from_descriptor(
         "source_indices",
         "centroid",
     }
-    if not isinstance(value, Mapping) or set(value) != required:
+    if (
+        not isinstance(value, Mapping)
+        or not required <= set(value)
+        or set(value) - required != ({"bounds"} if "bounds" in value else set())
+    ):
         _error(
             "A detached Drawing projection result is malformed.",
             "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
@@ -318,6 +343,24 @@ def prepared_projection_from_descriptor(
             "Detached Drawing projection centroid is invalid.",
             "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
         )
+    bounds_value = value.get("bounds")
+    bounds = None
+    if bounds_value is not None:
+        if not isinstance(bounds_value, list) or len(bounds_value) != 4:
+            _error(
+                "Detached Drawing projection bounds are malformed.",
+                "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+            )
+        bounds = tuple(float(item) for item in bounds_value)
+        if (
+            any(not math.isfinite(item) for item in bounds)
+            or bounds[2] <= bounds[0]
+            or bounds[3] <= bounds[1]
+        ):
+            _error(
+                "Detached Drawing projection bounds are invalid.",
+                "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+            )
     prefix = f"outputs/projection-{index:03d}"
     return PreparedDrawingProjection(
         key=str(value["key"] or ""),
@@ -331,6 +374,186 @@ def prepared_projection_from_descriptor(
         face_count=face_count,
         visible_edge_count=visible_count,
         hidden_edge_count=hidden_count,
+        bounds=bounds,
+    )
+
+
+def _prepared_layout(
+    value: Any,
+    *,
+    fit: DrawingProjectionFit | None,
+    projections: tuple[PreparedDrawingProjection, ...],
+) -> PreparedDrawingProjectionLayout | None:
+    if fit is None:
+        if value is not None:
+            _error(
+                "The detached Drawing result added an unrequested layout.",
+                "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+            )
+        return None
+    required = {
+        "scale",
+        "positions_mm",
+        "page_bounds_mm",
+        "page_width_mm",
+        "page_height_mm",
+        "spacing_x_mm",
+        "spacing_y_mm",
+        "drawable_bounds_mm",
+    }
+    if not isinstance(value, Mapping) or set(value) != required:
+        _error(
+            "The detached Drawing projection layout is malformed.",
+            "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+        )
+    scale = float(value["scale"])
+    dimensions = tuple(
+        float(value[name])
+        for name in (
+            "page_width_mm",
+            "page_height_mm",
+            "spacing_x_mm",
+            "spacing_y_mm",
+        )
+    )
+    if (
+        not math.isfinite(scale)
+        or not 1.0e-12 <= scale <= 1_000.0
+        or any(not math.isfinite(number) for number in dimensions)
+        or not math.isclose(dimensions[0], float(fit.page_width_mm), abs_tol=1.0e-9)
+        or not math.isclose(dimensions[1], float(fit.page_height_mm), abs_tol=1.0e-9)
+        or not math.isclose(dimensions[2], float(fit.spacing_x_mm), abs_tol=1.0e-9)
+        or not math.isclose(dimensions[3], float(fit.spacing_y_mm), abs_tol=1.0e-9)
+    ):
+        _error(
+            "The detached Drawing projection layout changed its page contract.",
+            "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+        )
+    positions_value = value["positions_mm"]
+    bounds_value = value["page_bounds_mm"]
+    drawable_value = value["drawable_bounds_mm"]
+    if (
+        not isinstance(drawable_value, list)
+        or len(drawable_value) != 4
+        or any(type(number) not in {int, float} for number in drawable_value)
+    ):
+        _error(
+            "The detached Drawing projection drawable bounds are malformed.",
+            "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+        )
+    drawable = tuple(float(number) for number in drawable_value)
+    expected_drawable = fit.drawable_bounds_mm or (
+        0.0,
+        0.0,
+        float(fit.page_width_mm),
+        float(fit.page_height_mm),
+    )
+    if (
+        any(not math.isfinite(number) for number in drawable)
+        or drawable[0] < 0.0
+        or drawable[1] < 0.0
+        or drawable[2] <= drawable[0]
+        or drawable[3] <= drawable[1]
+        or drawable[2] > dimensions[0]
+        or drawable[3] > dimensions[1]
+        or any(
+            not math.isclose(actual, float(expected), abs_tol=1.0e-9)
+            for actual, expected in zip(drawable, expected_drawable, strict=True)
+        )
+    ):
+        _error(
+            "The detached Drawing projection drawable bounds are invalid.",
+            "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+        )
+    if (
+        not isinstance(positions_value, Mapping)
+        or not isinstance(bounds_value, Mapping)
+        or set(positions_value) != set(fit.views)
+        or set(bounds_value) != set(fit.views)
+    ):
+        _error(
+            "The detached Drawing projection layout changed its view set.",
+            "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+        )
+    positions = []
+    page_bounds = []
+    projection_by_view = {
+        key.removeprefix("projection_group:"): projection
+        for key, projection in zip(
+            (projection.key for projection in projections),
+            projections,
+            strict=True,
+        )
+    }
+    for view in fit.views:
+        raw_position = positions_value[view]
+        raw_bounds = bounds_value[view]
+        if (
+            not isinstance(raw_position, list)
+            or len(raw_position) != 2
+            or not isinstance(raw_bounds, list)
+            or len(raw_bounds) != 4
+        ):
+            _error(
+                "The detached Drawing projection placement is malformed.",
+                "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+            )
+        position = tuple(float(number) for number in raw_position)
+        rectangle = tuple(float(number) for number in raw_bounds)
+        if (
+            any(not math.isfinite(number) for number in (*position, *rectangle))
+            or rectangle[0] < drawable[0] - 1.0e-8
+            or rectangle[1] < drawable[1] - 1.0e-8
+            or rectangle[2] > drawable[2] + 1.0e-8
+            or rectangle[3] > drawable[3] + 1.0e-8
+            or rectangle[2] <= rectangle[0]
+            or rectangle[3] <= rectangle[1]
+            or not math.isclose(
+                position[0],
+                (rectangle[0] + rectangle[2]) / 2.0,
+                abs_tol=1.0e-8,
+            )
+            or not math.isclose(
+                position[1],
+                (rectangle[1] + rectangle[3]) / 2.0,
+                abs_tol=1.0e-8,
+            )
+        ):
+            _error(
+                "The detached Drawing projection placement is invalid.",
+                "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+            )
+        projected_bounds = projection_by_view[view].bounds
+        if (
+            projected_bounds is None
+            or not math.isclose(
+                rectangle[2] - rectangle[0],
+                projected_bounds[2] - projected_bounds[0],
+                rel_tol=1.0e-7,
+                abs_tol=1.0e-7,
+            )
+            or not math.isclose(
+                rectangle[3] - rectangle[1],
+                projected_bounds[3] - projected_bounds[1],
+                rel_tol=1.0e-7,
+                abs_tol=1.0e-7,
+            )
+        ):
+            _error(
+                "The detached Drawing placement does not match its projected geometry.",
+                "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
+            )
+        positions.append((view, position))
+        page_bounds.append((view, rectangle))
+    return PreparedDrawingProjectionLayout(
+        scale=scale,
+        positions_mm=tuple(positions),
+        page_bounds_mm=tuple(page_bounds),
+        page_width_mm=dimensions[0],
+        page_height_mm=dimensions[1],
+        spacing_x_mm=dimensions[2],
+        spacing_y_mm=dimensions[3],
+        drawable_bounds_mm=drawable,
     )
 
 
@@ -362,7 +585,7 @@ def _read_result(frozen: FrozenDrawingProjectionBatch) -> PreparedDrawingProject
                 "NATIVE_DRAWING_PROJECTION_EXECUTION_FAILED",
             )
         raise NativeDrawingError(message, error_code=code)
-    required = {"ok", "protocol", "request_sha256", "projections"}
+    required = {"ok", "protocol", "request_sha256", "projections", "layout"}
     projections_value = value.get("projections")
     if (
         set(value) != required
@@ -389,7 +612,11 @@ def _read_result(frozen: FrozenDrawingProjectionBatch) -> PreparedDrawingProject
             "The detached Drawing projection result changed the requested view order.",
             "NATIVE_DRAWING_PROJECTION_OUTPUT_INVALID",
         )
-    return PreparedDrawingProjectionBatch(frozen=frozen, projections=projections)
+    return PreparedDrawingProjectionBatch(
+        frozen=frozen,
+        projections=projections,
+        layout=_prepared_layout(value["layout"], fit=frozen.fit, projections=projections),
+    )
 
 
 def execute_projection_batch(

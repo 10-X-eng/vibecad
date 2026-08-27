@@ -46,6 +46,7 @@ from VibeCADNativeAnalyzeThermalState import (
     thermal_condition_still_exact,
 )
 from VibeCADNativeAnalyzeMeshState import (
+    fem_mesh_definition_context_state,
     fem_mesh_definition_state,
     fem_mesh_definition_still_exact,
     fem_mesher_kind,
@@ -585,9 +586,9 @@ def prepare_fem_mesh_definition_target(
             f"The exact target is {kind}; this operation requires {expected_kind}.",
             error_code="NATIVE_ANALYZE_TARGET_TYPE_INVALID",
         )
-    state = fem_mesh_definition_state(mesh)
+    state = fem_mesh_definition_context_state(mesh)
     expected_sha = str(value["expected_state_sha256"])
-    if state["state_sha256"] != expected_sha:
+    if not fem_mesh_definition_still_exact(mesh, expected_sha):
         raise NativeAnalyzeError(
             "The exact FEM mesh definition changed after the provider read its state.",
             error_code="NATIVE_ANALYZE_STATE_STALE",

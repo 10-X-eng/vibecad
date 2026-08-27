@@ -24,7 +24,11 @@ _OPERATION_LABELS = {
 }
 
 
-def _create_subset(document: Any, output: PreparedSegmentOutput) -> Any:
+def _create_subset(
+    document: Any,
+    output: PreparedSegmentOutput,
+    accepted_mesh: Any | None = None,
+) -> Any:
     result = document.addObject(
         "Mesh::FacetSubset",
         document.getUniqueObjectName("MeshSegment"),
@@ -36,6 +40,12 @@ def _create_subset(document: Any, output: PreparedSegmentOutput) -> Any:
     result.FacetIndices = list(output.facet_indices)
     result.AcceptedTopology = output.target.source.Mesh
     result.SelectionKind = output.kind
+    if accepted_mesh is not None:
+        result.AcceptedResult = accepted_mesh
+        result.AcceptedSourceRevision = str(output.target.source_geometry_revision)
+        result.AcceptedSourceStale = False
+        result.Mesh = accepted_mesh
+        result.UpdateFromSource = False
     return result
 
 
@@ -46,6 +56,7 @@ def _create_boundary(
     *,
     facet_indices: tuple[int, ...] = (),
     make_faces: bool,
+    accepted_shape: Any | None = None,
 ) -> Any:
     result = document.addObject(
         "MeshPart::Boundary",
@@ -59,6 +70,9 @@ def _create_boundary(
     if facet_indices:
         result.AcceptedTopology = target.source.Mesh
     result.MakeFaces = make_faces
+    if accepted_shape is not None:
+        result.Shape = accepted_shape
+        result.UpdateFromSource = False
     return result
 
 
@@ -107,7 +121,21 @@ def create_mesh_segment(document: Any, prepared: PreparedMeshSegment) -> NativeM
     import MeshGui
     import MeshPart  # noqa: F401 - registers retained MeshPart boundaries
 
+    if prepared.operation == "split_components" and not prepared.outputs:
+        return NativeMutationDraft(
+            value={
+                "prepared": prepared,
+                "results": (),
+                "result_labels": (),
+                "group": None,
+                "boundaries": (),
+                "boundary_labels": (),
+            },
+        )
+
     if prepared.operation == "merge":
+        if len(prepared.accepted_meshes) not in {0, 1}:
+            raise NativeMeshError("The accepted Mesh merge artifact is incomplete.")
         result = document.addObject(
             "Mesh::Merge",
             document.getUniqueObjectName("MeshMerge"),
@@ -116,27 +144,51 @@ def create_mesh_segment(document: Any, prepared: PreparedMeshSegment) -> NativeM
             raise NativeMeshError("The retained Mesh merge could not be created.")
         result.Label = prepared.settings["result_label"]
         result.Sources = [target.source for target in prepared.targets]
+        if prepared.accepted_meshes:
+            result.AcceptedResult = prepared.accepted_meshes[0]
+            result.AcceptedSourceRevisions = [
+                str(target.source_geometry_revision) for target in prepared.targets
+            ]
+            result.AcceptedSourcePlacements = [
+                target.source.Placement for target in prepared.targets
+            ]
+            result.AcceptedSourcesStale = False
+            result.UpdateFromSource = False
         MeshGui.publishReplacingOperation(
             str(document.Name),
             [target.source for target in prepared.targets],
             result,
         )
         return NativeMutationDraft(
-            value={"prepared": prepared, "results": (result,), "group": None, "boundaries": ()},
+            value={
+                "prepared": prepared,
+                "results": (result,),
+                "result_labels": (str(result.Label),),
+                "group": None,
+                "boundaries": (),
+                "boundary_labels": (),
+            },
             recompute_targets=(result,),
             created=(object_identity(result),),
             replaced=tuple(object_identity(target.source) for target in prepared.targets),
         )
 
     if prepared.operation == "mesh_boundary":
+        if prepared.accepted_shapes and len(prepared.accepted_shapes) != len(prepared.targets):
+            raise NativeMeshError("The accepted Mesh boundary artifacts are incomplete.")
         results = [
             _create_boundary(
                 document,
                 target,
                 target.label,
                 make_faces=bool(prepared.settings["make_faces"]),
+                accepted_shape=(
+                    prepared.accepted_shapes[index]
+                    if prepared.accepted_shapes
+                    else None
+                ),
             )
-            for target in prepared.targets
+            for index, target in enumerate(prepared.targets)
         ]
         group = _publish_outputs(
             document,
@@ -147,17 +199,39 @@ def create_mesh_segment(document: Any, prepared: PreparedMeshSegment) -> NativeM
         )
         created_objects = [*results, *([group] if group is not None else [])]
         return NativeMutationDraft(
-            value={"prepared": prepared, "results": tuple(results), "group": group, "boundaries": ()},
+            value={
+                "prepared": prepared,
+                "results": tuple(results),
+                "result_labels": tuple(str(result.Label) for result in results),
+                "group": group,
+                "boundaries": (),
+                "boundary_labels": (),
+            },
             recompute_targets=tuple(created_objects),
             created=tuple(object_identity(result) for result in created_objects),
         )
 
-    results = [_create_subset(document, output) for output in prepared.outputs]
+    if prepared.accepted_meshes and len(prepared.accepted_meshes) != len(prepared.outputs):
+        raise NativeMeshError("The accepted Mesh segment artifacts are incomplete.")
+    results = [
+        _create_subset(
+            document,
+            output,
+            prepared.accepted_meshes[index] if prepared.accepted_meshes else None,
+        )
+        for index, output in enumerate(prepared.outputs)
+    ]
     paired_targets = [output.target for output in prepared.outputs]
     boundaries = []
     if prepared.operation == "reverse_segmentation" and prepared.settings[
         "create_boundary_faces"
     ]:
+        expected_shapes = sum(
+            1 for output in prepared.outputs if output.kind != "Unused facets"
+        )
+        if prepared.accepted_shapes and len(prepared.accepted_shapes) != expected_shapes:
+            raise NativeMeshError("The accepted planar boundary artifacts are incomplete.")
+        shape_index = 0
         for output in prepared.outputs:
             if output.kind == "Unused facets":
                 continue
@@ -168,8 +242,14 @@ def create_mesh_segment(document: Any, prepared: PreparedMeshSegment) -> NativeM
                     f"{output.label} Boundary",
                     facet_indices=output.facet_indices,
                     make_faces=True,
+                    accepted_shape=(
+                        prepared.accepted_shapes[shape_index]
+                        if prepared.accepted_shapes
+                        else None
+                    ),
                 )
             )
+            shape_index += 1
             paired_targets.append(output.target)
 
     all_outputs = [*results, *boundaries]
@@ -190,8 +270,10 @@ def create_mesh_segment(document: Any, prepared: PreparedMeshSegment) -> NativeM
         value={
             "prepared": prepared,
             "results": tuple(results),
+            "result_labels": tuple(str(result.Label) for result in results),
             "group": group,
             "boundaries": tuple(boundaries),
+            "boundary_labels": tuple(str(boundary.Label) for boundary in boundaries),
         },
         recompute_targets=tuple(created_objects),
         created=tuple(object_identity(result) for result in created_objects),
@@ -262,18 +344,21 @@ def _history_postcondition(
 def _verify_merge(document: Any, draft: NativeMutationDraft) -> dict[str, Any]:
     prepared = draft.value["prepared"]
     result = draft.value["results"][0]
+    result_label = draft.value["result_labels"][0]
     timeline = document.getObject("VibeCADTimeline")
     operations = list(getattr(timeline, "Operations", ()) or ()) if timeline else []
     mesh = getattr(result, "Mesh", None)
     expected_replaced = tuple(
         target.source for target in prepared.targets if target.source_visible
     )
+    detached = bool(prepared.accepted_meshes)
     if (
         not is_live(document, result)
         or str(getattr(result, "TypeId", "")) != "Mesh::Merge"
         or tuple(getattr(result, "Sources", ()) or ())
         != tuple(target.source for target in prepared.targets)
-        or str(getattr(result, "Label", "")) != prepared.settings["result_label"]
+        or str(getattr(result, "Label", "")) != result_label
+        or bool(result.UpdateFromSource) is detached
         or not bool(result.isValid())
         or int(getattr(mesh, "CountFacets", 0) or 0) < 1
         or timeline is None
@@ -290,6 +375,7 @@ def _verify_merge(document: Any, draft: NativeMutationDraft) -> dict[str, Any]:
         "source_count": len(prepared.targets),
         "result": mesh_object_state(result),
         "result_geometry_sha256": mesh_geometry_sha256(mesh),
+        "updates_from_source": not detached,
     }
 
 
@@ -299,14 +385,30 @@ def verify_mesh_segment(document: Any, draft: NativeMutationDraft) -> dict[str, 
         raise NativeMeshError("The Mesh segment operation lost its prepared state.")
     if prepared.operation == "merge":
         return _verify_merge(document, draft)
+    if prepared.operation == "split_components" and not prepared.outputs:
+        if any(not mesh_target_still_exact(document, target) for target in prepared.targets):
+            raise NativeMeshError("An exact Mesh changed while verifying segmentation.")
+        return {
+            "operation": prepared.operation,
+            "changed": False,
+            "source_count": len(prepared.targets),
+            "result_count": 0,
+            "results": [],
+            "sources": [object_reference(target.source) for target in prepared.targets],
+            "unchanged": [mesh_object_state(target.source) for target in prepared.targets],
+        }
     results = draft.value["results"]
+    result_labels = draft.value["result_labels"]
     boundaries = draft.value["boundaries"]
+    boundary_labels = draft.value["boundary_labels"]
     group = draft.value["group"]
     resources = (*results, *boundaries)
     source_preserving = prepared.operation == "mesh_boundary" or (
         prepared.operation == "segmentation_manual"
         and prepared.settings["mode"] == "extract"
     )
+    detached_meshes = bool(prepared.accepted_meshes)
+    detached_shapes = bool(prepared.accepted_shapes)
     if len(results) != (len(prepared.targets) if prepared.operation == "mesh_boundary" else len(prepared.outputs)):
         raise NativeMeshError("The Mesh segment operation returned the wrong result count.")
     if not _history_postcondition(
@@ -320,30 +422,42 @@ def verify_mesh_segment(document: Any, draft: NativeMutationDraft) -> dict[str, 
 
     summaries = []
     if prepared.operation == "mesh_boundary":
-        boundary_pairs = zip(prepared.targets, results)
+        boundary_pairs = zip(prepared.targets, results, result_labels)
     else:
         boundary_pairs = ()
-        for output, result in zip(prepared.outputs, results):
+        for output, result, result_label in zip(
+            prepared.outputs,
+            results,
+            result_labels,
+        ):
             mesh = getattr(result, "Mesh", None)
             status = str(getattr(result, "getStatusString", lambda: "")() or "").strip()
+            if not is_live(document, result):
+                raise NativeMeshError("A retained Mesh segment is no longer in the document.")
+            if str(getattr(result, "TypeId", "")) != "Mesh::FacetSubset":
+                raise NativeMeshError("A retained Mesh segment has the wrong object type.")
+            if getattr(result, "Source", None) is not output.target.source:
+                raise NativeMeshError("A retained Mesh segment lost its exact source.")
+            if tuple(int(value) for value in result.FacetIndices) != output.facet_indices:
+                raise NativeMeshError("A retained Mesh segment changed its accepted facets.")
+            if str(result.SelectionKind) != output.kind:
+                raise NativeMeshError("A retained Mesh segment changed its surface kind.")
+            if str(result.Label) != result_label:
+                raise NativeMeshError("A retained Mesh segment changed its label.")
             if (
-                not is_live(document, result)
-                or str(getattr(result, "TypeId", "")) != "Mesh::FacetSubset"
-                or getattr(result, "Source", None) is not output.target.source
-                or tuple(int(value) for value in result.FacetIndices) != output.facet_indices
-                or str(result.SelectionKind) != output.kind
-                or str(result.Label) != output.label
-                or mesh_geometry_sha256(result.AcceptedTopology)
+                mesh_geometry_sha256(result.AcceptedTopology)
                 != output.target.source_geometry_sha256
-                or not bool(result.isValid())
-                or int(getattr(mesh, "CountFacets", 0) or 0) != len(output.facet_indices)
             ):
-                raise NativeMeshError(
-                    status or "A retained Mesh facet segment failed its exact postcondition."
-                )
+                raise NativeMeshError("A retained Mesh segment lost its accepted topology.")
+            if not bool(result.isValid()):
+                raise NativeMeshError(status or "A retained Mesh segment is invalid.")
+            if bool(result.UpdateFromSource) is detached_meshes:
+                raise NativeMeshError("A retained Mesh segment changed its update mode.")
+            if int(getattr(mesh, "CountFacets", 0) or 0) != len(output.facet_indices):
+                raise NativeMeshError("A retained Mesh segment has the wrong facet count.")
             summaries.append(mesh_object_state(result))
 
-    for target, boundary in boundary_pairs:
+    for target, boundary, boundary_label in boundary_pairs:
         shape = getattr(boundary, "Shape", None)
         if (
             not is_live(document, boundary)
@@ -351,7 +465,8 @@ def verify_mesh_segment(document: Any, draft: NativeMutationDraft) -> dict[str, 
             or getattr(boundary, "Source", None) is not target.source
             or tuple(int(value) for value in boundary.FacetIndices)
             or bool(boundary.MakeFaces) is not bool(prepared.settings["make_faces"])
-            or str(boundary.Label) != target.label
+            or str(boundary.Label) != boundary_label
+            or bool(boundary.UpdateFromSource) is detached_shapes
             or not bool(boundary.isValid())
             or shape is None
             or bool(shape.isNull())
@@ -373,6 +488,7 @@ def verify_mesh_segment(document: Any, draft: NativeMutationDraft) -> dict[str, 
         if output.kind == "Unused facets" or expected_boundary_outputs == 0:
             continue
         boundary = boundaries[boundary_index]
+        boundary_label = boundary_labels[boundary_index]
         boundary_index += 1
         shape = getattr(boundary, "Shape", None)
         if (
@@ -383,6 +499,8 @@ def verify_mesh_segment(document: Any, draft: NativeMutationDraft) -> dict[str, 
             or mesh_geometry_sha256(boundary.AcceptedTopology)
             != output.target.source_geometry_sha256
             or not bool(boundary.MakeFaces)
+            or str(boundary.Label) != boundary_label
+            or bool(boundary.UpdateFromSource) is detached_shapes
             or not bool(boundary.isValid())
             or shape is None
             or bool(shape.isNull())
@@ -400,10 +518,12 @@ def verify_mesh_segment(document: Any, draft: NativeMutationDraft) -> dict[str, 
         raise NativeMeshError("Replacement segmentation did not hide every source Mesh.")
     response = {
         "operation": prepared.operation,
+        "changed": True,
         "source_count": len(prepared.targets),
         "result_count": len(resources),
         "results": summaries,
         "sources": [object_reference(target.source) for target in prepared.targets],
+        "updates_from_source": not (detached_meshes or detached_shapes),
     }
     if group is not None:
         response["operation_controller"] = mesh_object_state(group)

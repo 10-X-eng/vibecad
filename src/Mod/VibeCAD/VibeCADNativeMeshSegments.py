@@ -14,6 +14,18 @@ from VibeCADNativeMeshTargets import PreparedMeshTarget, prepare_mesh_target
 
 
 MAX_EXPLICIT_FACETS = 250_000
+BACKGROUND_SEGMENT_OPERATIONS = frozenset(
+    {
+        "merge",
+        "split_components",
+        "mesh_segmentation",
+        "segmentation_best_fit",
+        "reverse_segmentation",
+        "segmentation_manual",
+        "segmentation_from_components",
+        "mesh_boundary",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +42,8 @@ class PreparedMeshSegment:
     targets: tuple[PreparedMeshTarget, ...]
     outputs: tuple[PreparedSegmentOutput, ...]
     settings: Mapping[str, Any]
+    accepted_meshes: tuple[Any, ...] = ()
+    accepted_shapes: tuple[Any, ...] = ()
 
 
 def _label(value: Any, field: str = "label") -> str:
@@ -291,12 +305,367 @@ def _facet_selection(value: Any, facet_count: int) -> tuple[int, ...]:
     return tuple(sorted(facets))
 
 
+def capture_background_mesh_segment(
+    document: Any,
+    document_uid: str,
+    operation: str,
+    values: Mapping[str, Any],
+) -> PreparedMeshSegment:
+    """Capture exact sources and settings without analyzing mesh topology."""
+
+    if operation not in BACKGROUND_SEGMENT_OPERATIONS:
+        raise NativeMeshError("This Mesh segment operation does not use background analysis.")
+    if operation == "merge":
+        targets = _exact_targets(
+            document,
+            document_uid,
+            values["sources"],
+            minimum=2,
+        )
+        return PreparedMeshSegment(
+            operation,
+            targets,
+            (),
+            {"result_label": _label(values["result_label"], "result_label")},
+        )
+    if operation == "mesh_boundary":
+        raw_targets = values["targets"]
+        if not isinstance(raw_targets, list) or not 1 <= len(raw_targets) <= 32:
+            raise NativeMeshError("targets must contain 1 to 32 labeled exact Meshes.")
+        targets = tuple(
+            prepare_mesh_target(document, document_uid, value)
+            for value in raw_targets
+        )
+        names = tuple(str(target.source.Name) for target in targets)
+        if len(names) != len(set(names)):
+            raise NativeMeshError("Boundary targets must not repeat a Mesh.")
+        make_faces = values["make_faces_when_closed"]
+        if type(make_faces) is not bool:
+            raise NativeMeshError("make_faces_when_closed must be true or false.")
+        return PreparedMeshSegment(
+            operation,
+            targets,
+            (),
+            {"make_faces": make_faces},
+        )
+    if operation == "segmentation_from_components":
+        targets = _exact_targets(document, document_uid, values["targets"])
+    else:
+        targets = (
+            prepare_mesh_target(
+                document,
+                document_uid,
+                values["target"],
+                require_label=False,
+            ),
+        )
+    if operation == "segmentation_manual":
+        target = targets[0]
+        facets = _facet_selection(values["selection"], int(target.topology["facets"]))
+        result = values["result"]
+        if not isinstance(result, Mapping):
+            raise NativeMeshError("result must choose extract or split.")
+        mode = str(result.get("mode") or "")
+        outputs = [
+            PreparedSegmentOutput(
+                target,
+                facets,
+                _label(result.get("segment_label"), "segment_label"),
+                "Manual selection",
+            )
+        ]
+        if mode == "extract" and set(result) == {"mode", "segment_label"}:
+            pass
+        elif mode == "split" and set(result) == {
+            "mode",
+            "segment_label",
+            "remainder_label",
+        }:
+            selected = set(facets)
+            remainder = tuple(
+                index
+                for index in range(int(target.topology["facets"]))
+                if index not in selected
+            )
+            if not remainder:
+                raise NativeMeshError("split requires at least one unselected remainder facet.")
+            outputs.append(
+                PreparedSegmentOutput(
+                    target,
+                    remainder,
+                    _label(result["remainder_label"], "remainder_label"),
+                    "Manual selection remainder",
+                )
+            )
+        else:
+            raise NativeMeshError("result must match extract or split exactly.")
+        settings = {
+            "mode": mode,
+            "segments": tuple(
+                {
+                    "kind": output.kind,
+                    "facet_indices": output.facet_indices,
+                }
+                for output in outputs
+            ),
+        }
+        return PreparedMeshSegment(operation, targets, tuple(outputs), settings)
+    prefix = _label(values["result_label_prefix"], "result_label_prefix")
+
+    if operation in {"split_components", "segmentation_from_components"}:
+        settings: dict[str, Any] = {"result_label_prefix": prefix}
+    elif operation == "mesh_segmentation":
+        smoothing = values["smoothing_steps"]
+        if type(smoothing) is not int or not 0 <= smoothing <= 10_000:
+            raise NativeMeshError("smoothing_steps must be between 0 and 10000.")
+        settings = {
+            "result_label_prefix": prefix,
+            "surface_requests": _curvature_requests(values["surfaces"]),
+            "smoothing_steps": smoothing,
+        }
+    elif operation == "segmentation_best_fit":
+        settings = {
+            "result_label_prefix": prefix,
+            "surface_requests": _best_fit_requests(values["surfaces"]),
+        }
+    else:
+        smoothing = values["smoothing_steps"]
+        include_unused = values["include_unused_facets"]
+        create_faces = values["create_boundary_faces"]
+        if type(smoothing) is not int or not 0 <= smoothing <= 10_000:
+            raise NativeMeshError("smoothing_steps must be between 0 and 10000.")
+        if type(include_unused) is not bool or type(create_faces) is not bool:
+            raise NativeMeshError(
+                "include_unused_facets and create_boundary_faces must be booleans."
+            )
+        settings = {
+            "result_label_prefix": prefix,
+            "minimum_facets": _positive_int(values["minimum_facets"], "minimum_facets"),
+            "curvature_tolerance": _finite(
+                values["curvature_tolerance"],
+                "curvature_tolerance",
+                nonnegative=True,
+            ),
+            "distance_tolerance_mm": _finite(
+                values["distance_tolerance_mm"],
+                "distance_tolerance_mm",
+                nonnegative=True,
+            ),
+            "smoothing_steps": smoothing,
+            "include_unused_facets": include_unused,
+            "create_boundary_faces": create_faces,
+        }
+    return PreparedMeshSegment(operation, targets, (), settings)
+
+
+def analyze_detached_mesh_segment(
+    captured: PreparedMeshSegment,
+    detached_meshes: tuple[Any, ...],
+) -> PreparedMeshSegment:
+    """Analyze detached meshes without reading or mutating a document."""
+
+    if (
+        not isinstance(captured, PreparedMeshSegment)
+        or captured.operation not in BACKGROUND_SEGMENT_OPERATIONS
+        or len(detached_meshes) != len(captured.targets)
+    ):
+        raise TypeError("captured must match detached background Mesh sources")
+    operation = captured.operation
+    targets = captured.targets
+    settings = dict(captured.settings)
+    if operation in {"merge", "mesh_boundary", "segmentation_manual"}:
+        return captured
+    prefix = str(settings["result_label_prefix"])
+
+    if operation in {"split_components", "segmentation_from_components"}:
+        outputs = []
+        split_targets = []
+        for target, mesh in zip(targets, detached_meshes):
+            components = mesh_components(mesh)
+            if len(components) <= 1:
+                continue
+            split_targets.append(target)
+            for index, component in enumerate(components, 1):
+                label = (
+                    f"{prefix} {index}"
+                    if len(targets) == 1
+                    else f"{prefix} {target.source.Label} {index}"
+                )
+                outputs.append(
+                    PreparedSegmentOutput(
+                        target,
+                        component.facet_indices,
+                        label,
+                        "Connected component",
+                    )
+                )
+        if not outputs:
+            if operation == "split_components":
+                return PreparedMeshSegment(operation, targets, (), settings)
+            raise NativeMeshError("No selected Mesh contains multiple connected components.")
+        return PreparedMeshSegment(operation, tuple(split_targets), tuple(outputs), settings)
+
+    import Mesh
+
+    target = targets[0]
+    mesh = detached_meshes[0]
+    if operation == "mesh_segmentation":
+        detected = Mesh.detectCurvatureSegments(
+            mesh,
+            settings["surface_requests"],
+            settings["smoothing_steps"],
+        )
+        outputs: tuple[PreparedSegmentOutput, ...] | list[PreparedSegmentOutput] = (
+            _detected_outputs(target, detected, prefix)
+        )
+    elif operation == "segmentation_best_fit":
+        detected = Mesh.detectBestFitSegments(mesh, settings["surface_requests"])
+        outputs = _detected_outputs(target, detected, prefix)
+    else:
+        detected = Mesh.detectPlanarSegments(
+            mesh,
+            settings["minimum_facets"],
+            settings["curvature_tolerance"],
+            settings["distance_tolerance_mm"],
+            settings["smoothing_steps"],
+        )
+        outputs = list(_detected_outputs(target, detected, prefix)) if detected else []
+        if settings["include_unused_facets"]:
+            used = {index for output in outputs for index in output.facet_indices}
+            unused = tuple(
+                index for index in range(int(target.topology["facets"])) if index not in used
+            )
+            if unused:
+                outputs.append(
+                    PreparedSegmentOutput(
+                        target,
+                        unused,
+                        f"{prefix} Unused",
+                        "Unused facets",
+                    )
+                )
+        if not outputs:
+            raise NativeMeshError(
+                "The exact Mesh and planar settings did not produce any segments.",
+                error_code="NATIVE_MESH_SEGMENTATION_EMPTY",
+            )
+    return PreparedMeshSegment(operation, targets, tuple(outputs), settings)
+
+
+def accept_background_mesh_segment(
+    captured: PreparedMeshSegment,
+    analyses: Any,
+) -> PreparedMeshSegment:
+    """Validate isolated facet analysis and bind it to the captured sources."""
+
+    if (
+        not isinstance(captured, PreparedMeshSegment)
+        or captured.operation not in BACKGROUND_SEGMENT_OPERATIONS
+        or not isinstance(analyses, list)
+    ):
+        raise NativeMeshError("The isolated Mesh segmentation result is incomplete.")
+    operation = captured.operation
+    if operation in {"merge", "mesh_boundary"}:
+        if analyses:
+            raise NativeMeshError("The isolated Mesh geometry result is invalid.")
+        return captured
+    if operation == "segmentation_manual":
+        expected = [
+            [
+                {
+                    "kind": output.kind,
+                    "facet_indices": list(output.facet_indices),
+                }
+                for output in captured.outputs
+            ]
+        ]
+        if analyses != expected:
+            raise NativeMeshError("The isolated manual Mesh segments are invalid.")
+        return captured
+    if len(analyses) != len(captured.targets):
+        raise NativeMeshError("The isolated Mesh segmentation result is incomplete.")
+    prefix = str(captured.settings["result_label_prefix"])
+    outputs = []
+    retained_targets = []
+    for target_index, (target, detected) in enumerate(zip(captured.targets, analyses)):
+        if not isinstance(detected, list):
+            raise NativeMeshError("The isolated Mesh segmentation result is invalid.")
+        if operation in {"split_components", "segmentation_from_components"}:
+            if not detected:
+                continue
+            retained_targets.append(target)
+            validated = _detected_outputs(target, detected, prefix)
+            for component_index, output in enumerate(validated, 1):
+                label = (
+                    f"{prefix} {component_index}"
+                    if len(captured.targets) == 1
+                    else f"{prefix} {target.source.Label} {component_index}"
+                )
+                outputs.append(
+                    PreparedSegmentOutput(
+                        target,
+                        output.facet_indices,
+                        label,
+                        "Connected component",
+                    )
+                )
+            continue
+        if target_index != 0:
+            raise NativeMeshError("A surface segmentation returned extra target data.")
+        validated = list(_detected_outputs(target, detected, prefix)) if detected else []
+        if operation == "reverse_segmentation" and captured.settings[
+            "include_unused_facets"
+        ]:
+            used = {index for output in validated for index in output.facet_indices}
+            unused = tuple(
+                index for index in range(int(target.topology["facets"])) if index not in used
+            )
+            if unused:
+                validated.append(
+                    PreparedSegmentOutput(
+                        target,
+                        unused,
+                        f"{prefix} Unused",
+                        "Unused facets",
+                    )
+                )
+        if not validated:
+            raise NativeMeshError(
+                "The exact Mesh and settings did not produce any segments.",
+                error_code="NATIVE_MESH_SEGMENTATION_EMPTY",
+            )
+        retained_targets.append(target)
+        outputs.extend(validated)
+    if not outputs:
+        if operation == "split_components":
+            return PreparedMeshSegment(operation, captured.targets, (), captured.settings)
+        raise NativeMeshError("No selected Mesh contains multiple connected components.")
+    return PreparedMeshSegment(
+        operation,
+        tuple(retained_targets),
+        tuple(outputs),
+        captured.settings,
+    )
+
+
 def prepare_mesh_segment(
     document: Any,
     document_uid: str,
     operation: str,
     values: Mapping[str, Any],
 ) -> PreparedMeshSegment:
+    if operation in BACKGROUND_SEGMENT_OPERATIONS:
+        captured = capture_background_mesh_segment(
+            document,
+            document_uid,
+            operation,
+            values,
+        )
+        return analyze_detached_mesh_segment(
+            captured,
+            tuple(target.source.Mesh for target in captured.targets),
+        )
+
     if operation == "merge":
         targets = _exact_targets(document, document_uid, values["sources"], minimum=2)
         return PreparedMeshSegment(
@@ -322,137 +691,8 @@ def prepare_mesh_segment(
             raise NativeMeshError("make_faces_when_closed must be true or false.")
         return PreparedMeshSegment(operation, targets, (), {"make_faces": make_faces})
 
-    if operation == "segmentation_from_components":
-        targets = _exact_targets(document, document_uid, values["targets"])
-    else:
-        targets = (
-            prepare_mesh_target(document, document_uid, values["target"], require_label=False),
-        )
-    prefix = _label(values.get("result_label_prefix"), "result_label_prefix") if "result_label_prefix" in values else ""
-
-    if operation in {"split_components", "segmentation_from_components"}:
-        outputs = []
-        split_targets = []
-        for target in targets:
-            components = mesh_components(target.source.Mesh)
-            if len(components) <= 1:
-                if operation == "split_components":
-                    raise NativeMeshError(
-                        "The exact Mesh has only one connected component.",
-                        error_code="NATIVE_MESH_SINGLE_COMPONENT",
-                    )
-                continue
-            split_targets.append(target)
-            for index, component in enumerate(components, 1):
-                outputs.append(
-                    PreparedSegmentOutput(
-                        target,
-                        component.facet_indices,
-                        f"{prefix} {index}" if len(targets) == 1 else f"{prefix} {target.source.Label} {index}",
-                        "Connected component",
-                    )
-                )
-        if not outputs:
-            raise NativeMeshError("No selected Mesh contains multiple connected components.")
-        return PreparedMeshSegment(operation, tuple(split_targets), tuple(outputs), {})
-
+    targets = (
+        prepare_mesh_target(document, document_uid, values["target"], require_label=False),
+    )
     target = targets[0]
-    if operation == "segmentation_manual":
-        facets = _facet_selection(values["selection"], int(target.topology["facets"]))
-        result = values["result"]
-        if not isinstance(result, Mapping):
-            raise NativeMeshError("result must choose extract or split.")
-        mode = str(result.get("mode") or "")
-        selected = PreparedSegmentOutput(
-            target,
-            facets,
-            _label(result.get("segment_label"), "segment_label"),
-            "Manual selection",
-        )
-        outputs = [selected]
-        if mode == "extract" and set(result) == {"mode", "segment_label"}:
-            pass
-        elif mode == "split" and set(result) == {"mode", "segment_label", "remainder_label"}:
-            selected_set = set(facets)
-            remainder = tuple(
-                index for index in range(int(target.topology["facets"])) if index not in selected_set
-            )
-            if not remainder:
-                raise NativeMeshError("split requires at least one unselected remainder facet.")
-            outputs.append(
-                PreparedSegmentOutput(
-                    target,
-                    remainder,
-                    _label(result["remainder_label"], "remainder_label"),
-                    "Manual selection remainder",
-                )
-            )
-        else:
-            raise NativeMeshError("result must match extract or split exactly.")
-        return PreparedMeshSegment(operation, targets, tuple(outputs), {"mode": mode})
-
-    try:
-        import MeshGui
-
-        if operation == "mesh_segmentation":
-            smoothing = values["smoothing_steps"]
-            if type(smoothing) is not int or not 0 <= smoothing <= 10_000:
-                raise NativeMeshError("smoothing_steps must be between 0 and 10000.")
-            requests = _curvature_requests(values["surfaces"])
-            detected = MeshGui.detectCurvatureSegments(target.source, requests, smoothing)
-            outputs = _detected_outputs(target, detected, prefix)
-            settings = {"surface_requests": requests, "smoothing_steps": smoothing}
-        elif operation == "segmentation_best_fit":
-            requests = _best_fit_requests(values["surfaces"])
-            detected = MeshGui.detectBestFitSegments(target.source, requests)
-            outputs = _detected_outputs(target, detected, prefix)
-            settings = {"surface_requests": requests}
-        elif operation == "reverse_segmentation":
-            minimum = _positive_int(values["minimum_facets"], "minimum_facets")
-            curvature = _finite(values["curvature_tolerance"], "curvature_tolerance", nonnegative=True)
-            distance = _finite(values["distance_tolerance_mm"], "distance_tolerance_mm", nonnegative=True)
-            smoothing = values["smoothing_steps"]
-            include_unused = values["include_unused_facets"]
-            create_faces = values["create_boundary_faces"]
-            if type(smoothing) is not int or not 0 <= smoothing <= 10_000:
-                raise NativeMeshError("smoothing_steps must be between 0 and 10000.")
-            if type(include_unused) is not bool or type(create_faces) is not bool:
-                raise NativeMeshError("include_unused_facets and create_boundary_faces must be booleans.")
-            detected = MeshGui.detectPlanarSegments(
-                target.source,
-                minimum,
-                curvature,
-                distance,
-                smoothing,
-            )
-            outputs = list(_detected_outputs(target, detected, prefix)) if detected else []
-            if include_unused:
-                used = {index for output in outputs for index in output.facet_indices}
-                unused = tuple(
-                    index for index in range(int(target.topology["facets"])) if index not in used
-                )
-                if unused:
-                    outputs.append(
-                        PreparedSegmentOutput(target, unused, f"{prefix} Unused", "Unused facets")
-                    )
-            if not outputs:
-                raise NativeMeshError(
-                    "The exact Mesh and planar settings did not produce any segments.",
-                    error_code="NATIVE_MESH_SEGMENTATION_EMPTY",
-                )
-            outputs = tuple(outputs)
-            settings = {
-                "minimum_facets": minimum,
-                "curvature_tolerance": curvature,
-                "distance_tolerance_mm": distance,
-                "smoothing_steps": smoothing,
-                "include_unused_facets": include_unused,
-                "create_boundary_faces": create_faces,
-            }
-        else:
-            raise NativeMeshError("The requested Mesh segment operation is unavailable.")
-    except NativeMeshError:
-        raise
-    except Exception as exc:
-        raise NativeMeshError("The native Mesh segmentation detector failed.") from exc
-    return PreparedMeshSegment(operation, targets, tuple(outputs), settings)
+    raise NativeMeshError("The requested Mesh segment operation is unavailable.")

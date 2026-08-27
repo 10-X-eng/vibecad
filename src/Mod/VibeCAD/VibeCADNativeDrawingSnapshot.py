@@ -50,7 +50,6 @@ from VibeCADNativeDrawingLeaderState import (
     is_drawing_leader,
 )
 from VibeCADNativeDrawingDraftState import (
-    drawing_draft_source_state,
     drawing_draft_view_state,
     is_draft_drawing_view,
 )
@@ -65,6 +64,12 @@ from VibeCADNativeDrawingGeometryState import (
     NativeDrawingGeometryStateError,
     drawing_projected_geometry_state,
     selected_projected_geometry_state,
+)
+from VibeCADNativeDrawingProjectionGroup import projection_group_summary
+from VibeCADNativeDrawingPlacementState import (
+    NativeDrawingPlacementStateError,
+    drawing_view_placement_state,
+    is_positionable_drawing_view,
 )
 from VibeCADNativeDrawingLineAttributeState import (
     MAX_DRAWING_LINE_ATTRIBUTE_TARGETS,
@@ -111,15 +116,16 @@ from VibeCADNativeDrawingMeasurementAnnotationState import (
     is_drawing_measurement_annotation,
 )
 from VibeCADNativeDrawingFormatState import drawing_format_state
+from VibeCADNativeDrawingSourceCatalog import drawing_source_catalog_state_page
 from VibeCADNativeDrawingViewState import (
     MAX_DRAWING_BREAKS,
     MAX_DRAWING_VIEW_SOURCES,
-    drawing_break_state,
-    drawing_source_state,
+    drawing_source_catalog_identity_state,
     drawing_view_state,
     is_drawing_view,
     is_part_drawing_view,
 )
+from VibeCADNativeGeometrySources import is_potential_design_geometry_source
 from VibeCADNativeSnapshot import concise_object, objects_of_type
 
 
@@ -128,6 +134,7 @@ MAX_SELECTED_CLIP_GROUPS = 4
 MAX_SELECTED_PROJECTED_VIEWS = 4
 MAX_SELECTED_DIMENSIONS = 16
 MAX_UNRESOLVED_DRAWING_REFERENCES = 16
+MAX_DRAWING_SOURCES = 48
 _PROJECTED_ELEMENT_NAME = re.compile(r"^(?:Edge|Vertex|Face)(?:0|[1-9][0-9]*)$")
 
 
@@ -223,6 +230,24 @@ def _view_summary(
     line_length_inventories_by_view: dict[str, dict[str, Any] | None],
 ) -> dict[str, Any]:
     result = concise_object(view)
+    if is_positionable_drawing_view(view):
+        try:
+            placement = drawing_view_placement_state(view)
+            result["placement"] = {
+                "placement_target": {"object_name": placement["object_name"]},
+                "position_on_page_mm": placement["position_on_page_mm"],
+                "locked": placement["locked"],
+            }
+        except (
+            AttributeError,
+            NativeDrawingPlacementStateError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
+            pass
+    if str(getattr(view, "TypeId", "") or "") == "TechDraw::DrawProjGroup":
+        result["projection_group"] = projection_group_summary(view)
     if is_drawing_surface_finish_symbol(view):
         try:
             result["surface_finish_symbol"] = drawing_surface_finish_symbol_state(view)
@@ -806,6 +831,135 @@ def _active_page_state(page: Any) -> dict[str, Any]:
     return state
 
 
+_COMPACT_VIEW_KEYS = (
+    "document_uid",
+    "object_name",
+    "type_id",
+    "label",
+    "state",
+    "state_sha256",
+    "placement",
+    "x",
+    "y",
+    "scale",
+)
+_COMPACT_PRIMARY_VIEW_DETAILS = (
+    "projection_group",
+    "surface_finish_symbol",
+    "weld_symbol",
+    "rich_annotation",
+    "leader",
+    "measurement_annotation",
+    "balloon",
+    "dimension",
+    "dimension_repair",
+    "clip_group",
+    "active_view_image",
+    # These owner/readiness states are fallbacks for drawing objects without
+    # their own primary revision block.
+    "annotation_owner",
+    "leader_owner",
+    "stack",
+    "clip_member",
+    "hatches",
+    "section_position",
+    "view_lock",
+    "hidden_edge_visibility",
+    "line_attributes",
+    "line_lengths",
+)
+_COMPACT_DETAIL_SCALARS = frozenset(
+    {
+        "kind",
+        "dimension_type",
+        "measure_type",
+        "source_view_name",
+        "page_name",
+        "object_name",
+        "view_count",
+        "member_count",
+        "line_count",
+        "hatch_count",
+        "measured_value",
+        "formatted_text",
+        "timeline_usable",
+        "valid",
+        "available",
+        "locked",
+        "repairable",
+        "error",
+    }
+)
+
+
+def _compact_view_detail(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep revision and readiness facts while deferring repeated view detail."""
+
+    result = {}
+    for name, value in detail.items():
+        if name.endswith("sha256") or name in _COMPACT_DETAIL_SCALARS:
+            result[str(name)] = value
+    return result
+
+
+def compact_drawing_snapshot_for_bound(
+    domain: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compact repeated page-view detail after an active snapshot exceeds its budget.
+
+    The complete detail remains in selected target blocks and in explicit Drawing
+    read tools. Small snapshots never call this function and retain their established
+    shape verbatim.
+    """
+
+    result = dict(domain)
+    pages = []
+    compacted = False
+    for raw_page in list(domain.get("pages") or []):
+        if not isinstance(raw_page, Mapping):
+            pages.append(raw_page)
+            continue
+        page = dict(raw_page)
+        views = []
+        page_compacted = False
+        for raw_view in list(raw_page.get("views") or []):
+            if not isinstance(raw_view, Mapping):
+                views.append(raw_view)
+                continue
+            view = {
+                name: raw_view[name]
+                for name in _COMPACT_VIEW_KEYS
+                if name in raw_view
+            }
+            # Projected views already carry their authoritative state hash at
+            # the top level. Other objects (dimensions, annotations, symbols)
+            # keep one primary revision/readiness block. Repeating every
+            # secondary inventory hash is what made one ordinary page consume
+            # almost the entire active-snapshot allowance.
+            if "state_sha256" not in view:
+                for name in _COMPACT_PRIMARY_VIEW_DETAILS:
+                    detail = raw_view.get(name)
+                    if not isinstance(detail, Mapping):
+                        continue
+                    compact_detail = _compact_view_detail(detail)
+                    if compact_detail:
+                        view[name] = compact_detail
+                        break
+            views.append(view)
+            view_compacted = view != dict(raw_view)
+            page_compacted = page_compacted or view_compacted
+            compacted = compacted or view_compacted
+        page["views"] = views
+        if views and page_compacted:
+            page["views_detail_deferred"] = True
+        pages.append(page)
+    result["pages"] = pages
+    if compacted:
+        result["snapshot_compacted"] = True
+        result["deferred_details"] = ["pages.views"]
+    return result
+
+
 def _line_inventory(
     view: Any,
     cache: dict[str, dict[str, Any] | None],
@@ -885,13 +1039,36 @@ def _selected_sources(
     result = []
     for name in _selection_names(selection):
         selected = document.getObject(name)
-        if selected is None:
+        if selected is None or not is_potential_design_geometry_source(
+            document,
+            selected,
+        ):
             continue
         try:
-            result.append(drawing_source_state(selected))
+            result.append(drawing_source_catalog_identity_state(selected))
         except (AttributeError, RuntimeError, TypeError, ValueError):
             continue
     return result
+
+
+def _drawing_sources(
+    document: Any,
+    *,
+    structural_revision: int | None = None,
+    detached_sources: list[Mapping[str, Any]] | None = None,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Return each active design shape once at its public Body boundary."""
+
+    if detached_sources is not None:
+        sources = [dict(source) for source in detached_sources]
+        return len(sources), sources[:MAX_DRAWING_SOURCES]
+    page = drawing_source_catalog_state_page(
+        document,
+        offset=0,
+        page_size=MAX_DRAWING_SOURCES,
+        structural_revision=structural_revision,
+    )
+    return int(page["source_count"]), [dict(source) for source in page["sources"]]
 
 
 def _selected_break_definitions(
@@ -901,10 +1078,15 @@ def _selected_break_definitions(
     result = []
     for name in _selection_names(selection)[:MAX_DRAWING_BREAKS]:
         selected = document.getObject(name)
-        if selected is None:
+        if selected is None or not is_potential_design_geometry_source(
+            document,
+            selected,
+        ):
             continue
         try:
-            result.append(drawing_break_state(selected))
+            state = drawing_source_catalog_identity_state(selected)
+            state["break_details_deferred"] = True
+            result.append(state)
         except (AttributeError, RuntimeError, TypeError, ValueError):
             continue
     return result
@@ -917,10 +1099,15 @@ def _selected_draft_sources(
     result = []
     for name in _selection_names(selection)[:MAX_DRAWING_VIEW_SOURCES]:
         selected = document.getObject(name)
-        if selected is None:
+        if selected is None or not is_potential_design_geometry_source(
+            document,
+            selected,
+        ):
             continue
         try:
-            result.append(drawing_draft_source_state(selected))
+            state = drawing_source_catalog_identity_state(selected)
+            state["draft_details_deferred"] = True
+            result.append(state)
         except (AttributeError, RuntimeError, TypeError, ValueError):
             continue
     return result
@@ -1335,8 +1522,15 @@ def build_drawing_snapshot(
     document: Any,
     *,
     selection: Mapping[str, Any] | None = None,
+    structural_revision: int | None = None,
+    detached_sources: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     pages = objects_of_type(document, "TechDraw::DrawPage")
+    source_count, sources = _drawing_sources(
+        document,
+        structural_revision=structural_revision,
+        detached_sources=detached_sources,
+    )
     selected = _selected_pages(document, pages, selection)
     if len(selected) == 1:
         active = selected[0]
@@ -1376,6 +1570,8 @@ def build_drawing_snapshot(
         "rich_annotation_defaults": _rich_annotation_defaults_summary(),
         "weld_symbol_catalog": _weld_catalog_summary(),
         "leader_defaults": _leader_defaults_summary(),
+        "source_count": source_count,
+        "sources": sources,
         "page_count": len(pages),
         "pages": [
             _page_summary(
@@ -1430,6 +1626,9 @@ def build_drawing_snapshot(
     }
     if len(pages) > MAX_PAGES:
         result["pages_truncated"] = True
+    if source_count > len(sources):
+        result["sources_truncated"] = True
+        result["source_next_offset"] = len(sources)
     if projected_geometry_truncated:
         result["selected_projected_geometry_truncated"] = True
     if line_attributes_truncated:

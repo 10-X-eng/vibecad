@@ -158,7 +158,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     assert len(encoded.encode("utf-8")) < 5 * 1024
     branch = schema["parameters"]["oneOf"][0]
     assert branch["properties"]["operation"]["const"] == "create"
-    assert branch["required"] == ["operation", "page", "view", "circles"]
+    assert branch["required"] == ["page", "view", "circles"]
     assert branch["additionalProperties"] is False
     assert branch["properties"]["circles"]["maxItems"] == 32
     return NativeTurnSnapshot.from_provider_surface(
@@ -177,32 +177,34 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
 
 
 def _arguments(page, view, elements) -> dict:
-    page_state = drawing_page_state(page)
-    view_state = drawing_view_state(view)
-    projection = drawing_projected_geometry_state(view)
     return {
         "operation": "create",
-        "page": {
-            "object_name": page.Name,
-            "expected_state_sha256": page_state["state_sha256"],
-        },
-        "view": {
-            "object_name": view.Name,
-            "expected_state_sha256": view_state["state_sha256"],
-            "expected_projection_state_sha256": projection[
-                "projection_state_sha256"
-            ],
-        },
+        "page": {"object_name": page.Name},
+        "view": {"object_name": view.Name},
         "circles": [
             {
                 "subelement": element["name"],
-                "expected_element_state_sha256": element[
-                    "element_state_sha256"
-                ],
             }
             for element in elements
         ],
     }
+
+
+def _arguments_with_internal_state(page, view, elements) -> dict:
+    arguments = _arguments(page, view, elements)
+    projection = drawing_projected_geometry_state(view)
+    arguments["page"]["expected_state_sha256"] = drawing_page_state(page)[
+        "state_sha256"
+    ]
+    arguments["view"].update(
+        {
+            "expected_state_sha256": drawing_view_state(view)["state_sha256"],
+            "expected_projection_state_sha256": projection[
+                "projection_state_sha256"
+            ],
+        }
+    )
+    return arguments
 
 
 def _selection():
@@ -237,12 +239,12 @@ def _human_oracle(document, view, circular):
     assert not Gui.Selection.getSelectionEx()
     attributes = drawing_line_attribute_inventory_state(view)
     lengths = drawing_line_length_inventory_state(view)
-    assert attributes["line_count"] == 4
+    assert attributes["line_count"] == attributes["projected_edge_count"] + 4
     assert attributes["cosmetic_edge_count"] == 4
     assert lengths["line_count"] == 4
     document.undo()
     _events(16)
-    assert drawing_line_attribute_inventory_state(view)["line_count"] == 0
+    assert drawing_line_attribute_inventory_state(view)["cosmetic_edge_count"] == 0
     document.redo()
     _events(16)
     redone = drawing_line_attribute_inventory_state(view)
@@ -302,7 +304,9 @@ def _run() -> None:
             view,
             circular,
         )
-        assert drawing_line_attribute_inventory_state(view)["line_count"] == 0
+        assert drawing_line_attribute_inventory_state(view)[
+            "cosmetic_edge_count"
+        ] == 0
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -352,6 +356,7 @@ def _run() -> None:
             item["name"] for item in selected[0]["selected_elements"]
         } == {item["name"] for item in circular}
 
+        stale_arguments = _arguments_with_internal_state(page, view, circular)
         arguments = _arguments(page, view, circular)
         revision_before = state_store.current_revision(str(document.Uid))
         response = dispatcher.call(
@@ -365,6 +370,7 @@ def _run() -> None:
         assert result["pair_count"] == 2
         assert result["created_line_count"] == 4
         assert len(json.dumps(response, separators=(",", ":")).encode()) < 12 * 1024
+        _events(16)
         assert _selection() == selection_before
         assert not Gui.Control.activeDialog()
         assert state_store.current_revision(str(document.Uid)) == revision_before + 1
@@ -377,7 +383,10 @@ def _run() -> None:
 
         native_attributes = drawing_line_attribute_inventory_state(view)
         native_lengths = drawing_line_length_inventory_state(view)
-        assert native_attributes["line_count"] == 4
+        assert native_attributes["line_count"] == (
+            native_attributes["projected_edge_count"] + 4
+        )
+        assert native_attributes["cosmetic_edge_count"] == 4
         assert native_lengths["line_count"] == 4
         assert [line["format"] for line in native_attributes["lines"]] == [
             line["format"] for line in human_attributes["lines"]
@@ -390,7 +399,7 @@ def _run() -> None:
         refusal_undo = int(document.UndoCount)
         stale = dispatcher.call(
             DRAWING_CIRCLE_CENTER_LINE_CAPABILITY_NAME,
-            json.dumps(arguments),
+            json.dumps(stale_arguments),
             "native-drawing-circle-centerlines-stale",
         )
         assert stale["ok"] is False
@@ -456,7 +465,9 @@ def _run() -> None:
 
         document.undo()
         _events(16)
-        assert drawing_line_attribute_inventory_state(view)["line_count"] == 0
+        assert drawing_line_attribute_inventory_state(view)[
+            "cosmetic_edge_count"
+        ] == 0
         document.redo()
         _events(16)
         redone = drawing_line_attribute_inventory_state(view)
@@ -483,13 +494,15 @@ def _run() -> None:
         assert reopened["inventory_state_sha256"] == redone[
             "inventory_state_sha256"
         ]
-        assert {line["tag"] for line in reopened["lines"]} == tags
+        assert {
+            line["tag"] for line in reopened["lines"] if "tag" in line
+        } == tags
 
         print(
             "VIBECAD_NATIVE_DRAWING_CIRCLE_CENTER_LINES_GUI_OK operations=1 "
             "circle=true arc=true multi_target=true human_oracle=true "
             "shared_host_builder=true exact_page=true exact_view=true "
-            "projection_hash=true element_hash=true persistent_tags=true "
+            "provider_targets=true internal_state_guards=true persistent_tags=true "
             "host_style=true selection=true visibility=true history=true "
             "wrong_type=true stale=true rollback=true revision=true undo=true "
             "redo=true snapshot=true reopen=true low_noise=true no_task=true",

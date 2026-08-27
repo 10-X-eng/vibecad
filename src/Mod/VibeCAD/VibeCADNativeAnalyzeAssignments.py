@@ -354,14 +354,17 @@ def _reference_issue(
     if source is None:
         return f"{assignment} references missing object {source_name or '<empty>'}."
     shape = getattr(source, "Shape", None)
+    subelement_counts: dict[str, int | None] = {}
     for subelement in tuple(reference.get("subelements") or ()):
         match = _SUBELEMENT.fullmatch(str(subelement))
         if match is None:
             return f"{assignment} has invalid subelement {subelement}."
-        values = (
-            getattr(shape, match.group(1) + "s", None) if shape is not None else None
-        )
-        if values is None or int(match.group(2)) > len(values):
+        kind = str(match.group(1))
+        if kind not in subelement_counts:
+            values = getattr(shape, kind + "s", None) if shape is not None else None
+            subelement_counts[kind] = len(values) if values is not None else None
+        count = subelement_counts[kind]
+        if count is None or int(match.group(2)) > count:
             return f"{assignment} references missing {source_name}.{subelement}."
     return None
 

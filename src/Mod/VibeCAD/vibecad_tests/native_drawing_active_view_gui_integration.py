@@ -29,7 +29,7 @@ from VibeCADNativeDrawingActiveView import (
 from VibeCADNativeDrawingActiveViewSchema import (
     DRAWING_ACTIVE_VIEW_CAPABILITY_NAME,
 )
-from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAME
+from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAMES
 from VibeCADNativeDrawingState import drawing_page_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -84,7 +84,7 @@ def _create_source(document):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAME)
+    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAMES[0])
     active_definition = registry.definition(DRAWING_ACTIVE_VIEW_CAPABILITY_NAME)
     assert page_definition is not None and active_definition is not None
     page_schema = page_definition.provider_schema(("page_default",))
@@ -101,7 +101,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             available=True,
             unavailable_reason="",
             tool_names=(
-                DRAWING_PAGE_CAPABILITY_NAME,
+                DRAWING_PAGE_CAPABILITY_NAMES[0],
                 DRAWING_ACTIVE_VIEW_CAPABILITY_NAME,
             ),
             schemas=(page_schema, active_schema),
@@ -208,15 +208,21 @@ def _run() -> None:
             background_manager=service.native_background_manager(),
             document_thread_dispatch=VibeGui._dispatch_to_document_thread,
         )
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state_store,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def refresh_dispatcher() -> NativeTurnDispatcher:
+            nonlocal turn, frozen
+            turn = _turn(surface, registry)
+            frozen = turn.surface
+            return NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = refresh_dispatcher()
         call_index = 0
 
         def call(tool_name: str, arguments: dict, *, succeeds: bool = True) -> dict:
@@ -231,7 +237,7 @@ def _run() -> None:
             return response
 
         page_result = call(
-            DRAWING_PAGE_CAPABILITY_NAME,
+            DRAWING_PAGE_CAPABILITY_NAMES[0],
             {"operation": "page_default"},
         )
         _events(12)
@@ -269,6 +275,7 @@ def _run() -> None:
         assert tuple(page.Views) == ()
         assert document.getObject(human_view_name) is None
         assert not Gui.Control.activeDialog()
+        dispatcher = refresh_dispatcher()
 
         page_state = drawing_page_state(page)
         viewport_state = drawing_active_viewport_state(document)

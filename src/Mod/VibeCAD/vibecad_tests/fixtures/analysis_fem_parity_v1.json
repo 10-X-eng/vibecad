@@ -1,0 +1,38 @@
+{
+  "accepted_intentional_differences": [
+    "Execution is delegated to LocalProcessProvider instead of the legacy private process loop.",
+    "A serializable PreparedAnalysis identity is exposed in addition to the legacy transient request.",
+    "Progress includes the host-owned input-frozen event at seven percent."
+  ],
+  "schema": "vibecad-analysis-fem-parity-v1",
+  "solvers": {
+    "calculix": {
+      "commands": [["/solver/ccx", ["-i", "case"]]],
+      "progress": [[7, "FEM solver input frozen"], [12, "Running Calculix stage 1/1"], [84, "Calculix result artifacts ready"]],
+      "stages": [[1, "ccx", 0]],
+      "timeout_seconds": 120,
+      "type_id": "Fem::SolverCalculiX"
+    },
+    "elmer": {
+      "commands": [["/solver/ElmerGrid", ["14", "2", "case.unv"]], ["/solver/ElmerGrid", ["2", "2", "case"]], ["/solver/mpiexec", ["-n", "4", "/solver/ElmerSolver"]]],
+      "progress": [[7, "FEM solver input frozen"], [12, "Running Elmer stage 1/3"], [33, "Running Elmer stage 2/3"], [55, "Running Elmer stage 3/3"], [84, "Elmer result artifacts ready"]],
+      "stages": [[1, "ElmerGrid", 0], [2, "ElmerGrid", 0], [3, "mpiexec", 0]],
+      "timeout_seconds": 180,
+      "type_id": "Fem::SolverElmer"
+    },
+    "mystran": {
+      "commands": [["/solver/mystran", ["case.bdf"]]],
+      "progress": [[7, "FEM solver input frozen"], [12, "Running Mystran stage 1/1"], [84, "Mystran result artifacts ready"]],
+      "stages": [[1, "mystran", 0]],
+      "timeout_seconds": 300,
+      "type_id": "Fem::SolverMystran"
+    },
+    "z88": {
+      "commands": [["/solver/z88r", ["-t", "-choly"]], ["/solver/z88r", ["-c", "-choly"]]],
+      "progress": [[7, "FEM solver input frozen"], [12, "Running Z88 stage 1/2"], [44, "Running Z88 stage 2/2"], [84, "Z88 result artifacts ready"]],
+      "stages": [[1, "z88r", 0], [2, "z88r", 0]],
+      "timeout_seconds": 240,
+      "type_id": "Fem::SolverZ88"
+    }
+  }
+}

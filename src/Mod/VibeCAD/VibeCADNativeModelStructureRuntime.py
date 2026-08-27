@@ -377,7 +377,10 @@ class NativeModelStructureRuntime:
 
             def activate() -> None:
                 import FreeCADGui as Gui
-                from PySide import QtCore, QtWidgets
+                from VibeCADHostSurfaceAuthority import (
+                    drain_authorized_gui_events,
+                    enter_authorized_edit_mode,
+                )
 
                 gui_document = Gui.activeDocument()
                 if (
@@ -385,14 +388,9 @@ class NativeModelStructureRuntime:
                     or self._context.active_document() is not document
                 ):
                     raise NativeModelError("The Sketch document is no longer active.")
-                if not bool(gui_document.setEdit(str(sketch.Name))):
+                if not enter_authorized_edit_mode(gui_document, str(sketch.Name)):
                     raise NativeModelError("Sketcher could not open the exact Sketch.")
-                for _index in range(8):
-                    Gui.updateGui()
-                    QtWidgets.QApplication.processEvents(
-                        QtCore.QEventLoop.AllEvents,
-                        25,
-                    )
+                drain_authorized_gui_events()
 
             dispatch(activate)
             if self._context.active_document() is not document:

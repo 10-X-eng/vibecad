@@ -141,7 +141,7 @@ def vibecad_thread_config(
     # a user question must never be held inside a long-running exec cell.
     config["features.code_mode"] = {
         "enabled": False,
-        "direct_only_tool_namespaces": ["core", "conversation"],
+        "direct_only_tool_namespaces": ["core", "conversation", "view"],
     }
     if openai_base_url is not None:
         config.update(codex_openai_provider_config(openai_base_url))

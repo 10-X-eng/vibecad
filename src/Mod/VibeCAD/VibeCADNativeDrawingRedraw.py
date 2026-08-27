@@ -11,6 +11,10 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeDrawingErrors import NativeDrawingError
+from VibeCADNativeDrawingDimensionState import (
+    drawing_extent_state,
+    is_drawing_extent,
+)
 from VibeCADNativeDrawingProjectionWorker import projection_snapshot
 from VibeCADNativeDrawingState import drawing_page_state
 from VibeCADNativeDrawingViewState import (
@@ -39,6 +43,7 @@ class RedrawViewState:
 class PreparedPageRedraw:
     page: Any
     page_state_before: dict[str, Any]
+    page_was_touched: bool
     views: tuple[RedrawViewState, ...]
     objects_before: tuple[tuple[int, str, str], ...]
     timeline_before: tuple[tuple[int, str, str], ...]
@@ -118,7 +123,7 @@ def _vector(value: Any) -> list[float] | None:
 
 
 def _links(view: Any, property_name: str) -> list[dict[str, str]]:
-    values = tuple(getattr(view, property_name, ()) or ())
+    values = _ordinary_source_objects(view, property_name)
     result = []
     for obj in values:
         result.append(
@@ -129,6 +134,12 @@ def _links(view: Any, property_name: str) -> list[dict[str, str]]:
             }
         )
     return result
+
+
+def _ordinary_source_objects(view: Any, property_name: str) -> tuple[Any, ...]:
+    if property_name == "Source" and is_drawing_extent(view):
+        return ()
+    return tuple(getattr(view, property_name, ()) or ())
 
 
 _SAFE_PROPERTY_TYPES = frozenset(
@@ -210,7 +221,7 @@ def _source_geometry(view: Any) -> list[dict[str, Any]]:
     result = []
     names = set()
     for property_name in ("Source", "XSource"):
-        for source in tuple(getattr(view, property_name, ()) or ()):
+        for source in _ordinary_source_objects(view, property_name):
             name = str(getattr(source, "Name", "") or "")
             if not name or name in names or is_drawing_view(source):
                 continue
@@ -300,6 +311,7 @@ def redraw_view_state(view: Any) -> dict[str, Any]:
     if not is_drawing_view(view):
         raise TypeError("view must be a TechDraw::DrawView")
     type_id = str(view.TypeId)
+    extent = is_drawing_extent(view)
     if is_part_drawing_view(view):
         kind = "projection"
     elif bool(getattr(view, "isDerivedFrom", lambda _name: False)("TechDraw::DrawViewDimension")):
@@ -317,6 +329,18 @@ def redraw_view_state(view: Any) -> dict[str, Any]:
         "x_direction": _vector(getattr(view, "XDirection", None)),
         "properties": _view_properties(view),
     }
+    if extent:
+        extent_state = drawing_extent_state(view)
+        inputs["extent_target"] = {
+            name: extent_state[name]
+            for name in (
+                "view_name",
+                "dimension_type",
+                "extent_direction",
+                "measure_type",
+                "target",
+            )
+        }
     return {**inputs, "state_sha256": _digest(inputs)}
 
 
@@ -364,8 +388,29 @@ def _view_graph_identity(views: tuple[Any, ...]) -> tuple[tuple[str, str], ...]:
 
 
 def _require_current_document_sources(document: Any, view: Any) -> None:
-    for property_name in ("Source", "XSource"):
-        for source in tuple(getattr(view, property_name, ()) or ()):
+    if is_drawing_extent(view):
+        try:
+            extent = drawing_extent_state(view)
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+            raise NativeDrawingError(
+                f"Drawing extent {view.Name!r} has an invalid projected target.",
+                error_code="NATIVE_DRAWING_REDRAW_VIEW_INVALID",
+            ) from exc
+        target = document.getObject(str(extent["view_name"]))
+        if (
+            target is None
+            or getattr(target, "Document", None) is not document
+            or not is_part_drawing_view(target)
+        ):
+            raise NativeDrawingError(
+                f"Drawing extent {view.Name!r} has a target outside the active document.",
+                error_code="NATIVE_DRAWING_REDRAW_EXTERNAL_SOURCE_UNSUPPORTED",
+            )
+        property_names = ("XSource",)
+    else:
+        property_names = ("Source", "XSource")
+    for property_name in property_names:
+        for source in _ordinary_source_objects(view, property_name):
             if getattr(source, "Document", None) is not document:
                 raise NativeDrawingError(
                     f"Drawing view {view.Name!r} has a source outside the active document.",
@@ -422,6 +467,7 @@ def prepare_page_redraw(
     return PreparedPageRedraw(
         page=page,
         page_state_before=page_state,
+        page_was_touched="Touched" in tuple(page.State or ()),
         views=frozen_views,
         objects_before=_document_graph(document),
         timeline_before=_timeline(document),
@@ -581,6 +627,11 @@ def restore_page_redraw_commit_state(
                 error_code="NATIVE_DRAWING_REDRAW_ROLLBACK_FAILED",
             )
         restored = True
+    if prepared.page_was_touched:
+        prepared.page.touch()
+    else:
+        prepared.page.purgeTouched()
+    prepared.page.requestPaint()
     return restored
 
 
@@ -671,7 +722,6 @@ def adopt_page_redraw(
             # part projection and dimension cache has been adopted.
             view.touch()
             dependent_views.append(view)
-    prepared.page.requestPaint()
     changed = (prepared.page, *(item.view for item in prepared.views))
     return NativeMutationDraft(
         value={
@@ -680,7 +730,33 @@ def adopt_page_redraw(
         },
         recompute_targets=tuple(dependent_views),
         changed=tuple(object_identity(obj) for obj in changed),
+        after_recompute=lambda current_document: _settle_page_redraw(
+            current_document,
+            prepared,
+        ),
     )
+
+
+def _settle_page_redraw(document: Any, prepared: PreparedPageRedraw) -> None:
+    page = document.getObject(str(prepared.page.Name))
+    if page is not prepared.page:
+        raise NativeDrawingError(
+            "The Drawing page closed before redraw completion.",
+            error_code="NATIVE_DRAWING_REDRAW_POSTCONDITION_FAILED",
+        )
+    for expected in prepared.views:
+        view = document.getObject(expected.object_name)
+        if (
+            view is not expected.view
+            or not bool(view.isValid())
+            or "Up-to-date" not in tuple(view.State or ())
+        ):
+            raise NativeDrawingError(
+                f"Redrawn view {expected.object_name!r} is not current.",
+                error_code="NATIVE_DRAWING_REDRAW_POSTCONDITION_FAILED",
+            )
+    page.purgeTouched()
+    page.requestPaint()
 
 
 def _projection_counts(view: Any) -> tuple[int, int, int]:

@@ -162,6 +162,9 @@ _NATIVE_MESSAGES = AnalysisRuntimeMessages(
     document_lookup_requires_uid=(
         "A background job lookup needs a document UID."
     ),
+    document_change_resolver_boolean=(
+        "A background document-change resolver must return a boolean."
+    ),
     unknown_job="The Native background job is unknown.",
 )
 

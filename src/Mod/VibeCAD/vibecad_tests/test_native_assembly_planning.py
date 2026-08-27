@@ -1,0 +1,303 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from VibeCADAssemblyPlanning import (
+    AssemblyPlanningError,
+    SCENARIO_SCHEMA,
+    accept_joint_proposal_native,
+    accept_coupling_proposal_native,
+    propose_couplings,
+    propose_joints,
+)
+from VibeCADNativeAssemblyIdentity import (
+    IDENTITY_KIND_PROPERTY,
+    IDENTITY_PROPERTY,
+    IDENTITY_SCHEMA,
+    IDENTITY_SCHEMA_PROPERTY,
+)
+from VibeCADNativeAssemblyJointBindings import (
+    ASSEMBLY_JOINT_CAPABILITY_NAME,
+    ASSEMBLY_RELATION_CAPABILITY_NAME,
+    ASSEMBLY_COUPLING_CAPABILITY_NAME,
+)
+from VibeCADNativeAssemblyJointRuntime import NativeAssemblyJointRuntime
+from VibeCADNativeState import NativeCallTicket
+import VibeCADReferenceContracts as reference_contracts
+
+
+_OCCURRENCE_A = "11111111-1111-4111-8111-111111111111"
+_OCCURRENCE_B = "22222222-2222-4222-8222-222222222222"
+_INTERFACE_A = "33333333-3333-4333-8333-333333333333"
+_INTERFACE_B = "44444444-4444-4444-8444-444444444444"
+
+
+def _identity_object(name: str, persistent_id: str, kind: str):
+    return SimpleNamespace(
+        Name=name,
+        PropertiesList=[
+            IDENTITY_PROPERTY,
+            IDENTITY_KIND_PROPERTY,
+            IDENTITY_SCHEMA_PROPERTY,
+        ],
+        **{
+            IDENTITY_PROPERTY: persistent_id,
+            IDENTITY_KIND_PROPERTY: kind,
+            IDENTITY_SCHEMA_PROPERTY: IDENTITY_SCHEMA,
+        },
+    )
+
+
+def _occurrence(name: str, persistent_id: str, interface_id: str, interface_name: str):
+    occurrence = _identity_object(name, persistent_id, "occurrence")
+    interface = _identity_object(f"{name}LCS", interface_id, "interface")
+    setattr(interface, reference_contracts.PROP_NATIVE_INTERFACE_NAME, interface_name)
+    occurrence.Group = [interface]
+    return occurrence
+
+
+def _scenario() -> dict:
+    return {
+        "schema": SCENARIO_SCHEMA,
+        "scenario_id": "native-live-owner",
+        "occurrences": [
+            {"persistent_id": _OCCURRENCE_A},
+            {"persistent_id": _OCCURRENCE_B},
+        ],
+        "interfaces": [
+            {
+                "persistent_id": _INTERFACE_A,
+                "occurrence_id": _OCCURRENCE_A,
+                "name": "MountA",
+                "kind": "axis",
+                "compatibility": "mount-v1",
+                "allowed_joints": ["revolute"],
+                "geometry_binding": {"status": "current"},
+            },
+            {
+                "persistent_id": _INTERFACE_B,
+                "occurrence_id": _OCCURRENCE_B,
+                "name": "MountB",
+                "kind": "axis",
+                "compatibility": "mount-v1",
+                "allowed_joints": ["revolute"],
+                "geometry_binding": {"status": "current"},
+            },
+        ],
+        "joints": [],
+    }
+
+
+def _runtime():
+    document = SimpleNamespace(
+        Uid="native-planning-document",
+        Objects=[
+            _occurrence("OccurrenceA", _OCCURRENCE_A, _INTERFACE_A, "MountA"),
+            _occurrence("OccurrenceB", _OCCURRENCE_B, _INTERFACE_B, "MountB"),
+        ],
+    )
+    runtime = object.__new__(NativeAssemblyJointRuntime)
+    runtime._context = SimpleNamespace(
+        document=document,
+        document_uid=document.Uid,
+    )
+    ticket = NativeCallTicket(
+        document.Uid,
+        ASSEMBLY_JOINT_CAPABILITY_NAME,
+        7,
+        "native-planning-ticket",
+    )
+    return runtime, ticket
+
+
+def test_native_acceptance_resolves_persisted_occurrences_and_uses_joint_runtime(
+    monkeypatch,
+) -> None:
+    source = _scenario()
+    proposals = propose_joints(source)
+    runtime, ticket = _runtime()
+    calls = []
+    monkeypatch.setattr(
+        reference_contracts,
+        "resolve_component_interface",
+        lambda component, name: {
+            "selection": {"native_lcs": name},
+            "resolved": {"geometry_binding": {"status": "current"}},
+        },
+    )
+    monkeypatch.setattr(
+        NativeAssemblyJointRuntime,
+        "mutate_joint",
+        lambda self, arguments, *, ticket: calls.append((arguments, ticket)) or {
+            "receipt": {
+                "capability": ASSEMBLY_JOINT_CAPABILITY_NAME,
+                "revision_before": 7,
+                "revision_after": 8,
+            }
+        },
+    )
+
+    result = accept_joint_proposal_native(
+        source,
+        proposals,
+        proposals["candidates"][0]["proposal_id"],
+        runtime=runtime,
+        ticket=ticket,
+    )
+
+    assert result["mutation_owner"] == "native-assembly"
+    assert result["receipt"]["revision_after"] == 8
+    assert len(calls) == 1
+    arguments, used_ticket = calls[0]
+    assert used_ticket is ticket
+    assert arguments["operation"] == "create"
+    assert arguments["joint_type"] == "revolute"
+    assert {arguments["first"]["component"], arguments["second"]["component"]} == {
+        "OccurrenceA", "OccurrenceB",
+    }
+    assert {arguments["first"]["connector"], arguments["second"]["connector"]} == {
+        "MountA", "MountB",
+    }
+
+
+def test_native_acceptance_rejects_live_geometry_change_before_mutation(monkeypatch) -> None:
+    source = _scenario()
+    proposals = propose_joints(source)
+    runtime, ticket = _runtime()
+    calls = []
+    monkeypatch.setattr(
+        reference_contracts,
+        "resolve_component_interface",
+        lambda component, name: {
+            "resolved": {"geometry_binding": {"status": "stale"}},
+        },
+    )
+    monkeypatch.setattr(
+        NativeAssemblyJointRuntime,
+        "mutate_joint",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(AssemblyPlanningError, match="currentness changed"):
+        accept_joint_proposal_native(
+            source,
+            proposals,
+            proposals["candidates"][0]["proposal_id"],
+            runtime=runtime,
+            ticket=ticket,
+        )
+    assert calls == []
+
+
+def test_native_relation_acceptance_uses_relation_ticket_and_explicit_parameter(
+    monkeypatch,
+) -> None:
+    source = _scenario()
+    for interface in source["interfaces"]:
+        interface["allowed_joints"] = ["distance"]
+        interface["joint_parameters"] = {
+            "schema": "vibecad-interface-joint-parameters-v1",
+            "values": {"distance": {"distance_mm": 8.25}},
+        }
+    proposals = propose_joints(source)
+    runtime, _ticket = _runtime()
+    ticket = NativeCallTicket(
+        runtime._context.document_uid,
+        ASSEMBLY_RELATION_CAPABILITY_NAME,
+        7,
+        "native-relation-planning-ticket",
+    )
+    calls = []
+    monkeypatch.setattr(
+        reference_contracts,
+        "resolve_component_interface",
+        lambda component, name: {
+            "resolved": {"geometry_binding": {"status": "current"}},
+        },
+    )
+    monkeypatch.setattr(
+        NativeAssemblyJointRuntime,
+        "mutate_joint",
+        lambda self, arguments, *, ticket: calls.append((arguments, ticket)) or {
+            "receipt": {"capability": ASSEMBLY_RELATION_CAPABILITY_NAME}
+        },
+    )
+
+    accept_joint_proposal_native(
+        source,
+        proposals,
+        proposals["candidates"][0]["proposal_id"],
+        runtime=runtime,
+        ticket=ticket,
+    )
+
+    arguments, used_ticket = calls[0]
+    assert used_ticket is ticket
+    assert arguments["relation"] == "distance"
+    assert arguments["distance_mm"] == 8.25
+    assert "joint_type" not in arguments
+
+
+def test_native_coupling_acceptance_resolves_persisted_joint_and_component_ids(
+    monkeypatch,
+) -> None:
+    source = _scenario()
+    source["joints"] = [
+        {
+            "persistent_id": "55555555-5555-4555-8555-555555555555",
+            "interface_ids": [_INTERFACE_A, _INTERFACE_B],
+            "joint_kind": "revolute",
+            "moving_occurrence_id": _OCCURRENCE_A,
+            "allowed_couplings": ["gears"],
+            "coupling_parameters": {"pitch_radius_mm": 20.0},
+        },
+        {
+            "persistent_id": "66666666-6666-4666-8666-666666666666",
+            "interface_ids": [_INTERFACE_B, _INTERFACE_A],
+            "joint_kind": "revolute",
+            "moving_occurrence_id": _OCCURRENCE_B,
+            "allowed_couplings": ["gears"],
+            "coupling_parameters": {"pitch_radius_mm": 40.0},
+        },
+    ]
+    proposals = propose_couplings(source)
+    runtime, _ticket = _runtime()
+    runtime._context.document.Objects.extend([
+        _identity_object("FirstRevolute", source["joints"][0]["persistent_id"], "joint"),
+        _identity_object("SecondRevolute", source["joints"][1]["persistent_id"], "joint"),
+    ])
+    ticket = NativeCallTicket(
+        runtime._context.document_uid,
+        ASSEMBLY_COUPLING_CAPABILITY_NAME,
+        7,
+        "native-coupling-planning-ticket",
+    )
+    calls = []
+    monkeypatch.setattr(
+        NativeAssemblyJointRuntime,
+        "mutate_joint",
+        lambda self, arguments, *, ticket: calls.append((arguments, ticket)) or {
+            "receipt": {"capability": ASSEMBLY_COUPLING_CAPABILITY_NAME}
+        },
+    )
+
+    result = accept_coupling_proposal_native(
+        source,
+        proposals,
+        proposals["candidates"][0]["proposal_id"],
+        runtime=runtime,
+        ticket=ticket,
+    )
+
+    assert result["receipt"]["capability"] == ASSEMBLY_COUPLING_CAPABILITY_NAME
+    arguments, used_ticket = calls[0]
+    assert used_ticket is ticket
+    assert arguments["operation"] == "gears"
+    assert arguments["first_joint"] == {"object_name": "FirstRevolute"}
+    assert arguments["second_joint"] == {"object_name": "SecondRevolute"}
+    assert arguments["first_pitch_radius_mm"] == 20.0
+    assert arguments["second_pitch_radius_mm"] == 40.0

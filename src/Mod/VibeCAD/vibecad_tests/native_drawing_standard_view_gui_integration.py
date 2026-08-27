@@ -23,10 +23,12 @@ from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeBackgroundSchema import NATIVE_BACKGROUND_CAPABILITY_NAME
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAME
 from VibeCADNativeDrawingState import drawing_page_state
-from VibeCADNativeDrawingViewSchema import DRAWING_VIEW_CAPABILITY_NAME
-from VibeCADNativeDrawingViewState import drawing_source_state, drawing_view_state
+from VibeCADNativeDrawingViewState import (
+    drawing_source_catalog_identity_state,
+    drawing_source_state,
+    drawing_view_state,
+)
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
@@ -35,6 +37,10 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+DRAWING_CREATE_PAGE_CAPABILITY_NAME = "drawing.create_page"
+DRAWING_STANDARD_VIEW_CAPABILITY_NAME = "drawing.standard_view"
 
 
 def _events(rounds: int = 16) -> None:
@@ -80,8 +86,8 @@ def _create_source(document):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAME)
-    view_definition = registry.definition(DRAWING_VIEW_CAPABILITY_NAME)
+    page_definition = registry.definition(DRAWING_CREATE_PAGE_CAPABILITY_NAME)
+    view_definition = registry.definition(DRAWING_STANDARD_VIEW_CAPABILITY_NAME)
     job_definition = registry.definition(NATIVE_BACKGROUND_CAPABILITY_NAME)
     assert all(
         item is not None
@@ -102,8 +108,8 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             available=True,
             unavailable_reason="",
             tool_names=(
-                DRAWING_PAGE_CAPABILITY_NAME,
-                DRAWING_VIEW_CAPABILITY_NAME,
+                DRAWING_CREATE_PAGE_CAPABILITY_NAME,
+                DRAWING_STANDARD_VIEW_CAPABILITY_NAME,
                 NATIVE_BACKGROUND_CAPABILITY_NAME,
             ),
             schemas=(
@@ -135,7 +141,6 @@ def _arguments(page_state: dict, source_state: dict) -> dict:
         ],
         "orientation": "front",
         "position": {"x_mm": 92.0, "y_mm": 88.0},
-        "scale": {"kind": "custom", "value": 1.5},
         "line_style": "visible",
     }
 
@@ -163,7 +168,7 @@ def _run() -> None:
             view_plan.transaction_behavior,
             view_plan.background_required,
         ) == (
-            DRAWING_VIEW_CAPABILITY_NAME,
+            DRAWING_STANDARD_VIEW_CAPABILITY_NAME,
             "create_standard_view",
             "ExactDrawingPageSourcesAndProjectionSettings",
             "background",
@@ -241,7 +246,7 @@ def _run() -> None:
             raise AssertionError(f"Background Drawing job {job_id} did not finish")
 
         page_result = call(
-            DRAWING_PAGE_CAPABILITY_NAME,
+            DRAWING_CREATE_PAGE_CAPABILITY_NAME,
             {"operation": "page_default"},
         )
         _events(12)
@@ -271,23 +276,25 @@ def _run() -> None:
         )
         assert active["domain"]["active_page_resolution"] == "only_page"
         assert active["domain"]["active_page"]["state_sha256"] == page_state["state_sha256"]
-        assert active["domain"]["selected_sources"] == [source_state]
+        assert active["domain"]["selected_sources"] == [
+            drawing_source_catalog_identity_state(source)
+        ]
         assert len(json.dumps(active, separators=(",", ":")).encode()) < 64 * 1024
 
         invalid = _arguments(page_state, source_state)
         invalid["camera_direction"] = [0.0, 0.0, 1.0]
-        rejected = call(DRAWING_VIEW_CAPABILITY_NAME, invalid, succeeds=False)
+        rejected = call(DRAWING_STANDARD_VIEW_CAPABILITY_NAME, invalid, succeeds=False)
         assert rejected["error_code"] == "NATIVE_ARGUMENTS_INVALID"
         assert tuple(getattr(page, "Views", ()) or ()) == ()
 
         stale_source = _arguments(page_state, source_state)
         stale_source["sources"][0]["expected_state_sha256"] = "0" * 64
-        rejected = call(DRAWING_VIEW_CAPABILITY_NAME, stale_source, succeeds=False)
+        rejected = call(DRAWING_STANDARD_VIEW_CAPABILITY_NAME, stale_source, succeeds=False)
         assert rejected["error_code"] == "NATIVE_DRAWING_VIEW_SOURCE_STALE"
 
         duplicate_source = _arguments(page_state, source_state)
         duplicate_source["sources"].append(dict(duplicate_source["sources"][0]))
-        rejected = call(DRAWING_VIEW_CAPABILITY_NAME, duplicate_source, succeeds=False)
+        rejected = call(DRAWING_STANDARD_VIEW_CAPABILITY_NAME, duplicate_source, succeeds=False)
         assert rejected["error_code"] == "NATIVE_DRAWING_VIEW_SOURCES_INVALID"
 
         arguments = _arguments(page_state, source_state)
@@ -298,7 +305,7 @@ def _run() -> None:
 
         DrawingViewRuntimeModule.verify_standard_view_create = fail_verify
         try:
-            rolled_back_start = call(DRAWING_VIEW_CAPABILITY_NAME, arguments)
+            rolled_back_start = call(DRAWING_STANDARD_VIEW_CAPABILITY_NAME, arguments)
             rolled_back = wait_for_job(rolled_back_start["job"]["job_id"])
         finally:
             DrawingViewRuntimeModule.verify_standard_view_create = original_verify
@@ -307,7 +314,7 @@ def _run() -> None:
         assert tuple(getattr(page, "Views", ()) or ()) == ()
         assert document.getObject("View") is None
 
-        cancelled_start = call(DRAWING_VIEW_CAPABILITY_NAME, arguments)
+        cancelled_start = call(DRAWING_STANDARD_VIEW_CAPABILITY_NAME, arguments)
         cancelled_request = call(
             NATIVE_BACKGROUND_CAPABILITY_NAME,
             {
@@ -333,7 +340,7 @@ def _run() -> None:
         heartbeat.timeout.connect(tick)
         heartbeat.start()
         started_at = time.monotonic()
-        started = call(DRAWING_VIEW_CAPABILITY_NAME, arguments)
+        started = call(DRAWING_STANDARD_VIEW_CAPABILITY_NAME, arguments)
         returned_in = time.monotonic() - started_at
         assert returned_in < 2.0, returned_in
         completed = wait_for_job(started["job"]["job_id"])
@@ -358,7 +365,7 @@ def _run() -> None:
         assert state["direction"] == [0.0, -1.0, 0.0]
         assert state["x_direction"] == [1.0, 0.0, 0.0]
         assert state["x_mm"] == 92.0 and state["y_mm"] == 88.0
-        assert state["scale_type"] == "Custom" and state["scale"] == 1.5
+        assert state["scale_type"] == "Page"
         assert state["visible_edge_count"] >= 1
         assert str(view.VibeCADTimelineRole) == "operation"
         assert getattr(view, "VibeCADTimelineOwner", None) is None
@@ -371,7 +378,7 @@ def _run() -> None:
         operations_after = tuple(document.VibeCADTimeline.Operations)
 
         stale_page = _arguments(page_state, source_state)
-        rejected = call(DRAWING_VIEW_CAPABILITY_NAME, stale_page, succeeds=False)
+        rejected = call(DRAWING_STANDARD_VIEW_CAPABILITY_NAME, stale_page, succeeds=False)
         assert rejected["error_code"] == "NATIVE_DRAWING_PAGE_STALE"
 
         document.undo()
@@ -388,6 +395,8 @@ def _run() -> None:
         assert tuple(document.VibeCADTimeline.Operations) == operations_after
 
         page_name = str(page.Name)
+        cached_projection_state = str(view.PrecomputedProjectionSourceState)
+        assert cached_projection_state
         document.saveAs(str(save_path))
         document_name = document.Name
         App.closeDocument(document_name)
@@ -399,6 +408,7 @@ def _run() -> None:
         assert tuple(reopened_page.Views) == (reopened_view,)
         assert drawing_view_state(reopened_view) == state
         assert str(reopened_view.VibeCADTimelineRole) == "operation"
+        assert str(reopened_view.PrecomputedProjectionSourceState) == cached_projection_state
 
         print(
             "VIBECAD_NATIVE_DRAWING_STANDARD_VIEW_GUI_OK "

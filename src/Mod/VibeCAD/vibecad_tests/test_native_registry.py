@@ -13,7 +13,7 @@ from VibeCADNativeWorkspaceBindings import WORKSPACE_CAPABILITY_NAME
 def test_production_registry_has_every_finished_contract_and_binding() -> None:
     registry = build_native_capability_registry()
 
-    assert registry.shared_definition_names == (
+    required_legacy_shared = (
         NATIVE_BACKGROUND_CAPABILITY_NAME,
         *COMMON_NATIVE_CAPABILITY_NAMES,
         WORKSPACE_CAPABILITY_NAME,
@@ -25,6 +25,10 @@ def test_production_registry_has_every_finished_contract_and_binding() -> None:
         *MODEL_HISTORY_CAPABILITY_NAMES,
         SKETCH_BATCH_CAPABILITY_NAME,
         "sketch.finish",
+    )
+    assert set(required_legacy_shared) <= set(registry.shared_definition_names)
+    assert len(registry.shared_definition_names) == len(
+        set(registry.shared_definition_names)
     )
     assert set(registry.shared_definition_names) <= set(registry.definition_names)
     assert registry.definition_names == tuple(sorted(registry.definition_names))

@@ -149,6 +149,8 @@ from VibeCADNativeAssemblyStructureBindings import (
 )
 from VibeCADNativeAssemblyStructureRuntime import NativeAssemblyStructureRuntime
 from VibeCADNativeCommonBindings import common_runtime_bindings
+from VibeCADNativeInspectionCompareBindings import inspection_compare_runtime_bindings
+from VibeCADNativeInspectionCompareRuntime import NativeInspectionCompareRuntime
 from VibeCADNativeCommonRuntime import NativeCommonRuntime
 from VibeCADNativeWorkspaceBindings import workspace_runtime_bindings
 from VibeCADNativeWorkspaceRuntime import NativeWorkspaceRuntime
@@ -321,6 +323,10 @@ from VibeCADNativeDrawingViewLockBindings import (
 from VibeCADNativeDrawingViewLockRuntime import (
     NativeDrawingViewLockRuntime,
 )
+from VibeCADNativeDrawingPlacementBindings import (
+    drawing_placement_runtime_bindings,
+)
+from VibeCADNativeDrawingPlacementRuntime import NativeDrawingPlacementRuntime
 from VibeCADNativeDrawingSectionPositionBindings import (
     drawing_section_position_runtime_bindings,
 )
@@ -472,6 +478,7 @@ def build_native_runtime_bindings(
     analyze_post_function = NativeAnalyzePostFunctionRuntime(context)
     analyze_visualization = NativeAnalyzeVisualizationRuntime(context)
     common = NativeCommonRuntime(context=context)
+    inspection_compare = NativeInspectionCompareRuntime(context)
     workspace = NativeWorkspaceRuntime(context)
     background = NativeBackgroundRuntime(context)
     mesh_convert = NativeMeshConvertRuntime(context)
@@ -542,6 +549,7 @@ def build_native_runtime_bindings(
     drawing_line_attributes = NativeDrawingLineAttributesRuntime(context)
     drawing_line_length = NativeDrawingLineLengthRuntime(context)
     drawing_view_lock = NativeDrawingViewLockRuntime(context)
+    drawing_placement = NativeDrawingPlacementRuntime(context)
     drawing_section_position = NativeDrawingSectionPositionRuntime(context)
     drawing_format = NativeDrawingFormatRuntime(context)
     drawing_dimension_text = NativeDrawingDimensionTextRuntime(context)
@@ -615,6 +623,7 @@ def build_native_runtime_bindings(
         **analyze_visualization_runtime_bindings(analyze_visualization),
         **aero_solve_runtime_bindings(aero_solve),
         **common_runtime_bindings(common),
+        **inspection_compare_runtime_bindings(inspection_compare),
         **workspace_runtime_bindings(workspace),
         **native_background_runtime_bindings(background),
         **mesh_convert_runtime_bindings(mesh_convert),
@@ -688,6 +697,7 @@ def build_native_runtime_bindings(
         **drawing_line_attributes_runtime_bindings(drawing_line_attributes),
         **drawing_line_length_runtime_bindings(drawing_line_length),
         **drawing_view_lock_runtime_bindings(drawing_view_lock),
+        **drawing_placement_runtime_bindings(drawing_placement),
         **drawing_section_position_runtime_bindings(drawing_section_position),
         **drawing_format_runtime_bindings(drawing_format),
         **drawing_dimension_text_runtime_bindings(drawing_dimension_text),

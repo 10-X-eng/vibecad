@@ -49,7 +49,7 @@ _BASE_FIELDS = frozenset(
         "expected_alignment_base_state_sha256",
     }
 )
-_ELEMENT_FIELDS = frozenset({"name", "expected_element_state_sha256"})
+_ELEMENT_FIELDS = frozenset({"name"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,18 +223,6 @@ def _resolve_element(
         _error(
             f"The exact projected {kind} target is unavailable.",
             "NATIVE_DRAWING_SECTION_POSITION_ELEMENT_INVALID",
-        )
-    if (
-        str(exact["expected_element_state_sha256"])
-        != element["element_state_sha256"]
-    ):
-        _error(
-            f"The projected {kind} changed after it was inspected.",
-            "NATIVE_DRAWING_SECTION_POSITION_ELEMENT_STALE",
-            repair={
-                "name": name,
-                "current_element_state_sha256": element["element_state_sha256"],
-            },
         )
     return element
 

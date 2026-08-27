@@ -11,11 +11,14 @@ from pathlib import Path
 import pytest
 
 from VibeCADNativeDrawingErrors import NativeDrawingError
-from VibeCADNativeDrawingRichAnnotation import _normalize_host_plan
+import VibeCADNativeDrawingRichAnnotation as rich_annotation
+from VibeCADNativeDrawingRichAnnotation import (
+    _normalize_host_plan,
+    _requested_width,
+)
 from VibeCADNativeDrawingRichAnnotationSchema import (
-    DRAWING_RICH_ANNOTATION_CAPABILITY_NAME,
-    DRAWING_RICH_ANNOTATION_OPERATIONS,
-    drawing_rich_annotation_capability_definition,
+    DRAWING_NOTE_CAPABILITY_NAMES,
+    drawing_rich_annotation_capability_definitions,
 )
 from VibeCADNativeDrawingRichAnnotationState import (
     MAX_DRAWING_RICH_ANNOTATION_PROVIDER_CONTENT_CHARACTERS,
@@ -55,22 +58,22 @@ def _host_plan() -> dict:
     }
 
 
-def test_rich_annotation_schema_has_three_sharp_closed_branches() -> None:
-    definition = drawing_rich_annotation_capability_definition()
-    schema = definition.provider_schema(DRAWING_RICH_ANNOTATION_OPERATIONS)
-    branches = schema["parameters"]["oneOf"]
-    by_operation = {
-        branch["properties"]["operation"]["const"]: branch
-        for branch in branches
-    }
-
-    assert definition.name == DRAWING_RICH_ANNOTATION_CAPABILITY_NAME
-    assert tuple(by_operation) == DRAWING_RICH_ANNOTATION_OPERATIONS
-    assert by_operation["read_defaults"]["required"] == ["operation"]
-    assert by_operation["read_defaults"]["additionalProperties"] is False
-
-    plain = by_operation["create_plain_text"]
-    rich = by_operation["create_rich_text"]
+def test_notes_are_two_focused_tools_with_natural_optional_style() -> None:
+    definitions = drawing_rich_annotation_capability_definitions()
+    assert tuple(definition.name for definition in definitions) == (
+        "drawing.note",
+        "drawing.rich_note",
+    )
+    assert DRAWING_NOTE_CAPABILITY_NAMES == tuple(
+        definition.name for definition in definitions
+    )
+    assert definitions[0].description == "Create a plain-text Drawing note."
+    assert definitions[1].description == "Create a formatted Drawing note."
+    branches = [
+        definition.provider_schema(("create",))["parameters"]["oneOf"][0]
+        for definition in definitions
+    ]
+    plain, rich = branches
     assert "text" in plain["required"] and "html" not in plain["properties"]
     assert "html" in rich["required"] and "text" not in rich["properties"]
     assert (
@@ -82,29 +85,150 @@ def test_rich_annotation_schema_has_three_sharp_closed_branches() -> None:
         == MAX_DRAWING_RICH_ANNOTATION_PROVIDER_CONTENT_CHARACTERS
     )
 
-    for branch in (plain, rich):
+    for branch in branches:
         assert branch["additionalProperties"] is False
+        assert branch["properties"]["operation"]["const"] == "create"
         assert branch["properties"]["page"]["additionalProperties"] is False
         assert branch["properties"]["placement_on_page_mm"][
             "additionalProperties"
         ] is False
+        assert branch["properties"]["placement_on_page_mm"]["description"] == (
+            "Page coordinates in mm; use template_geometry width and height."
+        )
         assert branch["properties"]["frame"]["additionalProperties"] is False
-        owner = branch["properties"]["owner"]["oneOf"]
-        assert [item["properties"]["kind"]["const"] for item in owner] == [
+        assert set(branch["required"]) == {
             "page",
-            "view",
-        ]
-        width = branch["properties"]["width"]["oneOf"]
-        assert [item["properties"]["mode"]["const"] for item in width] == [
-            "automatic",
-            "fixed",
-        ]
+            "label",
+            "placement_on_page_mm",
+            "text" if branch is plain else "html",
+        }
+        assert branch["properties"]["owner"] == {
+            "default": "page",
+            "oneOf": [
+                {"type": "string", "const": "page"},
+                {
+                    "type": "object",
+                    "properties": {
+                        "object_name": branch["properties"]["page"]["properties"][
+                            "object_name"
+                        ],
+                        "expected_owner_state_sha256": branch["properties"]["page"][
+                            "properties"
+                        ]["expected_state_sha256"],
+                    },
+                    "required": ["object_name", "expected_owner_state_sha256"],
+                    "additionalProperties": False,
+                },
+            ],
+        }
+        assert branch["properties"]["width"] == {
+            "default": "automatic",
+            "description": "Width in mm wraps text; automatic keeps one line.",
+            "oneOf": [
+                {"type": "string", "enum": ["auto", "automatic"]},
+                {
+                    "type": "number",
+                    "exclusiveMinimum": 0.0,
+                    "maximum": 1_000_000.0,
+                },
+            ],
+        }
+        assert branch["properties"]["frame"]["required"] == []
 
-    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
-    assert "unknown" not in encoded.casefold()
-    assert "file_path" not in encoded.casefold()
-    assert "data_url" not in encoded.casefold()
+    encoded = "".join(
+        json.dumps(
+            definition.provider_schema(("create",)),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for definition in definitions
+    )
+    for unwanted in (
+        "unknown",
+        "file_path",
+        "data_url",
+        "rejected",
+        "warning",
+        "read_defaults",
+        "create_plain_text",
+        "create_rich_text",
+    ):
+        assert unwanted not in encoded.casefold()
     assert len(encoded.encode("utf-8")) < 14 * 1024
+
+
+@pytest.mark.parametrize("value", ("auto", "automatic"))
+def test_note_width_accepts_natural_automatic_aliases(value: str) -> None:
+    assert _requested_width(value) == {"mode": "automatic"}
+
+
+def test_note_creation_validates_placement_against_the_drawing_area(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Page:
+        Name = "Page"
+
+    target = type("Target", (), {"page": Page(), "owner": None})()
+    defaults = {
+        "frame": {
+            "visible": False,
+            "line_width_mm": 0.35,
+            "line_style": "continuous",
+            "color_rgb": {"red": 0.0, "green": 0.0, "blue": 0.0},
+        }
+    }
+    values = {
+        "page": {"object_name": "Page", "expected_state_sha256": "a" * 64},
+        "label": "Inspection Note",
+        "text": "Inspect all edges.",
+        "placement_on_page_mm": {"x_mm": 250.0, "y_mm": 10.0},
+    }
+
+    monkeypatch.setattr(
+        rich_annotation,
+        "drawing_rich_annotation_defaults_state",
+        lambda: defaults,
+    )
+    monkeypatch.setattr(rich_annotation, "_target", lambda *args, **kwargs: target)
+    monkeypatch.setattr(
+        rich_annotation,
+        "_host_plan",
+        lambda *args, **kwargs: (_host_plan(), None),
+    )
+
+    def reject_outside_drawing_area(page, position, *, noun, error_code):
+        assert page is target.page
+        assert position == values["placement_on_page_mm"]
+        assert noun == "note"
+        assert error_code == "NATIVE_DRAWING_RICH_ANNOTATION_PLACEMENT_INVALID"
+        raise NativeDrawingError(
+            "The Drawing note position is outside the drawing area.",
+            error_code=error_code,
+            repair={
+                "drawing_bounds_mm": {
+                    "min_x_mm": 27.0,
+                    "min_y_mm": 65.0,
+                    "max_x_mm": 280.0,
+                    "max_y_mm": 193.0,
+                },
+                "requested_position_on_page_mm": position,
+            },
+        )
+
+    monkeypatch.setattr(
+        rich_annotation,
+        "drawing_position_within_page_bounds",
+        reject_outside_drawing_area,
+        raising=False,
+    )
+
+    with pytest.raises(NativeDrawingError) as caught:
+        rich_annotation.prepare_drawing_rich_annotation(
+            object(),
+            operation="plain_text",
+            values=values,
+        )
+    assert caught.value.error_code == "NATIVE_DRAWING_RICH_ANNOTATION_PLACEMENT_INVALID"
 
 
 def test_rich_annotation_host_plan_preserves_complete_typed_state() -> None:
@@ -136,16 +260,16 @@ def test_rich_annotation_host_plan_rejects_malformed_nested_state(
     assert caught.value.error_code == _HOST_ERROR_CODE
 
 
-def test_rich_annotation_registry_has_one_definition_and_implementation() -> None:
+def test_note_registry_has_two_definitions_and_implementations() -> None:
     registry = build_native_capability_registry()
 
-    definition = registry.definition(DRAWING_RICH_ANNOTATION_CAPABILITY_NAME)
-    implementation = registry.implementation(DRAWING_RICH_ANNOTATION_CAPABILITY_NAME)
-    assert definition is not None
-    assert implementation is not None
-    assert tuple(item.operation for item in definition.variants) == (
-        DRAWING_RICH_ANNOTATION_OPERATIONS
-    )
+    assert registry.definition("drawing.rich_annotation") is None
+    for name in DRAWING_NOTE_CAPABILITY_NAMES:
+        definition = registry.definition(name)
+        implementation = registry.implementation(name)
+        assert definition is not None
+        assert implementation is not None
+        assert tuple(item.operation for item in definition.variants) == ("create",)
 
 
 def test_human_and_native_paths_share_one_compiled_builder_and_scene_policy() -> None:
@@ -204,3 +328,4 @@ def test_native_result_state_never_returns_the_stored_html_blob() -> None:
     assert '"stored_html"' not in content_return
     verify_return = implementation[implementation.index("def verify_drawing_rich_annotation") :]
     assert '"annotation": state' in verify_return
+    assert '"page": {' in verify_return

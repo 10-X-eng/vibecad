@@ -41,6 +41,7 @@
 QT_BEGIN_NAMESPACE
 class QGraphicsScene;
 class QGraphicsSceneMouseEvent;
+class QPainterPath;
 QT_END_NAMESPACE
 
 namespace App
@@ -93,6 +94,8 @@ public:
     enum {Type = UserType::QGIView};
     int type() const override { return Type;}
     QRectF boundingRect() const override;
+    QRectF contentBoundingRect() const;
+    QPainterPath contentShape() const;
     void paint( QPainter *painter,
                         const QStyleOptionGraphicsItem *option,
                         QWidget *widget = nullptr ) override;

@@ -19,10 +19,11 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
 
 
-_COMMON_FIELDS = frozenset({"page", "expected_inventory_state_sha256"})
 _FIELDS = {
-    "set": _COMMON_FIELDS | frozenset({"views"}),
-    "read_page": _COMMON_FIELDS | frozenset({"offset", "page_size"}),
+    "read": {"read": frozenset({"page", "offset"})},
+    "set": {
+        "set": frozenset({"page", "expected_inventory_state_sha256", "views"})
+    },
 }
 
 
@@ -37,11 +38,17 @@ class NativeDrawingViewLockRuntime:
         arguments: Mapping[str, Any],
         *,
         ticket: NativeCallTicket,
+        mode: str,
     ) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _FIELDS)
+        if mode not in _FIELDS:
+            raise ValueError("mode is not supported")
+        normalized = dict(arguments)
+        if mode == "read":
+            normalized.setdefault("offset", 0)
+        _operation, values = strict_variant_arguments(normalized, _FIELDS[mode])
         context = self._context
         context.guard()
-        if operation == "read_page":
+        if mode == "read":
             return read_drawing_view_locks(context.document, values=values)
         prepared = prepare_drawing_view_lock_change(
             context.document,

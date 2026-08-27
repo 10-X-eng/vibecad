@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADHostSurfaceAuthority import activate_authorized_workbench
 from VibeCADNativeWorkspaceSchema import (
     NATIVE_SURFACE_BY_WORKSPACE,
 )
@@ -68,16 +69,7 @@ class NativeWorkspaceRuntime:
         if self._activate_workbench is not None:
             self._activate_workbench(workbench)
             return
-        import FreeCADGui as Gui
-        from PySide import QtCore, QtWidgets
-
-        Gui.activateWorkbench(workbench)
-        for _index in range(8):
-            Gui.updateGui()
-            QtWidgets.QApplication.processEvents(
-                QtCore.QEventLoop.AllEvents,
-                25,
-            )
+        activate_authorized_workbench(workbench)
 
     def switch(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         _operation, values = strict_variant_arguments(

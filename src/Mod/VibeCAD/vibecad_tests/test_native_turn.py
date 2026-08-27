@@ -236,9 +236,19 @@ def test_native_context_keeps_operation_authorization_out_of_model_visible_state
     )
 
     assert _provider_schema_operations(context["provider_tool_schemas"][0]) == ()
-    assert context["_native_turn_authorization"]["operations_by_tool"] == {
+    authorization = context["_native_turn_authorization"]
+    assert authorization["operations_by_tool"] == {
         ANALYZE_INSPECT_CAPABILITY_NAME: ["study"]
     }
+    assert (
+        authorization["schema_sha256"]
+        == context["provider_tool_surface"]["schema_sha256"]
+    )
+    assert (
+        authorization["provider_schema_sha256"]
+        == context["provider_tool_surface"]["schema_sha256"]
+    )
+    assert len(authorization["operation_scope_sha256"]) == 64
     assert "_native_turn_authorization" not in session_module._provider_state_payload(
         context
     )

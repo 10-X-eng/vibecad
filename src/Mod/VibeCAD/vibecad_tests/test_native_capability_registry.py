@@ -12,6 +12,8 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeCapabilityRegistryError,
     NativeCapabilityVariant,
+    NativeProviderSurface,
+    project_native_provider_operations,
     provider_visible_native_schema,
     resolve_native_provider_surface,
 )
@@ -174,6 +176,70 @@ def test_single_purpose_provider_tool_does_not_repeat_its_operation_name() -> No
 
     assert "operation" not in parameters["properties"]
     assert parameters["required"] == ["target"]
+
+
+def test_public_multi_variant_contract_can_preserve_singleton_discriminator() -> None:
+    definition = NativeCapabilityDefinition(
+        name="model.focused",
+        description="Perform one focused operation.",
+        primary_classification="mutation",
+        preserve_operation_discriminator=True,
+        variants=(
+            _variant("first", "Focused_First", transaction_behavior="document"),
+            _variant("second", "Focused_Second", transaction_behavior="document"),
+        ),
+    )
+
+    parameters = definition.provider_schema(("first",))["parameters"]["oneOf"][0]
+
+    assert parameters["required"] == ["operation"]
+    assert parameters["properties"]["operation"]["const"] == "first"
+
+
+def test_operation_projection_accepts_an_exact_singleton_provider_schema() -> None:
+    definition = NativeCapabilityDefinition(
+        name="model.focused",
+        description="Perform one focused operation.",
+        primary_classification="mutation",
+        variants=(
+            _variant(
+                "first",
+                "Focused_First",
+                transaction_behavior="document",
+                parameters=_parameters(first_value={"type": "number"}),
+            ),
+            _variant(
+                "second",
+                "Focused_Second",
+                transaction_behavior="document",
+                parameters=_parameters(
+                    second_value={"type": "string", "maxLength": 32}
+                ),
+            ),
+        ),
+    )
+    registry = NativeCapabilityRegistry()
+    registry.register_definition(definition)
+    schema = provider_visible_native_schema(definition.provider_schema(("first",)))
+    surface = NativeProviderSurface(
+        snapshot=_surface(),
+        available=True,
+        unavailable_reason="",
+        tool_names=(definition.name,),
+        schemas=(schema,),
+        human_only_action_ids=(),
+        missing_definition_names=(),
+        missing_implementation_names=(),
+        incomplete_definition_names=(),
+    )
+
+    projected = project_native_provider_operations(
+        surface,
+        registry,
+        {definition.name: ("first",)},
+    )
+
+    assert provider_visible_native_schema(projected.schemas[0]) == schema
 
 
 def test_partial_registry_never_advertises_a_partial_surface() -> None:

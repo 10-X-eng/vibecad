@@ -5718,6 +5718,17 @@ void DocumentItem::rebuildModelBrowser()
         return object ? objectKey(object) : std::string("$document");
     };
 
+    auto isMeshesGroup = [](const App::DocumentObject* object) {
+        if (!object
+            || !object->hasExtension(App::GroupExtension::getExtensionClassTypeId())) {
+            return false;
+        }
+        const auto* role = dynamic_cast<const App::PropertyString*>(
+            object->getPropertyByName("VibeCADTreeRole")
+        );
+        return role && std::string_view(role->getValue()) == "meshes";
+    };
+
     auto logicalItem = [&](App::DocumentObject* object, DocumentObjectItem* fallback) {
         if (!object) {
             // A virtual category may visually place a document-root object
@@ -5864,6 +5875,22 @@ void DocumentItem::rebuildModelBrowser()
     // component. Members of an analysis are rendered from native Group
     // membership instead of being flattened into type categories.
     std::unordered_map<const App::DocumentObject*, EntryBucket> analyzeEntriesByComponent;
+    // Drawing pages keyed by their owning component, plus the native
+    // ViewProvider presentation graph below each page. TechDraw page/view
+    // ownership is not an App::Group relationship, so it needs the same
+    // explicit browser treatment as an FEM Analysis.
+    std::unordered_map<const App::DocumentObject*, EntryBucket> drawingPagesByComponent;
+    std::unordered_map<const App::DocumentObject*, EntryBucket> drawingChildren;
+
+    const Base::Type drawingPageType = Base::Type::fromName("TechDraw::DrawPage");
+    auto isDrawingPage = [drawingPageType](const App::DocumentObject* object) {
+        return object && !drawingPageType.isBad()
+            && object->getTypeId().isDerivedFrom(drawingPageType);
+    };
+    auto isDrawingObject = [](const App::DocumentObject* object) {
+        return object
+            && std::string_view(object->getTypeId().getName()).starts_with("TechDraw::");
+    };
 
     for (const auto& entry : entries) {
         if (entry.role == Role::Origin || entry.role == Role::OriginFeature) {
@@ -5878,6 +5905,21 @@ void DocumentItem::rebuildModelBrowser()
         entriesByComponentRole[{entry.component, entry.role}].push_back(&entry);
         if (entry.role == Role::Component) {
             componentEntries.push_back(&entry);
+        }
+        if (isDrawingPage(entry.object)) {
+            drawingPagesByComponent[entry.component].push_back(&entry);
+        }
+        if (isDrawingObject(entry.object)) {
+            auto* viewProvider = getViewProvider(entry.object);
+            if (!viewProvider) {
+                continue;
+            }
+            for (auto* child : viewProvider->claimChildren()) {
+                const Entry* childEntry = projection.find(child);
+                if (childEntry && isDrawingObject(childEntry->object)) {
+                    drawingChildren[entry.object].push_back(childEntry);
+                }
+            }
         }
     }
 
@@ -5952,6 +5994,7 @@ void DocumentItem::rebuildModelBrowser()
     std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderComponent;
     std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderGroup;
     std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderAnalyzeObject;
+    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderDrawingObject;
 
     // FreeCAD resolves duplicate default labels by appending a zero-padded
     // numeric suffix of at least three digits ("Origin001", "X-axis002"; see
@@ -6101,9 +6144,15 @@ void DocumentItem::rebuildModelBrowser()
                 || (groupEntry.component
                     && groupEntry.component->getTypeId().getName()
                         == std::string_view("Assembly::AssemblyObject")));
+        const bool meshesGroup = isMeshesGroup(groupEntry.object);
         for (const auto* child : children) {
             if (child->role == Role::Group) {
                 renderGroup(*child, groupItem, groupItem);
+                continue;
+            }
+            if (meshesGroup && child->role != Role::Internal
+                && !child->publishedImplementation && !child->bodyRepresentation) {
+                renderObject(*child, groupItem, groupItem);
                 continue;
             }
             // Bodies, Sketches, Parameters, References, and loose Geometry are
@@ -6194,6 +6243,58 @@ void DocumentItem::rebuildModelBrowser()
                 *entry,
                 folder,
                 logicalItem(entry->logicalParent, contextItem)
+            );
+        }
+    };
+
+    renderDrawingObject = [&](const Entry& entry,
+                              QTreeWidgetItem* parent,
+                              DocumentObjectItem* logicalParent) {
+        if (entry.publishedImplementation || entry.bodyRepresentation) {
+            return;
+        }
+        auto* item = renderObject(entry, parent, logicalParent);
+        if (!item) {
+            return;
+        }
+
+        // TechDraw's ViewProviders are the authoritative presentation owners:
+        // Page claims its template, views, and annotations; a projected view
+        // claims its dimensions and dependent drawing objects. Follow that
+        // graph recursively instead of flattening timeline operations.
+        const auto children = takeBucket(findBucket(drawingChildren, entry.object));
+        for (const auto* child : children) {
+            renderDrawingObject(*child, item, item);
+        }
+        item->setChildIndicatorPolicy(
+            item->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
+                                   : QTreeWidgetItem::DontShowIndicator
+        );
+    };
+
+    auto renderDrawings = [&](QTreeWidgetItem* parent,
+                              DocumentObjectItem* contextItem,
+                              App::DocumentObject* contextObject) {
+        const auto pages = takeBucket(findBucket(
+            drawingPagesByComponent,
+            static_cast<const App::DocumentObject*>(contextObject)
+        ));
+        if (pages.empty()) {
+            return;
+        }
+        auto* folder = makeFolder(
+            parent,
+            contextItem,
+            contextKey(contextObject),
+            "drawings",
+            TreeWidget::tr("Drawings"),
+            "preferences-techdraw"
+        );
+        for (const auto* page : pages) {
+            renderDrawingObject(
+                *page,
+                folder,
+                logicalItem(page->logicalParent, contextItem)
             );
         }
     };
@@ -6345,15 +6446,29 @@ void DocumentItem::rebuildModelBrowser()
             sketches
         );
 
+        const auto meshGroups = filterBucket(
+            findBucket(
+                entriesByComponentRole,
+                RoleContextKey {componentEntry.object, Role::Group}
+            ),
+            [&](const Entry& entry) {
+                return !entry.group && isMeshesGroup(entry.object);
+            }
+        );
+        for (const auto* group : meshGroups) {
+            renderGroup(*group, componentItem, componentItem);
+        }
+
         renderAnalyze(componentItem, componentItem, componentEntry.object);
+        renderDrawings(componentItem, componentItem, componentEntry.object);
 
         const auto operations = filterBucket(
             findBucket(
                 entriesByComponentRole,
                 RoleContextKey {componentEntry.object, Role::History}
             ),
-            [](const Entry& entry) {
-                return !entry.body;
+            [&](const Entry& entry) {
+                return !entry.body && !isMeshesGroup(entry.group);
             }
         );
         renderCategory(
@@ -6422,8 +6537,8 @@ void DocumentItem::rebuildModelBrowser()
                 entriesByComponentRole,
                 RoleContextKey {componentEntry.object, Role::Group}
             ),
-            [](const Entry& entry) {
-                return !entry.group;
+            [&](const Entry& entry) {
+                return !entry.group && !isMeshesGroup(entry.object);
             }
         );
         const bool assemblyComponent = componentEntry.object
@@ -6522,12 +6637,23 @@ void DocumentItem::rebuildModelBrowser()
         rootSketches
     );
 
+    const auto rootMeshGroups = filterBucket(
+        findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Group}),
+        [&](const Entry& entry) {
+            return !entry.group && isMeshesGroup(entry.object);
+        }
+    );
+    for (const auto* group : rootMeshGroups) {
+        renderGroup(*group, this, nullptr);
+    }
+
     renderAnalyze(this, nullptr, nullptr);
+    renderDrawings(this, nullptr, nullptr);
 
     const auto rootOperations = filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::History}),
-        [](const Entry& entry) {
-            return !entry.body;
+        [&](const Entry& entry) {
+            return !entry.body && !isMeshesGroup(entry.group);
         }
     );
     renderCategory(
@@ -6599,8 +6725,8 @@ void DocumentItem::rebuildModelBrowser()
 
     const auto rootGroups = filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Group}),
-        [](const Entry& entry) {
-            return !entry.group;
+        [&](const Entry& entry) {
+            return !entry.group && !isMeshesGroup(entry.object);
         }
     );
     if (!rootGroups.empty()) {

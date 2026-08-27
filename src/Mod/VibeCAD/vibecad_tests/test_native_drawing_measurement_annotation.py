@@ -8,13 +8,16 @@ import json
 from pathlib import Path
 
 from VibeCADNativeActionManifest import _plan
-from VibeCADNativeCapabilityRegistry import NativeCapabilityRegistry
+from VibeCADNativeCapabilityRegistry import (
+    NativeCapabilityRegistry,
+    provider_visible_native_schema,
+)
 from VibeCADNativeDrawingDimensionBindings import (
     register_drawing_dimension_capability_implementation,
 )
 from VibeCADNativeDrawingDimensionSchema import (
-    DRAWING_DIMENSION_CAPABILITY_NAME,
-    drawing_dimension_capability_definition,
+    DRAWING_DIMENSION_CAPABILITY_BY_OPERATION,
+    drawing_dimension_capability_definitions,
     register_drawing_dimension_capability_definition,
 )
 from VibeCADNativeDrawingMeasurementAnnotationSchema import (
@@ -26,46 +29,35 @@ from VibeCADRibbonSurface import RibbonAction
 MOD_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _branch(schema: dict, operation: str) -> dict:
+def _definition(operation: str):
     return next(
-        branch
-        for branch in schema["parameters"]["oneOf"]
-        if branch["properties"]["operation"].get("const") == operation
+        definition
+        for definition in drawing_dimension_capability_definitions()
+        if definition.variants[0].operation == operation
     )
+
+
+def _branch(operation: str) -> dict:
+    definition = _definition(operation)
+    return provider_visible_native_schema(
+        definition.provider_schema((operation,))
+    )["parameters"]["oneOf"][0]
 
 
 def test_measurement_annotation_schema_is_closed_exact_and_host_measured() -> None:
-    definition = drawing_dimension_capability_definition()
-    schema = definition.provider_schema(
-        DRAWING_MEASUREMENT_ANNOTATION_OPERATIONS
-    )
-
     assert DRAWING_MEASUREMENT_ANNOTATION_OPERATIONS == (
         "create_area_annotation",
         "create_arc_length_annotation",
     )
-    assert definition.primary_classification == "mutation"
-    assert definition.preserve_operation_branches
-    assert len(schema["parameters"]["oneOf"]) == 2
-
-    area = _branch(schema, "create_area_annotation")
-    arc = _branch(schema, "create_arc_length_annotation")
+    area = _branch("create_area_annotation")
+    arc = _branch("create_arc_length_annotation")
     for branch in (area, arc):
         assert branch["additionalProperties"] is False
-        assert branch["required"] == [
-            "operation",
-            "page",
-            "view",
-            "elements",
-            "label",
-        ]
+        assert branch["required"] == ["page", "view", "elements", "label"]
         elements = branch["properties"]["elements"]
         assert (elements["minItems"], elements["maxItems"]) == (1, 64)
         assert elements["items"]["additionalProperties"] is False
-        assert set(elements["items"]["required"]) == {
-            "subelement",
-            "expected_element_state_sha256",
-        }
+        assert set(elements["items"]["required"]) == {"subelement"}
         assert "text" not in branch["properties"]
         assert "value" not in branch["properties"]
         assert "placement" not in branch["properties"]
@@ -77,9 +69,8 @@ def test_measurement_annotation_schema_is_closed_exact_and_host_measured() -> No
         "subelement"
     ]["pattern"].startswith("^Edge")
 
-    variants = {variant.operation: variant for variant in definition.variants}
-    area_variant = variants["create_area_annotation"]
-    arc_variant = variants["create_arc_length_annotation"]
+    area_variant = _definition("create_area_annotation").variants[0]
+    arc_variant = _definition("create_arc_length_annotation").variants[0]
     assert area_variant.action_ids == frozenset(
         {"TechDraw_ExtensionAreaAnnotation"}
     )
@@ -98,7 +89,7 @@ def test_measurement_annotation_schema_is_closed_exact_and_host_measured() -> No
         for variant in (area_variant, arc_variant)
     )
 
-    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps([area, arc], sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert "path" not in encoded.casefold()
     assert len(encoded.encode("utf-8")) < 8 * 1024
@@ -130,7 +121,7 @@ def test_measurement_actions_resolve_to_their_exact_branches() -> None:
         area.operation_variant,
         area.exact_target_type,
     ) == (
-        DRAWING_DIMENSION_CAPABILITY_NAME,
+        DRAWING_DIMENSION_CAPABILITY_BY_OPERATION["create_area_annotation"],
         "create_area_annotation",
         "ExactDrawingProjectedFacesAndAreaAnnotation",
     )
@@ -139,7 +130,7 @@ def test_measurement_actions_resolve_to_their_exact_branches() -> None:
         arc.operation_variant,
         arc.exact_target_type,
     ) == (
-        DRAWING_DIMENSION_CAPABILITY_NAME,
+        DRAWING_DIMENSION_CAPABILITY_BY_OPERATION["create_arc_length_annotation"],
         "create_arc_length_annotation",
         "ExactDrawingOrderedProjectedEdgesAndArcLengthAnnotation",
     )
@@ -151,8 +142,10 @@ def test_measurement_registry_has_definition_and_implementation() -> None:
     registry = NativeCapabilityRegistry()
     register_drawing_dimension_capability_definition(registry)
     register_drawing_dimension_capability_implementation(registry)
-    assert registry.definition(DRAWING_DIMENSION_CAPABILITY_NAME) is not None
-    assert registry.implementation(DRAWING_DIMENSION_CAPABILITY_NAME) is not None
+    for operation in DRAWING_MEASUREMENT_ANNOTATION_OPERATIONS:
+        name = DRAWING_DIMENSION_CAPABILITY_BY_OPERATION[operation]
+        assert registry.definition(name) is not None
+        assert registry.implementation(name) is not None
 
 
 def test_human_and_native_share_typed_compiled_measurement_builder() -> None:

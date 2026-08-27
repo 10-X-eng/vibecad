@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from VibeCADTools import tool_failure
 
@@ -24,9 +24,11 @@ DUPLICATE_VISUAL_DIFFERENCE_THRESHOLD = 0.005
 
 TOOL_SPEC = {
     "description": (
-        "Capture the 3D view for visual verification. auto frames an open sketch or "
-        "the full model; clean temporarily hides sketch overlays. Omit camera for "
-        "automatic orientation or pass camera='isometric'."
+        "Capture a named Drawing page, the active Drawing page, or a 3D view for "
+        "visual verification. Call again with another page_name to inspect multiple "
+        "pages in one turn. auto frames an open sketch or the full model; clean "
+        "temporarily hides sketch overlays. Omit camera for automatic orientation "
+        "or pass camera='isometric'."
     ),
     "name": "core.capture_view_screenshot",
     "parameters": {
@@ -50,6 +52,15 @@ TOOL_SPEC = {
                     "frame='objects'."
                 ),
             },
+            "page_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": (
+                    "Drawing page internal Name or unique Label. When supplied, "
+                    "that page is captured even when another page is active."
+                ),
+            },
             "sketch_annotations": {
                 "type": "string",
                 "enum": list(CAPTURE_ANNOTATION_MODES),
@@ -71,12 +82,14 @@ def run(
     frame: str = "auto",
     object_names: list[str] | None = None,
     sketch_annotations: str = "clean",
+    page_name: str | None = None,
 ) -> dict[str, Any]:
     requested = {
         "camera": camera,
         "frame": frame,
         "object_names": list(object_names or []),
         "sketch_annotations": sketch_annotations,
+        "page_name": page_name,
     }
     frame_mode = str(frame or "auto").strip().lower()
     annotation_mode = str(sketch_annotations or "clean").strip().lower()
@@ -120,6 +133,28 @@ def run(
             "No active document.",
             requested=requested,
         )
+    drawing_page = None
+    if page_name is not None:
+        drawing_page, page_error = _resolve_drawing_page(document, page_name)
+        if drawing_page is None:
+            return _remember_failure(
+                service,
+                "DRAWING_PAGE_TARGET_INVALID",
+                "precondition",
+                page_error,
+                requested=requested,
+                candidates=_drawing_page_candidates(document),
+            )
+    else:
+        drawing_page = _active_drawing_page(document)
+    if drawing_page is not None:
+        return _capture_drawing_page(
+            service,
+            document,
+            drawing_page,
+            requested=requested,
+        )
+
     gui_document = getattr(Gui, "ActiveDocument", None)
     view = getattr(gui_document, "ActiveView", None) if gui_document else None
     if view is None:
@@ -367,6 +402,7 @@ def run(
             artifact=_artifact_state(path),
         )
 
+
     artifact = _artifact_state(path)
     if not artifact["created"]:
         return _remember_failure(
@@ -603,6 +639,199 @@ def run(
             requested=requested,
             normalized=normalized,
             observed={"stages": stages, "camera_after": _safe_camera_state(view)},
+            artifact=_artifact_state(path),
+        )
+
+
+def _automatic_camera(value: Any) -> bool:
+    if value is None or value == "auto":
+        return True
+    return (
+        isinstance(value, Mapping)
+        and set(value) == {"mode"}
+        and value.get("mode") == "auto"
+    )
+
+
+def _active_drawing_page(document: Any) -> Any | None:
+    try:
+        import TechDrawGui
+    except Exception:
+        return None
+    active = []
+    for obj in tuple(getattr(document, "Objects", ()) or ()):
+        checker = getattr(obj, "isDerivedFrom", None)
+        if not callable(checker) or not bool(checker("TechDraw::DrawPage")):
+            continue
+        try:
+            state = dict(TechDrawGui.drawingPagePresentation(obj))
+        except Exception:
+            continue
+        if bool(state.get("active")):
+            active.append(obj)
+    return active[0] if len(active) == 1 else None
+
+
+def _drawing_pages(document: Any) -> list[Any]:
+    pages: list[Any] = []
+    for obj in tuple(getattr(document, "Objects", ()) or ()):
+        checker = getattr(obj, "isDerivedFrom", None)
+        try:
+            is_page = (
+                bool(checker("TechDraw::DrawPage")) if callable(checker) else False
+            )
+        except Exception:
+            is_page = False
+        if is_page or getattr(obj, "TypeId", "") == "TechDraw::DrawPage":
+            pages.append(obj)
+    return pages
+
+
+def _drawing_page_candidates(document: Any) -> list[dict[str, str]]:
+    return [
+        {
+            "object_name": str(getattr(page, "Name", "")),
+            "label": str(getattr(page, "Label", getattr(page, "Name", ""))),
+        }
+        for page in _drawing_pages(document)[:32]
+    ]
+
+
+def _resolve_drawing_page(
+    document: Any,
+    requested_name: Any,
+) -> tuple[Any | None, str]:
+    name = str(requested_name or "").strip()
+    if not name:
+        return None, "Drawing page_name must not be empty."
+    pages = _drawing_pages(document)
+    exact = [page for page in pages if str(getattr(page, "Name", "")) == name]
+    if len(exact) == 1:
+        return exact[0], ""
+    labels = [page for page in pages if str(getattr(page, "Label", "")) == name]
+    if len(labels) == 1:
+        return labels[0], ""
+    if len(labels) > 1:
+        return None, f"Drawing page label {name!r} is not unique; use object_name."
+    return None, f"No Drawing page named {name!r} exists in the active document."
+
+
+def _capture_drawing_page(
+    service: Any,
+    document: Any,
+    page: Any,
+    *,
+    requested: dict[str, Any],
+) -> dict[str, Any]:
+    path: Path | None = None
+    try:
+        from PySide import QtCore, QtGui
+        import FreeCADGui as Gui
+        import TechDrawGui
+
+        template = getattr(page, "Template", None)
+        width_mm = float(getattr(template, "Width", 0.0))
+        height_mm = float(getattr(template, "Height", 0.0))
+        if width_mm <= 0.0 or height_mm <= 0.0:
+            raise RuntimeError("The selected Drawing page has no physical sheet size.")
+        width_px = max(1, int(round(width_mm * 10.0)))
+        height_px = max(1, int(round(height_mm * 10.0)))
+        screenshot_dir = _screenshot_artifact_dir(service)
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        path = screenshot_dir / (
+            f"{_slug(document.Name or 'drawing')}-{_slug(page.Name)}-"
+            f"{int(time.time() * 1000)}.png"
+        )
+        scene = TechDrawGui.getSceneForPage(page)
+        if scene is None:
+            raise RuntimeError("The selected Drawing page has no graphical scene.")
+        Gui.updateGui()
+        image = QtGui.QImage(
+            width_px,
+            height_px,
+            QtGui.QImage.Format.Format_ARGB32,
+        )
+        image.fill(QtGui.QColor("white"))
+        painter = QtGui.QPainter(image)
+        if not painter.isActive():
+            raise RuntimeError("Qt could not start the Drawing page renderer.")
+        try:
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(
+                QtGui.QPainter.RenderHint.TextAntialiasing,
+                True,
+            )
+            scene.render(
+                painter,
+                QtCore.QRectF(0.0, 0.0, float(width_px), float(height_px)),
+                QtCore.QRectF(
+                    0.0,
+                    -height_mm * 10.0,
+                    width_mm * 10.0,
+                    height_mm * 10.0,
+                ),
+                QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
+            )
+        finally:
+            painter.end()
+        if not image.save(str(path), "PNG"):
+            raise RuntimeError("Qt could not save the Drawing page image.")
+        artifact = _artifact_state(path)
+        observation = service._screenshot_visual_observation(path)
+        if not bool(observation.get("available")):
+            raise RuntimeError(
+                str(observation.get("error") or "Drawing page image could not be inspected.")
+            )
+        visual_fingerprint = _pixel_fingerprint(path)
+        concise_observation = {
+            key: observation[key]
+            for key in (
+                "inspection_summary",
+                "layout_summary",
+                "attention_flags",
+                "mostly_blank",
+                "foreground_pixel_ratio",
+            )
+            if observation.get(key) not in (None, "", [], {})
+        }
+        target = {
+            "frame": "drawing_page",
+            "object_count": 1,
+            "object_names": [str(page.Name)],
+        }
+        service._last_view_screenshot = {
+            "captured": True,
+            "pending_attachment": True,
+            "path": str(path),
+            "size": [width_px, height_px],
+            "document": str(document.Name),
+            "visual_fingerprint": visual_fingerprint,
+            "artifact": artifact,
+        }
+        return {
+            "ok": True,
+            "captured": True,
+            "document": str(document.Name),
+            "target": target,
+            "camera": {"mode": "drawing_page"},
+            "size": [width_px, height_px],
+            "new_observation": True,
+            "visual_observation": concise_observation,
+            "artifact": artifact,
+            "pending_attachment": True,
+            "_vibecad_image_attachment": {
+                "path": str(path),
+                "name": f"{str(getattr(page, 'Label', page.Name))} Drawing page",
+            },
+        }
+    except Exception as exc:
+        return _remember_failure(
+            service,
+            "DRAWING_PAGE_CAPTURE_FAILED",
+            "native_call",
+            str(exc),
+            requested=requested,
+            normalized={"frame": "drawing_page", "page": str(page.Name)},
             artifact=_artifact_state(path),
         )
 

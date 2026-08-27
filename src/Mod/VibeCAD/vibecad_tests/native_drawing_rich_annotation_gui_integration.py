@@ -27,8 +27,7 @@ from VibeCADNativeDrawingRichAnnotation import (
     drawing_rich_annotation_defaults_state,
 )
 from VibeCADNativeDrawingRichAnnotationSchema import (
-    DRAWING_RICH_ANNOTATION_CAPABILITY_NAME,
-    DRAWING_RICH_ANNOTATION_OPERATIONS,
+    DRAWING_NOTE_CAPABILITY_NAMES,
 )
 from VibeCADNativeDrawingRichAnnotationState import (
     drawing_rich_annotation_owner_state,
@@ -193,32 +192,20 @@ def _human_annotation(document, page, view):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(DRAWING_RICH_ANNOTATION_CAPABILITY_NAME)
-    assert definition is not None
-    schema = definition.provider_schema(DRAWING_RICH_ANNOTATION_OPERATIONS)
-    branches = schema["parameters"]["oneOf"]
-    assert [branch["properties"]["operation"]["const"] for branch in branches] == list(
-        DRAWING_RICH_ANNOTATION_OPERATIONS
+    definitions = tuple(registry.definition(name) for name in DRAWING_NOTE_CAPABILITY_NAMES)
+    assert all(definition is not None for definition in definitions)
+    schemas = tuple(
+        definition.provider_schema(("create",)) for definition in definitions
     )
-    by_operation = {
-        branch["properties"]["operation"]["const"]: branch for branch in branches
-    }
-    assert "text" in by_operation["create_plain_text"]["required"]
-    assert "html" not in by_operation["create_plain_text"]["properties"]
-    assert "html" in by_operation["create_rich_text"]["required"]
-    assert "text" not in by_operation["create_rich_text"]["properties"]
-    assert by_operation["read_defaults"]["required"] == ["operation"]
-    owner = by_operation["create_plain_text"]["properties"]["owner"]
-    assert [branch["properties"]["kind"]["const"] for branch in owner["oneOf"]] == [
-        "page",
-        "view",
-    ]
-    width = by_operation["create_plain_text"]["properties"]["width"]
-    assert [branch["properties"]["mode"]["const"] for branch in width["oneOf"]] == [
-        "automatic",
-        "fixed",
-    ]
-    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    plain, rich = (schema["parameters"]["oneOf"][0] for schema in schemas)
+    assert "text" in plain["required"] and "html" not in plain["properties"]
+    assert "html" in rich["required"] and "text" not in rich["properties"]
+    assert plain["properties"]["owner"]["default"] == "page"
+    assert plain["properties"]["width"]["default"] == "automatic"
+    encoded = "".join(
+        json.dumps(schema, sort_keys=True, separators=(",", ":"))
+        for schema in schemas
+    )
     assert "unknown" not in encoded.casefold()
     assert "file_path" not in encoded.casefold()
     assert "data_url" not in encoded.casefold()
@@ -228,8 +215,8 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(DRAWING_RICH_ANNOTATION_CAPABILITY_NAME,),
-            schemas=(schema,),
+            tool_names=DRAWING_NOTE_CAPABILITY_NAMES,
+            schemas=schemas,
             human_only_action_ids=(),
             missing_definition_names=(),
             missing_implementation_names=(),
@@ -249,16 +236,15 @@ def _arguments(
     x_mm: float,
     y_mm: float,
 ) -> dict:
-    owner_target = {"kind": "page"}
+    owner_target = "page"
     if owner is not None:
         owner_state = drawing_rich_annotation_owner_state(owner, page=page)
         owner_target = {
-            "kind": "view",
             "object_name": owner.Name,
             "expected_owner_state_sha256": owner_state["owner_state_sha256"],
         }
     result = {
-        "operation": operation,
+        "operation": "create",
         "page": {
             "object_name": page.Name,
             "expected_state_sha256": drawing_page_state(page)["state_sha256"],
@@ -266,9 +252,12 @@ def _arguments(
         "owner": owner_target,
         "label": label,
         "placement_on_page_mm": {"x_mm": x_mm, "y_mm": y_mm},
-        "width": json.loads(json.dumps(defaults["width"])),
-        "frame": json.loads(json.dumps(defaults["frame"])),
     }
+    if defaults["width"]["mode"] == "automatic":
+        result["width"] = "automatic"
+    else:
+        result["width"] = defaults["width"]["value_mm"]
+    result["frame"] = json.loads(json.dumps(defaults["frame"]))
     result["text" if operation == "create_plain_text" else "html"] = content
     return result
 
@@ -294,8 +283,8 @@ def _run() -> None:
             plan.operation_variant,
             plan.exact_target_type,
         ) == (
-            DRAWING_RICH_ANNOTATION_CAPABILITY_NAME,
-            "create_plain_text",
+            "drawing.note",
+            "create",
             "ExactDrawingPageOwnerPlainTextPlacementWidthAndFrame",
         )
 
@@ -308,6 +297,13 @@ def _run() -> None:
         human = _human_annotation(document, page, view)
         assert drawing_rich_annotation_state(human)["valid"]
         assert _page_image_sha256() != image_before_human
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(view)
+        _events(20)
+        selection_before = _selection()
+        visibility_before = tuple(
+            bool(item.ViewObject.Visibility) for item in (source, page, view, human)
+        )
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -345,39 +341,59 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                DRAWING_RICH_ANNOTATION_CAPABILITY_NAME,
+                "drawing.rich_note" if "html" in arguments else "drawing.note",
                 json.dumps(arguments, separators=(",", ":")),
                 f"native-drawing-rich-annotation-{call_index}",
             )
             assert response.get("ok") is succeeds, response
             return response
 
-        Gui.Selection.clearSelection()
-        Gui.Selection.addSelection(view)
-        selection_before = _selection()
-        visibility_before = tuple(
-            bool(item.ViewObject.Visibility) for item in (source, page, view, human)
-        )
         revision_before_defaults = state_store.current_revision(str(document.Uid))
-        defaults_response = call({"operation": "read_defaults"})
-        defaults = {name: defaults_response[name] for name in ("width", "frame")}
+        defaults = drawing_rich_annotation_defaults_state()
         assert defaults == drawing_rich_annotation_defaults_state()
         assert state_store.current_revision(str(document.Uid)) == revision_before_defaults
 
-        image_before_plain = _page_image_sha256()
-        plain_response = call(
-            _arguments(
-                page,
-                None,
-                defaults,
-                operation="create_plain_text",
-                content="CAUTION: deburr all edges before assembly.",
-                label="Assembly Caution",
-                x_mm=62.0,
-                y_mm=52.0,
-            )
+        outside = _arguments(
+            page,
+            None,
+            defaults,
+            operation="create_plain_text",
+            content="Outside drawing area",
+            label="Outside Note",
+            x_mm=-1.0,
+            y_mm=52.0,
         )
+        outside["width"] = "auto"
+        rejected = call(outside, False)
+        assert rejected["error_code"] == (
+            "NATIVE_DRAWING_RICH_ANNOTATION_PLACEMENT_INVALID"
+        )
+        assert rejected["repair"]["requested_position_on_page_mm"] == {
+            "x_mm": -1.0,
+            "y_mm": 52.0,
+        }
+
+        image_before_plain = _page_image_sha256()
+        plain_arguments = _arguments(
+            page,
+            None,
+            defaults,
+            operation="create_plain_text",
+            content="CAUTION: deburr all edges before assembly.",
+            label="Assembly Caution",
+            x_mm=62.0,
+            y_mm=52.0,
+        )
+        for optional in ("owner", "width", "frame"):
+            plain_arguments.pop(optional)
+        plain_response = call(plain_arguments)
         _events(20)
+        plain_page_state = drawing_page_state(page)
+        assert plain_response["page"] == {
+            "object_name": plain_page_state["object_name"],
+            "state_sha256": plain_page_state["state_sha256"],
+            "view_count": plain_page_state["view_count"],
+        }
         plain_name = plain_response["annotation"]["object_name"]
         assert plain_response["annotation"]["owner"] == {"kind": "page"}
         assert plain_response["annotation"]["content"]["plain_text_preview"].startswith(
@@ -399,7 +415,7 @@ def _run() -> None:
             x_mm=178.0,
             y_mm=72.0,
         )
-        rich_arguments["width"] = {"mode": "fixed", "value_mm": 54.0}
+        rich_arguments["width"] = 54.0
         rich_arguments["frame"] = {
             "visible": True,
             "line_width_mm": 0.7,
@@ -409,6 +425,12 @@ def _run() -> None:
         image_before_rich = _page_image_sha256()
         rich_response = call(rich_arguments)
         _events(20)
+        rich_page_state = drawing_page_state(page)
+        assert rich_response["page"] == {
+            "object_name": rich_page_state["object_name"],
+            "state_sha256": rich_page_state["state_sha256"],
+            "view_count": rich_page_state["view_count"],
+        }
         rich_name = rich_response["annotation"]["object_name"]
         assert rich_response["annotation"]["owner"]["object_name"] == view.Name
         assert rich_response["annotation"]["content"]["link_count"] == 1
@@ -560,12 +582,13 @@ def _run() -> None:
         assert rich_name in {item.Name for item in view.ViewObject.claimChildren()}
 
         print(
-            "VIBECAD_NATIVE_DRAWING_RICH_ANNOTATION_GUI_OK operations=3 "
+            "VIBECAD_NATIVE_DRAWING_RICH_ANNOTATION_GUI_OK operations=2 "
             "plain_text=true rich_text=true human_oracle=true "
             "shared_host_builder=true safe_html=true active_content_rejected=true "
             "resources_rejected=true malformed_host_rejected=true "
             "exact_page=true exact_owner=true explicit_placement=true "
-            "semantic_width=true explicit_frame=true defaults=true "
+            "semantic_width=true auto_alias=true drawing_bounds=true "
+            "explicit_frame=true optional_defaults=true "
             "content_hash=true bounded_preview=true visual_hash=true tree=true "
             "history=true snapshot=true stale=true rollback=true undo=true "
             "redo=true reopen=true selection=true visibility=true "

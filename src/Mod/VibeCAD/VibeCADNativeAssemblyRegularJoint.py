@@ -27,6 +27,7 @@ from VibeCADNativeAssemblyJointGraph import (
     solver_diagnostics,
     timeline_active,
 )
+from VibeCADNativeAssemblyIdentity import assign_persistent_identity
 from VibeCADNativeAssemblyState import read_active_assembly, same_assembly
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import (
@@ -176,6 +177,7 @@ def _create_regular_joint(
     joint.Label = spec.label
     JointObject.Joint(joint, spec.type_index)
     JointObject.ensureViewProviderJoint(joint)
+    assign_persistent_identity(joint, "joint")
     return joint
 
 

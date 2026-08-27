@@ -30,6 +30,7 @@ from VibeCADNativeAssemblyStructureSchema import (
     assembly_solve_capability_definition,
     assembly_structure_capability_definition,
 )
+from VibeCADNativeAssemblyIdentity import read_persistent_identity
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeTargets import NativeObjectRef
 
@@ -52,6 +53,8 @@ class _Object:
         document.next_id += 1
         self.Group: list[_Object] = []
         self.State = []
+        self.PropertiesList = []
+        self._editor_modes = {}
         self._parent = parent
         self.ViewObject = SimpleNamespace(isInEditMode=lambda: True)
 
@@ -63,6 +66,12 @@ class _Object:
 
     def newObject(self, type_id: str, base_name: str):
         return self.Document._create(type_id, base_name, parent=self)
+
+    def addProperty(self, _type_id, name, _group, _description):
+        self.PropertiesList.append(name)
+
+    def setEditorMode(self, name, mode):
+        self._editor_modes[name] = mode
 
 
 class _Document:
@@ -267,6 +276,10 @@ def test_root_assembly_creation_is_atomic_structure_without_activation(
     assembly = document.getObject(result["assembly"]["object_name"])
     assert assembly.Label == "Main mechanism"
     assert [child.TypeId for child in assembly.Group] == ["Assembly::JointGroup"]
+    assert read_persistent_identity(assembly, expected_kind="assembly") is not None
+    assert read_persistent_identity(
+        assembly.Group[0], expected_kind="joint_group"
+    ) is not None
 
     with pytest.raises(NativeAssemblyStructureError, match="one-root"):
         preflight_create_assembly(

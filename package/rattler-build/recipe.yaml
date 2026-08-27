@@ -10,7 +10,7 @@ source:
   use_gitignore: true
 
 build:
-  number: 5
+  number: 7
   script:
     env:
       # rattler-build runs the build in a sandbox that does not inherit shell

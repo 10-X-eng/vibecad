@@ -50,8 +50,8 @@
 #include <Mod/Mesh/App/Core/TopoAlgorithm.h>
 
 #include "MeshSelection.h"
+#include "BackgroundMeshModification.h"
 #include "CommandGuard.h"
-#include "ParametricMeshFilter.h"
 #include "ViewProvider.h"
 
 
@@ -354,7 +354,7 @@ bool MeshSelection::deleteSelection()
         return false;
     }
 
-    std::vector<MeshGui::ParametricMeshFilterTarget> operations;
+    std::vector<MeshGui::BackgroundMeshModificationTarget> operations;
     operations.reserve(deletions.size());
     for (auto& deletion : deletions) {
         auto* feature = deletion.feature.get<Mesh::Feature>();
@@ -363,35 +363,23 @@ bool MeshSelection::deleteSelection()
             return false;
         }
         std::vector<long> facets(deletion.facets.begin(), deletion.facets.end());
-        if (deletion.view) {
-            deletion.view->clearSelection();
-        }
         operations.push_back(
-            MeshGui::ParametricMeshFilterTarget {
+            MeshGui::BackgroundMeshModificationTarget {
                 feature,
-                [feature, facets = std::move(facets)](App::DocumentObject& object) {
-                    auto& edit = static_cast<Mesh::FacetEdit&>(object);
-                    edit.Action.setValue("Remove Facets");
-                    edit.Indices.setValues(facets);
-                    edit.AcceptedSource.setValue(feature->Mesh.getValue());
-                },
+                "Remove Mesh Facets",
+                {},
+                std::move(facets),
             }
         );
     }
 
     try {
-        MeshGui::createParametricMeshFilters(
-            *document,
-            operations,
-            MeshGui::ParametricMeshFilterSpec {
-                "Mesh::FacetEdit",
-                "RemoveFacets",
-                "Remove Mesh Facets",
-                "Delete selection",
-                true,
-                false,
+        MeshGui::startBackgroundMeshModification(operations, "remove_components", "{}");
+        for (auto& deletion : deletions) {
+            if (deletion.view) {
+                deletion.view->clearSelection();
             }
-        );
+        }
         return true;
     }
     catch (const Base::Exception& error) {

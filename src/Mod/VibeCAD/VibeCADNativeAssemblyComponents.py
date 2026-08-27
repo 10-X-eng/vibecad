@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from VibeCADNativeAssemblyState import read_active_assembly, same_assembly
+from VibeCADNativeAssemblyIdentity import assign_persistent_identity
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import (
     NativeObjectRef,
@@ -404,6 +405,7 @@ def insert_component(
     occurrence.Label = spec.label
     occurrence_label = str(occurrence.Label)
     occurrence.Placement = spec.placement
+    assign_persistent_identity(occurrence, "occurrence")
     if subassembly:
         occurrence.Rigid = bool(spec.rigid)
     recompute = getattr(occurrence, "recompute", None)
@@ -651,6 +653,7 @@ def create_part(
     occurrence.Label = spec.label
     occurrence_label = str(occurrence.Label)
     occurrence.Placement = spec.placement
+    assign_persistent_identity(occurrence, "occurrence")
     finalizer(part, body, occurrence)
     created_objects = _new_document_objects(document, before)
     explicit = {part, body, occurrence}

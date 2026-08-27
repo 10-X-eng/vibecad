@@ -12,6 +12,13 @@ from VibeCADNativeCapabilityRegistry import (
 
 
 MESH_SEGMENT_CAPABILITY_NAME = "mesh.segment"
+MESH_COMBINE_CAPABILITY_NAME = "mesh.combine"
+MESH_SEPARATE_CAPABILITY_NAME = "mesh.separate"
+MESH_SEGMENT_CAPABILITY_NAMES = (
+    MESH_SEGMENT_CAPABILITY_NAME,
+    MESH_COMBINE_CAPABILITY_NAME,
+    MESH_SEPARATE_CAPABILITY_NAME,
+)
 _OBJECT_NAME = {
     "type": "string",
     "minLength": 1,
@@ -234,8 +241,8 @@ def _variant(operation: str, description: str, action_id: str, parameters: dict)
         action_ids=frozenset({action_id}),
         surface_ids=frozenset({"mesh"}),
         exact_target_type="ExactCurrentHistoryMeshOrFacetSelection",
-        transaction_behavior="document",
-        background_required=False,
+        transaction_behavior="background",
+        background_required=True,
         parameters=parameters,
     )
 
@@ -389,4 +396,55 @@ def mesh_segment_capability_definition() -> NativeCapabilityDefinition:
 def register_mesh_segment_capability_definition(registry: NativeCapabilityRegistry) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_definition(mesh_segment_capability_definition())
+    segment = mesh_segment_capability_definition()
+    registry.register_definition(segment)
+    variants = {variant.operation: variant for variant in segment.variants}
+    for name, description, operation, parameters in (
+        (
+            MESH_COMBINE_CAPABILITY_NAME,
+            "Combine two or more exact Meshes into one retained Mesh.",
+            "merge",
+            _closed(
+                {
+                    "sources": {
+                        "type": "array",
+                        "items": _EXACT_MESH,
+                        "minItems": 2,
+                        "maxItems": 32,
+                    },
+                    "result_label": _LABEL,
+                },
+                ("sources",),
+            ),
+        ),
+        (
+            MESH_SEPARATE_CAPABILITY_NAME,
+            "Separate one exact Mesh into its connected components.",
+            "split_components",
+            _closed(
+                {"target": _EXACT_MESH, "result_label_prefix": _LABEL},
+                ("target",),
+            ),
+        ),
+    ):
+        variant = variants[operation]
+        registry.register_definition(
+            NativeCapabilityDefinition(
+                name=name,
+                description=description,
+                primary_classification="mutation",
+                variants=(
+                    NativeCapabilityVariant(
+                        operation=variant.operation,
+                        description=variant.description,
+                        action_ids=variant.action_ids,
+                        surface_ids=variant.surface_ids,
+                        exact_target_type=variant.exact_target_type,
+                        transaction_behavior=variant.transaction_behavior,
+                        background_required=variant.background_required,
+                        parameters=parameters,
+                        provider_supplemental=variant.provider_supplemental,
+                    ),
+                ),
+            )
+        )

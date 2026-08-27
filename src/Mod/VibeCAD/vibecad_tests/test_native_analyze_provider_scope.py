@@ -53,7 +53,11 @@ from VibeCADNativeAnalyzeMechanicalResultSchema import (
     analyze_mechanical_result_capability_definitions,
 )
 from VibeCADNativeAnalyzeMechanicalResultBindings import _mechanical_fields, _summary
-from VibeCADNativeAnalyzeResultState import _vtk_field_unit, _vtk_unit_system
+from VibeCADNativeAnalyzeResultState import (
+    _legacy_fields,
+    _vtk_field_unit,
+    _vtk_unit_system,
+)
 from VibeCADNativeAnalyzeThermalResultSchema import (
     ANALYZE_SHOW_TEMPERATURE,
     ANALYZE_TEMPERATURE_RESULTS,
@@ -841,6 +845,48 @@ def test_modern_calculix_pipeline_preserves_native_engineering_units() -> None:
     assert _vtk_unit_system(legacy) == "si"
     assert _vtk_field_unit("Displacement", unit_system="si") == "m"
     assert _vtk_field_unit("von Mises Stress", unit_system="si") == "Pa"
+
+
+def test_legacy_result_fields_preserve_authoritative_display_units() -> None:
+    class LegacyResult:
+        PropertiesList = (
+            "DisplacementLengths",
+            "vonMises",
+            "Peeq",
+            "Temperature",
+            "MassFlowRate",
+            "NetworkPressure",
+            "CustomResult",
+        )
+        Stats = tuple(float(value) for value in range(26))
+        DisplacementLengths = [0.0]
+        vonMises = [1.0]
+        Peeq = [0.1]
+        Temperature = [300.0]
+        MassFlowRate = [2.0]
+        NetworkPressure = [3.0]
+        CustomResult = [4.0]
+
+        @staticmethod
+        def getGroupOfProperty(_name):
+            return "NodeData"
+
+        @staticmethod
+        def getTypeIdOfProperty(_name):
+            return "App::PropertyFloatList"
+
+    fields = {
+        field["name"]: field
+        for field in _legacy_fields(LegacyResult(), include_ranges=True)
+    }
+
+    assert fields["DisplacementLengths"]["unit"] == "mm"
+    assert fields["vonMises"]["unit"] == "MPa"
+    assert "unit" not in fields["Peeq"]
+    assert fields["Temperature"]["unit"] == "K"
+    assert fields["MassFlowRate"]["unit"] == "kg/s"
+    assert fields["NetworkPressure"]["unit"] == "MPa"
+    assert "unit" not in fields["CustomResult"]
 
 
 def test_mechanical_result_maximum_names_its_exact_result_position() -> None:

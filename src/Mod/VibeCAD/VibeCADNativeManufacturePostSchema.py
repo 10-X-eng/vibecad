@@ -37,6 +37,7 @@ def manufacture_post_capability_definition() -> NativeCapabilityDefinition:
         name=MANUFACTURE_POST_CAPABILITY_NAME,
         description="Generate one exact CAM Job's machine program to human-authorized outputs.",
         primary_classification="export",
+        preserve_operation_discriminator=True,
         variants=(
             NativeCapabilityVariant(
                 operation="complete_job",

@@ -28,6 +28,16 @@ def open_tetrahedron(offset: float = 0.0) -> Any:
     return Mesh.Mesh([(a, c, b), (a, b, d), (c, a, d)])
 
 
+def duplicated_tetrahedron(offset: float = 0.0) -> Any:
+    mesh = tetrahedron(offset)
+    mesh.addFacet(
+        App.Vector(offset + 0.0, 0.0, 0.0),
+        App.Vector(offset + 0.0, 7.0, 0.0),
+        App.Vector(offset + 8.0, 0.0, 0.0),
+    )
+    return mesh
+
+
 def two_components() -> Any:
     result = tetrahedron()
     result.addFacet(

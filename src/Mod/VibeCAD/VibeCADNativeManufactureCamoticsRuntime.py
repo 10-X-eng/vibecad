@@ -20,6 +20,7 @@ from VibeCADNativeManufactureCamoticsWorker import (
     prepare_camotics,
 )
 from VibeCADNativeManufactureErrors import NativeManufactureError
+from VibeCADNativeManufactureGovernance import create_manufacture_evidence_governance
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
@@ -64,6 +65,12 @@ class NativeManufactureCamoticsRuntime:
                 error_code="NATIVE_MANUFACTURE_CAMOTICS_UNAVAILABLE",
             )
         frozen = preflight_camotics(context.document, **values)
+        governance = create_manufacture_evidence_governance(
+            frozen,
+            adapter_id="native.manufacture.camotics",
+            operation=f"camotics.{frozen.request_kind}",
+            evidence_kind="camotics",
+        )
 
         def prepare(cancelled: Any, progress: Any) -> Any:
             return prepare_camotics(
@@ -94,7 +101,7 @@ class NativeManufactureCamoticsRuntime:
             revision_after = context.state.current_revision(context.document_uid)
             if revision_after != revision_before:
                 raise NativeRevisionConflict(revision_before, revision_after)
-            return result
+            return governance.record_result(result)
 
         try:
             snapshot = manager.submit(
@@ -110,6 +117,7 @@ class NativeManufactureCamoticsRuntime:
                     else "Launching exact CAMotics project"
                 ),
                 cleanup=cleanup_camotics,
+                durable_lifecycle=governance,
             )
         except NativeBackgroundError as exc:
             raise NativeManufactureError(
@@ -118,6 +126,7 @@ class NativeManufactureCamoticsRuntime:
             ) from exc
         return {
             "job": _job_summary(snapshot),
+            "governance": governance.references(),
             "next": {
                 "tool": "native.job",
                 "operation": "status",

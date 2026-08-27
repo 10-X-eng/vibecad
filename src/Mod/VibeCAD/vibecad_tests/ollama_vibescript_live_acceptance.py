@@ -17,7 +17,7 @@ import zipfile
 
 import FreeCAD as App
 import FreeCADGui as Gui
-from PySide import QtCore, QtWidgets
+from PySide import QtCore, QtGui, QtSvg, QtWidgets
 
 import VibeCADCodex as CodexModule
 import VibeCADGui as VibeGui
@@ -101,6 +101,46 @@ def _shape_summary(document) -> dict:
         "solid_count": solid_count,
         "objects": objects,
     }
+
+
+def _drawing_acceptance_state(document):
+    from VibeCADNativeDrawingReadiness import drawing_page_readiness
+    from VibeCADNativeDrawingSnapshot import build_drawing_snapshot
+    from VibeCADNativeDrawingState import drawing_page_state
+
+    snapshot = build_drawing_snapshot(document)
+    pages = list(snapshot["pages"])
+    if int(snapshot["page_count"]) < 1 or not pages:
+        raise AssertionError("Drawing acceptance produced no Drawing page.")
+    if sum(int(page["view_count"]) for page in pages) < 1:
+        raise AssertionError("Drawing acceptance produced no page views.")
+
+    readiness = []
+    for page_summary in pages:
+        page = document.getObject(str(page_summary["object_name"]))
+        if page is None:
+            raise AssertionError(
+                "Drawing acceptance page disappeared before verification: "
+                f"{page_summary['object_name']}."
+            )
+        page.ViewObject.show()
+        for _index in range(24):
+            Gui.updateGui()
+            QtWidgets.QApplication.processEvents(
+                QtCore.QEventLoop.AllEvents,
+                25,
+            )
+        state = drawing_page_state(page)
+        readiness.append(
+            drawing_page_readiness(
+                document,
+                target={
+                    "object_name": state["object_name"],
+                    "expected_state_sha256": state["state_sha256"],
+                },
+            )
+        )
+    return snapshot, pages, readiness
 
 
 def _optional_nonnegative_integer(name: str) -> int | None:
@@ -214,6 +254,12 @@ def _run() -> None:
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_EXPECTED_BOUNDS_JSON") or ""
     ).strip()
     expected_bounds = json.loads(expected_bounds_raw) if expected_bounds_raw else None
+    mesh_expectations_raw = str(
+        os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_MESH_EXPECTATIONS_JSON") or ""
+    ).strip()
+    mesh_expectations = (
+        json.loads(mesh_expectations_raw) if mesh_expectations_raw else {}
+    )
     maximum_failures_raw = str(
         os.environ.get("VIBECAD_OLLAMA_ACCEPTANCE_MAX_FAILED_CALLS") or ""
     ).strip()
@@ -369,15 +415,27 @@ def _run() -> None:
             raise RuntimeError(
                 "VIBECAD_OLLAMA_ACCEPTANCE_AUTH_MODE must be api_key or chatgpt."
             )
-        if result_kind not in {"single_solid", "assembly", "analysis"}:
+        if result_kind not in {
+            "single_solid",
+            "assembly",
+            "analysis",
+            "drawing",
+            "mesh",
+        }:
             raise RuntimeError(
                 "VIBECAD_OLLAMA_ACCEPTANCE_RESULT_KIND must be single_solid, "
-                "assembly, or analysis."
+                "assembly, analysis, drawing, or mesh."
             )
         if expected_volume is not None and result_kind != "single_solid":
             raise RuntimeError("Expected volume applies only to a single-solid run.")
         if expected_bounds is not None and result_kind != "single_solid":
             raise RuntimeError("Expected bounds apply only to a single-solid run.")
+        if not isinstance(mesh_expectations, dict):
+            raise RuntimeError(
+                "VIBECAD_OLLAMA_ACCEPTANCE_MESH_EXPECTATIONS_JSON must be an object."
+            )
+        if mesh_expectations and result_kind != "mesh":
+            raise RuntimeError("Mesh expectations apply only to a Mesh run.")
         if input_fixture is not None and not input_fixture.is_file():
             raise RuntimeError(
                 f"VIBECAD_OLLAMA_ACCEPTANCE_INPUT does not exist: {input_fixture}"
@@ -405,9 +463,16 @@ def _run() -> None:
                 else "OllamaVibeScriptAcceptance"
             )
             if input_fixture is not None:
-                import Import
+                from VibeCADNativeMeshImport import MESH_IMPORT_SUFFIXES
 
-                Import.insert(str(input_fixture), document.Name)
+                if input_fixture.suffix.lower() in MESH_IMPORT_SUFFIXES:
+                    import Mesh
+
+                    Mesh.insert(str(input_fixture), document.Name)
+                else:
+                    import Import
+
+                    Import.insert(str(input_fixture), document.Name)
         if document is None:
             raise RuntimeError("FreeCAD did not open the acceptance document.")
         if Gui.activeWorkbench().name() == workbench:
@@ -436,6 +501,22 @@ def _run() -> None:
                 input_snapshot,
                 allow_existing=input_state == "assembled",
             )
+        elif result_kind == "drawing":
+            from VibeCADNativeDrawingSnapshot import build_drawing_snapshot
+
+            input_snapshot = build_drawing_snapshot(document)
+            if int(input_snapshot["page_count"]) != 0:
+                raise AssertionError(
+                    "Drawing acceptance input must not contain an existing Drawing page."
+                )
+            if int(input_snapshot["source_count"]) < 1:
+                raise AssertionError(
+                    "Drawing acceptance input has no active design geometry."
+                )
+            result["input_evidence"] = {
+                "source_count": int(input_snapshot["source_count"]),
+                "page_count": int(input_snapshot["page_count"]),
+            }
         document.UndoMode = 1
         copied_dependencies = copy_linked_document_dependencies(
             document,
@@ -508,27 +589,26 @@ def _run() -> None:
                     document_thread_dispatch=VibeGui._dispatch_to_document_thread,
                 )
                 responses.append(response)
-                if engine == "native":
-                    while True:
-                        continuation = VibeGui._dispatch_to_document_thread(
-                            lambda current=response: (
-                                VibeGui._native_surface_continuation_event(current)
-                            )
+                while True:
+                    continuation = VibeGui._dispatch_to_document_thread(
+                        lambda current=response: (
+                            VibeGui._native_surface_continuation_event(current)
                         )
-                        if continuation is None:
-                            break
-                        response = run_native_surface_continuation(
-                            continuation,
-                            service=service,
-                            provider=provider,
-                            progress_callback=_print_live_progress,
-                            cancellation_check=cancel_requested.is_set,
-                            output_authorization_callback=output_authorizer,
-                            document_thread_dispatch=(
-                                VibeGui._dispatch_to_document_thread
-                            ),
-                        )
-                        responses.append(response)
+                    )
+                    if continuation is None:
+                        break
+                    response = run_native_surface_continuation(
+                        continuation,
+                        service=service,
+                        provider=provider,
+                        progress_callback=_print_live_progress,
+                        cancellation_check=cancel_requested.is_set,
+                        output_authorization_callback=output_authorizer,
+                        document_thread_dispatch=(
+                            VibeGui._dispatch_to_document_thread
+                        ),
+                    )
+                    responses.append(response)
                 result["response"] = response
                 result["responses"] = responses
             except BaseException as exc:
@@ -569,6 +649,8 @@ def _run() -> None:
                 reopen_final_state()
                 assembly_evidence = None
                 analysis_evidence = None
+                drawing_evidence = None
+                mesh_evidence = None
                 if result_kind == "single_solid":
                     neutral_objects = [
                         obj
@@ -657,7 +739,7 @@ def _run() -> None:
                         raise AssertionError(
                             "Accepted Assembly has no component geometry to export."
                         )
-                else:
+                elif result_kind == "analysis":
                     from VibeCADNativeAnalyzeSnapshot import build_analyze_snapshot
 
                     analysis_snapshot = build_analyze_snapshot(document)
@@ -691,6 +773,115 @@ def _run() -> None:
                         raise AssertionError(
                             "Analyze acceptance has no source solid geometry to export."
                         )
+                elif result_kind == "drawing":
+                    from VibeCADNativeGeometrySources import (
+                        active_design_geometry_sources,
+                    )
+
+                    drawing_snapshot, pages, page_readiness = (
+                        _drawing_acceptance_state(document)
+                    )
+                    unresolved = sum(
+                        int(readiness["references"]["count"])
+                        for readiness in page_readiness
+                    )
+                    unready = [
+                        {
+                            "object_name": readiness["page"]["object_name"],
+                            "issues": list(readiness["issues"]),
+                        }
+                        for readiness in page_readiness
+                        if readiness["ready"] is not True
+                    ]
+                    if unresolved or unready:
+                        raise AssertionError(
+                            "Drawing acceptance is not export-ready: "
+                            f"unresolved_references={unresolved}, unready_pages={unready}."
+                        )
+
+                    def derived_count(type_id: str) -> int:
+                        return sum(
+                            1
+                            for obj in document.Objects
+                            if callable(getattr(obj, "isDerivedFrom", None))
+                            and bool(obj.isDerivedFrom(type_id))
+                        )
+
+                    drawing_evidence = {
+                        "page_count": int(drawing_snapshot["page_count"]),
+                        "page_view_count": sum(
+                            int(page["view_count"]) for page in pages
+                        ),
+                        "projected_view_count": derived_count(
+                            "TechDraw::DrawViewPart"
+                        ),
+                        "dimension_count": derived_count(
+                            "TechDraw::DrawViewDimension"
+                        ),
+                        "balloon_count": derived_count("TechDraw::DrawViewBalloon"),
+                        "unresolved_reference_count": unresolved,
+                        "export_ready": not unready,
+                    }
+                    neutral_objects = [
+                        obj
+                        for obj in active_design_geometry_sources(document)
+                        if getattr(obj, "Shape", None) is not None
+                        and not obj.Shape.isNull()
+                        and len(obj.Shape.Solids) > 0
+                    ]
+                    if not neutral_objects:
+                        raise AssertionError(
+                            "Drawing acceptance has no source solid geometry to export."
+                        )
+                else:
+                    import Mesh
+                    import MeshGui
+                    from vibecad_tests.mesh_acceptance import validate_mesh_quality
+
+                    neutral_objects = [
+                        obj
+                        for obj in document.Objects
+                        if bool(obj.isDerivedFrom("Mesh::Feature"))
+                        and int(obj.Mesh.CountFacets) > 0
+                        and bool(MeshGui.isNativeMeshInputActive(obj))
+                        and bool(obj.ViewObject.Visibility)
+                    ]
+                    if not neutral_objects:
+                        raise AssertionError(
+                            "Mesh acceptance has no visible active Mesh with facets."
+                        )
+                    quality = []
+                    for obj in neutral_objects:
+                        report = Mesh.evaluateNative(obj.Mesh, "strict", 32)
+                        quality.append(
+                            {
+                                "object_name": str(obj.Name),
+                                "label": str(obj.Label),
+                                "points": int(obj.Mesh.CountPoints),
+                                "facets": int(obj.Mesh.CountFacets),
+                                "solid": bool(report.get("solid", False)),
+                                "watertight": bool(report.get("watertight", False)),
+                                "issue_counts": {
+                                    name: int(value.get("count", 0) or 0)
+                                    for name, value in dict(
+                                        report.get("issues") or {}
+                                    ).items()
+                                    if int(value.get("count", 0) or 0) > 0
+                                },
+                            }
+                        )
+                    mesh_evidence = validate_mesh_quality(
+                        quality,
+                        mesh_expectations,
+                    )
+                if output_artifact is not None and (
+                    not output_artifact.is_file()
+                    or output_artifact.stat().st_size <= 0
+                ):
+                    raise AssertionError(
+                        "Live acceptance did not produce its authorized output artifact: "
+                        f"{output_artifact}."
+                    )
                 failed_calls = [
                     item
                     for turn in result.get("responses", [response])
@@ -705,46 +896,88 @@ def _run() -> None:
                         "Live acceptance exceeded its failed-call limit: "
                         f"expected at most {maximum_failures}, found {len(failed_calls)}."
                     )
-                import Part
+                mesh_artifact = None
+                if result_kind == "mesh":
+                    import Mesh
 
-                step_artifact.parent.mkdir(parents=True, exist_ok=True)
-                expected_step_solids = sum(
-                    len(obj.Shape.Solids) for obj in neutral_objects
-                )
-                export_shape = Part.makeCompound(
-                    [obj.Shape.copy() for obj in neutral_objects]
-                )
-                export_shape.exportStep(str(step_artifact))
-                if not step_artifact.is_file() or step_artifact.stat().st_size <= 0:
-                    raise AssertionError("FreeCAD did not write the acceptance STEP file.")
-                imported_step = Part.read(str(step_artifact))
-                if (
-                    imported_step.isNull()
-                    or len(imported_step.Solids) != expected_step_solids
-                ):
-                    raise AssertionError(
-                        "Acceptance STEP geometry mismatch: "
-                        f"expected {expected_step_solids} solids, found "
-                        f"{len(imported_step.Solids)}."
-                    )
-                from tool_impl.service import core_capture_view_screenshot
+                    mesh_artifact = artifact.with_suffix(".stl")
+                    Mesh.export(neutral_objects, str(mesh_artifact))
+                    imported_mesh = Mesh.read(str(mesh_artifact))
+                    if int(imported_mesh.CountFacets) != mesh_evidence["facet_count"]:
+                        raise AssertionError(
+                            "Acceptance STL facet count changed during export."
+                        )
+                else:
+                    import Part
 
-                capture = core_capture_view_screenshot.run(
-                    service,
-                    camera="isometric",
-                    frame="objects",
-                    object_names=[obj.Name for obj in neutral_objects],
-                    sketch_annotations="clean",
-                )
-                if capture.get("ok") is not True:
-                    raise AssertionError(
-                        "Target-aware acceptance screenshot failed: "
-                        f"{capture.get('failure_code')}: {capture.get('error')}"
+                    step_artifact.parent.mkdir(parents=True, exist_ok=True)
+                    expected_step_solids = sum(
+                        len(obj.Shape.Solids) for obj in neutral_objects
                     )
-                capture_path = Path(str(capture["artifact"]["path"]))
+                    export_shape = Part.makeCompound(
+                        [obj.Shape.copy() for obj in neutral_objects]
+                    )
+                    export_shape.exportStep(str(step_artifact))
+                    if not step_artifact.is_file() or step_artifact.stat().st_size <= 0:
+                        raise AssertionError("FreeCAD did not write the acceptance STEP file.")
+                    imported_step = Part.read(str(step_artifact))
+                    if (
+                        imported_step.isNull()
+                        or len(imported_step.Solids) != expected_step_solids
+                    ):
+                        raise AssertionError(
+                            "Acceptance STEP geometry mismatch: "
+                            f"expected {expected_step_solids} solids, found "
+                            f"{len(imported_step.Solids)}."
+                        )
                 screenshot = artifact.with_suffix(".png")
-                if capture_path != screenshot:
-                    shutil.copyfile(capture_path, screenshot)
+                drawing_svg = None
+                if result_kind == "drawing":
+                    import TechDrawGui
+
+                    page = document.getObject(str(pages[0]["object_name"]))
+                    drawing_svg = artifact.with_suffix(".svg")
+                    TechDrawGui.exportPageAsSvg(page, str(drawing_svg))
+                    renderer = QtSvg.QSvgRenderer(str(drawing_svg))
+                    if not renderer.isValid():
+                        raise AssertionError(
+                            "Drawing acceptance produced an invalid SVG export."
+                        )
+                    image_size = renderer.defaultSize()
+                    if image_size.width() < 1 or image_size.height() < 1:
+                        raise AssertionError(
+                            "Drawing acceptance SVG has no renderable page size."
+                        )
+                    image = QtGui.QImage(
+                        image_size,
+                        QtGui.QImage.Format.Format_ARGB32,
+                    )
+                    image.fill(QtGui.QColor("white"))
+                    painter = QtGui.QPainter(image)
+                    renderer.render(painter)
+                    painter.end()
+                    if not image.save(str(screenshot)):
+                        raise AssertionError(
+                            "Drawing acceptance could not render its SVG preview."
+                        )
+                else:
+                    from tool_impl.service import core_capture_view_screenshot
+
+                    capture = core_capture_view_screenshot.run(
+                        service,
+                        camera="isometric",
+                        frame="objects",
+                        object_names=[obj.Name for obj in neutral_objects],
+                        sketch_annotations="clean",
+                    )
+                    if capture.get("ok") is not True:
+                        raise AssertionError(
+                            "Target-aware acceptance screenshot failed: "
+                            f"{capture.get('failure_code')}: {capture.get('error')}"
+                        )
+                    capture_path = Path(str(capture["artifact"]["path"]))
+                    if capture_path != screenshot:
+                        shutil.copyfile(capture_path, screenshot)
                 summary = {
                     "ok": True,
                     "model": model,
@@ -755,6 +988,7 @@ def _run() -> None:
                     "reasoning_effort": reasoning_effort,
                     "auth_mode": auth_mode,
                     "expected_result_type": expected_result_type,
+                    "mesh_expectations": mesh_expectations,
                     "excluded_tools": sorted(excluded_tools),
                     "artifact": str(artifact),
                     "input_fixture": (
@@ -764,13 +998,19 @@ def _run() -> None:
                     "linked_dependencies": [
                         str(path) for path in copied_dependencies
                     ],
-                    "step": str(step_artifact),
+                    "step": str(step_artifact) if result_kind != "mesh" else None,
+                    "mesh_output": (
+                        str(mesh_artifact) if mesh_artifact is not None else None
+                    ),
                     "output": (
                         str(output_artifact)
                         if output_artifact is not None
                         else None
                     ),
                     "screenshot": str(screenshot),
+                    "drawing_svg": (
+                        str(drawing_svg) if drawing_svg is not None else None
+                    ),
                     "reference_image": (
                         str(reference_image) if reference_image is not None else None
                     ),
@@ -796,6 +1036,8 @@ def _run() -> None:
                     "turn_count": len(result.get("responses", [response])),
                     "assembly_evidence": assembly_evidence,
                     "analysis_evidence": analysis_evidence,
+                    "drawing_evidence": drawing_evidence,
+                    "mesh_evidence": mesh_evidence,
                     "shape_summary": _shape_summary(document),
                 }
                 print(

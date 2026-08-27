@@ -25,8 +25,7 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeDrawingDimensionSupport import drawing_selection_state
 from VibeCADNativeDrawingLeader import drawing_leader_defaults_state
 from VibeCADNativeDrawingLeaderSchema import (
-    DRAWING_ANNOTATION_CAPABILITY_NAME,
-    DRAWING_LEADER_OPERATIONS,
+    DRAWING_LEADER_CAPABILITY_NAME,
 )
 from VibeCADNativeDrawingLeaderState import (
     drawing_leader_owner_state,
@@ -229,20 +228,13 @@ def _human_leader(document, owner):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(DRAWING_ANNOTATION_CAPABILITY_NAME)
+    definition = registry.definition(DRAWING_LEADER_CAPABILITY_NAME)
     assert definition is not None
-    schema = definition.provider_schema(DRAWING_LEADER_OPERATIONS)
-    branches = schema["parameters"]["oneOf"]
-    assert [branch["properties"]["operation"]["const"] for branch in branches] == list(
-        DRAWING_LEADER_OPERATIONS
-    )
-    by_operation = {
-        branch["properties"]["operation"]["const"]: branch for branch in branches
-    }
-    create = by_operation["leader_line"]
+    schema = definition.provider_schema(("create",))
+    create = schema["parameters"]["oneOf"][0]
+    assert create["properties"]["operation"]["const"] == "create"
     assert create["properties"]["points_on_page_mm"]["minItems"] == 2
     assert create["properties"]["points_on_page_mm"]["maxItems"] == 64
-    assert by_operation["read_leader_defaults"]["required"] == ["operation"]
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert len(encoded.encode("utf-8")) < 10 * 1024
@@ -251,7 +243,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(DRAWING_ANNOTATION_CAPABILITY_NAME,),
+            tool_names=(DRAWING_LEADER_CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -262,17 +254,10 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
 
 
 def _arguments(page, owner, defaults: dict) -> dict:
-    owner_state = drawing_leader_owner_state(owner, page=page)
     return {
-        "operation": "leader_line",
-        "page": {
-            "object_name": page.Name,
-            "expected_state_sha256": drawing_page_state(page)["state_sha256"],
-        },
-        "owner": {
-            "object_name": owner.Name,
-            "expected_owner_state_sha256": owner_state["owner_state_sha256"],
-        },
+        "operation": "create",
+        "page": {"object_name": page.Name},
+        "owner": {"object_name": owner.Name},
         "points_on_page_mm": [
             {"x_mm": 82.0, "y_mm": 61.0},
             {"x_mm": 112.0, "y_mm": 88.0},
@@ -312,8 +297,8 @@ def _run() -> None:
             plan.operation_variant,
             plan.exact_target_type,
         ) == (
-            DRAWING_ANNOTATION_CAPABILITY_NAME,
-            "leader_line",
+            DRAWING_LEADER_CAPABILITY_NAME,
+            "create",
             "ExactDrawingPageOwnerPointsSymbolsBehaviorAndLineStyle",
         )
 
@@ -325,6 +310,14 @@ def _run() -> None:
         image_before_human = _page_image_sha256()
         human = _human_leader(document, owner)
         assert _page_image_sha256() != image_before_human
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(owner)
+        _events(20)
+        selection_before = _selection()
+        visibility_before = tuple(
+            bool(item.ViewObject.Visibility)
+            for item in (source, page, group, owner, human)
+        )
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -364,26 +357,15 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                DRAWING_ANNOTATION_CAPABILITY_NAME,
+                DRAWING_LEADER_CAPABILITY_NAME,
                 json.dumps(arguments, separators=(",", ":")),
                 f"native-drawing-leader-{call_index}",
             )
             assert response.get("ok") is succeeds, (response, debug_events[-1:])
             return response
 
-        Gui.Selection.clearSelection()
-        Gui.Selection.addSelection(owner)
-        selection_before = _selection()
-        visibility_before = tuple(
-            bool(item.ViewObject.Visibility)
-            for item in (source, page, group, owner, human)
-        )
         revision_before_defaults = state_store.current_revision(str(document.Uid))
-        defaults_response = call({"operation": "read_leader_defaults"})
-        defaults = {
-            name: defaults_response[name]
-            for name in ("symbols", "behavior", "line")
-        }
+        defaults = drawing_leader_defaults_state()
         assert defaults == drawing_leader_defaults_state()
         assert state_store.current_revision(str(document.Uid)) == revision_before_defaults
 
@@ -400,6 +382,12 @@ def _run() -> None:
         image_before_native = _page_image_sha256()
         response = call(arguments)
         _events(24)
+        current_page_state = drawing_page_state(page)
+        assert response["page"] == {
+            "object_name": current_page_state["object_name"],
+            "state_sha256": current_page_state["state_sha256"],
+            "view_count": current_page_state["view_count"],
+        }
         leader_name = response["leader"]["object_name"]
         leader = document.getObject(leader_name)
         assert leader is not None
@@ -524,7 +512,7 @@ def _run() -> None:
         }
 
         print(
-            "VIBECAD_NATIVE_DRAWING_LEADER_GUI_OK operations=2 "
+            "VIBECAD_NATIVE_DRAWING_LEADER_GUI_OK operations=1 "
             "human_oracle=true shared_host_builder=true projected_owner=true "
             "rotated_owner=true scaled_owner=true exact_page=true exact_owner=true "
             "absolute_points=true rendered_points=true auto_horizontal=true "
@@ -532,7 +520,7 @@ def _run() -> None:
             "tree=true history=true snapshot=true stale_page=true stale_owner=true "
             "invalid_geometry=true rollback=true undo=true redo=true reopen=true "
             "selection=true visibility=true closed_schema=true low_noise=true "
-            "native_no_task=true",
+            "provider_targets=true internal_state_guards=true native_no_task=true",
             flush=True,
         )
         exit_code = 0

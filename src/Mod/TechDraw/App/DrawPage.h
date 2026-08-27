@@ -153,6 +153,9 @@ protected:
 
 private:
     fastsignals::scoped_connection connectTimelineChanged;
+    fastsignals::scoped_connection connectFinishRestoreDocument;
+    void updateAllViewsAfterRestore();
+    void updateAllViewsImpl(bool reuseMatchingPartGeometry);
     int addViewImpl(App::DocumentObject* docObj, bool setPosition, bool evaluateFit);
     static const char* ProjectionTypeEnums[];
     bool nowUnsetting;

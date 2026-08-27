@@ -25,6 +25,7 @@ from VibeCADModelingSurface import (
     is_model_assembly_workbench,
     validate_surface_names,
 )
+from VibeCADProviderDrawingResult import provider_visible_drawing_readiness
 from VibeCADVibeScriptDomains import get_vibescript_pack
 
 
@@ -61,9 +62,9 @@ ANTHROPIC_STREAM_MAX_ATTEMPTS = 3
 
 VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical engineer for the user's live FreeCAD model.
 
-CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Meet explicit requirements; decide only ordinary details required for function. Ask only when an answer changes function or geometry. Build editable parametric geometry. Preserve existing identity and history unless replacement is requested; a correction changes only the named design. Search catalogs only for requested or required unspecified components; explicit dimensions are not catalog requests.
+CURRENT_USER_MESSAGE controls; RECENT_CONVERSATION_JSON resolves follow-ups. Meet explicit requirements; decide only details required for function. Ask only when an answer changes function or geometry. Build editable designs. Preserve existing identity and history unless replacement is requested; a correction changes only the named result.
 
-Use only exposed tools and exact returned state. Never invent names, references, revisions, or API members. Act decisively; do not revisit settled arithmetic. Resolve a failed operation before dependent work and never repeat an unchanged failure. Verify requested and function-critical geometry, interfaces, clearances, motion, manufacture, and appearance before claiming completion. Before claiming appearance is good, capture at least isometric, front, and top via core.set_view, fit (frame='all' or fit_all/set_isometric), and core.capture_view_screenshot; one random view is not enough. Pixels never invent dimensions, clearance, or fit; cite the view and tag presentation_only vs needs_measurement. If the next screenshot is unchanged (same faceting, clipping, or lighting), stop retrying that view; change tessellation, display, or section, or measure. Do not claim STEP, STL, or export quality from a screenshot. Aero mass, CL, hover power, and stability come from aero.solve / aero.inspect / the aero flight card, never from screenshots. Those numbers are not airworthy. Never claim work or verification not performed."""
+Use only exposed tools and exact returned state. Never invent names, references, revisions, or API members. Resolve a failed operation before dependent work and never repeat an unchanged failure. Verify requested and function-critical geometry, interfaces, clearances, motion, manufacture, and appearance before claiming completion. Never infer measurements from pixels. Never claim work or verification not performed."""
 
 
 ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS = """You compact one unfinished VibeCAD agent turn.
@@ -1099,7 +1100,10 @@ class CodexProvider(BaseProvider):
                 live_context = updated_context
             if _tool_runner_transition_requested(tool_runner):
                 transition_requested.set()
-            model_result = _provider_visible_tool_result(result)
+            model_result = _provider_visible_tool_result(
+                result,
+                tool_name=tool_name,
+            )
             state_after = _provider_state_after_tool(
                 updated_context,
                 result,
@@ -2655,34 +2659,81 @@ def _provider_state_after_tool(
     return result
 
 
-def _provider_compact_native_mutation_value(value: Any) -> Any:
+def _provider_compact_native_mutation_value(
+    value: Any,
+    *,
+    expose_state_hashes: bool,
+) -> Any:
     if isinstance(value, dict):
-        return {
-            key: _provider_compact_native_mutation_value(item)
+        visible = {
+            key: _provider_compact_native_mutation_value(
+                item,
+                expose_state_hashes=expose_state_hashes,
+            )
             for key, item in value.items()
             if key not in {"document_uid", "object_id", "receipt"}
-            and key != "state_sha256"
             and (
-                key == "expected_state_sha256"
-                or not str(key).endswith("_state_sha256")
+                (
+                    expose_state_hashes
+                    and key != "state_sha256"
+                    and (
+                        key == "expected_state_sha256"
+                        or not str(key).endswith("_state_sha256")
+                    )
+                )
+                or (
+                    not expose_state_hashes
+                    and not str(key).endswith("sha256")
+                )
             )
         }
+        if expose_state_hashes:
+            for key in ("projection_state_sha256",):
+                digest = value.get(key)
+                if isinstance(digest, str) and len(digest) == 64:
+                    visible[f"expected_{key}"] = digest
+            state_sha256 = value.get("state_sha256") or value.get(
+                "view_state_sha256"
+            )
+            if (
+                value.get("object_name")
+                and "expected_state_sha256" not in visible
+                and isinstance(state_sha256, str)
+                and len(state_sha256) == 64
+            ):
+                visible["expected_state_sha256"] = state_sha256
+        return visible
     if isinstance(value, (list, tuple)):
-        return [_provider_compact_native_mutation_value(item) for item in value]
+        return [
+            _provider_compact_native_mutation_value(
+                item,
+                expose_state_hashes=expose_state_hashes,
+            )
+            for item in value
+        ]
     return value
 
 
 def _provider_visible_native_mutation_result(
     result: dict[str, Any],
+    *,
+    capability: str,
 ) -> dict[str, Any]:
-    visible = _provider_compact_native_mutation_value(result)
+    visible = _provider_compact_native_mutation_value(
+        result,
+        expose_state_hashes=not str(capability).startswith("drawing."),
+    )
     feature = visible.get("feature")
     if isinstance(feature, dict) and visible.get("sources") == feature.get("sources"):
         visible.pop("sources", None)
     return visible
 
 
-def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+def _provider_visible_tool_result(
+    result: dict[str, Any],
+    *,
+    tool_name: str = "",
+) -> dict[str, Any]:
     """Return an exact normal result or an honest, bounded omission envelope.
 
     Authoring results are normally small and pass through unchanged. If a tool
@@ -2708,7 +2759,31 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     if native_result or (
         isinstance(receipt, dict) and str(receipt.get("capability") or "")
     ):
-        visible = _provider_visible_native_mutation_result(visible)
+        visible = _provider_visible_native_mutation_result(
+            visible,
+            capability=(
+                str(receipt.get("capability") or "")
+                if isinstance(receipt, dict)
+                else str(tool_name or "")
+            ),
+        )
+    job = visible.get("job")
+    if isinstance(job, dict) and isinstance(job.get("result"), dict):
+        nested_result = dict(job["result"])
+        nested_native = bool(nested_result.pop("_vibecad_native_result", False))
+        nested_receipt = nested_result.get("receipt")
+        if nested_native or (
+            isinstance(nested_receipt, dict)
+            and str(nested_receipt.get("capability") or "")
+        ):
+            visible_job = dict(job)
+            visible_job["result"] = _provider_visible_native_mutation_result(
+                nested_result,
+                capability=str(nested_receipt.get("capability") or "")
+                if isinstance(nested_receipt, dict)
+                else "",
+            )
+            visible["job"] = visible_job
     visible = _provider_hide_internal_program_ids(visible)
     if source_lifecycle:
         visible = _provider_visible_source_lifecycle_result(visible)
@@ -2728,6 +2803,8 @@ def _provider_visible_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         visible = _provider_visible_source_read_result(visible)
     elif isinstance(geometry_request, dict):
         visible = _provider_visible_geometry_read_result(visible, geometry_request)
+    if str(tool_name) == "drawing.page_readiness":
+        visible = provider_visible_drawing_readiness(visible)
     visible = _provider_compact_terminal_operation(visible)
     safe = _json_safe(visible)
     encoded = json.dumps(
@@ -4998,7 +5075,10 @@ def _anthropic_child_main(
                     )
                 )
                 visible_result = (
-                    _provider_visible_tool_result(result)
+                    _provider_visible_tool_result(
+                        result,
+                        tool_name=tool_name or "",
+                    )
                     if isinstance(result, dict)
                     else result
                 )

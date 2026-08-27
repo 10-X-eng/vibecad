@@ -21,6 +21,17 @@ try:
 except ImportError:
     Fem = None
 
+try:
+    import TechDraw  # noqa: F401 - registers optional TechDraw document types
+    import TechDrawGui  # noqa: F401 - registers TechDraw view providers
+except ImportError:
+    TechDraw = None
+
+try:
+    import Mesh
+except ImportError:
+    Mesh = None
+
 
 BROWSER_FOLDER_TYPE = 1002
 BROWSER_DETAIL_TYPE = 1003
@@ -116,6 +127,17 @@ def _snapshot_labels(snapshot):
         for child in snapshot[2]
         for label in _snapshot_labels(child)
     )
+
+
+def _icon_png(icon, size=16):
+    data = QtCore.QByteArray()
+    buffer = QtCore.QBuffer(data)
+    if not buffer.open(QtCore.QIODevice.WriteOnly):
+        raise RuntimeError("Could not open the icon comparison buffer")
+    if not icon.pixmap(size, size).save(buffer, "PNG"):
+        raise RuntimeError("Could not serialize the icon for comparison")
+    buffer.close()
+    return bytes(data)
 
 
 def _event_step(milliseconds=10):
@@ -677,9 +699,6 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertIsNone(
             _child(document_item, "Parameters", BROWSER_FOLDER_TYPE)
         )
-        self.assertIsNone(
-            _child(document_item, "Groups", BROWSER_FOLDER_TYPE)
-        )
 
         root_other = _child(document_item, "Other", BROWSER_FOLDER_TYPE)
         self.assertIsNotNone(root_other)
@@ -767,6 +786,101 @@ class TestModelTreeBrowser(unittest.TestCase):
             constraint.Label,
             solver.Label,
             loose_solver.Label,
+        ):
+            self.assertFalse(_snapshot_has_label(_snapshot(operations), label))
+            self.assertFalse(_snapshot_has_label(_snapshot(other), label))
+
+    @unittest.skipIf(TechDraw is None, "Requires TechDraw")
+    def test_drawings_folder_preserves_page_view_ownership_without_duplicates(self):
+        page = self.document.addObject("TechDraw::DrawPage", "DrawingPage")
+        page.Label = "Manufacturing Drawing"
+        _tag_timeline_role(page, "operation")
+
+        template = self.document.addObject(
+            "TechDraw::DrawSVGTemplate",
+            "DrawingTemplate",
+        )
+        template.Label = "A3 Template"
+        _tag_timeline_role(template, "resource")
+        page.Template = template
+
+        view = self.document.addObject("TechDraw::DrawViewPart", "DrawingView")
+        view.Label = "Base Front"
+        view.Source = [self.root_operation]
+        _tag_timeline_role(view, "operation")
+        page.addView(view)
+
+        dimension = self.document.addObject(
+            "TechDraw::DrawViewDimension",
+            "DrawingDimension",
+        )
+        dimension.Label = "Overall Width"
+        dimension.Type = "Distance"
+        dimension.References2D = [(view, "Edge1")]
+        _tag_timeline_role(dimension, "operation")
+        page.addView(dimension)
+
+        annotation = self.document.addObject(
+            "TechDraw::DrawRichAnno",
+            "DrawingAnnotation",
+        )
+        annotation.Label = "General Notes"
+        page.addView(annotation)
+        self.document.recompute()
+
+        def drawing_items():
+            _tree, document_item = self._tree_and_document_item()
+            drawings = _child(document_item, "Drawings", BROWSER_FOLDER_TYPE)
+            page_item = _child(drawings, page.Label)
+            view_item = _child(page_item, view.Label)
+            values = (document_item, drawings, page_item, view_item)
+            return values if all(value is not None for value in values) else None
+
+        observed = _wait_until(drawing_items)
+        self.assertIsNotNone(observed, self._snapshot())
+        document_item, drawings, page_item, view_item = observed
+        self.assertFalse(drawings.icon(0).isNull())
+
+        previous_visibility_icon = self.tree_parameters.GetBool(
+            "VisibilityIcon",
+            True,
+        )
+        try:
+            self.tree_parameters.SetBool("VisibilityIcon", False)
+            _event_step()
+            _tree, current_document_item = self._tree_and_document_item()
+            current_drawings = _child(
+                current_document_item,
+                "Drawings",
+                BROWSER_FOLDER_TYPE,
+            )
+            self.assertIsNotNone(current_drawings)
+            expected_icon = Gui.getIcon("preferences-techdraw")
+            self.assertIsNotNone(expected_icon)
+            self.assertFalse(expected_icon.isNull())
+            self.assertEqual(
+                _icon_png(current_drawings.icon(0)),
+                _icon_png(expected_icon),
+            )
+        finally:
+            self.tree_parameters.SetBool(
+                "VisibilityIcon",
+                previous_visibility_icon,
+            )
+            _event_step()
+
+        self.assertIsNotNone(_child(page_item, template.Label))
+        self.assertIsNotNone(_child(page_item, annotation.Label))
+        self.assertIsNotNone(_child(view_item, dimension.Label))
+
+        operations = _child(document_item, "Operations", BROWSER_FOLDER_TYPE)
+        other = _child(document_item, "Other", BROWSER_FOLDER_TYPE)
+        for label in (
+            page.Label,
+            template.Label,
+            view.Label,
+            dimension.Label,
+            annotation.Label,
         ):
             self.assertFalse(_snapshot_has_label(_snapshot(operations), label))
             self.assertFalse(_snapshot_has_label(_snapshot(other), label))
@@ -2660,6 +2774,104 @@ class TestModelTreeBrowser(unittest.TestCase):
                     and _primitive_counts(self.feature_body)[0] > 0
                 )
             )
+        )
+
+
+@unittest.skipIf(Mesh is None, "Requires Mesh")
+class TestMeshGroupBrowser(unittest.TestCase):
+    """Mesh history stays reachable through the document's Meshes group."""
+
+    def setUp(self):
+        if not App.GuiUp or Gui.getMainWindow() is None:
+            self.skipTest("Requires GUI")
+
+        self.tree_parameters = App.ParamGet(TREE_PARAMETER_PATH)
+        self.previous_browser_preference = self.tree_parameters.GetBool(
+            "OrganizeModelByType",
+            True,
+        )
+        self.tree_parameters.SetBool("OrganizeModelByType", True)
+        self.document = App.newDocument("MeshGroupBrowser")
+        self.document.Label = "Mesh Group Browser Test"
+        Gui.activateView("Gui::View3DInventor", True)
+
+    def tearDown(self):
+        if (
+            getattr(self, "document", None) is not None
+            and App.getDocument(self.document.Name) is not None
+        ):
+            App.closeDocument(self.document.Name)
+        self.tree_parameters.SetBool(
+            "OrganizeModelByType",
+            self.previous_browser_preference,
+        )
+        _event_step()
+
+    def _tree_and_document_item(self):
+        for tree in Gui.getMainWindow().findChildren(QtGui.QTreeWidget):
+            if not tree.isVisible() or not tree.viewport().isVisible():
+                continue
+            for index in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(index)
+                if not item.isHidden() and item.text(0) == self.document.Label:
+                    return tree, item
+        return None, None
+
+    def _snapshot(self):
+        _tree, document_item = self._tree_and_document_item()
+        return _snapshot(document_item) if document_item is not None else None
+
+    def test_mesh_history_object_is_presented_in_its_meshes_group(self):
+        meshes = self.document.addObject(
+            "App::DocumentObjectGroup",
+            "Meshes",
+        )
+        meshes.Label = "Meshes"
+        meshes.addProperty(
+            "App::PropertyString",
+            "VibeCADTreeRole",
+            "Tree",
+        )
+        meshes.VibeCADTreeRole = "meshes"
+
+        imported = self.document.addObject("Mesh::Feature", "ImportedMesh")
+        imported.Label = "Imported Mesh"
+        imported.Mesh = Mesh.Mesh(
+            [
+                (App.Vector(0, 0, 0), App.Vector(10, 0, 0), App.Vector(0, 10, 0)),
+            ]
+        )
+        _tag_timeline_role(imported, "operation")
+        meshes.addObject(imported)
+        self.document.recompute()
+
+        def mesh_items():
+            _tree, document_item = self._tree_and_document_item()
+            mesh_group = _child(document_item, "Meshes")
+            mesh_item = _child(mesh_group, imported.Label)
+            return (document_item, mesh_group, mesh_item) if mesh_item else None
+
+        observed = _wait_until(mesh_items)
+        self.assertIsNotNone(observed, self._snapshot())
+        document_item, mesh_group, mesh_item = observed
+        self.assertIs(mesh_item.parent(), mesh_group)
+
+        operations = _child(document_item, "Operations", BROWSER_FOLDER_TYPE)
+        self.assertTrue(
+            operations is None
+            or not _snapshot_has_label(_snapshot(operations), imported.Label)
+        )
+        groups = _child(document_item, "Groups", BROWSER_FOLDER_TYPE)
+        self.assertTrue(
+            groups is None
+            or not _snapshot_has_label(_snapshot(groups), meshes.Label)
+        )
+        self.assertEqual(
+            sum(
+                item.text(0) == imported.Label
+                for item in _visible_walk(document_item)
+            ),
+            1,
         )
 
 

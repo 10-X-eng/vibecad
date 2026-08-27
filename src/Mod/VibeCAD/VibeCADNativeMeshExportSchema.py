@@ -31,7 +31,15 @@ _STATE_SHA256 = {
     "maxLength": 64,
     "pattern": r"^[0-9a-f]{64}$",
 }
-_COUNT = {"type": "integer", "minimum": 0, "maximum": 2_147_483_647}
+_MESH_TARGET = {
+    "type": "object",
+    "properties": {
+        **_OBJECT_REF["properties"],
+        "expected_state_sha256": _STATE_SHA256,
+    },
+    "required": ["object_name", "expected_state_sha256"],
+    "additionalProperties": False,
+}
 _NONEMPTY_COUNT = {"type": "integer", "minimum": 1, "maximum": 2_147_483_647}
 
 
@@ -55,10 +63,7 @@ def mesh_export_capability_definition() -> NativeCapabilityDefinition:
                 parameters={
                     "type": "object",
                     "properties": {
-                        "target": _OBJECT_REF,
-                        "expected_state_sha256": _STATE_SHA256,
-                        "expected_point_count": _COUNT,
-                        "expected_facet_count": _COUNT,
+                        "target": _MESH_TARGET,
                         "format": {
                             "type": "string",
                             "enum": [
@@ -69,14 +74,12 @@ def mesh_export_capability_definition() -> NativeCapabilityDefinition:
                                 "off",
                                 "ply",
                                 "nastran",
+                                "3mf",
                             ],
                         },
                     },
                     "required": [
                         "target",
-                        "expected_state_sha256",
-                        "expected_point_count",
-                        "expected_facet_count",
                         "format",
                     ],
                     "additionalProperties": False,

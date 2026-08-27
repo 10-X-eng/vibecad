@@ -12,7 +12,6 @@ from VibeCADNativeCapabilityRegistry import (
 from VibeCADNativeDrawingDimensionSchema import (
     _AXONOMETRIC_MEASUREMENT,
     _EDGE,
-    _EXTENT_TARGET,
     _FACE,
     _LINEAR_REFERENCE,
     _OBJECT_NAME,
@@ -26,6 +25,28 @@ from VibeCADNativeDrawingDimensionSchema import (
 
 DRAWING_DIMENSION_REPAIR_CAPABILITY_NAME = "drawing.dimension_repair"
 DRAWING_DIMENSION_REPAIR_OPERATIONS = ("repair_references",)
+
+
+_EXTENT_TARGET = {
+    "oneOf": [
+        _closed(
+            {"scope": {"type": "string", "const": "whole_view"}},
+            ("scope",),
+        ),
+        _closed(
+            {
+                "scope": {"type": "string", "const": "edges"},
+                "edges": {
+                    "type": "array",
+                    "items": _EDGE,
+                    "minItems": 1,
+                    "maxItems": 64,
+                },
+            },
+            ("scope", "edges"),
+        ),
+    ]
+}
 
 
 def _replacement(kind: str, properties: dict, required: tuple[str, ...]) -> dict:
@@ -63,13 +84,19 @@ _REPLACEMENT = {
         ),
         _replacement(
             "radius",
-            {"edge": _EDGE, "allow_approximate": {"type": "boolean"}},
-            ("edge", "allow_approximate"),
+            {
+                "edge": _EDGE,
+                "allow_approximate": {"type": "boolean", "default": False},
+            },
+            ("edge",),
         ),
         _replacement(
             "diameter",
-            {"edge": _EDGE, "allow_approximate": {"type": "boolean"}},
-            ("edge", "allow_approximate"),
+            {
+                "edge": _EDGE,
+                "allow_approximate": {"type": "boolean", "default": False},
+            },
+            ("edge",),
         ),
         _replacement(
             "angle",

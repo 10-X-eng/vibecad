@@ -9,7 +9,6 @@ from typing import Any, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeDrawingRichAnnotation import (
-    drawing_rich_annotation_defaults_state,
     mutate_drawing_rich_annotation,
     prepare_drawing_rich_annotation,
     verify_drawing_rich_annotation,
@@ -23,9 +22,8 @@ _COMMON = frozenset(
     {"page", "owner", "label", "placement_on_page_mm", "width", "frame"}
 )
 _FIELDS = {
-    "create_plain_text": _COMMON | {"text"},
-    "create_rich_text": _COMMON | {"html"},
-    "read_defaults": frozenset(),
+    "plain_text": {"create": _COMMON | {"text"}},
+    "safe_html": {"create": _COMMON | {"html"}},
 }
 
 
@@ -40,15 +38,23 @@ class NativeDrawingRichAnnotationRuntime:
         arguments: Mapping[str, Any],
         *,
         ticket: NativeCallTicket,
+        content_kind: str,
     ) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _FIELDS)
+        if content_kind not in _FIELDS:
+            raise ValueError("content_kind is not supported")
+        normalized = dict(arguments)
+        normalized.setdefault("owner", "page")
+        normalized.setdefault("width", "automatic")
+        normalized.setdefault("frame", None)
+        _operation, values = strict_variant_arguments(
+            normalized,
+            _FIELDS[content_kind],
+        )
         context = self._context
         context.guard()
-        if operation == "read_defaults":
-            return drawing_rich_annotation_defaults_state()
         prepared = prepare_drawing_rich_annotation(
             context.document,
-            operation=operation,
+            operation=content_kind,
             values=values,
         )
         return run_immediate_mutation(

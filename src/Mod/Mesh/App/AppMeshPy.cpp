@@ -23,10 +23,19 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
+#include <numeric>
 
+#include <QByteArrayView>
+#include <QCryptographicHash>
+#include <QtEndian>
 
 #include <App/Application.h>
 #include <App/Document.h>
@@ -35,20 +44,28 @@
 #include <Base/Interpreter.h>
 #include <Base/PlacementPy.h>
 #include <Base/PyWrapParseTupleAndKeywords.h>
+#include <Base/Tools.h>
 #include <Base/VectorPy.h>
+#include <Base/ViewProj.h>
 #include "Core/Approximation.h"
+#include "Core/Algorithm.h"
+#include "Core/Curvature.h"
 #include "Core/Definitions.h"
 #include "Core/Evaluation.h"
 #include "Core/Iterator.h"
+#include "Core/Grid.h"
 #include "Core/MeshIO.h"
 #include "Core/MeshKernel.h"
 #include "WildMagic4/Wm4ContBox3.h"
 
 #include "Exporter.h"
+#include "FeatureMeshCurvature.h"
 #include "Importer.h"
 #include "Mesh.h"
+#include "MeshProperties.h"
 #include "MeshPy.h"
 #include "NativeInspection.h"
+#include "SegmentationTools.h"
 
 
 using namespace Mesh;
@@ -108,6 +125,51 @@ public:
             "inspectNativeFacets",
             &Module::inspectNativeFacets,
             "Read bounded exact facet geometry from a mesh without materializing all facets."
+        );
+        add_varargs_method(
+            "geometrySha256",
+            &Module::geometrySha256,
+            "Return the exact geometry and segment SHA-256 of a mesh."
+        );
+        add_varargs_method(
+            "propertyRevision",
+            &Module::propertyRevision,
+            "Return the current revision of a document-owned Mesh property."
+        );
+        add_varargs_method(
+            "snapshotWithSha256",
+            &Module::snapshotWithSha256,
+            "Return a thread-safe detached Mesh snapshot and its exact SHA-256."
+        );
+        add_varargs_method(
+            "projectedPolygonEdit",
+            &Module::projectedPolygonEdit,
+            "Apply a viewport-projected polygon cut or trim to a detached mesh."
+        );
+        add_varargs_method(
+            "detectCurvatureSegments",
+            &Module::detectCurvatureSegments,
+            "Detect facet segments on a detached mesh using curvature."
+        );
+        add_varargs_method(
+            "detectBestFitSegments",
+            &Module::detectBestFitSegments,
+            "Detect facet segments on a detached mesh using best-fit surfaces."
+        );
+        add_varargs_method(
+            "detectPlanarSegments",
+            &Module::detectPlanarSegments,
+            "Detect planar facet segments on a detached mesh."
+        );
+        add_varargs_method(
+            "curvatureArtifact",
+            &Module::curvatureArtifact,
+            "Compute exact per-vertex curvature into a compact binary artifact."
+        );
+        add_varargs_method(
+            "applyCurvatureArtifact",
+            &Module::applyCurvatureArtifact,
+            "Apply a validated curvature artifact to a retained Mesh::Curvature object."
         );
         add_varargs_method(
             "calculateEigenTransform",
@@ -185,6 +247,591 @@ private:
             result.setItem("sample_pairs", samples);
         }
         return result;
+    }
+
+    static std::vector<float> floatSequence(
+        PyObject* value,
+        const char* error,
+        std::size_t maximum = 7
+    )
+    {
+        if (value == Py_None) {
+            return {};
+        }
+        PyObject* sequence = PySequence_Fast(value, error);
+        if (!sequence) {
+            throw Py::Exception();
+        }
+        Py::Object owner(sequence, true);
+        const Py_ssize_t count = PySequence_Fast_GET_SIZE(sequence);
+        if (count < 1 || count > static_cast<Py_ssize_t>(maximum)) {
+            throw Py::ValueError(error);
+        }
+        std::vector<float> result;
+        result.reserve(static_cast<std::size_t>(count));
+        for (Py_ssize_t index = 0; index < count; ++index) {
+            const double number = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(sequence, index));
+            if (PyErr_Occurred() || !std::isfinite(number)) {
+                throw Py::ValueError(error);
+            }
+            result.push_back(static_cast<float>(number));
+        }
+        return result;
+    }
+
+    static Py::Object segmentResult(const std::vector<DetectedMeshSegment>& segments)
+    {
+        Py::List result;
+        for (const auto& segment : segments) {
+            Py::Dict value;
+            value.setItem("kind", Py::String(segment.kind));
+            Py::List facets;
+            for (const long facet : segment.facetIndices) {
+                facets.append(Py::Long(facet));
+            }
+            value.setItem("facet_indices", facets);
+            result.append(value);
+        }
+        return result;
+    }
+
+    static void hashUnsigned(QCryptographicHash& digest, std::uint64_t value)
+    {
+        const quint64 encoded = qToBigEndian(static_cast<quint64>(value));
+        digest.addData(QByteArrayView(reinterpret_cast<const char*>(&encoded), sizeof(encoded)));
+    }
+
+    static void hashDouble(QCryptographicHash& digest, double value)
+    {
+        hashUnsigned(digest, std::bit_cast<std::uint64_t>(value));
+    }
+
+    static QByteArray geometryDigest(const MeshObject& mesh)
+    {
+        QCryptographicHash digest(QCryptographicHash::Sha256);
+        const auto& kernel = mesh.getKernel();
+        hashUnsigned(digest, kernel.CountPoints());
+        hashUnsigned(digest, kernel.CountFacets());
+        for (MeshCore::PointIndex index = 0; index < kernel.CountPoints(); ++index) {
+            const Base::Vector3d point = mesh.getPoint(index);
+            hashDouble(digest, point.x);
+            hashDouble(digest, point.y);
+            hashDouble(digest, point.z);
+        }
+        for (const MeshCore::MeshFacet& facet : kernel.GetFacets()) {
+            hashUnsigned(digest, facet._aulPoints[0]);
+            hashUnsigned(digest, facet._aulPoints[1]);
+            hashUnsigned(digest, facet._aulPoints[2]);
+        }
+        hashUnsigned(digest, mesh.countSegments());
+        for (unsigned long index = 0; index < mesh.countSegments(); ++index) {
+            const auto& indices = mesh.getSegment(index).getIndices();
+            hashUnsigned(digest, indices.size());
+            for (const MeshCore::FacetIndex facetIndex : indices) {
+                hashUnsigned(digest, facetIndex);
+            }
+        }
+        return digest.result().toHex();
+    }
+
+    static constexpr std::array<char, 8> curvatureMagic {
+        'V', 'C', 'U', 'R', 'V', '0', '1', '\0'
+    };
+
+    static void writeLittleFloat(char*& output, float value)
+    {
+        const quint32 encoded = qToLittleEndian(std::bit_cast<quint32>(value));
+        std::memcpy(output, &encoded, sizeof(encoded));
+        output += sizeof(encoded);
+    }
+
+    static float readLittleFloat(const char*& input)
+    {
+        quint32 encoded {};
+        std::memcpy(&encoded, input, sizeof(encoded));
+        input += sizeof(encoded);
+        return std::bit_cast<float>(qFromLittleEndian(encoded));
+    }
+
+    Py::Object curvatureArtifact(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        if (!PyArg_ParseTuple(args.ptr(), "O!", &MeshPy::Type, &pythonMesh)) {
+            throw Py::Exception();
+        }
+        const auto* mesh = static_cast<MeshPy*>(pythonMesh)->getMeshObjectPtr();
+        std::vector<MeshCore::CurvatureInfo> samples;
+        {
+            Base::PyGILStateRelease release;
+            MeshCore::MeshCurvature curvature(mesh->getKernel());
+            curvature.ComputePerVertex();
+            samples = curvature.GetCurvature();
+        }
+        constexpr std::size_t headerBytes = 16;
+        constexpr std::size_t sampleBytes = 8 * sizeof(float);
+        if (samples.size() > (static_cast<std::size_t>(PY_SSIZE_T_MAX) - headerBytes)
+                / sampleBytes) {
+            throw Py::OverflowError("Curvature artifact exceeds the Python buffer limit");
+        }
+        const Py_ssize_t byteCount = static_cast<Py_ssize_t>(
+            headerBytes + samples.size() * sampleBytes
+        );
+        PyObject* bytes = PyBytes_FromStringAndSize(nullptr, byteCount);
+        if (!bytes) {
+            throw Py::Exception();
+        }
+        char* output = PyBytes_AS_STRING(bytes);
+        std::memcpy(output, curvatureMagic.data(), curvatureMagic.size());
+        output += curvatureMagic.size();
+        const quint64 encodedCount = qToLittleEndian(static_cast<quint64>(samples.size()));
+        std::memcpy(output, &encodedCount, sizeof(encodedCount));
+        output += sizeof(encodedCount);
+        for (const auto& sample : samples) {
+            writeLittleFloat(output, sample.fMaxCurvature);
+            writeLittleFloat(output, sample.fMinCurvature);
+            writeLittleFloat(output, sample.cMaxCurvDir.x);
+            writeLittleFloat(output, sample.cMaxCurvDir.y);
+            writeLittleFloat(output, sample.cMaxCurvDir.z);
+            writeLittleFloat(output, sample.cMinCurvDir.x);
+            writeLittleFloat(output, sample.cMinCurvDir.y);
+            writeLittleFloat(output, sample.cMinCurvDir.z);
+        }
+        return Py::Object(bytes, true);
+    }
+
+    Py::Object applyCurvatureArtifact(const Py::Tuple& args)
+    {
+        PyObject* pythonObject {};
+        PyObject* pythonArtifact {};
+        if (!PyArg_ParseTuple(args.ptr(), "OO", &pythonObject, &pythonArtifact)) {
+            throw Py::Exception();
+        }
+        if (!PyObject_TypeCheck(pythonObject, &App::DocumentObjectPy::Type)) {
+            throw Py::TypeError("result must be a Mesh::Curvature document object");
+        }
+        auto* object = static_cast<App::DocumentObjectPy*>(pythonObject)->getDocumentObjectPtr();
+        auto* result = freecad_cast<Mesh::Curvature*>(object);
+        if (!result) {
+            throw Py::TypeError("result must be a Mesh::Curvature document object");
+        }
+        if (!PyBytes_Check(pythonArtifact)) {
+            throw Py::TypeError("artifact must be exact curvature bytes");
+        }
+        const Py_ssize_t byteCount = PyBytes_GET_SIZE(pythonArtifact);
+        const char* input = PyBytes_AS_STRING(pythonArtifact);
+        constexpr Py_ssize_t headerBytes = 16;
+        constexpr Py_ssize_t sampleBytes = 8 * sizeof(float);
+        if (byteCount < headerBytes
+            || std::memcmp(input, curvatureMagic.data(), curvatureMagic.size()) != 0) {
+            throw Py::ValueError("The curvature artifact header is invalid");
+        }
+        input += curvatureMagic.size();
+        quint64 encodedCount {};
+        std::memcpy(&encodedCount, input, sizeof(encodedCount));
+        input += sizeof(encodedCount);
+        const quint64 count = qFromLittleEndian(encodedCount);
+        constexpr quint64 maximumBufferSamples = static_cast<quint64>(
+            (PY_SSIZE_T_MAX - headerBytes) / sampleBytes
+        );
+        if (count > maximumBufferSamples
+            || count > static_cast<quint64>(std::numeric_limits<int>::max())
+            || byteCount != headerBytes + static_cast<Py_ssize_t>(count) * sampleBytes) {
+            throw Py::ValueError("The curvature artifact size is invalid");
+        }
+        auto* source = freecad_cast<Mesh::Feature*>(result->Source.getValue());
+        if (!source || count != source->Mesh.getValue().countPoints()) {
+            throw Py::ValueError("The curvature artifact does not match its linked Mesh");
+        }
+        std::vector<Mesh::CurvatureInfo> samples;
+        samples.reserve(static_cast<std::size_t>(count));
+        for (quint64 index = 0; index < count; ++index) {
+            Mesh::CurvatureInfo sample;
+            sample.fMaxCurvature = readLittleFloat(input);
+            sample.fMinCurvature = readLittleFloat(input);
+            sample.cMaxCurvDir.x = readLittleFloat(input);
+            sample.cMaxCurvDir.y = readLittleFloat(input);
+            sample.cMaxCurvDir.z = readLittleFloat(input);
+            sample.cMinCurvDir.x = readLittleFloat(input);
+            sample.cMinCurvDir.y = readLittleFloat(input);
+            sample.cMinCurvDir.z = readLittleFloat(input);
+            if (!std::isfinite(sample.fMaxCurvature)
+                || !std::isfinite(sample.fMinCurvature)
+                || !std::isfinite(sample.cMaxCurvDir.x)
+                || !std::isfinite(sample.cMaxCurvDir.y)
+                || !std::isfinite(sample.cMaxCurvDir.z)
+                || !std::isfinite(sample.cMinCurvDir.x)
+                || !std::isfinite(sample.cMinCurvDir.y)
+                || !std::isfinite(sample.cMinCurvDir.z)) {
+                throw Py::ValueError("The curvature artifact contains a non-finite sample");
+            }
+            samples.push_back(sample);
+        }
+        result->CurvInfo.setValues(samples);
+        result->SampleCount.setValue(static_cast<int>(samples.size()));
+        return Py::None();
+    }
+
+    Py::Object geometrySha256(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        if (!PyArg_ParseTuple(args.ptr(), "O!", &MeshPy::Type, &pythonMesh)) {
+            throw Py::Exception();
+        }
+        const auto* mesh = static_cast<MeshPy*>(pythonMesh)->getMeshObjectPtr();
+        QByteArray digest;
+        {
+            Base::PyGILStateRelease release;
+            digest = geometryDigest(*mesh);
+        }
+        return Py::String(digest.toStdString());
+    }
+
+    Py::Object propertyRevision(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        if (!PyArg_ParseTuple(args.ptr(), "O!", &MeshPy::Type, &pythonMesh)) {
+            throw Py::Exception();
+        }
+        auto* mesh = static_cast<MeshPy*>(pythonMesh);
+        if (!mesh->parentProperty) {
+            throw Py::ValueError("mesh must belong to a document Mesh property");
+        }
+        return Py::Long(mesh->parentProperty->getGeometryRevision());
+    }
+
+    Py::Object snapshotWithSha256(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        if (!PyArg_ParseTuple(args.ptr(), "O!", &MeshPy::Type, &pythonMesh)) {
+            throw Py::Exception();
+        }
+        const auto* source = static_cast<MeshPy*>(pythonMesh)->getMeshObjectPtr();
+        std::unique_ptr<MeshObject> snapshot;
+        QByteArray digest;
+        {
+            Base::PyGILStateRelease release;
+            snapshot = source->snapshot();
+            digest = geometryDigest(*snapshot);
+        }
+        Py::Tuple result(2);
+        result.setItem(0, Py::asObject(new MeshPy(snapshot.release())));
+        result.setItem(1, Py::String(digest.toStdString()));
+        return result;
+    }
+
+    Py::Object projectedPolygonEdit(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        PyObject* pythonPolygon {};
+        PyObject* pythonMatrix {};
+        const char* action {};
+        PyObject* pythonRegions {};
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "O!OOsO",
+                &MeshPy::Type,
+                &pythonMesh,
+                &pythonPolygon,
+                &pythonMatrix,
+                &action,
+                &pythonRegions
+            )) {
+            throw Py::Exception();
+        }
+        if (!action || (strcmp(action, "cut") != 0 && strcmp(action, "trim") != 0)) {
+            throw Py::ValueError("action must be cut or trim");
+        }
+
+        PyObject* polygonSequence = PySequence_Fast(
+            pythonPolygon,
+            "polygon must contain at least three projected x/y points"
+        );
+        if (!polygonSequence) {
+            throw Py::Exception();
+        }
+        Py::Object polygonOwner(polygonSequence, true);
+        const Py_ssize_t pointCount = PySequence_Fast_GET_SIZE(polygonSequence);
+        if (pointCount < 3) {
+            throw Py::ValueError("polygon must contain at least three projected x/y points");
+        }
+        Base::Polygon2d polygon;
+        for (Py_ssize_t index = 0; index < pointCount; ++index) {
+            PyObject* point = PySequence_Fast(
+                PySequence_Fast_GET_ITEM(polygonSequence, index),
+                "every polygon point must contain projected x and y"
+            );
+            if (!point) {
+                throw Py::Exception();
+            }
+            Py::Object pointOwner(point, true);
+            if (PySequence_Fast_GET_SIZE(point) != 2) {
+                throw Py::ValueError("every polygon point must contain projected x and y");
+            }
+            const double x = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(point, 0));
+            const double y = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(point, 1));
+            if (PyErr_Occurred() || !std::isfinite(x) || !std::isfinite(y)) {
+                throw Py::ValueError("every polygon point must contain finite projected x and y");
+            }
+            polygon.Add(Base::Vector2d(x, y));
+        }
+
+        PyObject* matrixSequence = PySequence_Fast(
+            pythonMatrix,
+            "projection_matrix must contain 16 finite row-major values"
+        );
+        if (!matrixSequence) {
+            throw Py::Exception();
+        }
+        Py::Object matrixOwner(matrixSequence, true);
+        if (PySequence_Fast_GET_SIZE(matrixSequence) != 16) {
+            throw Py::ValueError("projection_matrix must contain 16 finite row-major values");
+        }
+        Base::Matrix4D matrix;
+        for (Py_ssize_t index = 0; index < 16; ++index) {
+            const double value = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(matrixSequence, index));
+            if (PyErr_Occurred() || !std::isfinite(value)) {
+                throw Py::ValueError("projection_matrix must contain 16 finite row-major values");
+            }
+            matrix[index / 4][index % 4] = value;
+        }
+
+        PyObject* regionSequence = PySequence_Fast(
+            pythonRegions,
+            "regions must contain inside, outside, or both"
+        );
+        if (!regionSequence) {
+            throw Py::Exception();
+        }
+        Py::Object regionOwner(regionSequence, true);
+        const Py_ssize_t regionCount = PySequence_Fast_GET_SIZE(regionSequence);
+        if (regionCount < 1 || regionCount > 2) {
+            throw Py::ValueError("regions must contain inside, outside, or both");
+        }
+        std::vector<MeshObject::CutType> regions;
+        regions.reserve(static_cast<std::size_t>(regionCount));
+        for (Py_ssize_t index = 0; index < regionCount; ++index) {
+            const char* region = PyUnicode_AsUTF8(PySequence_Fast_GET_ITEM(regionSequence, index));
+            if (!region) {
+                throw Py::Exception();
+            }
+            MeshObject::CutType type;
+            if (strcmp(region, "inside") == 0) {
+                type = MeshObject::INNER;
+            }
+            else if (strcmp(region, "outside") == 0) {
+                type = MeshObject::OUTER;
+            }
+            else {
+                throw Py::ValueError("regions must contain unique inside and/or outside values");
+            }
+            if (std::ranges::find(regions, type) != regions.end()) {
+                throw Py::ValueError("regions must contain unique inside and/or outside values");
+            }
+            regions.push_back(type);
+        }
+
+        const auto* source = static_cast<MeshPy*>(pythonMesh)->getMeshObjectPtr();
+        std::vector<std::unique_ptr<MeshObject>> outputs;
+        outputs.reserve(regions.size());
+        {
+            Base::PyGILStateRelease release;
+            const Base::ViewProjMatrix projection(matrix);
+            std::vector<MeshCore::FacetIndex> inside;
+            if (strcmp(action, "cut") == 0) {
+                MeshCore::MeshKernel kernel(source->getKernel());
+                kernel.Transform(source->getTransform());
+                MeshCore::MeshFacetGrid grid(kernel);
+                MeshCore::MeshAlgorithm algorithm(kernel);
+                algorithm.CheckFacets(grid, &projection, polygon, true, inside);
+                std::ranges::sort(inside);
+            }
+            for (const auto region : regions) {
+                auto output = std::make_unique<MeshObject>(*source);
+                if (strcmp(action, "cut") == 0) {
+                    if (region == MeshObject::INNER) {
+                        output->deleteFacets(inside);
+                    }
+                    else {
+                        std::vector<MeshCore::FacetIndex> outside(source->countFacets());
+                        std::iota(outside.begin(), outside.end(), MeshCore::FacetIndex {});
+                        std::vector<MeshCore::FacetIndex> removed;
+                        std::ranges::set_difference(outside, inside, std::back_inserter(removed));
+                        output->deleteFacets(removed);
+                    }
+                }
+                else {
+                    output->trim(polygon, projection, region);
+                }
+                outputs.push_back(std::move(output));
+            }
+        }
+        Py::List result;
+        for (auto& output : outputs) {
+            result.append(Py::asObject(new MeshPy(output.release())));
+        }
+        return result;
+    }
+
+    Py::Object detectCurvatureSegments(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        PyObject* pythonRequests {};
+        unsigned int smoothingSteps {};
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "O!OI",
+                &MeshPy::Type,
+                &pythonMesh,
+                &pythonRequests,
+                &smoothingSteps
+            )) {
+            throw Py::Exception();
+        }
+        PyObject* sequence = PySequence_Fast(
+            pythonRequests,
+            "requests must contain 1 to 4 typed curvature requests"
+        );
+        if (!sequence) {
+            throw Py::Exception();
+        }
+        Py::Object owner(sequence, true);
+        const Py_ssize_t count = PySequence_Fast_GET_SIZE(sequence);
+        if (count < 1 || count > 4 || smoothingSteps > 10000) {
+            throw Py::ValueError("Curvature segmentation settings exceed their limits");
+        }
+        std::vector<CurvatureSegmentRequest> requests;
+        requests.reserve(static_cast<std::size_t>(count));
+        for (Py_ssize_t index = 0; index < count; ++index) {
+            PyObject* tuple = PySequence_Fast_GET_ITEM(sequence, index);
+            if (!PyTuple_Check(tuple) || PyTuple_GET_SIZE(tuple) != 3) {
+                throw Py::TypeError(
+                    "Every curvature request must contain kind, minimum facets, and parameters"
+                );
+            }
+            const char* kind = PyUnicode_AsUTF8(PyTuple_GET_ITEM(tuple, 0));
+            const unsigned long minimum = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(tuple, 1));
+            if (!kind || PyErr_Occurred() || minimum < 1) {
+                throw Py::ValueError("Every curvature request needs a kind and minimum facets");
+            }
+            CurvatureSegmentKind parsedKind;
+            if (strcmp(kind, "Plane") == 0) {
+                parsedKind = CurvatureSegmentKind::Plane;
+            }
+            else if (strcmp(kind, "Cylinder") == 0) {
+                parsedKind = CurvatureSegmentKind::Cylinder;
+            }
+            else if (strcmp(kind, "Sphere") == 0) {
+                parsedKind = CurvatureSegmentKind::Sphere;
+            }
+            else if (strcmp(kind, "Freeform") == 0) {
+                parsedKind = CurvatureSegmentKind::Freeform;
+            }
+            else {
+                throw Py::ValueError("Curvature kind must be Plane, Cylinder, Sphere, or Freeform");
+            }
+            requests.push_back({
+                parsedKind,
+                minimum,
+                floatSequence(PyTuple_GET_ITEM(tuple, 2), "Invalid curvature parameters", 4),
+            });
+        }
+        const auto* mesh = static_cast<MeshPy*>(pythonMesh)->getMeshObjectPtr();
+        std::vector<DetectedMeshSegment> segments;
+        {
+            Base::PyGILStateRelease release;
+            segments = Mesh::detectCurvatureSegments(*mesh, requests, smoothingSteps);
+        }
+        return segmentResult(segments);
+    }
+
+    Py::Object detectBestFitSegments(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        PyObject* pythonRequests {};
+        if (!PyArg_ParseTuple(args.ptr(), "O!O", &MeshPy::Type, &pythonMesh, &pythonRequests)) {
+            throw Py::Exception();
+        }
+        PyObject* sequence = PySequence_Fast(
+            pythonRequests,
+            "requests must contain 1 to 3 typed best-fit requests"
+        );
+        if (!sequence) {
+            throw Py::Exception();
+        }
+        Py::Object owner(sequence, true);
+        const Py_ssize_t count = PySequence_Fast_GET_SIZE(sequence);
+        if (count < 1 || count > 3) {
+            throw Py::ValueError("Best-fit requests must contain 1 to 3 surfaces");
+        }
+        std::vector<BestFitSegmentRequest> requests;
+        requests.reserve(static_cast<std::size_t>(count));
+        for (Py_ssize_t index = 0; index < count; ++index) {
+            PyObject* tuple = PySequence_Fast_GET_ITEM(sequence, index);
+            if (!PyTuple_Check(tuple) || PyTuple_GET_SIZE(tuple) != 4) {
+                throw Py::TypeError(
+                    "Every best-fit request must contain kind, minimum facets, tolerance, and initial parameters"
+                );
+            }
+            const char* kind = PyUnicode_AsUTF8(PyTuple_GET_ITEM(tuple, 0));
+            const unsigned long minimum = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(tuple, 1));
+            const double tolerance = PyFloat_AsDouble(PyTuple_GET_ITEM(tuple, 2));
+            if (!kind || PyErr_Occurred() || minimum < 1 || !std::isfinite(tolerance)
+                || tolerance < 0.0) {
+                throw Py::ValueError("Every best-fit request needs valid typed settings");
+            }
+            requests.push_back({
+                kind,
+                minimum,
+                static_cast<float>(tolerance),
+                floatSequence(PyTuple_GET_ITEM(tuple, 3), "Invalid best-fit initial parameters"),
+            });
+        }
+        const auto* mesh = static_cast<MeshPy*>(pythonMesh)->getMeshObjectPtr();
+        std::vector<DetectedMeshSegment> segments;
+        {
+            Base::PyGILStateRelease release;
+            segments = Mesh::detectBestFitSegments(*mesh, requests);
+        }
+        return segmentResult(segments);
+    }
+
+    Py::Object detectPlanarSegments(const Py::Tuple& args)
+    {
+        PyObject* pythonMesh {};
+        unsigned long minimum {};
+        double curvatureTolerance {};
+        double distanceTolerance {};
+        unsigned int smoothingSteps {};
+        if (!PyArg_ParseTuple(
+                args.ptr(),
+                "O!kddI",
+                &MeshPy::Type,
+                &pythonMesh,
+                &minimum,
+                &curvatureTolerance,
+                &distanceTolerance,
+                &smoothingSteps
+            )) {
+            throw Py::Exception();
+        }
+        if (minimum < 1 || !std::isfinite(curvatureTolerance)
+            || !std::isfinite(distanceTolerance) || curvatureTolerance < 0.0
+            || distanceTolerance < 0.0 || smoothingSteps > 10000) {
+            throw Py::ValueError("Planar segmentation settings exceed their limits");
+        }
+        const auto* mesh = static_cast<MeshPy*>(pythonMesh)->getMeshObjectPtr();
+        std::vector<DetectedMeshSegment> segments;
+        {
+            Base::PyGILStateRelease release;
+            segments = Mesh::detectPlanarSegments(
+                *mesh,
+                minimum,
+                static_cast<float>(curvatureTolerance),
+                static_cast<float>(distanceTolerance),
+                smoothingSteps
+            );
+        }
+        return segmentResult(segments);
     }
 
     Py::Object evaluateNative(const Py::Tuple& args)
