@@ -306,6 +306,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyInspectBindings.py
     VibeCADNativeAssemblyInspectRuntime.py
     VibeCADNativeAssemblyInspectSchema.py
+    VibeCADNativeAssemblyIdentity.py
     VibeCADNativeAssemblyJointArguments.py
     VibeCADNativeAssemblyJointBindings.py
     VibeCADNativeAssemblyJointConnectors.py

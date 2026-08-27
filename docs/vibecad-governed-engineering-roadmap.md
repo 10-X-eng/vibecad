@@ -311,7 +311,7 @@ behavior while it waits for host persistence/workflows.
 | G5 — workflow DAG | H | **Partial** | The bounded durable DAG, scheduler, restart, cancellation, retry, and publish-once core is implemented; wire real G2 jobs/domain adapters and prove installed/runtime and real five-stage FEM acceptance. |
 | G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
 | G7 — Manufacture runtime integration | J | **Partial runtime integration** | Post, CAMotics, live GL simulation and retained simulation now create exact durable G2 Analysis/G5 workflow records and bounded X7 evidence while preserving owner-specific claim ceilings; A/B, stale/restart and authoritative installed closure remain. |
-| G8 — Assembly consolidation | K, L, N | **Partial evidence projection** | Existing native simulation-state hash and solver diagnostics project without a second graph; stable identities, interfaces, continuous motion, flexible/closed-loop/contact, fit and Part Design gates remain. |
+| G8 — Assembly consolidation | K, L, N | **Partial identity/evidence foundation** | New Native-authored assemblies, joint groups, occurrences, regular joints and published interfaces receive write-once persisted identities, while the existing simulation-state/solver projection remains; legacy migration, real reopen/rename proof, stable graph revision, expanded interfaces, continuous motion, flexible/closed-loop/contact, fit and Part Design gates remain. |
 | G9 — joint inference | M | **Design-ready** | Bounded interface extraction/classification, ranked compatibility evidence, explicit accept/reject, no direct authoritative mutation. |
 | G10 — assembly sequencing | O | **Design-ready** | Insertion/access/fastener/precedence model, bounded solver, collision/currentness evidence, sampled-versus-continuous verdicts. |
 | G11 — service/disassembly | P | **Blocked by G10** | Target/removal constraints, minimum-set objective, verified reverse sequence, uncertainty and service claim ceilings. |
@@ -732,8 +732,21 @@ the existing bounded `solver_diagnostics()` result. It preserves the native
 graph-state hash, counts, eligible-joint summaries and authored simulation
 summaries, exposes no mutation/solve/inference authority, leaves joint,
 sequence and service proposals empty, and fixes the claim ceiling at graph and
-sampled-motion evidence only. This is not persisted identity, interface,
-continuous-motion, flexible/closed-loop/contact or GUI closure.
+sampled-motion evidence only. This projection alone is not stable persisted
+graph identity, expanded-interface, continuous-motion,
+flexible/closed-loop/contact, or GUI closure.
+
+The first persisted-identity seam is implemented in
+`VibeCADNativeAssemblyIdentity.py`. Existing owning mutations assign one
+versioned UUID to each newly authored Assembly, joint group, occurrence,
+regular joint, and published interface LCS; repeat assignment is idempotent,
+kind changes and partial/malformed identity records are rejected, and connector
+identity is derived from the persisted joint plus its explicit side. The
+simulation-state projection includes these identities when present without
+silently mutating legacy documents during reads. This is an additive identity
+foundation, not save/reopen closure: legacy migration, source-replacement
+semantics, interface-aware graph revision, and real rename/reorder/reopen tests
+remain required before stable graph identity is claimed.
 
 ### G9 — propose-only joint inference
 

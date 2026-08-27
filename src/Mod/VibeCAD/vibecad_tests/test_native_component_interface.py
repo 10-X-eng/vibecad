@@ -30,12 +30,19 @@ class _Object:
         self.Label = name
         self.TypeId = type_id
         self.PropertiesList = []
+        self._editor_modes = {}
 
     def isDerivedFrom(self, expected: str) -> bool:
         return self.TypeId == expected or (
             self.TypeId == "PartDesign::CoordinateSystem"
             and expected == "App::LocalCoordinateSystem"
         )
+
+    def addProperty(self, _type_id, name, _group, _description):
+        self.PropertiesList.append(name)
+
+    def setEditorMode(self, name, mode):
+        self._editor_modes[name] = mode
 
 
 class _Document:

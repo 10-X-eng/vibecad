@@ -12,6 +12,7 @@ from VibeCADNativeAssemblyState import (
     read_active_assembly,
     same_assembly,
 )
+from VibeCADNativeAssemblyIdentity import assign_persistent_identity
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import (
     NativeObjectRef,
@@ -157,6 +158,8 @@ def create_assembly(
         raise NativeAssemblyStructureError(
             "The Assembly did not create its native Joints group."
         )
+    assign_persistent_identity(assembly, "assembly")
+    assign_persistent_identity(joint_group, "joint_group")
     changed = (object_identity(parent),) if parent is not None else ()
     return NativeMutationDraft(
         value={

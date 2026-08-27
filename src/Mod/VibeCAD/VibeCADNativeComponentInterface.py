@@ -9,6 +9,7 @@ import json
 from typing import Any, Callable, Mapping
 
 from VibeCADNativeMutation import NativeMutationDraft, NativeMutationError
+from VibeCADNativeAssemblyIdentity import assign_persistent_identity
 from VibeCADNativeTargets import (
     NativeObjectRef,
     document_uid,
@@ -270,6 +271,7 @@ def publish_component_interface(
             allowed_joints=current.allowed_joints,
             compatibility=current.compatibility,
         )
+        assign_persistent_identity(lcs, "interface")
     except NativeComponentInterfaceError:
         raise
     except (ReferenceContractError, RuntimeError, TypeError, ValueError) as exc:

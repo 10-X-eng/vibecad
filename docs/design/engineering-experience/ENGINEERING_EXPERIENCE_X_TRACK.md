@@ -69,13 +69,17 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
   `simulation_evidence_only` ceiling. It cannot choose destinations, replace
   the Native simulation owners, mutate the Job, or certify manufacturability.
   Qt pages, A/B behavior, stale/restart and installed acceptance remain.
-- **X8: partial Assembly evidence foundation.** The Native Assembly simulation
-  state hash and bounded solver diagnostics can now be projected without
+- **X8: partial Assembly identity/evidence foundation.** New Native-authored
+  assemblies, joint groups, occurrences, regular joints and published
+  interface LCS objects receive write-once versioned UUIDs, with connector
+  identity derived from joint identity and explicit side. The Native Assembly
+  simulation state hash and bounded solver diagnostics can be projected without
   creating a second graph. Counts, eligible joints and authored simulation
   summaries remain source-owned; continuous-motion certification is false and
   joint, sequence and service proposal collections are deliberately empty.
-  Stable persisted interface/occurrence identity, flexible/closed-loop/contact
-  evidence, Qt overlays and save/reopen/currentness acceptance remain.
+  Legacy identity migration, real save/reopen/rename/reorder/source-replacement
+  proof, flexible/closed-loop/contact evidence, continuous-motion certification,
+  Qt overlays and currentness acceptance remain.
 - **Compatibility boundary after X8 foundation:** the multi-variant
   `manufacture.post` wire contract retains its explicit `operation`
   discriminator for singleton provider projections, while single-purpose

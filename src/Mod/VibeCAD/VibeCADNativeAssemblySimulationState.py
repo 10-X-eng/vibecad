@@ -21,6 +21,10 @@ from VibeCADNativeAssemblyJointGraph import (
     active_regular_joints,
     require_joint_group,
 )
+from VibeCADNativeAssemblyIdentity import (
+    connector_persistent_identity,
+    read_persistent_identity,
+)
 from VibeCADNativeAssemblySolveState import (
     AssemblySolverState,
     capture_assembly_solver_state,
@@ -107,6 +111,11 @@ class AssemblySimulationState:
             "eligible_joints": [
                 {
                     **object_reference(item.obj),
+                    **(
+                        {"persistent_identity": identity}
+                        if (identity := read_persistent_identity(item.obj)) is not None
+                        else {}
+                    ),
                     "label": str(getattr(item.obj, "Label", "") or "")[:160],
                     "joint_type": item.joint_type,
                     "supported_motion_types": list(item.supported_motion_types),
@@ -180,7 +189,12 @@ def _identity_record(obj: Any) -> dict[str, Any]:
         raise NativeAssemblySimulationStateError(
             "An Assembly simulation object has an invalid identity."
         )
-    return {**result, "object_id": object_id}
+    persistent = read_persistent_identity(obj)
+    return {
+        **result,
+        "object_id": object_id,
+        **({"persistent_identity": persistent} if persistent is not None else {}),
+    }
 
 
 def _reference_record(reference: Any) -> dict[str, Any] | None:
@@ -243,7 +257,7 @@ def _joint_property_record(joint: Any) -> dict[str, Any]:
 
 
 def _joint_record(joint: Any) -> dict[str, Any]:
-    return {
+    result = {
         **_identity_record(joint),
         "label": str(getattr(joint, "Label", "") or "")[:256],
         "joint_type": str(getattr(joint, "JointType", "") or "")[:64],
@@ -253,6 +267,12 @@ def _joint_record(joint: Any) -> dict[str, Any]:
         "offset2": _placement_record(getattr(joint, "Offset2", None)),
         "properties": _joint_property_record(joint),
     }
+    if read_persistent_identity(joint) is not None:
+        result["connector_identities"] = [
+            connector_persistent_identity(joint, 1),
+            connector_persistent_identity(joint, 2),
+        ]
+    return result
 
 
 def _supported_motion_types(joint_type: str) -> tuple[str, ...]:
