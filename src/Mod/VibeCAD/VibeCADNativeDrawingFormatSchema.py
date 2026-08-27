@@ -62,6 +62,7 @@ def drawing_format_capability_definition() -> NativeCapabilityDefinition:
             "dimension or the literal text of one exact Balloon."
         ),
         primary_classification="mutation",
+        preserve_operation_branches=True,
         variants=(
             NativeCapabilityVariant(
                 operation="set_dimension_format",

@@ -139,6 +139,7 @@ def drawing_dimension_text_capability_definition() -> NativeCapabilityDefinition
             "atomically to one or more hash-pinned Drawing dimensions."
         ),
         primary_classification="mutation",
+        preserve_operation_branches=True,
         variants=tuple(
             NativeCapabilityVariant(
                 operation=operation,

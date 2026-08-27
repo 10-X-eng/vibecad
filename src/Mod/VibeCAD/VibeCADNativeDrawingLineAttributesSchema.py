@@ -166,6 +166,7 @@ def drawing_line_attributes_capability_definition() -> NativeCapabilityDefinitio
             "edges, cosmetic edges, and centerlines in one Drawing view."
         ),
         primary_classification="mutation",
+        preserve_operation_branches=True,
         variants=(
             NativeCapabilityVariant(
                 operation="set",

@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import json
 
-from VibeCADNativeCapabilityRegistry import NativeCapabilityRegistry
+from VibeCADNativeCapabilityRegistry import (
+    NativeCapabilityRegistry,
+    provider_visible_native_schema,
+)
 from VibeCADNativeDrawingLineDefaultsBindings import (
     register_drawing_line_defaults_capability_implementation,
 )
@@ -25,14 +28,17 @@ def test_line_defaults_schema_is_one_argument_free_read() -> None:
 
     assert DRAWING_LINE_DEFAULTS_OPERATIONS == ("read_current",)
     assert definition.primary_classification == "read"
+    assert definition.preserve_operation_discriminator is False
     assert len(branches) == 1
     branch = branches[0]
-    assert branch == {
+    assert branch["type"] == "object"
+    assert branch["properties"]["operation"]["const"] == "read_current"
+    assert branch["required"] == []
+    assert branch["additionalProperties"] is False
+    assert provider_visible_native_schema(schema)["parameters"]["oneOf"][0] == {
         "type": "object",
-        "properties": {
-            "operation": {"type": "string", "const": "read_current"}
-        },
-        "required": ["operation"],
+        "properties": {},
+        "required": [],
         "additionalProperties": False,
     }
 

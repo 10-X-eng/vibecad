@@ -121,6 +121,7 @@ def drawing_thread_representation_capability_definition() -> NativeCapabilityDef
             "span, line weights, color, visibility, and persistent geometry."
         ),
         primary_classification="mutation",
+        preserve_operation_branches=True,
         variants=(
             NativeCapabilityVariant(
                 operation="create_hole_side",
