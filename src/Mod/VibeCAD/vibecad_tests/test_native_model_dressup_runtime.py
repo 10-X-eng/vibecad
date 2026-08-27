@@ -112,6 +112,10 @@ def _arguments():
     }
 
 
+def _preview_arguments(arguments):
+    return {**arguments, "stage": "propose", "preview_id": ""}
+
+
 def _chamfer_arguments():
     arguments = _arguments()
     arguments["operation"] = "chamfer"
@@ -195,8 +199,20 @@ def test_dressup_runtime_preflights_then_routes_one_immediate_mutation(monkeypat
         lambda context, **kwargs: captured.update(kwargs) or {"routed": True},
     )
 
+    preview_arguments = _preview_arguments(_arguments())
+    preview = runtime.mutate_dressup(
+        preview_arguments,
+        ticket=state.begin_call(document.Uid, "model.dressup"),
+    )
+    assert preview["applied"] is False
+    assert observed == []
+    assert captured == {}
     result = runtime.mutate_dressup(
-        _arguments(),
+        {
+            **preview_arguments,
+            "stage": "apply",
+            "preview_id": preview["preview_id"],
+        },
         ticket=state.begin_call(document.Uid, "model.dressup"),
     )
 
@@ -253,8 +269,20 @@ def test_chamfer_runtime_preflights_then_routes_one_immediate_mutation(
         lambda context, **kwargs: captured.update(kwargs) or {"routed": True},
     )
 
+    preview_arguments = _preview_arguments(_chamfer_arguments())
+    preview = runtime.mutate_dressup(
+        preview_arguments,
+        ticket=state.begin_call(document.Uid, "model.dressup"),
+    )
+    assert preview["applied"] is False
+    assert observed == []
+    assert captured == {}
     result = runtime.mutate_dressup(
-        _chamfer_arguments(),
+        {
+            **preview_arguments,
+            "stage": "apply",
+            "preview_id": preview["preview_id"],
+        },
         ticket=state.begin_call(document.Uid, "model.dressup"),
     )
 
@@ -417,8 +445,18 @@ def test_duplicate_body_preflight_never_starts_transaction(monkeypatch) -> None:
         lambda *_args, **_kwargs: pytest.fail("mutation started"),
     )
 
+    preview_arguments = _preview_arguments(arguments)
+    preview = runtime.mutate_dressup(
+        preview_arguments,
+        ticket=state.begin_call(document.Uid, "model.dressup"),
+    )
+    assert preview["applied"] is False
     with pytest.raises(NativeModelError, match="repeat the same target Body"):
         runtime.mutate_dressup(
-            arguments,
+            {
+                **preview_arguments,
+                "stage": "apply",
+                "preview_id": preview["preview_id"],
+            },
             ticket=state.begin_call(document.Uid, "model.dressup"),
         )

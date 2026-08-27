@@ -188,6 +188,10 @@ def _scale_arguments(*, non_uniform: bool = False) -> dict[str, object]:
     }
 
 
+def _preview_arguments(arguments: dict[str, object]) -> dict[str, object]:
+    return {**arguments, "stage": "propose", "preview_id": ""}
+
+
 def test_transform_runtime_routes_scale_with_exact_preflight(monkeypatch) -> None:
     runtime, state, document = _runtime()
     observed = {}
@@ -216,8 +220,20 @@ def test_transform_runtime_routes_scale_with_exact_preflight(monkeypatch) -> Non
         lambda context, **kwargs: captured.update(kwargs) or {"routed": True},
     )
 
+    preview_arguments = _preview_arguments(_scale_arguments(non_uniform=True))
+    preview = runtime.mutate_transform(
+        preview_arguments,
+        ticket=state.begin_call(document.Uid, "model.transform"),
+    )
+    assert preview["applied"] is False
+    assert observed == {}
+    assert captured == {}
     result = runtime.mutate_transform(
-        _scale_arguments(non_uniform=True),
+        {
+            **preview_arguments,
+            "stage": "apply",
+            "preview_id": preview["preview_id"],
+        },
         ticket=state.begin_call(document.Uid, "model.transform"),
     )
 

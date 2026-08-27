@@ -71,6 +71,10 @@ def _combine_arguments():
     }
 
 
+def _preview_arguments(arguments):
+    return {**arguments, "stage": "propose", "preview_id": ""}
+
+
 def _split_arguments():
     return {
         "operation": "split",
@@ -180,8 +184,20 @@ def test_design_combine_runtime_preflights_before_one_immediate_mutation(
         lambda context, **kwargs: captured.update(kwargs) or {"routed": True},
     )
 
+    preview_arguments = _preview_arguments(_combine_arguments())
+    preview = runtime.mutate_boolean(
+        preview_arguments,
+        ticket=state.begin_call(document.Uid, "model.boolean"),
+    )
+    assert preview["applied"] is False
+    assert captured == {}
+    apply_arguments = {
+        **preview_arguments,
+        "stage": "apply",
+        "preview_id": preview["preview_id"],
+    }
     result = runtime.mutate_boolean(
-        _combine_arguments(),
+        apply_arguments,
         ticket=state.begin_call(document.Uid, "model.boolean"),
     )
 
@@ -409,11 +425,23 @@ def test_design_combine_definition_failures_precede_preflight_and_transaction(
         lambda *_args, **_kwargs: pytest.fail("mutation started"),
     )
 
-    with pytest.raises(NativeModelError, match=message):
-        runtime.mutate_boolean(
-            arguments,
+    def mutate_until_rejected() -> None:
+        preview_arguments = _preview_arguments(arguments)
+        preview = runtime.mutate_boolean(
+            preview_arguments,
             ticket=state.begin_call(document.Uid, "model.boolean"),
         )
+        runtime.mutate_boolean(
+            {
+                **preview_arguments,
+                "stage": "apply",
+                "preview_id": preview["preview_id"],
+            },
+            ticket=state.begin_call(document.Uid, "model.boolean"),
+        )
+
+    with pytest.raises(NativeModelError, match=message):
+        mutate_until_rejected()
 
 
 @pytest.mark.parametrize(
