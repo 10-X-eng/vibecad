@@ -44,8 +44,12 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
   projects exact semantic, unit, association, component and available-range
   evidence without importing FreeCAD, reading/copying field arrays or taking
   presentation ownership; unknown units and ranges remain explicitly
-  unavailable. Remaining X1 work is the broader contextual Qt shell and
-  field/result views,
+  unavailable. The first EVS-03 browser slice now enumerates every real result
+  accepted by the existing Native Analyze result-state owner, renders those
+  bounded descriptors in the existing Analyze shell, preserves all flow
+  controls, and labels governance axes unavailable when no G1 envelope exists.
+  Remaining X1 work is attachment of exact G1 envelopes/status axes, richer
+  result-card interaction and owner-routed non-flow presentation,
   accessibility coverage, and installed application acceptance.
 - **X2: partial durable-view foundation.** The installed facade projects
   validated G2 records, attempts, artifacts, currentness evaluations,
@@ -120,6 +124,9 @@ workbench or authority layer. The implementation sequence is:
 3. **EVS-03 — unified Results browser (X1/X2).** Put field selection, result
    cards, independent status axes, bounded metrics and provenance into the
    shared shell while retaining all current OpenFOAM controls and behavior.
+   **Partial:** real field discovery/cards and explicit unavailable-state
+   rendering are present; G1 envelope attachment, metrics/provenance views and
+   installed GUI acceptance remain.
 4. **EVS-04 — owner-routed viewport presentation (X1).** Route structural and
    flow field selection through the existing FEM/VTK/domain presentation
    owners. Never copy field arrays or create a second scientific renderer.

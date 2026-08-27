@@ -134,6 +134,19 @@ def _run() -> None:
         )
         assert (
             widget.results_browser.findChild(
+                QtWidgets.QGroupBox, "VibeCADEngineeringFieldsCard"
+            )
+            is not None
+        )
+        assert (
+            widget.results_browser.findChild(
+                QtWidgets.QGroupBox, "VibeCADEngineeringStatusCard"
+            )
+            is not None
+        )
+        assert widget.results_browser.field_combo.count() == 0
+        assert (
+            widget.results_browser.findChild(
                 QtWidgets.QGroupBox, "VibeCADEngineeringPerformanceCard"
             )
             is not None
@@ -282,6 +295,20 @@ def _run() -> None:
         widget.refresh()
         _events(12)
         assert widget.results_browser.result_combo.count() == 2
+        assert widget.results_browser.field_combo.count() >= 2
+        assert widget.results_browser.field_table.topLevelItemCount() >= 2
+        field_units = {
+            widget.results_browser.field_table.topLevelItem(index).text(3)
+            for index in range(
+                widget.results_browser.field_table.topLevelItemCount()
+            )
+        }
+        assert "Pa" in field_units
+        assert "m/s" in field_units
+        assert all(
+            label.text() == "Unavailable"
+            for label in widget.results_browser.status_labels.values()
+        )
         assert widget.results_browser.upstream_combo.count() == 2
         assert widget.results_browser.downstream_combo.count() == 2
         assert widget.results_browser.flow_boundary_combo.count() == 2

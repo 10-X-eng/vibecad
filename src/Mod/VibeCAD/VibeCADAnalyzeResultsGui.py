@@ -11,7 +11,8 @@ import FreeCADGui as Gui
 from PySide import QtCore, QtWidgets
 
 from VibeCADNativeAnalyzeFlowPresentation import present_flow_result
-from VibeCADNativeAnalyzeResultState import openfoam_flow_summary_state
+from VibeCADNativeAnalyzeResultState import result_state
+from VibeCADEngineeringFieldAdapters import presentation_from_result_state
 
 
 def _vector_text(values: Any) -> str:
@@ -27,6 +28,8 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self.setProperty("vibeEngineeringSurface", True)
         self.setAccessibleName("Engineering results")
         self._document = None
+        self._states: dict[str, dict[str, Any]] = {}
+        self._presentations: dict[str, Any] = {}
         self._summaries: dict[str, dict[str, Any]] = {}
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -41,6 +44,45 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self.summary_label.setAccessibleName("Selected engineering result summary")
         self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
+
+        fields = QtWidgets.QGroupBox("Fields")
+        fields.setObjectName("VibeCADEngineeringFieldsCard")
+        fields.setProperty("vibeResultCard", True)
+        fields_layout = QtWidgets.QVBoxLayout(fields)
+        self.field_combo = QtWidgets.QComboBox()
+        self.field_combo.setObjectName("VibeCADEngineeringFieldSelector")
+        self.field_combo.setAccessibleName("Engineering result field")
+        fields_layout.addWidget(self.field_combo)
+        self.field_table = QtWidgets.QTreeWidget()
+        self.field_table.setObjectName("VibeCADEngineeringFieldCards")
+        self.field_table.setAccessibleName("Available engineering result fields")
+        self.field_table.setHeaderLabels(
+            ("Field", "Minimum", "Maximum", "Unit", "Location", "Type")
+        )
+        self.field_table.setRootIsDecorated(False)
+        self.field_table.setAlternatingRowColors(True)
+        self.field_table.setMinimumHeight(120)
+        self.field_table.currentItemChanged.connect(self._field_item_changed)
+        fields_layout.addWidget(self.field_table)
+        self.show_field_button = QtWidgets.QPushButton("Show Selected Field")
+        self.show_field_button.setObjectName("VibeCADEngineeringShowField")
+        self.show_field_button.clicked.connect(self._show_selected_field)
+        fields_layout.addWidget(self.show_field_button)
+        layout.addWidget(fields)
+
+        status = QtWidgets.QGroupBox("Governed State")
+        status.setObjectName("VibeCADEngineeringStatusCard")
+        status.setProperty("vibeResultCard", True)
+        status_layout = QtWidgets.QFormLayout(status)
+        self.status_labels = {}
+        for axis in ("Execution", "Verification", "Currentness", "Publication"):
+            label = QtWidgets.QLabel("Unavailable")
+            label.setObjectName(f"VibeCADEngineering{axis}State")
+            label.setProperty("vibeGovernanceRole", "historical")
+            label.setAccessibleName(f"{axis} state")
+            self.status_labels[axis.lower()] = label
+            status_layout.addRow(axis, label)
+        layout.addWidget(status)
 
         self.boundary_table = QtWidgets.QTreeWidget()
         self.boundary_table.setObjectName("VibeCADAnalyzeFlowBoundaries")
@@ -134,26 +176,80 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         self.measure_button.setEnabled(enabled)
         self.compare_button.setEnabled(enabled and len(self._summaries) >= 2)
 
+    @staticmethod
+    def _field_number(value: Any) -> str:
+        return "Unavailable" if value is None else f"{float(value):.6g}"
+
+    def _field_item_changed(self, current: Any, _previous: Any) -> None:
+        if current is None:
+            return
+        field_id = str(current.data(0, QtCore.Qt.UserRole) or "")
+        index = self.field_combo.findData(field_id)
+        if index >= 0:
+            self.field_combo.setCurrentIndex(index)
+
+    def _render_engineering(self, name: str) -> None:
+        self.field_combo.clear()
+        self.field_table.clear()
+        presentation = self._presentations.get(name)
+        if presentation is None:
+            self.show_field_button.setEnabled(False)
+            return
+        for field in presentation.fields:
+            self.field_combo.addItem(field.label, field.field_id)
+            item = QtWidgets.QTreeWidgetItem(
+                (
+                    field.label,
+                    self._field_number(field.minimum),
+                    self._field_number(field.maximum),
+                    field.unit or "Unavailable",
+                    field.association.title(),
+                    field.presentation.title(),
+                )
+            )
+            item.setData(0, QtCore.Qt.UserRole, field.field_id)
+            item.setToolTip(0, field.semantic)
+            self.field_table.addTopLevelItem(item)
+        for column in range(self.field_table.columnCount()):
+            self.field_table.resizeColumnToContents(column)
+        if self.field_table.topLevelItemCount():
+            self.field_table.setCurrentItem(self.field_table.topLevelItem(0))
+        self.show_field_button.setEnabled(name in self._summaries)
+
     def refresh(self, document: Any, analysis: Any) -> None:
         previous = str(self.result_combo.currentData() or "")
         previous_candidate = str(self.compare_result_combo.currentData() or "")
         self._document = document
+        self._states = {}
+        self._presentations = {}
         self._summaries = {}
         if document is not None and analysis is not None:
             for member in tuple(getattr(analysis, "Group", ()) or ()):
                 try:
-                    summary = openfoam_flow_summary_state(member)
+                    state = result_state(member)
                 except Exception:
                     continue
-                if summary is not None:
-                    self._summaries[str(member.Name)] = summary
+                name = str(member.Name)
+                try:
+                    presentation = presentation_from_result_state(
+                        state, title=str(member.Label)
+                    )
+                except Exception:
+                    continue
+                self._states[name] = state
+                self._presentations[name] = presentation
+                summary = state.get("flow")
+                if isinstance(summary, dict):
+                    self._summaries[name] = summary
         self.result_combo.blockSignals(True)
         self.compare_result_combo.blockSignals(True)
         self.result_combo.clear()
         self.compare_result_combo.clear()
-        for name in self._summaries:
+        for name in self._states:
             result = document.getObject(name)
             self.result_combo.addItem(str(result.Label), name)
+        for name in self._summaries:
+            result = document.getObject(name)
             self.compare_result_combo.addItem(str(result.Label), name)
         index = self.result_combo.findData(previous)
         if index >= 0:
@@ -174,6 +270,9 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
 
     def _render(self, _index: int = -1) -> None:
         _result, summary = self._selected()
+        name = str(self.result_combo.currentData() or "")
+        state = self._states.get(name)
+        self._render_engineering(name)
         self.boundary_table.clear()
         previous_boundaries = (
             str(self.upstream_combo.currentData() or ""),
@@ -188,8 +287,18 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
             combo.clear()
         self.performance_label.clear()
         self.comparison_label.clear()
-        if summary is None:
+        if state is None:
             self.summary_label.setText("Run a study to view results.")
+            self._set_enabled(False)
+            return
+        if summary is None:
+            field_count = len(self._presentations[name].fields)
+            self.summary_label.setText(
+                f"{state.get('result_kind', 'Engineering')} result · "
+                f"{field_count} available field{'s' if field_count != 1 else ''} · "
+                "governed execution, verification, currentness and publication "
+                "state unavailable"
+            )
             self._set_enabled(False)
             return
         pressure = summary["pressure_range_pa"]
@@ -383,3 +492,25 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
                 "Flow Results",
                 str(exc),
             )
+
+    def _show_selected_field(self) -> None:
+        field_id = str(self.field_combo.currentData() or "")
+        presentation = self._presentations.get(
+            str(self.result_combo.currentData() or "")
+        )
+        if presentation is None:
+            return
+        selected = next(
+            (field for field in presentation.fields if field.field_id == field_id),
+            None,
+        )
+        if selected is None:
+            return
+        flow_field = {
+            "pressure": "pressure",
+            "velocity.vector": "velocity",
+            "velocity.magnitude": "velocity",
+            "turbulence.kinetic_energy": "turbulent_kinetic_energy",
+        }.get(selected.semantic)
+        if flow_field is not None:
+            self._show_field(flow_field)

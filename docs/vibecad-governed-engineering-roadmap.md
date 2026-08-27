@@ -1064,6 +1064,16 @@ source-tree and facade-registration tests cover the contract; configured
 build/install-tree execution remains a packaging acceptance gate rather than a
 claimed result of this slice.
 
+The first EVS-03 slice generalizes the existing Analyze result selector from
+OpenFOAM-only discovery to every live legacy FEM or VTK result accepted by the
+Native Analyze result-state owner. It renders bounded field cards with exact
+available ranges, units, association and presentation type, retains all current
+flow controls, and leaves execution/verification/currentness/publication visibly
+unavailable when no G1 envelope is attached. Generic selection invokes only the
+existing flow presentation owner when supported; it does not yet route legacy
+FEM/VTK selection, attach common provenance/metrics or prove installed GUI
+behavior. EVS-03 and EVS-04 therefore remain partial.
+
 The shared shell may be designed early, but no durable activity, workflow,
 candidate, interface, sequence, service, or Robot behavior is faked ahead of
 its dependency. Exact owners, initial files, visual examples, and acceptance
@@ -1244,10 +1254,11 @@ Keep the first changes small, reversible, and source-bound:
    FEM, VTK and OpenFOAM adapters, explicit facade packaging registration and
    focused contract coverage are present. Actual configured build/install-tree
    execution remains a packaging acceptance gate.
-3. **EVS-03 and EVS-04 / X1 results and presentation — next:** add real result cards,
-   field selection and independent execution/verification/currentness/
-   publication state, then route selection through existing viewport
-   presentation owners.
+3. **EVS-03 and EVS-04 / X1 results and presentation — partial/next:** real
+   cross-result field discovery/cards are present and unsupported governance
+   axes remain explicitly unavailable. Next attach exact G1 envelopes,
+   metrics/provenance and route legacy FEM/VTK selection through existing
+   viewport presentation owners.
 4. **EVS-05 and EVS-06 / X1 scientific view controls:** add truthful legends,
    validated colormaps, deformation and scoped Technical/Analysis presets as
    presentation state only.
