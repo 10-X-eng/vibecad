@@ -76,23 +76,35 @@ class EngineeringFieldProjection:
     semantic: str
     association: str
     components: int
-    unit: str
-    minimum: float
-    maximum: float
+    unit: str | None
+    minimum: float | None
+    maximum: float | None
     presentation: str
     default_color_map: str
 
     def __post_init__(self) -> None:
         for field in ("field_id", "label", "semantic"):
             object.__setattr__(self, field, _text(getattr(self, field), field))
-        object.__setattr__(self, "unit", _text(self.unit, "unit", MAX_UNIT_LENGTH))
+        if self.unit is not None:
+            object.__setattr__(
+                self, "unit", _text(self.unit, "unit", MAX_UNIT_LENGTH)
+            )
         if self.association not in ASSOCIATIONS:
             raise AnalysisContractError("Unknown field association.")
         if type(self.components) is not int or not 1 <= self.components <= 16:
             raise AnalysisContractError("Field components are outside the bounded range.")
-        object.__setattr__(self, "minimum", _number(self.minimum, "minimum"))
-        object.__setattr__(self, "maximum", _number(self.maximum, "maximum"))
-        if self.minimum > self.maximum:
+        if (self.minimum is None) != (self.maximum is None):
+            raise AnalysisContractError(
+                "Field minimum and maximum must both be known or both be unavailable."
+            )
+        if self.minimum is not None:
+            object.__setattr__(self, "minimum", _number(self.minimum, "minimum"))
+            object.__setattr__(self, "maximum", _number(self.maximum, "maximum"))
+        if (
+            self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
             raise AnalysisContractError("Field minimum cannot exceed maximum.")
         if self.presentation not in PRESENTATIONS:
             raise AnalysisContractError("Unknown field presentation.")

@@ -46,17 +46,19 @@ RESULT_TARGET = {
 
 
 _LEGACY_STATS = {
-    "DisplacementVectors": ("displacement", 6, 7),
-    "DisplacementLengths": ("displacement_magnitude", 6, 7),
-    "vonMises": ("von_mises_stress", 8, 9),
-    "PrincipalMax": ("maximum_principal_stress", 10, 11),
-    "PrincipalMed": ("middle_principal_stress", 12, 13),
-    "PrincipalMin": ("minimum_principal_stress", 14, 15),
-    "MaxShear": ("maximum_shear_stress", 16, 17),
-    "Peeq": ("equivalent_plastic_strain", 18, 19),
-    "Temperature": ("temperature", 20, 21),
-    "MassFlowRate": ("mass_flow_rate", 22, 23),
-    "NetworkPressure": ("network_pressure", 24, 25),
+    # Units match Fem's authoritative mechanical-result presentation. An empty
+    # unit is represented as unavailable instead of inventing a convention.
+    "DisplacementVectors": ("displacement", 6, 7, "mm"),
+    "DisplacementLengths": ("displacement_magnitude", 6, 7, "mm"),
+    "vonMises": ("von_mises_stress", 8, 9, "MPa"),
+    "PrincipalMax": ("maximum_principal_stress", 10, 11, "MPa"),
+    "PrincipalMed": ("middle_principal_stress", 12, 13, "MPa"),
+    "PrincipalMin": ("minimum_principal_stress", 14, 15, "MPa"),
+    "MaxShear": ("maximum_shear_stress", 16, 17, "MPa"),
+    "Peeq": ("equivalent_plastic_strain", 18, 19, None),
+    "Temperature": ("temperature", 20, 21, "K"),
+    "MassFlowRate": ("mass_flow_rate", 22, 23, "kg/s"),
+    "NetworkPressure": ("network_pressure", 24, 25, "MPa"),
 }
 
 
@@ -196,8 +198,8 @@ def _legacy_fields(obj: Any, *, include_ranges: bool) -> list[dict[str, Any]]:
             continue
         if count <= 0:
             continue
-        semantic, lower_index, upper_index = _LEGACY_STATS.get(
-            str(property_name), (str(property_name), -1, -1)
+        semantic, lower_index, upper_index, unit = _LEGACY_STATS.get(
+            str(property_name), (str(property_name), -1, -1, None)
         )
         item = {
             "name": str(property_name),
@@ -205,6 +207,8 @@ def _legacy_fields(obj: Any, *, include_ranges: bool) -> list[dict[str, Any]]:
             "components": 3 if "VectorList" in property_type else 1,
             "value_count": int(count),
         }
+        if unit is not None:
+            item["unit"] = unit
         if include_ranges and 0 <= lower_index < upper_index < len(stats):
             lower = _finite(stats[lower_index])
             upper = _finite(stats[upper_index])

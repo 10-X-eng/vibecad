@@ -229,8 +229,11 @@ def _run() -> None:
         assert legacy_state["timeline_owner_chain"] == [solver.Name]
         legacy_fields = {field["name"]: field for field in legacy_state["fields"]}
         assert legacy_fields["DisplacementLengths"]["range"] == [0.0, 12.0]
+        assert legacy_fields["DisplacementLengths"]["unit"] == "mm"
         assert legacy_fields["vonMises"]["range"] == [15.0, 45.0]
+        assert legacy_fields["vonMises"]["unit"] == "MPa"
         assert legacy_fields["Temperature"]["range"] == [300.0, 360.0]
+        assert legacy_fields["Temperature"]["unit"] == "K"
 
         pipeline_reference = result_reference_state(pipeline)
         post = dispatcher.call(

@@ -15,6 +15,7 @@ set(VibeCAD_Scripts
     VibeCADAnalysisWorkflow.py
     VibeCADEngineeringContracts.py
     VibeCADEngineeringExperience.py
+    VibeCADEngineeringFieldAdapters.py
     VibeCADGovernedOptimization.py
     VibeCADHostSurfaceAuthority.py
     VibeCADAnalyzeStudyGui.py

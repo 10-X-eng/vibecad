@@ -39,8 +39,13 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
   FEM, Aero, Manufacture, Assembly and Robot. EVS-01 now gives the existing
   Analyze Results browser an accessible Engineering-shell identity and matching
   light/dark result-card styling while retaining every existing OpenFOAM
-  control and presentation route. Remaining X1 work is real domain result
-  adapters, the broader contextual Qt shell and field/result views,
+  control and presentation route. EVS-02 now adds an installed, bounded adapter
+  facade over the existing legacy FEM, VTK and OpenFOAM metadata readers. It
+  projects exact semantic, unit, association, component and available-range
+  evidence without importing FreeCAD, reading/copying field arrays or taking
+  presentation ownership; unknown units and ranges remain explicitly
+  unavailable. Remaining X1 work is the broader contextual Qt shell and
+  field/result views,
   accessibility coverage, and installed application acceptance.
 - **X2: partial durable-view foundation.** The installed facade projects
   validated G2 records, attempts, artifacts, currentness evaluations,
@@ -108,7 +113,10 @@ workbench or authority layer. The implementation sequence is:
    field descriptors and adapters over the existing legacy FEM, VTK and
    OpenFOAM state readers. Preserve domain payloads and arrays with their
    owners. Prove semantic, unit, association, component and range mapping with
-   structural, flow and thermal fixtures plus installed imports.
+   structural, flow and thermal fixtures plus installed imports. **Implemented
+   as a bounded contract slice:** source-tree tests and explicit CMake/facade
+   registration are present; an actual configured build/install-tree run
+   remains part of repository packaging acceptance.
 3. **EVS-03 — unified Results browser (X1/X2).** Put field selection, result
    cards, independent status axes, bounded metrics and provenance into the
    shared shell while retaining all current OpenFOAM controls and behavior.

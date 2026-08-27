@@ -1043,7 +1043,7 @@ currentness, publication and restart records; G5 summarizes exact workflow
 nodes and attempts; and G6 pairs persisted candidates with the owning store's
 precomputed ranking while keeping mutation proposals inert. None may mutate,
 execute, recover, schedule, rank, select, publish or export. These foundations
-do not close their X milestones: real adapters, Qt views, GUI/accessibility,
+do not close their X milestones: broader Qt views, GUI/accessibility,
 fault/restart scenarios and installed application acceptance remain.
 
 The first EVS-01 slice styles the existing Analyze Results browser as the
@@ -1052,6 +1052,17 @@ its result selector, pressure/velocity/turbulence presentation, passage
 measurement and flow-comparison routes intact. This is a presentation-only X1
 increment; it does not yet provide the cross-domain shell, field adapters,
 durable activity UI or installed GUI acceptance required for X1/X2 closure.
+
+EVS-02 adds `tool_impl/engineering_field_adapters.py` behind the explicitly
+installed `VibeCADEngineeringFieldAdapters.py` facade. It consumes only bounded
+metadata already emitted by the legacy FEM, VTK and OpenFOAM owners and projects
+semantic, unit, association, component and available-range descriptors. Legacy
+units come from the authoritative Fem mechanical-result presentation; unknown
+units/ranges remain unavailable. It neither imports FreeCAD nor reads/copies
+large arrays, renders fields or changes presentation ownership. Focused
+source-tree and facade-registration tests cover the contract; configured
+build/install-tree execution remains a packaging acceptance gate rather than a
+claimed result of this slice.
 
 The shared shell may be designed early, but no durable activity, workflow,
 candidate, interface, sequence, service, or Robot behavior is faked ahead of
@@ -1226,14 +1237,14 @@ Stop the affected tranche and resolve explicitly if:
 
 Keep the first changes small, reversible, and source-bound:
 
-1. **EVS-01 / X1 shell:** extend the existing themes and land the inert,
-   Analyze-hosted Engineering shell without moving or removing current FEM,
-   VTK or OpenFOAM behavior.
-2. **EVS-02 / X1 field registry:** adapt real legacy FEM, VTK and OpenFOAM
-   metadata into bounded canonical field descriptors with semantic, unit,
-   association, components and range; retain arrays and physics payloads with
-   their owners.
-3. **EVS-03 and EVS-04 / X1 results and presentation:** add real result cards,
+1. **EVS-01 / X1 shell — implemented:** the inert Analyze-hosted Engineering
+   shell and both theme surfaces are present without moving or removing current
+   FEM, VTK or OpenFOAM behavior. Real installed GUI acceptance remains.
+2. **EVS-02 / X1 field registry — implemented contract slice:** bounded legacy
+   FEM, VTK and OpenFOAM adapters, explicit facade packaging registration and
+   focused contract coverage are present. Actual configured build/install-tree
+   execution remains a packaging acceptance gate.
+3. **EVS-03 and EVS-04 / X1 results and presentation — next:** add real result cards,
    field selection and independent execution/verification/currentness/
    publication state, then route selection through existing viewport
    presentation owners.

@@ -24,6 +24,7 @@ PUBLIC_GOVERNED_RUNTIME_MODULES = (
     "VibeCADAnalysisPublication.py",
     "VibeCADEngineeringContracts.py",
     "VibeCADEngineeringExperience.py",
+    "VibeCADEngineeringFieldAdapters.py",
     "VibeCADNativeAuthorityPolicy.py",
     "VibeCADAnalysisWorkflow.py",
     "VibeCADGovernedOptimization.py",

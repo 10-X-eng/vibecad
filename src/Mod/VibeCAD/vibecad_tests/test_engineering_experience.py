@@ -170,6 +170,21 @@ def test_field_contract_rejects_invalid_ranges_colormaps_and_nonfinite_values():
         PresentationMetric("m", "Metric", float("nan"), "Pa")
 
 
+def test_field_contract_preserves_explicitly_unavailable_metadata():
+    field = EngineeringFieldProjection(
+        "unknown", "Unknown", "domain.unknown", "cell", 4,
+        None, None, None, "vector", "viridis",
+    )
+    assert field.to_dict()["unit"] is None
+    assert field.to_dict()["minimum"] is None
+    assert field.to_dict()["maximum"] is None
+    with pytest.raises(AnalysisContractError, match="both be known"):
+        EngineeringFieldProjection(
+            "partial", "Partial", "domain.partial", "point", 1,
+            None, 0, None, "scalar", "viridis",
+        )
+
+
 def test_duplicate_and_unbounded_projection_items_are_refused():
     metric = PresentationMetric("m", "Metric", 1, "Pa")
     with pytest.raises(AnalysisContractError, match="unique"):
