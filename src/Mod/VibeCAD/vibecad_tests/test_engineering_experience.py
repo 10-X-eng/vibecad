@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from VibeCADAnalysisContracts import AnalysisContractError
+from VibeCADAnalysisContracts import AnalysisContractError, CanonicalJson
 from VibeCADAnalysisPersistence import AnalysisMetadataStore, new_job_record
 from VibeCADAnalysisWorkflow import (
     WorkflowDefinition,
@@ -29,6 +29,7 @@ from VibeCADEngineeringExperience import (
     EngineeringFieldProjection,
     EngineeringFieldViewState,
     PresentationMetric,
+    compare_domain_presentations,
     governance_role,
     project_analysis_activity,
     project_assembly_state,
@@ -140,6 +141,41 @@ def test_scientific_color_map_is_not_derived_from_governance_role():
     assert projected["fields"][0]["default_color_map"] == "turbo"
     assert projected["axes"]["verification"]["role"] == "negative"
     assert "turbo" not in {axis["role"] for axis in projected["axes"].values()}
+
+
+def test_domain_comparison_requires_exact_identity_and_matching_semantics():
+    baseline = DomainPresentation(
+        "Baseline",
+        (PresentationMetric("pressure_drop", "Pressure Drop", 10.0, "Pa", "difference"),),
+        (EngineeringFieldProjection(
+            "stress-a", "Stress", "stress.von_mises", "point", 1, "Pa",
+            1.0, 8.0, "scalar", "turbo",
+        ),),
+        CanonicalJson.from_value({"source_state_sha256": "a" * 64}),
+    )
+    candidate = DomainPresentation(
+        "Candidate",
+        (PresentationMetric("pressure_drop", "Pressure Drop", 12.5, "Pa", "difference"),),
+        (EngineeringFieldProjection(
+            "stress-b", "Stress", "stress.von_mises", "point", 1, "Pa",
+            2.0, 11.0, "scalar", "turbo",
+        ),),
+        CanonicalJson.from_value({"source_state_sha256": "b" * 64}),
+    )
+
+    comparison = compare_domain_presentations(baseline, candidate)
+
+    assert comparison["metric_differences"][0]["delta"] == 2.5
+    assert comparison["field_extrema_differences"][0]["minimum_delta"] == 1.0
+    assert comparison["field_extrema_differences"][0]["maximum_delta"] == 3.0
+    assert comparison["pointwise_field_differences_available"] is False
+    assert set(comparison["authority"].values()) == {False}
+    unidentified = replace(
+        candidate,
+        extension=CanonicalJson.from_value({"source_state_sha256": "missing"}),
+    )
+    with pytest.raises(AnalysisContractError, match="exact source-state"):
+        compare_domain_presentations(baseline, unidentified)
 
 
 @pytest.mark.parametrize("axis,value,role", (

@@ -260,6 +260,93 @@ class DomainPresentation:
         object.__setattr__(self, "fields", fields)
 
 
+def compare_domain_presentations(
+    baseline: DomainPresentation,
+    candidate: DomainPresentation,
+) -> dict[str, Any]:
+    """Compare only exact normalized metrics and field extrema; never arrays."""
+
+    if not isinstance(baseline, DomainPresentation) or not isinstance(
+        candidate, DomainPresentation
+    ):
+        raise TypeError("baseline and candidate must be DomainPresentation values")
+    baseline_extension = baseline.extension.to_value()
+    candidate_extension = candidate.extension.to_value()
+    baseline_sha = str(baseline_extension.get("source_state_sha256") or "")
+    candidate_sha = str(candidate_extension.get("source_state_sha256") or "")
+    for digest in (baseline_sha, candidate_sha):
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise AnalysisContractError(
+                "Result comparison requires exact source-state SHA-256 identities."
+            )
+
+    candidate_metrics = {metric.metric_id: metric for metric in candidate.metrics}
+    metrics = []
+    for metric in baseline.metrics:
+        other = candidate_metrics.get(metric.metric_id)
+        if other is None or (metric.unit, metric.qualifier) != (
+            other.unit,
+            other.qualifier,
+        ):
+            continue
+        metrics.append({
+            "metric_id": metric.metric_id,
+            "label": metric.label,
+            "unit": metric.unit,
+            "qualifier": metric.qualifier,
+            "baseline": metric.value,
+            "candidate": other.value,
+            "delta": other.value - metric.value,
+        })
+
+    def field_key(field: EngineeringFieldProjection) -> tuple[Any, ...]:
+        return (
+            field.semantic,
+            field.association,
+            field.components,
+            field.unit,
+            field.presentation,
+        )
+
+    candidate_fields = {field_key(field): field for field in candidate.fields}
+    fields = []
+    for field in baseline.fields:
+        other = candidate_fields.get(field_key(field))
+        if (
+            other is None
+            or field.minimum is None
+            or field.maximum is None
+            or other.minimum is None
+            or other.maximum is None
+        ):
+            continue
+        fields.append({
+            "semantic": field.semantic,
+            "label": field.label,
+            "association": field.association,
+            "components": field.components,
+            "unit": field.unit,
+            "presentation": field.presentation,
+            "baseline_minimum": field.minimum,
+            "candidate_minimum": other.minimum,
+            "minimum_delta": other.minimum - field.minimum,
+            "baseline_maximum": field.maximum,
+            "candidate_maximum": other.maximum,
+            "maximum_delta": other.maximum - field.maximum,
+            "pointwise_difference_available": False,
+        })
+    value = {
+        **_inert("domain_presentation_comparison"),
+        "baseline": {"title": baseline.title, "source_state_sha256": baseline_sha},
+        "candidate": {"title": candidate.title, "source_state_sha256": candidate_sha},
+        "metric_differences": metrics,
+        "field_extrema_differences": fields,
+        "pointwise_field_differences_available": False,
+        "comparison_count": len(metrics) + len(fields),
+    }
+    return CanonicalJson.from_value(value).to_value()
+
+
 def governance_role(axis: str, value: str) -> str:
     """Return a semantic status role; never a scientific field color."""
 

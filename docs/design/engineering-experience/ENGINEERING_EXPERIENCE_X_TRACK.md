@@ -175,6 +175,12 @@ workbench or authority layer. The implementation sequence is:
 9. **EVS-09 — result comparison (X6).** Present baseline/candidate metrics and
    field differences only when exact comparable sources and the owning
    ranking/result contracts exist; selection and publication remain gated.
+   **Partial exact-source comparison:** the Analyze shell now compares normalized
+   metrics only when IDs, units and qualifiers match, and field extrema only
+   when semantic, association, components, units and presentation match. Both
+   owner-state SHA-256 identities are required. Pointwise differences remain
+   explicitly unavailable until a shared mesh/array owner exists; optimization
+   ranking integration and installed GUI acceptance remain.
 
 EVS-01 through EVS-09 are individually reviewable and must retain compatibility
 with the existing Analyze UI. X3/X4, X7 and X8-X12 continue in parallel or

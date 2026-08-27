@@ -175,6 +175,13 @@ def _run() -> None:
         assert widget.results_browser.activity_table.topLevelItemCount() == 1
         assert (
             widget.results_browser.findChild(
+                QtWidgets.QGroupBox, "VibeCADEngineeringResultComparisonCard"
+            )
+            is not None
+        )
+        assert widget.results_browser.engineering_compare_combo.count() == 0
+        assert (
+            widget.results_browser.findChild(
                 QtWidgets.QGroupBox, "VibeCADEngineeringPerformanceCard"
             )
             is not None
@@ -323,6 +330,12 @@ def _run() -> None:
         widget.refresh()
         _events(12)
         assert widget.results_browser.result_combo.count() == 2
+        assert widget.results_browser.engineering_compare_combo.count() == 2
+        assert (
+            widget.results_browser.engineering_comparison_table.topLevelItemCount()
+            >= 1
+        )
+        assert "extrema-only" in widget.results_browser.engineering_comparison_note.text()
         assert widget.results_browser.field_combo.count() >= 2
         assert widget.results_browser.field_table.topLevelItemCount() >= 2
         assert widget.results_browser.show_field_button.isEnabled()

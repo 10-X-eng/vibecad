@@ -18,6 +18,7 @@ from VibeCADEngineeringChartSeries import (
 )
 from VibeCADEngineeringActivity import discover_engineering_activity
 from VibeCADEngineeringFieldAdapters import presentation_from_result_state
+from VibeCADEngineeringExperience import compare_domain_presentations
 
 
 def _vector_text(values: Any) -> str:
@@ -195,7 +196,34 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         performance_layout.addRow(self.performance_label)
         layout.addWidget(performance)
 
-        comparison = QtWidgets.QGroupBox("Compare Flow")
+        engineering_comparison = QtWidgets.QGroupBox("Compare Results")
+        engineering_comparison.setObjectName("VibeCADEngineeringResultComparisonCard")
+        engineering_comparison.setProperty("vibeResultCard", True)
+        engineering_comparison_layout = QtWidgets.QVBoxLayout(engineering_comparison)
+        self.engineering_compare_combo = QtWidgets.QComboBox()
+        self.engineering_compare_combo.setObjectName(
+            "VibeCADEngineeringComparisonCandidate"
+        )
+        self.engineering_compare_combo.currentIndexChanged.connect(
+            self._render_engineering_comparison
+        )
+        engineering_comparison_layout.addWidget(self.engineering_compare_combo)
+        self.engineering_comparison_table = QtWidgets.QTreeWidget()
+        self.engineering_comparison_table.setObjectName(
+            "VibeCADEngineeringComparisonDifferences"
+        )
+        self.engineering_comparison_table.setHeaderLabels(
+            ("Kind", "Quantity", "Baseline", "Candidate", "Difference", "Unit")
+        )
+        self.engineering_comparison_table.setRootIsDecorated(False)
+        self.engineering_comparison_table.setAlternatingRowColors(True)
+        engineering_comparison_layout.addWidget(self.engineering_comparison_table)
+        self.engineering_comparison_note = QtWidgets.QLabel()
+        self.engineering_comparison_note.setWordWrap(True)
+        engineering_comparison_layout.addWidget(self.engineering_comparison_note)
+        layout.addWidget(engineering_comparison)
+
+        comparison = QtWidgets.QGroupBox("Compare Flow Passage")
         comparison.setObjectName("VibeCADEngineeringComparisonCard")
         comparison.setProperty("vibeResultCard", True)
         comparison_layout = QtWidgets.QFormLayout(comparison)
@@ -501,6 +529,9 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
     def refresh(self, document: Any, analysis: Any) -> None:
         previous = str(self.result_combo.currentData() or "")
         previous_candidate = str(self.compare_result_combo.currentData() or "")
+        previous_engineering_candidate = str(
+            self.engineering_compare_combo.currentData() or ""
+        )
         self._document = document
         self._states = {}
         self._presentations = {}
@@ -535,14 +566,19 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
                     self._summaries[name] = summary
         self.result_combo.blockSignals(True)
         self.compare_result_combo.blockSignals(True)
+        self.engineering_compare_combo.blockSignals(True)
         self.result_combo.clear()
         self.compare_result_combo.clear()
+        self.engineering_compare_combo.clear()
         for name in self._states:
             result = document.getObject(name)
             self.result_combo.addItem(str(result.Label), name)
         for name in self._summaries:
             result = document.getObject(name)
             self.compare_result_combo.addItem(str(result.Label), name)
+        for name in self._presentations:
+            result = document.getObject(name)
+            self.engineering_compare_combo.addItem(str(result.Label), name)
         index = self.result_combo.findData(previous)
         if index >= 0:
             self.result_combo.setCurrentIndex(index)
@@ -551,11 +587,69 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
             self.compare_result_combo.setCurrentIndex(candidate_index)
         elif self.compare_result_combo.count() > 1:
             self.compare_result_combo.setCurrentIndex(1)
+        engineering_candidate_index = self.engineering_compare_combo.findData(
+            previous_engineering_candidate
+        )
+        if engineering_candidate_index >= 0:
+            self.engineering_compare_combo.setCurrentIndex(engineering_candidate_index)
+        elif self.engineering_compare_combo.count() > 1:
+            self.engineering_compare_combo.setCurrentIndex(1)
         self.result_combo.blockSignals(False)
         self.compare_result_combo.blockSignals(False)
+        self.engineering_compare_combo.blockSignals(False)
         self._render_charts()
         self._render_activity()
         self._render()
+
+    @staticmethod
+    def _comparison_number(value: Any) -> str:
+        return "Unavailable" if value is None else f"{float(value):.6g}"
+
+    def _render_engineering_comparison(self, _index: int = -1) -> None:
+        self.engineering_comparison_table.clear()
+        self.engineering_comparison_note.clear()
+        baseline_name = str(self.result_combo.currentData() or "")
+        candidate_name = str(self.engineering_compare_combo.currentData() or "")
+        baseline = self._presentations.get(baseline_name)
+        candidate = self._presentations.get(candidate_name)
+        if baseline is None or candidate is None or baseline_name == candidate_name:
+            self.engineering_comparison_note.setText(
+                "Choose a different result with exact comparable quantities."
+            )
+            return
+        try:
+            comparison = compare_domain_presentations(baseline, candidate)
+        except Exception as exc:
+            self.engineering_comparison_note.setText(str(exc))
+            return
+        for metric in comparison["metric_differences"]:
+            self.engineering_comparison_table.addTopLevelItem(
+                QtWidgets.QTreeWidgetItem((
+                    "Metric", metric["label"],
+                    self._comparison_number(metric["baseline"]),
+                    self._comparison_number(metric["candidate"]),
+                    self._comparison_number(metric["delta"]), metric["unit"],
+                ))
+            )
+        for field in comparison["field_extrema_differences"]:
+            for bound in ("minimum", "maximum"):
+                self.engineering_comparison_table.addTopLevelItem(
+                    QtWidgets.QTreeWidgetItem((
+                        "Field Extrema", f"{field['label']} {bound.title()}",
+                        self._comparison_number(field[f"baseline_{bound}"]),
+                        self._comparison_number(field[f"candidate_{bound}"]),
+                        self._comparison_number(field[f"{bound}_delta"]),
+                        field["unit"] or "Unavailable",
+                    ))
+                )
+        count = comparison["comparison_count"]
+        self.engineering_comparison_note.setText(
+            f"{count} exact comparable quantity group{'s' if count != 1 else ''}. "
+            "Field differences are extrema-only; pointwise differences require "
+            "a shared mesh and array owner."
+        )
+        for column in range(self.engineering_comparison_table.columnCount()):
+            self.engineering_comparison_table.resizeColumnToContents(column)
 
     def _selected(self) -> tuple[Any | None, dict[str, Any] | None]:
         name = str(self.result_combo.currentData() or "")
@@ -567,6 +661,7 @@ class AnalyzeResultsBrowser(QtWidgets.QGroupBox):
         name = str(self.result_combo.currentData() or "")
         state = self._states.get(name)
         self._render_engineering(name)
+        self._render_engineering_comparison()
         self.boundary_table.clear()
         previous_boundaries = (
             str(self.upstream_combo.currentData() or ""),

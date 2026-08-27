@@ -1305,6 +1305,13 @@ installed GUI evidence remain.
    durable directories appear and refreshes from the authoritative snapshots
    after atomic record changes without polling lifecycle state. Installed GUI
    acceptance remains.
+   The first EVS-09 increment adds exact-source generic result comparison over
+   the normalized presentation owners. Metric deltas require matching IDs,
+   units and qualifiers; field-extrema deltas require matching semantics,
+   association, components, units and presentation. Both owner-state SHA-256
+   identities are mandatory. Pointwise differences remain explicitly
+   unavailable without a shared mesh/array owner, and the projection grants no
+   ranking, selection, mutation, publication or export authority.
 6. **Continue G-track closure in dependency order:** complete G2/G5 acceptance,
    G7 stale/restart/installed behavior, and the current G8/G9 Assembly
    identity/interface/inference acceptance. Advance X3/X4 and X7-X12 only from
