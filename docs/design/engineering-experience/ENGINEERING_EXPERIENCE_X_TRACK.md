@@ -39,15 +39,32 @@ stack. Every X milestone is gated by and consumes the corresponding G contracts.
   FEM, Aero, Manufacture, Assembly and Robot. Remaining X1 work is integration
   with real domain result adapters and the Qt Engineering dock, GUI/accessibility
   tests, and installed application acceptance.
+- **X2: partial durable-view foundation.** The installed facade projects
+  validated G2 records, attempts, artifacts, currentness evaluations,
+  publication evidence and restart dispositions with exact Analysis identity
+  and explicit no-recovery/no-publication authority. Real Qt views,
+  corrupt/missing/quarantined artifact presentation and restart acceptance
+  remain.
+- **X5: partial workflow-view foundation.** Validated G5 run records are
+  projected into deterministic node summaries with exact attempts, outcomes,
+  receipt references and state counts. The projection cannot schedule, retry,
+  cancel or publish. Qt graph/activity views and five-stage failure/restart GUI
+  acceptance remain.
+- **X6: partial optimization-view foundation.** Validated G6 run records and
+  the store's precomputed ranking are projected together, including inert
+  mutation proposals, metrics, findings, constraints, currentness, selection
+  and publication evidence. The projection cannot rank, select, mutate or
+  publish. Compare UI, provenance branches and restart/staleness GUI acceptance
+  remain.
 
 ## First PR-sized implementation sequence
 
 1. Complete X1 real domain adapters and the non-authoritative shared shell over
    the already-landed common engineering envelope.
-2. X2 durable activity/artifact/publication views over the existing G2
-   foundation; leave unintegrated durability visibly partial.
-3. X5 workflow projection over the existing durable DAG foundation.
-4. X6 candidate/ranking projection over governed optimization.
+2. Connect the X2 durable activity/artifact/publication projection to the Qt
+   activity views; leave unintegrated durability visibly partial.
+3. Connect the X5 workflow projection to the Qt graph/activity views.
+4. Connect the X6 candidate/ranking projection to the Qt Compare view.
 5. Continue G7 and implement X7 together so Manufacture does not receive a
    disconnected generic result UI.
 6. Advance X3/X4 and X8-X12 only with their owning G closure slices.

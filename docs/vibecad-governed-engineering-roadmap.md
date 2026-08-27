@@ -301,7 +301,7 @@ behavior while it waits for host persistence/workflows.
 | G10 — assembly sequencing | O | **Design-ready** | Insertion/access/fastener/precedence model, bounded solver, collision/currentness evidence, sampled-versus-continuous verdicts. |
 | G11 — service/disassembly | P | **Blocked by G10** | Target/removal constraints, minimum-set objective, verified reverse sequence, uncertainty and service claim ceilings. |
 | G12 — Robot task projection | Q | **Partial foundation** | Versioned step-to-task contract, frames/units/tool/TCP/force/torque/tolerance, traceability, Robot-domain validation and downstream boundary. |
-| X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; X1 contract foundation partial** | Bounded no-authority G1 presentation projection and six-domain fixtures exist; real result adapters, Qt shell, durable/workflow/optimization/domain views, GUI/accessibility and installed acceptance remain dependency-bound. |
+| X0-X12 — Engineering Experience | cross-cutting presentation | **X0 documented; X1/X2/X5/X6 projection foundations partial** | Bounded no-authority G1 result, G2 activity/artifact/restart, G5 workflow and G6 candidate/ranking projections exist with durable-store tests; real adapters, Qt shell/views, domain slices, GUI/accessibility and installed acceptance remain dependency-bound. |
 
 ## 8. Dependency-ordered implementation roadmap
 
@@ -830,14 +830,16 @@ slices land only with sufficient backing G contracts:
 - X8-X12 add Assembly interfaces/motion, propose-only joints, sequence,
   service, and Robot task overlays only as G8-G12 become authoritative.
 
-The X1 contract foundation is implemented in
+The X1/X2/X5/X6 projection foundations are implemented in
 `tool_impl/engineering_experience.py` behind the installed
-`VibeCADEngineeringExperience.py` facade. It projects rather than replaces the
-G1 envelope, preserves domain payload, represents the four governance axes
-independently, separates scientific colormap identity from semantic status
-roles, and declares no mutation/execution/verification/publication/export
-authority. This is not X1 closure: real domain adapters, the Qt shell,
-GUI/accessibility behavior and installed application acceptance remain.
+`VibeCADEngineeringExperience.py` facade. G1 preserves domain payload and
+independent governance axes; G2 consumes exact durable activity, artifact,
+currentness, publication and restart records; G5 summarizes exact workflow
+nodes and attempts; and G6 pairs persisted candidates with the owning store's
+precomputed ranking while keeping mutation proposals inert. None may mutate,
+execute, recover, schedule, rank, select, publish or export. These foundations
+do not close their X milestones: real adapters, Qt views, GUI/accessibility,
+fault/restart scenarios and installed application acceptance remain.
 
 The shared shell may be designed early, but no durable activity, workflow,
 candidate, interface, sequence, service, or Robot behavior is faked ahead of
@@ -1018,12 +1020,12 @@ Keep the first changes small, reversible, and source-bound:
 2. **X1 common presentation contracts:** project the implemented G1 envelope
    and independent status axes through bounded, domain-preserving view models
    and cross-domain fixtures. No duplicate result model.
-3. **X2 durable activity projection:** consume the existing G2 metadata,
-   artifact and publication foundations while leaving unintegrated recovery
-   and domain wiring visibly partial.
-4. **X5/X6 projection slices:** render the implemented durable workflow and
-   governed-optimization cores with failure/restart/currentness evidence; do
-   not schedule or mutate from the UI.
+3. **X2 durable activity UI:** connect the implemented G2 metadata, artifact,
+   publication and restart projection to Qt while leaving unintegrated domain
+   wiring visibly partial.
+4. **X5/X6 Qt slices:** connect the implemented durable workflow and
+   governed-optimization projections; do not schedule, rank, select or mutate
+   from the UI.
 5. **G7 + X7 Manufacture integration:** attach one existing expensive detached
    Manufacture path to exact G2/G5 identities and display Manufacture-owned
    evidence without replacing Job/Post/CAMotics behavior.

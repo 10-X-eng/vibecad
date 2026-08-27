@@ -9,7 +9,10 @@ import math
 from typing import Any, Mapping
 
 from .analysis_contracts import AnalysisContractError, CanonicalJson
+from .analysis_persistence import ANALYSIS_METADATA_SCHEMA_VERSION
+from .analysis_workflow import WORKFLOW_SCHEMA_VERSION
 from .engineering_contracts import EngineeringResultEnvelope
+from .governed_optimization import OPTIMIZATION_SCHEMA_VERSION
 
 
 EXPERIENCE_SCHEMA_VERSION = 1
@@ -17,6 +20,10 @@ MAX_PRESENTATION_METRICS = 128
 MAX_PRESENTATION_FIELDS = 128
 MAX_LABEL_LENGTH = 160
 MAX_UNIT_LENGTH = 48
+MAX_ACTIVITY_ATTEMPTS = 256
+MAX_ACTIVITY_ARTIFACTS = 4096
+MAX_ACTIVITY_CURRENTNESS_EVALUATIONS = 4096
+MAX_ACTIVITY_EVENTS = 8192
 ASSOCIATIONS = frozenset({"point", "cell", "object"})
 PRESENTATIONS = frozenset({"scalar", "vector", "tensor"})
 SCIENTIFIC_COLOR_MAPS = frozenset(
@@ -191,3 +198,192 @@ def project_engineering_result(
     # Re-validate the complete projection as inert JSON and enforce canonicality.
     return CanonicalJson.from_value(value).to_value()
 
+
+def _mapping(value: Any, field: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise AnalysisContractError(f"{field} must be a mapping.")
+    return CanonicalJson.from_value(value).to_value()
+
+
+def _inert(kind: str) -> dict[str, Any]:
+    return {
+        "schema_version": EXPERIENCE_SCHEMA_VERSION,
+        "projection_kind": kind,
+        "presentation_only": True,
+        "authority": {"may_mutate": False, "may_execute": False,
+                      "may_recover": False, "may_schedule": False,
+                      "may_rank": False, "may_select": False,
+                      "may_publish": False, "may_export": False},
+    }
+
+
+def project_analysis_activity(
+    record: Mapping[str, Any],
+    *,
+    restart_disposition: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Project one validated durable Analysis record without acting on it."""
+
+    source = _mapping(record, "analysis record")
+    required = ("schema_version", "analysis_id", "domain", "adapter_id",
+                "source_document_uid", "state", "attempts", "artifacts",
+                "currentness_evaluations", "publication", "events")
+    if any(name not in source for name in required):
+        raise AnalysisContractError("Analysis activity record is incomplete.")
+    if source["schema_version"] != ANALYSIS_METADATA_SCHEMA_VERSION:
+        raise AnalysisContractError("Unsupported Analysis activity schema version.")
+    attempts, artifacts, events = source["attempts"], source["artifacts"], source["events"]
+    currentness = source["currentness_evaluations"]
+    if not isinstance(attempts, list) or len(attempts) > MAX_ACTIVITY_ATTEMPTS:
+        raise AnalysisContractError("Analysis attempts exceed their presentation bound.")
+    if not isinstance(artifacts, list) or len(artifacts) > MAX_ACTIVITY_ARTIFACTS:
+        raise AnalysisContractError("Analysis artifacts exceed their presentation bound.")
+    if not isinstance(currentness, list) or len(currentness) > MAX_ACTIVITY_CURRENTNESS_EVALUATIONS:
+        raise AnalysisContractError("Analysis currentness evaluations exceed their presentation bound.")
+    if not isinstance(events, list) or len(events) > MAX_ACTIVITY_EVENTS:
+        raise AnalysisContractError("Analysis events exceed their presentation bound.")
+    disposition = None if restart_disposition is None else _mapping(
+        restart_disposition, "restart disposition"
+    )
+    if disposition is not None and disposition.get("analysis_id") != source["analysis_id"]:
+        raise AnalysisContractError("Restart disposition belongs to another Analysis identity.")
+    publication = source["publication"]
+    if not isinstance(publication, Mapping):
+        raise AnalysisContractError("Analysis publication state is invalid.")
+    value = {
+        **_inert("analysis_activity"),
+        "analysis_id": source["analysis_id"],
+        "domain": source["domain"],
+        "adapter_id": source["adapter_id"],
+        "source_document_uid": source["source_document_uid"],
+        "state": source["state"],
+        "created_at": source.get("created_at"),
+        "updated_at": source.get("updated_at"),
+        "terminal_reason": source.get("terminal_reason"),
+        "attempt_count": len(attempts),
+        "attempts": attempts,
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts,
+        "currentness_evaluations": currentness,
+        "publication": publication,
+        "publication_axes": {
+            "intent_recorded": publication.get("intent") is not None,
+            "authorization_recorded": publication.get("authorization") is not None,
+            "receipt_recorded": publication.get("receipt") is not None,
+        },
+        "restart_disposition": disposition,
+        "latest_event": events[-1] if events else None,
+    }
+    return CanonicalJson.from_value(value).to_value()
+
+
+def project_workflow_run(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Project the authoritative durable workflow state without scheduling."""
+
+    source = _mapping(record, "workflow record")
+    required = ("schema_version", "run_id", "workflow_id", "workflow_version",
+                "definition_sha256", "state", "nodes")
+    if any(name not in source for name in required):
+        raise AnalysisContractError("Workflow run record is incomplete.")
+    if source["schema_version"] != WORKFLOW_SCHEMA_VERSION:
+        raise AnalysisContractError("Unsupported workflow schema version.")
+    nodes = source.get("nodes")
+    if not isinstance(nodes, Mapping) or not 1 <= len(nodes) <= 128:
+        raise AnalysisContractError("Workflow nodes exceed their presentation bound.")
+    projected_nodes = []
+    for node_id in sorted(nodes):
+        node = nodes[node_id]
+        if not isinstance(node, Mapping):
+            raise AnalysisContractError("Workflow node state is invalid.")
+        attempts = node.get("attempts")
+        if not isinstance(attempts, list) or len(attempts) > 17:
+            raise AnalysisContractError("Workflow node attempts exceed their bound.")
+        projected_nodes.append({
+            "node_id": node_id,
+            "state": node.get("state"),
+            "analysis_id": node.get("analysis_id"),
+            "attempt_count": len(attempts),
+            "attempts": attempts,
+            "outcome": node.get("outcome"),
+            "publication_receipt_id": node.get("publication_receipt_id"),
+        })
+    value = {
+        **_inert("workflow_run"),
+        "run_id": source["run_id"],
+        "workflow_id": source["workflow_id"],
+        "workflow_version": source["workflow_version"],
+        "definition_sha256": source["definition_sha256"],
+        "state": source["state"],
+        "cancel_requested": source.get("cancel_requested"),
+        "created_at": source.get("created_at"),
+        "updated_at": source.get("updated_at"),
+        "nodes": projected_nodes,
+        "counts": {state: sum(node["state"] == state for node in projected_nodes)
+                   for state in sorted({str(node["state"]) for node in projected_nodes})},
+    }
+    return CanonicalJson.from_value(value).to_value()
+
+
+def project_optimization_run(
+    record: Mapping[str, Any],
+    ranking: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Project persisted candidates plus an authoritative precomputed ranking."""
+
+    source = _mapping(record, "optimization record")
+    required = ("schema_version", "run_id", "definition_sha256",
+                "source_document_uid", "source_revision", "source_sha256",
+                "workflow_definition_sha256", "candidates")
+    if any(name not in source for name in required):
+        raise AnalysisContractError("Optimization run record is incomplete.")
+    if source["schema_version"] != OPTIMIZATION_SCHEMA_VERSION:
+        raise AnalysisContractError("Unsupported optimization schema version.")
+    candidates = source.get("candidates")
+    if not isinstance(candidates, Mapping) or not 1 <= len(candidates) <= 4096:
+        raise AnalysisContractError("Optimization candidates exceed their presentation bound.")
+    ranking_value = CanonicalJson.from_value(list(ranking)).to_value()
+    if len(ranking_value) > len(candidates):
+        raise AnalysisContractError("Optimization ranking contains excess candidates.")
+    ranks = {}
+    for item in ranking_value:
+        if not isinstance(item, Mapping) or item.get("candidate_id") not in candidates:
+            raise AnalysisContractError("Optimization ranking references an unknown candidate.")
+        candidate_id = item["candidate_id"]
+        if candidate_id in ranks:
+            raise AnalysisContractError("Optimization ranking contains a duplicate candidate.")
+        ranks[candidate_id] = item
+    projected = []
+    for candidate_id in sorted(candidates):
+        candidate = candidates[candidate_id]
+        if not isinstance(candidate, Mapping):
+            raise AnalysisContractError("Optimization candidate is invalid.")
+        rank = ranks.get(candidate_id)
+        projected.append({
+            "candidate_id": candidate_id,
+            "candidate_sha256": candidate.get("candidate_sha256"),
+            "values": candidate.get("values"),
+            "mutation_proposal": candidate.get("mutation_proposal"),
+            "state": candidate.get("state"),
+            "currentness": candidate.get("currentness"),
+            "workflow_run_id": candidate.get("workflow_run_id"),
+            "workflow_attempt_count": len(candidate.get("workflow_run_ids") or []),
+            "metrics": candidate.get("metrics"),
+            "findings": candidate.get("findings"),
+            "rank": None if rank is None else rank.get("rank"),
+            "constraint_failures": [] if rank is None else rank.get("constraint_failures", []),
+        })
+    value = {
+        **_inert("optimization_run"),
+        "run_id": source["run_id"],
+        "definition_sha256": source["definition_sha256"],
+        "source_document_uid": source["source_document_uid"],
+        "source_revision": source["source_revision"],
+        "source_sha256": source["source_sha256"],
+        "workflow_definition_sha256": source["workflow_definition_sha256"],
+        "created_at": source.get("created_at"),
+        "updated_at": source.get("updated_at"),
+        "candidates": projected,
+        "selection": source.get("selection"),
+        "publication": source.get("publication"),
+    }
+    return CanonicalJson.from_value(value).to_value()
