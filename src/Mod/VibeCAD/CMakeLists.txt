@@ -309,6 +309,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAssemblyIdentity.py
     VibeCADAssemblyPlanning.py
     VibeCADNativeAssemblyPlanning.py
+    VibeCADNativeAssemblyProposalDecision.py
     VibeCADNativeAssemblyJointArguments.py
     VibeCADNativeAssemblyJointBindings.py
     VibeCADNativeAssemblyJointConnectors.py

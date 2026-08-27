@@ -312,7 +312,7 @@ behavior while it waits for host persistence/workflows.
 | G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
 | G7 — Manufacture runtime integration | J | **Partial runtime integration** | Post, CAMotics, live GL simulation and retained simulation now create exact durable G2 Analysis/G5 workflow records and bounded X7 evidence while preserving owner-specific claim ceilings; A/B, stale/restart and authoritative installed closure remain. |
 | G8 — Assembly consolidation | K, L, N | **Partial identity/interface/currentness/evidence foundation** | New Native-authored graph objects receive write-once persisted identities; component interfaces expose expanded semantic and fit contracts plus conservative LCS-support geometry bindings with current/stale/unbound/indeterminate evidence; and the existing simulation-state/solver projection remains. Legacy migration, real reopen/rename proof, stable graph revision, semantic-kind-specific geometry validation, topology-stable references beyond conservative whole-support invalidation, catalog fit evaluation, continuous motion, flexible/closed-loop/contact and Part Design gates remain. |
-| G9 — joint inference | M | **Partial live-acceptance foundation** | The installed mutation-free planning facade binds deterministic ranked proposals to the exact persisted-identity graph revision and reports ambiguous/no-candidate outcomes. Acceptance revalidates the proposal, resolves both live occurrence and interface identities, rechecks geometry currentness, and can delegate fixed/revolute/cylindrical/slider/ball creation exactly once through the ordinary Native Assembly joint runtime and receipt path. Rejection persistence, bounded semantic-kind geometry extraction, parameter inference, remaining joint families and adversarial/installed runtime coverage remain. |
+| G9 — joint inference | M | **Partial live-decision foundation** | The installed mutation-free planning facade binds deterministic ranked proposals to the exact persisted-identity graph revision and reports ambiguous/no-candidate outcomes. Acceptance revalidates the proposal, resolves both live occurrence and interface identities, rechecks geometry currentness, and can delegate fixed/revolute/cylindrical/slider/ball creation exactly once through the ordinary Native Assembly joint runtime and receipt path. Rejections can be recorded in a bounded, append-only, revision-bound Assembly document log through the ordinary Native transaction path; that log deliberately cannot claim acceptance without the joint mutation receipt. Bounded semantic-kind geometry extraction, parameter inference, remaining joint families, provider/UI reachability and adversarial/installed runtime coverage remain. |
 | G10 — assembly sequencing | O | **Partial contract foundation** | The installed bounded planner now validates exact graph currentness and precedence, deterministically enumerates explicit-evidence orders, and separates sampled, continuous, collision, inaccessible, unsupported and indeterminate verdicts; real insertion/access/fastener/fixture/contact extraction, native collision/continuous-motion evidence, durable records and runtime/GUI integration remain. |
 | G11 — service/disassembly | P | **Partial projection foundation; closure blocked by G10** | Current G10 alternatives can now be reversed for explicit targets under protected-component constraints, with a bounded-model-only ceiling and equal-optimum reporting; full removal constraints, fastener/tool/fixture/access and replacement policy, minimum-set search, failed reverse-step verification, durable evidence and runtime/GUI integration remain. |
 | G12 — Robot task projection | Q | **Partial foundation** | Versioned step-to-task contract, frames/units/tool/TCP/force/torque/tolerance, traceability, Robot-domain validation and downstream boundary. |
@@ -784,7 +784,7 @@ remain required before stable graph identity is claimed.
 
 ### G9 — propose-only joint inference
 
-**Status: Partial live-acceptance foundation.**
+**Status: Partial live-decision foundation.**
 
 Joint inference reads G8 interfaces and geometry snapshots and returns ranked,
 bounded proposals. It never authors an accepted joint directly.
@@ -798,8 +798,7 @@ bound to that exact revision, report `proposed`, `ambiguous`, or
 `no-candidate`, and explicitly require a currentness check plus the existing
 Assembly owner for acceptance. This is a contract and deterministic ranking
 foundation only: it does not infer intent from topology, author joints inside
-the planning core, persist rejection decisions, or establish complete
-supported-family coverage.
+the planning core, or establish complete supported-family coverage.
 
 The acceptance seam recomputes the canonical proposal set against the live
 scenario, rejects stale, missing, or altered candidates before invoking any
@@ -812,8 +811,19 @@ checks that the ordinary call ticket belongs to the current document and
 `assembly.joint` capability, and delegates fixed, revolute, cylindrical, slider,
 or ball creation to `NativeAssemblyJointRuntime`. The generic injected seam
 remains compatible. Parameter-bearing relation/coupling families, durable
-rejection decisions, real installed-host acceptance, and broader adversarial
-fixtures remain runtime work.
+provider/UI reachability for proposal rejection, real installed-host
+acceptance, and broader adversarial fixtures remain runtime work.
+
+The document-owned rejection seam recomputes the exact proposal before writing,
+requires a nonempty reason and actor, and appends a self-hashed record bound to
+the scenario, graph revision, proposal identity, and proposal content hash. It
+fails closed on malformed, oversized, duplicated, or hash-inconsistent saved
+logs; an exact retry is a no-op, while a contradictory same-revision rejection
+is refused. The property is read-only in the editor and the write uses the
+ordinary Native transaction/verification/receipt runner. Successful acceptance
+is intentionally excluded from this log: acceptance evidence is the existing
+Assembly joint mutation receipt, so a document record cannot assert a joint was
+accepted when no joint mutation occurred.
 
 Pipeline:
 
