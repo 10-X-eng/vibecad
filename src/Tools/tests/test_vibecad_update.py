@@ -1063,6 +1063,26 @@ class UpdateServiceTests(unittest.TestCase):
                 marker.is_file(),
                 f"stderr={completed.stderr}\nlog={log.read_text(encoding='utf-8') if log.is_file() else ''}",
             )
+            if os.name == "nt" and log.is_file():
+                # The marker is written just before the detached interpreter
+                # exits.  Prove that its inherited log handle has closed before
+                # TemporaryDirectory removes the workspace; otherwise Windows
+                # can report a false cleanup failure after the behavior under
+                # test has already succeeded.
+                released_log = log.with_name("helper.released.log")
+                release_deadline = time.time() + 5
+                while time.time() < release_deadline:
+                    try:
+                        log.replace(released_log)
+                        released_log.replace(log)
+                        break
+                    except PermissionError:
+                        time.sleep(0.05)
+                else:
+                    self.fail(
+                        "detached helper kept its log handle open after "
+                        "writing the completion marker"
+                    )
 
     def test_macos_helper_replaces_the_app_and_keeps_a_live_update(self) -> None:
         if sys.platform != "darwin" or shutil.which("hdiutil") is None:
