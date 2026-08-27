@@ -92,11 +92,62 @@ Start page
   background-color: transparent;
   border: none; }
 
+QWidget#VibeCADStartContent {
+  background-color: transparent; }
+
+QFrame#VibeCADStartHero {
+  color: #e8edf2;
+  background-color: #1b2938;
+  border: 1px solid #2e4b66;
+  border-radius: 14px; }
+
+QLabel#VibeCADStartBrandTitle,
+QLabel#VibeCADFirstStartTitle {
+  color: #f3f7fb;
+  font-size: 26px;
+  font-weight: 700; }
+
+QLabel#VibeCADStartBrandDescription,
+QLabel#VibeCADFirstStartDescription,
+QLabel#VibeCADAISetupDescription {
+  color: #aab7c4;
+  font-size: 14px; }
+
+QLabel#VibeCADStartSectionTitle,
+QLabel#VibeCADFirstStartSectionTitle,
+QLabel#VibeCADAISetupTitle {
+  color: #edf3f8;
+  font-size: 18px;
+  font-weight: 650; }
+
+QFrame#VibeCADAISetupCard {
+  background-color: #202b37;
+  border: 1px solid #334252;
+  border-radius: 12px; }
+
+#StartView QPushButton[vibeStartPrimary="true"] {
+  color: #08111b;
+  background-color: #74c0fc;
+  border: 1px solid #4dabf7;
+  border-radius: 7px;
+  padding: 7px 14px; }
+  #StartView QPushButton[vibeStartPrimary="true"]:hover {
+    background-color: #91cdfd;
+    border-color: #74c0fc; }
+  #StartView QPushButton[vibeStartPrimary="true"]:pressed {
+    background-color: #4dabf7; }
+
+#StartView QListView {
+  background-color: transparent;
+  border: none;
+  outline: none; }
+
 QWidget#CreateNewRow {
   background-color: transparent;
   padding: 2px; }
 
-QPushButton#newFileButton {
+QPushButton#newFileButton,
+StartGui--NewFileButton {
   min-width: 180px;
   max-width: 180px;
   min-height: 76px;
@@ -104,16 +155,20 @@ QPushButton#newFileButton {
   background-color: #1d242d;
   border: 1px solid #29313c;
   border-radius: 8px; }
-  QPushButton#newFileButton:hover {
+  QPushButton#newFileButton:hover,
+  StartGui--NewFileButton:hover {
     background-color: #232b35;
     border-color: #39434f; }
-  QPushButton#newFileButton:pressed {
+  QPushButton#newFileButton:pressed,
+  StartGui--NewFileButton:pressed {
     color: #ffffff;
     background-color: #283140;
     border-color: #4dabf7; }
-  QPushButton#newFileButton:focus {
+  QPushButton#newFileButton:focus,
+  StartGui--NewFileButton:focus {
     border-color: #4dabf7; }
-  QPushButton#newFileButton QLabel {
+  QPushButton#newFileButton QLabel,
+  StartGui--NewFileButton QLabel {
     color: #e8edf2;
     background-color: transparent; }
 

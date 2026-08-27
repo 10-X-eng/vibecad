@@ -44,7 +44,7 @@ private:
     void retranslateUi();
 
     void setupUi();
-    void createHorizontalUi();
+    void createResponsiveUi();
 
     QString createLabelText(const QString& translatedText) const;
     gsl::owner<QComboBox*> createLanguageComboBox();
