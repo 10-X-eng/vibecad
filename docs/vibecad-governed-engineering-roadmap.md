@@ -258,7 +258,7 @@ behavior while it waits for host persistence/workflows.
 | G2 — durable Analysis and publication | A plus C/E | **Partial** | Complete migrations, application-data/global discovery, reconnect and crash recovery, quota/reference integrity, Native/domain publication wiring, and installed cross-platform acceptance. |
 | G3 — remote provider | B | **Blocked by G2** | One real target, reconnect/cancel/poll/event semantics, credential isolation, verified bundle/output transport, real restart acceptance. |
 | G4 — authority policy and preview evidence | F, G | **Partial** | The executable registry-bound census classifies all current operations; add bounded domain preview evidence where justified and prove authoritative installed/runtime integration. |
-| G5 — workflow DAG | H | **Design-ready** | Versioned definitions/runs, cycle and bound checks, deterministic scheduling, recovery, cancellation, failure/publication policies. |
+| G5 — workflow DAG | H | **Partial** | The bounded durable DAG, scheduler, restart, cancellation, retry, and publish-once core is implemented; wire real G2 jobs/domain adapters and prove installed/runtime and real five-stage FEM acceptance. |
 | G6 — optimization | I | **Blocked by G4 and G5** | Governed candidate mutation, variables/objectives/constraints, budgets, deduplication, provenance, ranking, approval/publication gates. |
 | G7 — Manufacture runtime integration | J | **Partial foundation** | Adapt expensive detached Manufacture tasks to G2/G5 without replacing current Jobs, operations, simulation, posts, or exports. |
 | G8 — Assembly consolidation | K, L, N | **Partial** | Extend the existing Assembly owner; close stable identities, interface taxonomy, continuous motion, flexible graphs, fit, evidence, and Part Design facade gates. |
@@ -486,10 +486,18 @@ Required invariants:
 
 ### G5 — durable workflow DAG
 
-**Status: Design-ready.**
+**Status: Partial on the current roadmap execution branch.**
 
 A workflow references G2 analyses/jobs; it does not embed provider processes or
 live domain objects. Definitions and runs are separate, versioned entities.
+
+The current roadmap execution stack implements bounded validated definitions,
+deterministic topological/ready scheduling, atomic inter-process run metadata,
+node attempts, restart interruption, cancellation and late-completion guards,
+upstream state eligibility, deterministic condition skipping, retry limits,
+publish-once receipts, bounded summaries, and a failure-injected five-stage
+contract benchmark. Production G2 submission/domain wiring and a real local FEM
+benchmark remain before closure.
 
 One workflow definition contains bounded nodes and edges with:
 

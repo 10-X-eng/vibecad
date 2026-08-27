@@ -12,6 +12,7 @@ set(VibeCAD_Scripts
     VibeCADAnalysisPersistence.py
     VibeCADAnalysisPublication.py
     VibeCADAnalysisRuntime.py
+    VibeCADAnalysisWorkflow.py
     VibeCADEngineeringContracts.py
     VibeCADAnalyzeStudyGui.py
     VibeCADAnalyzeGeometryGui.py
