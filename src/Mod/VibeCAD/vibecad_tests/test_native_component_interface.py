@@ -113,6 +113,12 @@ def test_component_interface_contract_is_exact_and_ribbon_scoped() -> None:
     assert branch["properties"]["component"]["required"] == ["object_name"]
     assert branch["properties"]["lcs"]["required"] == ["object_name"]
     assert branch["properties"]["allowed_joints"]["uniqueItems"] is True
+    assert set(branch["properties"]["kind"]["enum"]) >= {
+        "axis", "bearing_face", "bearing_seat", "bolt_pattern", "bore",
+        "electrical_connector", "fixture", "fluid_port", "frame",
+        "mounting_pattern", "plane", "planar_mate", "point", "shaft",
+        "shaft_seat", "thread", "thread_axis", "tool",
+    }
     serialized = repr(schema)
     for forbidden in ("selection", "workbench", "runCommand", "activate"):
         assert forbidden not in serialized
@@ -168,6 +174,21 @@ def test_component_interface_preflight_resolves_and_normalizes_exact_targets() -
     assert prepared.spec.allowed_joints == ("revolute", "fixed")
     assert prepared.spec.compatibility == "mount-v1"
     assert prepared.initial_state == ((False, None),) * 5
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "bearing_face", "bearing_seat", "bolt_pattern", "bore",
+        "electrical_connector", "fixture", "fluid_port", "mounting_pattern",
+        "planar_mate", "shaft", "shaft_seat", "thread", "thread_axis", "tool",
+    ),
+)
+def test_component_interface_accepts_expanded_semantic_taxonomy(kind: str) -> None:
+    document = _Document()
+    values = {key: value for key, value in _arguments().items() if key != "operation"}
+    values["kind"] = kind
+    assert prepare_component_interface(document, values).spec.kind == kind
 
 
 def test_component_interface_preflight_rejects_vibescript_and_unowned_lcs() -> None:

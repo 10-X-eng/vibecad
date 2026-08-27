@@ -5219,7 +5219,12 @@ class PublishComponentInterfaceCommand(_BaseCommand):
         name_edit = QtWidgets.QLineEdit(dialog)
         name_edit.setPlaceholderText("RotationAxis")
         kind_combo = QtWidgets.QComboBox(dialog)
-        kind_combo.addItems(["axis", "plane", "point", "frame"])
+        kind_combo.addItems([
+            "axis", "bearing_face", "bearing_seat", "bolt_pattern", "bore",
+            "electrical_connector", "fixture", "fluid_port", "frame",
+            "mounting_pattern", "plane", "planar_mate", "point", "shaft",
+            "shaft_seat", "thread", "thread_axis", "tool",
+        ])
         joints = QtWidgets.QListWidget(dialog)
         joints.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
         joints.setMaximumHeight(150)

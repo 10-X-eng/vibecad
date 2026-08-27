@@ -28,7 +28,12 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
         },
         "kind": {
             "type": "string",
-            "enum": ["axis", "plane", "point", "frame"],
+            "enum": [
+                "axis", "bearing_face", "bearing_seat", "bolt_pattern",
+                "bore", "electrical_connector", "fixture", "fluid_port",
+                "frame", "mounting_pattern", "plane", "planar_mate", "point",
+                "shaft", "shaft_seat", "thread", "thread_axis", "tool",
+            ],
         },
         "allowed_joints": {
             "type": "array",

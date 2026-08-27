@@ -25,7 +25,26 @@ PROP_NATIVE_INTERFACE_NAME = "VibeCADInterfaceName"
 PROP_NATIVE_INTERFACE_KIND = "VibeCADInterfaceKind"
 PROP_NATIVE_INTERFACE_ALLOWED_JOINTS = "VibeCADInterfaceAllowedJoints"
 PROP_NATIVE_INTERFACE_COMPATIBILITY = "VibeCADInterfaceCompatibility"
-NATIVE_INTERFACE_KINDS = frozenset({"axis", "plane", "point", "frame"})
+NATIVE_INTERFACE_KINDS = frozenset({
+    "axis",
+    "bearing_face",
+    "bearing_seat",
+    "bolt_pattern",
+    "bore",
+    "electrical_connector",
+    "fixture",
+    "fluid_port",
+    "frame",
+    "mounting_pattern",
+    "plane",
+    "planar_mate",
+    "point",
+    "shaft",
+    "shaft_seat",
+    "thread",
+    "thread_axis",
+    "tool",
+})
 
 
 class ReferenceContractError(RuntimeError):
@@ -480,9 +499,23 @@ def connector_interface_record(
     if not geometry or geometry in {"component_frame", "component_origin"}:
         geometry = {
             "axis": "cylinder",
+            "bearing_face": "plane",
+            "bearing_seat": "cylinder",
+            "bolt_pattern": "component_origin",
+            "bore": "cylinder",
+            "electrical_connector": "component_origin",
+            "fixture": "component_origin",
+            "fluid_port": "component_origin",
             "plane": "plane",
+            "planar_mate": "plane",
             "point": "vertex",
             "frame": "component_origin",
+            "mounting_pattern": "component_origin",
+            "shaft": "cylinder",
+            "shaft_seat": "cylinder",
+            "thread": "cylinder",
+            "thread_axis": "cylinder",
+            "tool": "component_origin",
         }.get(kind, "component_origin")
     frame = descriptor.get("frame")
     origin = [0.0, 0.0, 0.0]
