@@ -76,6 +76,7 @@ def manufacture_camotics_capability_definition() -> NativeCapabilityDefinition:
         name=MANUFACTURE_CAMOTICS_CAPABILITY_NAME,
         description="Inspect or open one exact ordered CAM program with CAMotics.",
         primary_classification="view",
+        preserve_operation_discriminator=True,
         variants=(
             NativeCapabilityVariant(
                 operation="camotics",

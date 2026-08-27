@@ -504,6 +504,89 @@ def project_manufacture_post_evidence(
     return CanonicalJson.from_value(value).to_value()
 
 
+def project_manufacture_simulation_evidence(
+    kind: str,
+    result: Mapping[str, Any],
+    *,
+    analysis_record: Mapping[str, Any],
+    workflow_record: Mapping[str, Any],
+    provider_attempt_id: str,
+) -> dict[str, Any]:
+    """Project bounded Native simulation evidence without process certification."""
+
+    evidence_kind = _text(kind, "kind")
+    if evidence_kind not in {"camotics", "gl_simulation", "retained_simulation"}:
+        raise AnalysisContractError("Unknown Manufacture simulation evidence kind.")
+    source = _mapping(result, "Manufacture simulation result")
+    activity = project_analysis_activity(analysis_record)
+    workflow = project_workflow_run(workflow_record)
+    attempt_id = _text(provider_attempt_id, "provider_attempt_id")
+    if activity["domain"] != "manufacture":
+        raise AnalysisContractError("Manufacture evidence requires a Manufacture Analysis record.")
+    if not any(str(item.get("attempt")) == attempt_id for item in activity["attempts"]):
+        raise AnalysisContractError("Manufacture provider attempt is not in the Analysis record.")
+    if not any(node["analysis_id"] == activity["analysis_id"] for node in workflow["nodes"]):
+        raise AnalysisContractError("Manufacture Analysis is not bound to the workflow run.")
+    governance = _mapping(source.get("governance"), "Manufacture governance references")
+    expected = {
+        "analysis_id": activity["analysis_id"],
+        "workflow_run_id": workflow["run_id"],
+        "provider_attempt_id": attempt_id,
+    }
+    if any(str(governance.get(name) or "") != value for name, value in expected.items()):
+        raise AnalysisContractError("Manufacture governance references do not match evidence.")
+
+    if evidence_kind == "camotics":
+        surface_value = source.get("surface")
+        surface = (
+            _mapping(surface_value, "CAMotics surface")
+            if surface_value is not None else {}
+        )
+        digest = str(surface.get("sha256") or source.get("program_sha256") or "").lower()
+        facts = {
+            name: source.get(name)
+            for name in (
+                "request", "launched", "job", "operation_count", "command_count", "resolution",
+                "path_step_count", "duration_seconds", "surface", "program_sha256",
+            )
+            if name in source
+        }
+    elif evidence_kind == "gl_simulation":
+        simulation = _mapping(source.get("simulation"), "GL simulation")
+        if simulation.get("document_changed") is not False:
+            raise AnalysisContractError("GL simulation changed the document.")
+        digest = str(simulation.get("program_sha256") or "").lower()
+        facts = dict(simulation)
+    else:
+        simulation = _mapping(source.get("simulation_result"), "retained simulation")
+        state = _mapping(simulation.get("result"), "retained simulation result")
+        digest = str(state.get("state_sha256") or "").lower()
+        facts = dict(simulation)
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise AnalysisContractError("Manufacture simulation digest is invalid.")
+    admitted = {
+        str(item.get("sha256") or "").lower()
+        for item in activity["artifacts"]
+        if isinstance(item, Mapping)
+    }
+    if digest not in admitted:
+        raise AnalysisContractError("Manufacture simulation evidence is not durably admitted.")
+    value = {
+        **_inert("manufacture_simulation_evidence"),
+        "kind": evidence_kind,
+        "analysis_id": activity["analysis_id"],
+        "workflow_run_id": workflow["run_id"],
+        "provider_attempt_id": attempt_id,
+        "facts": facts,
+        "evidence_sha256": digest,
+        "publication_state": "evidence_published",
+        "claim_ceiling": "simulation_evidence_only",
+        "proven_toolpath": False,
+        "manufacturable": False,
+    }
+    return CanonicalJson.from_value(value).to_value()
+
+
 def project_assembly_state(
     simulation_state: Mapping[str, Any],
     solver_diagnostics: Mapping[str, Any],

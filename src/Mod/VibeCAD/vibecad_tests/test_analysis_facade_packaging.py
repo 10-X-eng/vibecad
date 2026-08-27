@@ -28,7 +28,10 @@ PUBLIC_GOVERNED_RUNTIME_MODULES = (
     "VibeCADAnalysisWorkflow.py",
     "VibeCADGovernedOptimization.py",
     "VibeCADNativeManufactureGovernance.py",
+    "VibeCADNativeManufactureCamoticsRuntime.py",
     "VibeCADNativeManufacturePostRuntime.py",
+    "VibeCADNativeManufactureSimulationRuntime.py",
+    "VibeCADNativeManufactureSimulationResultRuntime.py",
 )
 PACKAGED_TREE_ENVIRONMENT = (
     ("VIBECAD_BUILD_MODULE_DIR", "CMake build tree"),

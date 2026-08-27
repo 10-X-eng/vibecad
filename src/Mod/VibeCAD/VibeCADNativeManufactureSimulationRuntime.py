@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeBackground import NativeBackgroundError
 from VibeCADNativeManufactureErrors import NativeManufactureError
+from VibeCADNativeManufactureGovernance import create_manufacture_evidence_governance
 from VibeCADNativeManufactureSimulation import (
     preflight_gl_simulation,
     prepare_gl_simulation,
@@ -59,6 +60,12 @@ class NativeManufactureSimulationRuntime:
                 error_code="NATIVE_MANUFACTURE_GL_SIMULATION_UNAVAILABLE",
             )
         frozen = preflight_gl_simulation(context.document, **values)
+        governance = create_manufacture_evidence_governance(
+            frozen,
+            adapter_id="native.manufacture.simulation.gl",
+            operation="simulation.gl",
+            evidence_kind="gl_simulation",
+        )
 
         def prepare(cancelled: Any, progress: Any) -> Any:
             return prepare_gl_simulation(
@@ -80,7 +87,7 @@ class NativeManufactureSimulationRuntime:
             revision_after = context.state.current_revision(context.document_uid)
             if revision_after != revision_before:
                 raise NativeRevisionConflict(revision_before, revision_after)
-            return result
+            return governance.record_result(result)
 
         try:
             snapshot = manager.submit(
@@ -91,6 +98,7 @@ class NativeManufactureSimulationRuntime:
                 commit=present,
                 dispatch_to_document_thread=dispatcher,
                 finalize_message="Opening exact GL simulation",
+                durable_lifecycle=governance,
             )
         except NativeBackgroundError as exc:
             raise NativeManufactureError(
@@ -99,6 +107,7 @@ class NativeManufactureSimulationRuntime:
             ) from exc
         return {
             "job": _job_summary(snapshot),
+            "governance": governance.references(),
             "next": {
                 "tool": "native.job",
                 "operation": "status",

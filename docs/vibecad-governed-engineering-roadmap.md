@@ -310,7 +310,7 @@ behavior while it waits for host persistence/workflows.
 | G4 — authority policy and preview evidence | F, G | **Partial** | The executable registry-bound census classifies all current operations; add bounded domain preview evidence where justified and prove authoritative installed/runtime integration. |
 | G5 — workflow DAG | H | **Partial** | The bounded durable DAG, scheduler, restart, cancellation, retry, and publish-once core is implemented; wire real G2 jobs/domain adapters and prove installed/runtime and real five-stage FEM acceptance. |
 | G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
-| G7 — Manufacture runtime integration | J | **Partial runtime integration** | Existing post output now creates exact durable G2 Analysis and single-node G5 workflow records, pinned output evidence, path-free human authorization evidence and X7 linkage while preserving `not_proven_toolpath`; CAMotics/simulation, A/B, stale/restart and installed closure remain. |
+| G7 — Manufacture runtime integration | J | **Partial runtime integration** | Post, CAMotics, live GL simulation and retained simulation now create exact durable G2 Analysis/G5 workflow records and bounded X7 evidence while preserving owner-specific claim ceilings; A/B, stale/restart and authoritative installed closure remain. |
 | G8 — Assembly consolidation | K, L, N | **Partial evidence projection** | Existing native simulation-state hash and solver diagnostics project without a second graph; stable identities, interfaces, continuous motion, flexible/closed-loop/contact, fit and Part Design gates remain. |
 | G9 — joint inference | M | **Design-ready** | Bounded interface extraction/classification, ranked compatibility evidence, explicit accept/reject, no direct authoritative mutation. |
 | G10 — assembly sequencing | O | **Design-ready** | Insertion/access/fastener/precedence model, bounded solver, collision/currentness evidence, sampled-versus-continuous verdicts. |
@@ -675,10 +675,18 @@ the durable artifact set. Job, postprocessor, machine and output hashes,
 unchanged document/history/selection/visibility state and the
 `not_proven_toolpath` ceiling remain owned by Manufacture.
 
-This closes runtime record creation for CAM post only. G7 remains partial until
-CAMotics/simulation use the same owner-preserving evidence path, restart and
-stale-source reconciliation are proven, existing behavior passes A/B GUI
-acceptance, and installed packaging is exercised.
+The same owner-preserving seam now covers CAMotics read/launch evidence, live GL
+simulation presentation and retained native material simulation. Each runtime
+derives path-free identities from its frozen Job/operation/settings state,
+admits only its exact program, surface, or retained-Mesh digest, and projects a
+bounded `simulation_evidence_only` claim. A CAMotics surface, opened GL task, or
+retained stock-removal Mesh is explicitly not manufacturability or continuous
+toolpath certification. The public CAMotics `operation` discriminator is also
+retained for installed-client compatibility.
+
+G7 remains partial until restart and stale-source reconciliation are proven,
+existing behavior passes A/B GUI acceptance, and authoritative build/install
+packaging is exercised.
 
 ### G8 — Assembly state, interface, and validation consolidation
 

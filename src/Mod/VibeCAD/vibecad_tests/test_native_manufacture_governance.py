@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+import VibeCADNativeManufactureCamoticsRuntime as camotics_runtime_module
 import VibeCADNativeManufacturePostRuntime as runtime_module
-from VibeCADEngineeringExperience import project_manufacture_post_evidence
+import VibeCADNativeManufactureSimulationResultRuntime as retained_runtime_module
+import VibeCADNativeManufactureSimulationRuntime as gl_runtime_module
+from VibeCADEngineeringExperience import (
+    project_manufacture_post_evidence,
+    project_manufacture_simulation_evidence,
+)
 from VibeCADNativeManufactureGovernance import (
+    create_manufacture_evidence_governance,
     create_manufacture_post_governance,
     manufacture_post_identity,
 )
@@ -68,6 +77,21 @@ def _result():
         "proven_toolpath": False,
         "manufacturable": False,
     }
+
+
+def _simulation_frozen():
+    return SimpleNamespace(
+        job=SimpleNamespace(Name="Job"),
+        expected_job_state_sha256="a" * 64,
+        runs=(SimpleNamespace(
+            operation_name="Profile",
+            expected_state_sha256="b" * 64,
+        ),),
+        quality=5,
+        resolution="medium",
+        request_kind="read_result",
+        command_count=48,
+    )
 
 
 def test_identity_is_deterministic_and_contains_no_private_paths() -> None:
@@ -178,6 +202,89 @@ def test_failure_after_publication_gate_remains_outcome_unknown(tmp_path) -> Non
     assert workflow["nodes"]["post"]["outcome"]["publication_state"] == "outcome_unknown"
 
 
+def test_camotics_evidence_is_durable_bounded_and_directly_projectable(tmp_path) -> None:
+    lifecycle = create_manufacture_evidence_governance(
+        _simulation_frozen(),
+        adapter_id="native.manufacture.camotics",
+        operation="camotics.read_result",
+        evidence_kind="camotics",
+        root=tmp_path,
+    )
+    lifecycle.submitted("camotics-1", "document-1", "manufacture.camotics.read_result")
+    lifecycle.started()
+    lifecycle.prepared()
+    lifecycle.publication_started()
+    result = lifecycle.record_result({
+        "request": "read_result",
+        "job": "Job",
+        "operation_count": 1,
+        "command_count": 48,
+        "resolution": "medium",
+        "path_step_count": 99,
+        "duration_seconds": 4.25,
+        "surface": {"sha256": "c" * 64, "facet_count": 24},
+        "program_sha256": "d" * 64,
+    })
+    lifecycle.succeeded("e" * 64)
+
+    projected = project_manufacture_simulation_evidence(
+        "camotics",
+        result,
+        analysis_record=lifecycle.analysis_store.load("camotics-1"),
+        workflow_record=lifecycle.workflow_store.load(lifecycle.workflow_run_id),
+        provider_attempt_id="1",
+    )
+
+    assert projected["kind"] == "camotics"
+    assert projected["evidence_sha256"] == "c" * 64
+    assert projected["claim_ceiling"] == "simulation_evidence_only"
+    assert projected["proven_toolpath"] is projected["manufacturable"] is False
+    assert lifecycle.analysis_store.load("camotics-1")["artifacts"][0]["role"] == (
+        "camotics_simulation_evidence"
+    )
+
+
+def test_gl_and_retained_profiles_admit_only_their_exact_owner_digest(tmp_path) -> None:
+    cases = (
+        (
+            "gl_simulation",
+            {"simulation": {"program_sha256": "f" * 64, "document_changed": False}},
+            "f" * 64,
+        ),
+        (
+            "retained_simulation",
+            {"simulation_result": {
+                "result": {"state_sha256": "1" * 64},
+                "program_sha256": "2" * 64,
+            }},
+            "1" * 64,
+        ),
+    )
+    for index, (kind, source, digest) in enumerate(cases, 1):
+        lifecycle = create_manufacture_evidence_governance(
+            _simulation_frozen(),
+            adapter_id=f"native.manufacture.{kind}",
+            operation=kind,
+            evidence_kind=kind,
+            root=tmp_path / kind,
+        )
+        analysis_id = f"simulation-{index}"
+        lifecycle.submitted(analysis_id, "document-1", f"manufacture.{kind}")
+        lifecycle.started()
+        lifecycle.prepared()
+        lifecycle.publication_started()
+        result = lifecycle.record_result(source)
+        lifecycle.succeeded("3" * 64)
+        projected = project_manufacture_simulation_evidence(
+            kind,
+            result,
+            analysis_record=lifecycle.analysis_store.load(analysis_id),
+            workflow_record=lifecycle.workflow_store.load(lifecycle.workflow_run_id),
+            provider_attempt_id="1",
+        )
+        assert projected["evidence_sha256"] == digest
+
+
 def test_runtime_submits_the_governance_lifecycle_and_returns_exact_references(
     monkeypatch,
 ) -> None:
@@ -251,3 +358,104 @@ def test_runtime_submits_the_governance_lifecycle_and_returns_exact_references(
     assert submitted["capability_name"] == "manufacture.post.complete_job"
     assert result["governance"] == governance.references()
     assert result["claim_ceiling"] == "not_proven_toolpath"
+
+
+@pytest.mark.parametrize(
+    ("module", "runtime_type", "method", "arguments", "capability"),
+    (
+        (
+            camotics_runtime_module,
+            camotics_runtime_module.NativeManufactureCamoticsRuntime,
+            "execute",
+            {
+                "operation": "camotics",
+                "job": {},
+                "operations": [],
+                "request": {},
+            },
+            "manufacture.camotics.read_result",
+        ),
+        (
+            gl_runtime_module,
+            gl_runtime_module.NativeManufactureSimulationRuntime,
+            "simulate",
+            {"operation": "gl", "job": {}, "operations": [], "quality": 5},
+            "manufacture.simulation.gl",
+        ),
+        (
+            retained_runtime_module,
+            retained_runtime_module.NativeManufactureSimulationResultRuntime,
+            "simulate",
+            {"operation": "native", "job": {}, "operations": [], "quality": 5},
+            "manufacture.simulation_result.native",
+        ),
+    ),
+)
+def test_each_simulation_runtime_submits_its_governance_lifecycle(
+    monkeypatch, module, runtime_type, method, arguments, capability
+) -> None:
+    document = SimpleNamespace(Uid="document-1")
+    captured = {}
+
+    class Governance:
+        def submitted(self, job_id, _document_uid, _capability):
+            captured["job_id"] = job_id
+
+        def references(self):
+            return {
+                "analysis_id": captured.get("job_id", ""),
+                "workflow_run_id": "workflow-1",
+                "workflow_node_id": "evidence",
+                "provider_attempt_id": "1",
+            }
+
+    governance = Governance()
+
+    class Manager:
+        def submit(self, **kwargs):
+            captured.update(kwargs)
+            kwargs["durable_lifecycle"].submitted(
+                "job-1", kwargs["document_uid"], kwargs["capability_name"]
+            )
+            return SimpleNamespace(
+                job_id="job-1",
+                capability_name=kwargs["capability_name"],
+                phase="preparing",
+                progress_percent=1,
+                progress_message="Preparing",
+            )
+
+    context = NativeRuntimeContext(
+        service=object(),
+        document=document,
+        state=NativeDocumentStateStore(),
+        undo_ledger=NativeAssistantUndoLedger(),
+        reauthorize_turn=lambda: None,
+        active_document=lambda: document,
+        active_surface_id=lambda: "manufacture",
+        edit_or_task_active=lambda: False,
+        authorize_output=lambda _request: None,
+        background_manager=Manager(),
+        document_thread_dispatch=lambda operation: operation(),
+    )
+    frozen = _simulation_frozen()
+    preflight_name = {
+        camotics_runtime_module: "preflight_camotics",
+        gl_runtime_module: "preflight_gl_simulation",
+        retained_runtime_module: "preflight_native_simulation",
+    }[module]
+    monkeypatch.setattr(module, preflight_name, lambda *_args, **_kwargs: frozen)
+    monkeypatch.setattr(
+        module,
+        "create_manufacture_evidence_governance",
+        lambda *_args, **_kwargs: governance,
+    )
+
+    result = getattr(runtime_type(context), method)(
+        arguments,
+        NativeCallTicket("document-1", capability.split(".")[0], 0, "token-1"),
+    )
+
+    assert captured["durable_lifecycle"] is governance
+    assert captured["capability_name"] == capability
+    assert result["governance"] == governance.references()
