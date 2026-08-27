@@ -311,7 +311,7 @@ behavior while it waits for host persistence/workflows.
 | G5 — workflow DAG | H | **Partial** | The bounded durable DAG, scheduler, restart, cancellation, retry, and publish-once core is implemented; wire real G2 jobs/domain adapters and prove installed/runtime and real five-stage FEM acceptance. |
 | G6 — optimization | I | **Partial** | Bounded deterministic candidate contracts, durable evaluation, explicit exceptional-result ranking, exact-source human selection, and publish-once intent are implemented; real mutation-owner/G5/G3 integration and installed acceptance remain. |
 | G7 — Manufacture runtime integration | J | **Partial runtime integration** | Post, CAMotics, live GL simulation and retained simulation now create exact durable G2 Analysis/G5 workflow records and bounded X7 evidence while preserving owner-specific claim ceilings; A/B, stale/restart and authoritative installed closure remain. |
-| G8 — Assembly consolidation | K, L, N | **Partial identity/interface/evidence foundation** | New Native-authored graph objects receive write-once persisted identities; component interfaces now expose the expanded semantic kind taxonomy through the provider schema, Native preflight and human dialog; and the existing simulation-state/solver projection remains. Legacy migration, real reopen/rename proof, stable graph revision, exact geometry/invalidation per semantic kind, explicit fit semantics, continuous motion, flexible/closed-loop/contact and Part Design gates remain. |
+| G8 — Assembly consolidation | K, L, N | **Partial identity/interface/evidence foundation** | New Native-authored graph objects receive write-once persisted identities; component interfaces expose the expanded semantic taxonomy plus a separate optional versioned engineering-fit contract through provider, Native persistence, projection and human-dialog paths; and the existing simulation-state/solver projection remains. Legacy migration, real reopen/rename proof, stable graph revision, exact geometry/invalidation per semantic kind, fit evaluation against geometry/catalog standards, continuous motion, flexible/closed-loop/contact and Part Design gates remain. |
 | G9 — joint inference | M | **Partial contract/acceptance foundation** | The installed mutation-free planning facade binds deterministic ranked proposals to the exact persisted-identity graph revision, reports ambiguous/no-candidate outcomes, and revalidates accepted proposals before delegating once to an injected Assembly mutation owner with its ordinary receipt and provenance; real runtime-owner binding, rejection persistence, bounded geometry extraction, all intended joint families and adversarial fixture coverage remain. |
 | G10 — assembly sequencing | O | **Partial contract foundation** | The installed bounded planner now validates exact graph currentness and precedence, deterministically enumerates explicit-evidence orders, and separates sampled, continuous, collision, inaccessible, unsupported and indeterminate verdicts; real insertion/access/fastener/fixture/contact extraction, native collision/continuous-motion evidence, durable records and runtime/GUI integration remain. |
 | G11 — service/disassembly | P | **Partial projection foundation; closure blocked by G10** | Current G10 alternatives can now be reversed for explicit targets under protected-component constraints, with a bounded-model-only ceiling and equal-optimum reporting; full removal constraints, fastener/tool/fixture/access and replacement policy, minimum-set search, failed reverse-step verification, durable evidence and runtime/GUI integration remain. |
@@ -729,8 +729,20 @@ mates, bolt/mounting patterns, fluid ports, electrical connectors, tools and
 fixtures in addition to the original axis/plane/point/frame kinds. The same
 enumeration is exposed by the strict provider schema and human dialog, and its
 descriptor projection supplies only conservative geometry-family defaults.
-This closes vocabulary transport, not the remaining exact-geometry,
-invalidation, compatibility, or fit semantics.
+This closes vocabulary transport, not the remaining exact-geometry or
+invalidation behavior.
+
+Compatibility identity and engineering fit are now separate public data. The
+legacy `compatibility` token remains unchanged and optional. A second optional
+`vibecad-interface-fit-v1` object records an explicit fit class, optional
+standard/designation, and paired minimum/maximum clearance bounds; it is
+validated, persisted as bounded canonical JSON, exposed by discovery/result
+projection, and editable in the human publication dialog. Existing callers and
+documents without the fit field remain valid and no fit is inferred from
+interface kind, geometry, or proximity. G9 proposal evidence reports
+compatibility-token agreement and fit agreement separately and rejects two
+explicitly contradictory fit declarations. Geometry- and catalog-backed fit
+evaluation remains open.
 
 Closure remains governed by the Assembly specification's release gates and
 owner approval points. This host roadmap must not mark G8 complete merely

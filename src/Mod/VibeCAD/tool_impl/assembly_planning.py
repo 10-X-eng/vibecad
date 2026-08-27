@@ -139,9 +139,16 @@ def propose_joints(
             kinds = sorted(left_joints & right_joints)
             compatibility_equal = bool(left.get("compatibility")) and left.get("compatibility") == right.get("compatibility")
             semantic_equal = bool(left.get("kind")) and left.get("kind") == right.get("kind")
+            left_fit = left.get("fit")
+            right_fit = right.get("fit")
+            fit_declared_both = isinstance(left_fit, Mapping) and isinstance(right_fit, Mapping)
+            fit_equal = fit_declared_both and dict(left_fit) == dict(right_fit)
+            fit_conflict = fit_declared_both and not fit_equal
             if not kinds or (left.get("compatibility") or right.get("compatibility")) and not compatibility_equal:
                 continue
-            score = 100 + (20 if compatibility_equal else 0) + (10 if semantic_equal else 0)
+            if fit_conflict:
+                continue
+            score = 100 + (20 if compatibility_equal else 0) + (15 if fit_equal else 0) + (10 if semantic_equal else 0)
             if left["persistent_id"] in occupied or right["persistent_id"] in occupied:
                 score -= 50
             for joint_kind in kinds:
@@ -153,6 +160,11 @@ def propose_joints(
                     "confidence": "high" if compatibility_equal and semantic_equal else "bounded",
                     "evidence": {
                         "compatibility_equal": compatibility_equal,
+                        "fit_status": (
+                            "equal" if fit_equal else
+                            "partial" if isinstance(left_fit, Mapping) != isinstance(right_fit, Mapping)
+                            else "undeclared"
+                        ),
                         "semantic_kind_equal": semantic_equal,
                         "allowed_by_both": True,
                     },

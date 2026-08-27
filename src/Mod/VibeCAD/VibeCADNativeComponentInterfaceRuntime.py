@@ -22,6 +22,7 @@ from VibeCADNativeState import NativeCallTicket
 _FIELDS = frozenset(
     {"component", "lcs", "name", "kind", "allowed_joints", "compatibility"}
 )
+_FIELDS_WITH_FIT = _FIELDS | {"fit"}
 
 
 class NativeComponentInterfaceRuntime:
@@ -50,10 +51,14 @@ class NativeComponentInterfaceRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        _operation, values = strict_variant_arguments(
-            arguments,
-            {"publish_interface": _FIELDS},
-        )
+        try:
+            _operation, values = strict_variant_arguments(
+                arguments, {"publish_interface": _FIELDS_WITH_FIT}
+            )
+        except NativeArgumentError:
+            _operation, values = strict_variant_arguments(
+                arguments, {"publish_interface": _FIELDS}
+            )
         self._context.guard()
         prepared = prepare_component_interface(self._context.document, values)
         return run_immediate_mutation(

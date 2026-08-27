@@ -5232,10 +5232,25 @@ class PublishComponentInterfaceCommand(_BaseCommand):
             joints.addItem(str(joint))
         compatibility_edit = QtWidgets.QLineEdit(dialog)
         compatibility_edit.setPlaceholderText("Optional exact mating token")
+        fit_combo = QtWidgets.QComboBox(dialog)
+        fit_combo.addItems([
+            "none", "bearing", "clearance", "custom", "interference",
+            "threaded", "transition",
+        ])
+        fit_designation_edit = QtWidgets.QLineEdit(dialog)
+        fit_designation_edit.setPlaceholderText("Optional standard/designation, e.g. H7/g6")
+        fit_minimum_edit = QtWidgets.QLineEdit(dialog)
+        fit_minimum_edit.setPlaceholderText("Optional minimum clearance in mm")
+        fit_maximum_edit = QtWidgets.QLineEdit(dialog)
+        fit_maximum_edit.setPlaceholderText("Optional maximum clearance in mm")
         layout.addRow("Name", name_edit)
         layout.addRow("Kind", kind_combo)
         layout.addRow("Allowed joints", joints)
         layout.addRow("Compatibility", compatibility_edit)
+        layout.addRow("Engineering fit", fit_combo)
+        layout.addRow("Fit designation", fit_designation_edit)
+        layout.addRow("Minimum clearance", fit_minimum_edit)
+        layout.addRow("Maximum clearance", fit_maximum_edit)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
             parent=dialog,
@@ -5251,6 +5266,24 @@ class PublishComponentInterfaceCommand(_BaseCommand):
         try:
             from VibeCADReferenceContracts import publish_native_interface
 
+            fit = None
+            if fit_combo.currentText() != "none":
+                fit = {
+                    "schema": "vibecad-interface-fit-v1",
+                    "fit_class": fit_combo.currentText(),
+                }
+                if fit_designation_edit.text().strip():
+                    fit["designation"] = fit_designation_edit.text().strip()
+                minimum = fit_minimum_edit.text().strip()
+                maximum = fit_maximum_edit.text().strip()
+                if bool(minimum) != bool(maximum):
+                    raise ValueError(
+                        "Minimum and maximum fit clearance must be supplied together."
+                    )
+                if minimum:
+                    fit["minimum_clearance_mm"] = float(minimum)
+                    fit["maximum_clearance_mm"] = float(maximum)
+
             document.openTransaction("Publish component interface")
             transaction_open = True
             publish_native_interface(
@@ -5260,6 +5293,7 @@ class PublishComponentInterfaceCommand(_BaseCommand):
                 kind=kind_combo.currentText(),
                 allowed_joints=[item.text() for item in joints.selectedItems()],
                 compatibility=compatibility_edit.text(),
+                fit=fit,
             )
             document.recompute()
             document.commitTransaction()

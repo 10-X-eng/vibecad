@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+import re
 from typing import Any, Mapping
 
 import VibeCADScriptedPublication as publication
@@ -25,6 +26,11 @@ PROP_NATIVE_INTERFACE_NAME = "VibeCADInterfaceName"
 PROP_NATIVE_INTERFACE_KIND = "VibeCADInterfaceKind"
 PROP_NATIVE_INTERFACE_ALLOWED_JOINTS = "VibeCADInterfaceAllowedJoints"
 PROP_NATIVE_INTERFACE_COMPATIBILITY = "VibeCADInterfaceCompatibility"
+PROP_NATIVE_INTERFACE_FIT = "VibeCADInterfaceFit"
+INTERFACE_FIT_SCHEMA = "vibecad-interface-fit-v1"
+INTERFACE_FIT_CLASSES = frozenset({
+    "bearing", "clearance", "custom", "interference", "threaded", "transition",
+})
 NATIVE_INTERFACE_KINDS = frozenset({
     "axis",
     "bearing_face",
@@ -59,6 +65,53 @@ class NativeInterfaceSpec:
     kind: str
     allowed_joints: tuple[str, ...]
     compatibility: str
+    fit: dict[str, Any] | None = None
+
+
+def normalize_interface_fit(value: Any) -> dict[str, Any] | None:
+    """Normalize explicit fit semantics; never infer fit from geometry."""
+
+    if value in (None, {}):
+        return None
+    if not isinstance(value, Mapping):
+        raise ReferenceContractError("Interface fit must be an object.")
+    allowed = {
+        "schema", "fit_class", "designation",
+        "minimum_clearance_mm", "maximum_clearance_mm",
+    }
+    if set(value) - allowed or value.get("schema") != INTERFACE_FIT_SCHEMA:
+        raise ReferenceContractError("Interface fit uses an unsupported contract.")
+    fit_class = str(value.get("fit_class") or "").strip().lower()
+    if fit_class not in INTERFACE_FIT_CLASSES:
+        raise ReferenceContractError(
+            f"Interface fit_class must be one of {sorted(INTERFACE_FIT_CLASSES)}."
+        )
+    result: dict[str, Any] = {
+        "schema": INTERFACE_FIT_SCHEMA,
+        "fit_class": fit_class,
+    }
+    designation = str(value.get("designation") or "").strip()
+    if designation:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ./_:+-]{0,95}", designation):
+            raise ReferenceContractError("Interface fit designation is invalid.")
+        result["designation"] = designation
+    bounds = []
+    for field in ("minimum_clearance_mm", "maximum_clearance_mm"):
+        if field not in value:
+            continue
+        number = value[field]
+        if isinstance(number, bool) or not isinstance(number, (int, float)):
+            raise ReferenceContractError(f"Interface {field} must be a finite number.")
+        number = float(number)
+        if not math.isfinite(number):
+            raise ReferenceContractError(f"Interface {field} must be a finite number.")
+        result[field] = number
+        bounds.append(field)
+    if len(bounds) == 1:
+        raise ReferenceContractError("Interface fit clearance bounds must be supplied together.")
+    if len(bounds) == 2 and result["minimum_clearance_mm"] > result["maximum_clearance_mm"]:
+        raise ReferenceContractError("Interface fit clearance bounds are reversed.")
+    return result
 
 
 def is_native_coordinate_system(obj: Any) -> bool:
@@ -112,10 +165,18 @@ def native_interface_definitions(component: Any) -> dict[str, dict[str, Any]]:
         compatibility = str(
             getattr(lcs, PROP_NATIVE_INTERFACE_COMPATIBILITY, "") or ""
         ).strip()
+        fit = None
+        raw_fit = str(getattr(lcs, PROP_NATIVE_INTERFACE_FIT, "") or "").strip()
+        if raw_fit:
+            try:
+                fit = normalize_interface_fit(json.loads(raw_fit))
+            except (ValueError, ReferenceContractError):
+                continue
         connector = {
             "kind": kind,
             **({"allowed_joints": list(allowed)} if allowed else {}),
             **({"compatibility": compatibility} if compatibility else {}),
+            **({"fit": fit} if fit is not None else {}),
         }
         definitions[name] = {
             "selection": {
@@ -141,16 +202,17 @@ def prepare_native_interface(
     kind: str,
     allowed_joints: list[str] | tuple[str, ...] = (),
     compatibility: str = "",
+    fit: Mapping[str, Any] | None = None,
 ) -> NativeInterfaceSpec:
     """Validate and normalize one exact native component-interface request."""
 
-    import re
     from vibescript_assembly_api import JOINT_TYPES
 
     clean_name = str(name or "").strip()
     clean_kind = str(kind or "").strip().lower()
     clean_joints = [str(value or "").strip().lower() for value in allowed_joints]
     clean_compatibility = str(compatibility or "").strip()
+    clean_fit = normalize_interface_fit(fit)
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", clean_name):
         raise ReferenceContractError("Interface name is not a stable identifier.")
     if clean_kind not in NATIVE_INTERFACE_KINDS:
@@ -188,6 +250,7 @@ def prepare_native_interface(
         clean_kind,
         tuple(clean_joints),
         clean_compatibility,
+        clean_fit,
     )
 
 
@@ -199,6 +262,7 @@ def publish_native_interface(
     kind: str,
     allowed_joints: list[str] | tuple[str, ...] = (),
     compatibility: str = "",
+    fit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Publish one exact existing LCS as a reusable component connector."""
 
@@ -209,6 +273,7 @@ def publish_native_interface(
         kind=kind,
         allowed_joints=allowed_joints,
         compatibility=compatibility,
+        fit=fit,
     )
     for property_type, property_name, description in (
         ("App::PropertyBool", PROP_NATIVE_INTERFACE, "Marks this LCS as a component interface."),
@@ -216,6 +281,7 @@ def publish_native_interface(
         ("App::PropertyString", PROP_NATIVE_INTERFACE_KIND, "Explicit connector kind."),
         ("App::PropertyString", PROP_NATIVE_INTERFACE_ALLOWED_JOINTS, "JSON list of allowed Assembly joint kinds."),
         ("App::PropertyString", PROP_NATIVE_INTERFACE_COMPATIBILITY, "Exact connector compatibility token."),
+        ("App::PropertyString", PROP_NATIVE_INTERFACE_FIT, "Versioned explicit engineering fit JSON."),
     ):
         if property_name not in set(getattr(lcs, "PropertiesList", []) or []):
             lcs.addProperty(
@@ -233,6 +299,11 @@ def publish_native_interface(
         json.dumps(spec.allowed_joints, ensure_ascii=True, separators=(",", ":")),
     )
     setattr(lcs, PROP_NATIVE_INTERFACE_COMPATIBILITY, spec.compatibility)
+    setattr(
+        lcs,
+        PROP_NATIVE_INTERFACE_FIT,
+        "" if spec.fit is None else json.dumps(spec.fit, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+    )
     return native_interface_definitions(component)[spec.name]
 
 

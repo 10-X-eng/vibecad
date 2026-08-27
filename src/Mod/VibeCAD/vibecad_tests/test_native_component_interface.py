@@ -21,6 +21,7 @@ from VibeCADNativeCapabilityRegistry import provider_visible_native_schema
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeUndo import NativeAssistantUndoLedger
+from VibeCADReferenceContracts import INTERFACE_FIT_SCHEMA
 
 
 class _Object:
@@ -113,6 +114,8 @@ def test_component_interface_contract_is_exact_and_ribbon_scoped() -> None:
     assert branch["properties"]["component"]["required"] == ["object_name"]
     assert branch["properties"]["lcs"]["required"] == ["object_name"]
     assert branch["properties"]["allowed_joints"]["uniqueItems"] is True
+    assert "fit" not in branch["required"]
+    assert branch["properties"]["fit"]["properties"]["schema"]["enum"] == [INTERFACE_FIT_SCHEMA]
     assert set(branch["properties"]["kind"]["enum"]) >= {
         "axis", "bearing_face", "bearing_seat", "bolt_pattern", "bore",
         "electrical_connector", "fixture", "fluid_port", "frame",
@@ -173,7 +176,56 @@ def test_component_interface_preflight_resolves_and_normalizes_exact_targets() -
     assert prepared.spec.kind == "axis"
     assert prepared.spec.allowed_joints == ("revolute", "fixed")
     assert prepared.spec.compatibility == "mount-v1"
-    assert prepared.initial_state == ((False, None),) * 5
+    assert prepared.initial_state == ((False, None),) * 6
+
+
+def test_component_interface_fit_is_optional_versioned_and_separate_from_compatibility() -> None:
+    document = _Document()
+    values = {key: value for key, value in _arguments().items() if key != "operation"}
+    values["fit"] = {
+        "schema": INTERFACE_FIT_SCHEMA,
+        "fit_class": "clearance",
+        "designation": "H7/g6",
+        "minimum_clearance_mm": 0.008,
+        "maximum_clearance_mm": 0.034,
+    }
+
+    spec = prepare_component_interface(document, values).spec
+
+    assert spec.compatibility == "mount-v1"
+    assert spec.fit == values["fit"]
+
+
+@pytest.mark.parametrize(
+    "fit, message",
+    (
+        ({"schema": "old", "fit_class": "clearance"}, "unsupported"),
+        ({"schema": INTERFACE_FIT_SCHEMA, "fit_class": "unknown"}, "fit_class"),
+        (
+            {
+                "schema": INTERFACE_FIT_SCHEMA,
+                "fit_class": "interference",
+                "minimum_clearance_mm": -0.01,
+            },
+            "together",
+        ),
+        (
+            {
+                "schema": INTERFACE_FIT_SCHEMA,
+                "fit_class": "clearance",
+                "minimum_clearance_mm": 0.1,
+                "maximum_clearance_mm": 0.01,
+            },
+            "reversed",
+        ),
+    ),
+)
+def test_component_interface_rejects_invalid_or_partial_fit(fit: dict, message: str) -> None:
+    document = _Document()
+    values = {key: value for key, value in _arguments().items() if key != "operation"}
+    values["fit"] = fit
+    with pytest.raises(NativeComponentInterfaceError, match=message):
+        prepare_component_interface(document, values)
 
 
 @pytest.mark.parametrize(
@@ -244,6 +296,38 @@ def test_component_interface_runtime_preflights_before_one_mutation(monkeypatch)
     assert draft.document is document
     assert draft.prepared is prepared
     assert captured["verify"] is runtime_module.verify_component_interface
+
+
+def test_component_interface_runtime_accepts_additive_fit_field(monkeypatch) -> None:
+    runtime, state, document = _runtime()
+    captured = {}
+    arguments = _arguments()
+    arguments["fit"] = {
+        "schema": INTERFACE_FIT_SCHEMA,
+        "fit_class": "threaded",
+        "designation": "M8x1.25",
+    }
+    values = {key: value for key, value in arguments.items() if key != "operation"}
+    monkeypatch.setattr(
+        runtime_module,
+        "prepare_component_interface",
+        lambda target_document, target_values: (
+            object()
+            if target_document is document and target_values == values
+            else pytest.fail("fit field did not reach exact preflight")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "run_immediate_mutation",
+        lambda context, **kwargs: captured.update(context=context, **kwargs)
+        or {"routed": True},
+    )
+
+    assert runtime.publish_interface(
+        arguments,
+        ticket=state.begin_call(document.Uid, "component.interface"),
+    ) == {"routed": True}
 
 
 def test_component_interface_runtime_rejects_noisy_arguments_before_preflight(

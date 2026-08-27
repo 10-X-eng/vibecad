@@ -11,6 +11,7 @@ from VibeCADNativeCapabilityRegistry import (
 )
 from VibeCADNativeDesignSchema import object_reference_schema, parameters_schema
 from vibescript_assembly_api import JOINT_TYPES
+from VibeCADReferenceContracts import INTERFACE_FIT_CLASSES, INTERFACE_FIT_SCHEMA
 
 
 COMPONENT_INTERFACE_CAPABILITY_NAME = "component.interface"
@@ -46,6 +47,18 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
             "maxLength": 128,
             "pattern": r"^(?:|[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$",
         },
+        "fit": {
+            "type": "object",
+            "properties": {
+                "schema": {"type": "string", "enum": [INTERFACE_FIT_SCHEMA]},
+                "fit_class": {"type": "string", "enum": sorted(INTERFACE_FIT_CLASSES)},
+                "designation": {"type": "string", "maxLength": 96},
+                "minimum_clearance_mm": {"type": "number"},
+                "maximum_clearance_mm": {"type": "number"},
+            },
+            "required": ["schema", "fit_class"],
+            "additionalProperties": False,
+        },
     }
     return NativeCapabilityDefinition(
         name=COMPONENT_INTERFACE_CAPABILITY_NAME,
@@ -60,7 +73,7 @@ def component_interface_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type="Component + LocalCoordinateSystem",
                 transaction_behavior="document",
                 background_required=False,
-                parameters=parameters_schema(fields, tuple(fields)),
+                parameters=parameters_schema(fields, tuple(key for key in fields if key != "fit")),
             ),
         ),
     )

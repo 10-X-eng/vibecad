@@ -100,6 +100,26 @@ def test_joint_proposals_report_ambiguity_and_no_candidate() -> None:
     assert propose_joints(incompatible)["status"] == "no-candidate"
 
 
+def test_joint_proposals_keep_compatibility_and_fit_evidence_separate() -> None:
+    source = scenario()
+    fit = {
+        "schema": "vibecad-interface-fit-v1",
+        "fit_class": "clearance",
+        "minimum_clearance_mm": 0.008,
+        "maximum_clearance_mm": 0.034,
+    }
+    source["interfaces"][0]["fit"] = fit
+    source["interfaces"][1]["fit"] = dict(fit)
+
+    candidate = propose_joints(source)["candidates"][0]
+
+    assert candidate["evidence"]["compatibility_equal"] is True
+    assert candidate["evidence"]["fit_status"] == "equal"
+
+    source["interfaces"][1]["fit"]["maximum_clearance_mm"] = 0.05
+    assert propose_joints(source)["status"] == "no-candidate"
+
+
 def test_joint_acceptance_revalidates_and_delegates_once_with_provenance() -> None:
     source = scenario()
     proposals = propose_joints(source)

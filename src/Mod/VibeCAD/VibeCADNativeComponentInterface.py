@@ -22,6 +22,7 @@ from VibeCADReferenceContracts import (
     PROP_NATIVE_INTERFACE,
     PROP_NATIVE_INTERFACE_ALLOWED_JOINTS,
     PROP_NATIVE_INTERFACE_COMPATIBILITY,
+    PROP_NATIVE_INTERFACE_FIT,
     PROP_NATIVE_INTERFACE_KIND,
     PROP_NATIVE_INTERFACE_NAME,
     ReferenceContractError,
@@ -39,6 +40,7 @@ _INTERFACE_PROPERTIES = (
     PROP_NATIVE_INTERFACE_KIND,
     PROP_NATIVE_INTERFACE_ALLOWED_JOINTS,
     PROP_NATIVE_INTERFACE_COMPATIBILITY,
+    PROP_NATIVE_INTERFACE_FIT,
 )
 _LCS_TYPES = (
     "App::LocalCoordinateSystem",
@@ -159,6 +161,7 @@ def _desired_connector(spec: NativeInterfaceSpec) -> dict[str, Any]:
             else {}
         ),
         **({"compatibility": spec.compatibility} if spec.compatibility else {}),
+        **({"fit": dict(spec.fit)} if spec.fit is not None else {}),
     }
 
 
@@ -187,14 +190,16 @@ def prepare_component_interface(
     document: Any,
     values: Mapping[str, Any],
 ) -> PreparedComponentInterface:
-    if not isinstance(values, Mapping) or set(values) != {
+    if not isinstance(values, Mapping) or set(values) not in ({
         "component",
         "lcs",
         "name",
         "kind",
         "allowed_joints",
         "compatibility",
-    }:
+    }, {
+        "component", "lcs", "name", "kind", "allowed_joints", "compatibility", "fit",
+    }):
         raise NativeComponentInterfaceError(
             "A component-interface publication is invalid."
         )
@@ -219,6 +224,7 @@ def prepare_component_interface(
             kind=values["kind"],
             allowed_joints=values["allowed_joints"],
             compatibility=values["compatibility"],
+            fit=values.get("fit"),
         )
     except (ReferenceContractError, TypeError, ValueError) as exc:
         raise NativeComponentInterfaceError(str(exc)) from exc
@@ -258,6 +264,7 @@ def publish_component_interface(
             kind=prepared.spec.kind,
             allowed_joints=prepared.spec.allowed_joints,
             compatibility=prepared.spec.compatibility,
+            fit=prepared.spec.fit,
         )
         if current != prepared.spec:
             raise NativeComponentInterfaceError(
@@ -270,6 +277,7 @@ def publish_component_interface(
             kind=current.kind,
             allowed_joints=current.allowed_joints,
             compatibility=current.compatibility,
+            fit=current.fit,
         )
         assign_persistent_identity(lcs, "interface")
     except NativeComponentInterfaceError:
@@ -328,6 +336,8 @@ def verify_component_interface(
         != list(spec.allowed_joints)
         or str(getattr(lcs, PROP_NATIVE_INTERFACE_COMPATIBILITY))
         != spec.compatibility
+        or str(getattr(lcs, PROP_NATIVE_INTERFACE_FIT, "") or "")
+        != ("" if spec.fit is None else json.dumps(spec.fit, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
     ):
         raise NativeComponentInterfaceError(
             "The component interface failed its exact publication postcondition."
@@ -341,6 +351,7 @@ def verify_component_interface(
             "kind": spec.kind,
             "allowed_joints": list(spec.allowed_joints),
             "compatibility": spec.compatibility,
+            "fit": None if spec.fit is None else dict(spec.fit),
             "origin_mm": list(frame["origin_mm"]),
             "axis_direction": list(frame["axis_direction"]),
             "x_direction": list(frame["x_direction"]),
