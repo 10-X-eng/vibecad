@@ -8,10 +8,12 @@ import pytest
 
 from VibeCADAssemblyPlanning import (
     AssemblyPlanningError,
+    JOINT_ACCEPTANCE_SCHEMA,
     JOINT_PROPOSAL_SCHEMA,
     SCENARIO_SCHEMA,
     SEQUENCE_SCHEMA,
     SERVICE_SCHEMA,
+    accept_joint_proposal,
     normalize_scenario,
     plan_sequence,
     plan_service,
@@ -96,6 +98,49 @@ def test_joint_proposals_report_ambiguity_and_no_candidate() -> None:
     incompatible = scenario()
     incompatible["interfaces"][1]["compatibility"] = "hinge.m10"
     assert propose_joints(incompatible)["status"] == "no-candidate"
+
+
+def test_joint_acceptance_revalidates_and_delegates_once_with_provenance() -> None:
+    source = scenario()
+    proposals = propose_joints(source)
+    calls = []
+
+    result = accept_joint_proposal(
+        source,
+        proposals,
+        proposals["candidates"][0]["proposal_id"],
+        assembly_owner=lambda proposal: calls.append(proposal) or {
+            "receipt": {"revision_before": 4, "revision_after": 5}
+        },
+    )
+
+    assert result["schema"] == JOINT_ACCEPTANCE_SCHEMA
+    assert result["mutation_owner"] == "native-assembly"
+    assert result["receipt"]["revision_after"] == 5
+    assert result["provenance"]["source_proposal_id"] == result["proposal_id"]
+    assert calls == [proposals["candidates"][0]]
+
+
+def test_joint_acceptance_rejects_stale_or_tampered_before_calling_owner() -> None:
+    source = scenario()
+    proposals = propose_joints(source)
+    calls = []
+    stale_source = scenario()
+    stale_source["occurrences"].append({"persistent_id": "occ.new"})
+    with pytest.raises(AssemblyPlanningError, match="current"):
+        accept_joint_proposal(
+            stale_source, proposals, proposals["candidates"][0]["proposal_id"],
+            assembly_owner=lambda proposal: calls.append(proposal),
+        )
+
+    tampered = deepcopy(proposals)
+    tampered["candidates"][0]["joint_kind"] = "fixed"
+    with pytest.raises(AssemblyPlanningError, match="altered"):
+        accept_joint_proposal(
+            source, tampered, tampered["candidates"][0]["proposal_id"],
+            assembly_owner=lambda proposal: calls.append(proposal),
+        )
+    assert calls == []
 
 
 def sequence_constraints(source: dict, **verdicts: str) -> dict:

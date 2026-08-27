@@ -9,13 +9,14 @@ import hashlib
 import json
 import math
 import re
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 
 SCENARIO_SCHEMA = "vibecad-assembly-scenario-v1"
 JOINT_PROPOSAL_SCHEMA = "vibecad-joint-proposals-v1"
 SEQUENCE_SCHEMA = "vibecad-assembly-sequence-v1"
 SERVICE_SCHEMA = "vibecad-service-plan-v1"
+JOINT_ACCEPTANCE_SCHEMA = "vibecad-joint-acceptance-v1"
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}$")
 _VERDICTS = frozenset({
     "sampled-clear", "continuous-pass", "collision", "inaccessible",
@@ -168,6 +169,60 @@ def propose_joints(
         "mutation_performed": False,
         "candidates": bounded,
         "truncated": len(candidates) > len(bounded),
+    }
+
+
+def accept_joint_proposal(
+    scenario: Mapping[str, Any],
+    proposals: Mapping[str, Any],
+    proposal_id: str,
+    *,
+    assembly_owner: Callable[[dict[str, Any]], Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Revalidate one proposal and delegate its mutation to the Assembly owner."""
+
+    normalized = normalize_scenario(scenario)
+    selected_id = _identifier(proposal_id, "proposal_id")
+    if proposals.get("schema") != JOINT_PROPOSAL_SCHEMA:
+        raise AssemblyPlanningError("Joint proposals use an unsupported schema.")
+    if (
+        proposals.get("scenario_id") != normalized["scenario_id"]
+        or proposals.get("graph_revision") != normalized["graph_revision"]
+    ):
+        raise AssemblyPlanningError("Joint proposal acceptance requires the current graph revision.")
+    canonical = propose_joints(normalized, max_candidates=512)
+    expected = {
+        item["proposal_id"]: item for item in canonical["candidates"]
+    }.get(selected_id)
+    supplied = {
+        str(item.get("proposal_id") or ""): item
+        for item in proposals.get("candidates", [])
+        if isinstance(item, Mapping)
+    }.get(selected_id)
+    if expected is None or supplied != expected:
+        raise AssemblyPlanningError("Selected joint proposal is missing or has been altered.")
+    if not callable(assembly_owner):
+        raise AssemblyPlanningError("An Assembly mutation owner is required for acceptance.")
+    owner_result = assembly_owner(dict(expected))
+    if not isinstance(owner_result, Mapping):
+        raise AssemblyPlanningError("Assembly owner did not return a mutation result.")
+    receipt = owner_result.get("receipt")
+    if not isinstance(receipt, Mapping) or not receipt:
+        raise AssemblyPlanningError("Assembly owner did not return an ordinary mutation receipt.")
+    return {
+        "schema": JOINT_ACCEPTANCE_SCHEMA,
+        "scenario_id": normalized["scenario_id"],
+        "source_graph_revision": normalized["graph_revision"],
+        "proposal_id": selected_id,
+        "joint_kind": expected["joint_kind"],
+        "interface_ids": list(expected["interface_ids"]),
+        "mutation_owner": "native-assembly",
+        "receipt": dict(receipt),
+        "provenance": {
+            "source_proposal_schema": JOINT_PROPOSAL_SCHEMA,
+            "source_proposal_id": selected_id,
+            "source_graph_revision": normalized["graph_revision"],
+        },
     }
 
 
