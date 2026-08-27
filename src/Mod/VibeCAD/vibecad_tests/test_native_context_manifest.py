@@ -450,6 +450,9 @@ def test_provider_actions_have_exact_variants_and_transaction_classification() -
     assert provider_actions[
         "VibeCAD_ManufactureUpdateToolBit"
     ].capability_family == "manufacture.update_tool"
+    assert provider_actions["CAM_SetStartPoint"].capability_family == (
+        "manufacture.start_point"
+    )
     assert provider_actions["VibeCAD_AnalyzeReadAnalysis"].operation_variant == (
         "analysis"
     )

@@ -23,6 +23,7 @@ from VibeCADNativeManufactureOperationSchema import (
     manufacture_operation_capability_definition,
 )
 from VibeCADNativeManufactureFocusedOperationSchema import (
+    MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES,
     manufacture_focused_operation_capability_definitions,
 )
 from VibeCADNativeManufactureProgramSchema import (
@@ -60,10 +61,7 @@ _AVAILABLE = (
     "manufacture.set_controller",
     "manufacture.update_tool",
     "manufacture.operation",
-    "manufacture.face",
-    "manufacture.pocket",
-    "manufacture.profile",
-    "manufacture.drill",
+    *MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES.values(),
     "manufacture.program",
     "manufacture.modify",
     "manufacture.probe",

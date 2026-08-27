@@ -45,8 +45,26 @@ _COMMON_OPERATIONS = frozenset(
     {
         "manufacture.face",
         "manufacture.pocket",
+        "manufacture.pocket_3d",
         "manufacture.profile",
         "manufacture.drill",
+        "manufacture.surface",
+        "manufacture.waterline",
+        "manufacture.rotary_surface",
+        "manufacture.helix",
+        "manufacture.adaptive",
+        "manufacture.slot",
+        "manufacture.thread_mill",
+        "manufacture.engrave",
+        "manufacture.deburr",
+        "manufacture.v_carve",
+    }
+)
+_OPERATION_EDITS = frozenset(
+    {
+        "manufacture.array",
+        "manufacture.copy_path",
+        "manufacture.start_point",
     }
 )
 
@@ -135,7 +153,7 @@ def manufacture_provider_tool_names(
             }
         )
     if any(int(setup["counts"]["operations"]) > 0 for setup in setups):
-        allowed.add("manufacture.modify")
+        allowed.update(_OPERATION_EDITS | {"manufacture.modify"})
     if any(_readiness_ready(setup, "simulation") for setup in setups):
         allowed.update(
             {

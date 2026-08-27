@@ -139,6 +139,19 @@ def test_common_cam_operations_resolve_to_focused_provider_tools() -> None:
         "CAM_Pocket_Shape": ("manufacture.pocket", "pocket_shape"),
         "CAM_Profile": ("manufacture.profile", "profile"),
         "CAM_Drilling": ("manufacture.drill", "drilling"),
+        "CAM_Pocket3D": ("manufacture.pocket_3d", "pocket_3d"),
+        "CAM_Surface": ("manufacture.surface", "surface"),
+        "CAM_Waterline": ("manufacture.waterline", "waterline"),
+        "CAM_RotarySurface": ("manufacture.rotary_surface", "rotary_surface"),
+        "CAM_Helix": ("manufacture.helix", "helix"),
+        "CAM_Adaptive": ("manufacture.adaptive", "adaptive"),
+        "CAM_Slot": ("manufacture.slot", "slot"),
+        "CAM_ThreadMilling": ("manufacture.thread_mill", "thread_milling"),
+        "CAM_Engrave": ("manufacture.engrave", "engrave"),
+        "CAM_Deburr": ("manufacture.deburr", "deburr"),
+        "CAM_Vcarve": ("manufacture.v_carve", "v_carve"),
+        "CAM_Array": ("manufacture.array", "array"),
+        "CAM_SimpleCopy": ("manufacture.copy_path", "simple_copy"),
     }
 
     plans = {

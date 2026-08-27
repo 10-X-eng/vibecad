@@ -224,7 +224,7 @@ def _run() -> None:
             plan.classification.human_only,
         )
         assert actual_plan == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            "manufacture.copy_path",
             "simple_copy",
             "ExactCamJobPlacedToolpathFlatteningSet",
             True,
@@ -459,4 +459,3 @@ def _run() -> None:
 
 
 QtCore.QTimer.singleShot(1000, _run)
-

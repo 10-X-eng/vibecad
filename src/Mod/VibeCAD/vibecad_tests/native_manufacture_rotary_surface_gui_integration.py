@@ -441,7 +441,7 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            "manufacture.rotary_surface",
             "rotary_surface",
             "ExactCamJobMachineCylinderRotaryFacesControllerAndParameters",
             True,

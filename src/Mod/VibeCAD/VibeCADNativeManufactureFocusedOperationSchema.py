@@ -16,8 +16,22 @@ from VibeCADNativeManufactureOperationSchema import (
 MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES = {
     "profile": "manufacture.profile",
     "pocket_shape": "manufacture.pocket",
+    "pocket_3d": "manufacture.pocket_3d",
+    "surface": "manufacture.surface",
+    "waterline": "manufacture.waterline",
+    "rotary_surface": "manufacture.rotary_surface",
     "mill_facing": "manufacture.face",
+    "helix": "manufacture.helix",
+    "adaptive": "manufacture.adaptive",
+    "slot": "manufacture.slot",
     "drilling": "manufacture.drill",
+    "thread_milling": "manufacture.thread_mill",
+    "engrave": "manufacture.engrave",
+    "deburr": "manufacture.deburr",
+    "v_carve": "manufacture.v_carve",
+    "array": "manufacture.array",
+    "simple_copy": "manufacture.copy_path",
+    "set_start_point": "manufacture.start_point",
 }
 
 

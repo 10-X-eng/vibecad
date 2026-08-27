@@ -192,7 +192,23 @@ def test_common_milling_provider_tools_are_focused_single_operations() -> None:
         "manufacture.drill": {"job", "tool_controller", "geometry"},
     }
 
-    assert set(definitions) == set(expected)
+    assert set(definitions) == {
+        *expected,
+        "manufacture.pocket_3d",
+        "manufacture.surface",
+        "manufacture.waterline",
+        "manufacture.rotary_surface",
+        "manufacture.helix",
+        "manufacture.adaptive",
+        "manufacture.slot",
+        "manufacture.thread_mill",
+        "manufacture.engrave",
+        "manufacture.deburr",
+        "manufacture.v_carve",
+        "manufacture.array",
+        "manufacture.copy_path",
+        "manufacture.start_point",
+    }
     for name, fields in expected.items():
         definition = definitions[name]
         assert len(definition.variants) == 1

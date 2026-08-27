@@ -1118,7 +1118,7 @@ NATIVE_CONTEXT_ACTIONS = (
     ),
     _action(
         "CAM_SetStartPoint", ("manufacture",), ("workbench_context",),
-        "mutation", "manufacture.operation", "set_start_point",
+        "mutation", "manufacture.start_point", "set_start_point",
         "ExactCamJobOperationAndPlanarStartPoint", "document",
         source_command_id="CAM_SetStartPoint",
     ),

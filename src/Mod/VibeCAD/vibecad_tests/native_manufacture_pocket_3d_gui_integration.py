@@ -485,7 +485,7 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            "manufacture.pocket_3d",
             "pocket_3d",
             "ExactCamJobPocket3DFeaturesControllerAndParameters",
             True,

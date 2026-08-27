@@ -65,7 +65,7 @@ def _surface():
         plan.classification.mutation,
         plan.classification.human_only,
     ) == (
-        MANUFACTURE_OPERATION_CAPABILITY_NAME,
+        "manufacture.start_point",
         "set_start_point",
         "ExactCamJobOperationAndPlanarStartPoint",
         True,
