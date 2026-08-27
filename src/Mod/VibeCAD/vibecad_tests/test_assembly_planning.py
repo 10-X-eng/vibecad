@@ -215,6 +215,15 @@ def test_coupling_proposals_refuse_missing_mismatched_or_invalid_evidence() -> N
     source = _coupling_scenario("screw")
     source["joints"][1]["coupling_parameters"]["lead_mm"] = 3.0
     assert propose_couplings(source)["status"] == "no-candidate"
+    source = _coupling_scenario("gears")
+    source["joints"][0]["coupling_parameters"]["pitch_radius_mm"] = 0.0
+    assert propose_couplings(source)["status"] == "no-candidate"
+    source = _coupling_scenario("belt")
+    del source["joints"][1]["moving_occurrence_id"]
+    assert propose_couplings(source)["status"] == "no-candidate"
+    source = _coupling_scenario("gears")
+    source["joints"][1]["moving_occurrence_id"] = "occ.missing"
+    assert propose_couplings(source)["status"] == "no-candidate"
 
 
 def test_coupling_acceptance_revalidates_and_requires_owner_receipt() -> None:
@@ -243,15 +252,6 @@ def test_coupling_acceptance_revalidates_and_requires_owner_receipt() -> None:
             proposals["candidates"][0]["proposal_id"],
             assembly_owner=lambda proposal: pytest.fail("tampered proposal reached owner"),
         )
-    source = _coupling_scenario("gears")
-    source["joints"][0]["coupling_parameters"]["pitch_radius_mm"] = 0.0
-    assert propose_couplings(source)["status"] == "no-candidate"
-    source = _coupling_scenario("belt")
-    del source["joints"][1]["moving_occurrence_id"]
-    assert propose_couplings(source)["status"] == "no-candidate"
-    source = _coupling_scenario("gears")
-    source["joints"][1]["moving_occurrence_id"] = "occ.missing"
-    assert propose_couplings(source)["status"] == "no-candidate"
 
 
 def test_joint_proposals_reject_stale_geometry_but_preserve_unknown_ceiling() -> None:
@@ -268,6 +268,29 @@ def test_joint_proposals_reject_stale_geometry_but_preserve_unknown_ceiling() ->
 
     source["interfaces"][1]["geometry_binding"] = {"status": "stale"}
     assert propose_joints(source)["status"] == "no-candidate"
+
+
+def test_joint_proposals_refuse_incompatible_or_indeterminate_semantic_geometry() -> None:
+    for status in ("incompatible", "indeterminate"):
+        source = scenario()
+        source["interfaces"][0]["geometry_binding"] = {
+            "status": "current",
+            "semantic_evidence": {"status": status},
+        }
+        source["interfaces"][1]["geometry_binding"] = {
+            "status": "current",
+            "semantic_evidence": {"status": "compatible"},
+        }
+        assert propose_joints(source)["status"] == "no-candidate"
+
+    source = scenario()
+    for interface in source["interfaces"][:2]:
+        interface["geometry_binding"] = {
+            "status": "current",
+            "semantic_evidence": {"status": "compatible"},
+        }
+    candidate = propose_joints(source)["candidates"][0]
+    assert set(candidate["evidence"]["semantic_geometry"].values()) == {"compatible"}
 
 
 def test_joint_acceptance_revalidates_and_delegates_once_with_provenance() -> None:

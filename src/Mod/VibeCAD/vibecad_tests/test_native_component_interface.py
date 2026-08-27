@@ -31,6 +31,7 @@ from VibeCADReferenceContracts import (
     PROP_NATIVE_INTERFACE_GEOMETRY,
     capture_native_interface_geometry,
     native_interface_geometry_currentness,
+    semantic_interface_geometry_evidence,
 )
 
 
@@ -297,6 +298,47 @@ def test_interface_geometry_binding_never_promotes_an_unbound_frame() -> None:
     )
     assert binding["status"] == "unbound"
     assert native_interface_geometry_currentness(document.lcs)["status"] == "unbound"
+
+
+def test_interface_semantic_geometry_is_extracted_from_exact_bound_subelement() -> None:
+    document = _Document()
+    source = _Object(document, "CylinderFeature", "PartDesign::Feature")
+    cylinder = SimpleNamespace(
+        ShapeType="Face",
+        Surface=SimpleNamespace(TypeId="Part::GeomCylinder"),
+    )
+    source.Shape = SimpleNamespace(
+        exportBrepToString=lambda: "cylinder-brep",
+        getElement=lambda name: cylinder if name == "Face2" else None,
+    )
+    document.lcs.AttachmentSupport = [(source, ["Face2"])]
+
+    evidence = semantic_interface_geometry_evidence(document.lcs, "axis")
+
+    assert evidence == {
+        "kind": "axis",
+        "status": "compatible",
+        "expected": ["circle", "cylinder", "line"],
+        "observed": ["cylinder"],
+    }
+    binding = capture_native_interface_geometry(document.lcs, kind="axis")
+    assert binding["semantic_evidence"] == evidence
+
+
+def test_component_interface_rejects_explicitly_incompatible_bound_geometry() -> None:
+    document = _Document()
+    source = _Object(document, "PlaneFeature", "PartDesign::Feature")
+    plane = SimpleNamespace(
+        ShapeType="Face",
+        Surface=SimpleNamespace(TypeId="Part::GeomPlane"),
+    )
+    source.Shape = SimpleNamespace(getElement=lambda name: plane)
+    document.lcs.AttachmentSupport = [(source, ["Face1"])]
+    values = {key: value for key, value in _arguments().items() if key != "operation"}
+    values["kind"] = "bore"
+
+    with pytest.raises(NativeComponentInterfaceError, match="incompatible"):
+        prepare_component_interface(document, values)
 
 
 @pytest.mark.parametrize(

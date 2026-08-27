@@ -192,6 +192,11 @@ def propose_joints(
                 if isinstance(value, Mapping) else "unrecorded"
                 for value in (left_geometry, right_geometry)
             ]
+            semantic_statuses = [
+                str(dict(value.get("semantic_evidence") or {}).get("status") or "unrecorded")
+                if isinstance(value, Mapping) else "unrecorded"
+                for value in (left_geometry, right_geometry)
+            ]
             fit_declared_both = isinstance(left_fit, Mapping) and isinstance(right_fit, Mapping)
             fit_equal = fit_declared_both and dict(left_fit) == dict(right_fit)
             fit_conflict = fit_declared_both and not fit_equal
@@ -200,6 +205,8 @@ def propose_joints(
             if fit_conflict:
                 continue
             if any(status in {"stale", "invalid"} for status in geometry_statuses):
+                continue
+            if any(status in {"incompatible", "indeterminate"} for status in semantic_statuses):
                 continue
             geometry_current = all(status == "current" for status in geometry_statuses)
             score = 100 + (20 if compatibility_equal else 0) + (15 if fit_equal else 0) + (10 if semantic_equal else 0) + (15 if geometry_current else 0)
@@ -240,6 +247,11 @@ def propose_joints(
                     or joint_kind in _UNPARAMETERIZED_RELATIONS
                 ):
                     candidate["parameters"] = parameters
+                if any(status != "unrecorded" for status in semantic_statuses):
+                    candidate["evidence"]["semantic_geometry"] = {
+                        left["persistent_id"]: semantic_statuses[0],
+                        right["persistent_id"]: semantic_statuses[1],
+                    }
                 candidates.append(candidate)
     candidates.sort(key=lambda item: (-item["score"], item["joint_kind"], item["interface_ids"]))
     bounded = candidates[:max_candidates]

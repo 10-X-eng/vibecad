@@ -178,7 +178,80 @@ def _native_support_entries(lcs: Any) -> list[tuple[Any, list[str]]]:
     return entries
 
 
-def capture_native_interface_geometry(lcs: Any) -> dict[str, Any]:
+_SEMANTIC_GEOMETRY_REQUIREMENTS = {
+    "axis": frozenset({"cylinder", "circle", "line"}),
+    "bearing_face": frozenset({"plane"}),
+    "bearing_seat": frozenset({"cylinder", "circle"}),
+    "bore": frozenset({"cylinder", "circle"}),
+    "plane": frozenset({"plane"}),
+    "planar_mate": frozenset({"plane"}),
+    "point": frozenset({"vertex"}),
+    "shaft": frozenset({"cylinder", "circle"}),
+    "shaft_seat": frozenset({"cylinder", "circle"}),
+    "thread": frozenset({"cylinder", "circle"}),
+    "thread_axis": frozenset({"cylinder", "circle", "line"}),
+}
+
+
+def _native_subelement_geometry(shape: Any, name: str) -> str | None:
+    reader = getattr(shape, "getElement", None)
+    if not callable(reader):
+        return None
+    try:
+        element = reader(name)
+    except Exception:
+        return None
+    shape_type = str(getattr(element, "ShapeType", "") or "").lower()
+    if shape_type == "vertex":
+        return "vertex"
+    geometry = getattr(element, "Surface", None) or getattr(element, "Curve", None)
+    type_id = str(getattr(geometry, "TypeId", "") or "").lower()
+    for token, normalized in (
+        ("cylinder", "cylinder"), ("circle", "circle"),
+        ("plane", "plane"), ("line", "line"), ("sphere", "sphere"),
+    ):
+        if token in type_id:
+            return normalized
+    return None
+
+
+def semantic_interface_geometry_evidence(lcs: Any, kind: str) -> dict[str, Any]:
+    """Classify only explicitly bound subelements against one semantic kind."""
+
+    clean_kind = str(kind or "").strip().lower()
+    expected = _SEMANTIC_GEOMETRY_REQUIREMENTS.get(clean_kind)
+    if expected is None:
+        return {"kind": clean_kind, "status": "not-applicable", "observed": []}
+    entries = _native_support_entries(lcs)
+    if not entries:
+        return {
+            "kind": clean_kind,
+            "status": "unbound",
+            "expected": sorted(expected),
+            "observed": [],
+        }
+    observed = sorted({
+        geometry
+        for source, subelements in entries
+        for name in subelements
+        for geometry in [_native_subelement_geometry(getattr(source, "Shape", None), name)]
+        if geometry is not None
+    })
+    if not observed:
+        status = "indeterminate"
+    elif any(value in expected for value in observed):
+        status = "compatible"
+    else:
+        status = "incompatible"
+    return {
+        "kind": clean_kind,
+        "status": status,
+        "expected": sorted(expected),
+        "observed": observed,
+    }
+
+
+def capture_native_interface_geometry(lcs: Any, *, kind: str = "") -> dict[str, Any]:
     """Capture conservative LCS support evidence for later invalidation checks."""
 
     supports = []
@@ -206,7 +279,12 @@ def capture_native_interface_geometry(lcs: Any) -> dict[str, Any]:
         "map_mode": str(getattr(lcs, "MapMode", "") or ""),
         "supports": supports,
     }
-    return {**snapshot, "binding_sha256": _interface_geometry_hash(snapshot), "status": status}
+    return {
+        **snapshot,
+        "binding_sha256": _interface_geometry_hash(snapshot),
+        "status": status,
+        "semantic_evidence": semantic_interface_geometry_evidence(lcs, kind),
+    }
 
 
 def _interface_geometry_hash(value: Mapping[str, Any]) -> str:
@@ -228,7 +306,8 @@ def native_interface_geometry_currentness(lcs: Any) -> dict[str, Any]:
         return {"schema": INTERFACE_GEOMETRY_SCHEMA, "status": "invalid"}
     if not isinstance(recorded, Mapping) or recorded.get("schema") != INTERFACE_GEOMETRY_SCHEMA:
         return {"schema": INTERFACE_GEOMETRY_SCHEMA, "status": "invalid"}
-    live = capture_native_interface_geometry(lcs)
+    kind = str(getattr(lcs, PROP_NATIVE_INTERFACE_KIND, "") or "")
+    live = capture_native_interface_geometry(lcs, kind=kind)
     recorded_hash = str(recorded.get("binding_sha256") or "")
     if recorded.get("status") == "unbound" and live["status"] == "unbound":
         status = "unbound"
@@ -243,6 +322,7 @@ def native_interface_geometry_currentness(lcs: Any) -> dict[str, Any]:
         "live_binding_sha256": live["binding_sha256"],
         "map_mode": live["map_mode"],
         "supports": live["supports"],
+        "semantic_evidence": live["semantic_evidence"],
     }
 
 
@@ -393,6 +473,11 @@ def prepare_native_interface(
         raise ReferenceContractError(
             "The selected LCS is not a direct resource of the selected component."
         )
+    semantic = semantic_interface_geometry_evidence(lcs, clean_kind)
+    if semantic["status"] == "incompatible":
+        raise ReferenceContractError(
+            f"Interface kind {clean_kind!r} is incompatible with its bound geometry."
+        )
     for existing_name, definition in native_interface_definitions(component).items():
         native_name = str(
             dict(definition.get("selection") or {}).get("native_lcs") or ""
@@ -475,7 +560,7 @@ def publish_native_interface(
             separators=(",", ":"),
         ),
     )
-    geometry_binding = capture_native_interface_geometry(lcs)
+    geometry_binding = capture_native_interface_geometry(lcs, kind=spec.kind)
     setattr(
         lcs,
         PROP_NATIVE_INTERFACE_GEOMETRY,
