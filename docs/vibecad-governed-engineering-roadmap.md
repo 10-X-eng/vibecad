@@ -1076,6 +1076,14 @@ represent the request. It does not attach common provenance/metrics or prove ins
 behavior. Ambiguous same-name point/cell arrays and unsupported legacy fields
 are refused rather than guessed. EVS-03 and EVS-04 therefore remain partial.
 
+The EVS-05/06 contract foundation adds bounded `EngineeringFieldViewState` for
+selected field, validated scientific colormap, auto/manual/clamped range,
+deformation scale, mesh edges, legend and undeformed outline. Automatic mode
+cannot smuggle manual limits; manual/clamped modes require finite ordered
+limits. This state is explicitly presentation-only and currently grants no
+owner capability or application behavior. Owner-specific controls, scoped
+presets and installed GUI acceptance remain before EVS-05/06 completion.
+
 The shared shell may be designed early, but no durable activity, workflow,
 candidate, interface, sequence, service, or Robot behavior is faked ahead of
 its dependency. Exact owners, initial files, visual examples, and acceptance
@@ -1263,7 +1271,9 @@ Keep the first changes small, reversible, and source-bound:
    result browser through installed GUI acceptance.
 4. **EVS-05 and EVS-06 / X1 scientific view controls:** add truthful legends,
    validated colormaps, deformation and scoped Technical/Analysis presets as
-   presentation state only.
+   presentation state only. The bounded state contract is present; next add
+   owner-capability-aware controls and scoped application without global
+   preference changes.
 5. **EVS-07 through EVS-09 / X2/X5/X6:** connect real chart series, durable
    Analysis activity/workflow state and exact comparable-result projections.
    Do not fabricate data or grant scheduling, ranking, selection, mutation or

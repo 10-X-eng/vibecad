@@ -27,6 +27,7 @@ from VibeCADEngineeringContracts import (
 from VibeCADEngineeringExperience import (
     DomainPresentation,
     EngineeringFieldProjection,
+    EngineeringFieldViewState,
     PresentationMetric,
     governance_role,
     project_analysis_activity,
@@ -183,6 +184,40 @@ def test_field_contract_preserves_explicitly_unavailable_metadata():
             "partial", "Partial", "domain.partial", "point", 1,
             None, 0, None, "scalar", "viridis",
         )
+
+
+def test_field_view_state_separates_validated_ui_state_from_engineering_data():
+    state = EngineeringFieldViewState(
+        "vonMises", "turbo", "manual", 12.4, 347.8, 2.5, True, True, True
+    )
+
+    assert state.to_dict() == {
+        "selected_field_id": "vonMises",
+        "color_map": "turbo",
+        "range_mode": "manual",
+        "range_minimum": 12.4,
+        "range_maximum": 347.8,
+        "deformation_scale": 2.5,
+        "show_mesh_edges": True,
+        "show_legend": True,
+        "show_undeformed": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "arguments,message",
+    (
+        (("field", "rainbow"), "color map"),
+        (("field", "turbo", "manual"), "require both"),
+        (("field", "turbo", "auto", 0.0, 1.0), "cannot carry"),
+        (("field", "turbo", "manual", 2.0, 1.0), "cannot exceed"),
+        (("field", "turbo", "auto", None, None, -1.0), "between"),
+        (("field", "turbo", "auto", None, None, 1.0, 1), "boolean"),
+    ),
+)
+def test_field_view_state_rejects_ambiguous_or_invalid_controls(arguments, message):
+    with pytest.raises(AnalysisContractError, match=message):
+        EngineeringFieldViewState(*arguments)
 
 
 def test_duplicate_and_unbounded_projection_items_are_refused():

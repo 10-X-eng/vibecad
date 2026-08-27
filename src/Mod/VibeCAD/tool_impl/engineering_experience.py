@@ -27,6 +27,7 @@ MAX_ACTIVITY_EVENTS = 8192
 MAX_MANUFACTURE_OUTPUTS = 64
 ASSOCIATIONS = frozenset({"point", "cell", "object"})
 PRESENTATIONS = frozenset({"scalar", "vector", "tensor"})
+RANGE_MODES = frozenset({"auto", "manual", "clamped"})
 SCIENTIFIC_COLOR_MAPS = frozenset(
     {"turbo", "viridis", "inferno", "blue-white-red", "safety-factor"}
 )
@@ -110,6 +111,51 @@ class EngineeringFieldProjection:
             raise AnalysisContractError("Unknown field presentation.")
         if self.default_color_map not in SCIENTIFIC_COLOR_MAPS:
             raise AnalysisContractError("Unknown scientific color map.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True, slots=True)
+class EngineeringFieldViewState:
+    """Bounded UI state; never scientific data or presentation authority."""
+
+    selected_field_id: str
+    color_map: str
+    range_mode: str = "auto"
+    range_minimum: float | None = None
+    range_maximum: float | None = None
+    deformation_scale: float = 1.0
+    show_mesh_edges: bool = False
+    show_legend: bool = True
+    show_undeformed: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "selected_field_id", _text(self.selected_field_id, "selected_field_id")
+        )
+        if self.color_map not in SCIENTIFIC_COLOR_MAPS:
+            raise AnalysisContractError("Unknown scientific color map.")
+        if self.range_mode not in RANGE_MODES:
+            raise AnalysisContractError("Unknown engineering field range mode.")
+        known_range = self.range_minimum is not None or self.range_maximum is not None
+        if self.range_mode == "auto" and known_range:
+            raise AnalysisContractError("Automatic range mode cannot carry a manual range.")
+        if self.range_mode != "auto" and (
+            self.range_minimum is None or self.range_maximum is None
+        ):
+            raise AnalysisContractError("Manual and clamped range modes require both limits.")
+        if self.range_minimum is not None:
+            object.__setattr__(self, "range_minimum", _number(self.range_minimum, "range_minimum"))
+            object.__setattr__(self, "range_maximum", _number(self.range_maximum, "range_maximum"))
+            if self.range_minimum > self.range_maximum:
+                raise AnalysisContractError("View range minimum cannot exceed maximum.")
+        object.__setattr__(self, "deformation_scale", _number(self.deformation_scale, "deformation_scale"))
+        if not 0.0 <= self.deformation_scale <= 1_000_000.0:
+            raise AnalysisContractError("deformation_scale must be between 0 and 1000000.")
+        for name in ("show_mesh_edges", "show_legend", "show_undeformed"):
+            if type(getattr(self, name)) is not bool:
+                raise AnalysisContractError(f"{name} must be a boolean.")
 
     def to_dict(self) -> dict[str, Any]:
         return {name: getattr(self, name) for name in self.__dataclass_fields__}

@@ -138,10 +138,15 @@ workbench or authority layer. The implementation sequence is:
 5. **EVS-05 — legend and colormap view state (X1).** Add named units, exact
    min/max, auto/manual/clamped range and a validated colormap registry.
    Palette choice remains presentation state and cannot alter engineering
-   values, verdicts or currentness.
+   values, verdicts or currentness. **Partial contract foundation:** validated
+   field selection, palette, range, legend, deformation and overlay state now
+   exists independently of engineering data; owner capability/application and
+   installed GUI acceptance remain.
 6. **EVS-06 — deformation and scoped technical presets (X1).** Expose existing
    deformation scale, mesh-edge and undeformed-outline capabilities through
-   scoped VibeCAD view state; do not globally rewrite user preferences.
+   scoped VibeCAD view state; do not globally rewrite user preferences. The
+   bounded per-view state exists; owner-specific application and preset UX
+   remain.
 7. **EVS-07 — engineering charts (X1/X5/X6).** Reuse the existing table,
    histogram and line-plot owners for real convergence, history and comparison
    series with declared axes/units. No cosmetic data.
