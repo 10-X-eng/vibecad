@@ -146,22 +146,42 @@ def terminate_process_tree(
 
     if process.poll() is not None:
         return
-    try:
-        if sys.platform == "win32":
-            system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-            taskkill = system_root / "System32" / "taskkill.exe"
-            subprocess.run(
-                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                shell=False,
-                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
-                timeout=timeout_seconds,
-                check=False,
-            )
-        else:
+    if sys.platform != "win32":
+        try:
             os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=timeout_seconds)
+        except Exception:
+            pass
+        # The wrapper can exit while an MPI rank/helper ignores SIGTERM. Reap
+        # the entire isolated session even when waiting for the wrapper itself
+        # succeeded. ProcessLookupError means the group already disappeared.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+        try:
+            process.wait(timeout=timeout_seconds)
+        except Exception:
+            pass
+        return
+    try:
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        taskkill = system_root / "System32" / "taskkill.exe"
+        subprocess.run(
+            [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+            timeout=timeout_seconds,
+            check=False,
+        )
         process.wait(timeout=timeout_seconds)
     except Exception:
         try:
@@ -211,6 +231,24 @@ def bounded_log_tail(
             return stream.read(bound).decode("utf-8", errors="replace").strip()
     except Exception:
         return ""
+
+
+def redact_process_output(text: str, environment: Mapping[str, str]) -> str:
+    """Remove exact environment values before process diagnostics escape."""
+
+    redacted = str(text or "")
+    values = sorted(
+        {
+            str(value)
+            for value in environment.values()
+            if len(str(value)) >= 4
+        },
+        key=len,
+        reverse=True,
+    )
+    for value in values:
+        redacted = redacted.replace(value, "[REDACTED]")
+    return redacted
 
 
 def _log_exceeds_limit(path: Path, maximum_log_bytes: int | None) -> bool:
@@ -356,7 +394,10 @@ def run_process_sequence(
                 stage=index,
                 program=program,
                 exit_code=exit_code,
-                detail=bounded_log_tail(log_path),
+                detail=redact_process_output(
+                    bounded_log_tail(log_path),
+                    environment,
+                ),
             )
         completed.append(
             ExternalProcessStage(
