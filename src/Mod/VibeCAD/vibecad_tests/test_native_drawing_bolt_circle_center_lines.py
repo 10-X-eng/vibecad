@@ -88,17 +88,16 @@ def test_bolt_circle_schema_is_one_closed_exact_operation() -> None:
     assert len(branches) == 1
     create = branches[0]
     assert create["properties"]["operation"]["const"] == "create"
-    assert create["required"] == ["operation", "page", "view", "holes"]
+    assert create["required"] == ["page", "view", "holes"]
     assert create["additionalProperties"] is False
     holes = create["properties"]["holes"]
     assert holes["minItems"] == 3
     assert holes["maxItems"] == 32
     assert holes["items"]["additionalProperties"] is False
-    assert holes["items"]["required"] == [
-        "subelement",
-        "expected_element_state_sha256",
-    ]
+    assert holes["items"]["required"] == ["subelement"]
+    assert set(holes["items"]["properties"]) == {"subelement"}
     variant = definition.variants[0]
+    assert "pitch circle" in definition.description
     assert variant.action_ids == frozenset({"TechDraw_ExtensionHoleCircle"})
     assert variant.surface_ids == frozenset({"drawing"})
     assert variant.exact_target_type == (

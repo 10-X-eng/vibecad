@@ -26,7 +26,7 @@ from VibeCADNativeDrawingClipState import (
     drawing_clip_group_state,
     drawing_clip_member_state,
 )
-from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAME
+from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAMES
 from VibeCADNativeDrawingState import drawing_page_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -105,7 +105,7 @@ def _create_view(document, page, source, name, x_mm, y_mm):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAME)
+    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAMES[0])
     clip_definition = registry.definition(DRAWING_CLIP_CAPABILITY_NAME)
     assert page_definition is not None and clip_definition is not None
     page_schema = page_definition.provider_schema(("page_default",))
@@ -133,7 +133,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(DRAWING_PAGE_CAPABILITY_NAME, DRAWING_CLIP_CAPABILITY_NAME),
+            tool_names=(DRAWING_PAGE_CAPABILITY_NAMES[0], DRAWING_CLIP_CAPABILITY_NAME),
             schemas=(page_schema, clip_schema),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -231,15 +231,21 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state_store,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def refresh_dispatcher() -> NativeTurnDispatcher:
+            nonlocal turn, frozen
+            turn = _turn(surface, registry)
+            frozen = turn.surface
+            return NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = refresh_dispatcher()
         call_index = 0
 
         def call(tool_name: str, arguments: dict, *, succeeds: bool = True) -> dict:
@@ -253,7 +259,7 @@ def _run() -> None:
             assert response.get("ok") is succeeds, response
             return response
 
-        page_result = call(DRAWING_PAGE_CAPABILITY_NAME, {"operation": "page_default"})
+        page_result = call(DRAWING_PAGE_CAPABILITY_NAMES[0], {"operation": "page_default"})
         _events(12)
         page = document.getObject(page_result["page"]["object_name"])
         assert page is not None
@@ -285,6 +291,7 @@ def _run() -> None:
         assert page is not None and first is not None and source is not None
         assert document.getObject(human_name) is None
         assert tuple(page.Views) == (first,)
+        dispatcher = refresh_dispatcher()
 
         page_state = drawing_page_state(page)
         first_state = drawing_clip_member_state(first)
@@ -400,6 +407,7 @@ def _run() -> None:
         first = document.getObject(first.Name)
         second = document.getObject(second.Name)
         assert tuple(clip.Views) == (first,)
+        dispatcher = refresh_dispatcher()
 
         add_arguments = {
             "operation": "add_views",
@@ -428,6 +436,7 @@ def _run() -> None:
         first = document.getObject(first.Name)
         second = document.getObject(second.Name)
         assert tuple(clip.Views) == (first, second)
+        dispatcher = refresh_dispatcher()
 
         configure = {
             "operation": "configure_clip_group",

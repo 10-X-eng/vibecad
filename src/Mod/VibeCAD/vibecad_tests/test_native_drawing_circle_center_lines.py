@@ -69,20 +69,20 @@ def test_circle_centerline_schema_is_one_closed_exact_operation() -> None:
     assert len(branches) == 1
     create = branches[0]
     assert create["properties"]["operation"]["const"] == "create"
-    assert create["required"] == ["operation", "page", "view", "circles"]
+    assert create["required"] == ["page", "view", "circles"]
     assert create["additionalProperties"] is False
     circles = create["properties"]["circles"]
     assert circles["minItems"] == 1
     assert circles["maxItems"] == 32
     assert circles["items"]["additionalProperties"] is False
-    assert circles["items"]["required"] == [
-        "subelement",
-        "expected_element_state_sha256",
-    ]
+    assert circles["items"]["required"] == ["subelement"]
+    assert set(circles["items"]["properties"]) == {"subelement"}
     assert circles["items"]["properties"]["subelement"]["pattern"] == (
         r"^Edge(?:0|[1-9][0-9]*)$"
     )
     variant = definition.variants[0]
+    assert "center marks" in definition.description
+    assert "bolt-pattern" not in definition.description
     assert variant.action_ids == frozenset(
         {"TechDraw_ExtensionCircleCenterLines"}
     )

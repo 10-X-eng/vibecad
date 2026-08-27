@@ -166,7 +166,14 @@ def test_drawing_page_actions_resolve_to_four_exact_variants() -> None:
         for command_id in expected
     }
 
-    assert all(plan.capability_family == "drawing.page" for plan in plans.values())
+    assert {
+        command_id: plan.capability_family for command_id, plan in plans.items()
+    } == {
+        "TechDraw_PageDefault": "drawing.create_page",
+        "TechDraw_PageTemplate": "drawing.choose_page_template",
+        "TechDraw_FillTemplateFields": "drawing.template_fields",
+        "TechDraw_RedrawPage": "drawing.redraw_page",
+    }
     assert {
         command_id: (plan.transaction_behavior, plan.background_required)
         for command_id, plan in plans.items()
@@ -200,9 +207,35 @@ def test_drawing_broken_view_resolves_to_exact_background_variant() -> None:
         plan.transaction_behavior,
         plan.background_required,
     ) == (
-        "drawing.view",
+        "drawing.broken_view",
         "create_broken_view",
         "ExactDrawingPageSourcesBreakDefinitionsAndProjectionSettings",
+        "background",
+        True,
+    )
+
+
+def test_drawing_projection_group_resolves_to_exact_background_variant() -> None:
+    plan = _plan(
+        "drawing",
+        "Views",
+        RibbonAction(
+            command_id="TechDraw_ProjectionGroup",
+            label="Projection Group",
+            available=True,
+            kind="command",
+        ),
+    )
+    assert (
+        plan.capability_family,
+        plan.operation_variant,
+        plan.exact_target_type,
+        plan.transaction_behavior,
+        plan.background_required,
+    ) == (
+        "drawing.projection_group",
+        "create_projection_group",
+        "ExactDrawingPageSourcesProjectionSetAndConvention",
         "background",
         True,
     )

@@ -549,22 +549,24 @@ def _vibescript_mode_context(
     }
 
 
-def test_system_instructions_encode_multi_view_visual_protocol() -> None:
+def test_system_instructions_are_surface_neutral_and_compact() -> None:
     text = provider.VIBECAD_SYSTEM_INSTRUCTIONS
-    assert "core.set_view" in text
-    assert "core.capture_view_screenshot" in text
-    assert "isometric" in text
-    assert "front" in text
-    assert "top" in text
-    assert "one random view is not enough" in text
-    assert "Pixels never invent" in text
-    assert "presentation_only" in text
-    assert "needs_measurement" in text
-    assert "unchanged" in text
-    assert "tessellation" in text
-    assert "STEP" in text
-    assert "STL" in text
-    assert "export quality" in text
+    assert "CURRENT_USER_MESSAGE controls" in text
+    assert "Use only exposed tools and exact returned state" in text
+    assert "Preserve existing identity and history" in text
+    assert "Never claim work or verification not performed" in text
+    assert len(text.encode("utf-8")) < 1_000
+    for surface_specific in (
+        "core.set_view",
+        "screenshot",
+        "isometric",
+        "Aero",
+        "catalog",
+        "parametric geometry",
+        "STEP",
+        "STL",
+    ):
+        assert surface_specific not in text
 
 
 def test_provider_instructions_stay_within_deterministic_byte_limit() -> None:
@@ -589,12 +591,10 @@ def test_instructions_include_vibescript_guidance_only_in_vibescript_mode() -> N
     guidance = provider._vibescript_authoring_instruction(context)
     instructions = provider._provider_instructions(context)
     assert instructions.startswith(provider.VIBECAD_SYSTEM_INSTRUCTIONS)
+    assert "catalog" not in provider.VIBECAD_SYSTEM_INSTRUCTIONS
+    assert "do not search component" in guidance
     assert (
-        "Search catalogs only for requested or required unspecified components"
-        in provider.VIBECAD_SYSTEM_INSTRUCTIONS
-    )
-    assert (
-        "a correction changes only the named design"
+        "a correction changes only the named result"
         in provider.VIBECAD_SYSTEM_INSTRUCTIONS
     )
     assert "Preserve existing identity and history" in provider.VIBECAD_SYSTEM_INSTRUCTIONS
@@ -817,6 +817,320 @@ def test_native_mutation_result_keeps_exact_follow_up_target() -> None:
             "expected_member_count": 3,
         },
     }
+
+
+def test_native_mutation_result_turns_object_state_into_a_copyable_target() -> None:
+    digest = "d" * 64
+
+    visible = provider._provider_visible_tool_result(
+        {
+            "_vibecad_native_result": True,
+            "ok": True,
+            "page": {
+                "object_name": "Page",
+                "state_sha256": digest,
+                "view_count": 1,
+            },
+        }
+    )
+
+    assert visible == {
+        "ok": True,
+        "page": {
+            "object_name": "Page",
+            "expected_state_sha256": digest,
+            "view_count": 1,
+        },
+    }
+
+
+def test_terminal_native_job_compacts_its_mutation_result() -> None:
+    digest = "e" * 64
+
+    visible = provider._provider_visible_tool_result(
+        {
+            "ok": True,
+            "job": {
+                "job_id": "a" * 32,
+                "terminal": True,
+                "result": {
+                    "page": {
+                        "object_name": "Page",
+                        "state_sha256": digest,
+                    },
+                    "receipt": {"capability": "drawing.projection_group"},
+                },
+            },
+        }
+    )
+
+    assert visible["job"]["result"] == {
+        "page": {
+            "object_name": "Page",
+        }
+    }
+
+
+def test_native_drawing_inspection_keeps_one_copyable_projection_target() -> None:
+    projection = "a" * 64
+    element = "b" * 64
+
+    visible = provider._provider_visible_tool_result(
+        {
+            "_vibecad_native_result": True,
+            "ok": True,
+            "expected_element_count": 1,
+            "elements": [
+                {
+                    "name": "Edge1",
+                    "element_state_sha256": element,
+                    "visible": True,
+                }
+            ],
+            "view": {
+                "object_name": "Front",
+                "type_id": "TechDraw::DrawViewPart",
+                "view_state_sha256": "c" * 64,
+                "projection_state_sha256": projection,
+            },
+        },
+        tool_name="drawing.projected_geometry",
+    )
+
+    assert visible == {
+        "ok": True,
+        "expected_element_count": 1,
+        "elements": [
+            {
+                "name": "Edge1",
+                "visible": True,
+            }
+        ],
+        "view": {
+            "object_name": "Front",
+            "type_id": "TechDraw::DrawViewPart",
+        },
+    }
+
+
+def test_native_drawing_ready_page_result_is_minimal() -> None:
+    visible = provider._provider_visible_tool_result(
+        {
+            "_vibecad_native_result": True,
+            "ok": True,
+            "page": {"object_name": "Page", "state_sha256": "a" * 64},
+            "ready": True,
+            "issues": [],
+            "rendered_item_count": 4,
+            "items": [{"object_name": "Front"}],
+            "clipping": {"count": 0, "items": [], "truncated": False},
+            "outside_drawing_area": {
+                "count": 0,
+                "items": [],
+                "truncated": False,
+            },
+            "collisions": {"count": 0, "pairs": [], "truncated": False},
+            "duplicate_scene_items": {
+                "count": 0,
+                "object_names": [],
+                "truncated": False,
+            },
+            "references": {"count": 0, "items": [], "truncated": False},
+            "duplicate_dimensions": {
+                "count": 0,
+                "groups": [],
+                "truncated": False,
+            },
+            "template_fields": {"count": 20, "empty_count": 4},
+            "update_status": {"current": True, "state_messages": ["Up-to-date"]},
+        },
+        tool_name="drawing.page_readiness",
+    )
+
+    assert visible == {
+        "ok": True,
+        "page": {"object_name": "Page"},
+        "ready": True,
+        "issues": [],
+    }
+
+
+def test_native_drawing_page_readiness_preserves_failures() -> None:
+    failure = {
+        "_vibecad_native_result": True,
+        "ok": False,
+        "error": "The document changed outside this Native turn.",
+        "error_code": "NATIVE_REVISION_CONFLICT",
+        "current_revision": 65,
+        "repair": {"next_turn_required": True},
+    }
+
+    visible = provider._provider_visible_tool_result(
+        failure,
+        tool_name="drawing.page_readiness",
+    )
+
+    assert visible == {
+        "ok": False,
+        "error": "The document changed outside this Native turn.",
+        "error_code": "NATIVE_REVISION_CONFLICT",
+        "current_revision": 65,
+        "repair": {"next_turn_required": True},
+    }
+
+
+def test_native_drawing_page_readiness_compacts_collision_graph() -> None:
+    items = [
+        {
+            "object_name": name,
+            "type_id": type_id,
+            "parent_object_name": parent,
+            "bounds_mm": bounds,
+            "within_page": True,
+            "within_drawing_area": True,
+        }
+        for name, type_id, parent, bounds in (
+            (
+                "Dimension",
+                "TechDraw::DrawViewDimension",
+                "Front",
+                {"min_x_mm": 20.0, "min_y_mm": 40.0, "max_x_mm": 80.0, "max_y_mm": 55.0},
+            ),
+            (
+                "Dimension001",
+                "TechDraw::DrawViewDimension",
+                "Front",
+                {"min_x_mm": 50.0, "min_y_mm": 45.0, "max_x_mm": 100.0, "max_y_mm": 60.0},
+            ),
+            (
+                "Top",
+                "TechDraw::DrawProjGroupItem",
+                "ProjectionGroup",
+                {"min_x_mm": 40.0, "min_y_mm": 50.0, "max_x_mm": 120.0, "max_y_mm": 90.0},
+            ),
+        )
+    ]
+    for index, x_mm in enumerate((30.0, 60.0)):
+        items[index].update(
+            {
+                "label_bounds_mm": {
+                    "min_x_mm": x_mm - 4.0,
+                    "min_y_mm": 52.0,
+                    "max_x_mm": x_mm + 4.0,
+                    "max_y_mm": 58.0,
+                },
+                "label_position_in_view_mm": {"x_mm": x_mm - 40.0, "y_mm": 5.0},
+                "view_origin_on_page_mm": {"x_mm": 40.0, "y_mm": 50.0},
+                "label_position_on_page_mm": {"x_mm": x_mm, "y_mm": 55.0},
+            }
+        )
+    pairs = [
+        {
+            "first_object_name": first,
+            "second_object_name": second,
+            "first_type_id": "unused",
+            "second_type_id": "unused",
+            "overlap_bounds_mm": {
+                "min_x_mm": 50.0,
+                "min_y_mm": 50.0,
+                "max_x_mm": 60.0,
+                "max_y_mm": 55.0,
+            },
+        }
+        for first, second in (
+            ("Dimension", "Dimension001"),
+            ("Dimension", "Top"),
+            ("Dimension001", "Top"),
+        )
+    ]
+    visible = provider._provider_visible_tool_result(
+        {
+            "_vibecad_native_result": True,
+            "ok": True,
+            "page": {"object_name": "Page", "state_sha256": "a" * 64},
+            "page_bounds_mm": {
+                "min_x_mm": 0.0,
+                "min_y_mm": 0.0,
+                "max_x_mm": 297.0,
+                "max_y_mm": 210.0,
+            },
+            "drawing_bounds_mm": {
+                "min_x_mm": 20.0,
+                "min_y_mm": 10.0,
+                "max_x_mm": 287.0,
+                "max_y_mm": 200.0,
+            },
+            "ready": False,
+            "issues": ["item_collisions"],
+            "rendered_item_count": 3,
+            "items": items,
+            "offset": 0,
+            "next_offset": None,
+            "clipping": {"count": 0, "items": [], "truncated": False},
+            "outside_drawing_area": {
+                "count": 0,
+                "items": [],
+                "truncated": False,
+            },
+            "collisions": {"count": 3, "pairs": pairs, "truncated": False},
+            "duplicate_scene_items": {
+                "count": 0,
+                "object_names": [],
+                "truncated": False,
+            },
+            "references": {"count": 0, "items": [], "truncated": False},
+            "duplicate_dimensions": {
+                "count": 0,
+                "groups": [],
+                "truncated": False,
+            },
+            "template_fields": {"count": 20, "empty_count": 4},
+            "update_status": {"current": True, "state_messages": ["Up-to-date"]},
+        },
+        tool_name="drawing.page_readiness",
+    )
+
+    assert visible == {
+        "ok": True,
+        "page": {"object_name": "Page"},
+        "ready": False,
+        "issues": ["item_collisions"],
+        "drawing_bounds_mm": {
+            "min_x_mm": 20.0,
+            "min_y_mm": 10.0,
+            "max_x_mm": 287.0,
+            "max_y_mm": 200.0,
+        },
+        "rendered_item_count": 3,
+        "collisions": {
+            "count": 3,
+            "objects": [
+                {
+                    "object_name": "Dimension",
+                    "label_position_on_page_mm": items[0][
+                        "label_position_on_page_mm"
+                    ],
+                    "collides_with": ["Dimension001", "Top"],
+                },
+                {
+                    "object_name": "Dimension001",
+                    "label_position_on_page_mm": items[1][
+                        "label_position_on_page_mm"
+                    ],
+                    "collides_with": ["Dimension", "Top"],
+                },
+                {
+                    "object_name": "Top",
+                    "bounds_mm": items[2]["bounds_mm"],
+                    "placement_target": {"object_name": "ProjectionGroup"},
+                    "collides_with": ["Dimension", "Dimension001"],
+                },
+            ],
+            "truncated": False,
+        },
+    }
+
+    assert len(json.dumps(visible, separators=(",", ":"))) < 1300
 
 
 def test_native_noop_result_hides_host_bookkeeping_without_a_receipt() -> None:
@@ -1265,6 +1579,7 @@ def test_assembly_turn_injects_copy_ready_available_components(
 
     schemas = [
         _context_schema("vibescript.read_source"),
+        _context_schema("vibescript.create_part"),
         _context_schema("vibescript.create_assembly"),
         _context_schema("component_catalog.search"),
     ]

@@ -18,8 +18,8 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistryError,
     NativeCapabilityRegistry,
     NativeProviderSurface,
+    _authorized_provider_schema_operations,
     _provider_schema_operations,
-    provider_visible_native_schema,
     project_native_provider_operations,
     project_native_provider_surface,
     resolve_native_provider_surface,
@@ -67,6 +67,42 @@ class NativeTurnChanged(RuntimeError):
         }
 
 
+def native_operation_scope_digest(
+    operations_by_tool: Mapping[str, Sequence[str]],
+) -> str:
+    """Return one deterministic digest for exact per-tool operation authority."""
+
+    if not isinstance(operations_by_tool, Mapping):
+        raise TypeError("operations_by_tool must be a mapping")
+    normalized: dict[str, list[str]] = {}
+    for name, operations in operations_by_tool.items():
+        clean_name = str(name or "").strip()
+        if (
+            not clean_name
+            or clean_name in normalized
+            or not isinstance(operations, Sequence)
+            or isinstance(operations, (str, bytes))
+        ):
+            raise ValueError("Native operation authorization is malformed.")
+        clean_operations = [
+            str(operation or "").strip() for operation in operations
+        ]
+        if (
+            not clean_operations
+            or any(not operation for operation in clean_operations)
+            or len(clean_operations) != len(set(clean_operations))
+        ):
+            raise ValueError("Native operation authorization is malformed.")
+        normalized[clean_name] = clean_operations
+    encoded = json.dumps(
+        normalized,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _canonical_schemas(schemas: tuple[dict[str, Any], ...]) -> str:
     return json.dumps(
         schemas,
@@ -89,14 +125,7 @@ def _captured_schema_operations(
         raise NativeTurnUnavailable(
             f"The captured Native capability {name!r} has no definition."
         )
-    matches = tuple(
-        variant.operation
-        for variant in definition.variants
-        if provider_visible_native_schema(
-            definition.provider_schema((variant.operation,))
-        )
-        == schema
-    )
+    matches = _authorized_provider_schema_operations(schema, definition)
     if len(matches) != 1:
         raise NativeTurnUnavailable(
             f"The captured Native schema for {name!r} does not identify one exact operation."

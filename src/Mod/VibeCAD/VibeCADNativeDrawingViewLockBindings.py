@@ -11,17 +11,29 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
 )
 from VibeCADNativeDrawingViewLockRuntime import NativeDrawingViewLockRuntime
-from VibeCADNativeDrawingViewLockSchema import DRAWING_VIEW_LOCK_CAPABILITY_NAME
+from VibeCADNativeDrawingViewLockSchema import DRAWING_VIEW_LOCK_CAPABILITY_NAMES
 
 
-def _execute(call: Any) -> Mapping[str, Any]:
+def _execute(call: Any, *, mode: str) -> Mapping[str, Any]:
     runtime = getattr(call, "runtime", None)
     arguments = getattr(call, "arguments", None)
     if not isinstance(runtime, NativeDrawingViewLockRuntime):
         raise TypeError("A Drawing view-lock call requires its exact runtime.")
     if not isinstance(arguments, Mapping):
         raise TypeError("A Drawing view-lock call requires argument data.")
-    return runtime.execute(arguments, ticket=getattr(call, "ticket", None))
+    return runtime.execute(
+        arguments,
+        ticket=getattr(call, "ticket", None),
+        mode=mode,
+    )
+
+
+def _read(call: Any) -> Mapping[str, Any]:
+    return _execute(call, mode="read")
+
+
+def _set(call: Any) -> Mapping[str, Any]:
+    return _execute(call, mode="set")
 
 
 def register_drawing_view_lock_capability_implementation(
@@ -29,9 +41,14 @@ def register_drawing_view_lock_capability_implementation(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_implementation(
-        NativeCapabilityImplementation(DRAWING_VIEW_LOCK_CAPABILITY_NAME, _execute)
-    )
+    for name, execute in zip(
+        DRAWING_VIEW_LOCK_CAPABILITY_NAMES,
+        (_read, _set),
+        strict=True,
+    ):
+        registry.register_implementation(
+            NativeCapabilityImplementation(name, execute)
+        )
 
 
 def drawing_view_lock_runtime_bindings(
@@ -39,4 +56,4 @@ def drawing_view_lock_runtime_bindings(
 ) -> dict[str, Any]:
     if not isinstance(runtime, NativeDrawingViewLockRuntime):
         raise TypeError("runtime must be a NativeDrawingViewLockRuntime")
-    return {DRAWING_VIEW_LOCK_CAPABILITY_NAME: runtime}
+    return {name: runtime for name in DRAWING_VIEW_LOCK_CAPABILITY_NAMES}

@@ -21,6 +21,7 @@ from VibeCADNativeDrawingViewState import (
     drawing_view_state,
     is_complex_section_drawing_view,
 )
+from VibeCADNativeGeometrySources import drawing_source_exclusion_reason
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import (
     object_identity,
@@ -109,6 +110,15 @@ def _require_usable(document: Any, obj: Any) -> None:
 
 
 def _profile_state(profile: Any, strategy: str) -> dict[str, Any]:
+    document = getattr(profile, "Document", None)
+    if (
+        document is None
+        or drawing_source_exclusion_reason(document, profile) is not None
+    ):
+        raise NativeDrawingError(
+            "A complex-section profile must be visible and outside Analyze/FEM.",
+            error_code="NATIVE_DRAWING_COMPLEX_SECTION_PROFILE_INVALID",
+        )
     try:
         state = drawing_source_state(profile)
     except (AttributeError, RuntimeError, TypeError, ValueError) as exc:

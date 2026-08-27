@@ -36,23 +36,19 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
 
 
-_COMMON = frozenset({"label", "page", "view", "label_position_in_view_mm"})
+_COMMON = frozenset({"label", "page", "view", "label_position_on_page_mm"})
 _FIELDS = {
-    "create_length": _COMMON | {"references"},
-    "create_horizontal": _COMMON | {"references"},
-    "create_vertical": _COMMON | {"references"},
-    "create_radius": _COMMON | {"edge", "allow_approximate"},
-    "create_diameter": _COMMON | {"edge", "allow_approximate"},
+    "create_linear": _COMMON | {"references", "direction"},
+    "create_radial": _COMMON | {"edge", "allow_approximate", "kind"},
     "create_angle": _COMMON | {"first_edge", "second_edge"},
     "create_three_point_angle": _COMMON
     | {"first_arm_point", "apex_point", "second_arm_point"},
     "create_area": _COMMON | {"face"},
-    "create_horizontal_extent": _COMMON | {"extent"},
-    "create_vertical_extent": _COMMON | {"extent"},
+    "create_view_extent": _COMMON | {"direction"},
+    "create_edge_extent": _COMMON | {"edges", "direction"},
     "create_axonometric_length": _COMMON
     | {"measurement", "extension_direction_edge", "expected_value_mode"},
-    "create_horizontal_chamfer": _COMMON | {"first_vertex", "second_vertex"},
-    "create_vertical_chamfer": _COMMON | {"first_vertex", "second_vertex"},
+    "create_chamfer": _COMMON | {"first_vertex", "second_vertex", "direction"},
     "create_arc_length_dimension": _COMMON | {"arc_edge"},
     "create_area_annotation": frozenset({"page", "view", "elements", "label"}),
     "create_arc_length_annotation": frozenset({"page", "view", "elements", "label"}),
@@ -87,6 +83,45 @@ _SPECIAL_OPERATIONS = frozenset(
 _MEASUREMENT_ANNOTATION_OPERATIONS = frozenset(
     {"create_area_annotation", "create_arc_length_annotation"}
 )
+_LINEAR_OPERATION = {
+    "aligned": "create_length",
+    "horizontal": "create_horizontal",
+    "vertical": "create_vertical",
+}
+_RADIAL_OPERATION = {
+    "radius": "create_radius",
+    "diameter": "create_diameter",
+}
+
+
+def _normalized_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(arguments)
+    if normalized.get("operation") == "create_radial":
+        normalized.setdefault("allow_approximate", False)
+    return normalized
+
+
+def _specific_operation(
+    operation: str,
+    values: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    exact = dict(values)
+    if operation == "create_linear":
+        return _LINEAR_OPERATION[str(exact.pop("direction"))], exact
+    if operation == "create_radial":
+        exact.setdefault("allow_approximate", False)
+        return _RADIAL_OPERATION[str(exact.pop("kind"))], exact
+    if operation == "create_view_extent":
+        direction = exact.pop("direction")
+        exact["extent"] = {"scope": "whole_view"}
+        return f"create_{direction}_extent", exact
+    if operation == "create_edge_extent":
+        direction = exact.pop("direction")
+        exact["extent"] = {"scope": "edges", "edges": exact.pop("edges")}
+        return f"create_{direction}_extent", exact
+    if operation == "create_chamfer":
+        return f"create_{exact.pop('direction')}_chamfer", exact
+    return operation, exact
 
 
 class NativeDrawingDimensionRuntime:
@@ -101,7 +136,11 @@ class NativeDrawingDimensionRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _FIELDS)
+        operation, values = strict_variant_arguments(
+            _normalized_arguments(arguments),
+            _FIELDS,
+        )
+        operation, values = _specific_operation(operation, values)
         context = self._context
         context.guard()
         if operation == "edit":

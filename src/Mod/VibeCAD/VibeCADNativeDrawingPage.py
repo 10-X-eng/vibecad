@@ -34,6 +34,36 @@ from VibeCADNativeTargets import object_identity, read_current_selection, resolv
 _FREECAD_EDITABLE_ATTRIBUTE = (
     "{http://www.freecad.org/wiki/index.php?title=Svg_Namespace}editable"
 )
+BUILT_IN_DRAWING_TEMPLATES = {
+    "iso_a0_landscape": "ISO/A0_Landscape_ISO5457_advanced.svg",
+    "iso_a1_landscape": "ISO/A1_Landscape_ISO5457_advanced.svg",
+    "iso_a2_landscape": "ISO/A2_Landscape_ISO5457_advanced.svg",
+    "iso_a3_landscape": "ISO/A3_Landscape_ISO5457_advanced.svg",
+    "iso_a4_landscape": "ISO/A4_Landscape_ISO5457_advanced.svg",
+    "iso_a4_portrait": "ISO/A4_Portrait_ISO5457_advanced.svg",
+    "asme_ansi_a_landscape": "ASME/ANSIA_Landscape.svg",
+    "asme_ansi_a_portrait": "ASME/ANSIA_Portrait.svg",
+    "asme_ansi_b_landscape": "ASME/ANSIB_Landscape.svg",
+    "asme_ansi_b_portrait": "ASME/ANSIB_Portrait.svg",
+    "asme_ansi_c_landscape": "ASME/ANSIC_Landscape.svg",
+    "asme_ansi_c_portrait": "ASME/ANSIC_Portrait.svg",
+    "asme_ansi_d_landscape": "ASME/ANSID_Landscape.svg",
+    "asme_ansi_d_portrait": "ASME/ANSID_Portrait.svg",
+    "asme_ansi_e_landscape": "ASME/ANSIE_Landscape.svg",
+    "asme_ansi_e_portrait": "ASME/ANSIE_Portrait.svg",
+}
+
+
+def built_in_template_relative_path(template: str) -> str:
+    try:
+        relative = BUILT_IN_DRAWING_TEMPLATES[str(template)]
+    except KeyError as exc:
+        raise NativeDrawingError(
+            "The requested built-in Drawing template is unavailable.",
+            error_code="NATIVE_DRAWING_TEMPLATE_UNKNOWN",
+            repair={"available_templates": sorted(BUILT_IN_DRAWING_TEMPLATES)},
+        ) from exc
+    return f"Mod/TechDraw/Templates/{relative}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +79,7 @@ class PreparedPageCreate:
 @dataclass(frozen=True, slots=True)
 class TemplateFieldChange:
     field_name: str
-    expected_value: str
+    expected_value: str | None
     value: str
 
 
@@ -223,6 +253,26 @@ def prepare_default_page_create(document: Any) -> PreparedPageCreate:
     return _capture_create_boundary(document, artifact, source_kind)
 
 
+def prepare_built_in_page_create(
+    document: Any,
+    *,
+    template: str,
+) -> PreparedPageCreate:
+    import FreeCAD as App
+
+    path = Path(App.getResourceDir()) / built_in_template_relative_path(template)
+    request = drawing_template_input_request()
+    try:
+        authorization = authorize_native_input_path(request, str(path))
+        artifact = authorization.claim(request)
+    except NativeInputError as exc:
+        raise NativeDrawingError(
+            "The requested built-in Drawing template is unavailable.",
+            error_code="NATIVE_DRAWING_TEMPLATE_UNAVAILABLE",
+        ) from exc
+    return _capture_create_boundary(document, artifact, f"built_in:{template}")
+
+
 def prepare_authorized_page_create(
     document: Any,
     authorization: Any,
@@ -385,7 +435,11 @@ def prepare_template_field_edit(
     changes = tuple(
         TemplateFieldChange(
             field_name=str(item["field_name"]),
-            expected_value=str(item["expected_value"]),
+            expected_value=(
+                str(item["expected_value"])
+                if "expected_value" in item
+                else None
+            ),
             value=str(item["value"]),
         )
         for item in updates
@@ -404,7 +458,10 @@ def prepare_template_field_edit(
                 error_code="NATIVE_DRAWING_TEMPLATE_FIELD_UNKNOWN",
                 repair={"available_fields": sorted(fields_before)[:64]},
             )
-        if fields_before[change.field_name] != change.expected_value:
+        if (
+            change.expected_value is not None
+            and fields_before[change.field_name] != change.expected_value
+        ):
             raise NativeDrawingError(
                 f"Editable field {change.field_name!r} changed after inspection.",
                 error_code="NATIVE_DRAWING_TEMPLATE_FIELD_STALE",

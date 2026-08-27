@@ -23,19 +23,28 @@ import VibeCADNativeDrawingPageRuntime as DrawingPageRuntimeModule
 from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeBackgroundSchema import NATIVE_BACKGROUND_CAPABILITY_NAME
-from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAME
+from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAMES
 from VibeCADNativeDrawingState import drawing_page_state
-from VibeCADNativeDrawingViewSchema import DRAWING_VIEW_CAPABILITY_NAME
+from VibeCADNativeDrawingViewSchema import DRAWING_VIEW_CAPABILITY_NAMES
 from VibeCADNativeDrawingViewState import drawing_source_state
+from VibeCADNativeProviderRunner import NativeProviderToolRunner
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
-from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
+from VibeCADNativeSessionFactory import NativeSessionExecution
+from VibeCADNativeSurface import require_frozen_native_surface
+from VibeCADNativeCapabilityRegistry import resolve_native_provider_surface
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CREATE_PAGE_TOOL = DRAWING_PAGE_CAPABILITY_NAMES[0]
+REDRAW_PAGE_TOOL = DRAWING_PAGE_CAPABILITY_NAMES[3]
+PAGE_UPDATES_TOOL = DRAWING_PAGE_CAPABILITY_NAMES[4]
+PAGE_READINESS_TOOL = DRAWING_PAGE_CAPABILITY_NAMES[5]
+STANDARD_VIEW_TOOL = DRAWING_VIEW_CAPABILITY_NAMES[0]
 
 
 def _events(rounds: int = 16) -> None:
@@ -138,60 +147,43 @@ def _dimension_sha256(dimension) -> str:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAME)
-    view_definition = registry.definition(DRAWING_VIEW_CAPABILITY_NAME)
-    job_definition = registry.definition(NATIVE_BACKGROUND_CAPABILITY_NAME)
-    assert all(
-        item is not None
-        for item in (page_definition, view_definition, job_definition)
+    provider_surface = resolve_native_provider_surface(surface, registry)
+    assert provider_surface.available, provider_surface.unavailable_reason
+    assert {
+        CREATE_PAGE_TOOL,
+        REDRAW_PAGE_TOOL,
+        PAGE_UPDATES_TOOL,
+        PAGE_READINESS_TOOL,
+        STANDARD_VIEW_TOOL,
+        NATIVE_BACKGROUND_CAPABILITY_NAME,
+    } <= set(provider_surface.tool_names)
+    redraw_index = provider_surface.tool_names.index(REDRAW_PAGE_TOOL)
+    encoded = json.dumps(
+        provider_surface.schemas[redraw_index],
+        sort_keys=True,
+        separators=(",", ":"),
     )
-    page_schema = page_definition.provider_schema(("page_default", "redraw_page"))
-    view_schema = view_definition.provider_schema(("create_standard_view",))
-    encoded = json.dumps(page_schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert "path" not in encoded.casefold()
     assert "snapshot" not in encoded.casefold()
-    assert "expected_state_sha256" in encoded
-    return NativeTurnSnapshot.from_provider_surface(
-        NativeProviderSurface(
-            snapshot=NativeSurfaceSnapshot.from_surface(surface),
-            available=True,
-            unavailable_reason="",
-            tool_names=(
-                DRAWING_PAGE_CAPABILITY_NAME,
-                DRAWING_VIEW_CAPABILITY_NAME,
-                NATIVE_BACKGROUND_CAPABILITY_NAME,
-            ),
-            schemas=(
-                page_schema,
-                view_schema,
-                job_definition.provider_schema(("status", "cancel")),
-            ),
-            human_only_action_ids=(),
-            missing_definition_names=(),
-            missing_implementation_names=(),
-            incomplete_definition_names=(),
-        )
-    )
+    assert "expected_state_sha256" not in encoded
+    return NativeTurnSnapshot.from_provider_surface(provider_surface)
 
 
 def _view_arguments(page_state: dict, source_state: dict) -> dict:
     return {
-        "operation": "create_standard_view",
         "label": "Redraw Target",
         "page": {
             "object_name": page_state["object_name"],
-            "expected_state_sha256": page_state["state_sha256"],
         },
         "sources": [
             {
                 "object_name": source_state["object_name"],
-                "expected_state_sha256": source_state["state_sha256"],
             }
         ],
         "orientation": "front",
         "position": {"x_mm": 88.0, "y_mm": 82.0},
-        "scale": {"kind": "custom", "value": 1.25},
+        "scale": 1.25,
         "line_style": "visible_and_hidden",
     }
 
@@ -199,10 +191,8 @@ def _view_arguments(page_state: dict, source_state: dict) -> dict:
 def _redraw_arguments(page) -> dict:
     state = drawing_page_state(page)
     return {
-        "operation": "redraw_page",
         "page": {
             "object_name": state["object_name"],
-            "expected_state_sha256": state["state_sha256"],
         },
     }
 
@@ -228,7 +218,7 @@ def _run() -> None:
             redraw_plan.transaction_behavior,
             redraw_plan.background_required,
         ) == (
-            DRAWING_PAGE_CAPABILITY_NAME,
+            REDRAW_PAGE_TOOL,
             "redraw_page",
             "ExactDrawingPageAndActiveViewGraph",
             "background",
@@ -252,12 +242,25 @@ def _run() -> None:
         source.ViewObject.Visibility = True
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(source, "Face1")
+        document.saveAs(str(save_path))
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
         frozen_surface = turn.surface
         service = get_service()
         service.select_modeling_engine("native")
+        prepared_conversation = service.prepare_conversation_turn(
+            "user",
+            "Keep this conversation attached while the page redraws.",
+        )
+        conversation_history = service.persist_prepared_conversation_turn(
+            prepared_conversation
+        )
+        service.accept_persisted_conversation_turn(
+            conversation_history,
+            prepared_conversation,
+        )
+        conversation_id = str(conversation_history["conversation_id"])
         state_store = service.native_document_state_store()
         ledger = NativeAssistantUndoLedger()
         ledger.begin_run("native-drawing-redraw-gui")
@@ -278,16 +281,22 @@ def _run() -> None:
             document_thread_dispatch=VibeGui._dispatch_to_document_thread,
         )
         debug_events = []
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state_store,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-            debug_sink=debug_events.append,
-        )
+        def refresh_dispatcher() -> NativeTurnDispatcher:
+            nonlocal turn, frozen_surface
+            turn = _turn(surface, registry)
+            frozen_surface = turn.surface
+            return NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+                debug_sink=debug_events.append,
+            )
+
+        dispatcher = refresh_dispatcher()
         call_index = 0
 
         def call(tool_name: str, arguments: dict, *, succeeds: bool = True) -> dict:
@@ -314,11 +323,11 @@ def _run() -> None:
                 time.sleep(0.01)
             raise AssertionError(f"Background redraw job {job_id} did not finish")
 
-        page_result = call(DRAWING_PAGE_CAPABILITY_NAME, {"operation": "page_default"})
+        page_result = call(CREATE_PAGE_TOOL, {"template": "iso_a4_landscape"})
         page = document.getObject(page_result["page"]["object_name"])
         assert page is not None
         view_started = call(
-            DRAWING_VIEW_CAPABILITY_NAME,
+            STANDARD_VIEW_TOOL,
             _view_arguments(drawing_page_state(page), drawing_source_state(source)),
         )
         view_completed = wait_for_job(view_started["job"]["job_id"])
@@ -348,9 +357,10 @@ def _run() -> None:
             key=lambda item: float(item["length_view_mm"]),
         )["name"]
         dimension = None
+        extent = None
 
         def create_dimension() -> None:
-            nonlocal dimension
+            nonlocal dimension, extent
             dimension = document.addObject(
                 "TechDraw::DrawViewDimension",
                 "RedrawDimension",
@@ -361,6 +371,20 @@ def _run() -> None:
             page.addView(dimension)
             document.publishProvisionalTimelineOperationBlock(
                 dimension,
+                (),
+                (),
+            )
+            extent = document.addObject(
+                "TechDraw::DrawViewDimExtent",
+                "RedrawExtent",
+            )
+            extent.Type = "DistanceX"
+            extent.DirExtent = 0
+            extent.Source = (view, [dimension_edge])
+            extent.References2D = [(view, dimension_edge)]
+            page.addView(extent)
+            document.publishProvisionalTimelineOperationBlock(
+                extent,
                 (),
                 (),
             )
@@ -376,21 +400,24 @@ def _run() -> None:
             page.KeepUpdated = False
             page.KeepUpdated = True
             dimension.touch()
+            extent.touch()
 
         _transaction(
             document,
             "Initialize redraw dimension cache",
             initialize_dimension_cache,
-            targets=(dimension,),
+            targets=(dimension, extent),
         )
         _events(16)
         assert dimension is not None and bool(dimension.isValid())
+        assert extent is not None and bool(extent.isValid())
         assert dimension.Name in tuple(item.Name for item in page.getAllActiveViews()), (
             tuple(item.Name for item in page.getAllActiveViews()),
             tuple(item.Name for item in document.VibeCADTimeline.Operations),
             int(document.VibeCADTimeline.Position),
         )
         initial_dimension = _dimension_sha256(dimension)
+        initial_extent = _dimension_sha256(extent)
         initial_dimension_value = float(dimension.getRawValue())
 
         _transaction(
@@ -400,6 +427,7 @@ def _run() -> None:
             targets=(page,),
         )
         assert not bool(page.KeepUpdated)
+        dispatcher = refresh_dispatcher()
         selection_before = _selection()
         visibility_before = bool(source.ViewObject.Visibility)
         timeline_before = tuple(document.VibeCADTimeline.Operations)
@@ -408,13 +436,8 @@ def _run() -> None:
 
         invalid = _redraw_arguments(page)
         invalid["worker_path"] = "/tmp/not-provider-data"
-        rejected = call(DRAWING_PAGE_CAPABILITY_NAME, invalid, succeeds=False)
-        assert rejected["error_code"] == "NATIVE_ARGUMENTS_INVALID"
-
-        stale = _redraw_arguments(page)
-        stale["page"]["expected_state_sha256"] = "0" * 64
-        rejected = call(DRAWING_PAGE_CAPABILITY_NAME, stale, succeeds=False)
-        assert rejected["error_code"] == "NATIVE_DRAWING_PAGE_STALE"
+        rejected = call(REDRAW_PAGE_TOOL, invalid, succeeds=False)
+        assert rejected["error_code"] == "NATIVE_ARGUMENTS_INVALID", rejected
 
         original_verify = DrawingPageRuntimeModule.verify_page_redraw
 
@@ -432,11 +455,13 @@ def _run() -> None:
             change_source_without_live_hlr,
             recompute=False,
         )
+        dispatcher = refresh_dispatcher()
         projection_before_rollback = _projection_sha256(view)
         dimension_before_rollback = _dimension_sha256(dimension)
+        extent_before_rollback = _dimension_sha256(extent)
         DrawingPageRuntimeModule.verify_page_redraw = fail_verify
         try:
-            rollback_started = call(DRAWING_PAGE_CAPABILITY_NAME, _redraw_arguments(page))
+            rollback_started = call(REDRAW_PAGE_TOOL, _redraw_arguments(page))
             rolled_back = wait_for_job(rollback_started["job"]["job_id"])
         finally:
             DrawingPageRuntimeModule.verify_page_redraw = original_verify
@@ -452,9 +477,11 @@ def _run() -> None:
         }
         view = current_view
         dimension = document.getObject(dimension.Name)
+        extent = document.getObject(extent.Name)
         assert _dimension_sha256(dimension) == dimension_before_rollback
+        assert _dimension_sha256(extent) == extent_before_rollback
 
-        cancelled_started = call(DRAWING_PAGE_CAPABILITY_NAME, _redraw_arguments(page))
+        cancelled_started = call(REDRAW_PAGE_TOOL, _redraw_arguments(page))
         cancelled_request = call(
             NATIVE_BACKGROUND_CAPABILITY_NAME,
             {"operation": "cancel", "job_id": cancelled_started["job"]["job_id"]},
@@ -464,6 +491,7 @@ def _run() -> None:
         assert cancelled["phase"] == "cancelled", cancelled
         assert _projection_sha256(view) == projection_before_rollback
         assert _dimension_sha256(dimension) == dimension_before_rollback
+        assert _dimension_sha256(extent) == extent_before_rollback
 
         entered = threading.Event()
         release = threading.Event()
@@ -478,7 +506,7 @@ def _run() -> None:
 
         DrawingPageRuntimeModule.execute_page_redraw = held_execute
         try:
-            stale_started = call(DRAWING_PAGE_CAPABILITY_NAME, _redraw_arguments(page))
+            stale_started = call(REDRAW_PAGE_TOOL, _redraw_arguments(page))
             deadline = time.monotonic() + 10.0
             while not entered.is_set() and time.monotonic() < deadline:
                 _events(2)
@@ -502,6 +530,15 @@ def _run() -> None:
         }
         assert _projection_sha256(view) == projection_before_rollback
         assert _dimension_sha256(dimension) == dimension_before_rollback
+        assert _dimension_sha256(extent) == extent_before_rollback
+        _transaction(
+            document,
+            "Touch exact page before redraw",
+            page.touch,
+            recompute=False,
+        )
+        assert "Touched" in tuple(page.State or ()), tuple(page.State or ())
+        dispatcher = refresh_dispatcher()
 
         selection_before = _selection()
         visibility_before = bool(source.ViewObject.Visibility)
@@ -518,24 +555,99 @@ def _run() -> None:
 
         heartbeat.timeout.connect(tick)
         heartbeat.start()
-        started_at = time.monotonic()
-        started = call(DRAWING_PAGE_CAPABILITY_NAME, _redraw_arguments(page))
-        returned_in = time.monotonic() - started_at
+        provider_runner = NativeProviderToolRunner(
+            execution=NativeSessionExecution(
+                dispatcher,
+                turn,
+                ledger,
+                "native-drawing-redraw-gui",
+                background_manager=context.background_manager,
+                document_uid=context.document_uid,
+            ),
+            document_dispatch=VibeGui._dispatch_to_document_thread,
+            refresh_context=lambda: {},
+            frozen_surface={},
+            frozen_schemas=[],
+            frozen_modeling_surface={},
+            tool_trace=[],
+        )
+        provider_result = {}
+        provider_redraw_arguments = json.dumps(
+            _redraw_arguments(page),
+            separators=(",", ":"),
+        )
+        provider_readiness_arguments = json.dumps(
+            {"page": {"object_name": str(page.Name)}},
+            separators=(",", ":"),
+        )
+
+        def redraw_then_readiness() -> None:
+            try:
+                started_at = time.monotonic()
+                started = provider_runner(
+                    REDRAW_PAGE_TOOL,
+                    provider_redraw_arguments,
+                    "native-drawing-redraw-provider",
+                )
+                provider_result["returned_in"] = time.monotonic() - started_at
+                provider_result["started"] = started
+                provider_result["readiness"] = provider_runner(
+                    PAGE_READINESS_TOOL,
+                    provider_readiness_arguments,
+                    "native-drawing-readiness-after-redraw-provider",
+                )
+            except Exception:
+                provider_result["exception"] = traceback.format_exc()
+
+        provider_thread = threading.Thread(target=redraw_then_readiness)
+        provider_thread.start()
+        deadline = time.monotonic() + 45.0
+        while provider_thread.is_alive() and time.monotonic() < deadline:
+            _events(2)
+            time.sleep(0.01)
+        provider_thread.join(timeout=0.1)
+        assert not provider_thread.is_alive(), "Provider redraw sequence timed out"
+        assert "exception" not in provider_result, provider_result.get("exception")
+        started = provider_result["started"]
+        returned_in = provider_result["returned_in"]
         assert returned_in < 2.0, returned_in
-        completed = wait_for_job(started["job"]["job_id"])
+        completed_snapshot = context.background_manager.snapshot(
+            started["job"]["job_id"]
+        )
+        completed = {
+            "phase": completed_snapshot.phase,
+            "result": completed_snapshot.result,
+            "failure": completed_snapshot.error,
+        }
         heartbeat.stop()
         assert completed["phase"] == "completed", completed
+        assert int(document.UndoCount) == undo_before
+        revision_after_redraw = state_store.current_revision(str(document.Uid))
+        _events(16)
+        assert state_store.current_revision(str(document.Uid)) == revision_after_redraw
+        assert "Up-to-date" in tuple(page.State or ()), tuple(page.State or ())
+        readiness = provider_result["readiness"]
+        assert readiness["ok"] is True, readiness
+        assert readiness["update_status"] == {
+            "current": True,
+            "state_messages": ["Up-to-date"],
+        }, readiness
         assert ui_ticks > 0, ui_ticks
         result = completed["result"]
         assert result["page"]["object_name"] == page.Name
-        assert result["page"]["view_count"] == 2
-        assert len(result["redrawn_views"]) == 2
+        assert result["page"]["view_count"] == 3
+        assert len(result["redrawn_views"]) == 3
         assert {
             (item["object_name"], item["kind"])
             for item in result["redrawn_views"]
-        } == {(view.Name, "projection"), (dimension.Name, "dimension")}
+        } == {
+            (view.Name, "projection"),
+            (dimension.Name, "dimension"),
+            (extent.Name, "dimension"),
+        }
         redrawn_projection = _projection_sha256(view)
         redrawn_dimension = _dimension_sha256(dimension)
+        redrawn_extent = _dimension_sha256(extent)
         assert redrawn_projection != initial_projection
         assert redrawn_projection != projection_before_rollback
         assert redrawn_dimension != initial_dimension, (
@@ -549,6 +661,8 @@ def _run() -> None:
             ),
         )
         assert redrawn_dimension != dimension_before_rollback
+        assert redrawn_extent != initial_extent
+        assert redrawn_extent != extent_before_rollback
         assert not bool(page.KeepUpdated)
         assert tuple(item.Name for item in page.getAllActiveViews()) == graph_before
         assert tuple(document.VibeCADTimeline.Operations) == timeline_before
@@ -558,11 +672,41 @@ def _run() -> None:
         assert result["assistant_undo_available"] is False
         assert "path" not in json.dumps(result).casefold()
         assert "snapshot" not in json.dumps(result).casefold()
+        assert service.conversation_history()["conversation_id"] == conversation_id
 
         page_name = str(page.Name)
         view_name = str(view.Name)
         dimension_name = str(dimension.Name)
+        extent_name = str(extent.Name)
         document.saveAs(str(save_path))
+        _transaction(
+            document,
+            "Touch exact page before enabling updates",
+            page.touch,
+            recompute=False,
+        )
+        assert "Touched" in tuple(page.State or ()), tuple(page.State or ())
+        dispatcher = refresh_dispatcher()
+        update_result = call(
+            PAGE_UPDATES_TOOL,
+            {
+                "page": {"object_name": page.Name},
+                "keep_updated": True,
+            },
+        )
+        assert update_result["keep_updated"] is True
+        revision_after_update = state_store.current_revision(str(document.Uid))
+        _events(16)
+        assert state_store.current_revision(str(document.Uid)) == revision_after_update
+        assert "Up-to-date" in tuple(page.State or ()), tuple(page.State or ())
+        readiness = call(
+            PAGE_READINESS_TOOL,
+            {"page": {"object_name": page.Name}},
+        )
+        assert readiness["update_status"] == {
+            "current": True,
+            "state_messages": ["Up-to-date"],
+        }, readiness
         document_name = str(document.Name)
         App.closeDocument(document_name)
         document = App.openDocument(str(save_path))
@@ -570,21 +714,25 @@ def _run() -> None:
         page = document.getObject(page_name)
         view = document.getObject(view_name)
         dimension = document.getObject(dimension_name)
-        assert page is not None and view is not None and dimension is not None
+        extent = document.getObject(extent_name)
+        assert all(item is not None for item in (page, view, dimension, extent))
         assert _projection_sha256(view) == redrawn_projection
         assert _dimension_sha256(dimension) == redrawn_dimension
+        assert _dimension_sha256(extent) == redrawn_extent
         assert not bool(page.KeepUpdated)
         assert tuple(item.Name for item in page.getAllActiveViews()) == (
             view_name,
             dimension_name,
+            extent_name,
         )
 
         print(
             "VIBECAD_NATIVE_DRAWING_REDRAW_GUI_OK exact_page=true exact_graph=true "
             "exact_sources=true closed_schema=true background=true detached=true "
-            "authenticated=true projection=true dimension=true rollback=true "
+            "authenticated=true projection=true dimension=true extent=true rollback=true "
             "cancel=true stale_preflight=true "
             "stale_commit=true selection=true visibility=true history=true "
+            "conversation=true "
             "keep_updated=true undo_stack_preserved=true reopen=true responsive=true "
             "path_private=true low_noise=true",
             flush=True,

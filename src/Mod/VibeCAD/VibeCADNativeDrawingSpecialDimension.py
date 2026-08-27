@@ -18,6 +18,8 @@ from VibeCADNativeDrawingDimensionSupport import (
     finite_drawing_coordinate,
     matches_drawing_document_label,
     prepare_drawing_dimension_target,
+    drawing_label_position_in_view_mm,
+    provider_drawing_dimension_state,
 )
 from VibeCADNativeDrawingGeometryState import drawing_projected_geometry_state
 from VibeCADNativeDrawingErrors import NativeDrawingError
@@ -93,12 +95,12 @@ def _spec(operation: str, values: Mapping[str, Any]) -> ChamferSpec:
     )
     first = exact_drawing_mapping(
         values["first_vertex"],
-        frozenset({"subelement", "expected_element_state_sha256"}),
+        frozenset({"subelement"}),
         "first chamfer vertex",
     )
     second = exact_drawing_mapping(
         values["second_vertex"],
-        frozenset({"subelement", "expected_element_state_sha256"}),
+        frozenset({"subelement"}),
         "second chamfer vertex",
     )
     names = (str(first["subelement"]), str(second["subelement"]))
@@ -133,7 +135,7 @@ def _arc_length_spec(operation: str, values: Mapping[str, Any]) -> ArcLengthSpec
     )
     edge = exact_drawing_mapping(
         values["arc_edge"],
-        frozenset({"subelement", "expected_element_state_sha256"}),
+        frozenset({"subelement"}),
         "arc-length source edge",
     )
     edge_name = str(edge["subelement"] or "")
@@ -171,7 +173,7 @@ def _validate_host(view: Any, spec: ChamferSpec) -> dict[str, Any]:
             repair={
                 "accepted_references": "two distinct projected VertexN references",
                 "requested_subelements": list(spec.subelements),
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if not isinstance(raw, Mapping) or set(raw) != {
@@ -218,7 +220,7 @@ def _validate_arc_length_host(
             repair={
                 "accepted_references": "one exact open circular ArcOfCircle EdgeN",
                 "requested_subelement": spec.edge_name,
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if not isinstance(raw, Mapping) or set(raw) != {
@@ -245,7 +247,6 @@ def prepare_drawing_chamfer(
     operation: str,
     values: Mapping[str, Any],
 ) -> PreparedDrawingChamfer:
-    spec = _spec(operation, values)
     element_targets = (
         values["first_vertex"],
         values["second_vertex"],
@@ -257,6 +258,13 @@ def prepare_drawing_chamfer(
         element_targets=element_targets,
         allowed_element_types=frozenset({"vertex"}),
     )
+    host_values = dict(values)
+    host_values["label_position_in_view_mm"] = drawing_label_position_in_view_mm(
+        target.view,
+        host_values.pop("label_position_on_page_mm"),
+        page=target.page,
+    )
+    spec = _spec(operation, host_values)
     if tuple(item["name"] for item in target.element_states_before) != spec.subelements:
         drawing_dimension_error(
             "The Drawing chamfer vertex order is inconsistent.",
@@ -275,7 +283,6 @@ def prepare_drawing_arc_length(
     operation: str,
     values: Mapping[str, Any],
 ) -> PreparedDrawingArcLength:
-    spec = _arc_length_spec(operation, values)
     target = prepare_drawing_dimension_target(
         document,
         page_target=values["page"],
@@ -283,6 +290,13 @@ def prepare_drawing_arc_length(
         element_targets=(values["arc_edge"],),
         allowed_element_types=frozenset({"edge"}),
     )
+    host_values = dict(values)
+    host_values["label_position_in_view_mm"] = drawing_label_position_in_view_mm(
+        target.view,
+        host_values.pop("label_position_on_page_mm"),
+        page=target.page,
+    )
+    spec = _arc_length_spec(operation, host_values)
     if target.element_states_before[0]["name"] != spec.edge_name:
         drawing_dimension_error(
             "The Drawing arc-length edge target is inconsistent.",
@@ -476,7 +490,7 @@ def _verify_drawing_chamfer(
             "state_sha256": page_state["state_sha256"],
             "view_count": page_state["view_count"],
         },
-        "dimension": state,
+        "dimension": provider_drawing_dimension_state(state, target.view),
     }
 
 
@@ -606,7 +620,7 @@ def _verify_drawing_arc_length(
             "state_sha256": page_state["state_sha256"],
             "view_count": page_state["view_count"],
         },
-        "dimension": state,
+        "dimension": provider_drawing_dimension_state(state, target.view),
     }
 
 

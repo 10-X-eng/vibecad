@@ -42,6 +42,7 @@
 #include <Mod/TechDraw/App/DrawUtil.h>
 #include <Mod/TechDraw/App/DrawViewBalloon.h>
 #include <Mod/TechDraw/App/DrawViewDimension.h>
+#include <Mod/TechDraw/App/DrawViewPart.h>
 #include <Mod/TechDraw/App/Preferences.h>
 
 #include "ViewProviderDrawingView.h"
@@ -54,6 +55,35 @@
 using namespace TechDrawGui;
 using namespace TechDraw;
 namespace sp = std::placeholders;
+
+namespace {
+
+void redrawViewAndDependentDimensions(QGIView* view)
+{
+    if (!view) {
+        return;
+    }
+
+    view->updateView(true);
+
+    auto* viewPart = dynamic_cast<DrawViewPart*>(view->getViewObject());
+    auto* page = dynamic_cast<QGSPage*>(view->scene());
+    if (!viewPart || !page || !viewPart->hasGeometry()) {
+        return;
+    }
+
+    // A Dimension can hide itself while its referenced view is still restoring.
+    // Once that view has geometry, redraw its active dependants so each Dimension
+    // can restore its saved visibility without waiting for user selection.
+    for (auto* dimension : viewPart->getActiveDimensions()) {
+        auto* dimensionView = page->findQViewForDocObj(dimension);
+        if (dimensionView) {
+            dimensionView->updateView(true);
+        }
+    }
+}
+
+}  // namespace
 
 PROPERTY_SOURCE(TechDrawGui::ViewProviderDrawingView, Gui::ViewProviderDocumentObject)
 
@@ -261,8 +291,7 @@ void ViewProviderDrawingView::updateData(const App::Property* prop)
     if (prop == &obj->X ||
         prop == &obj->Y) {
 
-        if (qgiv->isSnapping() ||
-            obj->LockPosition.getValue()) {
+        if (qgiv->isSnapping()) {
             Gui::ViewProviderDocumentObject::updateData(prop);
             return;
         }
@@ -347,7 +376,7 @@ void ViewProviderDrawingView::multiParentPaint(std::vector<TechDraw::DrawPage*>&
             if (vpPage->getQGSPage()) {
                 QGIView* qView = dynamic_cast<QGIView *>(vpPage->getQGSPage()->findQViewForDocObj(v));
                 if (qView) {
-                    qView->updateView(true);
+                    redrawViewAndDependentDimensions(qView);
                 }
             }
         }
@@ -364,7 +393,7 @@ void ViewProviderDrawingView::singleParentPaint(const TechDraw::DrawView* dv)
     }
     QGIView* qgiv = getQView();
     if (qgiv) {
-        qgiv->updateView(true);
+        redrawViewAndDependentDimensions(qgiv);
     } else {       //we are not part of the Gui page yet. ask page to add us.
         ViewProviderPage* vpPage = getViewProviderPage();
         if (vpPage) {

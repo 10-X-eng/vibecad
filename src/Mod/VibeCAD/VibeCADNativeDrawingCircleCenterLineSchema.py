@@ -71,9 +71,8 @@ _CIRCLE = _closed(
                 "Exact selected projected circle or circular-arc EdgeN."
             ),
         },
-        "expected_element_state_sha256": _SHA256,
     },
-    ("subelement", "expected_element_state_sha256"),
+    ("subelement",),
 )
 
 
@@ -83,8 +82,7 @@ def drawing_circle_center_line_capability_definition() -> (
     return NativeCapabilityDefinition(
         name=DRAWING_CIRCLE_CENTER_LINE_CAPABILITY_NAME,
         description=(
-            "Add a horizontal and vertical persistent centerline across each "
-            "exact selected projected circle or circular arc."
+            "Add persistent cross center marks to projected circles or circular arcs."
         ),
         primary_classification="mutation",
         variants=(

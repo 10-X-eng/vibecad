@@ -1014,6 +1014,12 @@ bool DrawComplexSection::restorePrecomputedComplexSection()
     return true;
 }
 
+bool DrawComplexSection::restorePrecomputedState()
+{
+    return DrawViewPart::restorePrecomputedState()
+        && restorePrecomputedComplexSection();
+}
+
 void DrawComplexSection::onDocumentRestored()
 {
     DrawViewSection::onDocumentRestored();

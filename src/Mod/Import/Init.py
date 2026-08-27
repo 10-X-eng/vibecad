@@ -37,6 +37,8 @@ translate = FreeCAD.Qt.translate
 FreeCAD.addImportType("PLMXML files (*.plmxml *.PLMXML)", "PlmXmlParser")
 FreeCAD.addImportType("STEPZ Zip File Type (*.stpZ *.stpz *.STPZ)", "stepZ")
 FreeCAD.addImportType("glTF (*.gltf *.GLTF *.glb *.GLB)", "ImportGui")
+FreeCAD.addImportType("Autodesk Fusion Design (*.f3d *.F3D *.f3z *.F3Z)", "importFusion")
+FreeCAD.addImportType("Siemens JT (*.jt *.JT)", "importJT")
 FreeCAD.addTranslatableExportType(
     translate("FileFormat", "STEPZ (Zipped STEP)"), ["stpZ", "stpz"], "stepZ"
 )

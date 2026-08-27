@@ -25,9 +25,7 @@ from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeBackgroundSchema import NATIVE_BACKGROUND_CAPABILITY_NAME
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAME
 from VibeCADNativeDrawingState import drawing_page_state
-from VibeCADNativeDrawingViewSchema import DRAWING_VIEW_CAPABILITY_NAME
 from VibeCADNativeDrawingViewState import (
     drawing_break_state,
     drawing_source_state,
@@ -41,6 +39,10 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+DRAWING_CREATE_PAGE_CAPABILITY_NAME = "drawing.create_page"
+DRAWING_BROKEN_VIEW_CAPABILITY_NAME = "drawing.broken_view"
 
 
 def _events(rounds: int = 16) -> None:
@@ -114,8 +116,8 @@ def _create_inputs(document):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAME)
-    view_definition = registry.definition(DRAWING_VIEW_CAPABILITY_NAME)
+    page_definition = registry.definition(DRAWING_CREATE_PAGE_CAPABILITY_NAME)
+    view_definition = registry.definition(DRAWING_BROKEN_VIEW_CAPABILITY_NAME)
     job_definition = registry.definition(NATIVE_BACKGROUND_CAPABILITY_NAME)
     assert all(
         item is not None
@@ -134,8 +136,8 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             available=True,
             unavailable_reason="",
             tool_names=(
-                DRAWING_PAGE_CAPABILITY_NAME,
-                DRAWING_VIEW_CAPABILITY_NAME,
+                DRAWING_CREATE_PAGE_CAPABILITY_NAME,
+                DRAWING_BROKEN_VIEW_CAPABILITY_NAME,
                 NATIVE_BACKGROUND_CAPABILITY_NAME,
             ),
             schemas=(
@@ -183,7 +185,7 @@ def _arguments(
         "gap_mm": 5.0,
         "orientation": "top",
         "position": {"x_mm": 96.0, "y_mm": 82.0},
-        "scale": {"kind": "custom", "value": 1.0},
+        "scale": 1.0,
         "line_style": "visible_and_hidden",
     }
 
@@ -211,7 +213,7 @@ def _run() -> None:
             plan.transaction_behavior,
             plan.background_required,
         ) == (
-            DRAWING_VIEW_CAPABILITY_NAME,
+            DRAWING_BROKEN_VIEW_CAPABILITY_NAME,
             "create_broken_view",
             "ExactDrawingPageSourcesBreakDefinitionsAndProjectionSettings",
             "background",
@@ -297,7 +299,7 @@ def _run() -> None:
             raise AssertionError(f"Background broken-view job {job_id} did not finish")
 
         page_result = call(
-            DRAWING_PAGE_CAPABILITY_NAME,
+            DRAWING_CREATE_PAGE_CAPABILITY_NAME,
             {"operation": "page_default"},
         )
         _events(12)
@@ -339,7 +341,7 @@ def _run() -> None:
 
         invalid = _arguments(page_state, source_state, break_state, edge_break_state)
         invalid["file_path"] = "/tmp/forbidden.FCStd"
-        rejected = call(DRAWING_VIEW_CAPABILITY_NAME, invalid, succeeds=False)
+        rejected = call(DRAWING_BROKEN_VIEW_CAPABILITY_NAME, invalid, succeeds=False)
         assert rejected["error_code"] == "NATIVE_ARGUMENTS_INVALID"
 
         stale_break = _arguments(
@@ -349,7 +351,7 @@ def _run() -> None:
             edge_break_state,
         )
         stale_break["breaks"][0]["expected_state_sha256"] = "0" * 64
-        rejected = call(DRAWING_VIEW_CAPABILITY_NAME, stale_break, succeeds=False)
+        rejected = call(DRAWING_BROKEN_VIEW_CAPABILITY_NAME, stale_break, succeeds=False)
         assert rejected["error_code"] == "NATIVE_DRAWING_BREAK_STALE"
 
         duplicate = _arguments(
@@ -359,7 +361,7 @@ def _run() -> None:
             edge_break_state,
         )
         duplicate["breaks"].append(dict(duplicate["breaks"][0]))
-        rejected = call(DRAWING_VIEW_CAPABILITY_NAME, duplicate, succeeds=False)
+        rejected = call(DRAWING_BROKEN_VIEW_CAPABILITY_NAME, duplicate, succeeds=False)
         assert rejected["error_code"] == "NATIVE_DRAWING_BREAKS_INVALID"
 
         disjoint = _arguments(
@@ -376,7 +378,7 @@ def _run() -> None:
                 ],
             }
         ]
-        rejected = call(DRAWING_VIEW_CAPABILITY_NAME, disjoint, succeeds=False)
+        rejected = call(DRAWING_BROKEN_VIEW_CAPABILITY_NAME, disjoint, succeeds=False)
         assert rejected["error_code"] == "NATIVE_DRAWING_BREAKS_INVALID"
 
         wrong_orientation = _arguments(
@@ -387,7 +389,7 @@ def _run() -> None:
         )
         wrong_orientation["orientation"] = "front"
         rejected = call(
-            DRAWING_VIEW_CAPABILITY_NAME,
+            DRAWING_BROKEN_VIEW_CAPABILITY_NAME,
             wrong_orientation,
             succeeds=False,
         )
@@ -406,7 +408,7 @@ def _run() -> None:
 
         DrawingViewRuntimeModule.verify_broken_view_create = fail_verify
         try:
-            rolled_back_start = call(DRAWING_VIEW_CAPABILITY_NAME, arguments)
+            rolled_back_start = call(DRAWING_BROKEN_VIEW_CAPABILITY_NAME, arguments)
             rolled_back = wait_for_job(rolled_back_start["job"]["job_id"])
         finally:
             DrawingViewRuntimeModule.verify_broken_view_create = original_verify
@@ -417,7 +419,7 @@ def _run() -> None:
         assert tuple(page.Views or ()) == ()
         assert document.getObject("BrokenView") is None
 
-        cancelled_start = call(DRAWING_VIEW_CAPABILITY_NAME, arguments)
+        cancelled_start = call(DRAWING_BROKEN_VIEW_CAPABILITY_NAME, arguments)
         cancelled_request = call(
             NATIVE_BACKGROUND_CAPABILITY_NAME,
             {
@@ -447,7 +449,7 @@ def _run() -> None:
 
         DrawingViewRuntimeModule.execute_broken_projection = gated_execute
         try:
-            stale_start = call(DRAWING_VIEW_CAPABILITY_NAME, arguments)
+            stale_start = call(DRAWING_BROKEN_VIEW_CAPABILITY_NAME, arguments)
             deadline = time.monotonic() + 10.0
             while not worker_ready.is_set() and time.monotonic() < deadline:
                 _events(2)
@@ -499,7 +501,7 @@ def _run() -> None:
         heartbeat.timeout.connect(tick)
         heartbeat.start()
         started_at = time.monotonic()
-        started = call(DRAWING_VIEW_CAPABILITY_NAME, arguments)
+        started = call(DRAWING_BROKEN_VIEW_CAPABILITY_NAME, arguments)
         returned_in = time.monotonic() - started_at
         assert returned_in < 2.0, returned_in
         completed = wait_for_job(started["job"]["job_id"])
@@ -552,7 +554,7 @@ def _run() -> None:
             break_state,
             edge_break_state,
         )
-        rejected = call(DRAWING_VIEW_CAPABILITY_NAME, stale_page, succeeds=False)
+        rejected = call(DRAWING_BROKEN_VIEW_CAPABILITY_NAME, stale_page, succeeds=False)
         assert rejected["error_code"] == "NATIVE_DRAWING_PAGE_STALE"
 
         document.undo()

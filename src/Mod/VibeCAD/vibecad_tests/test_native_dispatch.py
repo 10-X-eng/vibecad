@@ -590,6 +590,13 @@ def test_target_type_diagnostic_reaches_the_provider_as_structured_data() -> Non
             exact_target={"document_uid": "document-a", "object_name": "Sketch"},
             actual_type="Sketcher::SketchObject",
             accepted_types=("PartDesign::Feature", "Part::Feature"),
+            candidates=(
+                {
+                    "object_name": "Body",
+                    "type_id": "PartDesign::Body",
+                    "label": "Mounting Plate",
+                },
+            ),
         )
 
     dispatcher, _state, _debug = _dispatcher(handler)
@@ -600,6 +607,13 @@ def test_target_type_diagnostic_reaches_the_provider_as_structured_data() -> Non
     assert result["actual_type"] == "Sketcher::SketchObject"
     assert result["accepted_types"] == ["PartDesign::Feature", "Part::Feature"]
     assert result["exact_target"]["object_name"] == "Sketch"
+    assert result["candidates"] == [
+        {
+            "object_name": "Body",
+            "type_id": "PartDesign::Body",
+            "label": "Mounting Plate",
+        }
+    ]
 
 
 def test_duplicate_provider_call_returns_exact_prior_result_without_execution() -> None:

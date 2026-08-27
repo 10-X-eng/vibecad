@@ -74,7 +74,7 @@ def _source_targets(values: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
     for item in result:
         exact = exact_drawing_mapping(
             item,
-            frozenset({"subelement", "expected_element_state_sha256"}),
+            frozenset({"subelement"}),
             "bolt-hole source",
             family="bolt-circle centerline",
             error_code="NATIVE_DRAWING_BOLT_CIRCLE_PARAMETERS_INVALID",
@@ -132,7 +132,7 @@ def _validate_host(
                     "three centers define the pattern circle"
                 ),
                 "requested_subelements": list(source_names),
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if len(plan["holes"]) != len(source_elements):
@@ -273,14 +273,18 @@ def _persistent_line_boundary(line: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _persistent_line_identity(line: Mapping[str, Any]) -> tuple[str, str]:
+    return str(line["kind"]), str(line.get("tag", line["subelement"]))
+
+
 def _require_old_lines_preserved(
     before: Mapping[str, Any], after: Mapping[str, Any]
 ) -> None:
     after_by_identity = {
-        (line["kind"], line["tag"]): line for line in after["lines"]
+        _persistent_line_identity(line): line for line in after["lines"]
     }
     for old in before["lines"]:
-        current = after_by_identity.get((old["kind"], old["tag"]))
+        current = after_by_identity.get(_persistent_line_identity(old))
         if (
             current is None
             or _persistent_line_boundary(current)

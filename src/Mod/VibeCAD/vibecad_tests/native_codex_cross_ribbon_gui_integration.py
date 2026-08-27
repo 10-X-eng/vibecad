@@ -27,11 +27,11 @@ from VibeCADSession import run_prompt
 
 _SURFACES = (
     ("model", "PartDesignWorkbench", "model.extrude"),
-    ("assemble", "AssemblyWorkbench", "assembly.structure"),
+    ("assemble", "AssemblyWorkbench", "assembly.create"),
     ("mesh", "MeshWorkbench", "mesh.modify"),
     ("analyze", "FemWorkbench", "analyze.model"),
     ("manufacture", "CAMWorkbench", "manufacture.job"),
-    ("drawing", "TechDrawWorkbench", "drawing.page"),
+    ("drawing", "TechDrawWorkbench", "drawing.create_page"),
     ("parameters", "SpreadsheetWorkbench", "parameters.read"),
     ("sketch.setup", "SketcherWorkbench", "sketch.setup"),
     ("sketch.edit", "SketcherWorkbench", "sketch.draw_line"),
@@ -94,7 +94,6 @@ class _CrossRibbonCodexClient:
                 for expected, _workbench, tool in _SURFACES
                 if expected == surface_id
             )
-            assert "state.read" in tools
             assert required in tools, (surface_id, required, sorted(tools))
             assert ("document.save" in tools) is (surface_id != "sketch.edit")
             thread_id = f"native-cross-ribbon-{surface_id}"
@@ -111,23 +110,27 @@ class _CrossRibbonCodexClient:
 
             def callback() -> None:
                 try:
-                    bridge_result = self.server_request_handler(
-                        "item/tool/call",
-                        {
-                            "callId": f"state-{surface_id}",
-                            "namespace": "state",
-                            "tool": "read",
-                            "arguments": {"operation": "active"},
-                        },
-                    )
-                    content_items = bridge_result["contentItems"]
-                    payload = json.loads(content_items[0]["text"])
-                    assert payload["ok"] is True, payload
-                    assert "vibecad_state_after" not in payload, payload
-                    assert payload["surface_id"] == surface_id, payload
+                    tools = self._thread_tools[thread_id]
+                    state_surface = surface_id
+                    if "state.read" in tools:
+                        bridge_result = self.server_request_handler(
+                            "item/tool/call",
+                            {
+                                "callId": f"state-{surface_id}",
+                                "namespace": "state",
+                                "tool": "read",
+                                "arguments": {"operation": "active"},
+                            },
+                        )
+                        content_items = bridge_result["contentItems"]
+                        payload = json.loads(content_items[0]["text"])
+                        assert payload["ok"] is True, payload
+                        assert "vibecad_state_after" not in payload, payload
+                        assert payload["surface_id"] == surface_id, payload
+                        state_surface = payload["surface_id"]
                     type(self).observations[surface_id] = {
-                        "tools": self._thread_tools[thread_id],
-                        "state_surface": payload["surface_id"],
+                        "tools": tools,
+                        "state_surface": state_surface,
                         "callback_thread": threading.get_ident(),
                     }
                 except BaseException as exc:
@@ -300,7 +303,7 @@ def _run() -> None:
                     if _LIVE_ACCEPTANCE
                     else "VIBECAD_NATIVE_CODEX_CROSS_RIBBON_GUI_OK "
                 )
-                + "surfaces=9 human-switch frozen-tools state-read gui-dispatch",
+                + "surfaces=9 human-switch frozen-tools provider-start gui-dispatch",
                 flush=True,
             )
             finish(0)

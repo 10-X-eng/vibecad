@@ -304,7 +304,9 @@ def drawing_circle_center_line_result_state(
         )
     attributes = drawing_line_attribute_inventory_state(view)
     lengths = drawing_line_length_inventory_state(view)
-    attribute_by_tag = {line["tag"]: line for line in attributes["lines"]}
+    attribute_by_tag = {
+        line["tag"]: line for line in attributes["lines"] if "tag" in line
+    }
     length_by_tag = {line["tag"]: line for line in lengths["lines"]}
     result_pairs = []
     for pair, source in zip(created_pairs, source_elements, strict=True):

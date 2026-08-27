@@ -17,6 +17,7 @@ from VibeCADNativeDrawingDimensionSupport import (
 from VibeCADNativeDrawingErrors import NativeDrawingError
 from VibeCADNativeDrawingState import drawing_page_state
 from VibeCADNativeDrawingViewLockState import (
+    MAX_DRAWING_VIEW_LOCK_PAGE_SIZE,
     NativeDrawingViewLockStateError,
     drawing_view_lock_inventory_state,
     drawing_view_lock_page,
@@ -122,19 +123,48 @@ def read_drawing_view_locks(
 ) -> dict[str, Any]:
     """Read one exact bounded page of Drawing view-lock targets."""
 
-    page, _page_state = _resolve_page(document, values["page"])
+    page_target = values["page"]
+    if (
+        not isinstance(page_target, Mapping)
+        or "object_name" not in page_target
+        or not set(page_target)
+        <= {"object_name", "expected_inventory_state_sha256"}
+    ):
+        _error(
+            "A Drawing view-lock page target is invalid.",
+            "NATIVE_DRAWING_VIEW_LOCK_PARAMETERS_INVALID",
+        )
+    page = resolve_object(
+        document,
+        {
+            "document_uid": str(document.Uid),
+            "object_name": page_target["object_name"],
+        },
+        expected_types=("TechDraw::DrawPage",),
+    )
+    page_state = drawing_page_state(page)
+    inventory = drawing_view_lock_inventory_state(page)
+    expected_inventory = str(
+        page_target.get("expected_inventory_state_sha256") or ""
+    )
     try:
         result = drawing_view_lock_page(
             page,
-            expected_inventory_state_sha256=str(
-                values["expected_inventory_state_sha256"]
+            expected_inventory_state_sha256=(
+                expected_inventory or inventory["inventory_state_sha256"]
             ),
             offset=values["offset"],
-            page_size=values["page_size"],
+            page_size=MAX_DRAWING_VIEW_LOCK_PAGE_SIZE,
         )
     except (NativeDrawingViewLockStateError, TypeError, ValueError) as exc:
         _error(str(exc), "NATIVE_DRAWING_VIEW_LOCK_READ_INVALID")
-    return {"view_locks": result}
+    return {
+        "page": {
+            "object_name": page_state["object_name"],
+            "state_sha256": page_state["state_sha256"],
+        },
+        "view_locks": result,
+    }
 
 
 def _resolve_changes(

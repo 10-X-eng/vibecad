@@ -377,14 +377,18 @@ QString QGIViewDimension::getLabelText()
 void QGIViewDimension::draw()
 {
     prepareGeometryChange();
-    if (!isVisible()) {
-        return;
-    }
-
     auto* dim = dynamic_cast<TechDraw::DrawViewDimension*>(getViewObject());
     if (!dim ||//nothing to draw, don't try
         !dim->isDerivedFrom<TechDraw::DrawViewDimension>()
         || !dim->has2DReferences()) {
+        datumLabel->hide();
+        hide();
+        return;
+    }
+
+    auto* viewProvider =
+        dynamic_cast<ViewProviderDimension*>(getViewProvider(getViewObject()));
+    if (viewProvider && !viewProvider->isShow()) {
         datumLabel->hide();
         hide();
         return;
@@ -400,7 +404,7 @@ void QGIViewDimension::draw()
         return;
     }
 
-    auto vp = static_cast<ViewProviderDimension*>(getViewProvider(getViewObject()));
+    auto* vp = viewProvider;
     if (!vp) {
         datumLabel->show();
         show();
@@ -2332,8 +2336,9 @@ QColor QGIViewDimension::prefNormalColor()
         vpDim = freecad_cast<ViewProviderDimension*>(vp);
         if (vpDim) {
             Base::Color fcColor = vpDim->Color.getValue();
-            fcColor = Preferences::getAccessibleColor(fcColor);
-            setNormalColor(fcColor.asValue<QColor>());
+            setNormalColor(
+                PreferencesGui::getAccessibleQColor(fcColor.asValue<QColor>())
+            );
         }
     }
     return getNormalColor();

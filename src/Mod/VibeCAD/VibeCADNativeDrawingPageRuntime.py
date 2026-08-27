@@ -16,6 +16,7 @@ from VibeCADNativeDrawingPage import (
     drawing_template_input_request,
     edit_template_fields,
     prepare_authorized_page_create,
+    prepare_built_in_page_create,
     prepare_default_page_create,
     prepare_template_field_edit,
     prepare_keep_updated_edit,
@@ -38,6 +39,7 @@ from VibeCADNativeDrawingRedrawInput import (
     materialize_redraw_snapshot,
 )
 from VibeCADNativeDrawingRedrawWorker import execute_page_redraw
+from VibeCADNativeDrawingReadiness import drawing_page_readiness
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
@@ -65,18 +67,30 @@ class NativeDrawingPageRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
+        normalized = dict(arguments)
+        if normalized.get("operation") == "page_default":
+            normalized.setdefault("template", "")
+        if normalized.get("operation") == "inspect_page_readiness":
+            normalized.setdefault("offset", 0)
         operation, values = strict_variant_arguments(
-            arguments,
+            normalized,
             {
-                "page_default": frozenset(),
+                "page_default": frozenset({"template"}),
                 "page_template": frozenset(),
                 "fill_template_fields": frozenset({"page", "updates"}),
                 "redraw_page": frozenset({"page"}),
                 "set_keep_updated": frozenset({"page", "keep_updated"}),
+                "inspect_page_readiness": frozenset({"page", "offset"}),
             },
         )
         context = self._context
         context.guard()
+        if operation == "inspect_page_readiness":
+            return drawing_page_readiness(
+                context.document,
+                target=values["page"],
+                offset=values["offset"],
+            )
         if operation == "redraw_page":
             return self._redraw_page(values, ticket=ticket)
         if operation == "set_keep_updated":
@@ -106,7 +120,15 @@ class NativeDrawingPageRuntime:
                 verify=verify_template_field_edit,
             )
         if operation == "page_default":
-            prepared = prepare_default_page_create(context.document)
+            template = str(values.get("template") or "")
+            prepared = (
+                prepare_built_in_page_create(
+                    context.document,
+                    template=template,
+                )
+                if template
+                else prepare_default_page_create(context.document)
+            )
         else:
             authorizer = context.authorize_input
             if authorizer is None:
@@ -206,7 +228,7 @@ class NativeDrawingPageRuntime:
         try:
             background = manager.submit(
                 document_uid=context.document_uid,
-                capability_name="drawing.page.redraw_page",
+                capability_name="drawing.redraw_page",
                 prepare=prepare,
                 validate_before_commit=validate,
                 commit=commit,

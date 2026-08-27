@@ -17,6 +17,8 @@ COMMON_NATIVE_CAPABILITY_NAMES = (
     "state.read",
     "view.control",
     "inspect.query",
+    "drawing.sources",
+    "drawing.projected_geometry",
     "document.save",
     "document.undo",
 )
@@ -48,6 +50,14 @@ def _inspect(call: Any) -> Mapping[str, Any]:
     return _runtime(call).inspect(_arguments(call))
 
 
+def _drawing_sources(call: Any) -> Mapping[str, Any]:
+    return _runtime(call).read_drawing_sources(_arguments(call))
+
+
+def _projected_geometry(call: Any) -> Mapping[str, Any]:
+    return _runtime(call).read_projected_geometry(_arguments(call))
+
+
 def _save(call: Any) -> Mapping[str, Any]:
     return _runtime(call).save_document(_arguments(call))
 
@@ -63,6 +73,8 @@ _COMMON_HANDLERS = {
     "state.read": _read_state,
     "view.control": _control_view,
     "inspect.query": _inspect,
+    "drawing.sources": _drawing_sources,
+    "drawing.projected_geometry": _projected_geometry,
     "document.save": _save,
     "document.undo": _undo,
 }

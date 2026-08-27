@@ -17,7 +17,7 @@ from VibeCADNativeState import NativeCallTicket
 
 _FIELDS = {
     "infer": frozenset(
-        {"label", "page", "view", "label_position_in_view_mm", "elements"}
+        {"label", "page", "view", "label_position_on_page_mm", "elements"}
     )
 }
 

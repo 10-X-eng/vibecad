@@ -107,7 +107,7 @@ def _source_targets(
     for index, item in enumerate(targets):
         exact = exact_drawing_mapping(
             item,
-            frozenset({"subelement", "expected_element_state_sha256"}),
+            frozenset({"subelement"}),
             f"thread source {index}",
             family="thread representation",
             error_code="NATIVE_DRAWING_THREAD_PARAMETERS_INVALID",
@@ -184,7 +184,7 @@ def _validate_host(
                     else "1 to 32 distinct projected full-circle EdgeN targets"
                 ),
                 "requested_subelements": list(spec.source_names),
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     if spec.orientation == "side":

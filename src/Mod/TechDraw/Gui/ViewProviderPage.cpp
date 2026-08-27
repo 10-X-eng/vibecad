@@ -136,6 +136,8 @@ void ViewProviderPage::attach(App::DocumentObject* pcFeat)
                     const auto* timeline = dynamic_cast<const App::DocumentTimeline*>(&object);
                     if (!timeline
                         || (&property != &timeline->Position && &property != &timeline->Operations)
+                        || (timeline->getDocument()
+                            && timeline->getDocument()->testStatus(App::Document::Restoring))
                         || m_mdiView.isNull()
                         || !m_graphicsScene) {
                         return;

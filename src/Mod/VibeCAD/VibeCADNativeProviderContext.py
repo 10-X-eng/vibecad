@@ -137,4 +137,8 @@ def provider_visible_native_state(state: dict[str, Any]) -> dict[str, Any]:
         from VibeCADNativeAnalyzeProviderState import compact_analyze_provider_state
 
         return compact_analyze_provider_state(state)
+    if state.get("surface_id") == "drawing":
+        from VibeCADNativeDrawingProviderState import compact_drawing_provider_state
+
+        return compact_drawing_provider_state(state)
     return state

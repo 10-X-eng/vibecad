@@ -155,6 +155,7 @@ public:
                                   const std::vector<long>& sourceIndices,
                                   const TopoDS_Shape& faces,
                                   const Base::Vector3d& centroid);
+    virtual bool restorePrecomputedState();
 
     short mustExecute() const override;
     App::DocumentObjectExecReturn* execute() override;
@@ -185,6 +186,8 @@ public:
     const std::vector<TechDraw::FacePtr> getFaceGeometry() const;
 
     bool hasGeometry() const;
+    /// True when the displayed projection matches the currently active source state.
+    bool geometryMatchesActiveSources() const;
     TechDraw::GeometryObjectPtr getGeometryObject() const { return geometryObject; }
 
     TechDraw::VertexPtr getVertex(std::string vertexName) const;
@@ -297,13 +300,19 @@ protected:
     virtual TechDraw::GeometryObjectPtr buildGeometryObject(const TopoDS_Shape& shape,
                                                             const gp_Ax2& viewAxis);
     virtual TechDraw::GeometryObjectPtr makeGeometryForShape(const TopoDS_Shape& shape);//const??
-    void partExec(TopoDS_Shape& shape);
+    void adoptPrecomputedProjection(const TopoDS_Shape& edges,
+                                    const std::vector<long>& edgeClasses,
+                                    const std::vector<bool>& edgeVisibility,
+                                    const std::vector<long>& sourceIndices,
+                                    const TopoDS_Shape& faces,
+                                    const Base::Vector3d& centroid,
+                                    bool persist);
     bool restorePrecomputedProjection();
+    void partExec(TopoDS_Shape& shape);
     virtual void addPoints(void);
     std::string sourceStateSignature(
         const std::vector<App::DocumentObject*>& sources) const;
     virtual std::string geometrySourceStateSignature() const;
-    bool geometryMatchesActiveSources() const;
     virtual bool deferPrecomputedProjectionPaint() const { return false; }
     void recomputeForCurrentTimelineState();
 

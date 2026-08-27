@@ -194,6 +194,27 @@ class TestAnalyzeContextStatusRendering:
         )
         assert gui._progress_event_should_update_status(event) is True
 
+    def test_drawing_catalog_progress_is_visible_in_the_status_line(self) -> None:
+        gui = self._gui()
+        progress = {
+            "event": "drawing_context_progress",
+            "percent": 45,
+            "message": "Reading Drawing sources 24 of 80",
+        }
+        ready = {
+            "event": "drawing_context_ready",
+            "structural_revision": 12,
+        }
+
+        assert gui._format_progress_event(progress) == (
+            "Reading Drawing sources 24 of 80"
+        )
+        assert gui._format_progress_event(ready) == (
+            "Drawing context is ready for document revision 12."
+        )
+        assert gui._progress_event_should_update_status(progress) is True
+        assert gui._progress_event_should_update_status(ready) is True
+
     def test_analyze_progress_reaches_the_application_status_bar(
         self,
         monkeypatch,

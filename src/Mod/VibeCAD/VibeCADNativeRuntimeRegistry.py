@@ -321,6 +321,10 @@ from VibeCADNativeDrawingViewLockBindings import (
 from VibeCADNativeDrawingViewLockRuntime import (
     NativeDrawingViewLockRuntime,
 )
+from VibeCADNativeDrawingPlacementBindings import (
+    drawing_placement_runtime_bindings,
+)
+from VibeCADNativeDrawingPlacementRuntime import NativeDrawingPlacementRuntime
 from VibeCADNativeDrawingSectionPositionBindings import (
     drawing_section_position_runtime_bindings,
 )
@@ -542,6 +546,7 @@ def build_native_runtime_bindings(
     drawing_line_attributes = NativeDrawingLineAttributesRuntime(context)
     drawing_line_length = NativeDrawingLineLengthRuntime(context)
     drawing_view_lock = NativeDrawingViewLockRuntime(context)
+    drawing_placement = NativeDrawingPlacementRuntime(context)
     drawing_section_position = NativeDrawingSectionPositionRuntime(context)
     drawing_format = NativeDrawingFormatRuntime(context)
     drawing_dimension_text = NativeDrawingDimensionTextRuntime(context)
@@ -688,6 +693,7 @@ def build_native_runtime_bindings(
         **drawing_line_attributes_runtime_bindings(drawing_line_attributes),
         **drawing_line_length_runtime_bindings(drawing_line_length),
         **drawing_view_lock_runtime_bindings(drawing_view_lock),
+        **drawing_placement_runtime_bindings(drawing_placement),
         **drawing_section_position_runtime_bindings(drawing_section_position),
         **drawing_format_runtime_bindings(drawing_format),
         **drawing_dimension_text_runtime_bindings(drawing_dimension_text),

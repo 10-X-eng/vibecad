@@ -1076,6 +1076,15 @@ def test_dark_theme_uses_onshape_style_sketcher_color_roles() -> None:
     assert sketcher_grid["GridLineColor"] == int("343A40FF", 16)
     assert sketcher_grid["GridDivLineColor"] == int("495057FF", 16)
 
+    techdraw_colors = values_at(
+        "Root", "BaseApp", "Preferences", "Mod", "TechDraw", "Colors"
+    )
+    techdraw_dimensions = values_at(
+        "Root", "BaseApp", "Preferences", "Mod", "TechDraw", "Dimensions"
+    )
+    assert techdraw_colors["PageColor"] == int("F1F3F5FF", 16)
+    assert techdraw_dimensions["Color"] == int("212529FF", 16)
+
     sketcher_view = next(
         group
         for group in root.iter("FCParamGroup")

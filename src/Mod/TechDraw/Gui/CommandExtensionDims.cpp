@@ -2981,8 +2981,8 @@ namespace TechDrawGui {
             dimensionCommand.c_str()
         );
 
-        // Touch the parent feature so the dimension in tree view appears as a child
-        objFeat->touch();
+        // Refresh the claimed tree children without rebuilding the projection.
+        objFeat->touch(true);
         dim->recomputeFeature();
         if (dim->isError()) {
             throw Base::RuntimeError(

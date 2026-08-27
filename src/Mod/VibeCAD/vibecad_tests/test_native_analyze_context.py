@@ -18,6 +18,7 @@ from VibeCADNativeAnalyzeContext import (
     capture_responsive_analyze_snapshot,
 )
 from VibeCADNativeAnalyzeGeometrySources import active_analyze_geometry_sources
+from VibeCADNativeAnalyzeSnapshot import begin_analyze_snapshot_capture
 
 
 def _request(revision: int = 7, count: int = 10) -> dict:
@@ -36,6 +37,62 @@ def _request(revision: int = 7, count: int = 10) -> dict:
         },
         "background_job": None,
     }
+
+
+def test_analyze_capture_schedules_only_effectively_available_objects(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeAnalyzeSnapshot as analyze_snapshot
+
+    next_id = 0
+
+    def obj(
+        name: str,
+        *,
+        type_id: str = "Part::Feature",
+        visible: bool = True,
+        suppressed: bool = False,
+    ):
+        nonlocal next_id
+        next_id += 1
+        return SimpleNamespace(
+            ID=next_id,
+            Name=name,
+            TypeId=type_id,
+            PropertiesList=("Shape",),
+            ViewObject=SimpleNamespace(Visibility=visible),
+            Suppressed=suppressed,
+            getParentGroup=lambda: None,
+            getParentGeoFeatureGroup=lambda: None,
+        )
+
+    visible = obj("VisibleBody")
+    hidden = obj("HiddenBody", visible=False)
+    suppressed = obj("SuppressedBody", suppressed=True)
+    history_inactive = obj("FutureBody")
+    analysis = obj(
+        "Analysis",
+        type_id="Fem::FemAnalysis",
+        visible=False,
+    )
+    document = SimpleNamespace(
+        Uid="document-a",
+        Objects=(visible, hidden, suppressed, history_inactive, analysis),
+        isObjectUsableAtCurrentTimelinePosition=(
+            lambda candidate: candidate is not history_inactive
+        ),
+    )
+    monkeypatch.setattr(analyze_snapshot, "_active_analysis", lambda _document: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "PartGui",
+        SimpleNamespace(isModelingObjectActive=lambda _obj: True),
+    )
+
+    request = begin_analyze_snapshot_capture(document, validate_brep=False)
+
+    assert request["object_names"] == ["VisibleBody", "Analysis"]
+    assert request["analysis_names"] == ["Analysis"]
 
 
 def test_context_coordinator_coalesces_callers_and_reuses_the_revision() -> None:
@@ -228,6 +285,34 @@ def test_responsive_capture_postprocesses_detached_parts_outside_dispatch() -> N
     assert all(part["validated"] is True for part in result["parts"])
 
 
+def test_pre_detached_analyze_context_never_dispatches_to_the_document_thread() -> None:
+    request = _request(count=1)
+    request["detached_parts"] = [{"captured": ["VisibleBody"]}]
+    request["detached_clipping"] = {"available": False}
+
+    result = capture_responsive_analyze_snapshot(
+        request,
+        dispatch_to_document_thread=lambda _operation: pytest.fail(
+            "detached Analyze preparation must not return to the document thread"
+        ),
+        capture_batch=lambda _request, _names: pytest.fail(
+            "detached Analyze preparation must not recapture live objects"
+        ),
+        capture_clipping=lambda _request: pytest.fail(
+            "detached Analyze preparation must not recapture clipping state"
+        ),
+        finalize=lambda _request, parts, clipping: {
+            "parts": list(parts),
+            "clipping": dict(clipping),
+        },
+    )
+
+    assert result == {
+        "parts": [{"captured": ["VisibleBody"]}],
+        "clipping": {"available": False},
+    }
+
+
 def test_responsive_capture_checks_cancellation_between_batches() -> None:
     request = _request(count=5)
     completed_batches = 0
@@ -340,6 +425,129 @@ def test_session_capture_uses_document_dispatches_then_reuses_cache(
     assert any(event["event"] == "analyze_context_progress" for event in events)
     assert any(event["event"] == "analyze_context_ready" for event in events)
     assert any(event["event"] == "analyze_context_cache_hit" for event in events)
+
+
+def test_detached_analyze_session_uses_exactly_one_document_thread_dispatch(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeAnalyzeSnapshot as analyze_snapshot_module
+    import VibeCADSession as session_module
+
+    request = _request(count=1)
+    request["cacheable"] = False
+    request["detached_parts"] = [{"captured": ["VisibleBody"]}]
+    request["detached_clipping"] = {"available": False}
+    request["base_snapshot"]["_selection"] = {
+        "document_uid": "document-a",
+        "items": [],
+    }
+    in_dispatch = False
+    dispatch_count = 0
+
+    class _Service:
+        @staticmethod
+        def begin_native_analyze_context_request():
+            assert in_dispatch is True
+            return deepcopy(request)
+
+        @staticmethod
+        def native_analyze_context_coordinator():
+            return AnalyzeContextCoordinator()
+
+        @staticmethod
+        def capture_native_analyze_context_batch(_request, _names):
+            pytest.fail("detached Analyze context must not recapture live objects")
+
+        @staticmethod
+        def capture_native_analyze_context_clipping(_request):
+            pytest.fail("detached Analyze context must not recapture clipping state")
+
+    def dispatch(operation):
+        nonlocal in_dispatch, dispatch_count
+        assert in_dispatch is False
+        dispatch_count += 1
+        in_dispatch = True
+        try:
+            return operation()
+        finally:
+            in_dispatch = False
+
+    monkeypatch.setattr(
+        analyze_snapshot_module,
+        "finish_analyze_snapshot_capture",
+        lambda _request, parts, clipping: {
+            "kind": "analyze",
+            "parts": list(parts),
+            "clipping": dict(clipping),
+        },
+    )
+
+    result = session_module._build_responsive_analyze_native_state(
+        _Service(),
+        dispatch,
+    )
+
+    assert result["domain"]["parts"] == [{"captured": ["VisibleBody"]}]
+    assert dispatch_count == 1
+
+
+def test_cached_analyze_session_uses_initial_detached_clipping() -> None:
+    import VibeCADSession as session_module
+
+    coordinator = AnalyzeContextCoordinator()
+    coordinator.get_or_build(
+        "document-a",
+        7,
+        lambda _cancelled, _progress: {
+            "kind": "analyze",
+            "clipping": {"available": False},
+        },
+    )
+    request = _request(count=1)
+    request["cacheable"] = True
+    request["detached_clipping"] = {"available": True, "mode": "plane"}
+    request["base_snapshot"]["_selection"] = {
+        "document_uid": "document-a",
+        "items": [],
+    }
+    in_dispatch = False
+    dispatch_count = 0
+
+    class _Service:
+        @staticmethod
+        def begin_native_analyze_context_request():
+            assert in_dispatch is True
+            return deepcopy(request)
+
+        @staticmethod
+        def native_analyze_context_coordinator():
+            return coordinator
+
+        @staticmethod
+        def capture_native_analyze_context_batch(_request, _names):
+            pytest.fail("a cached Analyze context must not recapture live objects")
+
+        @staticmethod
+        def capture_native_analyze_context_clipping(_request):
+            pytest.fail("initial detached clipping must satisfy the cache refresh")
+
+    def dispatch(operation):
+        nonlocal in_dispatch, dispatch_count
+        assert in_dispatch is False
+        dispatch_count += 1
+        in_dispatch = True
+        try:
+            return operation()
+        finally:
+            in_dispatch = False
+
+    result = session_module._build_responsive_analyze_native_state(
+        _Service(),
+        dispatch,
+    )
+
+    assert result["domain"]["clipping"] == {"available": True, "mode": "plane"}
+    assert dispatch_count == 1
 
 
 class _Shape:
@@ -530,3 +738,126 @@ def test_analyze_geometry_postprocess_keeps_only_isolated_valid_results(
     assert processed[0]["geometry_source_count"] == 1
     assert processed[0]["geometry_sources"] == [{"object_name": "Valid"}]
     assert "geometry_validation_artifacts" not in processed[0]
+
+
+def test_analyze_snapshot_uses_context_mesh_state_and_skips_definitions_as_outputs(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeAnalyzeSnapshot as snapshot
+
+    definition = object()
+    document = type("Document", (), {"Objects": [definition]})()
+    definition_calls = []
+    output_calls = []
+    monkeypatch.setattr(
+        snapshot,
+        "is_fem_mesh_definition",
+        lambda obj: obj is definition,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        snapshot,
+        "fem_mesh_definition_context_state",
+        lambda obj: definition_calls.append(obj)
+        or {"object_name": "Mesh", "state_sha256": "a" * 64},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        snapshot,
+        "fem_mesh_object_context_state",
+        lambda obj: output_calls.append(obj)
+        or {"object_name": "Output", "state_sha256": "b" * 64},
+        raising=False,
+    )
+
+    count, definitions, _states = snapshot._mesh_definitions(document)
+    output_count, outputs = snapshot._fem_mesh_outputs(document)
+
+    assert count == 1
+    assert definitions[0]["object_name"] == "Mesh"
+    assert output_count == 0
+    assert outputs == []
+    assert definition_calls == [definition]
+    assert output_calls == []
+
+
+def test_analyze_study_record_uses_bounded_mesh_context_state(monkeypatch) -> None:
+    import VibeCADNativeAnalyzeSnapshot as snapshot
+
+    analysis = SimpleNamespace(Name="Analysis", Group=[])
+    observed = []
+    monkeypatch.setattr(
+        snapshot,
+        "analysis_state",
+        lambda _analysis: {"object_name": "Analysis", "state_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        snapshot,
+        "result_purge_state",
+        lambda _analysis: {
+            "object_count": 0,
+            "solver_result_root_count": 0,
+            "ordinary_operation_count": 0,
+            "purge_ready": True,
+            "blockers": [],
+            "graph_sha256": "b" * 64,
+        },
+    )
+
+    def bounded_study(_analysis, *, mesh_state_reader=None):
+        observed.append(mesh_state_reader)
+        return {"intent": {}, "inventory": {}}
+
+    monkeypatch.setattr(snapshot, "study_state", bounded_study)
+
+    snapshot._analysis_capture_record(
+        analysis,
+        active_analysis_name="Analysis",
+        include_summary=True,
+    )
+
+    assert observed == [snapshot.fem_mesh_definition_context_state]
+
+
+def test_analyze_mesh_state_cache_reuses_shape_topology_within_one_capture(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeMeshState as mesh_state
+
+    class Shape:
+        def __init__(self) -> None:
+            self.face_reads = 0
+
+        @property
+        def Faces(self):
+            self.face_reads += 1
+            return [object(), object()]
+
+        Vertexes = ()
+        Edges = ()
+        Wires = ()
+        Shells = ()
+        Solids = (object(),)
+        BoundBox = None
+
+    shape = Shape()
+    obj = SimpleNamespace(
+        Name="Body",
+        Label="Body",
+        TypeId="PartDesign::Body",
+        Shape=shape,
+        PropertiesList=(),
+    )
+    monkeypatch.setattr(
+        mesh_state,
+        "concise_object",
+        lambda _obj: {"object_name": "Body", "label": "Body"},
+    )
+
+    with mesh_state.mesh_object_state_cache():
+        first = mesh_state.mesh_object_state(obj)
+        second = mesh_state.mesh_object_state(obj)
+
+    assert first == second
+    assert first is not second
+    assert shape.face_reads == 1

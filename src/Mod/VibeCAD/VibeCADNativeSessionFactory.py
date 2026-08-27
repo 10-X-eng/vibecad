@@ -16,6 +16,7 @@ from VibeCADNativeCapabilityRegistry import (
     provider_visible_native_schema,
 )
 from VibeCADNativeInput import NativeInputAuthorizer
+from VibeCADModelingSurface import NATIVE_DERIVED_ARTIFACT_SURFACES
 from VibeCADNativeOutput import NativeOutputAuthorizer
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -24,6 +25,7 @@ from VibeCADNativeTargets import document_uid
 from VibeCADNativeTurn import (
     NativeTurnSnapshot,
     freeze_native_turn,
+    native_operation_scope_digest as _operation_scope_digest,
     require_frozen_native_turn,
 )
 from VibeCADNativeUndo import NativeAssistantUndoLedger
@@ -37,6 +39,8 @@ class NativeSessionExecution:
     undo_ledger: NativeAssistantUndoLedger
     run_id: str
     authority_release: Callable[[], None] | None = None
+    background_manager: Any | None = None
+    document_uid: str = ""
     _closed: bool = field(default=False, init=False, repr=False)
 
     def close(self) -> None:
@@ -134,25 +138,59 @@ def _validate_expected_turn(
             + (f" ({', '.join(mismatched)})" if mismatched else "")
         )
     if expected_authorization is not None:
-        if (
-            str(expected_authorization.get("schema_sha256") or "")
-            != turn.schema_sha256
-        ):
-            changed.append("operation authorization digest")
+        provider_schema_digest = str(
+            expected_authorization.get("provider_schema_sha256")
+            or expected_authorization.get("schema_sha256")
+            or ""
+        )
+        if provider_schema_digest != visible_turn_digest:
+            changed.append("provider schema authorization digest")
+        compatibility_digest = str(
+            expected_authorization.get("schema_sha256") or ""
+        )
+        if compatibility_digest and compatibility_digest != provider_schema_digest:
+            changed.append("provider schema authorization alias")
         expected_operations = expected_authorization.get("operations_by_tool")
         if not isinstance(expected_operations, Mapping):
             changed.append("operation authorization map")
         else:
+            captured_operations = {}
+            operation_map_valid = True
+            for name, operations in expected_operations.items():
+                clean_name = str(name or "").strip()
+                if (
+                    not clean_name
+                    or clean_name in captured_operations
+                    or not isinstance(operations, (list, tuple))
+                ):
+                    operation_map_valid = False
+                    continue
+                captured_operations[clean_name] = [
+                    str(operation) for operation in operations
+                ]
+            try:
+                captured_scope_digest = _operation_scope_digest(
+                    captured_operations
+                )
+            except (TypeError, ValueError):
+                operation_map_valid = False
+                captured_scope_digest = ""
+            if not operation_map_valid:
+                changed.append("operation authorization map")
+            expected_scope_digest = str(
+                expected_authorization.get("operation_scope_sha256") or ""
+            )
+            if (
+                expected_scope_digest
+                and expected_scope_digest != captured_scope_digest
+            ):
+                changed.append("operation authorization digest")
             frozen_operations = {
                 str(schema.get("name") or ""): list(operations)
                 for schema in turn.provider_schemas
                 if (operations := _provider_schema_operations(schema))
             }
-            if {
-                str(name): [str(operation) for operation in operations]
-                for name, operations in expected_operations.items()
-                if isinstance(operations, (list, tuple))
-            } != frozen_operations:
+            if captured_operations != frozen_operations:
                 changed.append("operation authorization scope")
     if str(expected_surface.get("domain") or "") != turn.surface.surface_id:
         changed.append("ribbon domain")
@@ -184,11 +222,16 @@ def create_native_session_execution(
     document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = None,
 ) -> NativeSessionExecution:
     authoring_engine = str(service.modeling_engine() or "").strip().lower()
-    scoped_analyze = (
-        authoring_engine == "vibescript"
-        and str(expected_surface.get("domain") or "") == "analyze"
+    requested_surface_id = str(expected_surface.get("domain") or "")
+    scoped_surface_id = (
+        requested_surface_id
+        if (
+            authoring_engine == "vibescript"
+            and requested_surface_id in NATIVE_DERIVED_ARTIFACT_SURFACES
+        )
+        else None
     )
-    if authoring_engine != "native" and not scoped_analyze:
+    if authoring_engine != "native" and scoped_surface_id is None:
         raise NativeDispatchError(
             "NATIVE_AUTHORITY_CHANGED",
             "The document is no longer under Native authority.",
@@ -236,10 +279,10 @@ def create_native_session_execution(
                 "NATIVE_AUTHORITY_CHANGED",
                 "Native mutation authority is not active for the exact document.",
             )
-    elif turn.surface.surface_id != "analyze":
+    elif turn.surface.surface_id != scoped_surface_id:
         raise NativeDispatchError(
             "NATIVE_AUTHORITY_CHANGED",
-            "Only the Analyze ribbon can use scoped Native authority.",
+            "The frozen ribbon cannot use scoped Native authority.",
         )
 
     def reauthorize() -> NativeTurnSnapshot:
@@ -264,9 +307,20 @@ def create_native_session_execution(
         )
     undo.begin_run(run_id)
     scope_token = (
-        state.begin_scoped_authority(uid, "analyze") if scoped_analyze else None
+        state.begin_scoped_authority(
+            uid,
+            scoped_surface_id,
+            exact_capabilities=("document.undo",),
+        )
+        if scoped_surface_id is not None
+        else None
     )
     background_manager_factory = getattr(service, "native_background_manager", None)
+    background_manager = (
+        background_manager_factory()
+        if callable(background_manager_factory)
+        else None
+    )
     try:
         context = NativeRuntimeContext(
             service=service,
@@ -279,13 +333,10 @@ def create_native_session_execution(
             edit_or_task_active=lambda: _edit_or_task_active(service),
             authorize_output=output_authorizer,
             authorize_input=input_authorizer,
-            background_manager=(
-                background_manager_factory()
-                if callable(background_manager_factory)
-                else None
-            ),
+            background_manager=background_manager,
             document_thread_dispatch=document_thread_dispatch,
             run_id=run_id,
+            scoped_capability_prefix=scoped_surface_id,
         )
         dispatcher = NativeTurnDispatcher(
             document=document,
@@ -307,7 +358,15 @@ def create_native_session_execution(
         if scope_token is not None
         else None
     )
-    return NativeSessionExecution(dispatcher, turn, undo, run_id, release)
+    return NativeSessionExecution(
+        dispatcher,
+        turn,
+        undo,
+        run_id,
+        release,
+        background_manager,
+        uid,
+    )
 
 
 def create_live_native_session_execution(

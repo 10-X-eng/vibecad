@@ -75,6 +75,15 @@ NON_STRUCTURAL_INTERNAL_PROPERTIES = frozenset(
         "PrecomputedDimensionFlags",
         "PrecomputedDimensionScalars",
         "PrecomputedDimensionVectors",
+        "PrecomputedEdgeClasses",
+        "PrecomputedEdgeVisibility",
+        "PrecomputedProjectionCentroid",
+        "PrecomputedProjectionEdges",
+        "PrecomputedProjectionFaces",
+        "PrecomputedProjectionSourceState",
+        "PrecomputedSourceIndices",
+        "SavedGeometry",
+        "BoxCorners",
         "VibeCADVibeScriptEditorDraft",
     }
 )
@@ -231,6 +240,7 @@ class PreparedNativeMutation:
 @dataclass(slots=True)
 class _ScopedAuthority:
     capability_prefix: str
+    exact_capabilities: frozenset[str] = frozenset()
     closing: bool = False
 
 
@@ -249,6 +259,7 @@ class _DocumentRecord:
     mutation_observer_token: str | None = None
     mutation_observer_events: int = 0
     previews: dict[str, dict[str, Any]] = field(default_factory=dict)
+    mutation_observer_read_only: bool = False
 
 
 def _canonical_verified_result(result: Mapping[str, Any]) -> str:
@@ -332,15 +343,21 @@ class NativeDocumentStateStore:
         self,
         document_uid: str,
         capability_prefix: str,
+        *,
+        exact_capabilities: tuple[str, ...] = (),
     ) -> str:
         """Authorize one bounded Native capability namespace for one session."""
 
         uid = _required_text(document_uid, "document UID")
         prefix = _required_text(capability_prefix, "capability prefix")
+        exact = frozenset(
+            _required_text(value, "exact capability")
+            for value in exact_capabilities
+        )
         token = secrets.token_hex(16)
         with self._lock:
             record = self._records.setdefault(uid, _DocumentRecord())
-            record.scoped_authorities[token] = _ScopedAuthority(prefix)
+            record.scoped_authorities[token] = _ScopedAuthority(prefix, exact)
         return token
 
     @staticmethod
@@ -622,6 +639,7 @@ class NativeDocumentStateStore:
                             or ticket.capability_name.startswith(
                                 f"{scope.capability_prefix}."
                             )
+                            or ticket.capability_name in scope.exact_capabilities
                         )
                     ),
                     None,
@@ -650,6 +668,7 @@ class NativeDocumentStateStore:
                 )
             record.mutation_observer_token = ticket.idempotency_token
             record.mutation_observer_events = 0
+            record.mutation_observer_read_only = False
 
     def commit_mutation_observation(self, ticket: NativeCallTicket) -> int:
         if not isinstance(ticket, NativeCallTicket):
@@ -658,10 +677,66 @@ class NativeDocumentStateStore:
             record = self._records.setdefault(ticket.document_uid, _DocumentRecord())
             if record.mutation_observer_token != ticket.idempotency_token:
                 raise NativeStateError("Native mutation observation ownership changed.")
+            if record.mutation_observer_read_only:
+                raise NativeStateError("A read observation cannot commit a mutation.")
             if record.mutation_observer_events:
                 record.revision += 1
             record.mutation_observer_token = None
             record.mutation_observer_events = 0
+            record.mutation_observer_read_only = False
+            return record.revision
+
+    def begin_read_observation(self, ticket: NativeCallTicket) -> None:
+        """Collect synchronous read-induced events without advancing revision."""
+
+        if not isinstance(ticket, NativeCallTicket):
+            raise TypeError("ticket must be a NativeCallTicket")
+        with self._lock:
+            record = self._records.setdefault(ticket.document_uid, _DocumentRecord())
+            if record.revision != ticket.expected_revision:
+                raise NativeRevisionConflict(ticket.expected_revision, record.revision)
+            if record.mutation_observer_token is not None:
+                raise NativeStateError(
+                    "A Native document already has an observed operation in progress."
+                )
+            record.mutation_observer_token = ticket.idempotency_token
+            record.mutation_observer_events = 0
+            record.mutation_observer_read_only = True
+
+    def complete_read_observation(self, ticket: NativeCallTicket) -> int:
+        """Discard events after the caller verifies that durable state is unchanged."""
+
+        if not isinstance(ticket, NativeCallTicket):
+            raise TypeError("ticket must be a NativeCallTicket")
+        with self._lock:
+            record = self._records.setdefault(ticket.document_uid, _DocumentRecord())
+            if (
+                record.mutation_observer_token != ticket.idempotency_token
+                or not record.mutation_observer_read_only
+            ):
+                raise NativeStateError("Native read observation ownership changed.")
+            record.mutation_observer_token = None
+            record.mutation_observer_events = 0
+            record.mutation_observer_read_only = False
+            return record.revision
+
+    def fail_read_observation(self, ticket: NativeCallTicket) -> int:
+        """Retain one structural revision when a read cannot prove no change."""
+
+        if not isinstance(ticket, NativeCallTicket):
+            raise TypeError("ticket must be a NativeCallTicket")
+        with self._lock:
+            record = self._records.setdefault(ticket.document_uid, _DocumentRecord())
+            if (
+                record.mutation_observer_token != ticket.idempotency_token
+                or not record.mutation_observer_read_only
+            ):
+                raise NativeStateError("Native read observation ownership changed.")
+            if record.mutation_observer_events:
+                record.revision += 1
+            record.mutation_observer_token = None
+            record.mutation_observer_events = 0
+            record.mutation_observer_read_only = False
             return record.revision
 
     def cancel_mutation(self, ticket: NativeCallTicket) -> None:
@@ -672,6 +747,7 @@ class NativeDocumentStateStore:
             if record.mutation_observer_token == ticket.idempotency_token:
                 record.mutation_observer_token = None
                 record.mutation_observer_events = 0
+                record.mutation_observer_read_only = False
             record.authorized_tokens.discard(ticket.idempotency_token)
             scope_token = record.authorized_token_scopes.pop(
                 ticket.idempotency_token,

@@ -12,6 +12,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeCapabilityVariant,
 )
+from VibeCADNativeInspect import MAX_INSPECTION_ELEMENTS
 from VibeCADNativeMeasure import MAX_RADIUS_MEASUREMENTS
 from VibeCADRibbonSurface import SURFACE_IDS
 
@@ -90,9 +91,22 @@ def _drawing_projected_view_ref() -> dict[str, Any]:
         "type": "object",
         "properties": {
             "object_name": deepcopy(_OBJECT_NAME),
-            "expected_state_sha256": deepcopy(_SHA256),
+            "expected_state_sha256": {
+                "default": "",
+                "anyOf": [
+                    {"type": "string", "const": ""},
+                    deepcopy(_SHA256),
+                ],
+            },
+            "expected_projection_state_sha256": {
+                "default": "",
+                "anyOf": [
+                    {"type": "string", "const": ""},
+                    deepcopy(_SHA256),
+                ],
+            },
         },
-        "required": ["object_name", "expected_state_sha256"],
+        "required": ["object_name"],
         "additionalProperties": False,
     }
 
@@ -220,7 +234,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
             ),
             _variant(
                 "capture_all",
-                "Capture a bounded image framed around all visible geometry.",
+                "Capture the active Drawing page or all visible 3D geometry.",
                 ("VibeCAD_NativeCaptureView",),
             ),
             _variant(
@@ -247,6 +261,17 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                 exact_target_type="DocumentObject[]",
             ),
             _variant(
+                "capture_drawing_page",
+                "Capture one exact Drawing page by its internal object name.",
+                ("VibeCAD_NativeCaptureView",),
+                parameters=_parameters(
+                    {"page": _object_ref()},
+                    ("page",),
+                ),
+                exact_target_type="TechDraw::DrawPage",
+                surface_ids=frozenset({"drawing"}),
+            ),
+            _variant(
                 "capture_active_sketch",
                 "Capture a bounded image framed around the active Sketch.",
                 ("VibeCAD_NativeCaptureView",),
@@ -256,7 +281,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
     )
     inspect = NativeCapabilityDefinition(
         name="inspect.query",
-        description="Inspect geometry.",
+        description="Inspect 3D model geometry by Face1, Edge1, or Vertex1.",
         primary_classification="read",
         variants=(
             _variant(
@@ -281,7 +306,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
             ),
             _variant(
                 "radius",
-                "Measure exact circular edge or cylindrical face radii in mm.",
+                "Measure known circular edges or cylindrical faces in mm.",
                 ("Std_Measure",),
                 parameters=_parameters(
                     {
@@ -323,48 +348,20 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
             ),
             _variant(
                 "element",
-                "Read concise geometry for one exact subelement.",
+                "Read each exact subelement's type and available size, endpoints, "
+                "radius, center, or normal.",
                 ("Inspection_InspectElement",),
                 parameters=_parameters(
-                    {"targets": _targets(_element_ref(), minimum=1, maximum=1)},
+                    {
+                        "targets": _targets(
+                            _element_ref(),
+                            minimum=1,
+                            maximum=MAX_INSPECTION_ELEMENTS,
+                        )
+                    },
                     ("targets",),
                 ),
-                exact_target_type="Subelement",
-            ),
-            _variant(
-                "drawing_projected_geometry",
-                "Read a bounded page of exact projected Drawing elements.",
-                ("VibeCAD_DrawingInspectProjectedGeometry",),
-                parameters=_parameters(
-                    {
-                        "view": _drawing_projected_view_ref(),
-                        "offset": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 4096,
-                        },
-                        "page_size": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 48,
-                        },
-                        "expected_projection_state_sha256": {
-                            "anyOf": [
-                                {"type": "string", "const": ""},
-                                deepcopy(_SHA256),
-                            ]
-                        },
-                    },
-                    (
-                        "view",
-                        "offset",
-                        "page_size",
-                        "expected_projection_state_sha256",
-                    ),
-                ),
-                exact_target_type="ExactDrawingProjectedGeometryPage",
-                surface_ids=frozenset({"drawing"}),
-                provider_supplemental=True,
+                exact_target_type="Subelement[]",
             ),
             _variant(
                 "validity",
@@ -375,6 +372,60 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
                     ("targets",),
                 ),
                 exact_target_type="Part::Feature",
+            ),
+        ),
+    )
+    drawing_sources = NativeCapabilityDefinition(
+        name="drawing.sources",
+        description="List exact whole-object sources available for Drawing views.",
+        primary_classification="read",
+        variants=(
+            _variant(
+                "list",
+                "Read one bounded page of exact Drawing sources.",
+                ("VibeCAD_DrawingListSources",),
+                parameters=_parameters(
+                    {
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1_000_000,
+                            "default": 0,
+                        },
+                    }
+                ),
+                exact_target_type="ExactDrawingSourcePage",
+                surface_ids=frozenset({"drawing"}),
+                provider_supplemental=True,
+            ),
+        ),
+    )
+    projected_geometry = NativeCapabilityDefinition(
+        name="drawing.projected_geometry",
+        description=(
+            "Read projected Drawing geometry by Face0, Edge0, or Vertex0."
+        ),
+        primary_classification="read",
+        variants=(
+            _variant(
+                "read",
+                "Read one bounded page of exact projected Drawing elements.",
+                ("VibeCAD_DrawingInspectProjectedGeometry",),
+                parameters=_parameters(
+                    {
+                        "view": _drawing_projected_view_ref(),
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 4096,
+                            "default": 0,
+                        },
+                    },
+                    ("view",),
+                ),
+                exact_target_type="ExactDrawingProjectedGeometryPage",
+                surface_ids=frozenset({"drawing"}),
+                provider_supplemental=True,
             ),
         ),
     )
@@ -405,7 +456,7 @@ def common_capability_definitions() -> tuple[NativeCapabilityDefinition, ...]:
             ),
         ),
     )
-    return state, view, inspect, save, undo
+    return state, view, inspect, drawing_sources, projected_geometry, save, undo
 
 
 def register_common_capability_definitions(

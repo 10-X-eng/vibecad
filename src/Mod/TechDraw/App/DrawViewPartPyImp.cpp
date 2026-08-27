@@ -21,6 +21,8 @@
  ***************************************************************************/
 
 
+#include <cmath>
+
 # include <BRepBuilderAPI_MakeVertex.hxx>
 # include <BRep_Builder.hxx>
 # include <BRepBndLib.hxx>
@@ -29,6 +31,7 @@
 # include <Bnd_Box.hxx>
 # include <GProp_GProps.hxx>
 # include <Precision.hxx>
+# include <Standard_Failure.hxx>
 # include <TopExp_Explorer.hxx>
 # include <TopExp.hxx>
 # include <TopTools_IndexedMapOfShape.hxx>
@@ -340,7 +343,13 @@ Py::Dict projectedElementDescriptors(DrawViewPart* view,
     const bool facesVisible = view->handleFaces() && !view->CoarseView.getValue();
     for (size_t index = 0; index < faces.size(); ++index) {
         const auto& face = faces.at(index);
-        const TopoDS_Face occFace = face->toOccFace();
+        TopoDS_Face occFace;
+        try {
+            occFace = face->toOccFace();
+        }
+        catch (const Standard_Failure&) {
+            continue;
+        }
         if (occFace.IsNull()) {
             continue;
         }
@@ -348,7 +357,7 @@ Py::Dict projectedElementDescriptors(DrawViewPart* view,
         descriptor.setItem("name", Py::String("Face" + std::to_string(index)));
         descriptor.setItem("element_type", Py::String("face"));
         descriptor.setItem("visible", Py::Boolean(facesVisible));
-        descriptor.setItem("area_view_mm2", Py::Float(face->getArea()));
+        descriptor.setItem("area_view_mm2", Py::Float(std::abs(face->getArea())));
         descriptor.setItem(
             "center_2d", pointDescriptor(face->getCenter(), conventionalCoordinates));
         descriptor.setItem("bounds_2d", shapeBounds(occFace, conventionalCoordinates));
@@ -493,7 +502,13 @@ PyObject* DrawViewPartPy::getPrecomputedProjection(PyObject* args)
         sourceIndices.append(Py::Long(edge->sourceIndex()));
     }
     for (const auto& face : view->getFaceGeometry()) {
-        const TopoDS_Face occFace = face->toOccFace();
+        TopoDS_Face occFace;
+        try {
+            occFace = face->toOccFace();
+        }
+        catch (const Standard_Failure&) {
+            continue;
+        }
         if (!occFace.IsNull()) {
             builder.Add(faces, occFace);
         }
@@ -605,6 +620,15 @@ PyObject* DrawViewPartPy::setPrecomputedProjection(PyObject* args)
         faces,
         centroid);
     Py_Return;
+}
+
+PyObject* DrawViewPartPy::restorePrecomputedState(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    return Py::new_reference_to(
+        Py::Boolean(getDrawViewPartPtr()->restorePrecomputedState()));
 }
 
 PyObject* DrawViewPartPy::getHiddenVertexes(PyObject *args)

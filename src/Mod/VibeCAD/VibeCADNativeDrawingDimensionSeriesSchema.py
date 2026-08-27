@@ -65,9 +65,8 @@ _VERTEX = _closed(
             "pattern": r"^Vertex(0|[1-9][0-9]*)$",
             "maxLength": 32,
         },
-        "expected_element_state_sha256": _SHA256,
     },
-    ("subelement", "expected_element_state_sha256"),
+    ("subelement",),
 )
 
 
@@ -78,6 +77,13 @@ def _parameters(kind: str, direction: str) -> dict:
         else "The first two vertices establish coordinate sign. "
         if kind == "coordinate"
         else "The host orders vertices geometrically. "
+    )
+    distinct = (
+        "Every vertex must have a distinct X coordinate. "
+        if direction == "horizontal"
+        else "Every vertex must have a distinct Y coordinate. "
+        if direction == "vertical"
+        else "Every vertex must have a distinct position along that baseline. "
     )
     return _closed(
         {
@@ -95,7 +101,7 @@ def _parameters(kind: str, direction: str) -> dict:
                 "minItems": 3,
                 "maxItems": 64,
                 "description": (
-                    f"Three to 64 unique exact projected vertices. {ordering}"
+                    f"Three to 64 unique exact projected vertices. {distinct}{ordering}"
                     f"Creates one {direction} {kind} series with N-1 dimensions."
                 ),
             },
@@ -116,7 +122,7 @@ def drawing_dimension_series_capability_definition() -> NativeCapabilityDefiniti
     return NativeCapabilityDefinition(
         name=DRAWING_DIMENSION_SERIES_CAPABILITY_NAME,
         description=(
-            "Create one hash-pinned chain or coordinate dimension series as a "
+            "Create one exact chain or coordinate dimension series as a "
             "single History operation with exact owned dimensions."
         ),
         primary_classification="mutation",

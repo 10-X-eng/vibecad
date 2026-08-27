@@ -467,13 +467,8 @@ void QGSPage::addItemToParent(QGIView* item, QGIView* parent)
         return;
     }
 
-    // positioning logic for objects (leader/rta/etc) that normally draw relative to the page goes
-    // here
-    //
-    QPointF itemPosition {item->getViewObject()->X.getValue(),  // millimetres on page
-                          -item->getViewObject()->Y.getValue()};
     parent->addToGroup(item);
-    item->setPos(Rez::guiX(itemPosition));
+    item->updatePositionFromFeatureXY();
 
     item->setZValue(ZVALUE::DIMENSION);
 }
@@ -959,6 +954,7 @@ void QGSPage::fixOrphans(bool force)
         if (!qv)
             attachView(dv);
     }
+    setViewParents();
     // if qView doesn't have a Feature on this Page, delete it
     std::vector<QGIView*> qvss = getViews();
     // qvss may contain an item and its child item(s) and to avoid to access a deleted item a QPointer is needed

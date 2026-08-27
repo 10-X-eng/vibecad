@@ -46,6 +46,11 @@ public:
 
     App::PropertyFileIncluded PageResult;
     App::PropertyFile Template;
+    App::PropertyLength DrawableX;
+    App::PropertyLength DrawableY;
+    App::PropertyLength DrawableWidth;
+    App::PropertyLength DrawableHeight;
+    App::PropertyLength DrawableClearance;
 
     void onChanged(const App::Property* prop) override;
    /// returns the type name of the ViewProvider

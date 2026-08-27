@@ -476,7 +476,7 @@ def _host_plan(
             "NATIVE_DRAWING_HATCH_PATTERN_INVALID",
             repair={
                 "accepted_target": "1 to 64 unique projected FaceN references",
-                "inspect_operation": "drawing_projected_geometry",
+                "tool": "drawing.projected_geometry",
             },
         )
     hatch = raw.get("hatch") if apply and isinstance(raw, Mapping) else None
@@ -746,8 +746,7 @@ def verify_drawing_hatch(document: Any, draft: NativeMutationDraft) -> dict[str,
         "hatch": state,
         "source_kind": prepared.source_kind,
         "next": {
-            "tool": "inspect.query",
-            "operation": "drawing_projected_geometry",
+            "tool": "drawing.projected_geometry",
             "view_name": str(target.view.Name),
         },
     }

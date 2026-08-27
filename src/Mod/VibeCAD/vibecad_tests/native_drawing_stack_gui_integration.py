@@ -22,7 +22,7 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAME
+from VibeCADNativeDrawingPageSchema import DRAWING_PAGE_CAPABILITY_NAMES
 from VibeCADNativeDrawingStackSchema import DRAWING_STACK_CAPABILITY_NAME
 from VibeCADNativeDrawingStackState import drawing_stack_state
 from VibeCADNativeDrawingState import drawing_page_state
@@ -125,7 +125,7 @@ def _create_clip(document, page, view):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAME)
+    page_definition = registry.definition(DRAWING_PAGE_CAPABILITY_NAMES[0])
     stack_definition = registry.definition(DRAWING_STACK_CAPABILITY_NAME)
     assert page_definition is not None and stack_definition is not None
     page_schema = page_definition.provider_schema(("page_default",))
@@ -142,7 +142,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(DRAWING_PAGE_CAPABILITY_NAME, DRAWING_STACK_CAPABILITY_NAME),
+            tool_names=(DRAWING_PAGE_CAPABILITY_NAMES[0], DRAWING_STACK_CAPABILITY_NAME),
             schemas=(page_schema, stack_schema),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -230,15 +230,21 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state_store,
-            registry=registry,
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=reauthorize,
-            active_document=lambda: App.ActiveDocument,
-        )
+        def refresh_dispatcher() -> NativeTurnDispatcher:
+            nonlocal turn, frozen
+            turn = _turn(surface, registry)
+            frozen = turn.surface
+            return NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
+        dispatcher = refresh_dispatcher()
         call_index = 0
 
         def call(tool_name: str, arguments: dict, *, succeeds: bool = True) -> dict:
@@ -252,7 +258,7 @@ def _run() -> None:
             assert response.get("ok") is succeeds, response
             return response
 
-        page_result = call(DRAWING_PAGE_CAPABILITY_NAME, {"operation": "page_default"})
+        page_result = call(DRAWING_PAGE_CAPABILITY_NAMES[0], {"operation": "page_default"})
         page = document.getObject(page_result["page"]["object_name"])
         assert page is not None
         page.ViewObject.show()
@@ -275,6 +281,7 @@ def _run() -> None:
         assert int(first.ViewObject.StackOrder) == -1
         first.ViewObject.StackOrder = 0
         _events(8)
+        dispatcher = refresh_dispatcher()
 
         source.ViewObject.Visibility = True
         first.ViewObject.Visibility = True
@@ -319,24 +326,29 @@ def _run() -> None:
 
         stale_arguments = _arguments("stack_up", page, third)
         TechDrawGui.stackView(third, "up")
+        dispatcher = refresh_dispatcher()
         rejected = call(DRAWING_STACK_CAPABILITY_NAME, stale_arguments, succeeds=False)
         assert rejected["error_code"] == "NATIVE_DRAWING_STACK_TARGET_STALE"
         TechDrawGui.stackView(third, "down")
+        dispatcher = refresh_dispatcher()
 
         stale_page = _arguments("stack_up", page, third)
         page.KeepUpdated = not bool(page.KeepUpdated)
+        dispatcher = refresh_dispatcher()
         rejected = call(DRAWING_STACK_CAPABILITY_NAME, stale_page, succeeds=False)
         assert rejected["error_code"] == "NATIVE_DRAWING_PAGE_STALE"
         page.KeepUpdated = not bool(page.KeepUpdated)
+        dispatcher = refresh_dispatcher()
 
         second_page_result = call(
-            DRAWING_PAGE_CAPABILITY_NAME,
+            DRAWING_PAGE_CAPABILITY_NAMES[0],
             {"operation": "page_default"},
         )
         second_page = document.getObject(second_page_result["page"]["object_name"])
         second_page.ViewObject.show()
         _events(12)
         other = _create_view(document, second_page, source, "OtherPageStackView", 80.0, 70.0)
+        dispatcher = refresh_dispatcher()
         mismatch = {
             "operation": "stack_up",
             "page": _target(drawing_page_state(page)),
@@ -348,6 +360,7 @@ def _run() -> None:
         _events(12)
 
         clip = _create_clip(document, page, third)
+        dispatcher = refresh_dispatcher()
         nested_before = drawing_stack_state(third)
         assert nested_before["scope_kind"] == "owner"
         nested = call(

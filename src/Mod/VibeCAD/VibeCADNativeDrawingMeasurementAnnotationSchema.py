@@ -61,9 +61,8 @@ def _element(prefix: str) -> dict:
                 "pattern": rf"^{prefix}(?:0|[1-9][0-9]*)$",
                 "maxLength": 32,
             },
-            "expected_element_state_sha256": _SHA256,
         },
-        ("subelement", "expected_element_state_sha256"),
+        ("subelement",),
     )
 
 

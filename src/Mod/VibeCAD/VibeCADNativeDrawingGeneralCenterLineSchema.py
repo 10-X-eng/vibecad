@@ -65,9 +65,8 @@ def _source(prefix: str) -> dict:
                 "pattern": rf"^{prefix}(?:0|[1-9][0-9]*)$",
                 "maxLength": 32,
             },
-            "expected_element_state_sha256": _SHA256,
         },
-        ("subelement", "expected_element_state_sha256"),
+        ("subelement",),
     )
 
 
@@ -96,7 +95,7 @@ def drawing_general_center_line_capability_definition() -> NativeCapabilityDefin
         name=DRAWING_GENERAL_CENTER_LINE_CAPABILITY_NAME,
         description=(
             "Create one persistent host-styled Drawing centerline from exact "
-            "hash-pinned faces, two edges, or two vertices. TechDraw owns "
+            "exact faces, two edges, or two vertices. TechDraw owns "
             "orientation repair, geometry derivation, defaults, and persistence."
         ),
         primary_classification="mutation",

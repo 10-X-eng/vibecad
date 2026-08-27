@@ -24,8 +24,7 @@ from VibeCADNativeDrawingDimensionSupport import drawing_selection_state
 from VibeCADNativeDrawingSnapshot import build_drawing_snapshot
 from VibeCADNativeDrawingState import drawing_page_state
 from VibeCADNativeDrawingViewLockSchema import (
-    DRAWING_VIEW_LOCK_CAPABILITY_NAME,
-    DRAWING_VIEW_LOCK_OPERATIONS,
+    DRAWING_VIEW_LOCK_CAPABILITY_NAMES,
 )
 from VibeCADNativeDrawingViewLockState import (
     drawing_view_lock_inventory_state,
@@ -149,29 +148,37 @@ def _create_fixture(document):
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(DRAWING_VIEW_LOCK_CAPABILITY_NAME)
-    assert definition is not None
-    schema = definition.provider_schema(DRAWING_VIEW_LOCK_OPERATIONS)
-    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    schemas = []
+    for name in DRAWING_VIEW_LOCK_CAPABILITY_NAMES:
+        definition = registry.definition(name)
+        assert definition is not None
+        schemas.append(
+            definition.provider_schema(
+                tuple(variant.operation for variant in definition.variants)
+            )
+        )
+    encoded = json.dumps(schemas, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert "path" not in encoded.casefold()
     assert len(encoded.encode("utf-8")) < 8 * 1024
     branches = {
-        branch["properties"]["operation"]["const"]: branch
-        for branch in schema["parameters"]["oneOf"]
+        schema["name"]: schema["parameters"]["oneOf"][0]
+        for schema in schemas
     }
-    assert set(branches) == {"set", "read_page"}
-    assert branches["set"]["properties"]["views"]["maxItems"] == 32
-    assert branches["read_page"]["properties"]["offset"]["maximum"] == 512
-    assert branches["read_page"]["properties"]["page_size"]["maximum"] == 48
+    assert set(branches) == set(DRAWING_VIEW_LOCK_CAPABILITY_NAMES)
+    assert branches["drawing.set_view_locks"]["properties"]["views"]["maxItems"] == 32
+    read = branches["drawing.view_locks"]
+    assert read["properties"]["operation"]["const"] == "read"
+    assert read["properties"]["offset"]["maximum"] == 512
+    assert "page_size" not in read["properties"]
     assert all(branch["additionalProperties"] is False for branch in branches.values())
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(DRAWING_VIEW_LOCK_CAPABILITY_NAME,),
-            schemas=(schema,),
+            tool_names=DRAWING_VIEW_LOCK_CAPABILITY_NAMES,
+            schemas=tuple(schemas),
             human_only_action_ids=(),
             missing_definition_names=(),
             missing_implementation_names=(),
@@ -196,17 +203,31 @@ def _visibility(document):
 
 
 def _page_target(page):
-    state = drawing_page_state(page)
-    return {
-        "object_name": state["object_name"],
-        "expected_state_sha256": state["state_sha256"],
-    }
+    return {"object_name": page.Name}
+
+
+def _rendered_bounds(page, object_names):
+    layout = TechDrawGui.inspectPageLayout(page)
+    by_name = {item["object_name"]: item for item in layout["items"]}
+    return {name: by_name[name]["bounds_mm"] for name in object_names}
+
+
+def _assert_rendered_bounds(actual, expected):
+    assert set(actual) == set(expected)
+    for object_name, expected_bounds in expected.items():
+        actual_bounds = actual[object_name]
+        for coordinate, expected_value in expected_bounds.items():
+            assert abs(actual_bounds[coordinate] - expected_value) < 1.0e-6, (
+                object_name,
+                coordinate,
+                expected_value,
+                actual_bounds[coordinate],
+            )
 
 
 def _change(state, locked):
     return {
         "object_name": state["object_name"],
-        "expected_view_lock_state_sha256": state["view_lock_state_sha256"],
         "locked": locked,
     }
 
@@ -216,25 +237,15 @@ def _set_arguments(page, inventory, requested):
     return {
         "operation": "set",
         "page": _page_target(page),
-        "expected_inventory_state_sha256": inventory[
-            "inventory_state_sha256"
-        ],
         "views": [
             _change(by_name[view.Name], locked) for view, locked in requested
         ],
     }
 
 
-def _read_arguments(page, inventory):
-    return {
-        "operation": "read_page",
-        "page": _page_target(page),
-        "expected_inventory_state_sha256": inventory[
-            "inventory_state_sha256"
-        ],
-        "offset": 0,
-        "page_size": 48,
-    }
+def _read_arguments(page, inventory=None, *, offset=0):
+    target = {"object_name": page.Name}
+    return {"operation": "read", "page": target, "offset": offset}
 
 
 def _human_oracle(document, first, second):
@@ -288,7 +299,7 @@ def _run() -> None:
             plan.transaction_behavior,
             plan.background_required,
         ) == (
-            DRAWING_VIEW_LOCK_CAPABILITY_NAME,
+            "drawing.set_view_locks",
             "set",
             "ExactDrawingPageAndExplicitViewLockStates",
             "document",
@@ -340,8 +351,8 @@ def _run() -> None:
 
         revision0 = state_store.current_revision(str(document.Uid))
         read_response = dispatcher.call(
-            DRAWING_VIEW_LOCK_CAPABILITY_NAME,
-            json.dumps(_read_arguments(page, initial), separators=(",", ":")),
+            "drawing.view_locks",
+            json.dumps(_read_arguments(page), separators=(",", ":")),
             "native-drawing-view-lock-read",
         )
         assert read_response["ok"] is True
@@ -368,7 +379,7 @@ def _run() -> None:
             ((first, True), (second, False)),
         )
         response = dispatcher.call(
-            DRAWING_VIEW_LOCK_CAPABILITY_NAME,
+            "drawing.set_view_locks",
             json.dumps(set_args, separators=(",", ":")),
             "native-drawing-view-lock-set",
         )
@@ -378,7 +389,7 @@ def _run() -> None:
         assert response["assistant_undo_available"] is True
         assert len(json.dumps(response, separators=(",", ":")).encode()) < 6 * 1024
         assert dispatcher.call(
-            DRAWING_VIEW_LOCK_CAPABILITY_NAME,
+            "drawing.set_view_locks",
             json.dumps(set_args, separators=(",", ":")),
             "native-drawing-view-lock-set",
         ) == response
@@ -396,7 +407,7 @@ def _run() -> None:
         no_op_undo = int(document.UndoCount)
         no_op_revision = state_store.current_revision(str(document.Uid))
         no_op = dispatcher.call(
-            DRAWING_VIEW_LOCK_CAPABILITY_NAME,
+            "drawing.set_view_locks",
             json.dumps(
                 _set_arguments(page, final_inventory, ((first, True),)),
                 separators=(",", ":"),
@@ -414,7 +425,7 @@ def _run() -> None:
             ((first, False), (first, False)),
         )
         duplicate = dispatcher.call(
-            DRAWING_VIEW_LOCK_CAPABILITY_NAME,
+            "drawing.set_view_locks",
             json.dumps(duplicate_args, separators=(",", ":")),
             "native-drawing-view-lock-duplicate",
         )
@@ -424,38 +435,29 @@ def _run() -> None:
         cross_page = {
             "operation": "set",
             "page": _page_target(page),
-            "expected_inventory_state_sha256": final_inventory[
-                "inventory_state_sha256"
-            ],
             "views": [_change(drawing_view_lock_state(other), True)],
         }
         mismatch = dispatcher.call(
-            DRAWING_VIEW_LOCK_CAPABILITY_NAME,
+            "drawing.set_view_locks",
             json.dumps(cross_page, separators=(",", ":")),
             "native-drawing-view-lock-cross-page",
         )
         assert mismatch["ok"] is False
         assert mismatch["error_code"] == "NATIVE_DRAWING_VIEW_LOCK_PAGE_MISMATCH"
 
-        old_first = drawing_view_lock_state(first)
-        TechDrawGui.changeDrawingViewLocks(page, ((first, False),))
-        changed_inventory = drawing_view_lock_inventory_state(page)
-        stale_target_args = {
-            "operation": "set",
-            "page": _page_target(page),
-            "expected_inventory_state_sha256": changed_inventory[
-                "inventory_state_sha256"
-            ],
-            "views": [_change(old_first, True)],
-        }
+        stale_target_args = _set_arguments(
+            page,
+            final_inventory,
+            ((first, False),),
+        )
+        stale_target_args["views"][0]["expected_view_lock_state_sha256"] = "0" * 64
         stale_target = dispatcher.call(
-            DRAWING_VIEW_LOCK_CAPABILITY_NAME,
+            "drawing.set_view_locks",
             json.dumps(stale_target_args, separators=(",", ":")),
             "native-drawing-view-lock-stale-target",
         )
         assert stale_target["ok"] is False
         assert stale_target["error_code"] == "NATIVE_DRAWING_VIEW_LOCK_TARGET_STALE"
-        TechDrawGui.changeDrawingViewLocks(page, ((first, True),))
         assert drawing_view_lock_inventory_state(page) == final_inventory
 
         stale_inventory_args = _set_arguments(
@@ -463,9 +465,9 @@ def _run() -> None:
             final_inventory,
             ((first, False),),
         )
-        TechDrawGui.changeDrawingViewLocks(page, ((first, False),))
+        stale_inventory_args["expected_inventory_state_sha256"] = "0" * 64
         stale_inventory = dispatcher.call(
-            DRAWING_VIEW_LOCK_CAPABILITY_NAME,
+            "drawing.set_view_locks",
             json.dumps(stale_inventory_args, separators=(",", ":")),
             "native-drawing-view-lock-stale-inventory",
         )
@@ -473,7 +475,6 @@ def _run() -> None:
         assert stale_inventory["error_code"] == (
             "NATIVE_DRAWING_VIEW_LOCK_INVENTORY_STALE"
         )
-        TechDrawGui.changeDrawingViewLocks(page, ((first, True),))
         assert drawing_view_lock_inventory_state(page) == final_inventory
 
         rollback_undo = int(document.UndoCount)
@@ -486,7 +487,7 @@ def _run() -> None:
         ViewLockRuntimeModule.verify_drawing_view_locks = fail_verify
         try:
             rollback = dispatcher.call(
-                DRAWING_VIEW_LOCK_CAPABILITY_NAME,
+                "drawing.set_view_locks",
                 json.dumps(
                     _set_arguments(
                         page,
@@ -553,6 +554,7 @@ def _run() -> None:
             ]
             for name in (names["first"], names["second"])
         }
+        rendered_bounds = _rendered_bounds(page, positions)
         document.saveAs(str(save_path))
         App.closeDocument(document.Name)
         document = App.openDocument(str(save_path))
@@ -570,16 +572,20 @@ def _run() -> None:
             view.Name: drawing_view_lock_state(view)["position_on_page_mm"]
             for view in (first, second)
         } == positions
+        _assert_rendered_bounds(
+            _rendered_bounds(page, positions),
+            rendered_bounds,
+        )
 
         print(
             "VIBECAD_NATIVE_DRAWING_VIEW_LOCK_GUI_OK operations=2 "
             "read_page=true set=true human_oracle=true shared_host_builder=true "
             "explicit_final_state=true mixed_batch=true exact_page=true "
-            "inventory_hash=true target_hash=true paginated=true "
+            "provider_targets=true internal_state_guards=true paginated=true "
             "limits_published=true selection=true visibility=true history=true "
             "stale_inventory=true stale_target=true no_op=true duplicate=true "
             "cross_page=true rollback=true revision=true undo=true redo=true "
-            "snapshot=true reopen=true low_noise=true no_task=true",
+            "snapshot=true reopen=true rendered_position=true low_noise=true no_task=true",
             flush=True,
         )
         exit_code = 0

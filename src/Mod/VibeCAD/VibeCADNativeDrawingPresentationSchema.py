@@ -11,12 +11,11 @@ from VibeCADNativeCapabilityRegistry import (
 )
 
 
-DRAWING_PRESENTATION_CAPABILITY_NAME = "drawing.presentation"
-DRAWING_PRESENTATION_OPERATIONS = (
-    "show",
-    "set_frame_visibility",
-    "set_grid_visibility",
-    "set_hidden_edges_visible",
+DRAWING_PRESENTATION_CAPABILITY_NAMES = (
+    "drawing.show_page",
+    "drawing.page_frames",
+    "drawing.page_grid",
+    "drawing.hidden_edges",
 )
 _OBJECT_NAME = {
     "type": "string",
@@ -85,21 +84,18 @@ _VIEW = _closed(
 )
 
 
-def drawing_presentation_capability_definition() -> NativeCapabilityDefinition:
-    return NativeCapabilityDefinition(
-        name=DRAWING_PRESENTATION_CAPABILITY_NAME,
-        description=(
-            "Set transient presentation state on the human-active Drawing page "
-            "without changing the document."
-        ),
-        primary_classification="view",
-        variants=(
+def drawing_presentation_capability_definitions() -> tuple[
+    NativeCapabilityDefinition, ...
+]:
+    return (
+        NativeCapabilityDefinition(
+            name="drawing.show_page",
+            description="Show a Drawing page.",
+            primary_classification="view",
+            variants=(
             NativeCapabilityVariant(
                 operation="show",
-                description=(
-                    "Open and activate one exact current-History Drawing page "
-                    "without changing the document or using GUI selection."
-                ),
+                description="Show a Drawing page.",
                 action_ids=frozenset({"TechDrawContextShowDrawing"}),
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type="TechDraw::DrawPage",
@@ -107,8 +103,15 @@ def drawing_presentation_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=_closed({"page": _PAGE}, ("page",)),
             ),
+            ),
+        ),
+        NativeCapabilityDefinition(
+            name="drawing.page_frames",
+            description="Set Drawing frame and vertex visibility.",
+            primary_classification="view",
+            variants=(
             NativeCapabilityVariant(
-                operation="set_frame_visibility",
+                operation="set_visibility",
                 description="Set frame and vertex visibility on one active Drawing page.",
                 action_ids=frozenset(
                     {"TechDraw_ToggleFrame", "TechDrawContextToggleFrames"}
@@ -130,12 +133,16 @@ def drawing_presentation_capability_definition() -> NativeCapabilityDefinition:
                     ("page", "visible"),
                 ),
             ),
+            ),
+        ),
+        NativeCapabilityDefinition(
+            name="drawing.page_grid",
+            description="Set Drawing grid visibility.",
+            primary_classification="view",
+            variants=(
             NativeCapabilityVariant(
-                operation="set_grid_visibility",
-                description=(
-                    "Show or hide the Drawing grid explicitly on one exact, "
-                    "human-active page."
-                ),
+                operation="set_visibility",
+                description="Set Drawing grid visibility.",
                 action_ids=frozenset({"TechDrawContextToggleGrid"}),
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type=("HumanActiveDrawingPageAndExactGridVisibilityState"),
@@ -152,12 +159,16 @@ def drawing_presentation_capability_definition() -> NativeCapabilityDefinition:
                     ("page", "visible"),
                 ),
             ),
+            ),
+        ),
+        NativeCapabilityDefinition(
+            name="drawing.hidden_edges",
+            description="Set hidden projected-edge visibility.",
+            primary_classification="view",
+            variants=(
             NativeCapabilityVariant(
-                operation="set_hidden_edges_visible",
-                description=(
-                    "Explicitly show or hide otherwise invisible projected edges "
-                    "for one exact view on the human-active Drawing page."
-                ),
+                operation="set_visibility",
+                description="Set hidden projected-edge visibility.",
                 action_ids=frozenset({"TechDraw_ShowAll"}),
                 surface_ids=frozenset({"drawing"}),
                 exact_target_type=(
@@ -176,6 +187,7 @@ def drawing_presentation_capability_definition() -> NativeCapabilityDefinition:
                     ("view", "visible"),
                 ),
             ),
+            ),
         ),
     )
 
@@ -185,4 +197,5 @@ def register_drawing_presentation_capability_definition(
 ) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
-    registry.register_definition(drawing_presentation_capability_definition())
+    for definition in drawing_presentation_capability_definitions():
+        registry.register_definition(definition)

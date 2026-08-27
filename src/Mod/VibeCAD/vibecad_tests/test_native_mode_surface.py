@@ -17,11 +17,13 @@ from vibecad_tests.test_ribbon_surface import _manifest
     (
         ("vibescript", "model", "vibescript"),
         ("vibescript", "analyze", "native"),
+        ("vibescript", "drawing", "native"),
         ("native", "analyze", "native"),
+        ("native", "drawing", "native"),
         ("native", "model", "native"),
     ),
 )
-def test_analyze_uses_native_tools_without_changing_geometry_authority(
+def test_derived_artifact_ribbons_use_native_tools_without_changing_source_authority(
     authoring_engine: str,
     surface_id: str,
     expected: str,
@@ -157,6 +159,39 @@ def test_analyze_ribbon_selects_native_schemas_for_vibescript_geometry(
     service = SimpleNamespace(modeling_engine=lambda: "vibescript")
 
     assert session.provider_tool_schemas(service, "FemWorkbench") == schemas
+    assert service.modeling_engine() == "vibescript"
+
+
+def test_drawing_ribbon_selects_native_schemas_for_vibescript_geometry(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeProviderContext as provider_context
+    import VibeCADSession as session
+
+    schemas = [
+        {
+            "name": "drawing.page",
+            "description": "Create or update a drawing page.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        }
+    ]
+    monkeypatch.setattr(
+        ribbon_module,
+        "read_active_ribbon_surface",
+        lambda: SimpleNamespace(surface_id="drawing"),
+    )
+    monkeypatch.setattr(
+        provider_context,
+        "native_provider_tool_schemas",
+        lambda: schemas,
+    )
+    service = SimpleNamespace(modeling_engine=lambda: "vibescript")
+
+    assert session.provider_tool_schemas(service, "TechDrawWorkbench") == schemas
     assert service.modeling_engine() == "vibescript"
 
 

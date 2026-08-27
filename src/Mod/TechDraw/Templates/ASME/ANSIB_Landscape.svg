@@ -10,7 +10,12 @@
    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
    xmlns:cc="http://creativecommons.org/ns#"
    xmlns:dc="http://purl.org/dc/elements/1.1/"
-   xmlns:freecad="http://www.freecad.org/wiki/index.php?title=Svg_Namespace">
+   xmlns:freecad="https://www.freecad.org/wiki/index.php?title=Svg_Namespace"
+   freecad:drawable-x-mm="19.979"
+   freecad:drawable-y-mm="20.179"
+   freecad:drawable-width-mm="391.84"
+   freecad:drawable-height-mm="190.771"
+   freecad:drawable-clearance-mm="7">
   <defs
      id="defs1" />
   <metadata
@@ -738,4 +743,5 @@
      fill="none"
      stroke="#000"
      stroke-width=".64876" />
+ <text id="unit_system_data_field" x="326.5" y="257.8587" fill="#000000" font-family="sans-serif" font-size="3.24px" text-anchor="middle" freecad:editable="unit_system" freecad:autofill="units"><tspan>in</tspan></text>
 </svg>

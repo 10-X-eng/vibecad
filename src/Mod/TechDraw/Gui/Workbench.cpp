@@ -297,6 +297,7 @@ Gui::ToolBarItem* Workbench::setupToolBars() const
     Gui::ToolBarItem* views = new Gui::ToolBarItem(root);
     views->setCommand("TechDraw Views");
     *views << "TechDraw_View";
+    *views << "TechDraw_ProjectionGroup";
     *views << "TechDraw_BrokenView";
     *views << "TechDraw_ActiveView";
     *views << "TechDraw_SectionGroup";

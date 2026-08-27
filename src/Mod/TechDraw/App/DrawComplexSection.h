@@ -77,6 +77,7 @@ public:
                                       const TopoDS_Shape& sectionFaces,
                                       const TopoDS_Shape& preparedShape,
                                       const Base::Vector3d& centroid);
+    bool restorePrecomputedState() override;
     PyObject* getPyObject() override;
 
     TopoDS_Shape makeCuttingTool(double dMax) override;

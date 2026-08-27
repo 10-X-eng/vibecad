@@ -442,6 +442,15 @@ bool DrawViewDimension::restorePrecomputedDimension()
     return true;
 }
 
+void DrawViewDimension::persistCurrentDimensionGeometry()
+{
+    PrecomputedDimensionVectors.setValues({});
+    const auto vectors = getPrecomputedDimensionVectors();
+    const auto scalars = getPrecomputedDimensionScalars();
+    const auto flags = getPrecomputedDimensionFlags();
+    setPrecomputedDimension(vectors, scalars, flags);
+}
+
 void DrawViewDimension::resetLinear()
 {
     m_linearPoints.first(Base::Vector3d(0, 0, 0));
@@ -729,10 +738,10 @@ App::DocumentObjectExecReturn* DrawViewDimension::execute()
     }
 
     if (m_hasGeometry) {
-        // A native recompute supersedes any persisted worker result.  Keep the
-        // old cache intact when execution cannot produce geometry, but make a
-        // successful recompute immediately authoritative for reads and saves.
-        PrecomputedDimensionVectors.setValues({});
+        // A successful native recompute is the current descriptive geometry.
+        // Persist it just like worker-produced geometry so reopening a clean
+        // drawing never has to repeat this work on the document thread.
+        persistCurrentDimensionGeometry();
     }
 
     overrideKeepUpdated(false);
@@ -1964,7 +1973,9 @@ void DrawViewDimension::updateSavedGeometry()
         }
     }
     if (!newGeometry.empty()) {
-        SavedGeometry.setValues(newGeometry);
+        if (oldGeometry != newGeometry) {
+            SavedGeometry.setValues(newGeometry);
+        }
         saveFeatureBox();
     }
 }
@@ -2054,7 +2065,10 @@ void DrawViewDimension::setReferences2d(const ReferenceVector& refsAll)
         subNames.push_back(ref.getSubName());
     }
 
-    References2D.setValues(objects, subNames);
+    if (References2D.getValues() != objects
+        || References2D.getSubValues() != subNames) {
+        References2D.setValues(objects, subNames);
+    }
     m_referencesCorrect = true;
 }
 
@@ -2424,7 +2438,9 @@ void DrawViewDimension::saveFeatureBox()
     auto bbx = getFeatureBox();
     bbxCorners.push_back(bbx.GetMinimum());
     bbxCorners.push_back(bbx.GetMaximum());
-    BoxCorners.setValues(bbxCorners);
+    if (BoxCorners.getValues() != bbxCorners) {
+        BoxCorners.setValues(bbxCorners);
+    }
 }
 
 Base::BoundBox3d DrawViewDimension::getSavedBox() const

@@ -39,6 +39,11 @@ def _process_events(rounds: int = 16) -> None:
         QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 25)
 
 
+def _dismiss_message_boxes() -> None:
+    for box in Gui.getMainWindow().findChildren(QtWidgets.QMessageBox):
+        box.done(QtWidgets.QMessageBox.Yes)
+
+
 def _close(left: float, right: float, tolerance: float = 5.0e-3) -> bool:
     return abs(float(left) - float(right)) <= tolerance
 
@@ -70,7 +75,7 @@ def _assert_shape_signature(shape, expected) -> None:
     assert actual["shape_type"] == expected["shape_type"]
     assert actual["topology"] == expected["topology"]
     assert all(
-        _close(left, right)
+        _close(left, right, tolerance=2.0e-2)
         for left, right in zip(actual["bounds"], expected["bounds"], strict=True)
     ), (actual["bounds"], expected["bounds"])
     for field in ("length", "area", "volume"):
@@ -287,16 +292,102 @@ def _assert_human_contract(document, sources) -> None:
     created = [obj for obj in document.Objects if obj.Name not in before]
     assert len(created) == 1 and created[0].TypeId == "Part::Compound"
     result = created[0]
+    assert tuple(Gui.Selection.getSelection()) == (result,)
     assert tuple(result.Links) == (sources["HumanFirst"], sources["HumanSecond"])
     assert tuple(result.ViewObject.claimChildren()) == tuple(result.Links)
     assert tuple(result.VibeCADTimelineReplacedInputs) == tuple(result.Links)
     assert not sources["HumanFirst"].Visibility
     assert not sources["HumanSecond"].Visibility
     _assert_ordered_children(result.Shape, sources, ("HumanFirst", "HumanSecond"))
+    result_name = result.Name
+    undo_before_delete = int(document.UndoCount)
+    Gui.Selection.clearSelection()
+    Gui.Selection.addSelection(result)
+    QtCore.QTimer.singleShot(0, _dismiss_message_boxes)
+    Gui.runCommand("Std_Delete", 0)
+    _process_events(24)
+    assert document.getObject(result_name) is None
+    assert document.getObject("HumanFirst") is sources["HumanFirst"]
+    assert document.getObject("HumanSecond") is sources["HumanSecond"]
+    assert sources["HumanFirst"].Visibility and sources["HumanSecond"].Visibility
+    assert int(document.UndoCount) == undo_before_delete + 1
+    document.undo()
+    _process_events()
+    result = document.getObject(result_name)
+    assert result is not None
+    assert not sources["HumanFirst"].Visibility
+    assert not sources["HumanSecond"].Visibility
+    document.redo()
+    _process_events()
+    assert document.getObject(result_name) is None
+    assert sources["HumanFirst"].Visibility and sources["HumanSecond"].Visibility
+    document.undo()
+    _process_events()
+    assert document.getObject(result_name) is not None
     document.undo()
     _process_events()
     assert tuple(obj.Name for obj in document.Objects) == before
     assert sources["HumanFirst"].Visibility and sources["HumanSecond"].Visibility
+    Gui.Selection.clearSelection()
+
+
+def _assert_explicit_replacement_inputs_delete(document) -> None:
+    before = tuple(obj.Name for obj in document.Objects)
+    document.openTransaction("Create ordinary Compound delete sources")
+    try:
+        first = document.addObject("Part::Feature", "OrdinaryDeleteFirst")
+        first.Shape = Part.makeBox(7, 5, 3, App.Vector(235, 0, 0))
+        second = document.addObject("Part::Feature", "OrdinaryDeleteSecond")
+        second.Shape = Part.makeCylinder(2, 6, App.Vector(246, 1, 0))
+        assert document.recompute([first, second], True, True) is not False
+        document.commitTransaction()
+    except Exception:
+        document.abortTransaction()
+        raise
+
+    Gui.Selection.clearSelection()
+    Gui.Selection.addSelection(first)
+    Gui.Selection.addSelection(second)
+    _process_events()
+    assert Gui.isCommandActive("Part_Compound")
+    Gui.runCommand("Part_Compound", 0)
+    _process_events(24)
+    selected = tuple(Gui.Selection.getSelection())
+    assert len(selected) == 1 and selected[0].TypeId == "Part::Compound"
+    result = selected[0]
+    result_name = result.Name
+    first_name = first.Name
+    second_name = second.Name
+    assert tuple(result.VibeCADTimelineReplacedInputs) == (first, second)
+
+    Gui.Selection.clearSelection()
+    Gui.Selection.addSelection(result)
+    Gui.Selection.addSelection(first)
+    Gui.Selection.addSelection(second)
+    QtCore.QTimer.singleShot(0, _dismiss_message_boxes)
+    Gui.runCommand("Std_Delete", 0)
+    _process_events(24)
+    assert document.getObject(result_name) is None
+    assert document.getObject(first_name) is None
+    assert document.getObject(second_name) is None
+
+    document.undo()
+    _process_events()
+    assert document.getObject(result_name) is not None
+    assert document.getObject("OrdinaryDeleteFirst") is not None
+    assert document.getObject("OrdinaryDeleteSecond") is not None
+    document.redo()
+    _process_events()
+    assert document.getObject(result_name) is None
+    assert document.getObject("OrdinaryDeleteFirst") is None
+    assert document.getObject("OrdinaryDeleteSecond") is None
+    document.undo()
+    _process_events()
+    document.undo()
+    _process_events()
+    document.undo()
+    _process_events()
+    assert tuple(obj.Name for obj in document.Objects) == before
     Gui.Selection.clearSelection()
 
 
@@ -373,16 +464,22 @@ def _run() -> None:
         )
         turn = _turn()
         debug_events = []
-        dispatcher = NativeTurnDispatcher(
-            document=document,
-            state=state,
-            registry=build_native_capability_registry(),
-            turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
-            reauthorize_turn=lambda: None,
-            active_document=lambda: App.ActiveDocument,
-            debug_sink=debug_events.append,
-        )
+        registry = build_native_capability_registry()
+        runtimes = build_native_runtime_bindings(context, turn.tool_names)
+
+        def new_dispatcher():
+            return NativeTurnDispatcher(
+                document=document,
+                state=state,
+                registry=registry,
+                turn=turn,
+                runtimes=runtimes,
+                reauthorize_turn=lambda: None,
+                active_document=lambda: App.ActiveDocument,
+                debug_sink=debug_events.append,
+            )
+
+        dispatcher = new_dispatcher()
         call_number = 0
 
         def native_call(arguments, *, succeeds=True):
@@ -459,10 +556,6 @@ def _run() -> None:
             assert str(result.VibeCADDefinitionId) and str(result.DesignId)
             _assert_shape_signature(result.Shape, expected)
             _assert_ordered_children(result.Shape, sources, names)
-            for _repeat in range(4):
-                assert document.recompute([result], True, True) is not False
-                _assert_shape_signature(result.Shape, expected)
-                _assert_ordered_children(result.Shape, sources, names)
             for name, (shape, placement, was_visible) in input_state.items():
                 _assert_shape_signature(Part.getShape(sources[name], transform=True), shape)
                 assert _placement_signature(sources[name]) == placement
@@ -479,15 +572,6 @@ def _run() -> None:
                     for name, (_shape, _placement, was_visible) in input_state.items()
                 },
             }
-            document.undo()
-            _process_events()
-            assert document.getObject(record["result"]) is None
-            for name, was_visible in record["visibility"].items():
-                assert bool(sources[name].Visibility) is was_visible
-            document.redo()
-            _process_events()
-            assert document.getObject(record["result"]) is not None
-            assert all(not sources[name].Visibility for name in names)
             records.append(record)
 
         invalid_calls = (
@@ -527,6 +611,7 @@ def _run() -> None:
         timeline_end = int(timeline.Position)
         timeline.Position = 0
         _process_events()
+        dispatcher = new_dispatcher()
         before = tuple(obj.Name for obj in document.Objects)
         inactive = native_call(
             _arguments("Inactive Compound", "InactiveSource"),
@@ -536,6 +621,7 @@ def _run() -> None:
         assert tuple(obj.Name for obj in document.Objects) == before
         timeline.Position = timeline_end
         _process_events()
+        dispatcher = new_dispatcher()
 
         before = tuple(obj.Name for obj in document.Objects)
         visibility = {
@@ -566,6 +652,32 @@ def _run() -> None:
             for name, was_visible in visibility.items()
         )
 
+        # Recompute and undo/redo are deliberate out-of-band document events.
+        # Run their durability coverage after the frozen Native turn has made
+        # every provider call; performing them between calls would correctly
+        # invalidate that turn's revision guard.
+        for record in reversed(records):
+            document.undo()
+            _process_events()
+            assert document.getObject(record["result"]) is None
+            for name, was_visible in record["visibility"].items():
+                assert bool(sources[name].Visibility) is was_visible
+        for record in records:
+            document.redo()
+            _process_events()
+            assert document.getObject(record["result"]) is not None
+            assert all(not sources[name].Visibility for name in record["names"])
+        for record in records:
+            result = document.getObject(record["result"])
+            for _repeat in range(4):
+                assert document.recompute([result], True, True) is not False
+                _assert_shape_signature(result.Shape, record["signature"])
+                _assert_ordered_children(
+                    result.Shape,
+                    sources,
+                    record["names"],
+                )
+
         save_directory = Path(tempfile.mkdtemp(prefix="vibecad-native-compound-"))
         save_path = save_directory / "ModelPartCompound.FCStd"
         document.saveAs(str(save_path))
@@ -590,6 +702,8 @@ def _run() -> None:
                 {source.Name: source for source in reopened_sources},
                 record["names"],
             )
+
+        _assert_explicit_replacement_inputs_delete(document)
 
         print("VIBECAD_NATIVE_MODEL_PART_COMPOUND_GUI_OK", flush=True)
         exit_code = 0

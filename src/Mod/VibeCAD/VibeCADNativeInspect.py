@@ -18,6 +18,7 @@ from VibeCADNativeTargets import (
 
 
 MAX_INSPECTION_DISTANCES = 4096
+MAX_INSPECTION_ELEMENTS = 256
 
 
 class NativeInspectError(RuntimeError):

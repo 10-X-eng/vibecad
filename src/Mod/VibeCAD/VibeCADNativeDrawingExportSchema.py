@@ -12,7 +12,7 @@ from VibeCADNativeCapabilityRegistry import (
 
 
 DRAWING_EXPORT_CAPABILITY_NAME = "drawing.export"
-DRAWING_EXPORT_OPERATIONS = ("svg", "dxf", "pdf", "print_all")
+DRAWING_EXPORT_OPERATIONS = ("svg", "dxf", "pdf", "pdf_all", "print_all")
 _OBJECT_NAME = {
     "type": "string",
     "pattern": r"^[A-Za-z_][A-Za-z0-9_]*$",
@@ -64,7 +64,7 @@ def _page_variant(
 def drawing_export_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=DRAWING_EXPORT_CAPABILITY_NAME,
-        description="Export or print one exact current Drawing page.",
+        description="Export a Drawing page, export all pages to PDF, or print all pages.",
         primary_classification="export",
         variants=(
             _page_variant(
@@ -81,12 +81,21 @@ def drawing_export_capability_definition() -> NativeCapabilityDefinition:
             ),
             _page_variant("pdf", frozenset({"TechDrawContextExportPDF"})),
             NativeCapabilityVariant(
-                operation="print_all",
-                description=(
-                    "Open the platform print dialog for every current-History Drawing "
-                    "page. The human chooses and authorizes the printer or print-to-file "
-                    "destination; the AI receives no device name or filesystem path."
+                operation="pdf_all",
+                description="Export every current Drawing page to one PDF.",
+                action_ids=frozenset(
+                    {"TechDraw_PrintAll", "TechDrawContextPrintAll"}
                 ),
+                surface_ids=frozenset({"drawing"}),
+                exact_target_type="App::Document",
+                transaction_behavior="background_output",
+                background_required=True,
+                parameters=_closed({}, ()),
+                provider_supplemental=True,
+            ),
+            NativeCapabilityVariant(
+                operation="print_all",
+                description="Open the print dialog for every current Drawing page.",
                 action_ids=frozenset(
                     {"TechDraw_PrintAll", "TechDrawContextPrintAll"}
                 ),

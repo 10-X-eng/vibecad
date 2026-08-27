@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from VibeCADNativeDrawingErrors import NativeDrawingError
 from VibeCADNativeDrawingGeometryState import drawing_projected_geometry_state
+from VibeCADNativeDrawingPlacementState import drawing_view_position_on_page
 from VibeCADNativeDrawingState import drawing_page_state
 from VibeCADNativeDrawingViewState import drawing_view_state
 from VibeCADNativeTargets import read_current_selection, resolve_object
@@ -77,6 +78,137 @@ def exact_drawing_mapping(
             error_code,
         )
     return value
+
+
+def drawing_label_position_in_view_mm(
+    view: Any,
+    position_on_page_mm: Any,
+    *,
+    page: Any | None = None,
+) -> dict[str, float]:
+    """Translate a public page position to TechDraw's view-local position."""
+
+    position = (
+        drawing_position_within_page_bounds(
+            page,
+            position_on_page_mm,
+            noun="dimension label",
+            error_code="NATIVE_DRAWING_DIMENSION_PLACEMENT_INVALID",
+        )
+        if page is not None
+        else exact_drawing_mapping(
+            position_on_page_mm,
+            frozenset({"x_mm", "y_mm"}),
+            "label position on page",
+        )
+    )
+    try:
+        origin = drawing_view_position_on_page(view)
+    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        raise NativeDrawingError(
+            "The Drawing dimension view has no exact page placement.",
+            error_code="NATIVE_DRAWING_DIMENSION_PLACEMENT_INVALID",
+        ) from exc
+    return {
+        field: finite_drawing_coordinate(
+            position[field],
+            f"label {field}",
+        )
+        - finite_drawing_coordinate(
+            origin[field],
+            f"view origin {field}",
+        )
+        for field in ("x_mm", "y_mm")
+    }
+
+
+def drawing_position_within_page_bounds(
+    page: Any,
+    position_on_page_mm: Any,
+    *,
+    noun: str,
+    error_code: str,
+) -> dict[str, float]:
+    """Validate one exact page coordinate against the template drawing area."""
+
+    position = exact_drawing_mapping(
+        position_on_page_mm,
+        frozenset({"x_mm", "y_mm"}),
+        f"{noun} position on page",
+        family="placement",
+        error_code=error_code,
+    )
+    point = {
+        field: finite_drawing_coordinate(
+            position[field],
+            f"{noun} {field}",
+            family="placement",
+            error_code=error_code,
+        )
+        for field in ("x_mm", "y_mm")
+    }
+    geometry = drawing_page_state(page).get("template_geometry")
+    bounds = (
+        geometry.get("drawing_bounds_mm")
+        if isinstance(geometry, Mapping)
+        else None
+    )
+    if not isinstance(bounds, Mapping) and isinstance(geometry, Mapping):
+        width = float(geometry.get("width_mm") or 0.0)
+        height = float(geometry.get("height_mm") or 0.0)
+        if (
+            math.isfinite(width)
+            and math.isfinite(height)
+            and width > 0.0
+            and height > 0.0
+        ):
+            bounds = {
+                "min_x_mm": 0.0,
+                "min_y_mm": 0.0,
+                "max_x_mm": width,
+                "max_y_mm": height,
+            }
+    if not isinstance(bounds, Mapping):
+        drawing_dimension_error(
+            "The Drawing page has no exact drawing area.",
+            error_code,
+        )
+    inside = (
+        float(bounds["min_x_mm"]) <= point["x_mm"] <= float(bounds["max_x_mm"])
+        and float(bounds["min_y_mm"])
+        <= point["y_mm"]
+        <= float(bounds["max_y_mm"])
+    )
+    if not inside:
+        drawing_dimension_error(
+            f"The Drawing {noun} position is outside the drawing area.",
+            error_code,
+            repair={
+                "drawing_bounds_mm": dict(bounds),
+                "requested_position_on_page_mm": point,
+            },
+        )
+    return point
+
+
+def provider_drawing_dimension_state(
+    state: Mapping[str, Any],
+    view: Any,
+) -> dict[str, Any]:
+    """Return dimension state with only the public page-coordinate placement."""
+
+    result = dict(state)
+    local = exact_drawing_mapping(
+        result.pop("label_position_in_view_mm"),
+        frozenset({"x_mm", "y_mm"}),
+        "label position in view",
+    )
+    origin = drawing_view_position_on_page(view)
+    result["label_position_on_page_mm"] = {
+        field: round(float(origin[field]) + float(local[field]), 9)
+        for field in ("x_mm", "y_mm")
+    }
+    return result
 
 
 def drawing_timeline_operations(document: Any) -> tuple[Any, ...]:
@@ -185,7 +317,10 @@ def _resolve_view(
         {"document_uid": str(document.Uid), "object_name": exact["object_name"]},
         expected_types=("TechDraw::DrawViewPart",),
     )
-    if view.findParentPage() is not page or view not in tuple(page.Views or ()):
+    # Projection-group children belong to their page through DrawProjGroup and
+    # therefore are not direct entries in DrawPage.Views.  TechDraw's parent
+    # relationship is the authoritative membership check for every view kind.
+    if view.findParentPage() is not page:
         drawing_dimension_error(
             f"The exact Drawing {family} view does not belong to the exact page.",
             f"{code_prefix}_PAGE_MISMATCH",
@@ -242,7 +377,7 @@ def prepare_drawing_dimension_target(
     for target in element_targets:
         exact = exact_drawing_mapping(
             target,
-            frozenset({"subelement", "expected_element_state_sha256"}),
+            frozenset({"subelement"}),
             "projected reference",
             family=family,
             error_code=f"{code_prefix}_PARAMETERS_INVALID",
@@ -253,27 +388,13 @@ def prepare_drawing_dimension_target(
             drawing_dimension_error(
                 f"Projected reference {name!r} no longer exists in the exact view.",
                 f"{code_prefix}_REFERENCE_STALE",
-                repair={"inspect_operation": "drawing_projected_geometry"},
+                repair={"tool": "drawing.projected_geometry"},
             )
         if element["element_type"] not in allowed_element_types:
             drawing_dimension_error(
                 f"Projected reference {name!r} has type {element['element_type']!r}.",
                 f"{code_prefix}_REFERENCE_TYPE_INVALID",
                 repair={"accepted_reference_types": sorted(allowed_element_types)},
-            )
-        if (
-            str(exact["expected_element_state_sha256"])
-            != element["element_state_sha256"]
-        ):
-            drawing_dimension_error(
-                f"Projected reference {name!r} changed after it was inspected.",
-                f"{code_prefix}_REFERENCE_STALE",
-                repair={
-                    "subelement": name,
-                    "current_element_state_sha256": element[
-                        "element_state_sha256"
-                    ],
-                },
             )
         names.append(name)
         elements.append(element)

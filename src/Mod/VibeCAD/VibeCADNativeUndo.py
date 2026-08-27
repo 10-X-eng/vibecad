@@ -263,6 +263,7 @@ class NativeAssistantUndoLedger:
         state: NativeDocumentStateStore,
         reauthorize_turn: Callable[[], Any],
         active_document: Callable[[], Any],
+        capability_prefix: str | None = None,
     ) -> NativeUndoExecution:
         if not isinstance(ticket, NativeCallTicket):
             raise TypeError("ticket must be a NativeCallTicket")
@@ -270,6 +271,11 @@ class NativeAssistantUndoLedger:
             raise TypeError("state must be a NativeDocumentStateStore")
         if not callable(reauthorize_turn) or not callable(active_document):
             raise TypeError("Native undo guards must be callable")
+        prefix = (
+            _required_text(capability_prefix, "capability prefix")
+            if capability_prefix is not None
+            else None
+        )
         uid = document_uid(document)
         if uid != ticket.document_uid or active_document() is not document:
             raise NativeUndoError(
@@ -297,6 +303,15 @@ class NativeAssistantUndoLedger:
                 "There is no safe assistant-owned operation to undo.",
             )
         guarded = entries[-1]
+        if prefix is not None and not (
+            guarded.entry.capability_name == prefix
+            or guarded.entry.capability_name.startswith(f"{prefix}.")
+        ):
+            state.cancel_mutation(ticket)
+            raise NativeUndoError(
+                NATIVE_UNDO_UNAVAILABLE,
+                "The latest assistant operation belongs to another ribbon.",
+            )
         count, names = _history(document)
         if (
             state.current_revision(uid) != guarded.guard_revision

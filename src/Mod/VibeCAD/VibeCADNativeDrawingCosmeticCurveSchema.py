@@ -65,9 +65,8 @@ _VIEW = _closed(
 _VERTEX = _closed(
     {
         "subelement": _VERTEX_NAME,
-        "expected_element_state_sha256": _SHA256,
     },
-    ("subelement", "expected_element_state_sha256"),
+    ("subelement",),
 )
 _RADIUS = {
     "type": "number",
@@ -86,7 +85,7 @@ def drawing_cosmetic_curve_capability_definition() -> NativeCapabilityDefinition
         name=DRAWING_COSMETIC_CURVE_CAPABILITY_NAME,
         description=(
             "Create one durable host-styled Drawing cosmetic circle or arc from "
-            "named, hash-pinned projected vertices; TechDraw derives all geometry."
+            "named projected vertices; TechDraw derives all geometry."
         ),
         primary_classification="mutation",
         variants=(
