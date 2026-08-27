@@ -1788,6 +1788,12 @@ class TaskPanel:
         combo.clear()
         try:
             entries = MachineFactory.list_configuration_files()
+            existing = {display.lower() for display, _filename in entries}
+            entries.extend(
+                (display, None)
+                for display in MachineFactory.list_configurations()
+                if display.lower() not in existing
+            )
         except Exception as e:
             Path.Log.warning("Failed to list machines: %s" % e)
             entries = [("<none>", None)]

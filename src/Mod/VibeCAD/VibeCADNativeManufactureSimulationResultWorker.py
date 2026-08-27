@@ -192,6 +192,61 @@ def _collision_bounds(shape: Any) -> dict[str, list[float]] | None:
     return {"min": list(values[:3]), "max": list(values[3:])}
 
 
+def _machine_travel_report(
+    frozen: FrozenNativeSimulation,
+    path_extents: Mapping[str, tuple[float, float]],
+) -> dict[str, Any]:
+    axes = []
+    violations = []
+    all_checked = bool(frozen.machine_axes)
+    for configured in frozen.machine_axes:
+        limits = {
+            "unit": "mm" if configured.kind == "linear" else "degrees",
+            "machine_min": round(configured.minimum, 9),
+            "machine_max": round(configured.maximum, 9),
+            "machine_span": round(configured.maximum - configured.minimum, 9),
+        }
+        extent = path_extents.get(configured.name)
+        if extent is None:
+            all_checked = False
+            axes.append(
+                {
+                    "axis": configured.name,
+                    "kind": configured.kind,
+                    "checked": False,
+                    **limits,
+                }
+            )
+            continue
+        path_min, path_max = extent
+        path_span = path_max - path_min
+        within = path_span <= configured.maximum - configured.minimum + 1.0e-9
+        record = {
+            "axis": configured.name,
+            "kind": configured.kind,
+            "checked": True,
+            "path_min": round(path_min, 9),
+            "path_max": round(path_max, 9),
+            "path_span": round(path_span, 9),
+            **limits,
+            "span_within_limits": within,
+        }
+        axes.append(record)
+        if not within:
+            violations.append(record)
+    return {
+        "machine": frozen.machine_name,
+        "configured": bool(frozen.machine_name),
+        "axis_span_checked": all_checked,
+        "fits_axis_spans": (
+            not violations if all_checked else (False if violations else None)
+        ),
+        "position_checked": False,
+        "axes": axes,
+        "violations": violations,
+    }
+
+
 def execute_native_simulation(
     frozen: FrozenNativeSimulation,
     *,
@@ -233,6 +288,7 @@ def execute_native_simulation(
         collision_records = []
         rapid_collision_count = 0
         rapid_collision_records = []
+        path_extents: dict[str, tuple[float, float]] = {}
         maximum_collision_records = 32
         total_sources = max(1, frozen.source_command_count)
         for run_index, run in enumerate(frozen.runs):
@@ -265,12 +321,23 @@ def execute_native_simulation(
                 FreeCAD.Vector(0.0, 0.0, frozen.stock_z_max_mm),
                 FreeCAD.Rotation(),
             )
+            for axis_name, coordinate in (
+                ("X", float(position.Base.x)),
+                ("Y", float(position.Base.y)),
+                ("Z", float(position.Base.z)),
+            ):
+                previous = path_extents.get(axis_name, (coordinate, coordinate))
+                path_extents[axis_name] = (
+                    min(previous[0], coordinate),
+                    max(previous[1], coordinate),
+                )
             first_cycle = True
 
             def apply(command: Any, source_index: int, *, rapid: bool) -> None:
                 nonlocal position, executed, collision_count, rapid_collision_count
                 _cancel(cancelled)
                 try:
+                    path_edge = Path.Geom.edgeForCmd(command, FreeCAD.Vector(position.Base))
                     sweep, _end = NativeSimulation._swept_tool(
                         _tool_proxy(run),
                         command,
@@ -282,6 +349,18 @@ def execute_native_simulation(
                         f"{source_index} could not be verified: {exc}",
                         error_code="NATIVE_MANUFACTURE_VERIFICATION_FAILED",
                     ) from exc
+                if path_edge is not None:
+                    box = path_edge.BoundBox
+                    for axis_name, minimum, maximum in (
+                        ("X", float(box.XMin), float(box.XMax)),
+                        ("Y", float(box.YMin), float(box.YMax)),
+                        ("Z", float(box.ZMin), float(box.ZMax)),
+                    ):
+                        previous = path_extents.get(axis_name, (minimum, maximum))
+                        path_extents[axis_name] = (
+                            min(previous[0], minimum),
+                            max(previous[1], maximum),
+                        )
                 if sweep is not None:
                     overlap = sweep.common(protected_model)
                     volume = float(overlap.Volume) if not overlap.isNull() else 0.0
@@ -401,8 +480,14 @@ def execute_native_simulation(
             "holder_collision",
             "fixture_collision",
             "rapid_clearance_current_stock",
-            "machine_travel",
         ]
+        machine_travel = _machine_travel_report(frozen, path_extents)
+        if not frozen.machine_name:
+            unavailable_checks.append("machine_travel")
+        else:
+            unavailable_checks.append("machine_travel_position")
+            if not machine_travel["axis_span_checked"]:
+                unavailable_checks.append("machine_travel_axis_span")
         if missing_cycle_time:
             unavailable_checks.append("cycle_time")
         verification = {
@@ -432,6 +517,7 @@ def execute_native_simulation(
                 "operations": cycle_time_operations,
                 "missing_operations": missing_cycle_time,
             },
+            "machine_travel": machine_travel,
             "unavailable_checks": unavailable_checks,
         }
         return PreparedNativeSimulation(

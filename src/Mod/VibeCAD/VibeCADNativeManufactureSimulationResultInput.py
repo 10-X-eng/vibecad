@@ -84,6 +84,14 @@ class SimulationTimelineState:
 
 
 @dataclass(frozen=True, slots=True)
+class FrozenMachineAxis:
+    name: str
+    kind: str
+    minimum: float
+    maximum: float
+
+
+@dataclass(frozen=True, slots=True)
 class FrozenNativeSimulation:
     job: Any
     expected_job_state_sha256: str
@@ -98,6 +106,8 @@ class FrozenNativeSimulation:
     stock_shape: Any
     stock_z_max_mm: float
     protected_model_shapes: tuple[Any, ...]
+    machine_name: str
+    machine_axes: tuple[FrozenMachineAxis, ...]
     runs: tuple[FrozenSimulationRun, ...]
     source_command_count: int
     executable_command_count: int
@@ -312,6 +322,57 @@ def _simulation_resolutions(stock_shape: Any, quality: int) -> tuple[float, floa
     return values
 
 
+def _machine_travel_configuration(job: Any) -> tuple[str, tuple[FrozenMachineAxis, ...]]:
+    machine_name = str(getattr(job, "Machine", "") or "").strip()
+    if not machine_name or machine_name == "<any>":
+        return "", ()
+    try:
+        from Machine.models.machine import MachineFactory
+
+        machine = MachineFactory.get_machine(machine_name)
+    except Exception as exc:
+        raise NativeManufactureError(
+            f"CAM machine {machine_name!r} could not be loaded for travel verification.",
+            error_code="NATIVE_MANUFACTURE_MACHINE_INVALID",
+            repair={"machine": machine_name, "reason": str(exc)[:240]},
+        ) from exc
+
+    linear_factor = 25.4 if str(machine.configuration_units) == "imperial" else 1.0
+    axes = []
+    for kind, configured_axes, factor in (
+        ("linear", machine.linear_axes, linear_factor),
+        ("rotary", machine.rotary_axes, 1.0),
+    ):
+        for axis_name, axis in sorted(configured_axes.items()):
+            minimum = float(axis.min_limit) * factor
+            maximum = float(axis.max_limit) * factor
+            if (
+                not axis_name
+                or not math.isfinite(minimum)
+                or not math.isfinite(maximum)
+                or minimum >= maximum
+            ):
+                _error(
+                    f"CAM machine {machine_name!r} has invalid {axis_name or kind!r} "
+                    "travel limits.",
+                    "NATIVE_MANUFACTURE_MACHINE_INVALID",
+                )
+            axes.append(
+                FrozenMachineAxis(
+                    name=str(axis_name).upper(),
+                    kind=kind,
+                    minimum=minimum,
+                    maximum=maximum,
+                )
+            )
+    if not axes:
+        _error(
+            f"CAM machine {machine_name!r} has no configured travel axes.",
+            "NATIVE_MANUFACTURE_MACHINE_INVALID",
+        )
+    return machine_name, tuple(axes)
+
+
 def preflight_native_simulation(
     document: Any,
     *,
@@ -486,6 +547,7 @@ def preflight_native_simulation(
             "The exact CAM Job has no valid protected model shape.",
             "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
         )
+    machine_name, machine_axes = _machine_travel_configuration(exact_job)
     accuracy, stock_resolution, tool_resolution = _simulation_resolutions(
         stock_shape,
         quality,
@@ -524,6 +586,8 @@ def preflight_native_simulation(
         stock_shape=stock_shape.copy(),
         stock_z_max_mm=float(stock_shape.BoundBox.ZMax),
         protected_model_shapes=protected_model_shapes,
+        machine_name=machine_name,
+        machine_axes=machine_axes,
         runs=tuple(runs),
         source_command_count=source_count,
         executable_command_count=executable_count,

@@ -301,11 +301,16 @@ comparison, not implementation instructions.
 - Retained simulation checks exact detached cutter sweeps against the protected
   setup model off the document thread. Collision-free and deliberate-gouge gates
   prove both outcomes; result objects retain bounded collision evidence and name
-  holder, fixture, and machine-travel checks as unavailable rather than passing
-  them implicitly. Rapid sweeps are checked against protected model geometry and
-  identify current-stock clearance as unavailable. Cycle time uses the existing
-  CAM Path estimator with exact setup feeds and rapids and reports feed-speed
-  fallback or missing operation data explicitly.
+  holder and fixture checks as unavailable rather than passing them implicitly.
+  Bundled, user, and add-on machine definitions are all usable on a fresh install.
+  For a configured machine, verification compares exact toolpath extents with
+  each supported axis travel span. It reports definite span violations, while
+  separately identifying absolute machine-position checking as unavailable until
+  the setup has a measured machine-coordinate work offset. Rapid sweeps are
+  checked against protected model geometry and identify current-stock clearance
+  as unavailable. Cycle time uses the existing CAM Path estimator with exact
+  setup feeds and rapids and reports feed-speed fallback or missing operation data
+  explicitly.
 - The Manufacture simulator menu exposes a human retained-result command backed
   by the same preflight, background worker, commit, and verifier as Native mode.
   With several Jobs it is inactive until selection identifies exactly one setup;

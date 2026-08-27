@@ -200,6 +200,7 @@ def _create_fixture(document, prefix: str):
     document.recompute()
     job = PathJobGui.Create([model], None, openTaskPanel=False)
     assert job is not None and job.Tools.Group
+    job.Machine = "Generic LinuxCNC Mill"
     document.openTransaction(f"Create {prefix} retained simulation Profile")
     try:
         controller = job.Tools.Group[0]
@@ -366,10 +367,19 @@ def _assert_retained_result(document, result, job, operation, quality: int) -> N
     assert {
         "holder_collision",
         "fixture_collision",
-        "machine_travel",
         "rapid_clearance_current_stock",
     }.issubset(verification["unavailable_checks"])
     assert "cycle_time" not in verification["unavailable_checks"]
+    machine_travel = verification["machine_travel"]
+    assert machine_travel["machine"] == "Generic LinuxCNC Mill"
+    assert machine_travel["configured"] is True
+    assert machine_travel["axis_span_checked"] is True
+    assert machine_travel["fits_axis_spans"] is True
+    assert machine_travel["position_checked"] is False
+    assert {value["axis"] for value in machine_travel["axes"]} == {"X", "Y", "Z"}
+    assert machine_travel["violations"] == []
+    assert "machine_travel" not in verification["unavailable_checks"]
+    assert "machine_travel_position" in verification["unavailable_checks"]
     assert result.VibeCADTimelineRole == "operation"
     assert getattr(result, "VibeCADTimelineOwner", None) is None
     assert not tuple(getattr(result, "VibeCADTimelineReplacedInputs", ()) or ())

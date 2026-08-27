@@ -42,6 +42,7 @@ def _run() -> None:
 
         job = PathJobGui.Create([model], None, openTaskPanel=False)
         assert job is not None and job.Tools.Group
+        job.Machine = "Generic LinuxCNC Mill"
         document.openTransaction("Create deliberate gouge path")
         operation = document.addObject("Path::Feature", "DeliberateGouge")
         operation.Label = "Deliberate protected-model gouge"
@@ -55,6 +56,7 @@ def _run() -> None:
                 CamPath.Command("G1", {"X": 24.0, "Y": 16.0, "Z": 4.0}),
                 CamPath.Command("G0", {"X": -10.0, "Y": 16.0, "Z": 4.0}),
                 CamPath.Command("G0", {"X": -10.0, "Y": 16.0, "Z": 10.0}),
+                CamPath.Command("G0", {"X": 700.0, "Y": 16.0, "Z": 10.0}),
             ]
         )
         job.Proxy.addOperation(operation)
@@ -106,10 +108,19 @@ def _run() -> None:
         assert cycle_time["complete"] is False
         assert cycle_time["missing_operations"] == [operation.Name]
         assert "cycle_time" in prepared.verification["unavailable_checks"]
+        machine_travel = prepared.verification["machine_travel"]
+        assert machine_travel["configured"] is True
+        assert machine_travel["axis_span_checked"] is True
+        assert machine_travel["fits_axis_spans"] is False
+        assert [value["axis"] for value in machine_travel["violations"]] == ["X"]
+        assert machine_travel["violations"][0]["path_span"] == 710.0
+        assert "machine_travel" not in prepared.verification["unavailable_checks"]
+        assert "machine_travel_position" in prepared.verification["unavailable_checks"]
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_VERIFICATION_GUI_OK "
-            "background=true protected_model=true gouge=true bounded=true",
+            "background=true protected_model=true gouge=true bounded=true "
+            "machine_span=true",
             flush=True,
         )
         exit_code = 0

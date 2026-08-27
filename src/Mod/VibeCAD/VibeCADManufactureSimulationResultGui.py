@@ -167,9 +167,14 @@ class _RetainedSimulationUi:
             verification = dict(receipt.get("verification") or {})
             protected = dict(verification.get("protected_model") or {})
             collisions = int(protected.get("collision_command_count") or 0)
+            machine_travel = dict(verification.get("machine_travel") or {})
+            travel_violations = len(machine_travel.get("violations") or ())
             status = "Retained CAM result created"
             if collisions:
                 status += f"; {collisions} protected-model collisions found"
+            if travel_violations:
+                status += f"; {travel_violations} machine travel span violations found"
+            if collisions or travel_violations:
                 App.Console.PrintWarning(status + "\n")
             Gui.getMainWindow().statusBar().showMessage(status, 15000)
         elif phase == "cancelled":
