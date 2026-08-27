@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -14,6 +15,18 @@ import VibeCADIntentMemoryCompiler as intent_compiler
 import VibeCADPreferences as preferences
 import VibeCADProvider as provider
 import VibeCADSession as session
+
+
+ROOT = Path(__file__).resolve().parents[4]
+
+
+def test_readme_documents_gemini_setup() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "**Google Gemini**" in readme
+    assert "GEMINI_API_KEY=your-key-here" in readme
+    assert "gemini-flash-latest" in readme
+    assert auth.DEFAULT_GEMINI_API_BASE in readme
 
 
 def test_gemini_auth_and_preferences_are_first_class() -> None:
