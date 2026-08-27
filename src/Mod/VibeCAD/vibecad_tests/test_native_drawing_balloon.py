@@ -10,17 +10,19 @@ from VibeCADNativeDrawingBalloonSchema import (
     DRAWING_BALLOON_OPERATIONS,
     drawing_balloon_capability_definition,
 )
+from vibecad_tests.schema_test_helpers import exact_provider_branches
 
 
 def test_balloon_schema_has_four_closed_exact_operations() -> None:
     definition = drawing_balloon_capability_definition()
     schema = definition.provider_schema(DRAWING_BALLOON_OPERATIONS)
-    branches = {
-        branch["properties"]["operation"]["const"]: branch
-        for branch in schema["parameters"]["oneOf"]
-    }
+    branches = exact_provider_branches(definition, DRAWING_BALLOON_OPERATIONS)
 
-    assert definition.preserve_operation_branches is True
+    assert definition.preserve_operation_branches is False
+    assert "oneOf" not in schema["parameters"]
+    assert schema["parameters"]["properties"]["operation"]["enum"] == list(
+        DRAWING_BALLOON_OPERATIONS
+    )
     assert DRAWING_BALLOON_OPERATIONS == (
         "create",
         "set_text",
