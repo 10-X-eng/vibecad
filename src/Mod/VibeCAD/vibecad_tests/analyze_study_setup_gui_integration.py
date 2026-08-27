@@ -122,6 +122,11 @@ def _run() -> None:
         assert dock is not None and dock.isVisible()
         widget = dock.widget()
         assert isinstance(widget, StudySetupWidget)
+        activity_watcher = widget.findChild(
+            QtCore.QFileSystemWatcher, "VibeCADEngineeringActivityWatcher"
+        )
+        assert activity_watcher is widget._activity_watcher
+        assert activity_watcher.directories()
         assert widget.apply_button.isVisible()
         assert (
             widget.results_browser.objectName()

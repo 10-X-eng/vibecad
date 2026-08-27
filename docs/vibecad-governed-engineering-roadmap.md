@@ -1300,8 +1300,11 @@ installed GUI evidence remain.
    discovery and read failures are explicit. Expandable rows show the bounded
    attempt, admitted-artifact, restart, currentness, publication-axis and
    workflow-node details from the same validated snapshots. The projection
-   carries no recovery, scheduling, retry or publication authority.
-   Event-driven refresh and installed GUI acceptance remain.
+   carries no recovery, scheduling, retry or publication authority. The visible
+   Study Setup surface now re-arms a debounced filesystem-event watcher as
+   durable directories appear and refreshes from the authoritative snapshots
+   after atomic record changes without polling lifecycle state. Installed GUI
+   acceptance remains.
 6. **Continue G-track closure in dependency order:** complete G2/G5 acceptance,
    G7 stale/restart/installed behavior, and the current G8/G9 Assembly
    identity/interface/inference acceptance. Advance X3/X4 and X7-X12 only from
