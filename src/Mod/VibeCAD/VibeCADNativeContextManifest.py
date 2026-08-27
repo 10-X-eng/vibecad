@@ -1076,13 +1076,13 @@ NATIVE_CONTEXT_ACTIONS = (
     ),
     _action(
         "VibeCAD_ManufactureReadJob", ("manufacture",), ("task_panel",),
-        "read", "manufacture.inspect", "read_job",
+        "read", "manufacture.read_setup", "read_job",
         "ExactCamJobGraphAndState", "none",
         source_command_id="CAM_Job",
     ),
     _action(
         "VibeCAD_ManufactureReadThreadCatalog", ("manufacture",), ("task_panel",),
-        "read", "manufacture.inspect", "read_thread_catalog",
+        "read", "manufacture.threads", "read_thread_catalog",
         "ShippedCamThreadCatalog", "none",
         source_command_id="CAM_ThreadMilling",
     ),

@@ -187,6 +187,9 @@ from VibeCADNativeModelTransformRuntime import NativeModelTransformRuntime
 from VibeCADNativeManufactureInspectBindings import (
     manufacture_inspect_runtime_bindings,
 )
+from VibeCADNativeManufactureFocusedInspectBindings import (
+    manufacture_focused_inspect_runtime_bindings,
+)
 from VibeCADNativeManufactureInspectRuntime import NativeManufactureInspectRuntime
 from VibeCADNativeManufactureJobBindings import manufacture_job_runtime_bindings
 from VibeCADNativeManufactureJobRuntime import NativeManufactureJobRuntime
@@ -672,6 +675,7 @@ def build_native_runtime_bindings(
         **sketch_setup_runtime_bindings(sketch_setup),
         **model_transform_runtime_bindings(model_transform),
         **manufacture_inspect_runtime_bindings(manufacture_inspect),
+        **manufacture_focused_inspect_runtime_bindings(manufacture_inspect),
         **manufacture_job_runtime_bindings(manufacture_job),
         **manufacture_area_runtime_bindings(manufacture_area),
         **manufacture_modify_runtime_bindings(manufacture_modify),

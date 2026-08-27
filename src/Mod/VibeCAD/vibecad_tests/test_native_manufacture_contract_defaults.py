@@ -7,6 +7,9 @@ from __future__ import annotations
 from VibeCADNativeManufactureInspectSchema import (
     manufacture_inspect_capability_definition,
 )
+from VibeCADNativeManufactureFocusedInspectSchema import (
+    manufacture_focused_inspect_capability_definitions,
+)
 from VibeCADNativeManufactureJobSchema import manufacture_job_capability_definition
 from VibeCADNativeManufactureOperationSchema import (
     manufacture_operation_capability_definition,
@@ -130,6 +133,33 @@ def test_model_geometry_read_is_exact_paged_and_drilling_aware() -> None:
         for variant in definition.variants
         if variant.operation == "read_model_geometry"
     ).background_required is True
+
+
+def test_cam_inspection_reads_publish_as_focused_tools() -> None:
+    definitions = {
+        definition.name: definition
+        for definition in manufacture_focused_inspect_capability_definitions()
+    }
+    assert {
+        name: definition.variants[0].operation
+        for name, definition in definitions.items()
+    } == {
+        "manufacture.setups": "list_setups",
+        "manufacture.read_setup": "read_job",
+        "manufacture.setup_options": "search_setup_options",
+        "manufacture.validate": "validate_job",
+        "manufacture.toolpath": "inspect_toolpath",
+        "manufacture.loop": "detect_loop",
+        "manufacture.geometry": "read_model_geometry",
+        "manufacture.threads": "read_thread_catalog",
+    }
+    geometry = definitions["manufacture.geometry"]
+    schema = provider_visible_native_schema(
+        geometry.provider_schema(("read_model_geometry",))
+    )
+    branch = schema["parameters"]["oneOf"][0]
+    assert set(branch["required"]) == {"target", "elements"}
+    assert "operation" not in branch["properties"]
 
 
 def test_common_milling_operations_inherit_setup_defaults() -> None:

@@ -26,8 +26,8 @@ from VibeCADNativeBackground import NativeBackgroundManager
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeContextManifest import provider_context_actions_for_surface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeManufactureInspectSchema import (
-    MANUFACTURE_INSPECT_CAPABILITY_NAME,
+from VibeCADNativeManufactureFocusedInspectSchema import (
+    MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES,
 )
 from VibeCADNativeManufactureJobSchema import MANUFACTURE_JOB_CAPABILITY_NAME
 from VibeCADNativeManufactureToolSchema import MANUFACTURE_TOOL_CAPABILITY_NAME
@@ -50,15 +50,6 @@ from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
 
 
-INSPECT_OPERATIONS = (
-    "list_setups",
-    "search_setup_options",
-    "read_job",
-    "validate_job",
-    "inspect_toolpath",
-    "detect_loop",
-    "read_model_geometry",
-)
 JOB_OPERATIONS = (
     "configure_stock",
     "create_job",
@@ -176,13 +167,20 @@ def _selection() -> tuple:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    inspect_definition = registry.definition(MANUFACTURE_INSPECT_CAPABILITY_NAME)
     job_definition = registry.definition(MANUFACTURE_JOB_CAPABILITY_NAME)
     tool_definition = registry.definition(MANUFACTURE_TOOL_CAPABILITY_NAME)
-    assert inspect_definition is not None and job_definition is not None
+    inspect_definitions = tuple(
+        registry.definition(name)
+        for name in MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES.values()
+    )
+    assert all(definition is not None for definition in inspect_definitions)
+    assert job_definition is not None
     assert tool_definition is not None
     schemas = (
-        inspect_definition.provider_schema(INSPECT_OPERATIONS),
+        *(
+            definition.provider_schema((definition.variants[0].operation,))
+            for definition in inspect_definitions
+        ),
         job_definition.provider_schema(JOB_OPERATIONS),
         tool_definition.provider_schema(TOOL_OPERATIONS),
     )
@@ -195,7 +193,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             available=True,
             unavailable_reason="",
             tool_names=(
-                MANUFACTURE_INSPECT_CAPABILITY_NAME,
+                *MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES.values(),
                 MANUFACTURE_JOB_CAPABILITY_NAME,
                 MANUFACTURE_TOOL_CAPABILITY_NAME,
             ),
@@ -229,7 +227,7 @@ def _run() -> None:
             plans["CAM_Sanity"].operation_variant,
             plans["CAM_Sanity"].exact_target_type,
         ) == (
-            MANUFACTURE_INSPECT_CAPABILITY_NAME,
+            MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES["validate_job"],
             "validate_job",
             "ExactCamJobGraphAndState",
         )
@@ -238,7 +236,7 @@ def _run() -> None:
             plans["CAM_Inspect"].operation_variant,
             plans["CAM_Inspect"].exact_target_type,
         ) == (
-            MANUFACTURE_INSPECT_CAPABILITY_NAME,
+            MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES["inspect_toolpath"],
             "inspect_toolpath",
             "ExactCamOperationToolpathAndState",
         )
@@ -247,7 +245,7 @@ def _run() -> None:
             plans["CAM_SelectLoop"].operation_variant,
             plans["CAM_SelectLoop"].exact_target_type,
         ) == (
-            MANUFACTURE_INSPECT_CAPABILITY_NAME,
+            MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES["detect_loop"],
             "detect_loop",
             "ExactCurrentCamModelShapeAndLoopSeed",
         )
@@ -261,7 +259,7 @@ def _run() -> None:
             read_plan.operation_variant,
             read_plan.exact_target_type,
         ) == (
-            MANUFACTURE_INSPECT_CAPABILITY_NAME,
+            MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES["read_job"],
             "read_job",
             "ExactCamJobGraphAndState",
         )
@@ -309,14 +307,18 @@ def _run() -> None:
         def call(
             arguments: dict,
             *,
-            tool_name: str = MANUFACTURE_INSPECT_CAPABILITY_NAME,
+            tool_name: str | None = None,
             succeeds: bool = True,
         ) -> dict:
             nonlocal call_index
             call_index += 1
+            payload = dict(arguments)
+            if tool_name is None:
+                operation = str(payload.pop("operation"))
+                tool_name = MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES[operation]
             response = dispatcher.call(
                 tool_name,
-                json.dumps(arguments, separators=(",", ":")),
+                json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-inspect-{call_index}",
             )
             assert response.get("ok") is succeeds, response

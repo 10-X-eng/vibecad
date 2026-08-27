@@ -12,8 +12,9 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
     NativeProviderSurface,
 )
-from VibeCADNativeManufactureInspectSchema import (
-    manufacture_inspect_capability_definition,
+from VibeCADNativeManufactureFocusedInspectSchema import (
+    MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES,
+    manufacture_focused_inspect_capability_definitions,
 )
 from VibeCADNativeManufactureJobSchema import manufacture_job_capability_definition
 from VibeCADNativeManufactureModifySchema import (
@@ -55,6 +56,7 @@ _AVAILABLE = (
     "workspace.switch",
     "manufacture.job",
     "manufacture.inspect",
+    *MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES.values(),
     "manufacture.tool_catalog",
     "manufacture.tool",
     "manufacture.add_tool",
@@ -187,7 +189,7 @@ def test_blank_document_exposes_setup_creation_and_bounded_discovery_only() -> N
 
     assert names == _SHARED | {
         "manufacture.job",
-        "manufacture.inspect",
+        "manufacture.setups",
         "manufacture.tool_catalog",
     }
 
@@ -299,26 +301,9 @@ def _schema_operations(schema: dict) -> set[str]:
     return result
 
 
-def test_inspection_operations_follow_exact_setup_content() -> None:
-    registry = NativeCapabilityRegistry()
-    definition = manufacture_inspect_capability_definition()
-    registry.register_definition(definition)
-    surface = _surface()
-    inspect_index = surface.tool_names.index("manufacture.inspect")
-    schemas = list(surface.schemas)
-    schemas[inspect_index] = definition.provider_schema(
-        tuple(variant.operation for variant in definition.variants)
-    )
-    surface = NativeProviderSurface(
-        snapshot=surface.snapshot,
-        available=True,
-        unavailable_reason="",
-        tool_names=surface.tool_names,
-        schemas=tuple(schemas),
-        human_only_action_ids=(),
-        missing_definition_names=(),
-        missing_implementation_names=(),
-        incomplete_definition_names=(),
+def test_focused_inspection_tools_follow_exact_setup_content() -> None:
+    registry, surface = _definition_surface(
+        manufacture_focused_inspect_capability_definitions()
     )
 
     blank = scope_manufacture_provider_surface(
@@ -342,22 +327,19 @@ def test_inspection_operations_follow_exact_setup_content() -> None:
         registry=registry,
     )
 
-    def operations(projected):
-        return _schema_operations(
-            projected.schemas[projected.tool_names.index("manufacture.inspect")]
-        )
-
-    assert operations(blank) == {"list_setups"}
-    assert operations(configured) == {
-        "list_setups",
-        "search_setup_options",
-        "read_job",
-        "validate_job",
-        "detect_loop",
-        "read_model_geometry",
-        "read_thread_catalog",
+    assert set(blank.tool_names) == {"manufacture.setups"}
+    assert set(configured.tool_names) == {
+        "manufacture.setups",
+        "manufacture.read_setup",
+        "manufacture.setup_options",
+        "manufacture.validate",
+        "manufacture.loop",
+        "manufacture.geometry",
+        "manufacture.threads",
     }
-    assert operations(with_path) == operations(configured) | {"inspect_toolpath"}
+    assert set(with_path.tool_names) == set(configured.tool_names) | {
+        "manufacture.toolpath"
+    }
 
 
 def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
@@ -478,7 +460,7 @@ def test_invalid_or_truncated_state_fails_closed_to_discovery() -> None:
 
     assert names == _SHARED | {
         "manufacture.job",
-        "manufacture.inspect",
+        "manufacture.setups",
         "manufacture.tool_catalog",
     }
 

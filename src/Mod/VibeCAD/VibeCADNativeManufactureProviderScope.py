@@ -29,7 +29,7 @@ _SHARED = frozenset(
 _DISCOVERY = frozenset(
     {
         "manufacture.job",
-        "manufacture.inspect",
+        "manufacture.setups",
         "manufacture.tool_catalog",
     }
 )
@@ -39,6 +39,9 @@ _SETUP_LIFECYCLE = frozenset(
         "manufacture.add_tool",
         "manufacture.program",
         "manufacture.template",
+        "manufacture.read_setup",
+        "manufacture.setup_options",
+        "manufacture.validate",
     }
 )
 _COMMON_OPERATIONS = frozenset(
@@ -148,12 +151,19 @@ def manufacture_provider_tool_names(
             | {
                 "manufacture.operation",
                 "manufacture.probe",
+                "manufacture.geometry",
+                "manufacture.loop",
                 "manufacture.set_controller",
                 "manufacture.update_tool",
             }
         )
+    if any(int(setup["counts"]["tools"]) > 0 for setup in setups):
+        allowed.add("manufacture.threads")
     if any(int(setup["counts"]["operations"]) > 0 for setup in setups):
-        allowed.update(_OPERATION_EDITS | {"manufacture.modify"})
+        allowed.update(
+            _OPERATION_EDITS
+            | {"manufacture.modify", "manufacture.toolpath"}
+        )
     if any(_readiness_ready(setup, "simulation") for setup in setups):
         allowed.update(
             {

@@ -185,12 +185,35 @@ def test_cam_tool_dock_resolves_to_focused_add_tool() -> None:
             kind="command",
         ),
     )
-
     assert (plan.capability_family, plan.operation_variant) == (
         "manufacture.add_tool",
         "create_controller",
     )
 
+
+def test_cam_inspection_commands_resolve_to_focused_tools() -> None:
+    expected = {
+        "CAM_Sanity": ("manufacture.validate", "validate_job"),
+        "CAM_Inspect": ("manufacture.toolpath", "inspect_toolpath"),
+        "CAM_SelectLoop": ("manufacture.loop", "detect_loop"),
+    }
+    plans = {
+        command_id: _plan(
+            "manufacture",
+            "Operations",
+            RibbonAction(
+                command_id=command_id,
+                label=command_id,
+                available=True,
+                kind="command",
+            ),
+        )
+        for command_id in expected
+    }
+    assert {
+        command_id: (plan.capability_family, plan.operation_variant)
+        for command_id, plan in plans.items()
+    } == expected
 
 def test_drawing_page_actions_resolve_to_four_exact_variants() -> None:
     expected = {
