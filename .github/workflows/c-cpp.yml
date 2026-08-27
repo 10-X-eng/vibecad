@@ -82,6 +82,7 @@ jobs:
             src/Mod/VibeCAD/vibecad_tests/test_mystran_analysis_local_provider.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_architecture_boundaries.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_parity_oracle.py \
+            src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_installed_publication.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_error_mapping.py \
             src/Mod/VibeCAD/vibecad_tests/test_analysis_process_tree.py \
             src/Mod/VibeCAD/vibecad_tests/test_scripted_process.py \

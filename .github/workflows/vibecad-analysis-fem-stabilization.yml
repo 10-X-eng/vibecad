@@ -43,6 +43,7 @@ jobs:
           python -m pytest -q
           --junitxml=analysis-fem-pytest.xml
           src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_parity_oracle.py
+          src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_installed_publication.py
           src/Mod/VibeCAD/vibecad_tests/test_analysis_fem_error_mapping.py
           src/Mod/VibeCAD/vibecad_tests/test_analysis_process_tree.py
           src/Mod/VibeCAD/vibecad_tests/test_scripted_process.py

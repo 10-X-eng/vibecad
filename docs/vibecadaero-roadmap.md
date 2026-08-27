@@ -196,12 +196,12 @@ Remote execution may be prototyped against inert test fixtures, but it may not b
 | Step | Current status | What remains before the step is closed |
 | --- | --- | --- |
 | 0 — live reconciliation | **Verified complete for this baseline** | Repeat on a newer `main` before implementation and record drift. |
-| 1 — characterization | **Partial** | The four-solver process-lifecycle A/B oracle is executable; complete document-lifecycle and installed Windows/POSIX traces. |
+| 1 — characterization | **Partial** | The four-solver process-lifecycle oracle and installed Windows synthetic-publication A/B gate are executable; complete installed POSIX, physical solver/importer, and remaining document-lifecycle traces. |
 | 2 — host contracts/facades | **Verified complete for the domain-neutral packaging/compatibility foundation** | Persistence, remote providers, and domain qualification remain later milestones and are not implied by this closure. |
 | 3 — local process mechanics | **Verified complete for the shared process primitive** | Keep the Windows/POSIX parity, timeout, cancellation, cleanup, output-bound, and redaction matrix required as later providers change; repeated lifecycle and leak burn-in remains Step 7. |
 | 4 — input/artifact sealing | **Partial** | Add quota enforcement, complete evidence-reference integrity, and prove installed/cross-platform integration around the implemented immutable manifests, storage, archive defenses, and cleanup. |
 | 5 — host orchestration | **Verified complete for the in-memory compatibility slice** | Persistence/recovery remain explicitly outside this step. |
-| 6 — current FEM migration | **Verified complete for CalculiX, Elmer, Z88, and Mystran** | The normalized process-lifecycle A/B matrix is frozen; close installed result-graph/History/receipt parity and rollback gates. |
+| 6 — current FEM migration | **Verified complete for CalculiX, Elmer, Z88, and Mystran** | Process parity and installed Windows synthetic result publication are frozen; close durable-receipt, installed POSIX/physical-solver, and rollback gates. |
 | 7 — stabilization | **Partial** | Complete stress, leak/orphan, cross-platform, lifecycle, and rollback burn-in. |
 | 8 — durable persistence | **Partial** | Complete supported schema migration, application-data integration, global discovery, full reconnect/crash recovery, quota/reference integrity, and authoritative installed/cross-platform acceptance. |
 | 8A — publication authority | **Partial** | Wire the coordinator through Native mutation authority and real domain adapters, then prove document-UID rebind, transaction rollback/postconditions, crash recovery, and strict current FEM compatibility. |
@@ -237,12 +237,12 @@ Exit evidence:
 
 **Status: Partial.**
 
-Real characterization exists for the generic runtime, atomic commit gate, shared process sequence, Native Aero background path, and each currently supported FEM local-provider path. `analysis_fem_parity_v2.json` and `test_analysis_fem_parity_oracle.py` now form one executable legacy/host process-lifecycle oracle for CalculiX, Elmer, Z88, and Mystran. It freezes success traces, exact process identity, public failures including repair data, cancellation, cleanup, and publication-seam delegation. Complete document-lifecycle and installed solver/platform traces remain open.
+Real characterization exists for the generic runtime, atomic commit gate, shared process sequence, Native Aero background path, and each currently supported FEM local-provider path. `analysis_fem_parity_v2.json` and `test_analysis_fem_parity_oracle.py` form the executable legacy/host process-lifecycle oracle for CalculiX, Elmer, Z88, and Mystran. The installed `analysis_fem_installed_publication_integration.py` gate now also runs both publication paths for all four solver families inside a real Windows VibeCAD 26.3 `FreeCADCmd` document and proves normalized object graph, solver membership, History order, ownership, hash presence, public JSON, and save/reopen persistence. Its fields are deterministic synthetic result data, not physical solver evidence, and both paths currently report no durable publication receipt. Remaining document lifecycle, installed POSIX, real backend/importer, and receipt traces stay open.
 
 Remaining exit criteria:
 
 - capture normalized lifecycle traces for process, input digest, exact command/environment identity, stale checks, result graph/History, receipts, public APIs/errors, timeout/cancel, cleanup, document close/switch/reopen, and Windows/POSIX behavior;
-- add installed Windows/POSIX traces and representative result-graph/History/hash/receipt evidence to the executable legacy-versus-host fixture for all supported FEM solver paths;
+- add installed POSIX and physical solver/importer traces; the installed Windows synthetic-publication fixture now covers result graph, History, ownership, hash presence, public JSON, and save/reopen for all supported paths, while durable receipt evidence remains open;
 - preserve the reviewed intentional-difference list in both the compatibility report and executable oracle before further extraction.
 
 ### Step 2 — introduce host Analysis contracts and facades
@@ -308,11 +308,11 @@ This step explicitly excludes persistence, restart recovery, new concurrency, re
 
 **Status: Verified complete for the currently supported detached solver set; parity gate remains open.**
 
-CalculiX, Elmer, Z88, and Mystran execution route through the host local provider with compatibility mappings and solver-specific tests. The v2 executable A/B oracle now directly compares legacy and host success, failure, cancellation, cleanup, and exact legacy publication delegation for every solver. It also closed a discovered host-path loss of the legacy backend diagnostic repair payload by sharing the FEM failure translator.
+CalculiX, Elmer, Z88, and Mystran execution route through the host local provider with compatibility mappings and solver-specific tests. The v2 executable A/B oracle directly compares legacy and host success, failure, cancellation, cleanup, and exact legacy publication delegation for every solver. The installed Windows synthetic-publication gate additionally executes commit/verify in real documents and compares result graph, membership, History, ownership, hashes, public output, and save/reopen persistence. It also records rather than conceals the shared absence of a durable publication receipt. The process oracle previously closed a discovered host-path loss of the legacy backend diagnostic repair payload by sharing the FEM failure translator.
 
 Remaining program obligations:
 
-- complete Gate 5 with installed representative result graph, History, hashes, receipts, and public output A/B evidence; exact inputs, commands, environment identity, process failures, cancellation, cleanup, and publication-seam identity are frozen by the v2 oracle;
+- complete Gate 5 with installed POSIX and physical solver/importer result publication plus durable receipts; installed Windows synthetic result graph, History, ownership, hash presence, public output, and save/reopen parity are frozen, while exact inputs, commands, environment identity, process failures, cancellation, cleanup, and publication-seam identity remain frozen by the v2 oracle;
 - treat any future FEM backend as a new solver migration requiring its own parity proof;
 - do not use this milestone to change FEM publication semantics.
 
