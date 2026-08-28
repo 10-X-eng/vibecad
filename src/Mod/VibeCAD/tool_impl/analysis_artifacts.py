@@ -140,16 +140,34 @@ def _safe_relative_path(value: str) -> str:
     return raw
 
 
-def _file_sha256(path: Path) -> tuple[str, int]:
+def _file_sha256(
+    path: Path,
+    *,
+    maximum_bytes: int | None = None,
+    relative_path: str = "",
+) -> tuple[str, int]:
     digest = hashlib.sha256()
     total = 0
+    error_path = str(relative_path or path.name)
     try:
         with path.open("rb") as stream:
             for block in iter(lambda: stream.read(STREAM_BLOCK_BYTES), b""):
                 total += len(block)
+                if maximum_bytes is not None and total > maximum_bytes:
+                    raise AnalysisArtifactError(
+                        "bounds",
+                        "Analysis artifact exceeds its declared byte bound.",
+                        relative_path=error_path,
+                    )
                 digest.update(block)
+    except AnalysisArtifactError:
+        raise
     except Exception as exc:
-        raise AnalysisArtifactError("read_failed", "An Analysis artifact could not be read.", relative_path=path.name) from exc
+        raise AnalysisArtifactError(
+            "read_failed",
+            "An Analysis artifact could not be read.",
+            relative_path=error_path,
+        ) from exc
     return digest.hexdigest(), total
 
 
@@ -170,9 +188,11 @@ def seal_artifact(
         raise AnalysisArtifactError("unsafe_symlink", "Artifact is a symbolic link.", relative_path=relative)
     if not file_path.is_file():
         raise AnalysisArtifactError("read_failed", "Artifact is not a regular file.", relative_path=relative)
-    digest, byte_count = _file_sha256(file_path)
-    if byte_count > _positive_integer(maximum_bytes, "maximum_bytes"):
-        raise AnalysisArtifactError("bounds", "Artifact exceeds its configured byte bound.", relative_path=relative)
+    digest, byte_count = _file_sha256(
+        file_path,
+        maximum_bytes=_positive_integer(maximum_bytes, "maximum_bytes"),
+        relative_path=relative,
+    )
     return ArtifactDescriptor(
         role, logical_name, media_type, relative, byte_count, digest, producer_id,
         job_id, provider_id, solver_id, source_correlation, exactness_class, created_at,
@@ -180,7 +200,11 @@ def seal_artifact(
 
 
 def verify_artifact(path: str | Path, descriptor: ArtifactDescriptor) -> None:
-    digest, byte_count = _file_sha256(Path(path))
+    digest, byte_count = _file_sha256(
+        Path(path),
+        maximum_bytes=descriptor.byte_count,
+        relative_path=descriptor.relative_path,
+    )
     if digest != descriptor.sha256 or byte_count != descriptor.byte_count:
         raise AnalysisArtifactError("hash_mismatch", "Artifact content does not match its immutable descriptor.", relative_path=descriptor.relative_path)
 

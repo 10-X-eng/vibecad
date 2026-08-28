@@ -11,6 +11,7 @@ GENERIC_ANALYSIS_FILES = (
     VIBECAD_DIR / "tool_impl" / "analysis_contracts.py",
     VIBECAD_DIR / "tool_impl" / "analysis_artifacts.py",
     VIBECAD_DIR / "tool_impl" / "analysis_local_provider.py",
+    VIBECAD_DIR / "tool_impl" / "analysis_output_admission.py",
     VIBECAD_DIR / "tool_impl" / "analysis_recovery.py",
     VIBECAD_DIR / "tool_impl" / "analysis_runtime.py",
     VIBECAD_DIR / "VibeCADAnalysisProviders.py",

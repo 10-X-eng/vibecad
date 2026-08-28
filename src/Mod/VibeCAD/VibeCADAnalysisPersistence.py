@@ -20,6 +20,11 @@ from tool_impl.analysis_persistence import (
     new_job_record,
     restart_disposition_for_record,
 )
+from tool_impl.analysis_output_admission import (
+    AnalysisOutputAdmissionCoordinator,
+    AnalysisOutputAdmissionError,
+    AnalysisOutputAdmissionResult,
+)
 from tool_impl.analysis_recovery import (
     AnalysisProviderRecoveryCoordinator,
     AnalysisProviderRecoveryError,
@@ -88,6 +93,9 @@ __all__ = (
     "TERMINAL_STATES",
     "AnalysisMetadataStore",
     "AnalysisPersistenceError",
+    "AnalysisOutputAdmissionCoordinator",
+    "AnalysisOutputAdmissionError",
+    "AnalysisOutputAdmissionResult",
     "AnalysisProviderRecoveryCoordinator",
     "AnalysisProviderRecoveryError",
     "AnalysisProviderRecoveryResult",

@@ -613,6 +613,7 @@ class AnalysisMetadataStore:
         *,
         pinned: bool = False,
         cleanup_eligible: bool = False,
+        expected_state: str | None = None,
     ) -> dict[str, Any]:
         artifact = deepcopy(dict(descriptor))
         digest = str(artifact.get("sha256") or "").lower()
@@ -630,6 +631,10 @@ class AnalysisMetadataStore:
         artifact["tombstoned_at"] = None
         with self._writer():
             current = self.load(analysis_id)
+            if expected_state is not None and current["state"] != expected_state:
+                raise AnalysisPersistenceError(
+                    "Analysis state changed before artifact admission"
+                )
             existing = next(
                 (item for item in current["artifacts"] if item.get("sha256") == digest),
                 None,
