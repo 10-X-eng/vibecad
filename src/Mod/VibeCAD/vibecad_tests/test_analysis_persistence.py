@@ -235,6 +235,70 @@ def test_artifact_tombstone_is_idempotent_and_evidence_aware(tmp_path: Path) -> 
         store.tombstone_artifact("analysis-1", "f" * 64)
 
 
+def test_artifact_metadata_enforces_per_analysis_count_and_byte_quotas(
+    tmp_path: Path,
+) -> None:
+    store = AnalysisMetadataStore(
+        tmp_path,
+        maximum_artifacts_per_analysis=1,
+        maximum_artifact_bytes_per_analysis=6,
+    )
+    store.create(_record())
+    first = {"sha256": "e" * 64, "role": "solver_output", "byte_count": 5}
+    second = {"sha256": "f" * 64, "role": "solver_output", "byte_count": 1}
+
+    admitted = store.record_artifact("analysis-1", first, cleanup_eligible=True)
+    assert store.record_artifact(
+        "analysis-1", first, cleanup_eligible=True
+    ) == admitted
+    with pytest.raises(AnalysisPersistenceError, match="artifact count quota"):
+        store.record_artifact("analysis-1", second, cleanup_eligible=True)
+
+    store.tombstone_artifact("analysis-1", first["sha256"])
+    assert store.record_artifact(
+        "analysis-1", second, cleanup_eligible=True
+    )["artifacts"][-1]["sha256"] == second["sha256"]
+
+    oversized = {"sha256": "0" * 64, "role": "solver_output", "byte_count": 7}
+    with pytest.raises(AnalysisPersistenceError, match="artifact byte quota"):
+        store.record_artifact("analysis-1", oversized, cleanup_eligible=True)
+
+
+def test_publication_artifact_references_must_be_live_and_remain_protected(
+    tmp_path: Path,
+) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    digest = "e" * 64
+    store.record_artifact(
+        "analysis-1",
+        {"sha256": digest, "role": "solver_output", "byte_count": 12},
+        cleanup_eligible=True,
+    )
+    _advance(store, "publishing", [])
+    authorization = {
+        "kind": "human_selected_destination",
+        "destination_paths_persisted": False,
+    }
+
+    with pytest.raises(AnalysisPersistenceError, match="unknown or tombstoned"):
+        store.record_publication_evidence(
+            "analysis-1",
+            intent={"kind": "human_authorized_output", "artifact_references": ["f" * 64]},
+            authorization=authorization,
+        )
+
+    recorded = store.record_publication_evidence(
+        "analysis-1",
+        intent={"kind": "human_authorized_output", "artifact_references": [digest]},
+        authorization=authorization,
+    )
+    assert recorded["publication"]["intent"]["artifact_references"] == [digest]
+    assert store.protected_artifact_sha256("analysis-1") == (digest,)
+    with pytest.raises(AnalysisPersistenceError, match="publication evidence"):
+        store.tombstone_artifact("analysis-1", digest)
+
+
 def test_publication_evidence_is_write_once_and_path_free(tmp_path: Path) -> None:
     store = AnalysisMetadataStore(tmp_path)
     store.create(_record())

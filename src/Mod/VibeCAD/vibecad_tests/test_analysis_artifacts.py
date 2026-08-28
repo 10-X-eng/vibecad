@@ -209,3 +209,36 @@ def test_content_store_admission_is_atomic_idempotent_and_evidence_aware(tmp_pat
     assert admitted.exists()
     assert store.cleanup(descriptor.sha256)
     assert not store.cleanup(descriptor.sha256)
+
+
+def test_content_store_enforces_unique_object_count_and_byte_quotas(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    first = workspace / "first.bin"
+    first.write_bytes(b"first")
+    second = workspace / "second.bin"
+    second.write_bytes(b"second")
+    first_descriptor = _seal(first, workspace)
+    second_descriptor = _seal(second, workspace)
+    store = ContentAddressedArtifactStore(
+        tmp_path / "store",
+        maximum_artifacts=1,
+        maximum_bytes=first_descriptor.byte_count,
+    )
+
+    admitted = store.admit(first, first_descriptor)
+    assert store.usage() == {"artifact_count": 1, "total_bytes": 5}
+    assert store.admit(first, first_descriptor) == admitted
+
+    with pytest.raises(AnalysisArtifactError) as count_bound:
+        store.admit(second, second_descriptor)
+    assert count_bound.value.reason == "bounds"
+    assert store.usage() == {"artifact_count": 1, "total_bytes": 5}
+
+    assert store.cleanup(first_descriptor.sha256)
+    with pytest.raises(AnalysisArtifactError) as byte_bound:
+        store.admit(second, second_descriptor)
+    assert byte_bound.value.reason == "bounds"
+    assert store.usage() == {"artifact_count": 0, "total_bytes": 0}

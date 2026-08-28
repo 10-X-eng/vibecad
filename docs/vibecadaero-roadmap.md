@@ -160,12 +160,12 @@ No current integrated implementation was found for Aero FluidX3D, Aero CfdOF/Ope
 The table above is historical evidence from `main@31ea810db`; it is not rewritten to attribute later work to that revision. In the current roadmap execution tree, after that audit:
 
 - all public Analysis facades are registered in `VibeCAD_Scripts`, the existing default `Unspecified` install-component behavior is retained, and isolated build-tree and component-installed import coverage exists;
-- artifact descriptors, manifests, canonical hashing, bounded archive admission, content-addressed storage, and protected idempotent cleanup are implemented and tested;
+- artifact descriptors, manifests, canonical hashing, bounded archive admission, quota-enforced content-addressed storage, protected idempotent cleanup, and exact live publication-artifact references are implemented and tested;
 - the four supported FEM adapters have a frozen normalized compatibility oracle and report, and shared process execution has descendant cleanup and environment-output redaction coverage;
 - versioned atomic durable metadata, legal lifecycle transitions, attempt/provider identity, restart disposition, retry identity, artifact retention metadata, and opt-in runtime lifecycle binding are implemented;
 - a publication coordinator enforces exact result/source/output identity, dependency currentness, adapter compatibility, fresh authorization, one publication owner, receipt replay, and outcome-unknown recovery.
 
-These are additive post-baseline slices. They do not yet close the remaining cross-platform packaging, quota/reference-integrity, real document rebind, full crash matrix, domain migration, or production-integration gates listed below.
+These are additive post-baseline slices. They do not yet close the remaining cross-platform packaging, application-data quota-policy integration, compact document-reference integration, real document rebind, full crash matrix, domain migration, or production-integration gates listed below.
 
 ## 6. Dependency graph
 
@@ -199,11 +199,11 @@ Remote execution may be prototyped against inert test fixtures, but it may not b
 | 1 — characterization | **Partial** | The four-solver process-lifecycle oracle and installed Windows synthetic-publication A/B gate are executable; complete installed POSIX, physical solver/importer, and remaining document-lifecycle traces. |
 | 2 — host contracts/facades | **Verified complete for the domain-neutral packaging/compatibility foundation** | Persistence, remote providers, and domain qualification remain later milestones and are not implied by this closure. |
 | 3 — local process mechanics | **Verified complete for the shared process primitive** | Keep the Windows/POSIX parity, timeout, cancellation, cleanup, output-bound, and redaction matrix required as later providers change; repeated lifecycle and leak burn-in remains Step 7. |
-| 4 — input/artifact sealing | **Partial** | Add quota enforcement, complete evidence-reference integrity, and prove installed/cross-platform integration around the implemented immutable manifests, storage, archive defenses, and cleanup. |
+| 4 — input/artifact sealing | **Partial** | Retained-object count/byte quotas and live publication-reference protection are implemented; complete application-data/compact-document integration and installed/cross-platform acceptance around the immutable manifests, storage, archive defenses, and cleanup. |
 | 5 — host orchestration | **Verified complete for the in-memory compatibility slice** | Persistence/recovery remain explicitly outside this step. |
 | 6 — current FEM migration | **Verified complete for CalculiX, Elmer, Z88, and Mystran** | Process parity and installed Windows synthetic result publication are frozen; close durable-receipt, installed POSIX/physical-solver, and rollback gates. |
 | 7 — stabilization | **Partial** | Complete stress, leak/orphan, cross-platform, lifecycle, and rollback burn-in. |
-| 8 — durable persistence | **Partial** | Complete supported schema migration, application-data integration, global discovery, full reconnect/crash recovery, quota/reference integrity, and authoritative installed/cross-platform acceptance. |
+| 8 — durable persistence | **Partial** | Per-analysis record-count/declared-byte quotas and exact live publication references are implemented; complete supported schema migration, application-data/global discovery, full reconnect/crash recovery, cross-record cleanup authority, and authoritative installed/cross-platform acceptance. |
 | 8A — publication authority | **Partial** | Wire the coordinator through Native mutation authority and real domain adapters, then prove document-UID rebind, transaction rollback/postconditions, crash recovery, and strict current FEM compatibility. |
 | 9 — Aero repair authority | **Partial** | Converge host revision and preview/apply/reject authority; define bounded preview persistence. |
 | 10 — Aero evidence/frames | **Partial** | Complete case schema, frames/references, readiness, correspondence, stamps/results/context, and claim ceilings. |
@@ -286,15 +286,14 @@ Step 7 still owns repeated timeout/cancel/close/switch/reopen/output-bound stres
 
 **Status: Partial.**
 
-Prepared-analysis, dependency, command, manifest, and artifact contracts exist, and FEM input identity is represented. The complete safe immutable workspace/content-addressed artifact lifecycle is not integrated.
+Prepared-analysis, dependency, command, manifest, and artifact contracts exist, and FEM input identity is represented. Content-addressed admission now serializes retained-object quota accounting across processes, preserves digest-idempotent admission, and recovers quota on cleanup. Durable publication evidence can name exact live artifact digests, rejects unknown/tombstoned references, and protects those objects from metadata cleanup. The complete application-data, compact-document-reference, and installed cross-platform lifecycle is not integrated.
 
 Remaining exit criteria:
 
-- preserve the exact accepted FEM directory-digest behavior while adding generic manifests;
-- implement immutable input/output manifests with role, logical name, media type, bytes, SHA-256, producer/job/provider/solver identity, source correlation, exactness class, and timestamps;
-- reject traversal, unsafe symlinks, unsafe archive extraction, unbounded bundles, and hash mismatch;
-- keep large artifacts outside FCStd while allowing compact references/evidence in the document;
-- make cleanup effect-idempotent and evidence-aware.
+- preserve the exact accepted FEM directory-digest behavior and current generic manifests while later storage/persistence work lands;
+- integrate the implemented object and per-analysis quotas with governed per-user application-data policy and cross-record cleanup authority;
+- keep large artifacts outside FCStd while wiring the implemented exact live references into compact document evidence;
+- prove immutable admission, quota accounting, archive defenses, reference protection, and cleanup in installed Windows and POSIX hosts.
 
 ### Step 5 — extract orchestration behind NativeBackground
 
@@ -333,9 +332,9 @@ Remaining exit criteria:
 
 **Status: Partial on the current roadmap execution branch.**
 
-The current roadmap execution branch implements versioned atomic JSON metadata, inter-process locking, legal state transitions, attempt and provider identities, backup, explicit fault points, restart dispositions, same-analysis retry with a new attempt, artifact records, pins, cleanup eligibility, tombstones, content-addressed artifacts, and an additive opt-in runtime lifecycle binding. Existing in-memory clients remain unchanged. FCStd still stores compact references and engineering evidence, not multi-gigabyte solver artifacts.
+The current roadmap execution branch implements versioned atomic JSON metadata, inter-process locking, legal state transitions, attempt and provider identities, backup, explicit fault points, restart dispositions, same-analysis retry with a new attempt, quota-enforced artifact record counts and declared bytes, pins, cleanup eligibility, tombstones, content-addressed artifacts, exact live publication-artifact references, and an additive opt-in runtime lifecycle binding. Existing compact hash-only evidence records remain valid and count toward the record quota without inventing a byte size. Existing in-memory clients remain unchanged. FCStd still stores compact references and engineering evidence, not multi-gigabyte solver artifacts.
 
-Remaining work includes supported migrations rather than refusal alone, per-user application-data ownership and global discovery, complete remote reconnect and real process-crash integration, quota enforcement, evidence-reference integrity, corruption/restore acceptance, and installed/cross-platform packaging evidence.
+Remaining work includes supported migrations rather than refusal alone, per-user application-data ownership and global discovery, complete remote reconnect and real process-crash integration, governed quota-policy configuration and cross-record cleanup authority, compact document-reference integration, corruption/restore acceptance, and installed/cross-platform packaging evidence.
 
 Required durable data:
 
@@ -706,8 +705,8 @@ Stop the affected implementation slice and resolve explicitly if:
 The next work should be small, reversible, and dependency-ordered:
 
 1. **Close Steps 1 and 7:** preserve the repeated Windows/POSIX runtime/process/workspace burn-in and complete installed close/switch/reopen/same-name replacement, exact-source rebind, physical solver/importer, and installed leak/orphan evidence. Keep the verified Step 2 packaging/compatibility foundation covered as later host capabilities are added.
-2. **Close Step 4:** add quota/reference-integrity and installed/cross-platform acceptance around the implemented immutable workspace/artifact sealing slice.
-3. **Close Step 8:** finish migration, application-data integration, discovery, reconnect/crash recovery, quota/reference integrity, and platform acceptance around the implemented durable lifecycle slice.
+2. **Close Step 4:** integrate the implemented quotas/live-reference protection with application-data and compact document evidence, then prove installed/cross-platform acceptance around the immutable workspace/artifact sealing slice.
+3. **Close Step 8:** finish migration, application-data integration, discovery, reconnect/crash recovery, governed quota policy/cross-record cleanup, compact references, and platform acceptance around the implemented durable lifecycle slice.
 4. **Close Step 8A:** integrate the implemented coordinator with Native mutation authority and domain adapters, proving real rebind, transaction, rollback, restart, and compatibility behavior.
 5. **Close Steps 9-11:** converge Aero repair authority and complete common Aero evidence/readiness/frame/case contracts on the shared runtime.
 6. **Implement real high-fidelity baselines:** OpenFOAM/CfdOF and FluidX3D in separate solver-focused tranches, each with real benchmark evidence.

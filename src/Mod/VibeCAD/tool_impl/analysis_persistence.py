@@ -18,6 +18,8 @@ from typing import Any, Callable, Iterator, Mapping
 ANALYSIS_METADATA_SCHEMA_VERSION = 1
 MAX_PUBLICATION_EVIDENCE_BYTES = 64 * 1024
 MAX_DISCOVERABLE_ANALYSES = 4096
+DEFAULT_MAXIMUM_ARTIFACTS_PER_ANALYSIS = 4096
+DEFAULT_MAXIMUM_ARTIFACT_BYTES_PER_ANALYSIS = 4 * 1024 * 1024 * 1024
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
 KNOWN_STATES = frozenset({
     "prepared", "running_local", "running_remote", "collecting", "verifying",
@@ -54,6 +56,44 @@ def _clean_id(value: Any, field: str) -> str:
     if not clean or clean in {".", ".."} or any(mark in clean for mark in "/\\:"):
         raise AnalysisPersistenceError(f"{field} is not a safe non-empty identifier")
     return clean
+
+
+def _positive_integer(value: int, field: str) -> int:
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
+def _artifact_references(record: Mapping[str, Any]) -> tuple[str, ...]:
+    publication = record.get("publication")
+    if not isinstance(publication, Mapping):
+        raise AnalysisPersistenceError("Analysis publication metadata must be an object")
+    intent = publication.get("intent")
+    if intent is None:
+        return ()
+    if not isinstance(intent, Mapping):
+        raise AnalysisPersistenceError("Publication intent must be an object")
+    references = intent.get("artifact_references")
+    if references is None:
+        return ()
+    if not isinstance(references, list):
+        raise AnalysisPersistenceError("Publication artifact references must be a list")
+    clean: list[str] = []
+    for value in references:
+        digest = str(value or "")
+        if (
+            value != digest
+            or digest != digest.lower()
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise AnalysisPersistenceError(
+                "Publication artifact references must be SHA-256 digests"
+            )
+        clean.append(digest)
+    if len(clean) != len(set(clean)):
+        raise AnalysisPersistenceError("Publication artifact references must be unique")
+    return tuple(clean)
 
 
 def new_job_record(
@@ -127,7 +167,14 @@ def restart_disposition_for_record(record: Mapping[str, Any]) -> dict[str, str]:
 class AnalysisMetadataStore:
     """One-writer JSON store with atomic replace, backup, and fault points."""
 
-    def __init__(self, root: str | Path, *, fault_injector: FaultInjector | None = None) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        fault_injector: FaultInjector | None = None,
+        maximum_artifacts_per_analysis: int = DEFAULT_MAXIMUM_ARTIFACTS_PER_ANALYSIS,
+        maximum_artifact_bytes_per_analysis: int = DEFAULT_MAXIMUM_ARTIFACT_BYTES_PER_ANALYSIS,
+    ) -> None:
         self.root = Path(root)
         self.records = self.root / "records"
         self.backups = self.root / "backups"
@@ -135,6 +182,13 @@ class AnalysisMetadataStore:
         if fault_injector is not None and not callable(fault_injector):
             raise TypeError("fault_injector must be callable")
         self.fault_injector = fault_injector
+        self.maximum_artifacts_per_analysis = _positive_integer(
+            maximum_artifacts_per_analysis, "maximum_artifacts_per_analysis"
+        )
+        self.maximum_artifact_bytes_per_analysis = _positive_integer(
+            maximum_artifact_bytes_per_analysis,
+            "maximum_artifact_bytes_per_analysis",
+        )
 
     def _path(self, analysis_id: str) -> Path:
         return self.records / f"{_clean_id(analysis_id, 'analysis_id')}.json"
@@ -357,20 +411,68 @@ class AnalysisMetadataStore:
         digest = str(artifact.get("sha256") or "").lower()
         if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
             raise AnalysisPersistenceError("Artifact sha256 must be a digest")
+        byte_count = artifact.get("byte_count")
+        if byte_count is not None and (type(byte_count) is not int or byte_count < 0):
+            raise AnalysisPersistenceError(
+                "Artifact byte_count must be a non-negative integer"
+            )
+        quota_bytes = 0 if byte_count is None else byte_count
         artifact["sha256"] = digest
         artifact["pinned"] = bool(pinned)
         artifact["cleanup_eligible"] = bool(cleanup_eligible)
         artifact["tombstoned_at"] = None
         with self._writer():
             current = self.load(analysis_id)
-            if any(item.get("sha256") == digest for item in current["artifacts"]):
-                return current
+            existing = next(
+                (item for item in current["artifacts"] if item.get("sha256") == digest),
+                None,
+            )
+            if existing is not None:
+                if existing == artifact:
+                    return current
+                raise AnalysisPersistenceError(
+                    "Artifact identity cannot be reused with different metadata"
+                )
+            active = [
+                item for item in current["artifacts"] if not item.get("tombstoned_at")
+            ]
+            active_bytes = 0
+            for item in active:
+                existing_bytes = item.get("byte_count")
+                if existing_bytes is not None and (
+                    type(existing_bytes) is not int or existing_bytes < 0
+                ):
+                    raise AnalysisPersistenceError(
+                        "Existing artifact metadata has an invalid byte count"
+                    )
+                active_bytes += 0 if existing_bytes is None else existing_bytes
+            if active_bytes + quota_bytes > self.maximum_artifact_bytes_per_analysis:
+                raise AnalysisPersistenceError("Analysis artifact byte quota exceeded")
+            if len(active) + 1 > self.maximum_artifacts_per_analysis:
+                raise AnalysisPersistenceError("Analysis artifact count quota exceeded")
             candidate = deepcopy(current)
             candidate["artifacts"].append(artifact)
             self._append_metadata_event(candidate, "artifact_admitted")
             candidate = self._validate(candidate)
             self._write_atomic(self._path(analysis_id), candidate, backup=True)
             return deepcopy(candidate)
+
+    def protected_artifact_sha256(self, analysis_id: str) -> tuple[str, ...]:
+        """Return exact live artifact identities that cleanup must retain."""
+
+        record = self.load(analysis_id)
+        referenced = set(_artifact_references(record))
+        protected = {
+            item["sha256"]
+            for item in record["artifacts"]
+            if not item.get("tombstoned_at")
+            and (
+                item.get("pinned")
+                or not item.get("cleanup_eligible")
+                or item["sha256"] in referenced
+            )
+        }
+        return tuple(sorted(protected))
 
     def record_publication_evidence(
         self,
@@ -446,6 +548,10 @@ class AnalysisMetadataStore:
             )
             if match is None:
                 raise AnalysisPersistenceError("Artifact identity is unknown")
+            if digest in set(_artifact_references(current)):
+                raise AnalysisPersistenceError(
+                    "Artifact is retained by publication evidence"
+                )
             if match.get("pinned") or not match.get("cleanup_eligible"):
                 raise AnalysisPersistenceError("Artifact is retained as engineering evidence")
             if match.get("tombstoned_at"):
@@ -502,6 +608,38 @@ class AnalysisMetadataStore:
             raise AnalysisPersistenceError("Analysis events must be non-empty")
         if [item.get("sequence") for item in events] != list(range(1, len(events) + 1)):
             raise AnalysisPersistenceError("Analysis event sequence is not monotonic")
+        artifacts = record.get("artifacts")
+        if not isinstance(artifacts, list):
+            raise AnalysisPersistenceError("Analysis artifacts must be a list")
+        digests: set[str] = set()
+        active_digests: set[str] = set()
+        for artifact in artifacts:
+            if not isinstance(artifact, Mapping):
+                raise AnalysisPersistenceError("Analysis artifact metadata must be an object")
+            digest = str(artifact.get("sha256") or "")
+            if (
+                digest != digest.lower()
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise AnalysisPersistenceError("Artifact sha256 must be a digest")
+            if digest in digests:
+                raise AnalysisPersistenceError("Analysis artifact identities must be unique")
+            digests.add(digest)
+            byte_count = artifact.get("byte_count")
+            if byte_count is not None and (
+                type(byte_count) is not int or byte_count < 0
+            ):
+                raise AnalysisPersistenceError(
+                    "Artifact byte_count must be a non-negative integer"
+                )
+            if not artifact.get("tombstoned_at"):
+                active_digests.add(digest)
+        references = _artifact_references(record)
+        if any(digest not in active_digests for digest in references):
+            raise AnalysisPersistenceError(
+                "Publication artifact reference is unknown or tombstoned"
+            )
         return record
 
 

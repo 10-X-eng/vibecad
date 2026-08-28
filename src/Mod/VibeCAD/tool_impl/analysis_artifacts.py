@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
@@ -11,8 +12,9 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import sys
 import tarfile
-from typing import Iterable
+from typing import Iterable, Iterator
 import zipfile
 
 
@@ -227,8 +229,101 @@ def validate_archive(path: str | Path, *, maximum_files: int = DEFAULT_MAXIMUM_F
 class ContentAddressedArtifactStore:
     """Atomic immutable admission and evidence-aware, idempotent cleanup."""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        maximum_artifacts: int = DEFAULT_MAXIMUM_FILES,
+        maximum_bytes: int = DEFAULT_MAXIMUM_BYTES,
+    ) -> None:
         self.root = Path(root)
+        self.maximum_artifacts = _positive_integer(
+            maximum_artifacts, "maximum_artifacts"
+        )
+        self.maximum_bytes = _positive_integer(maximum_bytes, "maximum_bytes")
+        self.lock_path = self.root / ".writer.lock"
+
+    @contextmanager
+    def _writer(self) -> Iterator[None]:
+        """Serialize quota accounting and mutations across host processes."""
+
+        self.root.mkdir(parents=True, exist_ok=True)
+        stream = self.lock_path.open("a+b")
+        try:
+            if stream.tell() == 0:
+                stream.write(b"0")
+                stream.flush()
+            stream.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError) as exc:
+            stream.close()
+            raise AnalysisArtifactError(
+                "read_failed",
+                "Another VibeCAD process owns Analysis artifact storage writes.",
+            ) from exc
+        try:
+            yield
+        finally:
+            try:
+                stream.seek(0)
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            finally:
+                stream.close()
+
+    def _usage_unlocked(self) -> dict[str, int]:
+        count = total = 0
+        if not self.root.exists():
+            return {"artifact_count": count, "total_bytes": total}
+        for prefix in self.root.iterdir():
+            if prefix == self.lock_path:
+                continue
+            if (
+                prefix.is_symlink()
+                or not prefix.is_dir()
+                or len(prefix.name) != 2
+                or any(value not in "0123456789abcdef" for value in prefix.name)
+            ):
+                raise AnalysisArtifactError(
+                    "invalid_manifest",
+                    "Analysis artifact storage contains an invalid object path.",
+                    relative_path=prefix.name,
+                )
+            for object_path in prefix.iterdir():
+                digest = prefix.name + object_path.name
+                if (
+                    not object_path.is_file()
+                    or object_path.is_symlink()
+                    or len(digest) != 64
+                    or any(value not in "0123456789abcdef" for value in digest)
+                ):
+                    raise AnalysisArtifactError(
+                        "invalid_manifest",
+                        "Analysis artifact storage contains an invalid object path.",
+                        relative_path=f"{prefix.name}/{object_path.name}",
+                    )
+                count += 1
+                total += object_path.stat().st_size
+        return {"artifact_count": count, "total_bytes": total}
+
+    def usage(self) -> dict[str, int]:
+        """Return exact retained-object quota usage under the storage lock."""
+
+        with self._writer():
+            return self._usage_unlocked()
 
     def path_for(self, sha256: str) -> Path:
         digest = str(sha256 or "").lower()
@@ -240,32 +335,45 @@ class ContentAddressedArtifactStore:
         source_path = Path(source)
         verify_artifact(source_path, descriptor)
         destination = self.path_for(descriptor.sha256)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists():
-            verify_artifact(destination, descriptor)
+        with self._writer():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                verify_artifact(destination, descriptor)
+                return destination
+            usage = self._usage_unlocked()
+            if usage["artifact_count"] + 1 > self.maximum_artifacts:
+                raise AnalysisArtifactError(
+                    "bounds", "Analysis artifact storage exceeds its object quota."
+                )
+            if usage["total_bytes"] + descriptor.byte_count > self.maximum_bytes:
+                raise AnalysisArtifactError(
+                    "bounds", "Analysis artifact storage exceeds its byte quota."
+                )
+            temporary = destination.with_name(
+                f".{destination.name}.{os.getpid()}.tmp"
+            )
+            try:
+                shutil.copyfile(source_path, temporary)
+                verify_artifact(temporary, descriptor)
+                os.replace(temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
             return destination
-        temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-        try:
-            shutil.copyfile(source_path, temporary)
-            verify_artifact(temporary, descriptor)
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return destination
 
     def cleanup(self, sha256: str, *, protected_sha256: Iterable[str] = ()) -> bool:
         digest = str(sha256 or "").lower()
         if digest in {str(item).lower() for item in protected_sha256}:
             return False
         path = self.path_for(digest)
-        if not path.exists():
-            return False
-        path.unlink()
-        try:
-            path.parent.rmdir()
-        except OSError:
-            pass
-        return True
+        with self._writer():
+            if not path.exists():
+                return False
+            path.unlink()
+            try:
+                path.parent.rmdir()
+            except OSError:
+                pass
+            return True
 
 
 def _positive_integer(value: int, field: str) -> int:
