@@ -101,6 +101,21 @@ def test_optional_inventory_is_explicit_and_does_not_change_default_counts() -> 
 
 def test_expensive_manufacture_workflows_require_background_execution() -> None:
     expected = {
+        "CAM_Profile": ("Operations", "background"),
+        "CAM_Pocket_Shape": ("Operations", "background"),
+        "CAM_Pocket3D": ("Operations", "background"),
+        "CAM_Surface": ("Operations", "background"),
+        "CAM_Waterline": ("Operations", "background"),
+        "CAM_RotarySurface": ("Operations", "background"),
+        "CAM_MillFacing": ("Operations", "background"),
+        "CAM_Helix": ("Operations", "background"),
+        "CAM_Adaptive": ("Operations", "background"),
+        "CAM_Slot": ("Operations", "background"),
+        "CAM_Drilling": ("Operations", "background"),
+        "CAM_ThreadMilling": ("Operations", "background"),
+        "CAM_Engrave": ("Operations", "background"),
+        "CAM_Deburr": ("Operations", "background"),
+        "CAM_Vcarve": ("Operations", "background"),
         "CAM_Camotics": ("Operations", "presentation"),
         "CAM_SimulatorGL": ("Program", "presentation"),
         "CAM_Simulator": ("Program", "background"),
