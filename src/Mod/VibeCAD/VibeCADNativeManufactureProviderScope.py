@@ -73,15 +73,7 @@ _OPERATION_EDITS = frozenset(
 _BUSY_SETUP_ALLOWED = frozenset(
     {
         "state.read",
-        "view.control",
-        "inspect.query",
-        "inspect.compare",
         "native.job",
-        "manufacture.setups",
-        "manufacture.read_setup",
-        "manufacture.setup_options",
-        "manufacture.validate",
-        "manufacture.tool_catalog",
     }
 )
 _ACTIVE_SIMULATION_ALLOWED = frozenset(

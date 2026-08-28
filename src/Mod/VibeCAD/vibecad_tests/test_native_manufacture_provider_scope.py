@@ -382,18 +382,7 @@ def test_selected_busy_setup_exposes_status_and_safe_reads_only() -> None:
 
     names = set(manufacture_provider_tool_names(domain, _AVAILABLE))
 
-    assert names == {
-        "state.read",
-        "view.control",
-        "inspect.query",
-        "inspect.compare",
-        "native.job",
-        "manufacture.setups",
-        "manufacture.read_setup",
-        "manufacture.setup_options",
-        "manufacture.validate",
-        "manufacture.tool_catalog",
-    }
+    assert names == {"state.read", "native.job"}
 
 
 def test_busy_unrelated_setup_does_not_hide_selected_setup_tools() -> None:

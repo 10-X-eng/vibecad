@@ -125,7 +125,8 @@ explicit relationships, readiness, and current human selection.
 | Operation selected | Read/edit/recompute/reorder/activate/remove that operation and expose applicable dress-ups. |
 | Valid paths exist | Inspect commands, simulate, verify, compare remaining stock, and retain setup/operation correction tools. |
 | Setup is post-ready | Preview and post the explicit setup or selected operations while retaining all relevant correction tools. |
-| Background work active | Job status/cancel plus safe reads; conflicting mutation operations are withheld until the job reaches a terminal state. |
+| Selected setup has background work active | Job status/cancel plus current state; setup-targeted reads and mutations return after atomic publication. |
+| Native simulator open | Exact simulation close plus non-mutating setup inspection; document mutations remain hidden until the task closes. |
 | Multiple setups selected | Only operations with a real multi-setup contract appear. Single-setup mutations require an explicit setup target. |
 
 This is not a rigid wizard. Relevant earlier operations remain available, and
@@ -353,6 +354,20 @@ comparison, not implementation instructions.
   operation properties survive rollback, undo/redo, recompute, save, and reopen.
   Existing lifecycle gates for every supported path strategy still pass through
   the shared headless operation boundary.
+- The interactive GL gate proves the open simulator publishes its exact task ID
+  and scopes the next Native turn to close plus non-mutating inspection. A live
+  Terra/high run opened, inspected, and closed that task without an impossible
+  mutation being advertised or attempted.
+- Live background reruns exposed a publication race when a busy setup still
+  advertised reads bound to its pre-publication state. The selected busy surface
+  now contains only current state and background status/cancel. Terra/high then
+  created a Pocket and Drilling operation from the fresh bracket with zero failed
+  calls; both paths remained active and valid after save/reopen.
+- Qwen completed the same corrected surface without the former busy-read trap,
+  but repeatedly encoded an explicit geometry array as text and selected invalid
+  or redundant geometry. Terra used the identical schemas correctly, so those
+  remaining failures are recorded as the small model's structured-output and
+  machining-plan limit rather than accepted through a looser production contract.
 
 ## Reusable benchmark corpus
 
