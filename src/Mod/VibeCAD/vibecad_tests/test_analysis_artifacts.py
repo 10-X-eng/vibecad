@@ -211,6 +211,51 @@ def test_content_store_admission_is_atomic_idempotent_and_evidence_aware(tmp_pat
     assert not store.cleanup(descriptor.sha256)
 
 
+def test_content_store_reverifies_only_regular_admitted_objects(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact = workspace / "result.bin"
+    artifact.write_bytes(b"verified result")
+    descriptor = _seal(artifact, workspace)
+    store = ContentAddressedArtifactStore(tmp_path / "store")
+
+    admitted = store.admit(artifact, descriptor)
+    assert store.verify_admitted(descriptor) == admitted
+
+    admitted.unlink()
+    admitted.mkdir()
+    with pytest.raises(AnalysisArtifactError) as non_file:
+        store.verify_admitted(descriptor)
+    assert non_file.value.reason == "invalid_manifest"
+
+    admitted.rmdir()
+    with pytest.raises(AnalysisArtifactError) as missing:
+        store.verify_admitted(descriptor)
+    assert missing.value.reason == "read_failed"
+
+
+def test_content_store_reverification_rejects_symlinked_object(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact = workspace / "result.bin"
+    artifact.write_bytes(b"verified result")
+    descriptor = _seal(artifact, workspace)
+    store = ContentAddressedArtifactStore(tmp_path / "store")
+    admitted = store.admit(artifact, descriptor)
+
+    replacement = tmp_path / "replacement.bin"
+    replacement.write_bytes(artifact.read_bytes())
+    admitted.unlink()
+    try:
+        admitted.symlink_to(replacement)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are unavailable on this test platform")
+
+    with pytest.raises(AnalysisArtifactError) as linked:
+        store.verify_admitted(descriptor)
+    assert linked.value.reason == "unsafe_symlink"
+
+
 def test_content_store_enforces_unique_object_count_and_byte_quotas(
     tmp_path: Path,
 ) -> None:

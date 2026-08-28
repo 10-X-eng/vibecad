@@ -7,6 +7,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any, Callable, Iterator, Mapping
 ANALYSIS_METADATA_SCHEMA_VERSION = 2
 SUPPORTED_ANALYSIS_METADATA_MIGRATIONS = frozenset({(1, 2)})
 MAX_PUBLICATION_EVIDENCE_BYTES = 64 * 1024
+MAX_VERIFICATION_EVIDENCE_BYTES = 1024 * 1024
 MAX_DISCOVERABLE_ANALYSES = 4096
 DEFAULT_MAXIMUM_ARTIFACTS_PER_ANALYSIS = 4096
 DEFAULT_MAXIMUM_ARTIFACT_BYTES_PER_ANALYSIS = 4 * 1024 * 1024 * 1024
@@ -114,6 +116,48 @@ def _provider_recovery_snapshot(
     return {field: value[field] for field in sorted(fields)}
 
 
+def analysis_provider_attempt_identity(
+    *,
+    analysis_id: str,
+    attempt: int,
+    provider_id: str,
+    provider_job_id: str,
+    output_manifest_sha256: str,
+) -> str:
+    """Return a path-free identity for one exact collected provider attempt."""
+
+    clean_analysis_id = _clean_id(analysis_id, "analysis_id")
+    if type(attempt) is not int or attempt < 1:
+        raise AnalysisPersistenceError("attempt must be a positive integer")
+    clean_provider_id = str(provider_id or "").strip()
+    clean_job_id = str(provider_job_id or "").strip()
+    digest = str(output_manifest_sha256 or "").lower()
+    if not clean_provider_id or not clean_job_id:
+        raise AnalysisPersistenceError(
+            "Provider attempt identity requires provider and remote job identities"
+        )
+    if (
+        len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise AnalysisPersistenceError(
+            "Provider attempt identity requires an output manifest digest"
+        )
+    encoded = json.dumps(
+        {
+            "analysis_id": clean_analysis_id,
+            "attempt": attempt,
+            "output_manifest_sha256": digest,
+            "provider_id": clean_provider_id,
+            "provider_job_id": clean_job_id,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def new_job_record(
     *, analysis_id: str, domain: str, adapter_id: str, source_document_uid: str,
     prepared_analysis_sha256: str, dependency_sha256: str,
@@ -136,6 +180,7 @@ def new_job_record(
         "updated_at": now,
         "attempts": [],
         "artifacts": [],
+        "verification_receipts": [],
         "currentness_evaluations": [],
         "publication": {"intent": None, "authorization": None, "receipt": None},
         "events": [{"sequence": 1, "at": now, "state": "prepared", "reason": "created"}],
@@ -686,6 +731,57 @@ class AnalysisMetadataStore:
         }
         return tuple(sorted(protected))
 
+    def record_verification_receipt(
+        self,
+        analysis_id: str,
+        receipt: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one bounded, write-once domain verification receipt."""
+
+        try:
+            encoded = json.dumps(
+                dict(receipt),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise AnalysisPersistenceError(
+                "Verification receipt must be a bounded JSON object"
+            ) from exc
+        if len(encoded.encode("utf-8")) > MAX_VERIFICATION_EVIDENCE_BYTES:
+            raise AnalysisPersistenceError("Verification receipt exceeds its bound")
+        clean_receipt = json.loads(encoded)
+        attempt = clean_receipt.get("attempt")
+        with self._writer():
+            current = self.load(analysis_id)
+            if current["state"] != "verifying":
+                raise AnalysisPersistenceError(
+                    "Verification receipt requires the verifying state"
+                )
+            receipts = deepcopy(current.get("verification_receipts", []))
+            existing = next(
+                (
+                    item
+                    for item in receipts
+                    if isinstance(item, Mapping) and item.get("attempt") == attempt
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing == clean_receipt:
+                    return current
+                raise AnalysisPersistenceError(
+                    "Domain verification evidence cannot be rewritten"
+                )
+            candidate = deepcopy(current)
+            candidate["verification_receipts"] = [*receipts, clean_receipt]
+            self._append_metadata_event(candidate, "domain_verification_recorded")
+            candidate = self._validate(candidate)
+            self._write_atomic(self._path(analysis_id), candidate, backup=True)
+            return deepcopy(candidate)
+
     def record_publication_evidence(
         self,
         analysis_id: str,
@@ -967,6 +1063,147 @@ class AnalysisMetadataStore:
                     "Analysis provider collection evidence is invalid"
                 )
             collected_attempts.add(attempt_number)
+        verification_receipts = record.get("verification_receipts", [])
+        if not isinstance(verification_receipts, list):
+            raise AnalysisPersistenceError(
+                "Analysis domain verification evidence is invalid"
+            )
+        if verification_receipts and not any(
+            event.get("state") == "verifying" for event in events
+        ):
+            raise AnalysisPersistenceError(
+                "Analysis domain verification evidence is invalid"
+            )
+        if verification_receipts and record.get("state") in {
+            "prepared", "running_local", "running_remote", "collecting",
+        }:
+            raise AnalysisPersistenceError(
+                "Analysis domain verification evidence is invalid"
+            )
+        verified_attempts: set[int] = set()
+        for receipt in verification_receipts:
+            if not isinstance(receipt, Mapping) or set(receipt) != {
+                "verified_at", "analysis_id", "attempt",
+                "provider_attempt_identity", "output_manifest_sha256",
+                "artifact_sha256", "result_identity", "result_sha256",
+                "result_envelope",
+            }:
+                raise AnalysisPersistenceError(
+                    "Analysis domain verification evidence is invalid"
+                )
+            attempt_number = receipt.get("attempt")
+            if (
+                type(attempt_number) is not int
+                or attempt_number < 1
+                or attempt_number > len(attempts)
+                or attempt_number in verified_attempts
+                or receipt.get("analysis_id") != record.get("analysis_id")
+                or not str(receipt.get("verified_at") or "").strip()
+            ):
+                raise AnalysisPersistenceError(
+                    "Analysis domain verification evidence is invalid"
+                )
+            collection = next(
+                (
+                    item
+                    for item in collection_receipts
+                    if item.get("attempt") == attempt_number
+                ),
+                None,
+            )
+            attempt = attempts[attempt_number - 1]
+            if collection is None:
+                raise AnalysisPersistenceError(
+                    "Analysis domain verification evidence is invalid"
+                )
+            manifest_digest = str(receipt.get("output_manifest_sha256") or "")
+            expected_attempt_identity = analysis_provider_attempt_identity(
+                analysis_id=record["analysis_id"],
+                attempt=attempt_number,
+                provider_id=attempt["provider_id"],
+                provider_job_id=attempt["provider_job_id"],
+                output_manifest_sha256=manifest_digest,
+            )
+            artifact_sha256 = receipt.get("artifact_sha256")
+            if (
+                manifest_digest != collection.get("output_manifest_sha256")
+                or receipt.get("provider_attempt_identity")
+                != expected_attempt_identity
+                or not isinstance(artifact_sha256, list)
+                or not artifact_sha256
+                or any(
+                    not isinstance(digest, str)
+                    or digest != digest.lower()
+                    or len(digest) != 64
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in digest
+                    )
+                    for digest in artifact_sha256
+                )
+                or len(artifact_sha256) != len(set(artifact_sha256))
+            ):
+                raise AnalysisPersistenceError(
+                    "Analysis domain verification evidence is invalid"
+                )
+            envelope_value = receipt.get("result_envelope")
+            if not isinstance(envelope_value, Mapping):
+                raise AnalysisPersistenceError(
+                    "Analysis domain verification evidence is invalid"
+                )
+            try:
+                from tool_impl.engineering_contracts import EngineeringResultEnvelope
+
+                envelope = EngineeringResultEnvelope.from_dict(envelope_value)
+                canonical = envelope.to_canonical_json()
+            except Exception as exc:
+                raise AnalysisPersistenceError(
+                    "Analysis domain verification evidence is invalid"
+                ) from exc
+            result_digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            envelope_artifacts = [item.digest for item in envelope.artifacts]
+            recorded_artifacts = record.get("artifacts")
+            if not isinstance(recorded_artifacts, list):
+                raise AnalysisPersistenceError(
+                    "Analysis domain verification evidence is invalid"
+                )
+            active_artifacts = {
+                item.get("sha256"): item
+                for item in recorded_artifacts
+                if isinstance(item, Mapping) and not item.get("tombstoned_at")
+            }
+            if (
+                receipt.get("result_identity") != envelope.result_id.canonical
+                or receipt.get("result_sha256") != result_digest
+                or envelope.domain != record.get("domain")
+                or envelope.adapter_id != record.get("adapter_id")
+                or envelope.provider_attempt_id != expected_attempt_identity
+                or envelope.source_identity.kind != "document"
+                or envelope.source_identity.value != record.get("source_document_uid")
+                or envelope.dependency_digest != record.get("dependency_sha256")
+                or envelope.currentness != "current"
+                or envelope.publication_state != "unpublished"
+                or envelope_artifacts != artifact_sha256
+                or any(
+                    item.domain != record.get("domain")
+                    for item in envelope.findings
+                )
+                or any(
+                    descriptor.digest not in active_artifacts
+                    or active_artifacts[descriptor.digest].get("byte_count")
+                    != descriptor.byte_size
+                    for descriptor in envelope.artifacts
+                )
+                or any(
+                    evidence.digest not in set(artifact_sha256)
+                    for finding in envelope.findings
+                    for evidence in finding.evidence
+                )
+            ):
+                raise AnalysisPersistenceError(
+                    "Analysis domain verification evidence is invalid"
+                )
+            verified_attempts.add(attempt_number)
         artifacts = record.get("artifacts")
         if not isinstance(artifacts, list):
             raise AnalysisPersistenceError("Analysis artifacts must be a list")

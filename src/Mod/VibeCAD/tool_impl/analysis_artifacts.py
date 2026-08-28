@@ -355,6 +355,37 @@ class ContentAddressedArtifactStore:
             raise ValueError("sha256 must be a lowercase SHA-256 digest")
         return self.root / digest[:2] / digest[2:]
 
+    def verify_admitted(self, descriptor: ArtifactDescriptor) -> Path:
+        """Reverify one admitted regular object under the storage lock."""
+
+        destination = self.path_for(descriptor.sha256)
+        with self._writer():
+            prefix = destination.parent
+            if (
+                self.root.is_symlink()
+                or prefix.is_symlink()
+                or destination.is_symlink()
+            ):
+                raise AnalysisArtifactError(
+                    "unsafe_symlink",
+                    "Immutable artifact storage contains a symbolic link.",
+                    relative_path=descriptor.relative_path,
+                )
+            if not destination.exists():
+                raise AnalysisArtifactError(
+                    "read_failed",
+                    "Immutable artifact storage is not durably readable.",
+                    relative_path=descriptor.relative_path,
+                )
+            if not destination.is_file():
+                raise AnalysisArtifactError(
+                    "invalid_manifest",
+                    "Immutable artifact storage contains a non-file object.",
+                    relative_path=descriptor.relative_path,
+                )
+            verify_artifact(destination, descriptor)
+            return destination
+
     def admit(self, source: str | Path, descriptor: ArtifactDescriptor) -> Path:
         source_path = Path(source)
         verify_artifact(source_path, descriptor)

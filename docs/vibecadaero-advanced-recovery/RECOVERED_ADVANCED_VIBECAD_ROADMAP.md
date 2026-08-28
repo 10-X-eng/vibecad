@@ -70,6 +70,20 @@ The current daily checkpoint adds a deliberately narrow Step 7 stabilization rep
 
 This checkpoint does not close Step 7, Step 8, or Step 8A. Installed POSIX evidence, physical solver/backend execution, durable restart/orphan recovery, fresh publication authorization, replay-idempotent durable receipts, and the remaining lifecycle/leak burn-in are still required.
 
+### Current queued Step 8 checkpoint: receipt-bound domain verification recovery
+
+The current dependency-ordered checkpoint extends the durable runtime after immutable provider-output admission without crossing into publication authority:
+
+- every returned artifact is read again from host-owned content-addressed storage and checked against the exact attempt-bound output manifest before any domain verifier runs;
+- the domain verifier receives the exact persisted analysis, domain, adapter, source-document UID, dependency digest, provider-attempt identity, manifest digest, immutable descriptors, and ephemeral local object paths;
+- the verifier must return the existing bounded, secret-screened `EngineeringResultEnvelope` and finding contracts, bound to the exact domain, adapter, source, dependency, attempt, and artifact hashes and byte counts;
+- the host persists a bounded, canonical, write-once verification receipt while state is still `verifying`, then advances only to `waiting_to_publish`;
+- a crash after receipt persistence but before the phase transition resumes without rerunning the domain verifier or duplicating evidence;
+- missing immutable storage or a temporarily unavailable verifier preserves `verifying` for truthful retry, while content drift or a mismatched verifier result fails closed as explicit terminal evidence;
+- the coordinator has no document, CAD-mutation, qualification-promotion, scheduling, or publication-authorization input.
+
+This is fixture evidence only. It does not wire a production FEM or Aero verifier, a real authenticated remote provider, network or portable-bundle transport, document rebind/currentness publication checks, or Native mutation authority. It therefore advances Step 8 but does not close Step 8 or Step 8A.
+
 ## What remains, in practical execution order
 
 ### A. Acceptance audit of already-landed foundation

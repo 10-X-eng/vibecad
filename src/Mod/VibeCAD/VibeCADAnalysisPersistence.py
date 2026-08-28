@@ -19,6 +19,7 @@ from tool_impl.analysis_persistence import (
     DurableRuntimeLifecycle,
     new_job_record,
     restart_disposition_for_record,
+    analysis_provider_attempt_identity,
 )
 from tool_impl.analysis_output_admission import (
     AnalysisOutputAdmissionCoordinator,
@@ -29,6 +30,14 @@ from tool_impl.analysis_recovery import (
     AnalysisProviderRecoveryCoordinator,
     AnalysisProviderRecoveryError,
     AnalysisProviderRecoveryResult,
+)
+from tool_impl.analysis_verification import (
+    AnalysisDomainVerificationCoordinator,
+    AnalysisDomainVerificationError,
+    AnalysisDomainVerificationRequest,
+    AnalysisDomainVerificationResult,
+    DomainVerifierUnavailable,
+    VerifiedAnalysisArtifact,
 )
 
 
@@ -92,6 +101,10 @@ __all__ = (
     "KNOWN_STATES",
     "TERMINAL_STATES",
     "AnalysisMetadataStore",
+    "AnalysisDomainVerificationCoordinator",
+    "AnalysisDomainVerificationError",
+    "AnalysisDomainVerificationRequest",
+    "AnalysisDomainVerificationResult",
     "AnalysisPersistenceError",
     "AnalysisOutputAdmissionCoordinator",
     "AnalysisOutputAdmissionError",
@@ -100,11 +113,14 @@ __all__ = (
     "AnalysisProviderRecoveryError",
     "AnalysisProviderRecoveryResult",
     "AnalysisStoreBusy",
+    "DomainVerifierUnavailable",
     "DurableRuntimeLifecycle",
     "analysis_user_data_root",
+    "analysis_provider_attempt_identity",
     "discover_user_analysis_records",
     "migrate_user_analysis_records",
     "new_job_record",
     "open_user_analysis_metadata_store",
     "restart_disposition_for_record",
+    "VerifiedAnalysisArtifact",
 )
