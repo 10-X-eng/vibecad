@@ -22,6 +22,7 @@ class ProviderCapabilities:
     maximum_input_bytes: int | None = None
     maximum_output_bytes: int | None = None
     portable_bundle_required: bool = False
+    job_survives_client_exit: bool = False
 
     def __post_init__(self) -> None:
         provider_id = str(self.provider_id or "").strip()
@@ -48,10 +49,24 @@ class ProviderCapabilities:
                 raise AnalysisContractError(
                     f"{field_name} must be a positive integer when provided."
                 )
+        for field_name in (
+            "reconnect_supported", "cancel_supported", "log_streaming",
+            "portable_bundle_required", "job_survives_client_exit",
+        ):
+            if type(getattr(self, field_name)) is not bool:
+                raise AnalysisContractError(f"{field_name} must be a boolean.")
         object.__setattr__(self, "provider_id", provider_id)
         object.__setattr__(self, "location", location)
         object.__setattr__(self, "execution_environment", execution_environment)
         object.__setattr__(self, "accelerator_types", accelerators)
+
+    def recovery_snapshot(self) -> dict[str, bool]:
+        """Return only inert capabilities needed to classify host restart."""
+
+        return {
+            "reconnect_supported": self.reconnect_supported,
+            "job_survives_client_exit": self.job_survives_client_exit,
+        }
 
 
 @runtime_checkable

@@ -43,8 +43,19 @@ def _legacy_v1_record(analysis_id: str = "analysis-1") -> dict:
 def _advance(store: AnalysisMetadataStore, state: str, attempts: list) -> None:
     if state == "prepared":
         return
-    running = "running_remote" if state == "running_remote" else "running_local"
-    store.transition("analysis-1", running, reason="fixture", updates={"attempts": attempts})
+    if state == "running_remote":
+        latest = attempts[-1]
+        store.begin_attempt(
+            "analysis-1", provider_id="remote", provider_kind="remote",
+            provider_job_id=latest.get("provider_job_id", ""),
+            provider_capability_snapshot=latest.get("provider_capability_snapshot"),
+        )
+        running = "running_remote"
+    else:
+        store.begin_attempt(
+            "analysis-1", provider_id="local-process", provider_kind="local",
+        )
+        running = "running_local"
     if state == running:
         return
     for next_state in ("collecting", "verifying", "waiting_to_publish", "publishing"):
@@ -57,11 +68,8 @@ def _advance(store: AnalysisMetadataStore, state: str, attempts: list) -> None:
 def test_create_transition_backup_and_terminal_idempotence(tmp_path: Path) -> None:
     store = AnalysisMetadataStore(tmp_path)
     created = store.create(_record())
-    running = store.transition(
-        "analysis-1",
-        "running_local",
-        reason="provider_started",
-        updates={"attempts": [{"attempt": 1, "provider_id": "local-process"}]},
+    running = store.begin_attempt(
+        "analysis-1", provider_id="local-process", provider_kind="local",
     )
     finished = store.transition("analysis-1", "interrupted", reason="host_restart")
 
@@ -272,16 +280,16 @@ def test_writer_lock_is_released_without_stale_recovery_after_exception(tmp_path
 
 
 @pytest.mark.parametrize(
-    ("state", "attempts", "action"),
+    ("state", "attempts", "action", "reason"),
     (
-        ("prepared", [], "mark_interrupted"),
-        ("running_local", [{"attempt": 1}], "mark_interrupted"),
-        ("running_remote", [{"provider_job_id": "remote-7"}], "reconnect_remote"),
-        ("collecting", [], "resume_collecting"),
-        ("verifying", [], "resume_verifying"),
-        ("waiting_to_publish", [], "resume_waiting_to_publish"),
-        ("publishing", [], "publication_outcome_unknown"),
-        ("succeeded", [], "terminal"),
+        ("prepared", [], "mark_interrupted", "host_runtime_not_reattachable"),
+        ("running_local", [{"attempt": 1}], "mark_interrupted", "host_runtime_not_reattachable"),
+        ("running_remote", [{"provider_job_id": "remote-7"}], "mark_interrupted", "provider_reconnect_not_proven"),
+        ("collecting", [], "resume_collecting", "durable_phase_requires_reconciliation"),
+        ("verifying", [], "resume_verifying", "durable_phase_requires_reconciliation"),
+        ("waiting_to_publish", [], "resume_waiting_to_publish", "durable_phase_requires_reconciliation"),
+        ("publishing", [], "publication_outcome_unknown", "publication_receipt_requires_reconciliation"),
+        ("succeeded", [], "terminal", "terminal_record"),
     ),
 )
 def test_restart_classification_never_guesses_success(
@@ -289,6 +297,7 @@ def test_restart_classification_never_guesses_success(
     state: str,
     attempts: list,
     action: str,
+    reason: str,
 ) -> None:
     store = AnalysisMetadataStore(tmp_path / state)
     store.create(_record())
@@ -297,6 +306,7 @@ def test_restart_classification_never_guesses_success(
         "analysis_id": "analysis-1",
         "state": state,
         "action": action,
+        "reason": reason,
     }
 
 
@@ -358,9 +368,172 @@ def test_remote_attempt_persists_reconnect_identity(tmp_path: Path) -> None:
         provider_id="kaggle",
         provider_kind="remote",
         provider_job_id="kernel-123",
+        provider_capability_snapshot={
+            "reconnect_supported": True,
+            "job_survives_client_exit": True,
+        },
     )
     assert running["attempts"][-1]["provider_job_id"] == "kernel-123"
-    assert store.restart_disposition("analysis-1")["action"] == "reconnect_remote"
+    assert store.restart_disposition("analysis-1") == {
+        "analysis_id": "analysis-1",
+        "state": "running_remote",
+        "action": "reconnect_remote",
+        "reason": "persisted_provider_reconnect_evidence",
+        "attempt": 1,
+        "provider_id": "kaggle",
+        "provider_job_id": "kernel-123",
+    }
+
+
+def test_remote_reconnect_requires_latest_attempt_capability_evidence(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    store.begin_attempt(
+        "analysis-1", provider_id="remote", provider_kind="remote",
+        provider_job_id="job-1", provider_capability_snapshot={
+            "reconnect_supported": True, "job_survives_client_exit": False,
+        },
+    )
+    assert store.restart_disposition("analysis-1")["action"] == "mark_interrupted"
+
+
+def test_old_reconnectable_attempt_never_authorizes_latest_attempt(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    store.begin_attempt(
+        "analysis-1", provider_id="remote", provider_kind="remote",
+        provider_job_id="job-1", provider_capability_snapshot={
+            "reconnect_supported": True, "job_survives_client_exit": True,
+        },
+    )
+    store.transition("analysis-1", "interrupted", reason="provider_failed")
+    store.retry_interrupted(
+        "analysis-1", expected_prepared_analysis_sha256="a" * 64,
+        expected_dependency_sha256="b" * 64,
+        expected_input_manifest_sha256="c" * 64,
+        expected_execution_spec_sha256="d" * 64,
+    )
+    store.begin_attempt(
+        "analysis-1", provider_id="remote", provider_kind="remote",
+        provider_job_id="job-2",
+    )
+    assert store.restart_disposition("analysis-1")["action"] == "mark_interrupted"
+
+
+def test_unrecoverable_restart_is_atomically_interrupted_and_audited(
+    tmp_path: Path,
+) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    store.begin_attempt(
+        "analysis-1", provider_id="local-process", provider_kind="local",
+    )
+
+    interrupted = store.interrupt_unrecoverable_after_restart("analysis-1")
+    assert interrupted["state"] == "interrupted"
+    assert interrupted["terminal_reason"] == "host_interrupted"
+    assert interrupted["attempts"][-1]["terminal_reason"] == "host_interrupted"
+    assert interrupted["recovery_events"] == [{
+        "classified_at": interrupted["recovery_events"][0]["classified_at"],
+        "previous_state": "running_local",
+        "disposition": "orphaned",
+        "failure_kind": "host_interrupted",
+        "attempt": 1,
+    }]
+    assert store.interrupt_unrecoverable_after_restart("analysis-1") == interrupted
+
+    retried = store.retry_interrupted(
+        "analysis-1", expected_prepared_analysis_sha256="a" * 64,
+        expected_dependency_sha256="b" * 64,
+        expected_input_manifest_sha256="c" * 64,
+        expected_execution_spec_sha256="d" * 64,
+    )
+    assert retried["recovery_events"] == interrupted["recovery_events"]
+
+
+def test_expected_state_guard_refuses_stale_restart_write(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    before = store.begin_attempt(
+        "analysis-1", provider_id="local-process", provider_kind="local",
+    )
+    with pytest.raises(AnalysisPersistenceError, match="state changed"):
+        store.transition(
+            "analysis-1", "collecting", reason="stale observation",
+            expected_state="prepared",
+        )
+    assert store.load("analysis-1") == before
+
+
+def test_reconnectable_remote_restart_is_read_only(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    before = store.begin_attempt(
+        "analysis-1", provider_id="remote", provider_kind="remote",
+        provider_job_id="job-1", provider_capability_snapshot={
+            "reconnect_supported": True, "job_survives_client_exit": True,
+        },
+    )
+    with pytest.raises(AnalysisPersistenceError, match="not unrecoverable"):
+        store.interrupt_unrecoverable_after_restart("analysis-1")
+    assert store.load("analysis-1") == before
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    (
+        {"reconnect_supported": 1, "job_survives_client_exit": True},
+        {"reconnect_supported": True},
+        {"reconnect_supported": True, "job_survives_client_exit": True,
+         "credential": "must-not-persist"},
+    ),
+)
+def test_provider_recovery_snapshot_is_bounded_and_inert(
+    tmp_path: Path, snapshot: dict,
+) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    with pytest.raises(AnalysisPersistenceError, match="capability snapshot"):
+        store.begin_attempt(
+            "analysis-1", provider_id="remote", provider_kind="remote",
+            provider_job_id="job-1", provider_capability_snapshot=snapshot,
+        )
+
+
+def test_persisted_recovery_evidence_fails_closed_when_malformed(
+    tmp_path: Path,
+) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    store.begin_attempt(
+        "analysis-1", provider_id="local-process", provider_kind="local",
+    )
+    store.interrupt_unrecoverable_after_restart("analysis-1")
+    path = store.records / "analysis-1.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["recovery_events"][0]["attempt"] = 0
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(AnalysisPersistenceError, match="recovery evidence"):
+        store.load("analysis-1")
+
+
+def test_persisted_provider_snapshot_fails_closed_when_expanded(
+    tmp_path: Path,
+) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.create(_record())
+    store.begin_attempt(
+        "analysis-1", provider_id="remote", provider_kind="remote",
+        provider_job_id="job-1",
+    )
+    path = store.records / "analysis-1.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["attempts"][0]["provider_capability_snapshot"]["credential"] = "secret"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(AnalysisPersistenceError, match="capability snapshot"):
+        store.load("analysis-1")
 
 
 def test_artifact_tombstone_is_idempotent_and_evidence_aware(tmp_path: Path) -> None:

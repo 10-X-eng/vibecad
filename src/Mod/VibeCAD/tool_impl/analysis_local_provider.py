@@ -53,4 +53,5 @@ class LocalProcessProvider:
             "log_streaming": False,
             "execution_environment": "host",
             "portable_bundle_required": False,
+            "job_survives_client_exit": False,
         }

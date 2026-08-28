@@ -82,9 +82,27 @@ def test_provider_port_exposes_required_future_surface_without_implementation() 
         cancel_supported=True,
         log_streaming=True,
         execution_environment="host",
+        job_survives_client_exit=False,
     )
     assert capabilities.provider_id == "local-process"
+    assert capabilities.recovery_snapshot() == {
+        "reconnect_supported": False,
+        "job_survives_client_exit": False,
+    }
     assert AnalysisProvider is not None
+
+
+def test_provider_recovery_capabilities_require_real_booleans() -> None:
+    with pytest.raises(AnalysisContractError, match="job_survives_client_exit"):
+        ProviderCapabilities(
+            provider_id="remote",
+            location="remote",
+            reconnect_supported=True,
+            cancel_supported=True,
+            log_streaming=True,
+            execution_environment="remote",
+            job_survives_client_exit=1,
+        )
 
 
 def _legacy_request(root: Path):

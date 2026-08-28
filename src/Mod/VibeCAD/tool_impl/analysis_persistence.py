@@ -97,6 +97,23 @@ def _artifact_references(record: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(clean)
 
 
+def _provider_recovery_snapshot(
+    value: Mapping[str, Any] | None,
+) -> dict[str, bool]:
+    fields = {"reconnect_supported", "job_survives_client_exit"}
+    if value is None:
+        return {field: False for field in sorted(fields)}
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise AnalysisPersistenceError(
+            "Provider capability snapshot must contain only recovery capabilities"
+        )
+    if any(type(value[field]) is not bool for field in fields):
+        raise AnalysisPersistenceError(
+            "Provider capability snapshot values must be booleans"
+        )
+    return {field: value[field] for field in sorted(fields)}
+
+
 def new_job_record(
     *, analysis_id: str, domain: str, adapter_id: str, source_document_uid: str,
     prepared_analysis_sha256: str, dependency_sha256: str,
@@ -137,7 +154,7 @@ def new_job_record(
     return record
 
 
-def restart_disposition_for_record(record: Mapping[str, Any]) -> dict[str, str]:
+def restart_disposition_for_record(record: Mapping[str, Any]) -> dict[str, Any]:
     """Classify one already-read durable snapshot without reopening its file."""
 
     if not isinstance(record, Mapping):
@@ -149,21 +166,47 @@ def restart_disposition_for_record(record: Mapping[str, Any]) -> dict[str, str]:
     attempts = record.get("attempts")
     if not isinstance(attempts, list):
         raise AnalysisPersistenceError("Analysis attempts must be a list")
+    latest = attempts[-1] if attempts and isinstance(attempts[-1], Mapping) else {}
+    snapshot = latest.get("provider_capability_snapshot")
+    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+    reconnectable = (
+        state == "running_remote"
+        and latest.get("provider_kind") == "remote"
+        and bool(str(latest.get("provider_job_id") or "").strip())
+        and snapshot.get("reconnect_supported") is True
+        and snapshot.get("job_survives_client_exit") is True
+    )
+    details: dict[str, Any] = {}
     if state in TERMINAL_STATES:
         action = "terminal"
-    elif state == "running_remote" and any(
-        str(item.get("provider_job_id") or "").strip()
-        for item in attempts
-        if isinstance(item, Mapping)
-    ):
+        reason = "terminal_record"
+    elif reconnectable:
         action = "reconnect_remote"
+        reason = "persisted_provider_reconnect_evidence"
+        details = {
+            "attempt": latest.get("attempt"),
+            "provider_id": latest.get("provider_id"),
+            "provider_job_id": latest.get("provider_job_id"),
+        }
     elif state in {"prepared", "running_local"}:
         action = "mark_interrupted"
+        reason = "host_runtime_not_reattachable"
+    elif state == "running_remote":
+        action = "mark_interrupted"
+        reason = "provider_reconnect_not_proven"
     elif state == "publishing":
         action = "publication_outcome_unknown"
+        reason = "publication_receipt_requires_reconciliation"
     else:
         action = f"resume_{state}"
-    return {"analysis_id": analysis_id, "state": state, "action": action}
+        reason = "durable_phase_requires_reconciliation"
+    return {
+        "analysis_id": analysis_id,
+        "state": state,
+        "action": action,
+        "reason": reason,
+        **details,
+    }
 
 
 class AnalysisMetadataStore:
@@ -380,12 +423,17 @@ class AnalysisMetadataStore:
     def transition(
         self, analysis_id: str, state: str, *, reason: str,
         updates: Mapping[str, Any] | None = None,
+        expected_state: str | None = None,
     ) -> dict[str, Any]:
         clean_state = str(state or "").strip()
         if clean_state not in KNOWN_STATES:
             raise AnalysisPersistenceError("Unknown Analysis lifecycle state")
         with self._writer():
             current = self.load(analysis_id)
+            if expected_state is not None and current["state"] != expected_state:
+                raise AnalysisPersistenceError(
+                    "Analysis state changed before the requested transition"
+                )
             if current["state"] in TERMINAL_STATES:
                 if current["state"] == clean_state:
                     return current
@@ -413,8 +461,48 @@ class AnalysisMetadataStore:
             self._write_atomic(self._path(analysis_id), candidate, backup=True)
             return deepcopy(candidate)
 
-    def restart_disposition(self, analysis_id: str) -> dict[str, str]:
+    def restart_disposition(self, analysis_id: str) -> dict[str, Any]:
         return restart_disposition_for_record(self.load(analysis_id))
+
+    def interrupt_unrecoverable_after_restart(
+        self, analysis_id: str,
+    ) -> dict[str, Any]:
+        """Persist a truthful host-interrupted outcome for an orphaned runtime."""
+
+        current = self.load(analysis_id)
+        recovery_events = current.get("recovery_events", [])
+        if (
+            current["state"] == "interrupted"
+            and isinstance(recovery_events, list)
+            and recovery_events
+            and recovery_events[-1].get("failure_kind") == "host_interrupted"
+        ):
+            return current
+        disposition = restart_disposition_for_record(current)
+        if disposition["action"] != "mark_interrupted":
+            raise AnalysisPersistenceError(
+                "Analysis restart disposition is not unrecoverable"
+            )
+        attempts = deepcopy(current["attempts"])
+        if attempts:
+            attempts[-1]["terminal_reason"] = "host_interrupted"
+        recovery_event = {
+            "classified_at": _utc_now(),
+            "previous_state": current["state"],
+            "disposition": "orphaned",
+            "failure_kind": "host_interrupted",
+            "attempt": attempts[-1]["attempt"] if attempts else None,
+        }
+        return self.transition(
+            analysis_id,
+            "interrupted",
+            reason="host_interrupted",
+            updates={
+                "attempts": attempts,
+                "recovery_events": [*recovery_events, recovery_event],
+            },
+            expected_state=current["state"],
+        )
 
     def begin_attempt(
         self,
@@ -423,6 +511,7 @@ class AnalysisMetadataStore:
         provider_id: str,
         provider_kind: str,
         provider_job_id: str = "",
+        provider_capability_snapshot: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         kind = str(provider_kind or "").strip()
         if kind not in {"local", "remote"}:
@@ -433,6 +522,9 @@ class AnalysisMetadataStore:
             "provider_id": str(provider_id or "").strip(),
             "provider_kind": kind,
             "provider_job_id": str(provider_job_id or "").strip(),
+            "provider_capability_snapshot": _provider_recovery_snapshot(
+                provider_capability_snapshot
+            ),
             "started_at": _utc_now(),
             "terminal_reason": None,
         }
@@ -443,6 +535,7 @@ class AnalysisMetadataStore:
             "running_remote" if kind == "remote" else "running_local",
             reason="provider_attempt_started",
             updates={"attempts": [*record["attempts"], attempt]},
+            expected_state=record["state"],
         )
 
     def retry_interrupted(
@@ -729,6 +822,67 @@ class AnalysisMetadataStore:
             raise AnalysisPersistenceError("Analysis events must be non-empty")
         if [item.get("sequence") for item in events] != list(range(1, len(events) + 1)):
             raise AnalysisPersistenceError("Analysis event sequence is not monotonic")
+        attempts = record.get("attempts")
+        if not isinstance(attempts, list):
+            raise AnalysisPersistenceError("Analysis attempts must be a list")
+        required_attempt_fields = {
+            "attempt", "provider_id", "provider_kind", "provider_job_id",
+            "started_at", "terminal_reason",
+        }
+        for expected_attempt, attempt in enumerate(attempts, start=1):
+            if not isinstance(attempt, Mapping):
+                raise AnalysisPersistenceError("Analysis attempt state is invalid")
+            fields = set(attempt)
+            if fields not in (
+                required_attempt_fields,
+                required_attempt_fields | {"provider_capability_snapshot"},
+            ):
+                raise AnalysisPersistenceError("Analysis attempt state is invalid")
+            if (
+                attempt.get("attempt") != expected_attempt
+                or not str(attempt.get("provider_id") or "").strip()
+                or attempt.get("provider_kind") not in {"local", "remote"}
+                or not isinstance(attempt.get("provider_job_id"), str)
+                or not str(attempt.get("started_at") or "").strip()
+                or (
+                    attempt.get("terminal_reason") is not None
+                    and not isinstance(attempt.get("terminal_reason"), str)
+                )
+            ):
+                raise AnalysisPersistenceError("Analysis attempt state is invalid")
+            snapshot = attempt.get("provider_capability_snapshot")
+            if snapshot is not None:
+                _provider_recovery_snapshot(snapshot)
+        recovery_events = record.get("recovery_events", [])
+        if not isinstance(recovery_events, list):
+            raise AnalysisPersistenceError("Analysis recovery evidence is invalid")
+        for recovery in recovery_events:
+            if not isinstance(recovery, Mapping) or set(recovery) != {
+                "classified_at", "previous_state", "disposition", "failure_kind",
+                "attempt",
+            }:
+                raise AnalysisPersistenceError("Analysis recovery evidence is invalid")
+            previous_state = recovery.get("previous_state")
+            attempt_number = recovery.get("attempt")
+            if (
+                not str(recovery.get("classified_at") or "").strip()
+                or previous_state not in KNOWN_STATES - TERMINAL_STATES
+                or recovery.get("disposition") != "orphaned"
+                or recovery.get("failure_kind") != "host_interrupted"
+                or (
+                    attempt_number is None
+                    and previous_state != "prepared"
+                )
+                or (
+                    attempt_number is not None
+                    and (
+                        type(attempt_number) is not int
+                        or attempt_number < 1
+                        or attempt_number > len(attempts)
+                    )
+                )
+            ):
+                raise AnalysisPersistenceError("Analysis recovery evidence is invalid")
         artifacts = record.get("artifacts")
         if not isinstance(artifacts, list):
             raise AnalysisPersistenceError("Analysis artifacts must be a list")
@@ -780,6 +934,7 @@ class DurableRuntimeLifecycle:
         provider_id: str = "local-process",
         provider_kind: str = "local",
         provider_job_id: str = "",
+        provider_capability_snapshot: Mapping[str, Any] | None = None,
     ) -> None:
         self.store = store
         self.identity = {
@@ -793,6 +948,7 @@ class DurableRuntimeLifecycle:
         self.provider_id = provider_id
         self.provider_kind = provider_kind
         self.provider_job_id = provider_job_id
+        self.provider_capability_snapshot = provider_capability_snapshot
         self.analysis_id = ""
 
     def submitted(self, job_id: str, document_uid: str, _capability_name: str) -> None:
@@ -809,6 +965,7 @@ class DurableRuntimeLifecycle:
             provider_id=self.provider_id,
             provider_kind=self.provider_kind,
             provider_job_id=self.provider_job_id,
+            provider_capability_snapshot=self.provider_capability_snapshot,
         )
 
     def prepared(self) -> None:

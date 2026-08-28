@@ -63,6 +63,10 @@ def test_discovers_only_exact_document_activity_and_linked_workflows(tmp_path: P
             "provider_id": "local-process",
             "provider_kind": "local",
             "provider_job_id": "",
+            "provider_capability_snapshot": {
+                "job_survives_client_exit": False,
+                "reconnect_supported": False,
+            },
             "started_at": projected["analyses"][0]["attempts"][0]["started_at"],
             "terminal_reason": None,
         }
