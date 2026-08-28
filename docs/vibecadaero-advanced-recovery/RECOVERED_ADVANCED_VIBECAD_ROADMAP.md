@@ -84,9 +84,9 @@ The current dependency-ordered checkpoint extends the durable runtime after immu
 
 This is fixture evidence only. It does not wire a production FEM or Aero verifier, a real authenticated remote provider, network or portable-bundle transport, document rebind/currentness publication checks, or Native mutation authority. It therefore advances Step 8 but does not close Step 8 or Step 8A.
 
-### Current queued Step 8A checkpoint: receipt-bound publication recovery
+### Current fork Step 8A checkpoint: receipt-bound Native publication authority
 
-The next dependency-ordered checkpoint preserves the compatibility publication API and adds a stricter path for verified results:
+The current dependency-ordered fork checkpoint preserves the compatibility publication API and adds a stricter path for verified results:
 
 - one canonical publication descriptor binds the exact latest attempt, domain, adapter and version, source-document UID, frozen dependency digest, provider-attempt identity, output-manifest digest, result identity, and canonical result digest;
 - fresh authorization binds the hash of that complete descriptor rather than a loose result label;
@@ -94,9 +94,13 @@ The next dependency-ordered checkpoint preserves the compatibility publication A
 - exact source rebind, domain currentness, and adapter compatibility must pass before compare-and-swap ownership persists bounded intent, authorization, currentness, verification-receipt identity, and live artifact references;
 - the document callback receives the canonical verified result plus ephemeral immutable artifact paths, but no persisted callback, live document object, or authority token is introduced;
 - successful postconditions produce bounded, secret-screened, path-free mutation evidence and a write-once publication receipt before terminal success;
-- a crash after that receipt but before the terminal transition finalizes without remutation, while ownership with no receipt remains outcome-unknown and is never replayed automatically.
+- a crash after that receipt but before the terminal transition finalizes without remutation, while ownership with no receipt remains outcome-unknown and is never replayed automatically;
+- an additive Native host boundary enumerates real open FreeCAD documents, refuses missing or ambiguous exact UIDs, dispatches onto the VibeCAD document thread, and rebinds the same `Document.Uid` immediately before an owned transaction;
+- domain-owned currentness is checked again inside that transaction before domain-owned draft construction, while the host retains transaction and rollback authority;
+- domain postconditions run before commit and their returned evidence is canonicalized and screened; failure aborts and stabilizes the document rather than publishing partial state;
+- unit tests cover exact rebind, ambiguity, late staleness, commit, rollback, and malformed host/domain evidence, while an installed `FreeCADCmd` fixture proves real transaction commit, rollback, save, close, and reopen persistence.
 
-This checkpoint uses an inert document fixture. It does not yet provide real `Document.Uid` rebind, domain-owned FEM/Aero publication-draft adapters, Native document-thread transaction and rollback wiring, installed-host process-crash evidence, or physical solver/importer parity. It advances Step 8A but does not close Step 8A.
+This checkpoint still uses a fixture domain adapter. It does not yet wire a production FEM or Aero publication-draft adapter, run the generic durable coordinator end to end in the installed host, prove real process-crash recovery, or validate a physical solver/importer. It advances Step 8A but does not close Step 8A.
 
 ## What remains, in practical execution order
 
