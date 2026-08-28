@@ -310,6 +310,62 @@ def test_unselected_independent_setups_keep_explicit_target_lifecycle_available(
     assert "manufacture.post_selected" not in names
 
 
+def test_selected_busy_setup_exposes_status_and_safe_reads_only() -> None:
+    setup = _job("SetupBusy", tools=1, operations=2)
+    domain = _domain(setup, active=setup)
+    domain["background_jobs"] = [
+        {
+            "job_id": "background-a",
+            "capability": "manufacture.path.pocket_shape",
+            "resource_scope": "manufacture:SetupBusy",
+            "phase": "preparing",
+            "progress_percent": 40,
+            "progress_message": "Generating CAM path",
+            "terminal": False,
+            "cancel_requested": False,
+        }
+    ]
+
+    names = set(manufacture_provider_tool_names(domain, _AVAILABLE))
+
+    assert names == {
+        "state.read",
+        "view.control",
+        "inspect.query",
+        "inspect.compare",
+        "native.job",
+        "manufacture.setups",
+        "manufacture.read_setup",
+        "manufacture.setup_options",
+        "manufacture.validate",
+        "manufacture.tool_catalog",
+    }
+
+
+def test_busy_unrelated_setup_does_not_hide_selected_setup_tools() -> None:
+    first = _job("SetupA", tools=1, operations=1)
+    second = _job("SetupB", tools=1, operations=0)
+    domain = _domain(first, second, active=second)
+    domain["background_jobs"] = [
+        {
+            "job_id": "background-a",
+            "capability": "manufacture.path.profile",
+            "resource_scope": "manufacture:SetupA",
+            "phase": "preparing",
+            "progress_percent": 20,
+            "progress_message": "Generating CAM path",
+            "terminal": False,
+            "cancel_requested": False,
+        }
+    ]
+
+    names = set(manufacture_provider_tool_names(domain, _AVAILABLE))
+
+    assert "manufacture.operation" in names
+    assert "manufacture.pocket" in names
+    assert "document.save" in names
+
+
 def test_provider_authorization_applies_manufacture_scope_after_human_ribbon() -> None:
     setup = _job("SetupE", tools=1)
     surface = _surface()
@@ -520,7 +576,7 @@ def test_invalid_or_truncated_state_fails_closed_to_discovery() -> None:
 def test_snapshot_publishes_readiness_for_every_visible_setup(monkeypatch) -> None:
     first = SimpleNamespace(Name="SetupOne", Document=None)
     second = SimpleNamespace(Name="SetupTwo", Document=None)
-    document = SimpleNamespace(Objects=[first, second])
+    document = SimpleNamespace(Objects=[first, second], Uid="document-a")
     first.Document = document
     second.Document = document
 
@@ -582,6 +638,19 @@ def test_snapshot_publishes_readiness_for_every_visible_setup(monkeypatch) -> No
     result = manufacture_snapshot.build_manufacture_snapshot(
         document,
         selection={"items": []},
+        background_jobs=(
+            SimpleNamespace(
+                job_id="background-a",
+                document_uid="document-a",
+                capability_name="manufacture.path.profile",
+                resource_scope="manufacture:SetupOne",
+                phase="preparing",
+                progress_percent=35,
+                progress_message="Generating CAM path",
+                terminal=False,
+                cancel_requested=False,
+            ),
+        ),
     )
 
     assert result["active_job"] is None
@@ -594,6 +663,18 @@ def test_snapshot_publishes_readiness_for_every_visible_setup(monkeypatch) -> No
             "simulation": {"ready": False},
             "post": {"ready": True},
         },
+    ]
+    assert result["background_jobs"] == [
+        {
+            "job_id": "background-a",
+            "capability": "manufacture.path.profile",
+            "resource_scope": "manufacture:SetupOne",
+            "phase": "preparing",
+            "progress_percent": 35,
+            "progress_message": "Generating CAM path",
+            "terminal": False,
+            "cancel_requested": False,
+        }
     ]
 
 

@@ -15,6 +15,7 @@ from VibeCADNativeManufactureOperationSupport import (
     PreparedOperationBoundary,
     create_native_operation,
     extend_native_operation_draft,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm as shared_quantity_mm,
     verify_native_operation,
@@ -696,15 +697,18 @@ def create_profile_defaults(
     from functools import partial
 
     import Path.Op.Profile as PathProfile
-    import Path.Op.Gui.Profile as PathProfileGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Profile"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Profile",
         operation_factory=PathProfile.Create,
-        provider_factory=PathProfileGui.PathOpGui.ViewProvider,
-        provider_resource=PathProfileGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_profile_default_intent, prepared=prepared),
         payload={
             "parameters": {

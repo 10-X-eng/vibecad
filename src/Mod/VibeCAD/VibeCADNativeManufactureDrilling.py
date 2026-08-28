@@ -19,6 +19,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     preflight_operation_without_geometry,
     quantity_mm,
@@ -726,15 +727,18 @@ def create_drilling(
     if not isinstance(prepared, PreparedDrillingCreate):
         raise TypeError("prepared must be a PreparedDrillingCreate")
     import Path.Op.Drilling as PathDrilling
-    import Path.Op.Gui.Drilling as PathDrillingGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Drilling"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Drilling",
         operation_factory=PathDrilling.Create,
-        provider_factory=PathDrillingGui.PathOpGui.ViewProvider,
-        provider_resource=PathDrillingGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )
@@ -751,15 +755,18 @@ def create_drilling_defaults(
     if not isinstance(prepared, PreparedDrillingDefaults):
         raise TypeError("prepared must be a PreparedDrillingDefaults")
     import Path.Op.Drilling as PathDrilling
-    import Path.Op.Gui.Drilling as PathDrillingGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Drilling"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Drilling",
         operation_factory=PathDrilling.Create,
-        provider_factory=PathDrillingGui.PathOpGui.ViewProvider,
-        provider_resource=PathDrillingGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=lambda _operation: None,
         payload={"parameters": {"source": "setup_defaults"}},
     )

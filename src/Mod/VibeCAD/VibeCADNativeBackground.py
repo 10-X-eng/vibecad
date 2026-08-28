@@ -445,6 +445,36 @@ class NativeBackgroundManager:
             )
             return self._snapshot_locked(job) if job is not None else None
 
+    def document_snapshots(
+        self,
+        document_uid: str,
+        *,
+        capability_prefix: str = "",
+        active_only: bool = False,
+        limit: int = MAX_BACKGROUND_JOBS,
+    ) -> tuple[NativeBackgroundSnapshot, ...]:
+        """Return newest bounded jobs for one document without collapsing scopes."""
+
+        uid = str(document_uid or "").strip()
+        prefix = str(capability_prefix or "").strip()
+        if not uid:
+            raise NativeBackgroundError("A background job lookup needs a document UID.")
+        if type(active_only) is not bool:
+            raise TypeError("active_only must be a boolean")
+        if type(limit) is not int or not 1 <= limit <= MAX_BACKGROUND_JOBS:
+            raise NativeBackgroundError(
+                f"A background job catalog limit must be 1 through {MAX_BACKGROUND_JOBS}."
+            )
+        with self._lock:
+            jobs = tuple(
+                candidate
+                for candidate in reversed(tuple(self._jobs.values()))
+                if candidate.document_uid == uid
+                and (not prefix or candidate.capability_name.startswith(prefix))
+                and (not active_only or candidate.phase not in _TERMINAL_PHASES)
+            )[:limit]
+            return tuple(self._snapshot_locked(job) for job in jobs)
+
     @staticmethod
     def _snapshot_locked(job: _Job) -> NativeBackgroundSnapshot:
         now = time.monotonic()

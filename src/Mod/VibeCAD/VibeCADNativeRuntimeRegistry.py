@@ -223,6 +223,9 @@ from VibeCADNativeManufactureFocusedOperationBindings import (
 from VibeCADNativeManufactureOperationRuntime import (
     NativeManufactureOperationRuntime,
 )
+from VibeCADNativeManufactureOperationGeneration import (
+    start_background_operation_mutation,
+)
 from VibeCADNativeManufactureCamoticsBindings import (
     manufacture_camotics_runtime_bindings,
 )
@@ -551,7 +554,10 @@ def build_native_runtime_bindings(
     manufacture_program = NativeManufactureProgramRuntime(context)
     manufacture_probe = NativeManufactureProbeRuntime(context)
     manufacture_property_bag = NativeManufacturePropertyBagRuntime(context)
-    manufacture_operation = NativeManufactureOperationRuntime(context)
+    manufacture_operation = NativeManufactureOperationRuntime(
+        context,
+        mutation_executor=start_background_operation_mutation,
+    )
     manufacture_camotics = NativeManufactureCamoticsRuntime(context)
     manufacture_post = NativeManufacturePostRuntime(context)
     manufacture_template = NativeManufactureTemplateRuntime(context)

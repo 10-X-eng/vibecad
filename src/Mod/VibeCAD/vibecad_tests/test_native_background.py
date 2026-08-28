@@ -374,6 +374,41 @@ def test_independent_resource_scopes_can_prepare_in_one_document() -> None:
     assert manager.wait(second.job_id, 2.0).phase == "completed"
 
 
+def test_document_job_catalog_preserves_every_active_resource_scope() -> None:
+    manager = NativeBackgroundManager()
+    release = threading.Event()
+
+    def prepare(_cancelled, _progress):
+        release.wait(1.0)
+        return {"ready": True}
+
+    first = manager.submit(
+        **_callbacks(prepare=prepare),
+        resource_scope="manufacture:SetupA",
+    )
+    second = manager.submit(
+        **_callbacks(prepare=prepare),
+        resource_scope="manufacture:SetupB",
+    )
+
+    snapshots = manager.document_snapshots(
+        "document-a",
+        capability_prefix="mesh.",
+        active_only=True,
+    )
+    assert {snapshot.job_id for snapshot in snapshots} == {
+        first.job_id,
+        second.job_id,
+    }
+    assert {snapshot.resource_scope for snapshot in snapshots} == {
+        "manufacture:SetupA",
+        "manufacture:SetupB",
+    }
+    release.set()
+    manager.wait(first.job_id, 2.0)
+    manager.wait(second.job_id, 2.0)
+
+
 def test_document_scoped_work_conflicts_with_every_resource_scope() -> None:
     manager = NativeBackgroundManager()
     release = threading.Event()

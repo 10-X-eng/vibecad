@@ -222,9 +222,18 @@ def resolve_element(document: Any, target: NativeElementRef) -> tuple[Any, Any]:
 def read_current_selection(document: Any, selection_api: Any | None = None) -> dict[str, Any]:
     uid = document_uid(document)
     if selection_api is None:
-        import FreeCADGui as Gui
+        import FreeCAD as App
 
-        selection_api = Gui.Selection
+        if App.GuiUp:
+            import FreeCADGui as Gui
+
+            selection_api = Gui.Selection
+    if selection_api is None:
+        return {
+            "document_uid": uid,
+            "selected_count": 0,
+            "items": [],
+        }
     selected = list(selection_api.getSelectionEx(str(document.Name)) or [])
     items = []
     for entry in selected[:MAX_SELECTION_OBJECTS]:

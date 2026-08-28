@@ -25,6 +25,7 @@ from VibeCADNativeManufactureOperationSupport import (
     extend_native_operation_draft,
     finite_number,
     has_prior_cutting_operation,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     verify_native_operation,
@@ -373,15 +374,18 @@ def create_pocket_shape(
     if not isinstance(prepared, PreparedPocketShapeCreate):
         raise TypeError("prepared must be a PreparedPocketShapeCreate")
     import Path.Op.PocketShape as PathPocketShape
-    import Path.Op.Gui.PocketShape as PathPocketShapeGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.PocketShape"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Pocket Shape",
         operation_factory=PathPocketShape.Create,
-        provider_factory=PathPocketShapeGui.PathOpGui.ViewProvider,
-        provider_resource=PathPocketShapeGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )
@@ -398,15 +402,18 @@ def create_pocket_shape_defaults(
     if not isinstance(prepared, PreparedPocketShapeDefaults):
         raise TypeError("prepared must be a PreparedPocketShapeDefaults")
     import Path.Op.PocketShape as PathPocketShape
-    import Path.Op.Gui.PocketShape as PathPocketShapeGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.PocketShape"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Pocket Shape",
         operation_factory=PathPocketShape.Create,
-        provider_factory=PathPocketShapeGui.PathOpGui.ViewProvider,
-        provider_resource=PathPocketShapeGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=lambda operation: setattr(operation, "Label", prepared.label),
         payload={"parameters": {"source": "setup_defaults"}},
     )

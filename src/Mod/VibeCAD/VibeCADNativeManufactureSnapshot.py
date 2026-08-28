@@ -91,11 +91,41 @@ def _focused_setup_state(
     return result
 
 
+def _background_job_states(
+    document: Any,
+    background_jobs: tuple[Any, ...],
+) -> list[dict[str, Any]]:
+    document_uid = str(getattr(document, "Uid", "") or "")
+    result = []
+    for job in background_jobs:
+        if str(getattr(job, "document_uid", "") or "") != document_uid:
+            raise NativeManufactureError(
+                "Manufacture background status belongs to another document.",
+                error_code="NATIVE_MANUFACTURE_STATE_INVALID",
+            )
+        result.append(
+            {
+                "job_id": str(job.job_id),
+                "capability": str(job.capability_name),
+                "resource_scope": str(job.resource_scope),
+                "phase": str(job.phase),
+                "progress_percent": int(job.progress_percent),
+                "progress_message": str(job.progress_message)[:160],
+                "terminal": bool(job.terminal),
+                "cancel_requested": bool(job.cancel_requested),
+            }
+        )
+    return result
+
+
 def build_manufacture_snapshot(
     document: Any,
     *,
     selection: Mapping[str, Any] | None = None,
+    background_jobs: tuple[Any, ...] = (),
 ) -> dict[str, Any]:
+    if not isinstance(background_jobs, tuple):
+        raise TypeError("background_jobs must be a tuple")
     objects = list(getattr(document, "Objects", []) or [])
     job_objects = [obj for obj in objects if is_job(obj)]
     retained_results = [obj for obj in objects if is_simulation_result(obj)]
@@ -190,6 +220,7 @@ def build_manufacture_snapshot(
         ],
         "remaining_stock_results_truncated": len(retained_results)
         > MAX_REMAINING_STOCK_RESULTS,
+        "background_jobs": _background_job_states(document, background_jobs),
     }
     result.update(property_bag_snapshot(document))
     result.update(area_snapshot(document))

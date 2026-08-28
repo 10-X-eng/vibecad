@@ -5,10 +5,10 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
-from VibeCADNativeImmediate import run_immediate_mutation
+from VibeCADNativeImmediate import run_immediate_mutation as _run_immediate_mutation
 from VibeCADNativeManufactureAdaptive import (
     AdaptiveCreateSpec,
     create_adaptive,
@@ -298,13 +298,40 @@ _ARRAY_FIELDS = frozenset(
 )
 _SIMPLE_COPY_FIELDS = frozenset({"label", "job", "source_operations"})
 _START_POINT_FIELDS = frozenset({"job", "target", "point_mm"})
+_PATH_GENERATION_OPERATIONS = frozenset(
+    {
+        "profile",
+        "pocket_shape",
+        "pocket_3d",
+        "surface",
+        "waterline",
+        "rotary_surface",
+        "mill_facing",
+        "helix",
+        "adaptive",
+        "slot",
+        "drilling",
+        "thread_milling",
+        "engrave",
+        "deburr",
+        "v_carve",
+    }
+)
 
 
 class NativeManufactureOperationRuntime:
-    def __init__(self, context: NativeRuntimeContext) -> None:
+    def __init__(
+        self,
+        context: NativeRuntimeContext,
+        *,
+        mutation_executor: Callable[..., Mapping[str, Any]] = _run_immediate_mutation,
+    ) -> None:
         if not isinstance(context, NativeRuntimeContext):
             raise TypeError("context must be a NativeRuntimeContext")
+        if not callable(mutation_executor):
+            raise TypeError("mutation_executor must be callable")
         self._context = context
+        self._mutation_executor = mutation_executor
 
     def mutate_operation(
         self,
@@ -343,6 +370,21 @@ class NativeManufactureOperationRuntime:
         current = context.state.current_revision(context.document_uid)
         if current != ticket.expected_revision:
             raise NativeRevisionConflict(ticket.expected_revision, current)
+
+        def run_immediate_mutation(
+            runtime_context: NativeRuntimeContext,
+            **options: Any,
+        ) -> Mapping[str, Any]:
+            if (
+                operation not in _PATH_GENERATION_OPERATIONS
+                or self._mutation_executor is _run_immediate_mutation
+            ):
+                return _run_immediate_mutation(runtime_context, **options)
+            return self._mutation_executor(
+                runtime_context,
+                request={"operation": operation, **values},
+                **options,
+            )
         if operation == "set_start_point":
             prepared = preflight_start_point(
                 context.document,

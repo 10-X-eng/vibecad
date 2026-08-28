@@ -18,6 +18,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     shape_sha256,
@@ -442,15 +443,18 @@ def create_mill_facing(
     if not isinstance(prepared, PreparedMillFacingCreate):
         raise TypeError("prepared must be a PreparedMillFacingCreate")
     import Path.Op.MillFacing as PathMillFacing
-    import Path.Op.Gui.MillFacing as PathMillFacingGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.MillFacing"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="MillFacing",
         operation_factory=PathMillFacing.Create,
-        provider_factory=PathMillFacingGui.PathOpGui.ViewProvider,
-        provider_resource=PathMillFacingGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )
@@ -467,15 +471,18 @@ def create_mill_facing_defaults(
     if not isinstance(prepared, PreparedMillFacingDefaults):
         raise TypeError("prepared must be a PreparedMillFacingDefaults")
     import Path.Op.MillFacing as PathMillFacing
-    import Path.Op.Gui.MillFacing as PathMillFacingGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.MillFacing"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="MillFacing",
         operation_factory=PathMillFacing.Create,
-        provider_factory=PathMillFacingGui.PathOpGui.ViewProvider,
-        provider_resource=PathMillFacingGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=lambda _operation: None,
         payload={"parameters": {"source": "setup_defaults"}},
     )

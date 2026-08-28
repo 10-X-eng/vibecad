@@ -225,13 +225,14 @@ def test_common_milling_operations_inherit_setup_defaults() -> None:
         "tool_controller",
     }
     assert set(facing["required"]) == {"job", "tool_controller"}
+    assert set(pocket["properties"]) == {
+        "operation",
+        "label",
+        "job",
+        "tool_controller",
+        "geometry",
+    }
     for branch in (pocket, drilling):
-        assert set(branch["properties"]) == {
-            "operation",
-            "job",
-            "tool_controller",
-            "geometry",
-        }
         assert set(branch["required"]) == {
             "job",
             "tool_controller",
@@ -240,6 +241,12 @@ def test_common_milling_operations_inherit_setup_defaults() -> None:
         geometry = branch["properties"]["geometry"]
         assert geometry["type"] == "array"
         assert set(geometry["items"]["required"]) == {"model", "subelements"}
+    assert set(drilling["properties"]) == {
+        "operation",
+        "job",
+        "tool_controller",
+        "geometry",
+    }
     assert set(profile["properties"]) == {
         "operation",
         "job",
@@ -255,6 +262,39 @@ def test_common_milling_operations_inherit_setup_defaults() -> None:
     }
 
 
+def test_path_generation_is_background_but_path_graph_edits_are_immediate() -> None:
+    definition = manufacture_operation_capability_definition()
+    background = {
+        "profile",
+        "pocket_shape",
+        "pocket_3d",
+        "surface",
+        "waterline",
+        "rotary_surface",
+        "mill_facing",
+        "helix",
+        "adaptive",
+        "slot",
+        "drilling",
+        "thread_milling",
+        "engrave",
+        "deburr",
+        "v_carve",
+    }
+    immediate = {"array", "simple_copy", "set_start_point"}
+
+    assert {variant.operation for variant in definition.variants} == (
+        background | immediate
+    )
+    for variant in definition.variants:
+        if variant.operation in background:
+            assert variant.transaction_behavior == "background"
+            assert variant.background_required is True
+        else:
+            assert variant.transaction_behavior == "document"
+            assert variant.background_required is False
+
+
 def test_common_milling_provider_tools_are_focused_single_operations() -> None:
     definitions = {
         definition.name: definition
@@ -262,7 +302,7 @@ def test_common_milling_provider_tools_are_focused_single_operations() -> None:
     }
     expected = {
         "manufacture.face": {"job", "tool_controller"},
-        "manufacture.pocket": {"job", "tool_controller", "geometry"},
+        "manufacture.pocket": {"label", "job", "tool_controller", "geometry"},
         "manufacture.profile": {
             "job",
             "tool_controller",
@@ -297,4 +337,4 @@ def test_common_milling_provider_tools_are_focused_single_operations() -> None:
         )
         branch = schema["parameters"]["oneOf"][0]
         assert set(branch["properties"]) == fields
-        assert set(branch["required"]) == fields
+        assert set(branch["required"]) == fields - {"label"}

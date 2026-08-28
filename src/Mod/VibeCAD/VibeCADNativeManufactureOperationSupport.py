@@ -4,9 +4,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import field
-from dataclasses import replace
+import importlib
+from dataclasses import dataclass, field, replace
 import hashlib
 import math
 import re
@@ -630,14 +629,30 @@ def _add_base_geometry(operation: Any, prepared: PreparedOperationBoundary) -> N
             operation.Proxy.addBase(operation, item.public_source, subelement)
 
 
+def native_operation_presentation(
+    module_name: str,
+) -> tuple[ProviderFactory | None, Any | None]:
+    """Resolve GUI presentation only when this process owns a GUI."""
+
+    import FreeCAD as App
+
+    clean_name = str(module_name or "").strip()
+    if not clean_name.startswith("Path.Op.Gui."):
+        raise ValueError("A CAM presentation module must be in Path.Op.Gui.")
+    if not App.GuiUp:
+        return None, None
+    module = importlib.import_module(clean_name)
+    return module.PathOpGui.ViewProvider, module.Command.res
+
+
 def create_native_operation(
     document: Any,
     *,
     prepared: PreparedOperationBoundary,
     internal_name: str,
     operation_factory: OperationFactory,
-    provider_factory: ProviderFactory,
-    provider_resource: Any,
+    provider_factory: ProviderFactory | None,
+    provider_resource: Any | None,
     configure: OperationConfigurator,
     payload: Mapping[str, Any],
 ) -> NativeMutationDraft:
@@ -652,10 +667,22 @@ def create_native_operation(
         )
         _add_base_geometry(operation, prepared)
         configure(operation)
-        provider = provider_factory(operation.ViewObject, provider_resource)
-        operation.ViewObject.Proxy = provider
-        provider.deleteOnReject = False
-        operation.ViewObject.Visibility = True
+        view = getattr(operation, "ViewObject", None)
+        if view is None:
+            if provider_factory is not None or provider_resource is not None:
+                raise RuntimeError(
+                    "A headless CAM operation cannot receive GUI presentation."
+                )
+            provider = None
+        else:
+            if provider_factory is None or provider_resource is None:
+                raise RuntimeError(
+                    "A GUI CAM operation requires its native view provider."
+                )
+            provider = provider_factory(view, provider_resource)
+            view.Proxy = provider
+            provider.deleteOnReject = False
+            view.Visibility = True
         for existing, visible in prepared.visibility_before:
             if bool(existing.ViewObject.Visibility) is not visible:
                 existing.ViewObject.Visibility = visible
@@ -832,7 +859,14 @@ def verify_native_operation(
             f"The created {prepared.noun} lost its exact tool controller.",
             "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",
         )
-    if operation.ViewObject.Proxy is not provider or bool(provider.deleteOnReject):
+    view = getattr(operation, "ViewObject", None)
+    if view is None:
+        if provider is not None:
+            _error(
+                f"The headless {prepared.noun} retained unexpected GUI presentation.",
+                "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",
+            )
+    elif provider is None or view.Proxy is not provider or bool(provider.deleteOnReject):
         _error(
             f"The created {prepared.noun} did not retain its accepted native view provider.",
             "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",

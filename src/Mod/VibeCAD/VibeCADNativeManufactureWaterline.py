@@ -26,6 +26,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     verify_native_operation,
@@ -863,16 +864,19 @@ def create_waterline(
 
     if not isinstance(prepared, PreparedWaterlineCreate):
         raise TypeError("prepared must be a PreparedWaterlineCreate")
-    import Path.Op.Gui.Waterline as PathWaterlineGui
     import Path.Op.Waterline as PathWaterline
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Waterline"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Waterline",
         operation_factory=PathWaterline.Create,
-        provider_factory=PathWaterlineGui.PathOpGui.ViewProvider,
-        provider_resource=PathWaterlineGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )

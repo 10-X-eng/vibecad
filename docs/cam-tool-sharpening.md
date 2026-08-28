@@ -80,6 +80,9 @@ The architecture must therefore work for zero, one, ten, or hundreds of setups.
   process plan. It never silently posts every Job in the document.
 - Background jobs and caches are keyed by setup identity and exact source state,
   so work on one setup cannot validate or invalidate another accidentally.
+- Live context carries every active CAM job and its setup resource scope instead
+  of collapsing several running setups into one document-wide status. A selected
+  busy setup exposes status and safe reads; an unrelated setup remains usable.
 - The tree presents every setup as a separate expandable manufacturing unit with
   its model, stock, fixtures, WCS, tools, operations, verification, and outputs.
 
@@ -172,6 +175,16 @@ editable state, create, edit geometry and parameters, choose a tool, recompute,
 reorder, activate/suppress, and remove. Geometry selectors use current objects and
 subelements supplied by inspection or selection. Runtime must not depend on an
 unpublished GUI selection or task-panel side effect.
+
+Path-generating Native operations capture the exact setup on the document
+thread, save one private FCStd snapshot there, and perform path computation in an
+isolated `FreeCADCmd` process. One bounded, authenticated path artifact is
+published in a short document transaction after exact live-state revalidation.
+Cancellation remains available until publication starts. Exact unchanged work
+uses a bounded in-session cache. Setup expressions and native presentation are
+restored during publication; undo/redo and save/reopen retain the same path and
+persistent operation settings. Array, copy-path, and start-point edits do not
+generate paths and remain immediate atomic graph edits.
 
 The first proven vertical slice contains facing, pocket, profile, and drilling.
 After owner validation, the same lifecycle is applied separately to helix,
@@ -333,6 +346,13 @@ comparison, not implementation instructions.
   calls: exact ToolBit and controller updates, machine and post setup, labeled
   Pocket, drilling, retained-stock simulation, validation, posting, save, and
   reopen evidence with two active valid operations.
+- Pocket, drilling, and whole-model 3D Surface gates execute the production
+  Native call through the background manager and isolated worker. The GUI event
+  loop remains live, setup-scoped progress appears in Manufacture context,
+  independent Jobs keep separate ownership, and generated paths and computed
+  operation properties survive rollback, undo/redo, recompute, save, and reopen.
+  Existing lifecycle gates for every supported path strategy still pass through
+  the shared headless operation boundary.
 
 ## Reusable benchmark corpus
 

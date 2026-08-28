@@ -179,6 +179,9 @@ def _domain_builder(
         return lambda document: build_manufacture_snapshot(
             document,
             selection=selection,
+            background_jobs=(
+                background_job if isinstance(background_job, tuple) else ()
+            ),
         )
     if surface_id == "drawing":
         from VibeCADNativeDrawingSnapshot import build_drawing_snapshot

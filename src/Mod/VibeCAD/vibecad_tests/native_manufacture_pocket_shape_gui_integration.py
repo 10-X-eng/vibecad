@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import traceback
 
 import FreeCAD as App
@@ -21,6 +22,7 @@ import Path.Main.Job as PathJob
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
+from VibeCADNativeBackground import NativeBackgroundManager
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureFocusedOperationSchema import (
@@ -43,6 +45,24 @@ def _events(rounds: int = 16) -> None:
     for _index in range(rounds):
         Gui.updateGui()
         QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 25)
+
+
+def _await_job(
+    manager: NativeBackgroundManager,
+    job_id: str,
+    *,
+    timeout: float = 120.0,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        _events(1)
+        snapshot = manager.snapshot(job_id)
+        if snapshot.terminal:
+            assert snapshot.phase == "completed", snapshot
+            assert snapshot.result is not None
+            return snapshot.result
+        time.sleep(0.01)
+    raise AssertionError("The isolated CAM path gate timed out")
 
 
 def _surface():
@@ -274,6 +294,7 @@ def _run() -> None:
         save_path = Path(temporary.name) / "native-manufacture-pocket.FCStd"
         document = App.newDocument("NativeManufacturePocketGate")
         document.UndoMode = 1
+        VibeGui._ensure_document_thread_invoker()
         VibeGui._connect_document_observer()
         controller, surface = _surface()
         plans = {
@@ -311,6 +332,7 @@ def _run() -> None:
         service = get_service()
         service.select_modeling_engine("native")
         state_store = service.native_document_state_store()
+        background = service.native_background_manager()
         ledger = NativeAssistantUndoLedger()
         ledger.begin_run("native-manufacture-pocket-shape-gui")
 
@@ -326,6 +348,8 @@ def _run() -> None:
             active_document=lambda: App.ActiveDocument,
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
+            background_manager=background,
+            document_thread_dispatch=VibeGui._dispatch_to_document_thread,
         )
         dispatcher = NativeTurnDispatcher(
             document=document,
@@ -349,6 +373,33 @@ def _run() -> None:
             assert response.get("ok") is succeeds, response
             return response
 
+        def submit(payload: dict, expected_scope: str) -> dict:
+            started = time.monotonic()
+            accepted = call(payload)
+            assert time.monotonic() - started < 2.0, accepted
+            background_job = accepted["job"]
+            assert background_job["resource_scope"] == expected_scope
+            assert accepted["next"]["tool"] == "native.job"
+            active_jobs = service.native_active_snapshot()["domain"]["background_jobs"]
+            assert any(
+                item["job_id"] == background_job["job_id"]
+                and item["resource_scope"] == expected_scope
+                and item["terminal"] is False
+                for item in active_jobs
+            )
+            return background_job
+
+        def generate(
+            payload: dict,
+            expected_scope: str,
+            *,
+            while_running=None,
+        ) -> dict:
+            background_job = submit(payload, expected_scope)
+            if while_running is not None:
+                while_running()
+            return _await_job(background, background_job["job_id"])
+
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(model, "Edge1")
         selection_before = _selection()
@@ -364,8 +415,32 @@ def _run() -> None:
         assert tuple(job.Operations.Group) == initial_operations
         assert tuple(document.VibeCADTimeline.Operations) == initial_timeline
         assert int(document.UndoCount) == undo_before
+        assert _selection() == selection_before
 
-        result = call(arguments)
+        heartbeat_count = 0
+
+        def heartbeat() -> None:
+            nonlocal heartbeat_count
+            heartbeat_count += 1
+
+        heartbeat_timer = QtCore.QTimer()
+        heartbeat_timer.setInterval(10)
+        heartbeat_timer.timeout.connect(heartbeat)
+        heartbeat_timer.start()
+        selection_during_generation = ()
+
+        def change_selection_while_running() -> None:
+            nonlocal selection_during_generation
+            Gui.Selection.clearSelection()
+            selection_during_generation = _selection()
+
+        result = generate(
+            arguments,
+            f"manufacture:{job.Name}",
+            while_running=change_selection_while_running,
+        )
+        heartbeat_timer.stop()
+        assert heartbeat_count > 0
         _events(12)
         operation_name = result["pocket_shape"]["object_name"]
         operation = document.getObject(operation_name)
@@ -390,13 +465,16 @@ def _run() -> None:
         assert result["assistant_undo_available"] is True
         assert int(document.UndoCount) == undo_before + 1
         assert state_store.current_revision(context.document_uid) == revision_before + 1
-        assert _selection() == selection_before
+        assert _selection() == selection_during_generation
         assert not Gui.Control.activeDialog()
         created_state = operation_state(operation)
 
         bracket_arguments = _arguments(bracket, bracket_job, bracket_face)
         bracket_arguments["label"] = "Top pocket"
-        bracket_result = call(bracket_arguments)
+        bracket_result = generate(
+            bracket_arguments,
+            f"manufacture:{bracket_job.Name}",
+        )
         bracket_operation_name = bracket_result["pocket_shape"]["object_name"]
         assert document.getObject(bracket_operation_name).Label == "Top pocket"
         assert bracket_result["pocket_shape"]["geometry"] == {
@@ -406,6 +484,49 @@ def _run() -> None:
             ],
         }
         assert bracket.Shape.exportBrepToString() == bracket_shape_before
+
+        parallel_arguments = _arguments(model, job, face_name)
+        parallel_arguments["label"] = "Parallel first setup"
+        parallel_bracket_arguments = _arguments(bracket, bracket_job, bracket_face)
+        parallel_bracket_arguments["label"] = "Parallel second setup"
+        first_parallel_job = submit(
+            parallel_arguments,
+            f"manufacture:{job.Name}",
+        )
+        second_parallel_job = submit(
+            parallel_bracket_arguments,
+            f"manufacture:{bracket_job.Name}",
+        )
+        active_job_ids = {
+            item["job_id"]
+            for item in service.native_active_snapshot()["domain"]["background_jobs"]
+        }
+        assert {
+            first_parallel_job["job_id"],
+            second_parallel_job["job_id"],
+        } <= active_job_ids
+        first_parallel_result = _await_job(
+            background,
+            first_parallel_job["job_id"],
+        )
+        second_parallel_result = _await_job(
+            background,
+            second_parallel_job["job_id"],
+        )
+        first_parallel_name = first_parallel_result["pocket_shape"]["object_name"]
+        second_parallel_name = second_parallel_result["pocket_shape"]["object_name"]
+        assert document.getObject(first_parallel_name) in tuple(job.Operations.Group)
+        assert document.getObject(second_parallel_name) in tuple(
+            bracket_job.Operations.Group
+        )
+
+        document.undo()
+        document.undo()
+        _events(12)
+        assert document.getObject(first_parallel_name) is None
+        assert document.getObject(second_parallel_name) is None
+        assert document.getObject(bracket_operation_name) is not None
+        assert document.getObject(operation_name) is operation
 
         document.undo()
         _events(12)
@@ -431,7 +552,12 @@ def _run() -> None:
             model,
             face_name,
         )
-        assert operation_state(operation)["state_sha256"] == created_state["state_sha256"]
+        reopened_state = operation_state(operation)
+        assert reopened_state["state_sha256"] == created_state["state_sha256"], {
+            key: (created_state.get(key), reopened_state.get(key))
+            for key in set(created_state) | set(reopened_state)
+            if created_state.get(key) != reopened_state.get(key)
+        }
 
         document.redo()
         _events(12)
@@ -453,12 +579,18 @@ def _run() -> None:
             diagnostics_required=False,
             timeline_last=False,
         )
-        assert operation_state(operation)["state_sha256"] == created_state["state_sha256"]
+        reopened_state = operation_state(operation)
+        assert reopened_state["state_sha256"] == created_state["state_sha256"], {
+            key: (created_state.get(key), reopened_state.get(key))
+            for key in set(created_state) | set(reopened_state)
+            if created_state.get(key) != reopened_state.get(key)
+        }
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_POCKET_SHAPE_GUI_OK "
             "exact_targets=true geometry=true extensions=true parameters=true "
-            "toolpath=true recessed_pocket=true multi_setup=true repair_target=true "
+            "toolpath=true recessed_pocket=true multi_setup=true parallel_setups=true "
+            "repair_target=true "
             "history=true rollback=true undo=true redo=true reopen=true",
             flush=True,
         )

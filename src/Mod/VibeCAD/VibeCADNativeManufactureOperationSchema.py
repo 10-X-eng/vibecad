@@ -1804,8 +1804,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 action_ids=frozenset({"CAM_Profile"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobProfileGeometryAndController",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "job": _EXACT_TARGET,
@@ -1832,8 +1832,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 action_ids=frozenset({"CAM_Pocket_Shape"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobPocketGeometryAndController",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -1858,8 +1858,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type=(
                     "ExactCamJobPocket3DFeaturesControllerAndParameters"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -1897,8 +1897,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type=(
                     "ExactCamJobSurfaceFacesControllerAndParameters"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -1935,8 +1935,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type=(
                     "ExactCamJobWaterlineFacesControllerAlgorithmAndParameters"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -1971,8 +1971,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type=(
                     "ExactCamJobMachineCylinderRotaryFacesControllerAndParameters"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2005,8 +2005,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 action_ids=frozenset({"CAM_MillFacing"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobStockAndController",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "job": _EXACT_TARGET,
@@ -2026,8 +2026,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 action_ids=frozenset({"CAM_Helix"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobHoleFeaturesControllerAndHelixParameters",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2066,8 +2066,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type=(
                     "ExactCamJobAdaptiveRegionsControllerExtensionsAndParameters"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2107,8 +2107,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 action_ids=frozenset({"CAM_Slot"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobSlotPathControllerAndParameters",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2141,8 +2141,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 action_ids=frozenset({"CAM_Drilling"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobDrillableGeometryAndController",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "job": _EXACT_TARGET,
@@ -2166,8 +2166,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type=(
                     "ExactCamJobHoleFeaturesControllerAndThreadDefinition"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2204,8 +2204,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 action_ids=frozenset({"CAM_Engrave"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobEngraveGeometryControllerAndParameters",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2242,8 +2242,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 action_ids=frozenset({"CAM_Deburr"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobDeburrFeaturesControllerAndParameters",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2280,8 +2280,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 action_ids=frozenset({"CAM_Vcarve"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobVCarveFacesControllerAndParameters",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,

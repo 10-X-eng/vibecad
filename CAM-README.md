@@ -33,8 +33,10 @@ exactly one of them, VibeCAD asks for the setup instead of guessing.
    coolant, feeds, and rapids used by the setup.
 6. Create machining operations from exact faces, edges, holes, or bodies. Review
    each operation's depths, allowances, entry, clearance, and Tool Controller.
-7. Generate and inspect the toolpaths. Use dress-ups only when the underlying
-   operation is already correct.
+7. Generate and inspect the toolpaths. Native generation runs in an isolated
+   background process with setup-scoped progress and cancellation; unrelated
+   setups remain available. Use dress-ups only when the underlying operation is
+   already correct.
 8. Simulate the setup, review verification findings, run the sanity check, and
    post only the intended operations with the intended machine.
 

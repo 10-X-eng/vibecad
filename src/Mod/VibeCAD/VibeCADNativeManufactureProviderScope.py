@@ -70,6 +70,20 @@ _OPERATION_EDITS = frozenset(
         "manufacture.start_point",
     }
 )
+_BUSY_SETUP_ALLOWED = frozenset(
+    {
+        "state.read",
+        "view.control",
+        "inspect.query",
+        "inspect.compare",
+        "native.job",
+        "manufacture.setups",
+        "manufacture.read_setup",
+        "manufacture.setup_options",
+        "manufacture.validate",
+        "manufacture.tool_catalog",
+    }
+)
 
 
 def _nonnegative_int(value: Any) -> int | None:
@@ -127,6 +141,20 @@ def _scoped_setups(domain: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...] |
     return tuple(value for value in result if value is not None)
 
 
+def _focused_setup_is_busy(domain: Mapping[str, Any]) -> bool:
+    active = _valid_setup(domain.get("active_job"))
+    jobs = domain.get("background_jobs")
+    if active is None or not isinstance(jobs, list):
+        return False
+    expected_scope = f"manufacture:{active['object_name']}"
+    return any(
+        isinstance(job, Mapping)
+        and job.get("resource_scope") == expected_scope
+        and job.get("terminal") is False
+        for job in jobs
+    )
+
+
 def manufacture_provider_tool_names(
     domain: Mapping[str, Any],
     available_tool_names: Sequence[str],
@@ -135,6 +163,11 @@ def manufacture_provider_tool_names(
 
     allowed = set(_SHARED | _DISCOVERY)
     if not isinstance(domain, Mapping) or domain.get("kind") != "manufacture":
+        return tuple(name for name in available_tool_names if name in allowed)
+    if _focused_setup_is_busy(domain):
+        allowed = set(_BUSY_SETUP_ALLOWED)
+        if _nonnegative_int(domain.get("remaining_stock_result_count")):
+            allowed.add("manufacture.remaining_stock")
         return tuple(name for name in available_tool_names if name in allowed)
     result_count = _nonnegative_int(domain.get("remaining_stock_result_count"))
     if result_count:

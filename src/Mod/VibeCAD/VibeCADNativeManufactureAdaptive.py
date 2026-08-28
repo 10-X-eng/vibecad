@@ -26,6 +26,7 @@ from VibeCADNativeManufactureOperationSupport import (
     extend_native_operation_draft,
     finite_number,
     has_prior_cutting_operation,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     shape_sha256,
@@ -552,15 +553,18 @@ def create_adaptive(
     if not isinstance(prepared, PreparedAdaptiveCreate):
         raise TypeError("prepared must be a PreparedAdaptiveCreate")
     import Path.Op.Adaptive as PathAdaptive
-    import Path.Op.Gui.Adaptive as PathAdaptiveGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Adaptive"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Adaptive",
         operation_factory=PathAdaptive.Create,
-        provider_factory=PathAdaptiveGui.PathOpGui.ViewProvider,
-        provider_resource=PathAdaptiveGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )
