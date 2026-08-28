@@ -43,7 +43,7 @@ def test_aero_surface_id_is_registered() -> None:
 
 def test_cpp_ribbon_places_aero_tab_after_parameters() -> None:
     ribbon = (REPO / "src/Gui/VibeCADRibbon.cpp").read_text(encoding="utf-8")
-    assert 'constexpr std::array<DomainDefinition, 8> domains' in ribbon
+    assert 'constexpr std::array<DomainDefinition, 9> domains' in ribbon
     parameters = ribbon.index(
         '{"Parameters", "SpreadsheetWorkbench", "parameters"}'
     )
@@ -552,6 +552,11 @@ def test_session_and_provider_allowlists_keep_aero(monkeypatch) -> None:
         session,
         "_capture_editable_sources_for_workbench",
         lambda *_args, **_kwargs: {"sources": []},
+    )
+    monkeypatch.setattr(
+        session,
+        "provider_engine_from_service",
+        lambda _service: "vibescript",
     )
 
     context = session._capture_context_for_provider(_Service())
