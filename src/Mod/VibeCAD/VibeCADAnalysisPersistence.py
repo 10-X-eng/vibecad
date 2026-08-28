@@ -20,6 +20,11 @@ from tool_impl.analysis_persistence import (
     new_job_record,
     restart_disposition_for_record,
 )
+from tool_impl.analysis_recovery import (
+    AnalysisProviderRecoveryCoordinator,
+    AnalysisProviderRecoveryError,
+    AnalysisProviderRecoveryResult,
+)
 
 
 def analysis_user_data_root(data_root: str | Path | None = None) -> Path:
@@ -83,6 +88,9 @@ __all__ = (
     "TERMINAL_STATES",
     "AnalysisMetadataStore",
     "AnalysisPersistenceError",
+    "AnalysisProviderRecoveryCoordinator",
+    "AnalysisProviderRecoveryError",
+    "AnalysisProviderRecoveryResult",
     "AnalysisStoreBusy",
     "DurableRuntimeLifecycle",
     "analysis_user_data_root",

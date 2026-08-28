@@ -504,6 +504,38 @@ class AnalysisMetadataStore:
             expected_state=current["state"],
         )
 
+    def interrupt_missing_provider_job_after_restart(
+        self, analysis_id: str,
+    ) -> dict[str, Any]:
+        """Record that an authorized reconnect found no surviving remote job."""
+
+        current = self.load(analysis_id)
+        disposition = restart_disposition_for_record(current)
+        if disposition["action"] != "reconnect_remote":
+            raise AnalysisPersistenceError(
+                "Analysis restart disposition does not authorize reconnect"
+            )
+        attempts = deepcopy(current["attempts"])
+        attempts[-1]["terminal_reason"] = "provider_job_not_found"
+        recovery_events = current.get("recovery_events", [])
+        recovery_event = {
+            "classified_at": _utc_now(),
+            "previous_state": current["state"],
+            "disposition": "orphaned",
+            "failure_kind": "host_interrupted",
+            "attempt": attempts[-1]["attempt"],
+        }
+        return self.transition(
+            analysis_id,
+            "interrupted",
+            reason="provider_job_not_found",
+            updates={
+                "attempts": attempts,
+                "recovery_events": [*recovery_events, recovery_event],
+            },
+            expected_state=current["state"],
+        )
+
     def begin_attempt(
         self,
         analysis_id: str,
@@ -883,6 +915,53 @@ class AnalysisMetadataStore:
                 )
             ):
                 raise AnalysisPersistenceError("Analysis recovery evidence is invalid")
+        collection_receipts = record.get("provider_collection_receipts", [])
+        if not isinstance(collection_receipts, list):
+            raise AnalysisPersistenceError(
+                "Analysis provider collection evidence is invalid"
+            )
+        if collection_receipts and record.get("state") in {
+            "prepared", "running_local", "running_remote",
+        }:
+            raise AnalysisPersistenceError(
+                "Analysis provider collection evidence is invalid"
+            )
+        if collection_receipts and not any(
+            event.get("state") == "collecting" for event in events
+        ):
+            raise AnalysisPersistenceError(
+                "Analysis provider collection evidence is invalid"
+            )
+        collected_attempts: set[int] = set()
+        for receipt in collection_receipts:
+            if not isinstance(receipt, Mapping) or set(receipt) != {
+                "collected_at", "attempt", "provider_id", "provider_job_id",
+                "output_manifest_sha256",
+            }:
+                raise AnalysisPersistenceError(
+                    "Analysis provider collection evidence is invalid"
+                )
+            attempt_number = receipt.get("attempt")
+            digest = str(receipt.get("output_manifest_sha256") or "")
+            if (
+                type(attempt_number) is not int
+                or attempt_number < 1
+                or attempt_number > len(attempts)
+                or attempt_number in collected_attempts
+                or not str(receipt.get("collected_at") or "").strip()
+                or attempts[attempt_number - 1]["provider_kind"] != "remote"
+                or not attempts[attempt_number - 1]["provider_job_id"]
+                or receipt.get("provider_id") != attempts[attempt_number - 1]["provider_id"]
+                or receipt.get("provider_job_id")
+                != attempts[attempt_number - 1]["provider_job_id"]
+                or digest != digest.lower()
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise AnalysisPersistenceError(
+                    "Analysis provider collection evidence is invalid"
+                )
+            collected_attempts.add(attempt_number)
         artifacts = record.get("artifacts")
         if not isinstance(artifacts, list):
             raise AnalysisPersistenceError("Analysis artifacts must be a list")
