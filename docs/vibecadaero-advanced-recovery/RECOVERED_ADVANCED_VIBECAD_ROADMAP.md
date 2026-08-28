@@ -70,7 +70,7 @@ The current daily checkpoint adds a deliberately narrow Step 7 stabilization rep
 
 This checkpoint does not close Step 7, Step 8, or Step 8A. Installed POSIX evidence, physical solver/backend execution, durable restart/orphan recovery, fresh publication authorization, replay-idempotent durable receipts, and the remaining lifecycle/leak burn-in are still required.
 
-### Current queued Step 8 checkpoint: receipt-bound domain verification recovery
+### Queued Step 8 checkpoint: receipt-bound domain verification recovery
 
 The current dependency-ordered checkpoint extends the durable runtime after immutable provider-output admission without crossing into publication authority:
 
@@ -83,6 +83,20 @@ The current dependency-ordered checkpoint extends the durable runtime after immu
 - the coordinator has no document, CAD-mutation, qualification-promotion, scheduling, or publication-authorization input.
 
 This is fixture evidence only. It does not wire a production FEM or Aero verifier, a real authenticated remote provider, network or portable-bundle transport, document rebind/currentness publication checks, or Native mutation authority. It therefore advances Step 8 but does not close Step 8 or Step 8A.
+
+### Current queued Step 8A checkpoint: receipt-bound publication recovery
+
+The next dependency-ordered checkpoint preserves the compatibility publication API and adds a stricter path for verified results:
+
+- one canonical publication descriptor binds the exact latest attempt, domain, adapter and version, source-document UID, frozen dependency digest, provider-attempt identity, output-manifest digest, result identity, and canonical result digest;
+- fresh authorization binds the hash of that complete descriptor rather than a loose result label;
+- before source rebind or mutation, every verification-receipt artifact is checked again under the content-addressed store lock, with missing storage left retryable and byte, type, or symlink drift recorded as terminal integrity failure;
+- exact source rebind, domain currentness, and adapter compatibility must pass before compare-and-swap ownership persists bounded intent, authorization, currentness, verification-receipt identity, and live artifact references;
+- the document callback receives the canonical verified result plus ephemeral immutable artifact paths, but no persisted callback, live document object, or authority token is introduced;
+- successful postconditions produce bounded, secret-screened, path-free mutation evidence and a write-once publication receipt before terminal success;
+- a crash after that receipt but before the terminal transition finalizes without remutation, while ownership with no receipt remains outcome-unknown and is never replayed automatically.
+
+This checkpoint uses an inert document fixture. It does not yet provide real `Document.Uid` rebind, domain-owned FEM/Aero publication-draft adapters, Native document-thread transaction and rollback wiring, installed-host process-crash evidence, or physical solver/importer parity. It advances Step 8A but does not close Step 8A.
 
 ## What remains, in practical execution order
 

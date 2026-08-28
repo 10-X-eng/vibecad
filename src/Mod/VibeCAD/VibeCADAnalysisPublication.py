@@ -8,6 +8,11 @@ from tool_impl.analysis_publication import (
     CurrentnessReport,
     PublicationAuthorization,
     PublicationDescriptor,
+    VerifiedAnalysisPublicationCoordinator,
+    VerifiedPublicationArtifact,
+    VerifiedPublicationAuthorization,
+    VerifiedPublicationDescriptor,
+    VerifiedPublicationRequest,
 )
 
 __all__ = (
@@ -16,4 +21,9 @@ __all__ = (
     "CurrentnessReport",
     "PublicationAuthorization",
     "PublicationDescriptor",
+    "VerifiedAnalysisPublicationCoordinator",
+    "VerifiedPublicationArtifact",
+    "VerifiedPublicationAuthorization",
+    "VerifiedPublicationDescriptor",
+    "VerifiedPublicationRequest",
 )

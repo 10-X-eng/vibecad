@@ -20,6 +20,11 @@ ANALYSIS_METADATA_SCHEMA_VERSION = 2
 SUPPORTED_ANALYSIS_METADATA_MIGRATIONS = frozenset({(1, 2)})
 MAX_PUBLICATION_EVIDENCE_BYTES = 64 * 1024
 MAX_VERIFICATION_EVIDENCE_BYTES = 1024 * 1024
+VERIFIED_PUBLICATION_INTENT_VERSION = "vibecad-analysis-publication-intent-v1"
+VERIFIED_PUBLICATION_AUTHORIZATION_VERSION = (
+    "vibecad-analysis-publication-authorization-v1"
+)
+VERIFIED_PUBLICATION_RECEIPT_VERSION = "vibecad-analysis-publication-receipt-v1"
 MAX_DISCOVERABLE_ANALYSES = 4096
 DEFAULT_MAXIMUM_ARTIFACTS_PER_ANALYSIS = 4096
 DEFAULT_MAXIMUM_ARTIFACT_BYTES_PER_ANALYSIS = 4 * 1024 * 1024 * 1024
@@ -67,6 +72,22 @@ def _positive_integer(value: int, field: str) -> int:
     return value
 
 
+def _canonical_sha256(value: Mapping[str, Any]) -> str:
+    try:
+        encoded = json.dumps(
+            dict(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise AnalysisPersistenceError(
+            "Publication evidence must be canonical JSON"
+        ) from exc
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _artifact_references(record: Mapping[str, Any]) -> tuple[str, ...]:
     publication = record.get("publication")
     if not isinstance(publication, Mapping):
@@ -97,6 +118,172 @@ def _artifact_references(record: Mapping[str, Any]) -> tuple[str, ...]:
     if len(clean) != len(set(clean)):
         raise AnalysisPersistenceError("Publication artifact references must be unique")
     return tuple(clean)
+
+
+def _validate_verified_publication(record: Mapping[str, Any]) -> None:
+    publication = record.get("publication")
+    if not isinstance(publication, Mapping):
+        raise AnalysisPersistenceError("Analysis publication metadata must be an object")
+    intent = publication.get("intent")
+    if not isinstance(intent, Mapping) or intent.get("schema_version") != (
+        VERIFIED_PUBLICATION_INTENT_VERSION
+    ):
+        return
+    if set(intent) != {
+        "schema_version",
+        "publication_descriptor",
+        "publication_descriptor_sha256",
+        "verification_receipt_sha256",
+        "artifact_references",
+        "currentness",
+    }:
+        raise AnalysisPersistenceError("Verified publication intent is invalid")
+    if record.get("state") not in {"publishing", "succeeded"}:
+        raise AnalysisPersistenceError(
+            "Verified publication evidence is in an invalid lifecycle state"
+        )
+    descriptor = intent.get("publication_descriptor")
+    if not isinstance(descriptor, Mapping) or set(descriptor) != {
+        "publication_id",
+        "analysis_id",
+        "attempt",
+        "domain_id",
+        "adapter_id",
+        "adapter_version",
+        "source_document_uid",
+        "frozen_dependency_sha256",
+        "output_manifest_sha256",
+        "provider_attempt_identity",
+        "result_identity",
+        "result_sha256",
+    }:
+        raise AnalysisPersistenceError("Verified publication descriptor is invalid")
+    descriptor_sha256 = _canonical_sha256(descriptor)
+    attempt = descriptor.get("attempt")
+    verification_receipts = record.get("verification_receipts", [])
+    verification = next(
+        (
+            item
+            for item in verification_receipts
+            if isinstance(item, Mapping) and item.get("attempt") == attempt
+        ),
+        None,
+    )
+    artifact_references = intent.get("artifact_references")
+    currentness = intent.get("currentness")
+    if (
+        type(attempt) is not int
+        or attempt < 1
+        or attempt != len(record.get("attempts", []))
+        or verification is None
+        or intent.get("publication_descriptor_sha256") != descriptor_sha256
+        or intent.get("verification_receipt_sha256")
+        != _canonical_sha256(verification)
+        or descriptor.get("analysis_id") != record.get("analysis_id")
+        or descriptor.get("domain_id") != record.get("domain")
+        or descriptor.get("adapter_id") != record.get("adapter_id")
+        or descriptor.get("source_document_uid")
+        != record.get("source_document_uid")
+        or descriptor.get("frozen_dependency_sha256")
+        != record.get("dependency_sha256")
+        or descriptor.get("provider_attempt_identity")
+        != verification.get("provider_attempt_identity")
+        or descriptor.get("output_manifest_sha256")
+        != verification.get("output_manifest_sha256")
+        or descriptor.get("result_identity")
+        != verification.get("result_identity")
+        or descriptor.get("result_sha256") != verification.get("result_sha256")
+        or artifact_references != verification.get("artifact_sha256")
+        or currentness
+        != {
+            "current": True,
+            "source_resolved": True,
+            "changed_dependencies": [],
+            "ambiguous_dependencies": [],
+        }
+        or not str(descriptor.get("publication_id") or "").strip()
+        or not str(descriptor.get("adapter_version") or "").strip()
+    ):
+        raise AnalysisPersistenceError("Verified publication intent is invalid")
+    authorization = publication.get("authorization")
+    if not isinstance(authorization, Mapping) or set(authorization) != {
+        "schema_version",
+        "publication_id",
+        "publication_descriptor_sha256",
+        "authorization_id",
+        "authorized_at",
+    }:
+        raise AnalysisPersistenceError(
+            "Verified publication authorization is invalid"
+        )
+    if (
+        authorization.get("schema_version")
+        != VERIFIED_PUBLICATION_AUTHORIZATION_VERSION
+        or authorization.get("publication_id") != descriptor.get("publication_id")
+        or authorization.get("publication_descriptor_sha256")
+        != descriptor_sha256
+        or not str(authorization.get("authorization_id") or "").strip()
+        or not str(authorization.get("authorized_at") or "").strip()
+    ):
+        raise AnalysisPersistenceError(
+            "Verified publication authorization is invalid"
+        )
+    for evidence in (intent, authorization):
+        try:
+            encoded_evidence = json.dumps(
+                dict(evidence),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise AnalysisPersistenceError(
+                "Verified publication evidence is invalid"
+            ) from exc
+        if len(encoded_evidence.encode("utf-8")) > MAX_PUBLICATION_EVIDENCE_BYTES:
+            raise AnalysisPersistenceError(
+                "Verified publication evidence exceeds its bound"
+            )
+    receipt = publication.get("receipt")
+    if receipt is None:
+        return
+    if not isinstance(receipt, Mapping) or set(receipt) != {
+        "schema_version",
+        "publication_id",
+        "publication_descriptor_sha256",
+        "analysis_id",
+        "attempt",
+        "provider_attempt_identity",
+        "output_manifest_sha256",
+        "result_identity",
+        "result_sha256",
+        "artifact_sha256",
+        "authorization_id",
+        "published_at",
+        "mutation_result",
+    }:
+        raise AnalysisPersistenceError("Verified publication receipt is invalid")
+    if (
+        receipt.get("schema_version") != VERIFIED_PUBLICATION_RECEIPT_VERSION
+        or receipt.get("publication_id") != descriptor.get("publication_id")
+        or receipt.get("publication_descriptor_sha256") != descriptor_sha256
+        or receipt.get("analysis_id") != record.get("analysis_id")
+        or receipt.get("attempt") != attempt
+        or receipt.get("provider_attempt_identity")
+        != descriptor.get("provider_attempt_identity")
+        or receipt.get("output_manifest_sha256")
+        != descriptor.get("output_manifest_sha256")
+        or receipt.get("result_identity") != descriptor.get("result_identity")
+        or receipt.get("result_sha256") != descriptor.get("result_sha256")
+        or receipt.get("artifact_sha256") != artifact_references
+        or receipt.get("authorization_id")
+        != authorization.get("authorization_id")
+        or not str(receipt.get("published_at") or "").strip()
+        or not isinstance(receipt.get("mutation_result"), Mapping)
+        or record.get("state") not in {"publishing", "succeeded"}
+    ):
+        raise AnalysisPersistenceError("Verified publication receipt is invalid")
 
 
 def _provider_recovery_snapshot(
@@ -240,8 +427,22 @@ def restart_disposition_for_record(record: Mapping[str, Any]) -> dict[str, Any]:
         action = "mark_interrupted"
         reason = "provider_reconnect_not_proven"
     elif state == "publishing":
-        action = "publication_outcome_unknown"
-        reason = "publication_receipt_requires_reconciliation"
+        publication = record.get("publication")
+        receipt = (
+            publication.get("receipt")
+            if isinstance(publication, Mapping)
+            else None
+        )
+        if (
+            isinstance(receipt, Mapping)
+            and receipt.get("schema_version")
+            == VERIFIED_PUBLICATION_RECEIPT_VERSION
+        ):
+            action = "finalize_publication_receipt"
+            reason = "durable_publication_receipt_requires_terminal_transition"
+        else:
+            action = "publication_outcome_unknown"
+            reason = "publication_receipt_requires_reconciliation"
     else:
         action = f"resume_{state}"
         reason = "durable_phase_requires_reconciliation"
@@ -845,6 +1046,65 @@ class AnalysisMetadataStore:
             self._write_atomic(self._path(analysis_id), candidate, backup=True)
             return deepcopy(candidate)
 
+    def record_publication_receipt(
+        self,
+        analysis_id: str,
+        receipt: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one bounded, write-once verified-publication receipt."""
+
+        try:
+            encoded = json.dumps(
+                dict(receipt),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise AnalysisPersistenceError(
+                "Publication receipt must be a bounded JSON object"
+            ) from exc
+        if len(encoded.encode("utf-8")) > MAX_PUBLICATION_EVIDENCE_BYTES:
+            raise AnalysisPersistenceError("Publication receipt exceeds its bound")
+        clean_receipt = json.loads(encoded)
+        with self._writer():
+            current = self.load(analysis_id)
+            publication = deepcopy(current["publication"])
+            intent = publication.get("intent")
+            authorization = publication.get("authorization")
+            if (
+                clean_receipt.get("schema_version")
+                != VERIFIED_PUBLICATION_RECEIPT_VERSION
+                or not isinstance(intent, Mapping)
+                or intent.get("schema_version")
+                != VERIFIED_PUBLICATION_INTENT_VERSION
+                or not isinstance(authorization, Mapping)
+                or authorization.get("schema_version")
+                != VERIFIED_PUBLICATION_AUTHORIZATION_VERSION
+            ):
+                raise AnalysisPersistenceError(
+                    "Verified publication receipt requires exact durable evidence"
+                )
+            existing = publication.get("receipt")
+            if existing is not None:
+                if existing == clean_receipt:
+                    return current
+                raise AnalysisPersistenceError(
+                    "Published Analysis evidence cannot be rewritten"
+                )
+            if current["state"] != "publishing":
+                raise AnalysisPersistenceError(
+                    "Publication receipt requires the publishing state"
+                )
+            publication["receipt"] = clean_receipt
+            candidate = deepcopy(current)
+            candidate["publication"] = publication
+            self._append_metadata_event(candidate, "publication_receipt_recorded")
+            candidate = self._validate(candidate)
+            self._write_atomic(self._path(analysis_id), candidate, backup=True)
+            return deepcopy(candidate)
+
     def tombstone_artifact(self, analysis_id: str, sha256: str) -> dict[str, Any]:
         digest = str(sha256 or "").lower()
         with self._writer():
@@ -1236,6 +1496,7 @@ class AnalysisMetadataStore:
             raise AnalysisPersistenceError(
                 "Publication artifact reference is unknown or tombstoned"
             )
+        _validate_verified_publication(record)
         return record
 
 
