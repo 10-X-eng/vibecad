@@ -46,6 +46,10 @@ from VibeCADNativeManufactureState import (
     operation_state,
 )
 from VibeCADNativeRegistry import build_native_capability_registry
+from VibeCADNativeProviderContext import (
+    provider_authorized_native_surface,
+    resolve_production_native_surface,
+)
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
@@ -502,6 +506,24 @@ def _run() -> None:
         assert state_store.current_revision(document_uid(document)) == revision_before
         assert Gui.Control.activeDialog()
 
+        active_state = service.native_active_snapshot()
+        assert active_state["domain"]["active_simulation"] == {
+            "mode": "gl",
+            "simulation_id": result["simulation_id"],
+            "job": job.Name,
+        }
+        production_registry, production_surface = resolve_production_native_surface()
+        task_surface = provider_authorized_native_surface(
+            production_surface,
+            active_state,
+            registry=production_registry,
+        )
+        assert MANUFACTURE_SIMULATION_CONTROL_CAPABILITY_NAME in task_surface.tool_names
+        assert MANUFACTURE_SIMULATION_CAPABILITY_NAME not in task_surface.tool_names
+        assert "manufacture.start_point" not in task_surface.tool_names
+        assert "manufacture.set_controller" not in task_surface.tool_names
+        assert "document.save" not in task_surface.tool_names
+
         status = call(
             NATIVE_BACKGROUND_CAPABILITY_NAME,
             {"operation": "status", "job_id": success_id},
@@ -625,7 +647,7 @@ def _run() -> None:
             "active_path=true quality=true background=true gui_responsive=true "
             "compiled_mesh=true detached_tools=true placed_gcode=true cancel=true "
             "stale=true document_close=true ribbon_switch=true duplicate_guard=true "
-            "task_owned=true status_during_task=true low_noise=true history=true "
+            "task_owned=true task_scoped=true status_during_task=true low_noise=true history=true "
             "undo_neutral=true selection=true visibility=true revision_neutral=true "
             "view_teardown=true",
             flush=True,

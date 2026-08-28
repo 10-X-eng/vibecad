@@ -44,6 +44,37 @@ MAX_REMAINING_STOCK_RESULTS = 24
 _NON_MODEL_SHAPE_TYPES = frozenset({"App::Line", "App::Plane", "App::Point"})
 
 
+def _active_simulation_state(document: Any) -> dict[str, str] | None:
+    """Read the exact Native-owned CAM task, when this document owns it."""
+
+    try:
+        from Path.Main.Gui import SimulatorGL
+    except ImportError:
+        return None
+    if not SimulatorGL.owns_active_prepared_simulation(document):
+        return None
+    simulation = SimulatorGL.active_prepared_simulation()
+    simulation_id = str(getattr(simulation, "nativeSimulationId", "") or "")
+    job = getattr(simulation, "job", None)
+    if (
+        simulation is None
+        or len(simulation_id) != 32
+        or any(character not in "0123456789abcdef" for character in simulation_id)
+        or job is None
+        or getattr(job, "Document", None) is not document
+        or not str(getattr(job, "Name", "") or "")
+    ):
+        raise NativeManufactureError(
+            "The active Native CAM simulation has invalid task identity.",
+            error_code="NATIVE_MANUFACTURE_STATE_INVALID",
+        )
+    return {
+        "mode": "gl",
+        "simulation_id": simulation_id,
+        "job": str(job.Name),
+    }
+
+
 def _contained_resources(job: Any) -> set[int]:
     """Return CAM-owned resources without following clones back to public models."""
 
@@ -222,6 +253,9 @@ def build_manufacture_snapshot(
         > MAX_REMAINING_STOCK_RESULTS,
         "background_jobs": _background_job_states(document, background_jobs),
     }
+    active_simulation = _active_simulation_state(document)
+    if active_simulation is not None:
+        result["active_simulation"] = active_simulation
     result.update(property_bag_snapshot(document))
     result.update(area_snapshot(document))
     tool_catalog = capture_tool_catalog()

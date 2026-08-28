@@ -84,6 +84,19 @@ _BUSY_SETUP_ALLOWED = frozenset(
         "manufacture.tool_catalog",
     }
 )
+_ACTIVE_SIMULATION_ALLOWED = frozenset(
+    {
+        "state.read",
+        "inspect.query",
+        "inspect.compare",
+        "native.job",
+        "manufacture.setups",
+        "manufacture.read_setup",
+        "manufacture.setup_options",
+        "manufacture.validate",
+        "manufacture.tool_catalog",
+    }
+)
 
 
 def _nonnegative_int(value: Any) -> int | None:
@@ -155,6 +168,19 @@ def _focused_setup_is_busy(domain: Mapping[str, Any]) -> bool:
     )
 
 
+def _active_simulation(value: Any) -> Mapping[str, Any] | None:
+    if not isinstance(value, Mapping) or value.get("mode") != "gl":
+        return None
+    simulation_id = str(value.get("simulation_id") or "")
+    if len(simulation_id) != 32 or any(
+        character not in "0123456789abcdef" for character in simulation_id
+    ):
+        return None
+    if not str(value.get("job") or ""):
+        return None
+    return value
+
+
 def manufacture_provider_tool_names(
     domain: Mapping[str, Any],
     available_tool_names: Sequence[str],
@@ -163,6 +189,11 @@ def manufacture_provider_tool_names(
 
     allowed = set(_SHARED | _DISCOVERY)
     if not isinstance(domain, Mapping) or domain.get("kind") != "manufacture":
+        return tuple(name for name in available_tool_names if name in allowed)
+    if "active_simulation" in domain:
+        allowed = set(_ACTIVE_SIMULATION_ALLOWED)
+        if _active_simulation(domain.get("active_simulation")) is not None:
+            allowed.add("manufacture.close_simulation")
         return tuple(name for name in available_tool_names if name in allowed)
     if _focused_setup_is_busy(domain):
         allowed = set(_BUSY_SETUP_ALLOWED)
@@ -211,7 +242,6 @@ def manufacture_provider_tool_names(
                 "manufacture.simulation",
                 "manufacture.simulation_result",
                 "manufacture.camotics",
-                "manufacture.close_simulation",
             }
         )
     if any(_readiness_ready(setup, "post") for setup in setups):

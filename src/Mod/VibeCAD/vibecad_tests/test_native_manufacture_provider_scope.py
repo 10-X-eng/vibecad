@@ -276,13 +276,67 @@ def test_valid_paths_add_correction_simulation_and_post_without_hiding_setup_too
         "manufacture.operations",
         "manufacture.dressup",
         "manufacture.simulation",
-        "manufacture.close_simulation",
         "manufacture.simulation_result",
         "manufacture.camotics",
         "manufacture.post_job",
         "manufacture.post_selected",
     } <= names
+    assert "manufacture.close_simulation" not in names
     assert "manufacture.post" not in names
+
+
+def test_active_native_simulation_exposes_exact_close_and_safe_reads_only() -> None:
+    setup = _job(
+        "SetupSimulation",
+        tools=2,
+        operations=4,
+        simulation_ready=True,
+        post_ready=True,
+    )
+    domain = _domain(setup, active=setup)
+    domain["active_simulation"] = {
+        "mode": "gl",
+        "simulation_id": "1" * 32,
+        "job": setup["object_name"],
+    }
+
+    names = set(manufacture_provider_tool_names(domain, _AVAILABLE))
+
+    assert names == {
+        "state.read",
+        "inspect.query",
+        "inspect.compare",
+        "native.job",
+        "manufacture.setups",
+        "manufacture.read_setup",
+        "manufacture.setup_options",
+        "manufacture.validate",
+        "manufacture.tool_catalog",
+        "manufacture.close_simulation",
+    }
+
+
+def test_provider_state_retains_exact_active_simulation_identity() -> None:
+    state = {
+        "surface_id": "manufacture",
+        "document": {"document_uid": "document-a"},
+        "domain": {
+            **_domain(),
+            "active_simulation": {
+                "mode": "gl",
+                "simulation_id": "2" * 32,
+                "job": "SetupA",
+            },
+        },
+    }
+
+    compact = provider_visible_native_state(state)
+
+    assert compact["domain"]["active_simulation"] == {
+        "mode": "gl",
+        "simulation_id": "2" * 32,
+        "job": "SetupA",
+    }
 
 
 def test_unselected_independent_setups_keep_explicit_target_lifecycle_available() -> None:
@@ -303,8 +357,8 @@ def test_unselected_independent_setups_keep_explicit_target_lifecycle_available(
         "manufacture.operations",
         "manufacture.dressup",
         "manufacture.simulation",
-        "manufacture.close_simulation",
     } <= names
+    assert "manufacture.close_simulation" not in names
     assert "manufacture.post" not in names
     assert "manufacture.post_job" not in names
     assert "manufacture.post_selected" not in names

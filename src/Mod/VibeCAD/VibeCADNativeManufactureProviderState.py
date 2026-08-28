@@ -63,6 +63,7 @@ _DOMAIN_FIELDS = (
     "job_creation",
     "remaining_stock_result_count",
     "remaining_stock_results_truncated",
+    "active_simulation",
 )
 
 
