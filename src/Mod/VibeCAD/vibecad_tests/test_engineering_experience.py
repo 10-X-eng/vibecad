@@ -8,7 +8,11 @@ import json
 import pytest
 
 from VibeCADAnalysisContracts import AnalysisContractError, CanonicalJson
-from VibeCADAnalysisPersistence import AnalysisMetadataStore, new_job_record
+from VibeCADAnalysisPersistence import (
+    ANALYSIS_METADATA_SCHEMA_VERSION,
+    AnalysisMetadataStore,
+    new_job_record,
+)
 from VibeCADAnalysisWorkflow import (
     WorkflowDefinition,
     WorkflowNode,
@@ -424,7 +428,9 @@ def _manufacture_post_result():
 
 def _manufacture_governance_records():
     analysis = {
-        "schema_version": 1, "analysis_id": "analysis-post-1",
+        "schema_version": ANALYSIS_METADATA_SCHEMA_VERSION,
+        "schema_migrations": [],
+        "analysis_id": "analysis-post-1",
         "domain": "manufacture", "adapter_id": "native.manufacture.post",
         "source_document_uid": "document-1", "state": "succeeded",
         "created_at": "2026-08-26T00:00:00Z", "updated_at": "2026-08-26T00:01:00Z",

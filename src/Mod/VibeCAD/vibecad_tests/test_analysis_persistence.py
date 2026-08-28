@@ -8,10 +8,15 @@ from pathlib import Path
 import pytest
 
 from VibeCADAnalysisPersistence import (
+    ANALYSIS_METADATA_SCHEMA_VERSION,
     AnalysisMetadataStore,
     AnalysisPersistenceError,
     AnalysisStoreBusy,
+    analysis_user_data_root,
+    discover_user_analysis_records,
+    migrate_user_analysis_records,
     new_job_record,
+    open_user_analysis_metadata_store,
 )
 
 
@@ -26,6 +31,13 @@ def _record(analysis_id: str = "analysis-1") -> dict:
         input_manifest_sha256="c" * 64,
         execution_spec_sha256="d" * 64,
     )
+
+
+def _legacy_v1_record(analysis_id: str = "analysis-1") -> dict:
+    record = _record(analysis_id)
+    record["schema_version"] = 1
+    record.pop("schema_migrations", None)
+    return record
 
 
 def _advance(store: AnalysisMetadataStore, state: str, attempts: list) -> None:
@@ -86,6 +98,144 @@ def test_discovery_refuses_corrupt_or_misnamed_records(tmp_path: Path) -> None:
     )
     with pytest.raises(AnalysisPersistenceError, match="filename"):
         store.list_records()
+
+
+def test_v1_record_migration_is_atomic_audited_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.records.mkdir(parents=True)
+    path = store.records / "analysis-1.json"
+    legacy = _legacy_v1_record()
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    with pytest.raises(AnalysisPersistenceError, match="requires migration"):
+        store.load("analysis-1")
+
+    migrated = store.migrate_record("analysis-1")
+    assert ANALYSIS_METADATA_SCHEMA_VERSION == 2
+    assert migrated["schema_version"] == 2
+    assert migrated["schema_migrations"] == [{
+        "from_version": 1,
+        "to_version": 2,
+        "at": migrated["schema_migrations"][0]["at"],
+    }]
+    assert migrated["analysis_id"] == legacy["analysis_id"]
+    assert migrated["events"] == legacy["events"]
+    assert migrated["updated_at"] == legacy["updated_at"]
+    assert store.migrate_record("analysis-1") == migrated
+    assert json.loads(
+        (store.backups / "analysis-1.previous.json").read_text(encoding="utf-8")
+    ) == legacy
+
+
+@pytest.mark.parametrize(
+    ("fault_point", "durable_version"),
+    (
+        ("before_stage", 1),
+        ("after_stage", 1),
+        ("before_replace", 1),
+        ("after_replace", 2),
+    ),
+)
+def test_migration_fault_points_have_defined_durable_outcome(
+    tmp_path: Path, fault_point: str, durable_version: int,
+) -> None:
+    baseline = AnalysisMetadataStore(tmp_path)
+    baseline.records.mkdir(parents=True)
+    path = baseline.records / "analysis-1.json"
+    legacy = _legacy_v1_record()
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    def fail(point, _record_value):
+        if point == fault_point:
+            raise RuntimeError(f"migration power loss: {fault_point}")
+
+    faulted = AnalysisMetadataStore(tmp_path, fault_injector=fail)
+    with pytest.raises(RuntimeError, match=fault_point):
+        faulted.migrate_record("analysis-1")
+
+    durable = json.loads(path.read_text(encoding="utf-8"))
+    assert durable["schema_version"] == durable_version
+    if durable_version == 1:
+        assert durable == legacy
+    assert list((tmp_path / "records").glob("*.tmp")) == []
+
+
+def test_migration_refuses_unknown_versions_without_rewriting(tmp_path: Path) -> None:
+    store = AnalysisMetadataStore(tmp_path)
+    store.records.mkdir(parents=True)
+    path = store.records / "analysis-1.json"
+    future = _legacy_v1_record()
+    future["schema_version"] = 999
+    path.write_text(json.dumps(future), encoding="utf-8")
+
+    with pytest.raises(AnalysisPersistenceError, match="no supported migration"):
+        store.migrate_record("analysis-1")
+    assert json.loads(path.read_text(encoding="utf-8")) == future
+
+    mismatched = _legacy_v1_record("different-id")
+    path.write_text(json.dumps(mismatched), encoding="utf-8")
+    with pytest.raises(AnalysisPersistenceError, match="filename"):
+        store.migrate_record("analysis-1")
+    assert json.loads(path.read_text(encoding="utf-8")) == mismatched
+
+
+@pytest.mark.parametrize(
+    "history",
+    (
+        [{"from_version": 1, "to_version": 3, "at": "now"}],
+        [{"from_version": 0, "to_version": 1, "at": "now"},
+         {"from_version": 1, "to_version": 2, "at": "now"}],
+        [{"from_version": True, "to_version": 2, "at": "now"}],
+    ),
+)
+def test_current_record_refuses_unrecognized_migration_history(
+    tmp_path: Path, history: list[dict],
+) -> None:
+    record = _record()
+    record["schema_migrations"] = history
+    with pytest.raises(AnalysisPersistenceError, match="migration history"):
+        AnalysisMetadataStore(tmp_path).create(record)
+
+
+def test_user_analysis_store_uses_central_app_data_and_global_discovery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("VIBECAD_HOME", str(tmp_path / "vibecad-user-data"))
+    expected = tmp_path / "vibecad-user-data" / "analysis-runtime"
+
+    assert analysis_user_data_root() == expected
+    store = open_user_analysis_metadata_store()
+    store.create(_record("analysis-2"))
+    other = _record("analysis-1")
+    other["source_document_uid"] = "other-document"
+    store.create(other)
+
+    assert store.root == expected
+    assert [
+        item["analysis_id"] for item in discover_user_analysis_records()
+    ] == ["analysis-1", "analysis-2"]
+    assert [
+        item["analysis_id"]
+        for item in discover_user_analysis_records(document_uid="document-uid")
+    ] == ["analysis-2"]
+    assert migrate_user_analysis_records() == ()
+
+    legacy_path = store.records / "analysis-legacy.json"
+    legacy_path.write_text(
+        json.dumps(_legacy_v1_record("analysis-legacy")), encoding="utf-8",
+    )
+    with pytest.raises(AnalysisPersistenceError, match="invalid record") as refused:
+        discover_user_analysis_records()
+    assert "requires migration" in str(refused.value.__cause__)
+    assert json.loads(legacy_path.read_text(encoding="utf-8"))["schema_version"] == 1
+    migrated = migrate_user_analysis_records()
+    assert [item["analysis_id"] for item in migrated] == ["analysis-legacy"]
+    assert [
+        item["analysis_id"] for item in discover_user_analysis_records()
+    ] == ["analysis-1", "analysis-2", "analysis-legacy"]
 
 
 def test_fault_before_replace_preserves_previous_durable_record(tmp_path: Path) -> None:

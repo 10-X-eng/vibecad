@@ -15,7 +15,8 @@ import sys
 from typing import Any, Callable, Iterator, Mapping
 
 
-ANALYSIS_METADATA_SCHEMA_VERSION = 1
+ANALYSIS_METADATA_SCHEMA_VERSION = 2
+SUPPORTED_ANALYSIS_METADATA_MIGRATIONS = frozenset({(1, 2)})
 MAX_PUBLICATION_EVIDENCE_BYTES = 64 * 1024
 MAX_DISCOVERABLE_ANALYSES = 4096
 DEFAULT_MAXIMUM_ARTIFACTS_PER_ANALYSIS = 4096
@@ -104,6 +105,7 @@ def new_job_record(
     now = _utc_now()
     record = {
         "schema_version": ANALYSIS_METADATA_SCHEMA_VERSION,
+        "schema_migrations": [],
         "analysis_id": _clean_id(analysis_id, "analysis_id"),
         "domain": str(domain or "").strip(),
         "adapter_id": str(adapter_id or "").strip(),
@@ -251,6 +253,86 @@ class AnalysisMetadataStore:
         except (OSError, ValueError) as exc:
             raise AnalysisPersistenceError("Analysis metadata is missing or corrupt") from exc
         return self._validate(value)
+
+    def migrate_record(self, analysis_id: str) -> dict[str, Any]:
+        """Atomically migrate one supported legacy record under write authority."""
+
+        path = self._path(analysis_id)
+        with self._writer():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise AnalysisPersistenceError(
+                    "Analysis metadata is missing or corrupt"
+                ) from exc
+            if not isinstance(value, Mapping):
+                raise AnalysisPersistenceError("Analysis metadata must be an object")
+            stored_analysis_id = _clean_id(value.get("analysis_id"), "analysis_id")
+            if stored_analysis_id != _clean_id(analysis_id, "analysis_id"):
+                raise AnalysisPersistenceError(
+                    "Analysis metadata filename does not match its identity"
+                )
+            version = value.get("schema_version")
+            if version == ANALYSIS_METADATA_SCHEMA_VERSION:
+                return self._validate(value)
+            if (version, ANALYSIS_METADATA_SCHEMA_VERSION) not in (
+                SUPPORTED_ANALYSIS_METADATA_MIGRATIONS
+            ):
+                raise AnalysisPersistenceError(
+                    "Analysis metadata has no supported migration to the current schema"
+                )
+            if version == 1:
+                if "schema_migrations" in value:
+                    raise AnalysisPersistenceError(
+                        "Legacy Analysis metadata has an invalid migration history"
+                    )
+                candidate = deepcopy(dict(value))
+                candidate["schema_version"] = ANALYSIS_METADATA_SCHEMA_VERSION
+                candidate["schema_migrations"] = [{
+                    "from_version": 1,
+                    "to_version": ANALYSIS_METADATA_SCHEMA_VERSION,
+                    "at": _utc_now(),
+                }]
+            else:  # pragma: no cover - registry and branch remain intentionally paired.
+                raise AnalysisPersistenceError(
+                    "Analysis metadata migration is not implemented"
+                )
+            candidate = self._validate(candidate)
+            self._write_atomic(path, candidate, backup=True)
+            return deepcopy(candidate)
+
+    def migrate_records(self) -> tuple[dict[str, Any], ...]:
+        """Migrate every supported per-root record, atomically one record at a time."""
+
+        if not self.records.exists():
+            return ()
+        paths = tuple(sorted(self.records.glob("*.json"), key=lambda path: path.name))
+        if len(paths) > MAX_DISCOVERABLE_ANALYSES:
+            raise AnalysisPersistenceError(
+                "Analysis metadata discovery exceeds its bounded record limit"
+            )
+        migrated = []
+        for path in paths:
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise AnalysisPersistenceError(
+                    f"Analysis metadata migration found an invalid record: {path.name}"
+                ) from exc
+            if not isinstance(value, Mapping):
+                raise AnalysisPersistenceError(
+                    f"Analysis metadata migration found an invalid record: {path.name}"
+                )
+            analysis_id = _clean_id(value.get("analysis_id"), "analysis_id")
+            if path.stem != analysis_id:
+                raise AnalysisPersistenceError(
+                    f"Analysis metadata filename does not match its identity: {path.name}"
+                )
+            if value.get("schema_version") == ANALYSIS_METADATA_SCHEMA_VERSION:
+                self._validate(value)
+                continue
+            migrated.append(self.migrate_record(analysis_id))
+        return tuple(migrated)
 
     def list_records(self) -> tuple[dict[str, Any], ...]:
         """Read every bounded durable record without acquiring write authority."""
@@ -598,8 +680,47 @@ class AnalysisMetadataStore:
         if not isinstance(value, Mapping):
             raise AnalysisPersistenceError("Analysis metadata must be an object")
         record = deepcopy(dict(value))
-        if record.get("schema_version") != ANALYSIS_METADATA_SCHEMA_VERSION:
+        version = record.get("schema_version")
+        if version != ANALYSIS_METADATA_SCHEMA_VERSION:
+            if (version, ANALYSIS_METADATA_SCHEMA_VERSION) in (
+                SUPPORTED_ANALYSIS_METADATA_MIGRATIONS
+            ):
+                raise AnalysisPersistenceError(
+                    "Analysis metadata requires migration before use"
+                )
             raise AnalysisPersistenceError("Unsupported Analysis metadata schema version")
+        migrations = record.get("schema_migrations")
+        if not isinstance(migrations, list):
+            raise AnalysisPersistenceError(
+                "Analysis schema migration history must be a list"
+            )
+        previous_to = None
+        for migration in migrations:
+            if not isinstance(migration, Mapping) or set(migration) != {
+                "from_version", "to_version", "at",
+            }:
+                raise AnalysisPersistenceError(
+                    "Analysis schema migration history is invalid"
+                )
+            from_version = migration.get("from_version")
+            to_version = migration.get("to_version")
+            if (
+                type(from_version) is not int
+                or type(to_version) is not int
+                or (previous_to is not None and from_version != previous_to)
+                or to_version != from_version + 1
+                or (from_version, to_version)
+                not in SUPPORTED_ANALYSIS_METADATA_MIGRATIONS
+                or not str(migration.get("at") or "").strip()
+            ):
+                raise AnalysisPersistenceError(
+                    "Analysis schema migration history is not monotonic"
+                )
+            previous_to = to_version
+        if migrations and previous_to != ANALYSIS_METADATA_SCHEMA_VERSION:
+            raise AnalysisPersistenceError(
+                "Analysis schema migration history does not reach the current version"
+            )
         _clean_id(record.get("analysis_id"), "analysis_id")
         if record.get("state") not in KNOWN_STATES:
             raise AnalysisPersistenceError("Unknown Analysis lifecycle state")
