@@ -179,9 +179,15 @@ class _EmptyAnthropicStream:
 
 
 def test_anthropic_empty_completion_returns_explicit_error(monkeypatch) -> None:
+    requests: list[dict[str, object]] = []
+
+    def stream(**request):
+        requests.append(request)
+        return _EmptyAnthropicStream()
+
     anthropic_module = SimpleNamespace(
         Anthropic=lambda **_kwargs: SimpleNamespace(
-            messages=SimpleNamespace(stream=lambda **_kwargs: _EmptyAnthropicStream())
+            messages=SimpleNamespace(stream=stream)
         ),
         BadRequestError=type("BadRequestError", (Exception,), {}),
     )
@@ -208,6 +214,7 @@ def test_anthropic_empty_completion_returns_explicit_error(monkeypatch) -> None:
     ]
     assert len(terminal) == 1
     assert "without any user-visible text" in str(terminal[0]["error"])
+    assert requests[0]["cache_control"] == {"type": "ephemeral"}
     assert connection.closed
 
 
@@ -216,7 +223,7 @@ def test_anthropic_child_forwards_the_exact_tool_use_id(monkeypatch) -> None:
         type="tool_use",
         id="anthropic-call-17",
         name="state_read",
-        input={},
+        input={"scope": "selection", "include_geometry": False},
     )
     text_block = SimpleNamespace(type="text", text="Done.")
     responses = iter(
@@ -242,11 +249,15 @@ def test_anthropic_child_forwards_the_exact_tool_use_id(monkeypatch) -> None:
         def get_final_message(self):
             return self.response
 
+    requests: list[dict[str, object]] = []
+
+    def stream(**request):
+        requests.append(request)
+        return _Stream(next(responses))
+
     anthropic_module = SimpleNamespace(
         Anthropic=lambda **_kwargs: SimpleNamespace(
-            messages=SimpleNamespace(
-                stream=lambda **_kwargs: _Stream(next(responses))
-            )
+            messages=SimpleNamespace(stream=stream)
         ),
         BadRequestError=type("BadRequestError", (Exception,), {}),
     )
@@ -258,6 +269,13 @@ def test_anthropic_child_forwards_the_exact_tool_use_id(monkeypatch) -> None:
     )
 
     context = {
+        "workbench": "PartDesignWorkbench",
+        "modeling_surface": {
+            "workbench": "PartDesignWorkbench",
+            "engine": "vibescript",
+            "domain": "partdesign",
+            "available": True,
+        },
         "provider_tool_schemas": [
             {
                 "name": "state.read",
@@ -300,10 +318,25 @@ def test_anthropic_child_forwards_the_exact_tool_use_id(monkeypatch) -> None:
         {
             "type": "tool",
             "tool_name": "state.read",
-            "arguments_json": "{}",
+            "arguments_json": '{"scope":"selection","include_geometry":false}',
             "provider_call_id": "anthropic-call-17",
         }
     ]
+    second_messages = requests[1]["messages"]
+    tool_result_message = next(
+        message
+        for message in reversed(second_messages)
+        if message.get("role") == "user"
+        and isinstance(message.get("content"), list)
+        and message["content"]
+        and message["content"][0].get("type") == "tool_result"
+    )
+    tool_result = tool_result_message["content"][0]
+    assert tool_result == {
+        "type": "tool_result",
+        "tool_use_id": "anthropic-call-17",
+        "content": '{"ok":true}',
+    }
     assert any(message.get("type") == "done" for message in connection.messages)
     assert connection.closed
 
@@ -630,7 +663,8 @@ def test_system_blocks_carry_vibescript_guidance_only_in_vibescript_mode() -> No
         provider.VIBECAD_SYSTEM_INSTRUCTIONS,
         guidance,
     ]
-    assert all(block["cache_control"] == {"type": "ephemeral"} for block in blocks)
+    assert "cache_control" not in blocks[0]
+    assert blocks[-1]["cache_control"] == {"type": "ephemeral"}
 
     other_blocks = provider._anthropic_system_blocks(
         {"provider_tool_schemas": [{"name": "core.set_view"}]}
@@ -638,6 +672,293 @@ def test_system_blocks_carry_vibescript_guidance_only_in_vibescript_mode() -> No
     assert [block["text"] for block in other_blocks] == [
         provider.VIBECAD_SYSTEM_INSTRUCTIONS
     ]
+    assert other_blocks[-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_durable_images_form_a_cached_prefix(monkeypatch) -> None:
+    monkeypatch.setattr(
+        provider,
+        "_context_image_blocks",
+        lambda _context: [
+            ("R1/2:first.png", "image/png", "first"),
+            ("R2/2:second.png", "image/png", "second"),
+            ("V:current", "image/jpeg", "viewport"),
+        ],
+    )
+    monkeypatch.setattr(
+        provider,
+        "_context_image_delivery_notes",
+        lambda _context: [],
+    )
+
+    content = provider._anthropic_user_content("CURRENT REQUEST", {})
+
+    assert isinstance(content, list)
+    assert [block["type"] for block in content] == [
+        "text",
+        "image",
+        "text",
+        "image",
+        "text",
+        "text",
+        "image",
+    ]
+    assert content[0]["text"] == "R1/2:first.png"
+    assert "cache_control" not in content[1]
+    assert content[2]["text"] == "R2/2:second.png"
+    assert content[3]["cache_control"] == {"type": "ephemeral"}
+    assert content[4] == {"type": "text", "text": "CURRENT REQUEST"}
+    assert content[5]["text"] == "V:current"
+    assert "cache_control" not in content[6]
+
+
+def test_anthropic_view_repin_does_not_repeat_durable_references(monkeypatch) -> None:
+    seen_contexts: list[dict[str, object]] = []
+
+    def image_blocks(context):
+        seen_contexts.append(dict(context))
+        blocks = []
+        if context.get("reference_images"):
+            blocks.append(("R1/1:reference.png", "image/png", "reference"))
+        if context.get("view_screenshot"):
+            blocks.append(("V:current", "image/jpeg", "viewport"))
+        return blocks
+
+    monkeypatch.setattr(provider, "_context_image_blocks", image_blocks)
+    content = provider._anthropic_visual_repin_content(
+        {"reference_images": {"images": [{"name": "reference.png"}]}},
+        {"captured": True, "new_observation": True},
+    )
+
+    assert "reference_images" not in seen_contexts[0]
+    assert [block.get("text") for block in content if block["type"] == "text"] == [
+        "Current viewport observation captured after the preceding CAD operation.",
+        "V:current",
+    ]
+
+
+def test_anthropic_compaction_resume_reattaches_durable_references(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        provider,
+        "_context_image_blocks",
+        lambda context: (
+            [("R1/1:reference.png", "image/png", "reference")]
+            if context.get("reference_images")
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_context_image_delivery_notes",
+        lambda _context: [],
+    )
+
+    content = provider._anthropic_compaction_resume_content(
+        {"current_request": "Finish the bracket."},
+        {
+            "reference_images": {
+                "count": 1,
+                "images": [{"name": "reference.png"}],
+            }
+        },
+    )
+
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "R1/1:reference.png"}
+    assert content[1]["type"] == "image"
+    assert content[1]["cache_control"] == {"type": "ephemeral"}
+    assert '"Finish the bracket."' in content[2]["text"]
+
+
+def test_anthropic_tools_rely_on_the_cumulative_system_cache_prefix() -> None:
+    definitions = [
+        {
+            "name": "core__inspect",
+            "description": "Inspect exact state.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "core__set_view",
+            "description": "Set the view.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    ]
+
+    cad_only = provider._anthropic_request_tools(definitions, False)
+    with_web = provider._anthropic_request_tools(definitions, True)
+
+    assert "cache_control" not in definitions[-1]
+    assert all("cache_control" not in tool for tool in cad_only)
+    assert all("cache_control" not in tool for tool in with_web)
+    assert with_web[-1]["name"] == "web_search"
+    assert provider._anthropic_request_tools([], False) == []
+
+
+def test_anthropic_recent_conversation_forms_a_growing_cached_prefix() -> None:
+    prompt = session._provider_prompt(
+        "Continue with only the mounting holes.",
+        _vibescript_mode_context(),
+        recent_conversation=[
+            {"role": "user", "content": "Build the bracket."},
+            {"role": "assistant", "content": "The bracket body is complete."},
+        ],
+    )
+
+    content = provider._anthropic_user_content(prompt, {})
+
+    assert isinstance(content, list)
+    assert len(content) == 3
+    assert content[0]["type"] == "text"
+    assert '"role":"user"' in content[0]["text"]
+    assert "Build the bracket." in content[0]["text"]
+    assert "cache_control" not in content[0]
+    assert content[1]["type"] == "text"
+    assert '"role":"assistant"' in content[1]["text"]
+    assert "The bracket body is complete." in content[1]["text"]
+    assert content[1]["cache_control"] == {"type": "ephemeral"}
+    assert content[2]["type"] == "text"
+    assert "Continue with only the mounting holes." in content[2]["text"]
+    assert "Build the bracket." not in content[2]["text"]
+    assert "The bracket body is complete." not in content[2]["text"]
+    assert '"turns":[]' in content[2]["text"]
+    assert '"delivered_turn_count":2' in content[2]["text"]
+    assert (
+        '"turn_delivery":"preceding_RECENT_CONVERSATION_TURN_JSON_blocks"'
+        in content[2]["text"]
+    )
+
+
+def test_anthropic_authoring_contract_joins_the_static_cached_prefix() -> None:
+    context = _vibescript_mode_context()
+    context["editable_sources"] = {
+        "schema": "vibecad-editable-sources-v1",
+        "source_count": 1,
+        "sources": [{"program": "BracketProgram"}],
+        "core_api": {
+            "schema": "vibecad-authoring-contract-v1",
+            "functions": ["STABLE_CONTRACT_SENTINEL" + ("x" * 512)],
+        },
+    }
+    prompt = session._provider_prompt("Build the bracket.", context)
+
+    content = provider._anthropic_user_content(prompt, {})
+
+    assert isinstance(content, list)
+    assert len(content) == 2
+    assert "VIBESCRIPT_AUTHORING_CONTRACT_JSON" in content[0]["text"]
+    assert "STABLE_CONTRACT_SENTINEL" in content[0]["text"]
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "Build the bracket." in content[1]["text"]
+    assert "STABLE_CONTRACT_SENTINEL" not in content[1]["text"]
+    assert '"delivered_as_preceding_content_block":true' in content[1]["text"]
+
+
+def test_anthropic_cache_layout_stays_within_four_breakpoints(monkeypatch) -> None:
+    monkeypatch.setattr(
+        provider,
+        "_context_image_blocks",
+        lambda _context: [("R1/1:reference.png", "image/png", "reference")],
+    )
+    monkeypatch.setattr(
+        provider,
+        "_context_image_delivery_notes",
+        lambda _context: [],
+    )
+    context = _vibescript_mode_context()
+    context["editable_sources"] = {
+        "schema": "vibecad-editable-sources-v1",
+        "source_count": 1,
+        "sources": [{"program": "BracketProgram"}],
+        "core_api": {
+            "schema": "vibecad-authoring-contract-v1",
+            "functions": ["stable.call"],
+        },
+    }
+    prompt = session._provider_prompt(
+        "Continue.",
+        context,
+        recent_conversation=[
+            {"role": "user", "content": "Build it."},
+            {"role": "assistant", "content": "Built."},
+        ],
+    )
+    request = {
+        "cache_control": {"type": "ephemeral"},
+        "system": provider._anthropic_system_blocks(context),
+        "tools": provider._anthropic_request_tools(
+            [
+                {
+                    "name": "core__inspect",
+                    "description": "Inspect.",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+            False,
+        ),
+        "messages": [
+            {
+                "role": "user",
+                "content": provider._anthropic_user_content(prompt, context),
+            }
+        ],
+    }
+
+    def breakpoint_count(value) -> int:
+        if isinstance(value, dict):
+            return int("cache_control" in value) + sum(
+                breakpoint_count(item)
+                for key, item in value.items()
+                if key != "cache_control"
+            )
+        if isinstance(value, list):
+            return sum(breakpoint_count(item) for item in value)
+        return 0
+
+    assert breakpoint_count(request) == 4
+    user_content = request["messages"][0]["content"]
+    reference_image = next(
+        block for block in user_content if block.get("type") == "image"
+    )
+    contract = next(
+        block
+        for block in user_content
+        if block.get("type") == "text"
+        and "VIBESCRIPT_AUTHORING_CONTRACT_JSON" in block.get("text", "")
+        and "delivered_as_preceding_content_block" not in block.get("text", "")
+    )
+    assert "cache_control" not in reference_image
+    assert contract["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_response_summary_reports_cache_token_usage() -> None:
+    response = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="Done.")],
+        stop_reason="end_turn",
+        usage={
+            "input_tokens": 240,
+            "output_tokens": 18,
+            "cache_creation_input_tokens": 1200,
+            "cache_read_input_tokens": 8400,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 1200,
+                "ephemeral_1h_input_tokens": 0,
+            },
+        },
+    )
+
+    summary = provider._anthropic_response_summary(response)
+
+    assert summary["token_usage"] == response.usage
 
 
 def test_both_wire_formats_do_not_inject_intent_memory() -> None:

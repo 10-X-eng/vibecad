@@ -25,6 +25,7 @@ from VibeCADProvider import (
     OfflineProvider,
     ProviderUnavailable,
     _model_visible_context,
+    provider_input_budget,
     provider_tool_schema_digest,
 )
 from VibeCADIntentMemoryCompiler import compile_intent_memory_update
@@ -5873,12 +5874,21 @@ def _run_session_turn(
         }
     _consume_context_view_attachment(active_service, context, document_thread_dispatch)
     tool_trace: list[dict[str, Any]] = []
+    provider_prompt = _provider_prompt(
+        clean_prompt,
+        context,
+        prompt_section=prompt_section,
+        recent_conversation=turn_conversation,
+        current_user_message=clean_prompt if persist_input_as_user else None,
+    )
+    input_budget = provider_input_budget(provider_prompt, context)
     _emit(
         progress_callback,
         {
             "event": "context_build_completed",
             "workbench": context.get("workbench"),
             "provider_tool_count": len(context.get("provider_tool_schemas") or []),
+            "input_budget": input_budget,
         },
     )
     active_provider = provider or _on_document_thread(
@@ -5945,13 +5955,7 @@ def _run_session_turn(
     try:
         result = _run_provider(
             active_provider,
-            _provider_prompt(
-                clean_prompt,
-                context,
-                prompt_section=prompt_section,
-                recent_conversation=turn_conversation,
-                current_user_message=clean_prompt if persist_input_as_user else None,
-            ),
+            provider_prompt,
             context,
             tool_runner,
             cancellation_check,
