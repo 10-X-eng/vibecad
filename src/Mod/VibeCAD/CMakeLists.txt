@@ -792,6 +792,9 @@ set(VibeCAD_Scripts
     VibeCADNativeMeshPointsSchema.py
     VibeCADNativeMeshApproximateSchema.py
     VibeCADNativeMeshRebuildSchema.py
+    VibeCADNativeMeshReconstructParametricSchema.py
+    VibeCADNativeReconstructParametricBindings.py
+    VibeCADNativeReconstructParametricRuntime.py
     VibeCADNativeMeshRegularSolid.py
     VibeCADNativeMeshSegment.py
     VibeCADNativeMeshSegmentBindings.py
