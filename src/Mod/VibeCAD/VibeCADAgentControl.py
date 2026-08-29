@@ -4,8 +4,10 @@
 
 This is additive and independent of MCP. Enabling it does not disable the
 in-app VibeCAD Assistant, so Grok / ChatGPT / OpenAI / Anthropic can keep
-driving the open document while a local agent opens files, runs Python or
-VibeScript, shows Preferences, or reads auth status.
+driving the open document while a local agent performs guarded native-file
+round trips, captures the visible window, activates semantic Qt targets without
+controlling the physical cursor, runs authorized compatibility scripts, shows
+Preferences, or reads auth status.
 
 The server binds only to 127.0.0.1. Callers authenticate with a bearer token
 that VibeCAD writes to a private file the agent can read; the agent never
@@ -15,6 +17,8 @@ types passwords or OAuth codes.
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 import json
@@ -40,12 +44,30 @@ AGENT_BRIEF_FILENAME = "AGENTS.md"
 GROK_BOT_CMD_ENV = "VIBECAD_GROK_BOT_CMD"
 TOKEN_BYTES = 32
 MAX_BODY_BYTES = 1_048_576
-COMMANDS = ("status", "documents", "open", "run", "preferences", "aero")
+COMMANDS = (
+    "status",
+    "documents",
+    "open",
+    "save",
+    "save_as",
+    "close",
+    "ui_ribbon",
+    "ui_menus",
+    "ui_click",
+    "screenshot",
+    "run",
+    "preferences",
+    "aero",
+)
+UPSTREAM_COMMANDS = frozenset(
+    {"status", "documents", "open", "run", "preferences", "aero"}
+)
 
 _server_lock = threading.RLock()
 _server: ThreadingHTTPServer | None = None
 _server_thread: threading.Thread | None = None
 _document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = None
+_document_operation_gate = threading.Lock()
 _bound_port: int | None = None
 
 
@@ -141,7 +163,8 @@ def brief_path() -> Path:
 _AGENT_BRIEF_TEMPLATE = """# VibeCAD control brief for Grok Bot
 
 VibeCAD is running on this machine and exposes a local, loopback-only control
-channel. Use it to drive VibeCAD without clicking menus.
+channel. Use exact semantic VibeCAD targets without taking over the human's
+physical cursor.
 
 ## Connect
 
@@ -157,6 +180,13 @@ channel. Use it to drive VibeCAD without clicking menus.
 | GET  | `/v1/status`      |                                   | Provider, auth (no secrets), documents, endpoint |
 | GET  | `/v1/documents`   |                                   | Open documents |
 | POST | `/v1/open`        | `{{"path":"..."}}`                | Open/activate a document |
+| POST | `/v1/save`        | optional `{{"document":"Name"}}` | Save an already-named document |
+| POST | `/v1/save-as`     | `{{"path":"...","overwrite":false}}` | Save to an explicit .FCStd path |
+| POST | `/v1/close`       | optional `{{"document":"Name","discard_unsaved":false}}` | Close without silently discarding changes |
+| GET  | `/v1/ui/ribbon`   |                                   | Live semantic tab names and screen geometry |
+| GET  | `/v1/ui/menus`    |                                   | Live top-level menu names and screen geometry |
+| POST | `/v1/ui/click`    | `{{"kind":"ribbon","text":"Model"}}` | Activate a semantic Qt target without moving the physical cursor |
+| GET/POST | `/v1/screenshot` | optional `{{"path":"...png","overwrite":false}}` | Capture the visible VibeCAD window |
 | POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
 | GET  | `/v1/aero`        |                                   | Flight card + AeroReport stamps |
 | POST | `/v1/aero`        | `{{"operation":"analyze"}}` (also section, vlm, export_jsbsim, report, propose_repairs, apply_repairs, reject_repairs, flight_card) | Same Aero wrapper as in-app Grok |
@@ -190,6 +220,8 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
 ## Rules
 
 - Loopback only; do not expose this port off the machine.
+- UI activation is in-process Qt only; never move, click, confine, hide, or
+  block the human's physical cursor.
 - Never type passwords or OAuth codes. Sign-in stays in VibeCAD Preferences.
 - Do not enable MCP; it disables the in-app Assistant.
 """
@@ -313,10 +345,77 @@ def _gui() -> Any | None:
 
 
 def _on_document_thread(operation: Callable[[], Any]) -> Any:
+    """Preserve the original public dispatch behavior for existing callers."""
+
     dispatch = _document_thread_dispatch
     if dispatch is None:
         return operation()
     return dispatch(operation)
+
+
+def _on_document_thread_fail_closed(
+    operation: Callable[[], Any],
+    *,
+    allow_headless_direct: bool = False,
+) -> Any:
+    """Run one document operation without GUI-thread re-entry.
+
+    The gate is acquired before a worker can enqueue work through Qt. This is
+    intentionally non-reentrant: FreeCAD restore code pumps Qt events, so a
+    second request must fail busy rather than enter a partially restored
+    document. Direct execution is reserved for the explicitly requested local
+    FreeCADCmd/headless adapter; the GUI HTTP server always supplies a document
+    thread dispatcher.
+    """
+
+    if not _document_operation_gate.acquire(blocking=False):
+        return failure(
+            "DOCUMENT_OPERATION_BUSY",
+            "Another VibeCAD document operation is still in progress; retry after it completes.",
+            stage="precondition",
+        )
+    try:
+        dispatch = _document_thread_dispatch
+        if not callable(dispatch):
+            if allow_headless_direct and _app_gui_up_state() is False:
+                return _execute_document_operation(operation)
+            return failure(
+                "DOCUMENT_THREAD_UNAVAILABLE",
+                "The VibeCAD GUI document-thread dispatcher is unavailable; no document state was accessed.",
+                stage="precondition",
+            )
+        return dispatch(lambda: _execute_document_operation(operation))
+    finally:
+        _document_operation_gate.release()
+
+
+def _execute_document_operation(operation: Callable[[], Any]) -> Any:
+    """Fail before document access when FreeCAD is inside native restore."""
+
+    try:
+        restoring = getattr(_app(), "isRestoring")
+    except Exception:
+        restoring = None
+    if not callable(restoring):
+        return failure(
+            "DOCUMENT_RESTORE_STATE_UNAVAILABLE",
+            "VibeCAD cannot verify the native document-restore state; no document state was accessed.",
+            stage="precondition",
+        )
+    try:
+        if bool(restoring()):
+            return failure(
+                "DOCUMENT_RESTORE_IN_PROGRESS",
+                "FreeCAD is restoring a document; retry after the native restore completes.",
+                stage="precondition",
+            )
+    except Exception:
+        return failure(
+            "DOCUMENT_RESTORE_STATE_UNAVAILABLE",
+            "VibeCAD cannot verify the native document-restore state; no document state was accessed.",
+            stage="precondition",
+        )
+    return operation()
 
 
 def _document_summary(document: Any) -> dict[str, Any]:
@@ -326,7 +425,128 @@ def _document_summary(document: Any) -> dict[str, Any]:
         "path": str(getattr(document, "FileName", "") or ""),
         "active": document is getattr(_app(), "ActiveDocument", None),
         "object_count": len(list(getattr(document, "Objects", []) or [])),
+        "modified": _document_modified(document),
     }
+
+
+def _gui_document(document: Any) -> Any | None:
+    """Return the GUI document that owns persisted view-provider state."""
+
+    gui = _gui()
+    getter = getattr(gui, "getDocument", None) if gui is not None else None
+    if not callable(getter):
+        return None
+    try:
+        return getter(str(getattr(document, "Name", "") or ""))
+    except Exception:
+        return None
+
+
+def _clear_gui_modified_after_verified_save(document: Any) -> bool:
+    """Normalize App-level save behavior after its file postconditions pass.
+
+    ``Document.save()`` and ``saveAs()`` persist ``GuiDocument.xml`` through
+    FreeCAD's save observer, but unlike the native File -> Save command they do
+    not clear ``GuiDocument.Modified``. This function is called only after the
+    requested file and path association have been verified. Any later App or
+    view-provider edit sets the native GUI flag again.
+    """
+
+    gui_document = _gui_document(document)
+    if gui_document is None:
+        return False
+    try:
+        gui_document.Modified = False
+        return not bool(gui_document.Modified)
+    except Exception:
+        return False
+
+
+def _app_gui_up_state() -> bool | None:
+    """Return FreeCAD's App-level GUI authority, or None when it is unsafe."""
+
+    try:
+        value = getattr(_app(), "GuiUp")
+    except Exception:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    return None
+
+
+def _document_modified(document: Any) -> bool:
+    """Return FreeCAD's native persisted dirty state, failing closed.
+
+    ``Document.isSaved()`` means only that a document has a file name in the
+    supported FreeCAD builds. In a GUI process, the GUI document's ``Modified``
+    flag is the authoritative guard because the native file also persists
+    ``GuiDocument.xml`` and view-provider properties. The explicit
+    ``FreeCADCmd``/headless adapter has no GUI document and the native App
+    binding exposes no equivalent document-modified flag, so generic dirty
+    queries fail closed there as well. A successful headless save is handled by
+    the narrower verified-save postcondition below.
+    """
+
+    is_saved = getattr(document, "isSaved", None)
+    if callable(is_saved):
+        try:
+            if not bool(is_saved()):
+                return True
+        except Exception:
+            return True
+    elif not str(getattr(document, "FileName", "") or "").strip():
+        return True
+
+    gui_document = _gui_document(document)
+    if gui_document is not None:
+        try:
+            return bool(gui_document.Modified)
+        except Exception:
+            return True
+    return True
+
+
+def _verified_save_summary(document: Any) -> dict[str, Any]:
+    """Summarize a save after its native call and file postconditions passed.
+
+    The headless DocumentPy binding has no document-level ``Modified`` flag.
+    Only this operation-scoped postcondition may report it clean, and only when
+    App-level ``GuiUp`` is authoritatively false. Generic status and close
+    queries remain fail-closed without a GUI document.
+    """
+
+    summary = _document_summary(document)
+    if _app_gui_up_state() is False and _gui_document(document) is None:
+        summary["modified"] = False
+    return summary
+
+
+def _partial_document_save_failure(document: Any) -> dict[str, Any] | None:
+    """Reject saves that FreeCAD would acknowledge without writing a file."""
+
+    try:
+        partial = getattr(document, "Partial")
+    except Exception:
+        return failure(
+            "DOCUMENT_PARTIAL_STATE_UNKNOWN",
+            "VibeCAD could not verify whether the document is partially loaded; refusing to save it.",
+            stage="precondition",
+        )
+    if not isinstance(partial, (bool, int)) or int(partial) not in (0, 1):
+        return failure(
+            "DOCUMENT_PARTIAL_STATE_UNKNOWN",
+            "VibeCAD could not verify whether the document is partially loaded; refusing to save it.",
+            stage="precondition",
+        )
+    if bool(partial):
+        return failure(
+            "DOCUMENT_PARTIAL",
+            "FreeCAD cannot durably save a partially loaded document. Fully load it before saving.",
+            stage="precondition",
+        )
+    return None
 
 
 def _all_documents() -> list[dict[str, Any]]:
@@ -380,6 +600,66 @@ def _documents_at_path(path: Path) -> list[Any]:
         except OSError:
             continue
     return matches
+
+
+def _selected_document(name: str = "") -> tuple[Any | None, dict[str, Any] | None]:
+    App = _app()
+    requested = str(name or "").strip()
+    if not requested:
+        document = getattr(App, "ActiveDocument", None)
+        if document is None:
+            return None, failure(
+                "DOCUMENT_REQUIRED",
+                "No active document is available.",
+            )
+        return document, None
+
+    listing = getattr(App, "listDocuments", None)
+    documents = listing() if callable(listing) else {}
+    document = documents.get(requested) if isinstance(documents, dict) else None
+    if document is None:
+        return None, failure(
+            "DOCUMENT_NOT_OPEN",
+            f"No open document is named {requested!r}.",
+        )
+    return document, None
+
+
+def _resolve_save_path(raw: str) -> tuple[Path | None, dict[str, Any] | None]:
+    text = str(raw or "").strip()
+    if not text:
+        return None, failure(
+            "SAVE_PATH_REQUIRED",
+            "Save As requires an explicit path.",
+            stage="schema",
+        )
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        return None, failure(
+            "SAVE_PATH_NOT_ABSOLUTE",
+            "Save As path must be absolute.",
+            stage="schema",
+        )
+    try:
+        candidate = candidate.resolve()
+    except OSError as exc:
+        return None, failure(
+            "SAVE_PATH_INVALID",
+            f"Save As path cannot be resolved: {exc}",
+            stage="schema",
+        )
+    if candidate.suffix.lower() != ".fcstd":
+        return None, failure(
+            "SAVE_EXTENSION_UNSUPPORTED",
+            "Agent-control Save As supports native .FCStd documents only.",
+            stage="schema",
+        )
+    if not candidate.parent.is_dir():
+        return None, failure(
+            "SAVE_PARENT_NOT_FOUND",
+            f"Save As parent directory does not exist: {candidate.parent}.",
+        )
+    return candidate, None
 
 
 def _safe_settings() -> Any | None:
@@ -522,6 +802,708 @@ def open_document(path: str) -> dict[str, Any]:
         "ok": True,
         "already_open": False,
         "opened": _document_summary(document),
+    }
+
+
+def save_document(name: str = "") -> dict[str, Any]:
+    """Save an already-named document and verify the native file exists."""
+
+    document, error = _selected_document(name)
+    if error is not None:
+        return error
+    assert document is not None
+    partial_failure = _partial_document_save_failure(document)
+    if partial_failure is not None:
+        return partial_failure
+    raw_path = str(getattr(document, "FileName", "") or "").strip()
+    if not raw_path:
+        return failure(
+            "SAVE_AS_REQUIRED",
+            "The selected document has no file path; use POST /v1/save-as.",
+        )
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        return failure(
+            "SAVE_PATH_NOT_ABSOLUTE",
+            "The selected document's file path is not absolute.",
+        )
+    path = path.resolve()
+    saver = getattr(document, "save", None)
+    if not callable(saver):
+        return failure(
+            "DOCUMENT_SAVE_UNAVAILABLE",
+            "FreeCAD document save is unavailable in this process.",
+            stage="native_call",
+        )
+    try:
+        outcome = saver()
+    except Exception as exc:
+        return failure(
+            "DOCUMENT_SAVE_FAILED",
+            str(exc),
+            stage="native_call",
+        )
+    if outcome is False or not path.is_file():
+        return failure(
+            "DOCUMENT_SAVE_FAILED",
+            f"VibeCAD did not produce the expected document file at {path}.",
+            stage="native_call",
+        )
+    _clear_gui_modified_after_verified_save(document)
+    summary = _verified_save_summary(document)
+    if summary["modified"]:
+        return failure(
+            "DOCUMENT_STILL_MODIFIED",
+            "VibeCAD saved the file but the document still reports unsaved changes.",
+            stage="postcondition",
+            saved=summary,
+        )
+    return {
+        "ok": True,
+        "saved": summary,
+        "file": {
+            "path": str(path),
+            "size": path.stat().st_size,
+        },
+    }
+
+
+def save_document_as(
+    path: str,
+    *,
+    name: str = "",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Save a document to an explicit native path, protecting files by default."""
+
+    allow_overwrite = overwrite is True
+    candidate, error = _resolve_save_path(path)
+    if error is not None:
+        return error
+    assert candidate is not None
+    if candidate.exists() and not allow_overwrite:
+        return failure(
+            "SAVE_TARGET_EXISTS",
+            f"Refusing to overwrite existing file {candidate}; pass overwrite=true explicitly.",
+        )
+    if candidate.exists() and not candidate.is_file():
+        return failure(
+            "SAVE_TARGET_INVALID",
+            f"Save As target is not a file: {candidate}.",
+        )
+    document, error = _selected_document(name)
+    if error is not None:
+        return error
+    assert document is not None
+    partial_failure = _partial_document_save_failure(document)
+    if partial_failure is not None:
+        return partial_failure
+    saver = getattr(document, "saveAs", None)
+    if not callable(saver):
+        return failure(
+            "DOCUMENT_SAVE_AS_UNAVAILABLE",
+            "FreeCAD document saveAs is unavailable in this process.",
+            stage="native_call",
+        )
+    try:
+        outcome = saver(str(candidate))
+    except Exception as exc:
+        return failure(
+            "DOCUMENT_SAVE_AS_FAILED",
+            str(exc),
+            stage="native_call",
+        )
+    if outcome is False or not candidate.is_file():
+        return failure(
+            "DOCUMENT_SAVE_AS_FAILED",
+            f"VibeCAD did not produce the expected document file at {candidate}.",
+            stage="native_call",
+        )
+    try:
+        actual = Path(str(getattr(document, "FileName", "") or "")).expanduser().resolve()
+    except OSError:
+        actual = None
+    if actual != candidate:
+        return failure(
+            "DOCUMENT_SAVE_AS_PATH_MISMATCH",
+            "VibeCAD saved a file but did not associate the document with the requested path.",
+            stage="postcondition",
+            expected_path=str(candidate),
+            saved_as=_document_summary(document),
+        )
+    _clear_gui_modified_after_verified_save(document)
+    summary = _verified_save_summary(document)
+    if summary["modified"]:
+        return failure(
+            "DOCUMENT_STILL_MODIFIED",
+            "VibeCAD saved the file but the document still reports unsaved changes.",
+            stage="postcondition",
+            saved_as=summary,
+        )
+    return {
+        "ok": True,
+        "overwrote": allow_overwrite,
+        "saved_as": summary,
+        "file": {
+            "path": str(candidate),
+            "size": candidate.stat().st_size,
+        },
+    }
+
+
+def close_document(name: str = "", *, discard_unsaved: bool = False) -> dict[str, Any]:
+    """Close a document, refusing to discard changes unless explicitly allowed."""
+
+    allow_discard = discard_unsaved is True
+    document, error = _selected_document(name)
+    if error is not None:
+        return error
+    assert document is not None
+    document_name = str(getattr(document, "Name", "") or "")
+    if _document_modified(document) and not allow_discard:
+        return failure(
+            "DOCUMENT_MODIFIED",
+            (
+                f"Document {document_name!r} has unsaved changes; save it or "
+                "pass discard_unsaved=true explicitly."
+            ),
+        )
+    App = _app()
+    closer = getattr(App, "closeDocument", None)
+    if not callable(closer):
+        return failure(
+            "DOCUMENT_CLOSE_UNAVAILABLE",
+            "FreeCAD closeDocument is unavailable in this process.",
+            stage="native_call",
+        )
+    try:
+        closer(document_name)
+    except Exception as exc:
+        return failure(
+            "DOCUMENT_CLOSE_FAILED",
+            str(exc),
+            stage="native_call",
+        )
+    listing = getattr(App, "listDocuments", None)
+    documents = listing() if callable(listing) else {}
+    if isinstance(documents, dict) and document_name in documents:
+        return failure(
+            "DOCUMENT_CLOSE_FAILED",
+            f"Document {document_name!r} is still open after closeDocument.",
+            stage="postcondition",
+        )
+    return {
+        "ok": True,
+        "closed": document_name,
+        "discarded_unsaved": allow_discard,
+        "documents": _all_documents(),
+    }
+
+
+def ui_ribbon_snapshot() -> dict[str, Any]:
+    """Return live, screen-global geometry for the human-visible ribbon tabs."""
+
+    gui = _gui()
+    if gui is None or not bool(getattr(gui, "GuiUp", True)):
+        return failure(
+            "GUI_REQUIRED",
+            "Ribbon geometry requires the running VibeCAD GUI.",
+        )
+    try:
+        from PySide import QtWidgets
+
+        main_window = gui.getMainWindow()
+        tabs = (
+            main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
+            if main_window is not None
+            else None
+        )
+        if tabs is None:
+            return failure(
+                "RIBBON_TABS_UNAVAILABLE",
+                "The VibeCADRibbonTabs semantic target is unavailable.",
+            )
+        selected_index = int(tabs.currentIndex())
+        items: list[dict[str, Any]] = []
+        for index in range(int(tabs.count())):
+            rect = tabs.tabRect(index)
+            top_left = tabs.mapToGlobal(rect.topLeft())
+            center = tabs.mapToGlobal(rect.center())
+            text = str(tabs.tabText(index) or "").replace("&", "").strip()
+            items.append(
+                {
+                    "index": index,
+                    "text": text,
+                    "workbench": str(tabs.tabData(index) or "").strip(),
+                    "enabled": bool(tabs.isTabEnabled(index)),
+                    "selected": index == selected_index,
+                    "screen_rect": {
+                        "left": int(top_left.x()),
+                        "top": int(top_left.y()),
+                        "width": int(rect.width()),
+                        "height": int(rect.height()),
+                        "center_x": int(center.x()),
+                        "center_y": int(center.y()),
+                    },
+                }
+            )
+        selected_text = next(
+            (item["text"] for item in items if item["selected"]),
+            "",
+        )
+        return {
+            "ok": True,
+            "process_id": os.getpid(),
+            "window_handle": int(main_window.winId()),
+            "object_name": str(tabs.objectName() or "VibeCADRibbonTabs"),
+            "visible": bool(tabs.isVisible()),
+            "window_title": str(main_window.windowTitle() or ""),
+            "selected_index": selected_index,
+            "selected_text": selected_text,
+            "tabs": items,
+        }
+    except Exception as exc:
+        return failure(
+            "RIBBON_SNAPSHOT_FAILED",
+            str(exc),
+            stage="native_call",
+        )
+
+
+def ui_menu_snapshot() -> dict[str, Any]:
+    """Return live, screen-global geometry for top-level application menus."""
+
+    gui = _gui()
+    if gui is None or not bool(getattr(gui, "GuiUp", True)):
+        return failure(
+            "GUI_REQUIRED",
+            "Menu geometry requires the running VibeCAD GUI.",
+        )
+    try:
+        main_window = gui.getMainWindow()
+        menu_bar = main_window.menuBar() if main_window is not None else None
+        if menu_bar is None:
+            return failure(
+                "MENU_BAR_UNAVAILABLE",
+                "The VibeCAD top-level menu bar is unavailable.",
+            )
+        items: list[dict[str, Any]] = []
+        for index, action in enumerate(menu_bar.actions()):
+            rect = menu_bar.actionGeometry(action)
+            top_left = menu_bar.mapToGlobal(rect.topLeft())
+            center = menu_bar.mapToGlobal(rect.center())
+            menu = action.menu()
+            text = str(action.text() or "").replace("&", "").strip()
+            items.append(
+                {
+                    "index": index,
+                    "text": text,
+                    "enabled": bool(action.isEnabled()),
+                    "visible": bool(action.isVisible()),
+                    "menu_visible": bool(menu is not None and menu.isVisible()),
+                    "screen_rect": {
+                        "left": int(top_left.x()),
+                        "top": int(top_left.y()),
+                        "width": int(rect.width()),
+                        "height": int(rect.height()),
+                        "center_x": int(center.x()),
+                        "center_y": int(center.y()),
+                    },
+                }
+            )
+        return {
+            "ok": True,
+            "process_id": os.getpid(),
+            "window_handle": int(main_window.winId()),
+            "object_name": str(menu_bar.objectName() or "VibeCADMenuBar"),
+            "visible": bool(menu_bar.isVisible()),
+            "window_title": str(main_window.windowTitle() or ""),
+            "menus": items,
+        }
+    except Exception as exc:
+        return failure(
+            "MENU_SNAPSHOT_FAILED",
+            str(exc),
+            stage="native_call",
+        )
+
+
+def _cursor_coordinates(QtGui: Any) -> dict[str, int]:
+    point = QtGui.QCursor.pos()
+    return {"x": int(point.x()), "y": int(point.y())}
+
+
+def ui_click_target(
+    kind: str,
+    text: str,
+    *,
+    expected_process_id: Any = None,
+    expected_index: Any = None,
+) -> dict[str, Any]:
+    """Activate a Qt target while leaving the user's OS cursor untouched."""
+
+    target_kind = str(kind or "").strip().lower().replace("-", "_")
+    if target_kind in {"tab", "ribbon_tab"}:
+        target_kind = "ribbon"
+    if target_kind not in {"ribbon", "menu"}:
+        return failure(
+            "UI_TARGET_KIND_INVALID",
+            "kind must be 'ribbon' or 'menu'.",
+            stage="schema",
+        )
+    target_text = str(text or "").strip()
+    if not target_text:
+        return failure(
+            "UI_TARGET_TEXT_REQUIRED",
+            "text must name one visible semantic UI target.",
+            stage="schema",
+        )
+    try:
+        required_pid = int(expected_process_id or 0)
+    except (TypeError, ValueError):
+        return failure(
+            "UI_PROCESS_ID_INVALID",
+            "expected_process_id must be an integer.",
+            stage="schema",
+        )
+    if required_pid and required_pid != os.getpid():
+        return failure(
+            "UI_PROCESS_MISMATCH",
+            f"Expected VibeCAD PID {required_pid}, but this GUI is PID {os.getpid()}.",
+            stage="precondition",
+        )
+    try:
+        required_index = None if expected_index is None else int(expected_index)
+    except (TypeError, ValueError):
+        return failure(
+            "UI_TARGET_INDEX_INVALID",
+            "expected_index must be an integer when provided.",
+            stage="schema",
+        )
+
+    gui = _gui()
+    if gui is None or not bool(getattr(gui, "GuiUp", True)):
+        return failure(
+            "GUI_REQUIRED",
+            "UI clicking requires the running VibeCAD GUI.",
+        )
+    try:
+        from PySide import QtCore, QtGui, QtWidgets
+
+        try:
+            from PySide import QtTest
+        except ImportError:
+            try:
+                from PySide6 import QtTest
+            except ImportError:
+                from PySide2 import QtTest
+
+        main_window = gui.getMainWindow()
+        if main_window is None:
+            return failure(
+                "MAIN_WINDOW_UNAVAILABLE",
+                "The VibeCAD main window is unavailable.",
+            )
+        cursor_before = _cursor_coordinates(QtGui)
+        left_button = QtCore.Qt.LeftButton
+        no_modifier = QtCore.Qt.NoModifier
+
+        if target_kind == "ribbon":
+            menu_bar = main_window.menuBar()
+            if menu_bar is not None:
+                for menu_action in menu_bar.actions():
+                    open_menu = menu_action.menu()
+                    if open_menu is not None and open_menu.isVisible():
+                        open_menu.close()
+                menu_bar.setActiveAction(None)
+                QtWidgets.QApplication.processEvents()
+            widget = main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
+            if widget is None or not bool(widget.isVisible()):
+                return failure(
+                    "RIBBON_TABS_UNAVAILABLE",
+                    "The visible VibeCADRibbonTabs semantic target is unavailable.",
+                )
+            matches = [
+                index
+                for index in range(int(widget.count()))
+                if str(widget.tabText(index) or "").replace("&", "").strip()
+                == target_text
+            ]
+            if len(matches) != 1:
+                return failure(
+                    "UI_TARGET_NOT_UNIQUE",
+                    f"Expected exactly one ribbon tab named {target_text!r}; found {len(matches)}.",
+                    stage="precondition",
+                )
+            target_index = matches[0]
+            if required_index is not None and required_index != target_index:
+                return failure(
+                    "UI_TARGET_INDEX_MISMATCH",
+                    f"Ribbon tab {target_text!r} is index {target_index}, not {required_index}.",
+                    stage="precondition",
+                )
+            if not bool(widget.isTabEnabled(target_index)):
+                return failure(
+                    "UI_TARGET_DISABLED",
+                    f"Ribbon tab {target_text!r} is disabled.",
+                    stage="precondition",
+                )
+            selected_before = str(
+                widget.tabText(int(widget.currentIndex())) or ""
+            ).replace("&", "").strip()
+            click_point = widget.tabRect(target_index).center()
+            QtTest.QTest.mouseClick(widget, left_button, no_modifier, click_point)
+            QtWidgets.QApplication.processEvents()
+            selected_after = str(
+                widget.tabText(int(widget.currentIndex())) or ""
+            ).replace("&", "").strip()
+            verified = int(widget.currentIndex()) == target_index
+            details: dict[str, Any] = {
+                "target_kind": target_kind,
+                "target_text": target_text,
+                "target_index": target_index,
+                "selected_before": selected_before,
+                "selected_after": selected_after,
+                "click_queued": False,
+            }
+        else:
+            widget = main_window.menuBar()
+            if widget is None or not bool(widget.isVisible()):
+                return failure(
+                    "MENU_BAR_UNAVAILABLE",
+                    "The visible VibeCAD top-level menu bar is unavailable.",
+                )
+            actions = list(widget.actions())
+            matches = [
+                (index, action)
+                for index, action in enumerate(actions)
+                if str(action.text() or "").replace("&", "").strip()
+                == target_text
+            ]
+            if len(matches) != 1:
+                return failure(
+                    "UI_TARGET_NOT_UNIQUE",
+                    (
+                        f"Expected exactly one top-level menu named {target_text!r}; "
+                        f"found {len(matches)}."
+                    ),
+                    stage="precondition",
+                )
+            target_index, action = matches[0]
+            if required_index is not None and required_index != target_index:
+                return failure(
+                    "UI_TARGET_INDEX_MISMATCH",
+                    f"Menu {target_text!r} is index {target_index}, not {required_index}.",
+                    stage="precondition",
+                )
+            if not bool(action.isEnabled()) or not bool(action.isVisible()):
+                return failure(
+                    "UI_TARGET_DISABLED",
+                    f"Top-level menu {target_text!r} is disabled or hidden.",
+                    stage="precondition",
+                )
+            target_menu = action.menu()
+            if target_menu is None:
+                return failure(
+                    "UI_TARGET_HAS_NO_MENU",
+                    f"Top-level action {target_text!r} has no menu.",
+                    stage="precondition",
+                )
+            for candidate in actions:
+                candidate_menu = candidate.menu()
+                if candidate_menu is not None and candidate_menu.isVisible():
+                    candidate_menu.close()
+            QtWidgets.QApplication.processEvents()
+            menu_visible_before = bool(target_menu.isVisible())
+            action_rect = widget.actionGeometry(action)
+            popup_point = widget.mapToGlobal(
+                QtCore.QPoint(action_rect.left(), action_rect.bottom())
+            )
+            # Native Windows menu tracking can block the HTTP request when a
+            # synthetic press/release opens a top-level popup. QMenu.popup is
+            # the non-blocking Qt-native equivalent: the cyan virtual cursor
+            # supplies the visible press state while the user's OS pointer is
+            # sampled only for evidence and is never moved or clicked.
+            widget.setActiveAction(action)
+            target_menu.popup(popup_point)
+            QtWidgets.QApplication.processEvents()
+            menu_visible_after = bool(target_menu.isVisible())
+            verified = menu_visible_after
+            details = {
+                "target_kind": target_kind,
+                "target_text": target_text,
+                "target_index": target_index,
+                "menu_visible_before": menu_visible_before,
+                "menu_visible": menu_visible_after,
+                "click_queued": False,
+            }
+
+        cursor_after = _cursor_coordinates(QtGui)
+        details.update(
+            {
+                "input_method": (
+                    "qt_in_process_mouse_click"
+                    if target_kind == "ribbon"
+                    else "qt_in_process_menu_popup"
+                ),
+                "physical_cursor_control": "none",
+                "physical_cursor_before": cursor_before,
+                "physical_cursor_after": cursor_after,
+                "physical_cursor_unchanged": cursor_before == cursor_after,
+                "semantic_verified": bool(verified),
+                "process_id": os.getpid(),
+            }
+        )
+        if not verified and not bool(details.get("click_queued")):
+            payload = failure(
+                "UI_CLICK_NOT_APPLIED",
+                f"Qt click did not activate {target_kind} target {target_text!r}.",
+                stage="postcondition",
+            )
+            payload.update(details)
+            return payload
+        return {"ok": True, **details}
+    except Exception as exc:
+        return failure(
+            "UI_CLICK_FAILED",
+            str(exc),
+            stage="native_call",
+        )
+
+
+def _resolve_screenshot_path(
+    raw: str,
+) -> tuple[Path | None, dict[str, Any] | None]:
+    text = str(raw or "").strip()
+    if not text:
+        directory = agent_home() / "screenshots"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return None, failure(
+                "SCREENSHOT_DIRECTORY_FAILED",
+                f"Could not prepare the screenshot directory: {exc}",
+                stage="filesystem",
+            )
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        return (directory / f"vibecad-window-{timestamp}.png").resolve(), None
+
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        return None, failure(
+            "SCREENSHOT_PATH_NOT_ABSOLUTE",
+            "An explicit screenshot path must be absolute.",
+            stage="schema",
+        )
+    try:
+        candidate = candidate.resolve()
+    except OSError as exc:
+        return None, failure(
+            "SCREENSHOT_PATH_INVALID",
+            f"Screenshot path cannot be resolved: {exc}",
+            stage="schema",
+        )
+    if candidate.suffix.lower() != ".png":
+        return None, failure(
+            "SCREENSHOT_EXTENSION_UNSUPPORTED",
+            "Agent-control screenshots use the .png format only.",
+            stage="schema",
+        )
+    if not candidate.parent.is_dir():
+        return None, failure(
+            "SCREENSHOT_PARENT_NOT_FOUND",
+            f"Screenshot parent directory does not exist: {candidate.parent}.",
+        )
+    return candidate, None
+
+
+def capture_screenshot(
+    path: str = "",
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Capture the visible VibeCAD main window to a native PNG file."""
+
+    allow_overwrite = overwrite is True
+    candidate, error = _resolve_screenshot_path(path)
+    if error is not None:
+        return error
+    assert candidate is not None
+    if candidate.exists() and not allow_overwrite:
+        return failure(
+            "SCREENSHOT_TARGET_EXISTS",
+            (
+                f"Refusing to overwrite existing screenshot {candidate}; "
+                "pass overwrite=true explicitly."
+            ),
+        )
+    if candidate.exists() and not candidate.is_file():
+        return failure(
+            "SCREENSHOT_TARGET_INVALID",
+            f"Screenshot target is not a file: {candidate}.",
+        )
+
+    gui = _gui()
+    if gui is None or not bool(getattr(gui, "GuiUp", True)):
+        return failure(
+            "GUI_REQUIRED",
+            "Screenshot capture requires the running VibeCAD GUI.",
+        )
+    try:
+        main_window = gui.getMainWindow()
+        if main_window is None:
+            return failure(
+                "MAIN_WINDOW_UNAVAILABLE",
+                "The VibeCAD main window is unavailable.",
+            )
+        is_visible = getattr(main_window, "isVisible", None)
+        if callable(is_visible) and not bool(is_visible()):
+            return failure(
+                "MAIN_WINDOW_NOT_VISIBLE",
+                "The VibeCAD main window is not visible.",
+                stage="precondition",
+            )
+        pixmap = main_window.grab()
+        width = int(pixmap.width())
+        height = int(pixmap.height())
+        if width <= 0 or height <= 0:
+            return failure(
+                "SCREENSHOT_EMPTY",
+                "VibeCAD returned an empty main-window image.",
+                stage="postcondition",
+            )
+        if not bool(pixmap.save(str(candidate), "PNG")):
+            return failure(
+                "SCREENSHOT_SAVE_FAILED",
+                f"Qt could not save the VibeCAD screenshot at {candidate}.",
+                stage="native_call",
+            )
+    except Exception as exc:
+        return failure(
+            "SCREENSHOT_CAPTURE_FAILED",
+            str(exc),
+            stage="native_call",
+        )
+
+    if not candidate.is_file() or candidate.stat().st_size <= 0:
+        return failure(
+            "SCREENSHOT_SAVE_FAILED",
+            f"The expected screenshot was not produced at {candidate}.",
+            stage="postcondition",
+        )
+    digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    return {
+        "ok": True,
+        "capture": {
+            "path": str(candidate),
+            "size": candidate.stat().st_size,
+            "sha256": digest,
+            "width": width,
+            "height": height,
+            "window_title": str(main_window.windowTitle() or ""),
+            "window_handle": int(main_window.winId()),
+            "process_id": os.getpid(),
+        },
     }
 
 
@@ -670,7 +1652,13 @@ def show_preferences() -> dict[str, Any]:
     return {"ok": True, "opened": "VibeCAD"}
 
 
-def dispatch(command: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+def dispatch(
+    command: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    allow_headless_direct: bool = False,
+    fail_closed: bool = False,
+) -> dict[str, Any]:
     action = str(command or "").strip().lower()
     args = dict(arguments or {})
     if action not in COMMANDS:
@@ -679,14 +1667,65 @@ def dispatch(command: str, arguments: dict[str, Any] | None = None) -> dict[str,
             f"Unknown command {command!r}; expected one of {list(COMMANDS)}.",
             stage="schema",
         )
+    effective_fail_closed = bool(fail_closed or action not in UPSTREAM_COMMANDS)
+
+    def on_document_thread(operation: Callable[[], Any]) -> Any:
+        if not effective_fail_closed:
+            return _on_document_thread(operation)
+        return _on_document_thread_fail_closed(
+            operation,
+            allow_headless_direct=allow_headless_direct,
+        )
+
     if action == "status":
-        return report_status()
+        if not effective_fail_closed:
+            return report_status()
+        return on_document_thread(report_status)
     if action == "documents":
-        return _on_document_thread(list_documents)
+        return on_document_thread(list_documents)
     if action == "open":
-        return _on_document_thread(lambda: open_document(str(args.get("path") or "")))
+        return on_document_thread(lambda: open_document(str(args.get("path") or "")))
+    if action == "save":
+        return on_document_thread(
+            lambda: save_document(str(args.get("document") or ""))
+        )
+    if action == "save_as":
+        return on_document_thread(
+            lambda: save_document_as(
+                str(args.get("path") or ""),
+                name=str(args.get("document") or ""),
+                overwrite=args.get("overwrite") is True,
+            )
+        )
+    if action == "close":
+        return on_document_thread(
+            lambda: close_document(
+                str(args.get("document") or ""),
+                discard_unsaved=args.get("discard_unsaved") is True,
+            )
+        )
+    if action == "ui_ribbon":
+        return on_document_thread(ui_ribbon_snapshot)
+    if action == "ui_menus":
+        return on_document_thread(ui_menu_snapshot)
+    if action == "ui_click":
+        return on_document_thread(
+            lambda: ui_click_target(
+                str(args.get("kind") or ""),
+                str(args.get("text") or ""),
+                expected_process_id=args.get("expected_process_id"),
+                expected_index=args.get("expected_index"),
+            )
+        )
+    if action == "screenshot":
+        return on_document_thread(
+            lambda: capture_screenshot(
+                str(args.get("path") or ""),
+                overwrite=args.get("overwrite") is True,
+            )
+        )
     if action == "run":
-        return _on_document_thread(
+        return on_document_thread(
             lambda: run_script(
                 python=args.get("python"),
                 script=args.get("script"),
@@ -695,8 +1734,8 @@ def dispatch(command: str, arguments: dict[str, Any] | None = None) -> dict[str,
             )
         )
     if action == "aero":
-        return _on_document_thread(lambda: aero_command(args))
-    return _on_document_thread(show_preferences)
+        return on_document_thread(lambda: aero_command(args))
+    return on_document_thread(show_preferences)
 
 
 def configured_port() -> int:
@@ -742,24 +1781,53 @@ def handle_http_request(
     method: str,
     path: str,
     body: dict[str, Any] | None = None,
+    *,
+    fail_closed: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     parsed = urlparse(path)
     route = parsed.path.rstrip("/") or "/"
     payload = dict(body or {})
+
+    def routed_dispatch(
+        command: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if fail_closed:
+            return dispatch(command, arguments, fail_closed=True)
+        if arguments is None:
+            return dispatch(command)
+        return dispatch(command, arguments)
+
     if method == "GET" and route in {"/v1/status", "/status"}:
-        return 200, dispatch("status")
+        return 200, routed_dispatch("status")
     if method == "GET" and route in {"/v1/documents", "/documents"}:
-        return 200, dispatch("documents")
+        return 200, routed_dispatch("documents")
     if method == "POST" and route in {"/v1/open", "/open"}:
-        return 200, dispatch("open", payload)
+        return 200, routed_dispatch("open", payload)
+    if method == "POST" and route in {"/v1/save", "/save"}:
+        return 200, routed_dispatch("save", payload)
+    if method == "POST" and route in {"/v1/save-as", "/save-as"}:
+        return 200, routed_dispatch("save_as", payload)
+    if method == "POST" and route in {"/v1/close", "/close"}:
+        return 200, routed_dispatch("close", payload)
+    if method == "GET" and route in {"/v1/ui/ribbon", "/ui/ribbon"}:
+        return 200, routed_dispatch("ui_ribbon")
+    if method == "GET" and route in {"/v1/ui/menus", "/ui/menus"}:
+        return 200, routed_dispatch("ui_menus")
+    if method == "POST" and route in {"/v1/ui/click", "/ui/click"}:
+        return 200, routed_dispatch("ui_click", payload)
+    if method == "GET" and route in {"/v1/screenshot", "/screenshot"}:
+        return 200, routed_dispatch("screenshot")
+    if method == "POST" and route in {"/v1/screenshot", "/screenshot"}:
+        return 200, routed_dispatch("screenshot", payload)
     if method == "POST" and route in {"/v1/run", "/run"}:
-        return 200, dispatch("run", payload)
+        return 200, routed_dispatch("run", payload)
     if method == "GET" and route in {"/v1/aero", "/aero"}:
-        return 200, dispatch("aero", {"operation": "context"})
+        return 200, routed_dispatch("aero", {"operation": "context"})
     if method == "POST" and route in {"/v1/aero", "/aero"}:
-        return 200, dispatch("aero", payload)
+        return 200, routed_dispatch("aero", payload)
     if method == "POST" and route in {"/v1/preferences", "/preferences"}:
-        return 200, dispatch("preferences")
+        return 200, routed_dispatch("preferences")
     return 404, failure(
         "ROUTE_UNKNOWN",
         f"Unsupported {method} {route}.",
@@ -821,7 +1889,14 @@ class _AgentRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             body = self._read_json_body() if method == "POST" else {}
-            status, payload = handle_http_request(method, self.path, body)
+            status, payload = handle_http_request(
+                method,
+                self.path,
+                body,
+                fail_closed=bool(
+                    getattr(self.server, "vibecad_fail_closed", False)
+                ),
+            )
         except ValueError as exc:
             self._write_json(400, failure("REQUEST_INVALID", str(exc), stage="schema"))
             return
@@ -853,20 +1928,65 @@ def server_snapshot() -> dict[str, Any]:
         }
 
 
-def ensure_server_started(
+def server_is_fail_closed() -> bool:
+    """Report the additive server mode without changing the legacy snapshot."""
+
+    with _server_lock:
+        return bool(getattr(_server, "vibecad_fail_closed", False))
+
+
+def _server_port_candidates(requested: int, *, explicit: bool) -> tuple[int, ...]:
+    """Return the requested port and bounded automatic fallbacks."""
+
+    if explicit:
+        return (requested,)
+    return tuple(range(requested, min(65535, requested + 9) + 1))
+
+
+def _ensure_server_started(
     *,
     document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = None,
     host: str = AGENT_HOST,
     port: int | None = None,
+    fail_closed: bool,
 ) -> dict[str, Any]:
-    """Start the loopback server once. Safe to call from GUI startup."""
+    """Start one legacy or explicitly fail-closed loopback server."""
 
     global _server, _server_thread, _document_thread_dispatch, _bound_port
     with _server_lock:
+        if _server is not None and _bound_port:
+            running_fail_closed = bool(
+                getattr(_server, "vibecad_fail_closed", False)
+            )
+            if fail_closed and not running_fail_closed:
+                raise RuntimeError(
+                    "VibeCAD agent control is already running in compatibility mode; "
+                    "restart it before requesting fail-closed development control."
+                )
+            if document_thread_dispatch is not None:
+                if (fail_closed or running_fail_closed) and not callable(
+                    document_thread_dispatch
+                ):
+                    raise RuntimeError(
+                        "VibeCAD agent control requires a callable document-thread dispatcher."
+                    )
+                if (
+                    running_fail_closed
+                    and not fail_closed
+                    and document_thread_dispatch is not _document_thread_dispatch
+                ):
+                    raise RuntimeError(
+                        "The compatibility server starter cannot replace the active "
+                        "fail-closed document-thread dispatcher."
+                    )
+                _document_thread_dispatch = document_thread_dispatch
+            return server_snapshot()
+        if fail_closed and not callable(document_thread_dispatch):
+            raise RuntimeError(
+                "VibeCAD agent control requires the GUI document-thread dispatcher before startup."
+            )
         if document_thread_dispatch is not None:
             _document_thread_dispatch = document_thread_dispatch
-        if _server is not None and _bound_port:
-            return server_snapshot()
         load_or_create_token()
         requested = DEFAULT_AGENT_PORT if port is None else int(port)
         if port is None:
@@ -874,9 +1994,7 @@ def ensure_server_started(
         last_error: Exception | None = None
         listener = None
         bound = requested
-        candidates = (
-            [requested] if port is not None else list(range(requested, requested + 10))
-        )
+        candidates = _server_port_candidates(requested, explicit=port is not None)
         for candidate in candidates:
             try:
                 listener = _bind_listener(host, candidate)
@@ -898,6 +2016,7 @@ def ensure_server_started(
                 pass
             server.socket = listener
             server.server_bind = lambda: None  # type: ignore[method-assign]
+            setattr(server, "vibecad_fail_closed", bool(fail_closed))
             server.server_activate()
         except Exception:
             listener.close()
@@ -915,13 +2034,50 @@ def ensure_server_started(
         return server_snapshot()
 
 
+def ensure_server_started(
+    *,
+    document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None = None,
+    host: str = AGENT_HOST,
+    port: int | None = None,
+) -> dict[str, Any]:
+    """Start the compatibility server with the original public defaults."""
+
+    return _ensure_server_started(
+        document_thread_dispatch=document_thread_dispatch,
+        host=host,
+        port=port,
+        fail_closed=False,
+    )
+
+
+def ensure_fail_closed_server_started(
+    *,
+    document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None,
+    host: str = AGENT_HOST,
+    port: int | None = None,
+) -> dict[str, Any]:
+    """Start the opt-in development server with strict document serialization."""
+
+    return _ensure_server_started(
+        document_thread_dispatch=document_thread_dispatch,
+        host=host,
+        port=port,
+        fail_closed=True,
+    )
+
+
 def shutdown_server(*, wait: bool = False) -> None:
-    global _server, _server_thread, _bound_port
+    global _server, _server_thread, _document_thread_dispatch, _bound_port
     with _server_lock:
         server = _server
         thread = _server_thread
+        was_fail_closed = bool(
+            getattr(server, "vibecad_fail_closed", False)
+        )
         _server = None
         _server_thread = None
+        if was_fail_closed:
+            _document_thread_dispatch = None
         _bound_port = None
     if server is not None:
         server.shutdown()

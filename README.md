@@ -317,6 +317,16 @@ for current platform-specific details.
 - **The assistant input is disabled:** save the active CAD document.
 - **The assistant panel was closed:** reopen it from **View > Panels > VibeCAD Assistant**.
 
+## Developer testing
+
+On Windows, double-click `RUN-VIBECAD-DEV.cmd` to build and launch the exact
+current checkout in its repo-local Pixi environment. The visible development
+identity, checkout-scoped authenticated control channel, native file
+round-trip commands, screenshots, and plain-cyan independent-cursor tour are
+documented in
+[docs/developer-launch-windows.md](docs/developer-launch-windows.md). The tour
+does not move or click the user's physical mouse.
+
 ## Project Status
 
 VibeCAD is under active development. The current focus is reliable, readable AI-assisted part design with explicit human control over the document, workbench, and design direction.

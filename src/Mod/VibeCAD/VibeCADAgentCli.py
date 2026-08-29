@@ -7,7 +7,8 @@ Works two ways:
 1. As a plain Python HTTP client against a running VibeCAD GUI
    (``http://127.0.0.1:8766``). No FreeCAD bindings required.
 2. In-process through ``FreeCADCmd.exe`` / ``VibeCADCmd.exe`` when the GUI is
-   not running (headless open / run / status). Preferences still need the GUI.
+   not running (headless open / save / close / run / status). Semantic UI
+   activation, screenshots, and Preferences still need the GUI.
 
 The CLI reads the bearer token from the private Agent token file. Do not type
 passwords or OAuth codes.
@@ -23,7 +24,20 @@ from typing import Any
 from urllib import error, request
 
 
-COMMANDS = ("status", "documents", "open", "run", "preferences")
+COMMANDS = (
+    "status",
+    "documents",
+    "open",
+    "save",
+    "save-as",
+    "close",
+    "ui-ribbon",
+    "ui-menus",
+    "ui-click",
+    "screenshot",
+    "run",
+    "preferences",
+)
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_GUI_UNAVAILABLE = 2
@@ -82,10 +96,72 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="Report provider, auth, and open documents.")
     sub.add_parser("documents", help="List open documents.")
+    sub.add_parser("ui-ribbon", help="Report live semantic ribbon-tab geometry.")
+    sub.add_parser("ui-menus", help="Report live semantic top-level menu geometry.")
     sub.add_parser("preferences", help="Show VibeCAD Preferences (GUI only).")
+
+    ui_click_parser = sub.add_parser(
+        "ui-click",
+        help="Activate one semantic ribbon or menu target without moving the OS cursor.",
+    )
+    ui_click_parser.add_argument(
+        "--kind",
+        required=True,
+        choices=("ribbon", "menu"),
+        help="Target family to activate.",
+    )
+    ui_click_parser.add_argument("--text", required=True, help="Exact visible target text.")
+    ui_click_parser.add_argument(
+        "--expected-process-id",
+        type=int,
+        help="Optional exact VibeCAD GUI process identity precondition.",
+    )
+    ui_click_parser.add_argument(
+        "--expected-index",
+        type=int,
+        help="Optional semantic target-index precondition.",
+    )
+
+    screenshot_parser = sub.add_parser(
+        "screenshot",
+        help="Capture the visible VibeCAD main window as a PNG.",
+    )
+    screenshot_parser.add_argument(
+        "--path",
+        help="Optional absolute .png path; defaults to the private agent home.",
+    )
+    screenshot_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Explicitly allow replacing an existing screenshot.",
+    )
 
     open_parser = sub.add_parser("open", help="Open a document and make it active.")
     open_parser.add_argument("--path", required=True, help="Absolute document path.")
+
+    save_parser = sub.add_parser("save", help="Save an already-named document.")
+    save_parser.add_argument("--document", help="Document name; defaults to active.")
+
+    save_as_parser = sub.add_parser(
+        "save-as", help="Save the active document to an explicit .FCStd path."
+    )
+    save_as_parser.add_argument("--path", required=True, help="Absolute .FCStd path.")
+    save_as_parser.add_argument("--document", help="Document name; defaults to active.")
+    save_as_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Explicitly allow replacing an existing target file.",
+    )
+
+    close_parser = sub.add_parser(
+        "close", help="Close a document without silently discarding changes."
+    )
+    close_parser.add_argument("--document", help="Document name; defaults to active.")
+    close_parser.add_argument(
+        "--discard-unsaved",
+        action="store_true",
+        help="Explicitly allow closing a modified document without saving.",
+    )
 
     run_parser = sub.add_parser(
         "run",
@@ -105,6 +181,31 @@ def build_parser() -> argparse.ArgumentParser:
 def _command_arguments(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "open":
         return {"path": args.path}
+    if args.command == "save":
+        return {"document": args.document}
+    if args.command == "save-as":
+        return {
+            "path": args.path,
+            "document": args.document,
+            "overwrite": bool(args.overwrite),
+        }
+    if args.command == "close":
+        return {
+            "document": args.document,
+            "discard_unsaved": bool(args.discard_unsaved),
+        }
+    if args.command == "ui-click":
+        return {
+            "kind": args.kind,
+            "text": args.text,
+            "expected_process_id": args.expected_process_id,
+            "expected_index": args.expected_index,
+        }
+    if args.command == "screenshot":
+        return {
+            "path": args.path,
+            "overwrite": bool(args.overwrite),
+        }
     if args.command == "run":
         return {
             "path": args.path,
@@ -118,7 +219,20 @@ def _command_arguments(args: argparse.Namespace) -> dict[str, Any]:
 def _http_route(command: str) -> tuple[str, str]:
     if command in {"status", "documents"}:
         return "GET", f"/v1/{command}"
+    if command in {"ui-ribbon", "ui-menus"}:
+        return "GET", f"/v1/ui/{command.removeprefix('ui-')}"
+    if command == "ui-click":
+        return "POST", "/v1/ui/click"
     return "POST", f"/v1/{command}"
+
+
+def _control_command(command: str) -> str:
+    return {
+        "save-as": "save_as",
+        "ui-ribbon": "ui_ribbon",
+        "ui-menus": "ui_menus",
+        "ui-click": "ui_click",
+    }.get(command, command)
 
 
 def _endpoint_and_token() -> tuple[str, str]:
@@ -177,7 +291,16 @@ def call_http(
 
 
 def call_local(command: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    return _control_module().dispatch(command, arguments)
+    control = _control_module()
+    action = _control_command(command)
+    if action in control.UPSTREAM_COMMANDS:
+        return control.dispatch(action, arguments)
+    return control.dispatch(
+        action,
+        arguments,
+        allow_headless_direct=True,
+        fail_closed=True,
+    )
 
 
 def _gui_unavailable() -> dict[str, Any]:
