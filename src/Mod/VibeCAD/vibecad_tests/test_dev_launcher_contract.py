@@ -50,18 +50,237 @@ def test_windows_dev_launcher_initializes_pinned_submodules_before_pixi_build():
 def test_windows_dev_launcher_recovers_an_incomplete_repo_local_environment():
     script = _text(POWERSHELL)
 
-    assert "$LaunchableExecutable" in script
-    assert "if (-not $LaunchableExecutable)" in script
+    assert "$LaunchRuntime = Get-VibeCADLaunchRuntime" in script
+    assert "if (-not $LaunchRuntime.Complete)" in script
     assert "pixi clean --build" in script
     assert "Recovering an incomplete repo-local VibeCAD development environment" in script
+
+
+def test_windows_dev_launcher_requires_repo_local_qwindows_and_matching_qt_dlls():
+    script = _text(POWERSHELL)
+
+    assert "function Resolve-VibeCADQtLaunchRuntime" in script
+    assert "function Get-VibeCADLaunchRuntime" in script
+    for path in (
+        r"Library\lib\qt6\plugins\platforms\qwindows.dll",
+        r"Library\plugins\platforms\qwindows.dll",
+        r"plugins\platforms\qwindows.dll",
+    ):
+        assert path in script
+    for dll in (
+        "Qt6Core.dll",
+        "Qt6Gui.dll",
+        "Qt6Widgets.dll",
+    ):
+        assert dll in script
+    assert "qt5" not in script.lower()
+    assert "Qt5" not in script
+    assert "No supported repo-local qwindows.dll was found" in script
+    assert "matching Qt DLL runtime is incomplete" in script
+    assert "Get-VibeCADQtRuntimeIdentity" in script
+    assert script.count("qt_runtime = $QtRuntimeIdentity") == 3
+
+
+def test_windows_dev_launcher_load_probes_qwindows_for_recovery_and_prelaunch():
+    script = _text(POWERSHELL)
+
+    assert "function Test-VibeCADQtPlatformRuntime" in script
+    assert "from PySide6 import QtGui, QtWidgets" in script
+    assert 'platform_name != "windows"' in script
+    assert '$env:QT_QPA_PLATFORM = "windows"' in script
+    assert '$env:QT_FORCE_STDERR_LOGGING = "1"' in script
+    assert "VIBECAD_EXPECTED_QWINDOWS" in script
+    assert "GetModuleHandleW" in script
+    assert "GetModuleFileNameW" in script
+    assert "loaded_qwindows_path" in script
+    assert script.count("Test-VibeCADQtPlatformRuntime -LaunchRuntime") >= 3
+    initial_probe = "$InitialQtProbe = Test-VibeCADQtPlatformRuntime"
+    recovery_gate = "if (-not $LaunchRuntime.Complete)"
+    final_probe = "$FinalQtProbe = Test-VibeCADQtPlatformRuntime"
+    initial_probe_index = script.index(initial_probe)
+    assert initial_probe_index < script.index(recovery_gate, initial_probe_index)
+    assert script.rindex(final_probe) < script.index("$GuiProcess = Start-Process")
+    assert script.count("qt_platform_probe = $QtPlatformProbeEvidence") == 3
+    assert "qt_process = [ordered]@{" in script
+    assert "loaded_qwindows_path = $QtRuntimeIdentity.qwindows_path" in script
+    assert "loaded_qwindows_sha256 = $QtRuntimeIdentity.qwindows_sha256" in script
+
+
+def test_windows_dev_launcher_rejects_qwindows_resolving_outside_env_root():
+    script = _text(POWERSHELL)
+
+    assert "function Test-VibeCADPathWithinRoot" in script
+    assert "Test-VibeCADPathWithinRoot `" in script
+    assert "resolved outside the checkout Pixi environment" in script
+    qt_resolver = script[
+        script.index("function Resolve-VibeCADQtLaunchRuntime") : script.index(
+            "function Get-VibeCADLaunchRuntime"
+        )
+    ]
+    assert "Join-Path $ResolvedEnvironmentRoot" in qt_resolver
+    assert "Get-ChildItem" not in qt_resolver
+    assert "$env:QT_PLUGIN_PATH" not in qt_resolver
+    assert "$env:QT_QPA_PLATFORM_PLUGIN_PATH" not in qt_resolver
+
+
+def test_windows_dev_launcher_refuses_incomplete_skip_rebuild_before_launch():
+    script = _text(POWERSHELL)
+
+    guard = "if (-not $LaunchRuntime.Complete)"
+    refusal = (
+        "SkipRebuild requested, but the repo-local VibeCAD launch runtime is incomplete"
+    )
+    assert guard in script
+    assert refusal in script
+    assert script.index(guard) < script.index("$GuiProcess = Start-Process")
+    assert script.index(refusal) < script.index("$GuiProcess = Start-Process")
+
+
+def test_windows_dev_launcher_exports_only_exact_repo_local_qt_plugin_paths():
+    script = _text(POWERSHELL)
+
+    plugin_export = "$env:QT_PLUGIN_PATH = $LaunchRuntime.QtPluginRoot"
+    platform_export = (
+        "$env:QT_QPA_PLATFORM_PLUGIN_PATH = $LaunchRuntime.QtPlatformsDirectory"
+    )
+    assert plugin_export in script
+    assert platform_export in script
+    assert "$LaunchRuntime.QtDllDirectory" in script
+    assert script.index(plugin_export) < script.index("$GuiProcess = Start-Process")
+    assert script.index(platform_export) < script.index("$GuiProcess = Start-Process")
+    final_validation = (
+        "$FinalLaunchRuntime = Get-VibeCADLaunchRuntime -EnvironmentRoot "
+        "$ResolvedEnvRoot"
+    )
+    assert final_validation in script
+    assert script.index(final_validation) < script.rindex(plugin_export)
+    assert script.rindex(plugin_export) < script.index("$GuiProcess = Start-Process")
+    assert script.rindex(platform_export) < script.index("$GuiProcess = Start-Process")
+    assert '$env:QT_PLUGIN_PATH +=' not in script
+    assert '$env:QT_QPA_PLATFORM_PLUGIN_PATH +=' not in script
+
+
+def test_windows_dev_launcher_rehashes_executable_after_final_probe_before_launch():
+    script = _text(POWERSHELL)
+
+    expected_hash = "$ExecutableSha256 = Get-VibeCADSha256 -Path $ResolvedExecutable"
+    final_hash = (
+        "$FinalExecutableSha256 = Get-VibeCADSha256 -Path "
+        "$PostProbeLaunchRuntime.ExecutablePath"
+    )
+    launch = "$GuiProcess = Start-Process"
+
+    assert expected_hash in script
+    assert final_hash in script
+    assert "The repo-local GUI executable changed during final prelaunch validation." in script
+    assert script.index(expected_hash) < script.index(final_hash) < script.index(launch)
+
+
+def test_release_attestation_requires_clean_superproject_and_submodules():
+    script = _text(POWERSHELL)
+
+    assert "function Assert-VibeCADReleaseCheckoutClean" in script
+    assert "status --porcelain=v2 --untracked-files=all --ignore-submodules=none" in script
+    assert "ReleaseAttestation requires an exact clean Git checkout" in script
+    pre_build = (
+        '$ReleaseEvidence["pre_build_checked_at_utc"] = '
+        'Assert-VibeCADReleaseCheckoutClean -RepositoryRoot $RepoRoot'
+    )
+    pre_receipt = (
+        '$ReleaseEvidence["pre_receipt_checked_at_utc"] = '
+        'Assert-VibeCADReleaseCheckoutClean -RepositoryRoot $RepoRoot'
+    )
+    assert pre_build in script
+    assert pre_receipt in script
+    assert script.index("submodule update --init --recursive") < script.index(pre_build)
+    assert script.index(pre_build) < script.index("& $Pixi install -e default --frozen")
+    assert script.index(pre_receipt) < script.index("$BuildPayload = [ordered]@{")
+    assert script.count("release_evidence = $ReleaseEvidence") == 3
+    assert 'asserted = [bool]$ReleaseAttestation' in script
+    assert '$ReleaseEvidence["clean_checkout"] = $true' in script
+    assert '$ReleaseEvidence["submodule_dirt_checked"] = $true' in script
+    assert "includes_submodule_dirt" not in script
+    assert 'clean_checkout = $null' in script
+
+
+def test_release_attestation_forces_and_records_a_cold_pixi_build():
+    script = _text(POWERSHELL)
+
+    assert 'cold_build_asserted = [bool]$ReleaseAttestation' in script
+    assert "pre_build_environment_present" in script
+    assert "pre_build_runtime_complete" in script
+    assert "environment_absent_before_install" in script
+    assert 'if ($ReleaseAttestation) {' in script
+    assert "Preparing an exact cold repo-local release-attestation build" in script
+    assert "ReleaseAttestation could not remove the existing Pixi environment" in script
+    assert '$BuildAction = "pixi-install"' in script
+    assert script.index(
+        "Preparing an exact cold repo-local release-attestation build"
+    ) < script.index("& $Pixi install -e default --frozen")
 
 
 def test_windows_dev_launcher_sets_visible_identity_environment():
     script = _text(POWERSHELL)
 
     assert '$env:VIBECAD_DEV_MODE = "1"' in script
-    assert "$env:VIBECAD_DEV_SOURCE_SHA = $GitSha" in script
+    assert "$env:VIBECAD_DEV_SOURCE_SHA = $GitCommit" in script
+    assert "$env:VIBECAD_DEV_SOURCE_TREE = $GitTree" in script
     assert "$env:VIBECAD_DEV_SOURCE_ROOT = $RepoRoot" in script
+    assert "rev-parse --verify HEAD" in script
+    assert 'rev-parse --verify "HEAD^{tree}"' in script
+    assert "rev-parse --short" not in script
+
+
+def test_windows_dev_launcher_writes_collision_safe_build_and_launch_attestations():
+    script = _text(POWERSHELL)
+
+    assert "vibecad.dev-build-attestation.v1" in script
+    assert "vibecad.dev-launch-attestation.v1" in script
+    assert "function Write-VibeCADAttestation" in script
+    assert "[System.IO.FileMode]::CreateNew" in script
+    assert r'$AttestationRoot = Join-Path $RepoRoot ".vibecad-dev\attestations"' in script
+    assert "[guid]::NewGuid().ToString(\"N\")" in script
+    assert "repository_root" in script
+    assert "commit" in script
+    assert "tree" in script
+    assert "executable_sha256" in script
+    for name in (
+        "InitGui.py",
+        "VibeCADAgentControl.py",
+        "VibeCADGui.py",
+        "Invoke-VibeCAD-VisibleTour.ps1",
+        "Launch-VibeCAD-Dev.ps1",
+    ):
+        assert name in script
+
+
+def test_windows_dev_launcher_refuses_skip_rebuild_in_release_attestation_mode():
+    script = _text(POWERSHELL)
+
+    assert "[switch]$ReleaseAttestation" in script
+    guard = "if ($SkipRebuild -and $ReleaseAttestation)"
+    assert guard in script
+    assert "ReleaseAttestation cannot be combined with SkipRebuild" in script
+    assert script.index(guard) < script.index("submodule update --init --recursive")
+
+
+def test_windows_dev_launcher_exports_exact_attestation_contract():
+    script = _text(POWERSHELL)
+
+    for environment_name in (
+        "VIBECAD_DEV_ATTESTATION_REQUIRED",
+        "VIBECAD_DEV_BUILD_ATTESTATION",
+        "VIBECAD_DEV_BUILD_ATTESTATION_SHA256",
+        "VIBECAD_DEV_LAUNCH_ATTESTATION",
+        "VIBECAD_DEV_LAUNCH_ATTESTATION_SHA256",
+    ):
+        assert environment_name in script
+    assert "$Endpoint.process_id -ne $GuiProcess.Id" in script
+    assert "$Status.process_id -ne $GuiProcess.Id" in script
+    assert "$Endpoint.server_instance_id -ne $Status.server_instance_id" in script
+    assert "vibecad.dev-runtime-identity.v1" in script
+    assert "build_attestation_path" in script
+    assert "launch_attestation_path" in script
 
 
 def test_windows_dev_launcher_scopes_agent_control_to_this_checkout():
@@ -139,6 +358,7 @@ def test_gui_bootstrap_consumes_dev_identity_without_affecting_normal_launches()
 
     assert 'os.environ.get("VIBECAD_DEV_MODE")' in script
     assert 'os.environ.get("VIBECAD_DEV_SOURCE_SHA")' in script
+    assert "development_runtime_identity" in script
     assert "VibeCADDevelopmentIdentity" in script
     assert "VibeCAD DEV" in script
     assert "QtCore.QTimer.singleShot(0, _setup_development_identity)" in script

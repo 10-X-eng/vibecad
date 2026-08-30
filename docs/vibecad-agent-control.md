@@ -66,8 +66,124 @@ GUI under test. The launcher waits for an authenticated ready status before it
 reports success; see
 [developer-launch-windows.md](developer-launch-windows.md).
 
-`endpoint.json` contains `host`, `port`, `base_url`, and `token_path`. It
-does not contain the token. Read the token file; do not prompt a human.
+`endpoint.json` contains `host`, `port`, `base_url`, and the exact canonical
+`token_path`. It does not contain the token. Read the token file; do not prompt a
+human. The endpoint also carries the same process/runtime envelope returned at
+the top level of `/v1/status`:
+
+| Field | Contract |
+| --- | --- |
+| `server_instance_id` | Cryptographically random ID regenerated for each server start |
+| `process_id` | Actual VibeCAD process ID |
+| `server_started_at_utc` | UTC server-start timestamp |
+| `runtime_identity` | Strict attested identity below, or `null` for compatible normal/skip-rebuild startup |
+
+The endpoint and authenticated status must match on all four fields. A caller
+that launched VibeCAD itself must additionally compare `process_id` with the
+process it started; freshness by endpoint-file timestamp or window title alone
+is insufficient.
+
+### Attested development runtime identity
+
+A rebuilt Windows checkout launch exports receipts and starts the server only
+after the runtime independently reads the actual checkout's canonical Git root,
+full `HEAD`, and `HEAD^{tree}` and validates the actual files. In that mode
+`runtime_identity` has this additive schema (paths are absolute and hashes are
+lowercase SHA-256):
+
+```json
+{
+  "schema": "vibecad.dev-runtime-identity.v1",
+  "repository_root": "<canonical checkout>",
+  "commit": "<full Git commit>",
+  "tree": "<full Git tree>",
+  "executable_path": "<actual process executable>",
+  "executable_sha256": "<actual executable hash>",
+  "build_attestation_path": "<absolute build receipt>",
+  "build_attestation_sha256": "<actual build receipt hash>",
+  "launch_attestation_path": "<absolute launch receipt>",
+  "launch_attestation_sha256": "<actual launch receipt hash>",
+  "qt_runtime": {
+    "qt_major": 6,
+    "qwindows_path": "<checkout-local qwindows.dll>",
+    "qwindows_sha256": "<actual plugin hash>",
+    "dlls": [
+      {
+        "name": "Qt6Core.dll",
+        "path": "<checkout-local Qt6Core.dll>",
+        "sha256": "<actual DLL hash>"
+      }
+    ]
+  },
+  "qt_platform_probe": {
+    "complete": true,
+    "checked_at_utc": "<UTC timestamp>",
+    "platform": "windows",
+    "python_executable": "<checkout-local python.exe>",
+    "python_sha256": "<actual Python hash>",
+    "loaded_qwindows_path": "<same checkout-local qwindows.dll>",
+    "loaded_qwindows_sha256": "<same actual plugin hash>"
+  },
+  "release_evidence": {
+    "asserted": false,
+    "clean_checkout": null,
+    "submodule_dirt_checked": null,
+    "git_status_mode": null,
+    "cold_build_asserted": false,
+    "pre_build_environment_present": true,
+    "pre_build_runtime_complete": true,
+    "environment_absent_before_install": null,
+    "pre_build_checked_at_utc": null,
+    "environment_cleaned_at_utc": null,
+    "build_cache_cleaned_at_utc": null,
+    "pre_receipt_checked_at_utc": null
+  },
+  "qt_process": {
+    "platform": "windows",
+    "loaded_qwindows_path": "<module loaded by this VibeCAD PID>",
+    "loaded_qwindows_sha256": "<actual loaded-module file hash>"
+  },
+  "modules": [
+    {
+      "name": "VibeCADAgentControl.py",
+      "source_path": "<absolute checkout source>",
+      "source_sha256": "<actual source hash>",
+      "runtime_path": "<absolute installed module, or null for source-only assets>",
+      "runtime_sha256": "<actual installed hash, or null>"
+    }
+  ]
+}
+```
+
+The required module set is `InitGui.py`, `VibeCADAgentControl.py`,
+`VibeCADGui.py`, `Invoke-VibeCAD-VisibleTour.ps1`, and
+`Launch-VibeCAD-Dev.ps1`. The first three must have installed copies identical
+to their checkout sources; the last two are source-only identities. The build
+receipt uses `vibecad.dev-build-attestation.v1` and the launch receipt uses
+`vibecad.dev-launch-attestation.v1`. Missing, altered, cross-checkout, partial,
+stale, or executable-mismatched evidence prevents development control startup.
+The Qt and release objects must be complete and identical in both receipts.
+The process re-hashes their referenced files and uses Windows module inspection
+to prove that the visible VibeCAD PID itself loaded the attested `qwindows.dll`;
+the separate PySide6 probe is not accepted as a substitute for that GUI-process
+proof.
+
+Normal packaged startup remains compatible when these dev-attestation
+environment variables are absent: the existing server entry point, routes,
+defaults, and endpoint fields remain, with `runtime_identity: null`.
+
+### Token access
+
+The service still binds only to `127.0.0.1`; a caller cannot select a non-loopback
+host. Development mode accepts only the exact
+`<repo>\.vibecad-dev\agent` home derived from `VIBECAD_DEV_SOURCE_ROOT`; it
+rejects an outside override before creating or changing that directory. On
+Windows, token creation first protects the checkout-scoped agent directory and
+then the exact token file with one inheritance-protected, current-user
+full-control ACE. The DACL is read back and verified. Development mode refuses
+server startup if that operation is unavailable or the resulting ACL has any
+additional ACE. Normal installed startup keeps its existing best-effort
+file-permission compatibility behavior and does not replace the directory DACL.
 
 ## Exact commands (Windows)
 
@@ -187,7 +303,7 @@ All routes are loopback-only and require
 
 | Method | Path | Body | Result |
 | --- | --- | --- | --- |
-| GET | `/v1/status` | | Provider, auth (no secrets), Grok sign-in flag, documents, endpoint |
+| GET | `/v1/status` | | Process/runtime identity, provider, auth (no secrets), Grok sign-in flag, documents, endpoint |
 | GET | `/v1/documents` | | Open documents |
 | POST | `/v1/open` | `{"path":"..."}` | Open/activate a document |
 | POST | `/v1/save` | optional `{"document":"Name"}` | Save an already-named document and verify the file/postcondition |
@@ -197,6 +313,7 @@ All routes are loopback-only and require
 | GET | `/v1/ui/ribbon` | | Live ribbon names, workbenches, indices, selection, and screen geometry |
 | POST | `/v1/ui/click` | `{"kind":"menu|ribbon","text":"..."}`, optional exact PID/index | Activate one semantic Qt target without moving or clicking the OS cursor |
 | POST | `/v1/run` | `{"python":"..."}` or `{"script":"..."}` plus optional `path`, `recompute` | Exec against the active doc |
+| GET | `/v1/operations/{operation_id}` | | Read the in-memory state/result of a client-identified operation without entering the document thread |
 | GET/POST | `/v1/aero` | operation payload for POST | Bounded Aero context and operations |
 | GET/POST | `/v1/screenshot` | optional absolute `.png` path and explicit `overwrite` | Capture the visible VibeCAD window |
 | POST | `/v1/preferences` | | Show VibeCAD Preferences |
@@ -211,6 +328,41 @@ exceptions come back in the JSON payload.
 authority boundary. Only execute source the developer has authorized. Prefer a
 bounded domain route such as `/v1/aero` when one exists instead of bypassing its
 preconditions and postconditions through arbitrary Python.
+
+### Proving completion after a client timeout
+
+Any routed request body may add an optional canonical lowercase UUID in the
+`operation_id` field. When present, the response repeats that ID and the server
+keeps a bounded, thread-safe in-memory record for the lifetime of that server
+instance. Read it with:
+
+```text
+GET /v1/operations/<operation_id>
+```
+
+The operation record moves from `running` to `completed` and includes UTC start
+and completion times, its owning `server_instance_id`, the logical result, and
+the complete response. This lets a
+tester prove that a request which outlived its HTTP client timeout actually
+finished before it continues. IDs are single-use within a server instance;
+invalid or reused IDs fail closed. Completed records are evicted oldest-first
+only when the 256-record bound needs room, and running records are never
+evicted. A restart clears the registry and rotates `server_instance_id`; a late
+completion from the previous server instance is ignored even if a client reuses
+the same UUID after restart.
+
+Each listener also owns an immutable copy of its complete process/runtime
+identity envelope. If an old request overlaps shutdown and restart, that old
+listener cannot accidentally publish the new listener's instance ID, start
+time, or runtime identity.
+
+`/v1/status` advertises this additive surface as
+`vibecad.dev-operation-tracking.v1`. The operation-status route reads only the
+registry, so it does not enter FreeCAD's document thread. Normal document and
+status routes remain serialized in fail-closed development mode: while a long
+document operation owns that gate they return `DOCUMENT_OPERATION_BUSY`
+immediately, and a normal authenticated status is rechecked after tracked
+completion.
 
 ### Semantic UI activation and the independent cursor
 
@@ -276,7 +428,9 @@ The original `ensure_server_started()` and omitted-flag `dispatch()` behavior
 remains the compatibility default for existing integrations and normal
 installed startup. Development sessions opt in through
 `ensure_fail_closed_server_started()` when `VIBECAD_DEV_MODE=1`; the launcher
-sets that value itself. Newly added save, close, UI-inspection, UI-activation,
+sets that value itself. If the rebuilt launcher also supplies the attestation
+variables, server startup validates them before creating a token, listener, or
+endpoint. Newly added save, close, UI-inspection, UI-activation,
 and screenshot commands stay guarded even for a direct caller that omits the
 new mode flag.
 

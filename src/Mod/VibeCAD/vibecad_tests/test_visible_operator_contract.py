@@ -61,7 +61,6 @@ PROHIBITED_PHYSICAL_INPUT_APIS = (
     "robotjs",
 )
 PROHIBITED_PYTHON_INPUT_MODULES = {
-    "ctypes",
     "keyboard",
     "mouse",
     "pyautogui",
@@ -71,6 +70,7 @@ PROHIBITED_PYTHON_INPUT_MODULES = {
     "win32gui",
     "win32process",
 }
+ALLOWED_CTYPES_WINDOWS_LIBRARIES = {"advapi32", "kernel32"}
 PROHIBITED_QT_INPUT_CALLS = {
     "QtGui.QCursor.setPos",
     "QtTest.QTest.keyClick",
@@ -304,15 +304,29 @@ def test_tester_implementations_never_take_over_physical_mouse_or_keyboard() -> 
     agent_tree = ast.parse(agent_source, filename=str(AGENT_CONTROL))
     imported_modules: set[str] = set()
     calls: Counter[str] = Counter()
+    ctypes_windows_libraries: list[str | None] = []
     for node in ast.walk(agent_tree):
         if isinstance(node, ast.Import):
             imported_modules.update(alias.name.split(".", 1)[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported_modules.add(node.module.split(".", 1)[0])
         elif isinstance(node, ast.Call):
-            calls[_dotted_name(node.func)] += 1
+            call_name = _dotted_name(node.func)
+            calls[call_name] += 1
+            if call_name == "ctypes.WinDLL":
+                library = None
+                if (
+                    node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                ):
+                    library = node.args[0].value.lower()
+                ctypes_windows_libraries.append(library)
 
     assert imported_modules.isdisjoint(PROHIBITED_PYTHON_INPUT_MODULES)
+    assert "ctypes.windll" not in agent_source
+    assert None not in ctypes_windows_libraries
+    assert set(ctypes_windows_libraries) <= ALLOWED_CTYPES_WINDOWS_LIBRARIES
     assert not (set(calls) & PROHIBITED_QT_INPUT_CALLS)
     assert calls["QtGui.QCursor.pos"] == 1
     assert calls["QtTest.QTest.mouseClick"] == 1

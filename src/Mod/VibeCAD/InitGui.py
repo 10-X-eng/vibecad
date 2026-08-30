@@ -232,7 +232,20 @@ try:
 
             source_sha = str(
                 os.environ.get("VIBECAD_DEV_SOURCE_SHA") or "unknown"
-            ).strip()[:12]
+            ).strip()
+            if (
+                str(os.environ.get("VIBECAD_DEV_ATTESTATION_REQUIRED") or "").strip()
+                == "1"
+            ):
+                import VibeCADAgentControl
+
+                runtime_identity = VibeCADAgentControl.development_runtime_identity()
+                if runtime_identity is None:
+                    raise RuntimeError(
+                        "The attested development runtime identity is unavailable."
+                    )
+                source_sha = str(runtime_identity["commit"])
+            source_sha = source_sha[:12]
             marker = f"VibeCAD DEV • {source_sha}"
             main_window = Gui.getMainWindow()
             if main_window is None:
