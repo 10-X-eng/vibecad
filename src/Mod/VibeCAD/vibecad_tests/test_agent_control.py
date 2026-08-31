@@ -1960,6 +1960,53 @@ def test_status_response_uses_immutable_listener_identity(monkeypatch) -> None:
     } == old_identity
 
 
+@pytest.mark.parametrize(
+    "disconnect_error",
+    (
+        BrokenPipeError(32, "client closed the pipe"),
+        ConnectionResetError(10054, "client reset the connection"),
+        ConnectionAbortedError(10053, "client aborted the connection"),
+    ),
+)
+def test_http_response_treats_client_disconnect_as_normal_completion(
+    disconnect_error,
+) -> None:
+    handler = object.__new__(control._AgentRequestHandler)
+    handler.close_connection = False
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _name, _value: None
+    handler.end_headers = lambda: None
+
+    class _DisconnectedWriter:
+        def write(self, _raw):
+            raise disconnect_error
+
+    handler.wfile = _DisconnectedWriter()
+
+    handler._write_json(200, {"ok": True})
+
+    assert handler.close_connection is True
+
+
+def test_http_response_does_not_hide_unrelated_write_failures() -> None:
+    handler = object.__new__(control._AgentRequestHandler)
+    handler.close_connection = False
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _name, _value: None
+    handler.end_headers = lambda: None
+
+    class _FailingWriter:
+        def write(self, _raw):
+            raise OSError(5, "unexpected response write failure")
+
+    handler.wfile = _FailingWriter()
+
+    with pytest.raises(OSError, match="unexpected response write failure"):
+        handler._write_json(200, {"ok": True})
+
+    assert handler.close_connection is False
+
+
 def test_existing_server_start_default_preserves_no_dispatcher_compatibility(
     tmp_path, monkeypatch
 ) -> None:
