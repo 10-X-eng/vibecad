@@ -436,6 +436,10 @@ from VibeCADNativeMeshPointsBindings import mesh_points_runtime_bindings
 from VibeCADNativeMeshPointsRuntime import NativeMeshPointsRuntime
 from VibeCADNativeReverseBindings import reverse_runtime_bindings
 from VibeCADNativeReverseRuntime import NativeReverseRuntime
+from VibeCADNativeReconstructParametricBindings import (
+    reconstruct_parametric_runtime_bindings,
+)
+from VibeCADNativeReconstructParametricRuntime import NativeReconstructParametricRuntime
 from VibeCADNativeMeshExportBindings import mesh_export_runtime_bindings
 from VibeCADNativeMeshExportRuntime import NativeMeshExportRuntime
 from VibeCADNativeBackgroundBindings import native_background_runtime_bindings
@@ -493,6 +497,7 @@ def build_native_runtime_bindings(
     mesh_points = NativeMeshPointsRuntime(context)
     mesh_rebuild = NativeReverseRuntime(context, "mesh.rebuild")
     mesh_approximate = NativeReverseRuntime(context, "mesh.approximate")
+    mesh_reconstruct_parametric = NativeReconstructParametricRuntime(context)
     assembly_diagnosis = NativeAssemblyDiagnosisRuntime(context)
     assembly_bom = NativeAssemblyBomRuntime(context)
     assembly_fastener = NativeAssemblyFastenerRuntime(context)
@@ -637,6 +642,7 @@ def build_native_runtime_bindings(
         **mesh_segment_runtime_bindings(mesh_segment),
         **mesh_points_runtime_bindings(mesh_points),
         **reverse_runtime_bindings(mesh_rebuild, mesh_approximate),
+        **reconstruct_parametric_runtime_bindings(mesh_reconstruct_parametric),
         **assembly_diagnosis_runtime_bindings(assembly_diagnosis),
         **assembly_bom_runtime_bindings(assembly_bom),
         **assembly_fastener_runtime_bindings(assembly_fastener),

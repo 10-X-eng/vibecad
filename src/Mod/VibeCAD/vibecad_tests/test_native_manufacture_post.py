@@ -22,7 +22,7 @@ def test_schema_is_exact_job_only_and_exposes_no_process_or_output_controls() ->
     branch = schema["parameters"]["oneOf"][0]
 
     assert definition.primary_classification == "export"
-    assert branch["required"] == ["operation", "job"]
+    assert branch["required"] == ["job"]
     assert branch["additionalProperties"] is False
     assert set(branch["properties"]) == {"operation", "job"}
     assert branch["properties"]["job"]["required"] == [
@@ -46,7 +46,7 @@ def test_selected_schema_requires_one_ordered_exact_operation_subset() -> None:
     schema = definition.provider_schema(("selected_operations",))
     branch = schema["parameters"]["oneOf"][0]
 
-    assert branch["required"] == ["operation", "job", "operations"]
+    assert branch["required"] == ["job", "operations"]
     assert branch["additionalProperties"] is False
     assert set(branch["properties"]) == {"operation", "job", "operations"}
     operations = branch["properties"]["operations"]
@@ -93,14 +93,21 @@ def test_result_reader_preserves_child_failure_code_without_exposing_diagnostics
     }
 
 
-def test_result_reader_rejects_symlinks_and_over_limit_metadata(tmp_path: Path) -> None:
+def test_result_reader_rejects_symlinks(tmp_path: Path) -> None:
     target = tmp_path / "target.json"
     target.write_text('{"ok":true}', encoding="utf-8")
     link = tmp_path / "result.json"
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     with pytest.raises(NativeManufactureError, match="unreadable result metadata"):
         Worker._read_result(link)
 
+
+def test_result_reader_rejects_over_limit_metadata(tmp_path: Path) -> None:
     oversized = tmp_path / "oversized.json"
     oversized.write_bytes(b"{" + b" " * (Worker.MAX_POST_RESULT_BYTES + 1) + b"}")
     with pytest.raises(NativeManufactureError) as raised:

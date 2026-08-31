@@ -301,7 +301,10 @@ def test_partdesign_uses_the_exact_common_v2_lifecycle() -> None:
     assert pack.tool_names == (
         *(
             f"vibescript.{operation}"
-            for operation in domains.UNIVERSAL_SOURCE_OPERATIONS
+            for operation in (
+                *domains.UNIVERSAL_SOURCE_OPERATIONS,
+                *domains.MODEL_ASSEMBLY_SOURCE_OPERATIONS,
+            )
         ),
         *(
             f"vibescript.partdesign.{operation}"
