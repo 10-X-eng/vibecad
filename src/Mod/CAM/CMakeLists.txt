@@ -606,6 +606,7 @@ SET(Tests_SRCS
     CAMTests/TestPathRotaryWrap.py
     CAMTests/TestPathRotationGenerator.py
     CAMTests/TestPathSetupSheet.py
+    CAMTests/TestPathSimulation.py
     CAMTests/TestPathSpiralGenerator.py
     CAMTests/TestPathStock.py
     CAMTests/TestPathTapGenerator.py

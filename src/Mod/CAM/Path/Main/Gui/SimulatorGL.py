@@ -396,8 +396,16 @@ def activate_prepared_simulation(**prepared):
 def owns_active_prepared_simulation(document):
     """Return whether the active task belongs to this exact Native document."""
 
+    global _active_native_prepared_simulation
     simulation = _active_native_prepared_simulation
-    if simulation is None or simulation.job.Document is not document:
+    if simulation is None:
+        return False
+    try:
+        simulation_document = simulation.job.Document
+    except (AttributeError, ReferenceError, RuntimeError):
+        _active_native_prepared_simulation = None
+        return False
+    if simulation_document is not document:
         return False
     try:
         guiDocument = FreeCADGui.getDocument(document)

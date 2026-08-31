@@ -15,6 +15,7 @@ from VibeCADNativeManufactureOperationSupport import (
     PreparedOperationBoundary,
     create_native_operation,
     extend_native_operation_draft,
+    merge_subelement_geometry_items,
     native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm as shared_quantity_mm,
@@ -106,16 +107,20 @@ class PreparedProfileCreate:
 
 @dataclass(frozen=True, slots=True)
 class ProfileDefaultsSpec:
+    label: Any
     job: Mapping[str, Any]
     tool_controller: Mapping[str, Any]
     geometry: tuple[Mapping[str, Any], ...]
     cut_side: str
+    coolant: str
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedProfileDefaults:
+    label: str
     boundary: PreparedOperationBoundary
     cut_side: str
+    coolant: str
 
 
 def _error(message: str, code: str = "NATIVE_ARGUMENTS_INVALID") -> None:
@@ -340,30 +345,18 @@ def _prepare_geometry(
         return kind, prepared, frozenset()
     if kind != "subelements" or set(request) != {"kind", "items"}:
         _error("geometry must be entire_job or a closed subelements request.")
-    raw_items = request.get("items")
-    if (
-        not isinstance(raw_items, list)
-        or not 1 <= len(raw_items) <= MAX_PROFILE_GEOMETRY_ITEMS
-    ):
-        _error("subelements geometry requires 1 through 32 model items.")
+    grouped_items = merge_subelement_geometry_items(
+        request.get("items"),
+        noun="Profile",
+        max_items=MAX_PROFILE_GEOMETRY_ITEMS,
+        max_subelements=MAX_PROFILE_SUBELEMENTS,
+    )
     prepared_items = []
-    seen_models: set[str] = set()
     selected_types: set[str] = set()
-    total = 0
-    for item in raw_items:
-        if not isinstance(item, Mapping) or set(item) != {"model", "subelements"}:
-            _error("Each Profile geometry item requires model and subelements.")
-        target = item["model"]
-        if not isinstance(target, Mapping) or set(target) != {
-            "object_name",
-            "expected_state_sha256",
-        }:
-            _error("Each Profile model requires one exact state target.")
-        name = str(target.get("object_name") or "")
-        expected = str(target.get("expected_state_sha256") or "")
-        if name in seen_models or name not in models:
+    for name, expected, names in grouped_items:
+        if name not in models:
             _error(
-                "Profile geometry models must be distinct public sources owned by the exact Job.",
+                f"Profile model {name!r} is not a public source owned by the exact Job.",
                 "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
             )
         if model_states.get(name) != expected:
@@ -377,21 +370,11 @@ def _prepare_geometry(
                 f"CAM model {name!r} no longer exists.",
                 "NATIVE_MANUFACTURE_TARGET_STALE",
             )
-        raw_names = item["subelements"]
-        if not isinstance(raw_names, list) or not raw_names:
-            _error("Each Profile model requires at least one subelement.")
-        names = tuple(str(value) for value in raw_names)
-        if len(names) != len(set(names)):
-            _error("Profile subelement names must be unique per model.")
-        total += len(names)
-        if total > MAX_PROFILE_SUBELEMENTS:
-            _error("A Profile request accepts at most 64 total subelements.")
         element_hashes = []
         for subelement in names:
             element_type, element_hash = _validate_subelement(public, subelement)
             selected_types.add(element_type)
             element_hashes.append(element_hash)
-        seen_models.add(name)
         prepared_items.append(
             PreparedProfileGeometry(
                 public_source=public,
@@ -498,6 +481,9 @@ def preflight_profile_defaults(
     cut_side = str(spec.cut_side or "")
     if cut_side not in {"outside", "inside"}:
         _error("Profile cut_side must be outside or inside.")
+    coolant = str(spec.coolant or "")
+    if coolant not in {"none", "flood", "mist"}:
+        _error("Profile coolant must be none, flood, or mist.")
     boundary = preflight_operation_boundary(
         document,
         noun="Profile",
@@ -507,7 +493,12 @@ def preflight_profile_defaults(
         allowed_subelement_types=frozenset({"Face", "Edge"}),
         allow_entire_job=False,
     )
-    return PreparedProfileDefaults(boundary=boundary, cut_side=cut_side)
+    return PreparedProfileDefaults(
+        label=_clean_label(spec.label),
+        boundary=boundary,
+        cut_side=cut_side,
+        coolant=coolant,
+    )
 
 
 def _assert_preflight_current(document: Any, prepared: PreparedProfileCreate) -> None:
@@ -682,7 +673,16 @@ def _apply_profile_default_intent(
     *,
     prepared: PreparedProfileDefaults,
 ) -> None:
+    operation.Label = prepared.label
+    operation.Proxy.init = False
     operation.Side = prepared.cut_side.capitalize()
+    operation.CoolantMode = prepared.coolant.capitalize()
+    if str(operation.Side).lower() != prepared.cut_side:
+        _error(
+            "The native Profile rejected cut_side "
+            f"{prepared.cut_side!r} during configuration.",
+            "NATIVE_MANUFACTURE_PROFILE_POSTCONDITION_FAILED",
+        )
 
 
 def create_profile_defaults(
@@ -934,9 +934,11 @@ def _default_profile_result(
     *,
     prepared: PreparedProfileDefaults,
 ) -> Mapping[str, Any]:
-    if str(operation.Side).lower() != prepared.cut_side:
+    actual_cut_side = str(operation.Side).lower()
+    if actual_cut_side != prepared.cut_side:
         _error(
-            "The created Profile did not retain its cut side.",
+            "The created Profile normalized cut_side from "
+            f"{prepared.cut_side!r} to {actual_cut_side!r}.",
             "NATIVE_MANUFACTURE_PROFILE_POSTCONDITION_FAILED",
         )
     return {

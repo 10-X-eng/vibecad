@@ -162,7 +162,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     )
 
 
-def _controller_settings(label: str, tool_number: dict, feed: float) -> dict:
+def _controller_settings(label: str, tool_number: int | dict, feed: float) -> dict:
     return {
         "label": label,
         "tool_number": tool_number,
@@ -464,7 +464,7 @@ def _run() -> None:
             "target": _target(tool_controller_state(tool_controller)),
             "controller": _controller_settings(
                 "Native finishing controller",
-                {"kind": "explicit", "value": 9},
+                9,
                 600.0,
             ),
         }
@@ -504,7 +504,7 @@ def _run() -> None:
                 "property_changes": [
                     {
                         "property_name": "Diameter",
-                        "value": {"kind": "length_mm", "value": 7.5},
+                        "value": 7.5,
                     }
                 ],
             },
@@ -518,11 +518,11 @@ def _run() -> None:
             "property_changes": [
                 {
                     "property_name": "Diameter",
-                    "value": {"kind": "length_mm", "value": 7.5},
+                    "value": 7.5,
                 },
                 {
                     "property_name": "Material",
-                    "value": {"kind": "choice", "value": "Carbide"},
+                    "value": "Carbide",
                 },
             ],
         }

@@ -92,6 +92,9 @@ NotValidBaseTypeIds = []
 
 def isValidBaseObject(obj):
     """isValidBaseObject(obj) ... returns true if the object can be used as a base for a job."""
+    timeline_role = str(getattr(obj, "VibeCADTimelineRole", "") or "")
+    if timeline_role in {"internal", "resource"} and obj.TypeId != "PartDesign::Body":
+        return False
     if hasattr(obj, "getParentGeoFeatureGroup") and obj.getParentGeoFeatureGroup():
         # Can't link to anything inside a geo feature group anymore
         Path.Log.debug("%s is inside a geo feature group" % obj.Label)

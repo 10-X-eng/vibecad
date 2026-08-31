@@ -112,6 +112,18 @@ def is_timeline_input_usable(obj, document=None):
     if document is None:
         document = getattr(obj, "Document", None)
     try:
+        if getattr(obj, "Document", None) is not document or not is_document_object(
+            obj,
+            document,
+        ):
+            return False
+        if FreeCAD.GuiUp:
+            import PartGui
+
+            # Bodies are stable human-facing identities. Their active History
+            # state, rather than the structural container, is the exact model
+            # input used by every modeling workbench.
+            return bool(PartGui.isModelingObjectActive(obj))
         current = obj
         visited = set()
         while current is not None:
@@ -122,12 +134,10 @@ def is_timeline_input_usable(obj, document=None):
             current_document = getattr(current, "Document", None)
             if current is obj and current_document is not document:
                 return False
-            if (
-                not is_document_object(current, current_document)
-                or not current_document.isObjectUsableAtCurrentTimelinePosition(
-                    current
-                )
-            ):
+            if not is_document_object(
+                current,
+                current_document,
+            ) or not current_document.isObjectUsableAtCurrentTimelinePosition(current):
                 return False
             linked = current.getLinkedObject(recursive=False)
             if linked is None or linked is current:

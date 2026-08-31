@@ -35,6 +35,7 @@ from VibeCADNativeManufactureProgramSchema import (
     manufacture_program_capability_definition,
 )
 from VibeCADNativeManufactureToolSchema import (
+    manufacture_tool_catalog_capability_definition,
     manufacture_tool_capability_definition,
 )
 from VibeCADNativeManufactureFocusedToolSchema import (
@@ -89,6 +90,37 @@ _AVAILABLE = (
     "robot.export",
 )
 
+
+def test_visible_partdesign_body_shadows_its_private_compatibility_link() -> None:
+    identity = {
+        "VibeCADScriptedEngine": "vibescript:partdesign",
+        "VibeCADScriptedModelId": "0123456789abcdef0123456789abcdef",
+        "VibeCADScriptedOutputKey": "FixtureBlock",
+    }
+    body = SimpleNamespace(
+        TypeId="PartDesign::Body",
+        VibeCADScriptedRole="implementation",
+        **identity,
+    )
+    publication = SimpleNamespace(
+        TypeId="App::Link",
+        VibeCADScriptedRole="publication",
+        **identity,
+    )
+    independent = SimpleNamespace(
+        TypeId="App::Link",
+        VibeCADScriptedRole="publication",
+        VibeCADScriptedEngine="vibescript:partdesign",
+        VibeCADScriptedModelId="fedcba9876543210fedcba9876543210",
+        VibeCADScriptedOutputKey="OtherPart",
+    )
+
+    shadowed = manufacture_snapshot._shadowed_partdesign_publication_ids(
+        (body, publication, independent)
+    )
+
+    assert shadowed == {id(publication)}
+
 _SHARED = {
     "state.read",
     "view.control",
@@ -96,7 +128,6 @@ _SHARED = {
     "inspect.compare",
     "document.save",
     "document.undo",
-    "native.job",
 }
 
 
@@ -229,7 +260,6 @@ def test_selected_setup_exposes_only_lifecycle_supported_by_its_state() -> None:
 
     assert {
         "manufacture.tool",
-        "manufacture.operation",
         "manufacture.face",
         "manufacture.pocket",
         "manufacture.profile",
@@ -251,6 +281,7 @@ def test_selected_setup_exposes_only_lifecycle_supported_by_its_state() -> None:
     assert "manufacture.post" not in names
     assert "manufacture.post_job" not in names
     assert "manufacture.post_selected" not in names
+    assert "native.job" not in names
     assert not any(name.startswith("robot.") for name in names)
 
 
@@ -271,7 +302,6 @@ def test_valid_paths_add_correction_simulation_and_post_without_hiding_setup_too
 
     assert {
         "manufacture.tool",
-        "manufacture.operation",
         "manufacture.program",
         "manufacture.operations",
         "manufacture.dressup",
@@ -306,7 +336,6 @@ def test_active_native_simulation_exposes_exact_close_and_safe_reads_only() -> N
         "state.read",
         "inspect.query",
         "inspect.compare",
-        "native.job",
         "manufacture.setups",
         "manufacture.read_setup",
         "manufacture.setup_options",
@@ -352,7 +381,6 @@ def test_unselected_independent_setups_keep_explicit_target_lifecycle_available(
 
     assert {
         "manufacture.tool",
-        "manufacture.operation",
         "manufacture.program",
         "manufacture.operations",
         "manufacture.dressup",
@@ -404,7 +432,7 @@ def test_busy_unrelated_setup_does_not_hide_selected_setup_tools() -> None:
 
     names = set(manufacture_provider_tool_names(domain, _AVAILABLE))
 
-    assert "manufacture.operation" in names
+    assert "manufacture.operation" not in names
     assert "manufacture.pocket" in names
     assert "document.save" in names
 
@@ -420,7 +448,7 @@ def test_provider_authorization_applies_manufacture_scope_after_human_ribbon() -
 
     assert projected.snapshot is surface.snapshot
     assert "workspace.switch" not in projected.tool_names
-    assert "manufacture.operation" in projected.tool_names
+    assert "manufacture.operation" not in projected.tool_names
     assert "manufacture.simulation" not in projected.tool_names
     assert tuple(schema["name"] for schema in projected.schemas) == projected.tool_names
 
@@ -488,6 +516,21 @@ def test_focused_inspection_tools_follow_exact_setup_content() -> None:
     }
 
 
+def test_provider_tool_catalog_is_one_clear_listing_operation() -> None:
+    registry, surface = _definition_surface(
+        (manufacture_tool_catalog_capability_definition(),)
+    )
+
+    projected = scope_manufacture_provider_surface(
+        surface,
+        {"surface_id": "manufacture", "domain": _domain()},
+        registry=registry,
+    )
+
+    assert projected.tool_names == ("manufacture.tool_catalog",)
+    assert _schema_operations(projected.schemas[0]) == {"list_tools"}
+
+
 def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
     definitions = (
         manufacture_job_capability_definition(),
@@ -544,7 +587,7 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
         "update_setup",
     }
 
-    assert "manufacture.operation" in projected_with_tool.tool_names
+    assert "manufacture.operation" not in projected_with_tool.tool_names
     assert {
         "manufacture.face",
         "manufacture.pocket",
@@ -587,19 +630,10 @@ def test_setup_lifecycle_operations_sharpen_as_resources_are_added() -> None:
     assert "manufacture.operations" in projected_with_path.tool_names
     assert "manufacture.dressup" in projected_with_path.tool_names
     assert {
-        "set_start_point",
-        "array",
-        "simple_copy",
-    } <= {
-        operation
-        for name, schema in zip(
-            projected_with_path.tool_names,
-            projected_with_path.schemas,
-            strict=True,
-        )
-        if name == "manufacture.operation"
-        for operation in _schema_operations(schema)
-    }
+        "manufacture.start_point",
+        "manufacture.array",
+        "manufacture.copy_path",
+    } <= set(projected_with_path.tool_names)
 
 
 def test_invalid_or_truncated_state_fails_closed_to_discovery() -> None:
@@ -776,7 +810,7 @@ def test_focused_setup_keeps_the_exact_counts_required_for_provider_scope(
     result = manufacture_snapshot.build_manufacture_snapshot(document)
 
     assert result["active_job"]["counts"] == state["counts"]
-    assert "manufacture.operation" in manufacture_provider_tool_names(
+    assert "manufacture.operation" not in manufacture_provider_tool_names(
         result,
         _AVAILABLE,
     )

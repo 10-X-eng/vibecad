@@ -512,12 +512,34 @@ def _is_usable(obj: Any, document: Any) -> bool:
         return False
 
 
-def candidate_model_state(obj: Any) -> dict[str, Any]:
+def _validated_model_state(
+    obj: Any,
+    *,
+    require_history_usable: bool,
+) -> dict[str, Any]:
     document = getattr(obj, "Document", None)
-    if document is None or not _is_usable(obj, document):
+    name = str(getattr(obj, "Name", "") or "")
+    if (
+        document is None
+        or not name
+        or document.getObject(name) is not obj
+        or (require_history_usable and not _is_usable(obj, document))
+    ):
         raise NativeManufactureError(
             "The CAM model candidate is not usable at the current History position.",
             error_code="NATIVE_MANUFACTURE_TARGET_STALE",
+        )
+    try:
+        import Path.Base.Util as PathUtil
+    except ImportError as exc:
+        raise NativeManufactureError(
+            "The CAM Job model validator is unavailable.",
+            error_code="NATIVE_MANUFACTURE_ENVIRONMENT_UNAVAILABLE",
+        ) from exc
+    if not PathUtil.isValidBaseObject(obj):
+        raise NativeManufactureError(
+            "The object is not a valid CAM Job model.",
+            error_code="NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
         )
     state = mesh_object_state(obj)
     shape = getattr(obj, "Shape", None)
@@ -534,6 +556,16 @@ def candidate_model_state(obj: Any) -> dict[str, Any]:
     }
     state["state_sha256"] = _digest(digest_source)
     return state
+
+
+def candidate_model_state(obj: Any) -> dict[str, Any]:
+    return _validated_model_state(obj, require_history_usable=True)
+
+
+def _job_model_state(obj: Any) -> dict[str, Any]:
+    """Fingerprint an exact Job-owned source after its History replacement."""
+
+    return _validated_model_state(obj, require_history_usable=False)
 
 
 def _operation_reference_state(obj: Any) -> dict[str, Any]:
@@ -956,7 +988,7 @@ def job_state(
     for resource in model_group:
         public = _public_model(job, resource)
         try:
-            state = candidate_model_state(public)
+            state = _job_model_state(public)
         except NativeManufactureError:
             state = _fallback_resource_state(public)
         models.append(

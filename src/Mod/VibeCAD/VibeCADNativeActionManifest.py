@@ -1920,7 +1920,7 @@ _EXACT_TARGET_TYPE_OVERRIDES = {
     "CAM_Pocket_Shape": "ExactCamJobPocketGeometryAndController",
     "CAM_MillFacing": "ExactCamJobStockAndController",
     "CAM_Helix": "ExactCamJobHoleFeaturesControllerAndHelixParameters",
-    "CAM_Adaptive": "ExactCamJobAdaptiveRegionsControllerExtensionsAndParameters",
+    "CAM_Adaptive": "ExactCamJobAdaptiveRegionsAndController",
     "CAM_Slot": "ExactCamJobSlotPathControllerAndParameters",
     "CAM_Drilling": "ExactCamJobDrillableGeometryAndController",
     "CAM_ThreadMilling": "ExactCamJobHoleFeaturesControllerAndThreadDefinition",

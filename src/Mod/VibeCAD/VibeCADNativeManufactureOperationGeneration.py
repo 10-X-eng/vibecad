@@ -31,6 +31,9 @@ from VibeCADScriptedProcess import run_process
 MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESULT_BYTES = 256 * 1024 * 1024
+MAX_GENERATED_PYTHON_STATE_BYTES = 64 * 1024 * 1024
+MAX_GENERATED_PYTHON_STATE_DEPTH = 64
+MAX_GENERATED_PYTHON_STATE_NODES = 1_000_000
 PATH_TIMEOUT_SECONDS = 3600.0
 PATH_MEMORY_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
 _CACHE_LIMIT = 8
@@ -53,6 +56,7 @@ _GENERATION_VALUE_TYPES = frozenset(
         "App::PropertyIntegerList",
         "App::PropertyLength",
         "App::PropertyPercent",
+        "App::PropertyPythonObject",
         "App::PropertyQuantity",
         "App::PropertyString",
         "App::PropertyStringList",
@@ -714,17 +718,79 @@ def _generation_property_changes(
                 f"CAM path generation changed unsupported property {name!r}.",
                 "NATIVE_MANUFACTURE_PATH_WORKER_INVALID",
             )
+        value = current["value"]
+        if type_id == "App::PropertyPythonObject":
+            value = _plain_json_property(value)
         changed.append(
             {
                 "name": name,
                 "type": type_id,
-                "value": current["value"],
+                "value": value,
             }
         )
     return changed
 
 
+def _plain_json_property(value: Any) -> Any:
+    nodes = 0
+
+    def validate(item: Any, depth: int) -> None:
+        nonlocal nodes
+        nodes += 1
+        if (
+            depth > MAX_GENERATED_PYTHON_STATE_DEPTH
+            or nodes > MAX_GENERATED_PYTHON_STATE_NODES
+        ):
+            _error(
+                "The isolated CAM path returned oversized generated Python state.",
+                "NATIVE_MANUFACTURE_PATH_WORKER_INVALID",
+            )
+        if item is None or type(item) in {bool, int, str}:
+            return
+        if type(item) is float:
+            if not math.isfinite(item):
+                _error(
+                    "The isolated CAM path returned non-finite generated Python state.",
+                    "NATIVE_MANUFACTURE_PATH_WORKER_INVALID",
+                )
+            return
+        if isinstance(item, list):
+            for child in item:
+                validate(child, depth + 1)
+            return
+        if isinstance(item, dict) and all(type(key) is str for key in item):
+            for child in item.values():
+                validate(child, depth + 1)
+            return
+        _error(
+            "The isolated CAM path returned non-JSON generated Python state.",
+            "NATIVE_MANUFACTURE_PATH_WORKER_INVALID",
+        )
+
+    validate(value, 0)
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise NativeManufactureError(
+            "The isolated CAM path returned unreadable generated Python state.",
+            error_code="NATIVE_MANUFACTURE_PATH_WORKER_INVALID",
+        ) from exc
+    if len(encoded) > MAX_GENERATED_PYTHON_STATE_BYTES:
+        _error(
+            "The isolated CAM path returned oversized generated Python state.",
+            "NATIVE_MANUFACTURE_PATH_WORKER_INVALID",
+        )
+    return json.loads(encoded)
+
+
 def _property_assignment(type_id: str, value: Any) -> Any:
+    if type_id == "App::PropertyPythonObject":
+        return _plain_json_property(value)
     if type_id in {"App::PropertyVector", "App::PropertyVectorDistance"}:
         if (
             not isinstance(value, list)

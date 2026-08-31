@@ -108,12 +108,14 @@ class PocketShapeDefaultsSpec:
     job: Mapping[str, Any]
     tool_controller: Mapping[str, Any]
     geometry: tuple[Mapping[str, Any], ...]
+    coolant: Any
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedPocketShapeDefaults:
     label: str
     boundary: PreparedOperationBoundary
+    coolant: str
 
 
 def _error(message: str, code: str = "NATIVE_ARGUMENTS_INVALID") -> None:
@@ -279,6 +281,9 @@ def preflight_pocket_shape_defaults(
 
     if not isinstance(spec, PocketShapeDefaultsSpec):
         raise TypeError("spec must be a PocketShapeDefaultsSpec")
+    coolant = str(spec.coolant or "")
+    if coolant not in _COOLANT_MODES:
+        _error("Pocket Shape coolant must be none, flood, or mist.")
     boundary = preflight_operation_boundary(
         document,
         noun="Pocket Shape",
@@ -292,6 +297,7 @@ def preflight_pocket_shape_defaults(
     return PreparedPocketShapeDefaults(
         label=clean_operation_label(spec.label, "Pocket Shape"),
         boundary=boundary,
+        coolant=coolant,
     )
 
 
@@ -407,6 +413,10 @@ def create_pocket_shape_defaults(
         "Path.Op.Gui.PocketShape"
     )
 
+    def configure(operation: Any) -> None:
+        operation.Label = prepared.label
+        operation.CoolantMode = _COOLANT_MODES[prepared.coolant]
+
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
@@ -414,7 +424,7 @@ def create_pocket_shape_defaults(
         operation_factory=PathPocketShape.Create,
         provider_factory=provider_factory,
         provider_resource=provider_resource,
-        configure=lambda operation: setattr(operation, "Label", prepared.label),
+        configure=configure,
         payload={"parameters": {"source": "setup_defaults"}},
     )
     return extend_native_operation_draft(draft, pocket_defaults=prepared)

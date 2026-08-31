@@ -9,6 +9,7 @@ from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityRegistry,
 )
 from VibeCADNativeManufactureOperationSchema import (
+    manufacture_adaptive_defaults_variant,
     manufacture_operation_capability_definition,
 )
 
@@ -42,6 +43,7 @@ def manufacture_focused_operation_capability_definitions() -> tuple[
         variant.operation: variant
         for variant in manufacture_operation_capability_definition().variants
     }
+    variants["adaptive"] = manufacture_adaptive_defaults_variant()
     return tuple(
         NativeCapabilityDefinition(
             name=name,

@@ -16,6 +16,25 @@ from VibeCADNativeManufactureFocusedOperationSchema import (
 from VibeCADNativeManufactureOperationRuntime import NativeManufactureOperationRuntime
 
 
+def _lower_focused_operation_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    values = dict(arguments)
+    adaptive_fields = {
+        "operation",
+        "label",
+        "job",
+        "tool_controller",
+        "geometry",
+        "coolant",
+    }
+    if (
+        values.get("operation") == "adaptive"
+        and {"job", "tool_controller", "geometry"}.issubset(values)
+        and set(values).issubset(adaptive_fields)
+    ):
+        values["operation"] = "adaptive_defaults"
+    return values
+
+
 def _mutate(call: Any) -> Mapping[str, Any]:
     runtime = getattr(call, "runtime", None)
     arguments = getattr(call, "arguments", None)
@@ -23,7 +42,10 @@ def _mutate(call: Any) -> Mapping[str, Any]:
         raise TypeError("A focused CAM operation call requires its exact runtime.")
     if not isinstance(arguments, Mapping):
         raise TypeError("A focused CAM operation call requires argument data.")
-    return runtime.mutate_operation(arguments, ticket=getattr(call, "ticket", None))
+    return runtime.mutate_operation(
+        _lower_focused_operation_arguments(arguments),
+        ticket=getattr(call, "ticket", None),
+    )
 
 
 def register_manufacture_focused_operation_capability_implementations(

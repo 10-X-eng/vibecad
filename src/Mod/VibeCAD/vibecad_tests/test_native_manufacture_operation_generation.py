@@ -139,3 +139,32 @@ def test_cache_hit_still_authenticates_frozen_runtime(tmp_path, monkeypatch) -> 
         )
 
     assert caught.value.error_code == "NATIVE_MANUFACTURE_PATH_WORKER_INVALID"
+
+
+def test_generated_plain_json_python_state_is_publishable() -> None:
+    changes = generation._generation_property_changes(
+        {
+            "GeneratedState": {
+                "type": "App::PropertyPythonObject",
+                "value": "",
+            }
+        },
+        {
+            "GeneratedState": {
+                "type": "App::PropertyPythonObject",
+                "value": {"regions": [{"depth_mm": 3.5}], "complete": True},
+            }
+        },
+    )
+
+    assert changes == [
+        {
+            "name": "GeneratedState",
+            "type": "App::PropertyPythonObject",
+            "value": {"regions": [{"depth_mm": 3.5}], "complete": True},
+        }
+    ]
+    assert generation._property_assignment(
+        "App::PropertyPythonObject",
+        changes[0]["value"],
+    ) == changes[0]["value"]

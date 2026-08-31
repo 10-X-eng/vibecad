@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import traceback
+from types import SimpleNamespace
 
 import FreeCAD as App
 import FreeCADGui as Gui
@@ -31,6 +32,9 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+import VibeCADScriptedPublication as ScriptedPublication
+import VibeCADNativeManufactureFollowUpRuntime as ManufactureFollowUpRuntimeModule
+import VibeCADNativeManufactureJobRuntime as ManufactureJobRuntimeModule
 
 
 def _events(rounds: int = 16) -> None:
@@ -78,11 +82,132 @@ def _model(document, name: str, *, visible: bool, x: float):
     return _commit(document, f"Create {name}", create)
 
 
+def _body_model(document, name: str, *, visible: bool, x: float):
+    def create():
+        body = document.addObject("PartDesign::Body", name)
+        body.Label = name.replace("Model", " model")
+        body.addProperty(
+            "App::PropertyString",
+            "VibeCADTimelineRole",
+            "Timeline",
+            "Document timeline classification",
+            attr=16,
+            hidden=True,
+            locked=True,
+        )
+        body.VibeCADTimelineRole = "internal"
+        ScriptedPublication.tag_object(
+            body,
+            role=ScriptedPublication.ROLE_IMPLEMENTATION,
+            engine="vibescript:partdesign",
+            model_id="0123456789abcdef0123456789abcdef",
+            output_key="FixtureBlock",
+            revision="sketch-v1:test",
+        )
+        feature = body.newObject("PartDesign::Feature", f"{name}Feature")
+        feature.Shape = Part.makeBox(30.0, 20.0, 8.0, App.Vector(x, 0.0, 0.0))
+        document.publishProvisionalTimelineOperationBlock(feature, (), ())
+        publication = document.addObject("App::Link", f"{name}Publication")
+        publication.Label = body.Label
+        publication.LinkedObject = body
+        ScriptedPublication.tag_object(
+            publication,
+            role=ScriptedPublication.ROLE_PUBLICATION,
+            engine="vibescript:partdesign",
+            model_id="0123456789abcdef0123456789abcdef",
+            output_key="FixtureBlock",
+            revision="sketch-v1:test",
+        )
+        publication.ViewObject.Visibility = False
+        document.publishProvisionalTimelineOperationBlock(publication, (), ())
+        body.ViewObject.Visibility = visible
+        return body
+
+    return _commit(document, f"Create {name}", create)
+
+
 def _selection() -> tuple:
     return tuple(
         (item.Object.Name, tuple(item.SubElementNames))
         for item in Gui.Selection.getSelectionEx()
     )
+
+
+def _visible_children(item) -> tuple:
+    return tuple(
+        item.child(index)
+        for index in range(item.childCount())
+        if not item.child(index).isHidden()
+    )
+
+
+def _tree_snapshot(item) -> tuple:
+    return (
+        item.text(0),
+        tuple(_tree_snapshot(child) for child in _visible_children(item)),
+    )
+
+
+def _tree_child(item, label: str):
+    return next(
+        (child for child in _visible_children(item) if child.text(0) == label),
+        None,
+    )
+
+
+def _tree_label_count(item, label: str) -> int:
+    return int(item.text(0) == label) + sum(
+        _tree_label_count(child, label) for child in _visible_children(item)
+    )
+
+
+def _document_tree_item(document):
+    for _attempt in range(80):
+        _events(2)
+        for tree in Gui.getMainWindow().findChildren(QtWidgets.QTreeWidget):
+            if not tree.isVisible() or not tree.viewport().isVisible():
+                continue
+            for index in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(index)
+                if not item.isHidden() and item.text(0) == document.Label:
+                    return item
+    return None
+
+
+def _assert_manufacture_tree(document, jobs) -> None:
+    document_item = _document_tree_item(document)
+    assert document_item is not None
+    snapshot = _tree_snapshot(document_item)
+    for job in jobs:
+        setup = _tree_child(document_item, job.Label)
+        assert setup is not None, snapshot
+        assert _tree_label_count(document_item, job.Label) == 1, snapshot
+        setup_children = _visible_children(setup)
+        expected_children = [job.Stock.Label, "Tools"]
+        if job.Operations.Group:
+            expected_children.append("Operations")
+        expected_children.append(job.SetupSheet.Label)
+        assert [child.text(0) for child in setup_children] == expected_children, snapshot
+        tools = setup_children[1]
+        assert len(_visible_children(tools)) == len(job.Tools.Group), snapshot
+        assert all(
+            not _visible_children(controller_item)
+            for controller_item in _visible_children(tools)
+        ), snapshot
+        if job.Operations.Group:
+            operations = _tree_child(setup, "Operations")
+            assert operations is not None, snapshot
+            assert [item.text(0) for item in _visible_children(operations)] == [
+                operation.Label for operation in job.Operations.Group
+            ], snapshot
+        assert _tree_label_count(setup, job.Model.Label) == 0, snapshot
+
+        for controller in job.Tools.Group:
+            tool = controller.Tool
+            assert _tree_label_count(document_item, tool.Label) == 0, snapshot
+            bit_body = getattr(tool, "BitBody", None)
+            if bit_body is not None:
+                assert _tree_label_count(document_item, bit_body.Label) == 0, snapshot
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
@@ -151,6 +276,7 @@ def _job_resources(document, job) -> tuple:
 
 
 def _assert_job_graph(document, job, sources, replacements) -> tuple:
+    assert job.VibeCADTreeRole == "manufacture_setup"
     resources = _job_resources(document, job)
     assert resources
     assert tuple(job.VibeCADTimelineReplacedInputs) == tuple(replacements)
@@ -219,7 +345,7 @@ def _run() -> None:
 
         visible = _model(document, "VisibleModel", visible=True, x=0.0)
         hidden = _model(document, "HiddenModel", visible=False, x=40.0)
-        second_model = _model(document, "SecondModel", visible=True, x=80.0)
+        second_model = _body_model(document, "SecondModel", visible=True, x=80.0)
         initial_names = tuple(obj.Name for obj in document.Objects)
         initial_timeline = tuple(document.VibeCADTimeline.Operations)
         snapshot = build_manufacture_snapshot(document)
@@ -263,6 +389,29 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
+        capture_calls = []
+        original_job_capture = ManufactureJobRuntimeModule.capture_job_creation_environment
+        original_follow_up_capture = (
+            ManufactureFollowUpRuntimeModule.capture_job_creation_environment
+        )
+
+        def record_capture():
+            capture_calls.append("capture")
+            return SimpleNamespace(state_sha256="unused")
+
+        ManufactureJobRuntimeModule.capture_job_creation_environment = record_capture
+        ManufactureFollowUpRuntimeModule.capture_job_creation_environment = record_capture
+        try:
+            shared_bindings = build_native_runtime_bindings(context, ("state.read",))
+        finally:
+            ManufactureJobRuntimeModule.capture_job_creation_environment = (
+                original_job_capture
+            )
+            ManufactureFollowUpRuntimeModule.capture_job_creation_environment = (
+                original_follow_up_capture
+            )
+        assert tuple(shared_bindings) == ("state.read",)
+        assert capture_calls == []
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state_store,
@@ -454,6 +603,11 @@ def _run() -> None:
             second_created_state["state_sha256"]
         )
 
+        # Exercise additive migration of CAM Jobs saved before the explicit
+        # Manufacture tree role existed. The restored proxy must add the role,
+        # and the final browser rebuild must not retain its legacy claim tree.
+        job.removeProperty("VibeCADTreeRole")
+        second_job.removeProperty("VibeCADTreeRole")
         document.saveAs(str(save_path))
         document_name = document.Name
         App.closeDocument(document_name)
@@ -493,6 +647,7 @@ def _run() -> None:
         )
         assert job.ViewObject.Proxy.__class__.__name__ == "ViewProvider"
         assert job.Description == "Catalog-authenticated Native Job"
+        _assert_manufacture_tree(document, (job, second_job))
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_JOB_GUI_OK "

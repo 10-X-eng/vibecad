@@ -31,6 +31,9 @@ from VibeCADNativeManufactureToolSchema import (
 from VibeCADNativeManufactureFocusedToolSchema import (
     manufacture_focused_tool_capability_definitions,
 )
+from VibeCADNativeManufactureFocusedToolBindings import (
+    _lower_focused_tool_arguments,
+)
 
 
 def _branch(definition, operation: str) -> dict:
@@ -120,6 +123,43 @@ def test_tool_mutations_publish_as_three_focused_tools() -> None:
         )
         branch = schema["parameters"]["oneOf"][0]
         assert "operation" not in branch["properties"]
+    controller = definitions["manufacture.set_controller"]
+    schema = provider_visible_native_schema(
+        controller.provider_schema(("update_controller",))
+    )
+    tool_number = schema["parameters"]["oneOf"][0]["properties"]["controller"][
+        "properties"
+    ]["tool_number"]
+    assert tool_number == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10_000,
+    }
+    lowered = _lower_focused_tool_arguments(
+        {
+            "operation": "update_controller",
+            "target": {"object_name": "TC", "expected_state_sha256": "a" * 64},
+            "controller": {"tool_number": 7},
+        }
+    )
+    assert lowered["controller"]["tool_number"] == {
+        "kind": "explicit",
+        "value": 7,
+    }
+    update_tool = definitions["manufacture.update_tool"]
+    schema = provider_visible_native_schema(
+        update_tool.provider_schema(("update_tool_bit",))
+    )
+    value = schema["parameters"]["oneOf"][0]["properties"]["property_changes"][
+        "items"
+    ]["properties"]["value"]
+    assert value == {
+        "oneOf": [
+            {"type": "number"},
+            {"type": "string", "maxLength": 320},
+            {"type": "boolean"},
+        ]
+    }
 
 
 def test_model_geometry_read_is_exact_paged_and_drilling_aware() -> None:
@@ -167,6 +207,8 @@ def test_cam_inspection_reads_publish_as_focused_tools() -> None:
     branch = schema["parameters"]["oneOf"][0]
     assert set(branch["required"]) == {"target", "elements"}
     assert "operation" not in branch["properties"]
+    assert branch["properties"]["page_size"]["default"] == 24
+    assert branch["properties"]["page_size"]["maximum"] == 24
 
 
 def test_cam_operation_edits_publish_as_two_intent_tools() -> None:
@@ -221,8 +263,10 @@ def test_common_milling_operations_inherit_setup_defaults() -> None:
 
     assert set(facing["properties"]) == {
         "operation",
+        "label",
         "job",
         "tool_controller",
+        "coolant",
     }
     assert set(facing["required"]) == {"job", "tool_controller"}
     assert set(pocket["properties"]) == {
@@ -231,6 +275,7 @@ def test_common_milling_operations_inherit_setup_defaults() -> None:
         "job",
         "tool_controller",
         "geometry",
+        "coolant",
     }
     for branch in (pocket, drilling):
         assert set(branch["required"]) == {
@@ -243,16 +288,20 @@ def test_common_milling_operations_inherit_setup_defaults() -> None:
         assert set(geometry["items"]["required"]) == {"model", "subelements"}
     assert set(drilling["properties"]) == {
         "operation",
+        "label",
         "job",
         "tool_controller",
         "geometry",
+        "coolant",
     }
     assert set(profile["properties"]) == {
         "operation",
+        "label",
         "job",
         "tool_controller",
         "geometry",
         "cut_side",
+        "coolant",
     }
     assert set(profile["required"]) == {
         "job",
@@ -301,15 +350,26 @@ def test_common_milling_provider_tools_are_focused_single_operations() -> None:
         for definition in manufacture_focused_operation_capability_definitions()
     }
     expected = {
-        "manufacture.face": {"job", "tool_controller"},
-        "manufacture.pocket": {"label", "job", "tool_controller", "geometry"},
-        "manufacture.profile": {
-            "job",
-            "tool_controller",
-            "geometry",
-            "cut_side",
-        },
-        "manufacture.drill": {"job", "tool_controller", "geometry"},
+        "manufacture.face": (
+            {"label", "job", "tool_controller", "coolant"},
+            {"job", "tool_controller"},
+        ),
+        "manufacture.pocket": (
+            {"label", "job", "tool_controller", "geometry", "coolant"},
+            {"job", "tool_controller", "geometry"},
+        ),
+        "manufacture.profile": (
+            {"label", "job", "tool_controller", "geometry", "cut_side", "coolant"},
+            {"job", "tool_controller", "geometry", "cut_side"},
+        ),
+        "manufacture.drill": (
+            {"label", "job", "tool_controller", "geometry", "coolant"},
+            {"job", "tool_controller", "geometry"},
+        ),
+        "manufacture.adaptive": (
+            {"label", "job", "tool_controller", "geometry", "coolant"},
+            {"job", "tool_controller", "geometry"},
+        ),
     }
 
     assert set(definitions) == {
@@ -329,7 +389,7 @@ def test_common_milling_provider_tools_are_focused_single_operations() -> None:
         "manufacture.copy_path",
         "manufacture.start_point",
     }
-    for name, fields in expected.items():
+    for name, (fields, required) in expected.items():
         definition = definitions[name]
         assert len(definition.variants) == 1
         schema = provider_visible_native_schema(
@@ -337,4 +397,4 @@ def test_common_milling_provider_tools_are_focused_single_operations() -> None:
         )
         branch = schema["parameters"]["oneOf"][0]
         assert set(branch["properties"]) == fields
-        assert set(branch["required"]) == fields - {"label"}
+        assert set(branch["required"]) == required

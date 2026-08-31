@@ -23,6 +23,7 @@ from VibeCADNativeManufactureToolState import (
     ToolCatalogRecord,
     apply_tool_property_changes,
     instantiate_catalog_tool,
+    normalize_tool_property_changes,
     resolve_catalog_record,
 )
 from VibeCADNativeMutation import NativeMutationDraft
@@ -334,7 +335,7 @@ def preflight_tool_bit_update(
     if not isinstance(spec, ToolBitUpdateSpec):
         raise TypeError("spec must be a ToolBitUpdateSpec")
     tool, before = resolve_tool_bit_target(document, spec.target)
-    changes = tuple(spec.property_changes)
+    changes = normalize_tool_property_changes(tool, tuple(spec.property_changes))
     if not changes:
         raise NativeManufactureError(
             "Update at least one ToolBit property.",

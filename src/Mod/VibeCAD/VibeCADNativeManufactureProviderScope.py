@@ -23,7 +23,6 @@ _SHARED = frozenset(
         "inspect.compare",
         "document.save",
         "document.undo",
-        "native.job",
     }
 )
 _DISCOVERY = frozenset(
@@ -81,7 +80,6 @@ _ACTIVE_SIMULATION_ALLOWED = frozenset(
         "state.read",
         "inspect.query",
         "inspect.compare",
-        "native.job",
         "manufacture.setups",
         "manufacture.read_setup",
         "manufacture.setup_options",
@@ -160,6 +158,13 @@ def _focused_setup_is_busy(domain: Mapping[str, Any]) -> bool:
     )
 
 
+def _has_running_background_job(domain: Mapping[str, Any]) -> bool:
+    jobs = domain.get("background_jobs")
+    return isinstance(jobs, list) and any(
+        isinstance(job, Mapping) and job.get("terminal") is False for job in jobs
+    )
+
+
 def _active_simulation(value: Any) -> Mapping[str, Any] | None:
     if not isinstance(value, Mapping) or value.get("mode") != "gl":
         return None
@@ -184,6 +189,8 @@ def manufacture_provider_tool_names(
         return tuple(name for name in available_tool_names if name in allowed)
     if "active_simulation" in domain:
         allowed = set(_ACTIVE_SIMULATION_ALLOWED)
+        if _has_running_background_job(domain):
+            allowed.add("native.job")
         if _active_simulation(domain.get("active_simulation")) is not None:
             allowed.add("manufacture.close_simulation")
         return tuple(name for name in available_tool_names if name in allowed)
@@ -193,6 +200,8 @@ def manufacture_provider_tool_names(
             allowed.add("manufacture.remaining_stock")
         return tuple(name for name in available_tool_names if name in allowed)
     result_count = _nonnegative_int(domain.get("remaining_stock_result_count"))
+    if _has_running_background_job(domain):
+        allowed.add("native.job")
     if result_count:
         allowed.add("manufacture.follow_up_setup")
         allowed.add("manufacture.remaining_stock")
@@ -209,7 +218,6 @@ def manufacture_provider_tool_names(
         allowed.update(
             _COMMON_OPERATIONS
             | {
-                "manufacture.operation",
                 "manufacture.probe",
                 "manufacture.geometry",
                 "manufacture.loop",
@@ -260,6 +268,11 @@ def _operation_scope(
         default=0,
     )
     result: dict[str, tuple[str, ...]] = {}
+    catalog = available_by_tool.get("manufacture.tool_catalog")
+    if catalog is not None:
+        result["manufacture.tool_catalog"] = tuple(
+            operation for operation in catalog if operation == "list_tools"
+        )
     job = available_by_tool.get("manufacture.job")
     if job is not None:
         allowed = {"create_job", "create_job_from_template"}

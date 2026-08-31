@@ -37,11 +37,53 @@ from VibeCADNativeRobotTrajectoryState import (
     NativeRobotTrajectoryStateError,
     capture_robot_trajectory_state,
 )
+import VibeCADScriptedPublication as ScriptedPublication
+
+
 MAX_JOBS = 12
 MAX_MODEL_CANDIDATES = 24
 MAX_SNAPSHOT_JOB_ITEMS = 8
 MAX_REMAINING_STOCK_RESULTS = 24
 _NON_MODEL_SHAPE_TYPES = frozenset({"App::Line", "App::Plane", "App::Point"})
+
+
+def _partdesign_publication_identity(obj: Any, role: str) -> tuple[str, str] | None:
+    if (
+        str(getattr(obj, "VibeCADScriptedRole", "") or "") != role
+        or str(getattr(obj, "VibeCADScriptedEngine", "") or "")
+        != "vibescript:partdesign"
+    ):
+        return None
+    model_id = str(getattr(obj, "VibeCADScriptedModelId", "") or "").strip()
+    output_key = str(getattr(obj, "VibeCADScriptedOutputKey", "") or "").strip()
+    return (model_id, output_key) if model_id and output_key else None
+
+
+def _shadowed_partdesign_publication_ids(objects: tuple[Any, ...]) -> set[int]:
+    """Hide compatibility links when their native Part Design Body is present."""
+
+    body_identities = {
+        identity
+        for obj in objects
+        if str(getattr(obj, "TypeId", "") or "") == "PartDesign::Body"
+        if (
+            identity := _partdesign_publication_identity(
+                obj,
+                ScriptedPublication.ROLE_IMPLEMENTATION,
+            )
+        )
+        is not None
+    }
+    return {
+        id(obj)
+        for obj in objects
+        if str(getattr(obj, "TypeId", "") or "") == "App::Link"
+        if _partdesign_publication_identity(
+            obj,
+            ScriptedPublication.ROLE_PUBLICATION,
+        )
+        in body_identities
+    }
 
 
 def _active_simulation_state(document: Any) -> dict[str, str] | None:
@@ -158,6 +200,7 @@ def build_manufacture_snapshot(
     if not isinstance(background_jobs, tuple):
         raise TypeError("background_jobs must be a tuple")
     objects = list(getattr(document, "Objects", []) or [])
+    shadowed_publication_ids = _shadowed_partdesign_publication_ids(tuple(objects))
     job_objects = [obj for obj in objects if is_job(obj)]
     retained_results = [obj for obj in objects if is_simulation_result(obj)]
     resource_ids: set[int] = set()
@@ -214,6 +257,7 @@ def build_manufacture_snapshot(
     for obj in objects:
         if (
             id(obj) in resource_ids
+            or id(obj) in shadowed_publication_ids
             or str(getattr(obj, "TypeId", "")) in _NON_MODEL_SHAPE_TYPES
         ):
             continue

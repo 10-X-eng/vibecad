@@ -11,9 +11,13 @@ from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeImmediate import run_immediate_mutation as _run_immediate_mutation
 from VibeCADNativeManufactureAdaptive import (
     AdaptiveCreateSpec,
+    AdaptiveDefaultsSpec,
     create_adaptive,
+    create_adaptive_defaults,
     preflight_adaptive_create,
+    preflight_adaptive_defaults,
     verify_created_adaptive,
+    verify_created_adaptive_defaults,
 )
 from VibeCADNativeManufactureArray import (
     ArrayCreateSpec,
@@ -123,10 +127,12 @@ from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
 _PROFILE_FIELDS = frozenset(
     {
+        "label",
         "job",
         "tool_controller",
         "geometry",
         "cut_side",
+        "coolant",
     }
 )
 _POCKET_SHAPE_FIELDS = frozenset(
@@ -135,6 +141,7 @@ _POCKET_SHAPE_FIELDS = frozenset(
         "job",
         "tool_controller",
         "geometry",
+        "coolant",
     }
 )
 _POCKET_3D_FIELDS = frozenset(
@@ -186,8 +193,10 @@ _ROTARY_SURFACE_FIELDS = frozenset(
 )
 _MILL_FACING_FIELDS = frozenset(
     {
+        "label",
         "job",
         "tool_controller",
+        "coolant",
     }
 )
 _HELIX_FIELDS = frozenset(
@@ -217,6 +226,15 @@ _ADAPTIVE_FIELDS = frozenset(
         "coolant",
     }
 )
+_ADAPTIVE_DEFAULTS_FIELDS = frozenset(
+    {
+        "label",
+        "job",
+        "tool_controller",
+        "geometry",
+        "coolant",
+    }
+)
 _SLOT_FIELDS = frozenset(
     {
         "label",
@@ -230,9 +248,11 @@ _SLOT_FIELDS = frozenset(
 )
 _DRILLING_FIELDS = frozenset(
     {
+        "label",
         "job",
         "tool_controller",
         "geometry",
+        "coolant",
     }
 )
 _THREAD_MILLING_FIELDS = frozenset(
@@ -309,6 +329,7 @@ _PATH_GENERATION_OPERATIONS = frozenset(
         "mill_facing",
         "helix",
         "adaptive",
+        "adaptive_defaults",
         "slot",
         "drilling",
         "thread_milling",
@@ -351,6 +372,7 @@ class NativeManufactureOperationRuntime:
                 "mill_facing": _MILL_FACING_FIELDS,
                 "helix": _HELIX_FIELDS,
                 "adaptive": _ADAPTIVE_FIELDS,
+                "adaptive_defaults": _ADAPTIVE_DEFAULTS_FIELDS,
                 "slot": _SLOT_FIELDS,
                 "drilling": _DRILLING_FIELDS,
                 "thread_milling": _THREAD_MILLING_FIELDS,
@@ -361,7 +383,13 @@ class NativeManufactureOperationRuntime:
                 "simple_copy": _SIMPLE_COPY_FIELDS,
                 "set_start_point": _START_POINT_FIELDS,
             },
-            defaults={"pocket_shape": {"label": "Pocket Shape"}},
+            defaults={
+                "profile": {"label": "Profile", "coolant": "none"},
+                "pocket_shape": {"label": "Pocket Shape", "coolant": "none"},
+                "mill_facing": {"label": "Mill Facing", "coolant": "none"},
+                "adaptive_defaults": {"label": "Adaptive", "coolant": "none"},
+                "drilling": {"label": "Drilling", "coolant": "none"},
+            },
         )
         context = self._context
         context.guard()
@@ -401,10 +429,12 @@ class NativeManufactureOperationRuntime:
             prepared = preflight_profile_defaults(
                 context.document,
                 ProfileDefaultsSpec(
+                    label=values["label"],
                     job=values["job"],
                     tool_controller=values["tool_controller"],
                     geometry=tuple(values["geometry"]),
                     cut_side=values["cut_side"],
+                    coolant=values["coolant"],
                 ),
             )
             transaction_name = "Create Native CAM Profile"
@@ -418,6 +448,7 @@ class NativeManufactureOperationRuntime:
                     job=values["job"],
                     tool_controller=values["tool_controller"],
                     geometry=tuple(values["geometry"]),
+                    coolant=values["coolant"],
                 ),
             )
             transaction_name = "Create Native CAM Pocket Shape"
@@ -494,8 +525,10 @@ class NativeManufactureOperationRuntime:
             prepared = preflight_mill_facing_defaults(
                 context.document,
                 MillFacingDefaultsSpec(
+                    label=values["label"],
                     job=values["job"],
                     tool_controller=values["tool_controller"],
+                    coolant=values["coolant"],
                 ),
             )
             transaction_name = "Create Native CAM Mill Facing"
@@ -538,6 +571,20 @@ class NativeManufactureOperationRuntime:
             transaction_name = "Create Native CAM Adaptive"
             mutate = partial(create_adaptive, prepared=prepared)
             verify = verify_created_adaptive
+        elif operation == "adaptive_defaults":
+            prepared = preflight_adaptive_defaults(
+                context.document,
+                AdaptiveDefaultsSpec(
+                    label=values["label"],
+                    job=values["job"],
+                    tool_controller=values["tool_controller"],
+                    geometry=tuple(values["geometry"]),
+                    coolant=values["coolant"],
+                ),
+            )
+            transaction_name = "Create Native CAM Adaptive"
+            mutate = partial(create_adaptive_defaults, prepared=prepared)
+            verify = verify_created_adaptive_defaults
         elif operation == "slot":
             prepared = preflight_slot_create(
                 context.document,
@@ -558,9 +605,11 @@ class NativeManufactureOperationRuntime:
             prepared = preflight_drilling_defaults(
                 context.document,
                 DrillingDefaultsSpec(
+                    label=values["label"],
                     job=values["job"],
                     tool_controller=values["tool_controller"],
                     geometry=tuple(values["geometry"]),
+                    coolant=values["coolant"],
                 ),
             )
             transaction_name = "Create Native CAM Drilling"

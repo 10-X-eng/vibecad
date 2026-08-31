@@ -138,6 +138,8 @@ Notification = NotificationClass()
 
 
 class ObjectJob:
+    TREE_ROLE = "manufacture_setup"
+
     def __init__(
         self,
         obj,
@@ -156,6 +158,7 @@ class ObjectJob:
         self._initialTimelineResources = []
         obj.Proxy = self
         PathUtil.markTimelineOperation(obj)
+        self.setupTreePresentation(obj)
 
         obj.addProperty(
             "App::PropertyFile",
@@ -308,6 +311,22 @@ class ObjectJob:
         if createDefaultStock:
             self.setupStock(obj)
         self.setupTimelineTracking(obj)
+
+    def setupTreePresentation(self, obj):
+        """Publish the Job as the authoritative Manufacture tree root."""
+
+        if not hasattr(obj, "VibeCADTreeRole"):
+            obj.addProperty(
+                "App::PropertyString",
+                "VibeCADTreeRole",
+                "Tree",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Application tree presentation role",
+                ),
+            )
+        obj.VibeCADTreeRole = self.TREE_ROLE
+        obj.setEditorMode("VibeCADTreeRole", 2)
 
     def _captureInitialTimelineOperation(self, operation):
         """Defer initial Job role mutation to the atomic core publisher."""
@@ -669,6 +688,7 @@ class ObjectJob:
         # setup helper restores resource metadata.
         self._deferTimelinePublication = False
         self._initialTimelineResources = []
+        self.setupTreePresentation(obj)
         self.setupBaseModel(obj)
         self.fixupOperations(obj)
         self.setupSetupSheet(obj)

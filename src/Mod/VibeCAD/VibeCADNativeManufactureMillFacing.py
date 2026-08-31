@@ -97,13 +97,17 @@ class PreparedMillFacingCreate:
 
 @dataclass(frozen=True, slots=True)
 class MillFacingDefaultsSpec:
+    label: Any
     job: Mapping[str, Any]
     tool_controller: Mapping[str, Any]
+    coolant: Any
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedMillFacingDefaults:
+    label: str
     boundary: PreparedOperationBoundary
+    coolant: str
     stock: Any
     stock_shape_sha256: str
     stock_top_face_sha256: str
@@ -313,6 +317,9 @@ def preflight_mill_facing_defaults(
 
     if not isinstance(spec, MillFacingDefaultsSpec):
         raise TypeError("spec must be a MillFacingDefaultsSpec")
+    coolant = str(spec.coolant or "")
+    if coolant not in _COOLANT_MODES:
+        _error("Mill Facing coolant must be none, flood, or mist.")
     boundary = preflight_operation_boundary(
         document,
         noun="Mill Facing",
@@ -337,7 +344,9 @@ def preflight_mill_facing_defaults(
         )
     top_face = _stock_top_face(stock)
     return PreparedMillFacingDefaults(
+        label=clean_operation_label(spec.label, "Mill Facing"),
         boundary=boundary,
+        coolant=coolant,
         stock=stock,
         stock_shape_sha256=shape_sha256(stock_shape, "CAM Job stock"),
         stock_top_face_sha256=shape_sha256(top_face, "CAM Job stock top face"),
@@ -476,6 +485,10 @@ def create_mill_facing_defaults(
         "Path.Op.Gui.MillFacing"
     )
 
+    def configure(operation: Any) -> None:
+        operation.Label = prepared.label
+        operation.CoolantMode = _COOLANT_MODES[prepared.coolant]
+
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
@@ -483,7 +496,7 @@ def create_mill_facing_defaults(
         operation_factory=PathMillFacing.Create,
         provider_factory=provider_factory,
         provider_resource=provider_resource,
-        configure=lambda _operation: None,
+        configure=configure,
         payload={"parameters": {"source": "setup_defaults"}},
     )
     return extend_native_operation_draft(draft, facing_defaults=prepared)

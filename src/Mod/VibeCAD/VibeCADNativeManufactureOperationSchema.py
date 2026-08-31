@@ -42,6 +42,10 @@ _POSITIVE_DISTANCE_MM = {
     "exclusiveMinimum": 0.0,
     "maximum": 1_000_000.0,
 }
+_COOLANT_SCHEMA = {
+    "type": "string",
+    "enum": ["none", "flood", "mist"],
+}
 def _closed(properties: dict, required: tuple[str, ...]) -> dict:
     return {
         "type": "object",
@@ -1137,7 +1141,7 @@ _ADAPTIVE_SETTINGS = _closed(
         },
         "tolerance_mm": {
             "type": "number",
-            "minimum": 0.05,
+            "minimum": 0.001,
             "maximum": 0.15,
             "description": (
                 "Accuracy/performance tolerance exposed by the human Adaptive panel."
@@ -1787,6 +1791,31 @@ _VCARVE_DEPTHS = _closed(
 )
 
 
+def manufacture_adaptive_defaults_variant() -> NativeCapabilityVariant:
+    """Focused Adaptive clearing with the shipped human-operation defaults."""
+    return NativeCapabilityVariant(
+        operation="adaptive",
+        description=(
+            "Adaptively clear exact planar Faces or closed Edge loops using setup defaults."
+        ),
+        action_ids=frozenset({"CAM_Adaptive"}),
+        surface_ids=frozenset({"manufacture"}),
+        exact_target_type="ExactCamJobAdaptiveRegionsAndController",
+        transaction_behavior="background",
+        background_required=True,
+        parameters=_closed(
+            {
+                "label": LABEL_SCHEMA,
+                "job": _EXACT_TARGET,
+                "tool_controller": _EXACT_TARGET,
+                "geometry": _FEATURE_SELECTION,
+                "coolant": _COOLANT_SCHEMA,
+            },
+            ("job", "tool_controller", "geometry"),
+        ),
+    )
+
+
 def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MANUFACTURE_OPERATION_CAPABILITY_NAME,
@@ -1808,6 +1837,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 background_required=True,
                 parameters=_closed(
                     {
+                        "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
                         "geometry": _FEATURE_SELECTION,
@@ -1815,6 +1845,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                             "type": "string",
                             "enum": ["outside", "inside"],
                         },
+                        "coolant": _COOLANT_SCHEMA,
                     },
                     (
                         "job",
@@ -1840,6 +1871,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
                         "geometry": _FEATURE_SELECTION,
+                        "coolant": _COOLANT_SCHEMA,
                     },
                     (
                         "job",
@@ -2009,8 +2041,10 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 background_required=True,
                 parameters=_closed(
                     {
+                        "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
+                        "coolant": _COOLANT_SCHEMA,
                     },
                     (
                         "job",
@@ -2145,9 +2179,11 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 background_required=True,
                 parameters=_closed(
                     {
+                        "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
                         "geometry": _FEATURE_SELECTION,
+                        "coolant": _COOLANT_SCHEMA,
                     },
                     (
                         "job",

@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityDefinition,
     NativeCapabilityRegistry,
+    NativeCapabilityVariant,
 )
 from VibeCADNativeManufactureInspectSchema import (
     manufacture_inspect_capability_definition,
@@ -33,6 +36,24 @@ _SHARED_CAPABILITIES = frozenset(
 )
 
 
+def _focused_variant(
+    operation: str,
+    variant: NativeCapabilityVariant,
+) -> NativeCapabilityVariant:
+    if operation != "read_model_geometry":
+        return variant
+    parameters = dict(variant.parameters)
+    properties = dict(parameters["properties"])
+    properties["page_size"] = {
+        **properties["page_size"],
+        "maximum": 24,
+        "default": 24,
+        "description": "Return 1 through 24 ordered elements.",
+    }
+    parameters["properties"] = properties
+    return replace(variant, parameters=parameters)
+
+
 def manufacture_focused_inspect_capability_definitions() -> tuple[
     NativeCapabilityDefinition, ...
 ]:
@@ -45,7 +66,7 @@ def manufacture_focused_inspect_capability_definitions() -> tuple[
             name=name,
             description=variants[operation].description,
             primary_classification="read",
-            variants=(variants[operation],),
+            variants=(_focused_variant(operation, variants[operation]),),
         )
         for operation, name in MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES.items()
     )

@@ -16,6 +16,19 @@ from VibeCADNativeManufactureFocusedToolSchema import (
 from VibeCADNativeManufactureToolRuntime import NativeManufactureToolRuntime
 
 
+def _lower_focused_tool_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    lowered = dict(arguments)
+    if lowered.get("operation") != "update_controller":
+        return lowered
+    controller = dict(lowered["controller"])
+    controller["tool_number"] = {
+        "kind": "explicit",
+        "value": controller["tool_number"],
+    }
+    lowered["controller"] = controller
+    return lowered
+
+
 def _mutate(call: Any) -> Mapping[str, Any]:
     runtime = getattr(call, "runtime", None)
     arguments = getattr(call, "arguments", None)
@@ -23,7 +36,10 @@ def _mutate(call: Any) -> Mapping[str, Any]:
         raise TypeError("A focused CAM tool call requires its exact runtime.")
     if not isinstance(arguments, Mapping):
         raise TypeError("A focused CAM tool call requires argument data.")
-    return runtime.mutate(arguments, ticket=getattr(call, "ticket", None))
+    return runtime.mutate(
+        _lower_focused_tool_arguments(arguments),
+        ticket=getattr(call, "ticket", None),
+    )
 
 
 def register_manufacture_focused_tool_capability_implementations(

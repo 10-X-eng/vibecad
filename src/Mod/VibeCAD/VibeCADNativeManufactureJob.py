@@ -530,6 +530,21 @@ def _verify_timeline(
             error_code="NATIVE_MANUFACTURE_HISTORY_INVALID",
         )
     replaced = set(prepared.replacements)
+    try:
+        import PartGui
+
+        for source in prepared.replacements:
+            state = PartGui.resolveModelingObject(source)
+            if state is not None:
+                replaced.add(state)
+                operation = getattr(state, "Operation", None)
+                if operation is not None:
+                    replaced.add(operation)
+    except ImportError as exc:
+        raise NativeManufactureError(
+            "The CAM modeling-state resolver is unavailable.",
+            error_code="NATIVE_MANUFACTURE_ENVIRONMENT_UNAVAILABLE",
+        ) from exc
     for index, operation in enumerate(before.operations):
         if operation not in replaced and after.visibility[index] != before.visibility[index]:
             raise NativeManufactureError(

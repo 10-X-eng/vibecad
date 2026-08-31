@@ -137,6 +137,94 @@ def tool_property_state(tool: Any) -> list[dict[str, Any]]:
     return [_property_descriptor(tool, name) for name in sorted(names)]
 
 
+def normalize_tool_property_changes(
+    tool: Any,
+    changes: tuple[Mapping[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    """Resolve natural values against the exact ToolBit property contract."""
+
+    current = {item["property_name"]: item for item in tool_property_state(tool)}
+    if not 1 <= len(changes) <= MAX_TOOL_PROPERTIES:
+        raise NativeManufactureError(
+            "tool_property_changes must contain 1 through 64 distinct changes.",
+            error_code="NATIVE_ARGUMENTS_INVALID",
+        )
+    normalized = []
+    seen: set[str] = set()
+    for change in changes:
+        if not isinstance(change, Mapping) or set(change) != {
+            "property_name",
+            "value",
+        }:
+            raise NativeManufactureError(
+                "Every tool property change must contain property_name and value.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+            )
+        name = str(change.get("property_name") or "").strip()
+        expected = current.get(name)
+        if expected is None or name in seen:
+            raise NativeManufactureError(
+                f"CAM tool property {name!r} is unavailable or duplicated.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+            )
+        seen.add(name)
+        supplied = change.get("value")
+        if isinstance(supplied, Mapping):
+            if set(supplied) != {"kind", "value"}:
+                raise NativeManufactureError(
+                    f"CAM tool property {name!r} has an invalid typed value.",
+                    error_code="NATIVE_ARGUMENTS_INVALID",
+                )
+            kind = str(supplied.get("kind") or "")
+            raw = supplied.get("value")
+        else:
+            kind = str(expected["kind"])
+            raw = supplied
+        if kind != expected["kind"]:
+            raise NativeManufactureError(
+                f"CAM tool property {name!r} requires value kind {expected['kind']!r}.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+                repair={"property": expected},
+            )
+        if kind in {"length_mm", "angle_degrees", "number"}:
+            if (
+                isinstance(raw, bool)
+                or not isinstance(raw, (int, float))
+                or not math.isfinite(raw)
+            ):
+                raise NativeManufactureError(
+                    f"CAM tool property {name!r} requires a finite number.",
+                    error_code="NATIVE_ARGUMENTS_INVALID",
+                )
+        elif kind == "integer":
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                raise NativeManufactureError(
+                    f"CAM tool property {name!r} requires an integer.",
+                    error_code="NATIVE_ARGUMENTS_INVALID",
+                )
+        elif kind == "boolean":
+            if not isinstance(raw, bool):
+                raise NativeManufactureError(
+                    f"CAM tool property {name!r} requires a boolean.",
+                    error_code="NATIVE_ARGUMENTS_INVALID",
+                )
+        elif not isinstance(raw, str) or len(raw) > 320:
+            raise NativeManufactureError(
+                f"CAM tool property {name!r} requires a bounded string.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+            )
+        elif kind == "choice" and raw not in expected.get("allowed_values", ()):
+            raise NativeManufactureError(
+                f"CAM tool property {name!r} rejected choice {raw!r}.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+                repair={"allowed_values": expected.get("allowed_values", [])},
+            )
+        normalized.append(
+            {"property_name": name, "value": {"kind": kind, "value": raw}}
+        )
+    return tuple(normalized)
+
+
 def apply_tool_property_changes(
     tool: Any,
     changes: tuple[Mapping[str, Any], ...],
@@ -145,6 +233,7 @@ def apply_tool_property_changes(
 ) -> None:
     """Apply exact typed property changes to an attached or detached ToolBit."""
 
+    changes = normalize_tool_property_changes(tool, changes)
     current = {
         item["property_name"]: item for item in tool_property_state(tool)
     }

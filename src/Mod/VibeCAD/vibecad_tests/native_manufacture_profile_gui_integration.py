@@ -142,10 +142,12 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     branch = schema["parameters"]["oneOf"][0]
     assert set(branch["properties"]) == {
         "operation",
+        "label",
         "job",
         "tool_controller",
         "geometry",
         "cut_side",
+        "coolant",
     }
     assert set(branch["required"]) == {
         "job",
@@ -183,7 +185,7 @@ def _arguments(model, job) -> dict:
                 "subelements": [_top_face_name(model)],
             }
         ],
-        "cut_side": "outside",
+        "cut_side": "inside",
     }
 
 
@@ -208,7 +210,7 @@ def _assert_profile_graph(
     assert job.Proxy.baseObject(job, operation.Base[0][0]) is model
     assert operation.Label
     assert operation.Direction in {"CW", "CCW"}
-    assert operation.Side == "Outside"
+    assert operation.Side == "Inside"
     expressions = {str(name) for name, _expression in operation.ExpressionEngine}
     assert {
         "StartDepth",
@@ -347,7 +349,7 @@ def _run() -> None:
         }
         assert result["profile"]["cutting_command_count"] >= 1
         assert result["profile"]["parameters"]["source"] == "setup_defaults"
-        assert result["profile"]["parameters"]["cut_side"] == "outside"
+        assert result["profile"]["parameters"]["cut_side"] == "inside"
         assert result["job"]["operation_count"] == len(initial_operations) + 1
         assert [item["object_name"] for item in result["receipt"]["created"]] == [
             operation_name

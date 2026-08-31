@@ -193,6 +193,7 @@ from VibeCADNativeManufactureFocusedInspectBindings import (
 from VibeCADNativeManufactureInspectRuntime import NativeManufactureInspectRuntime
 from VibeCADNativeManufactureJobBindings import manufacture_job_runtime_bindings
 from VibeCADNativeManufactureJobRuntime import NativeManufactureJobRuntime
+from VibeCADNativeManufactureJobSchema import MANUFACTURE_JOB_CAPABILITY_NAME
 from VibeCADNativeManufactureAreaBindings import manufacture_area_runtime_bindings
 from VibeCADNativeManufactureAreaRuntime import NativeManufactureAreaRuntime
 from VibeCADNativeManufactureModifyBindings import (
@@ -263,6 +264,9 @@ from VibeCADNativeManufactureFollowUpBindings import (
 )
 from VibeCADNativeManufactureFollowUpRuntime import (
     NativeManufactureFollowUpRuntime,
+)
+from VibeCADNativeManufactureFollowUpSchema import (
+    MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME,
 )
 from VibeCADNativeManufactureToolBindings import manufacture_tool_runtime_bindings
 from VibeCADNativeManufactureFocusedToolBindings import (
@@ -548,7 +552,11 @@ def build_native_runtime_bindings(
     sketch_setup = NativeSketchSetupRuntime(context)
     model_transform = NativeModelTransformRuntime(context)
     manufacture_inspect = NativeManufactureInspectRuntime(context)
-    manufacture_job = NativeManufactureJobRuntime(context)
+    manufacture_job = (
+        NativeManufactureJobRuntime(context)
+        if MANUFACTURE_JOB_CAPABILITY_NAME in tool_names
+        else None
+    )
     manufacture_area = NativeManufactureAreaRuntime(context)
     manufacture_modify = NativeManufactureModifyRuntime(context)
     manufacture_program = NativeManufactureProgramRuntime(context)
@@ -563,7 +571,11 @@ def build_native_runtime_bindings(
     manufacture_template = NativeManufactureTemplateRuntime(context)
     manufacture_simulation = NativeManufactureSimulationRuntime(context)
     manufacture_simulation_result = NativeManufactureSimulationResultRuntime(context)
-    manufacture_follow_up = NativeManufactureFollowUpRuntime(context)
+    manufacture_follow_up = (
+        NativeManufactureFollowUpRuntime(context)
+        if MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME in tool_names
+        else None
+    )
     manufacture_tool_catalog = NativeManufactureToolCatalogRuntime(context)
     manufacture_tool = NativeManufactureToolRuntime(context)
     manufacture_tool_output = NativeManufactureToolOutputRuntime(context)
@@ -698,7 +710,11 @@ def build_native_runtime_bindings(
         **model_transform_runtime_bindings(model_transform),
         **manufacture_inspect_runtime_bindings(manufacture_inspect),
         **manufacture_focused_inspect_runtime_bindings(manufacture_inspect),
-        **manufacture_job_runtime_bindings(manufacture_job),
+        **(
+            manufacture_job_runtime_bindings(manufacture_job)
+            if manufacture_job is not None
+            else {}
+        ),
         **manufacture_area_runtime_bindings(manufacture_area),
         **manufacture_modify_runtime_bindings(manufacture_modify),
         **manufacture_focused_modify_runtime_bindings(manufacture_modify),
@@ -716,7 +732,11 @@ def build_native_runtime_bindings(
         **manufacture_simulation_result_runtime_bindings(
             manufacture_simulation_result
         ),
-        **manufacture_follow_up_runtime_bindings(manufacture_follow_up),
+        **(
+            manufacture_follow_up_runtime_bindings(manufacture_follow_up)
+            if manufacture_follow_up is not None
+            else {}
+        ),
         **manufacture_tool_runtime_bindings(
             manufacture_tool_catalog,
             manufacture_tool,

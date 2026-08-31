@@ -119,14 +119,18 @@ class PreparedDrillingCreate:
 
 @dataclass(frozen=True, slots=True)
 class DrillingDefaultsSpec:
+    label: Any
     job: Mapping[str, Any]
     tool_controller: Mapping[str, Any]
     geometry: tuple[Mapping[str, Any], ...]
+    coolant: Any
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedDrillingDefaults:
+    label: str
     boundary: PreparedOperationBoundary
+    coolant: str
     features: tuple[PreparedDrillingFeature, ...]
     tool_diameter_mm: float
 
@@ -587,6 +591,9 @@ def preflight_drilling_defaults(
 
     if not isinstance(spec, DrillingDefaultsSpec):
         raise TypeError("spec must be a DrillingDefaultsSpec")
+    coolant = str(spec.coolant or "")
+    if coolant not in _COOLANT_MODES:
+        _error("Drilling coolant must be none, flood, or mist.")
     groups = tuple(
         RequestedFeatureGroup(
             model=dict(item["model"]),
@@ -615,7 +622,9 @@ def preflight_drilling_defaults(
             "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
         )
     return PreparedDrillingDefaults(
+        label=clean_operation_label(spec.label, "Drilling"),
         boundary=boundary,
+        coolant=coolant,
         features=features,
         tool_diameter_mm=round(diameter, 9),
     )
@@ -732,6 +741,10 @@ def create_drilling(
         "Path.Op.Gui.Drilling"
     )
 
+    def configure(operation: Any) -> None:
+        operation.Label = prepared.label
+        operation.CoolantMode = _COOLANT_MODES[prepared.coolant]
+
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
@@ -767,7 +780,7 @@ def create_drilling_defaults(
         operation_factory=PathDrilling.Create,
         provider_factory=provider_factory,
         provider_resource=provider_resource,
-        configure=lambda _operation: None,
+        configure=configure,
         payload={"parameters": {"source": "setup_defaults"}},
     )
     return extend_native_operation_draft(draft, drilling_defaults=prepared)
