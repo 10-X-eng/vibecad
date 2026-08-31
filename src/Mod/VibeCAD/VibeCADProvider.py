@@ -5039,6 +5039,7 @@ def _gemini_child_main(
                 messages.append(
                     {
                         "role": "tool",
+                        "name": function_name,
                         "tool_call_id": str(tool_call["id"]),
                         "content": json.dumps(_json_safe(visible_result)),
                     }

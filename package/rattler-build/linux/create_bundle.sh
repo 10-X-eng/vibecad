@@ -120,6 +120,7 @@ EOF
         jsonschema \
         mcp \
         mcp_types \
+        openai \
         tuf \
         secretstorage \
         keyring.backends.SecretService; do
@@ -128,8 +129,8 @@ EOF
             exit 1
         fi
     done
-    if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "import importlib.util; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('Retired direct OpenAI modules are absent')"; then
-        echo "A retired direct OpenAI module remains in the Linux bundle."
+    if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "import importlib.util; assert importlib.util.find_spec('agents') is None; print('Retired OpenAI Agents module is absent')"; then
+        echo "The retired OpenAI Agents module remains in the Linux bundle."
         exit 1
     fi
     if ! "${conda_env}/bin/freecadcmd" --safe-mode -c "from VibeCADProvider import _provider_subprocess_smoke; _provider_subprocess_smoke(); print('VibeCAD provider subprocess smoke ok')"; then

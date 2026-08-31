@@ -29,6 +29,43 @@ def test_readme_documents_gemini_setup() -> None:
     assert auth.DEFAULT_GEMINI_API_BASE in readme
 
 
+def test_release_paths_package_and_smoke_the_gemini_sdk() -> None:
+    requirements = (ROOT / "src/Mod/VibeCAD/requirements.txt").read_text(
+        encoding="utf-8"
+    )
+    installer = (
+        ROOT
+        / "package/rattler-build/scripts/install_vibecad_provider_deps.sh"
+    ).read_text(encoding="utf-8")
+    windows_bundle = (
+        ROOT / "package/rattler-build/windows/create_bundle.sh"
+    ).read_text(encoding="utf-8")
+    linux_bundle = (
+        ROOT / "package/rattler-build/linux/create_bundle.sh"
+    ).read_text(encoding="utf-8")
+    macos_bundle = (
+        ROOT / "package/rattler-build/osx/create_bundle.sh"
+    ).read_text(encoding="utf-8")
+    macos_validator = (
+        ROOT
+        / "package/rattler-build/scripts/validate_vibecad_macos_runtime.py"
+    ).read_text(encoding="utf-8")
+    local_release = (
+        ROOT
+        / "package/rattler-build/scripts/build_vibecad_local_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "openai==3.5.0" in requirements
+    assert "pip uninstall --yes openai openai-agents" not in installer
+    assert '    "openai",' in installer
+    assert "importlib.import_module(module_name)" in installer
+    assert ", openai, tuf" in windows_bundle
+    assert "openai \\" in linux_bundle
+    assert "openai" in macos_bundle
+    assert '"openai": _check_module("openai")' in macos_validator
+    assert ", openai, numpy" in local_release
+
+
 def test_gemini_auth_and_preferences_are_first_class() -> None:
     spec = auth.provider_spec("gemini")
     assert spec.display_name == "Google Gemini"
@@ -38,6 +75,14 @@ def test_gemini_auth_and_preferences_are_first_class() -> None:
         "https://generativelanguage.googleapis.com/v1beta/openai/models"
     )
     assert preferences.normalize_provider("gemini") == "gemini"
+    assert preferences.reasoning_efforts_for_provider("gemini") == (
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+    )
+    assert "xhigh" in preferences.reasoning_efforts_for_provider("anthropic")
 
     settings = preferences.VibeCADSettings(
         provider="gemini",
@@ -439,6 +484,7 @@ def test_gemini_stream_preserves_thought_signatures_and_repairs_tool_arguments(
     assert assistant_message["tool_calls"][0]["extra_content"] == thought_signature
     tool_result_message = requests[1]["messages"][3]
     assert tool_result_message["role"] == "tool"
+    assert tool_result_message["name"] == "state_read"
     assert tool_result_message["tool_call_id"] == "gemini-call-17"
     assert json.loads(tool_result_message["content"]) == {
         "ok": True,

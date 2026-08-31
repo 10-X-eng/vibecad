@@ -64,6 +64,13 @@ REASONING_EFFORTS = (
     "max",
     "ultra",
 )
+GEMINI_REASONING_EFFORTS = (
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+)
 DEFAULT_REASONING_EFFORT = "high"
 DEFAULT_SCRIPTED_TIMEOUT_SECONDS = 300.0
 DEFAULT_SCRIPTED_MEMORY_LIMIT_MB = 6144
@@ -74,6 +81,12 @@ DEFAULT_NEW_DOCUMENT_AUTHORING_MODE = "ask"
 def normalize_provider(value: str | None) -> str:
     clean = (value or "").strip().lower()
     return clean if clean in PROVIDERS else DEFAULT_PROVIDER
+
+
+def reasoning_efforts_for_provider(provider: str | None) -> tuple[str, ...]:
+    if normalize_provider(provider) == "gemini":
+        return GEMINI_REASONING_EFFORTS
+    return REASONING_EFFORTS
 
 
 def normalize_new_document_authoring_mode(value: str | None) -> str:
@@ -835,7 +848,7 @@ class VibeCADPreferencesPage:
     def _refresh_reasoning_efforts(self) -> None:
         provider = self._selected_provider()
         current = self.reasoning_effort.currentText().strip()
-        allowed = list(REASONING_EFFORTS)
+        allowed = list(reasoning_efforts_for_provider(provider))
         preferred = current or DEFAULT_REASONING_EFFORT
         if provider == "chatgpt":
             model_id = str(self.chatgpt_model.currentData() or "").strip()
