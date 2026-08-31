@@ -16,14 +16,7 @@ from VibeCADNativeDrawingLineAttributesSchema import (
     drawing_line_attributes_capability_definition,
     register_drawing_line_attributes_capability_definition,
 )
-
-
-def _branch(schema: dict, operation: str) -> dict:
-    return next(
-        branch
-        for branch in schema["parameters"]["oneOf"]
-        if branch["properties"]["operation"].get("const") == operation
-    )
+from vibecad_tests.schema_test_helpers import exact_provider_branches
 
 
 def test_line_attributes_schema_is_closed_exact_and_bounded() -> None:
@@ -32,9 +25,16 @@ def test_line_attributes_schema_is_closed_exact_and_bounded() -> None:
 
     assert DRAWING_LINE_ATTRIBUTES_OPERATIONS == ("set", "read_view")
     assert definition.primary_classification == "mutation"
-    assert len(schema["parameters"]["oneOf"]) == 2
+    assert "oneOf" not in schema["parameters"]
+    assert schema["parameters"]["properties"]["operation"]["enum"] == [
+        "set",
+        "read_view",
+    ]
+    branches = exact_provider_branches(
+        definition, DRAWING_LINE_ATTRIBUTES_OPERATIONS
+    )
 
-    set_branch = _branch(schema, "set")
+    set_branch = branches["set"]
     assert set_branch["additionalProperties"] is False
     assert set_branch["properties"]["targets"]["minItems"] == 1
     assert set_branch["properties"]["targets"]["maxItems"] == 32
@@ -63,7 +63,7 @@ def test_line_attributes_schema_is_closed_exact_and_bounded() -> None:
         assert color["minimum"] == 0.0
         assert color["maximum"] == 1.0
 
-    read_branch = _branch(schema, "read_view")
+    read_branch = branches["read_view"]
     assert read_branch["properties"]["offset"]["maximum"] == 512
     assert read_branch["properties"]["page_size"]["maximum"] == 48
 

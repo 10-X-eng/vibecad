@@ -39,7 +39,6 @@ def test_schema_exposes_every_template_choice_but_no_output_path() -> None:
     assert definition.primary_classification == "export"
     assert branch["additionalProperties"] is False
     assert branch["required"] == [
-        "operation",
         "job",
         "description",
         "include_postprocessing",

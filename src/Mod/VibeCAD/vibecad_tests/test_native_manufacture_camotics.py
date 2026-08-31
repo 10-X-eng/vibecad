@@ -52,7 +52,7 @@ def test_schema_has_two_closed_requests_and_no_provider_process_fields() -> None
     branch = schema["parameters"]["oneOf"][0]
     request = branch["properties"]["request"]
 
-    assert branch["required"] == ["operation", "job", "operations", "request"]
+    assert branch["required"] == ["job", "operations", "request"]
     assert branch["additionalProperties"] is False
     assert [item["properties"]["kind"]["const"] for item in request["oneOf"]] == [
         "read_result",

@@ -1178,6 +1178,7 @@ set(VibeCAD_Scripts
     VibeCADScriptedOwnership.py
     VibeCADScriptedProcess.py
     VibeCADScriptedPublication.py
+    VibeCADSurfaceAuthority.py
     VibeCADTools.py
     VibeCADTransactions.py
     VibeCADUpdate.py
@@ -1256,6 +1257,7 @@ set(VibeCAD_TestScripts)
 if(BUILD_TEST AND BUILD_GUI)
     list(APPEND VibeCAD_TestScripts
         vibecad_tests/__init__.py
+        vibecad_tests/schema_test_helpers.py
         vibecad_tests/authoring_mode_gui_integration.py
         vibecad_tests/authoring_mode_persistence_gui_integration.py
         vibecad_tests/assembly_simulation_playback_gui_integration.py

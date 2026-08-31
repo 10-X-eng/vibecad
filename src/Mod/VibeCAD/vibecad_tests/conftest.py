@@ -16,6 +16,7 @@ import types
 
 VIBECAD_DIR = Path(__file__).resolve().parent.parent
 TECHDRAW_DIR = VIBECAD_DIR.parent / "TechDraw"
+FEM_DIR = VIBECAD_DIR.parent / "Fem"
 
 
 def _install_freecad_stubs() -> None:
@@ -28,6 +29,6 @@ def _install_freecad_stubs() -> None:
 
 _install_freecad_stubs()
 
-for module_dir in (TECHDRAW_DIR, VIBECAD_DIR):
+for module_dir in (FEM_DIR, TECHDRAW_DIR, VIBECAD_DIR):
     if str(module_dir) not in sys.path:
         sys.path.insert(0, str(module_dir))
