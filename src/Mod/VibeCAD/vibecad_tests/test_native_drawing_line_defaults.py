@@ -27,14 +27,14 @@ def test_line_defaults_schema_is_one_argument_free_read() -> None:
     assert definition.primary_classification == "read"
     assert len(branches) == 1
     branch = branches[0]
-    assert branch == {
-        "type": "object",
-        "properties": {
-            "operation": {"type": "string", "const": "read_current"}
-        },
-        "required": ["operation"],
-        "additionalProperties": False,
-    }
+    assert branch["type"] == "object"
+    assert branch["required"] == []
+    assert branch["additionalProperties"] is False
+    assert set(branch["properties"]) == {"operation"}
+    operation = branch["properties"]["operation"]
+    assert operation["type"] == "string"
+    assert operation["const"] == "read_current"
+    assert operation["description"]
 
     variant = definition.variants[0]
     assert variant.action_ids == frozenset(

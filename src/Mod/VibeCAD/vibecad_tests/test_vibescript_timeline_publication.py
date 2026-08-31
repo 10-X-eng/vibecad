@@ -57,6 +57,8 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
         "vibescript.delete_output",
         "vibescript.delete_program",
         "vibescript.delete_object",
+        "vibescript.create_part",
+        "vibescript.create_assembly",
     }
 
     expected_operations = {
@@ -75,6 +77,8 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
         "vibescript.delete_output": "semantic_deletion",
         "vibescript.delete_program": "semantic_deletion",
         "vibescript.delete_object": "semantic_deletion",
+        "vibescript.create_part": "delegated_domain_strategy",
+        "vibescript.create_assembly": "delegated_domain_strategy",
     }
     for pack in packs:
         domain_specs = {
@@ -95,8 +99,8 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
         )
         contracts[f"vibescript.{pack.domain}.delete_program"] = "semantic_deletion"
 
-    # Eight canonical writes plus four callable compatibility aliases per shipped pack.
-    assert len(registered_writes) == 8 + 4 * len(packs) == 76
+    # Ten canonical writes plus four callable compatibility aliases per shipped pack.
+    assert len(registered_writes) == 10 + 4 * len(packs) == 78
     assert set(contracts) == registered_writes
     assert set(contracts.values()) <= {
         *domain_publication._TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN.values(),

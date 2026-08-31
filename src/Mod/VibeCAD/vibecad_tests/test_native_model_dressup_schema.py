@@ -89,7 +89,7 @@ def test_fillet_contract_matches_current_radius_reference_and_all_edge_controls(
 
     assert definition.name == "model.dressup"
     assert definition.variants[0].action_ids == frozenset({"PartDesign_Fillet"})
-    assert branch["required"] == ["operation", "label", "selection", "radius_mm"]
+    assert branch["required"] == ["label", "selection", "radius_mm"]
     assert branch["additionalProperties"] is False
     selection = branch["properties"]["selection"]
     assert [
@@ -124,7 +124,7 @@ def test_chamfer_contract_matches_every_current_task_definition_control() -> Non
     branch = definition.provider_schema(("chamfer",))["parameters"]["oneOf"][0]
 
     assert definition.variants[1].action_ids == frozenset({"PartDesign_Chamfer"})
-    assert branch["required"] == ["operation", "label", "selection", "definition"]
+    assert branch["required"] == ["label", "selection", "definition"]
     assert branch["additionalProperties"] is False
     definitions = branch["properties"]["definition"]["oneOf"]
     assert [item["properties"]["kind"]["const"] for item in definitions] == [
@@ -172,7 +172,6 @@ def test_draft_contract_matches_face_angle_reference_and_reverse_controls() -> N
 
     assert definition.variants[2].action_ids == frozenset({"PartDesign_Draft"})
     assert branch["required"] == [
-        "operation",
         "label",
         "selection",
         "angle_degrees",
@@ -219,7 +218,6 @@ def test_thickness_contract_matches_every_current_task_control() -> None:
 
     assert definition.variants[3].action_ids == frozenset({"PartDesign_Thickness"})
     assert branch["required"] == [
-        "operation",
         "label",
         "selection",
         "thickness_mm",

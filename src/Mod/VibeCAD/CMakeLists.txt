@@ -792,6 +792,9 @@ set(VibeCAD_Scripts
     VibeCADNativeMeshPointsSchema.py
     VibeCADNativeMeshApproximateSchema.py
     VibeCADNativeMeshRebuildSchema.py
+    VibeCADNativeMeshReconstructParametricSchema.py
+    VibeCADNativeReconstructParametricBindings.py
+    VibeCADNativeReconstructParametricRuntime.py
     VibeCADNativeMeshRegularSolid.py
     VibeCADNativeMeshSegment.py
     VibeCADNativeMeshSegmentBindings.py
@@ -1174,10 +1177,12 @@ set(VibeCAD_Scripts
     VibeCADRibbonSurface.py
     VibeCADProject.py
     VibeCADSession.py
+    VibeCADSessionRecovery.py
     VibeCADScriptedEditor.py
     VibeCADScriptedOwnership.py
     VibeCADScriptedProcess.py
     VibeCADScriptedPublication.py
+    VibeCADSurfaceAuthority.py
     VibeCADTools.py
     VibeCADTransactions.py
     VibeCADUpdate.py
@@ -1256,6 +1261,7 @@ set(VibeCAD_TestScripts)
 if(BUILD_TEST AND BUILD_GUI)
     list(APPEND VibeCAD_TestScripts
         vibecad_tests/__init__.py
+        vibecad_tests/schema_test_helpers.py
         vibecad_tests/authoring_mode_gui_integration.py
         vibecad_tests/authoring_mode_persistence_gui_integration.py
         vibecad_tests/assembly_simulation_playback_gui_integration.py
@@ -1263,6 +1269,8 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/section_view_gui_integration.py
         vibecad_tests/link_override_visibility_gui_integration.py
         vibecad_tests/mcp_gui_integration.py
+        vibecad_tests/session_recovery_gui_integration.py
+        vibecad_tests/test_session_recovery.py
     vibecad_tests/native_background_gui_integration.py
     vibecad_tests/native_analyze_context_responsiveness_gui_integration.py
     vibecad_tests/native_analyze_model_gui_integration.py
@@ -1438,6 +1446,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/test_mesh_acceptance.py
     vibecad_tests/test_native_mesh_boolean_background.py
     vibecad_tests/test_native_mesh_io.py
+    vibecad_tests/test_native_mesh_reconstruct_parametric.py
     vibecad_tests/test_native_mesh_tessellation_background.py
     vibecad_tests/gui_api_thread_guard_integration.py
     vibecad_tests/native_provider_thread_gui_integration.py
@@ -1529,6 +1538,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_native_assembly_export.py
         vibecad_tests/test_native_assembly_fastener.py
         vibecad_tests/test_native_input.py
+        vibecad_tests/test_gemini_provider.py
         vibecad_tests/test_grok_oauth.py
         vibecad_tests/test_agent_control.py
         vibecad_tests/test_agent_control_grok_bot.py
@@ -1704,6 +1714,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/qt_ribbon_theme_integration.py
         vibecad_tests/read_geometry_integration.py
         vibecad_tests/test_geometry_worker_fallback.py
+        vibecad_tests/test_source_checkout_bootstrap.py
         vibecad_tests/ribbon_surface_gui_integration.py
         vibecad_tests/test_aero_ribbon_and_context.py
         vibecad_tests/test_aero_ribbon_install.py

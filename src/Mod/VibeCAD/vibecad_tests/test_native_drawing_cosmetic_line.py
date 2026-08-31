@@ -19,6 +19,7 @@ from VibeCADNativeDrawingCosmeticLineState import (
     normalize_cosmetic_line_host_plan,
     normalize_two_point_cosmetic_line_host_plan,
 )
+from vibecad_tests.schema_test_helpers import exact_provider_branches
 
 
 MOD_ROOT = Path(__file__).resolve().parents[2]
@@ -62,12 +63,15 @@ def _plan(construction: str, line: dict) -> dict:
 def test_cosmetic_line_schema_has_three_closed_exact_role_branches() -> None:
     definition = drawing_cosmetic_line_capability_definition()
     schema = definition.provider_schema(DRAWING_COSMETIC_LINE_OPERATIONS)
-    branches = schema["parameters"]["oneOf"]
-    by_operation = {
-        branch["properties"]["operation"]["const"]: branch for branch in branches
-    }
+    by_operation = exact_provider_branches(
+        definition, DRAWING_COSMETIC_LINE_OPERATIONS
+    )
 
     assert definition.name == DRAWING_COSMETIC_LINE_CAPABILITY_NAME
+    assert "oneOf" not in schema["parameters"]
+    assert schema["parameters"]["properties"]["operation"]["enum"] == list(
+        DRAWING_COSMETIC_LINE_OPERATIONS
+    )
     assert tuple(by_operation) == DRAWING_COSMETIC_LINE_OPERATIONS
     named_role_branches = [
         by_operation["create_parallel"],
@@ -78,7 +82,10 @@ def test_cosmetic_line_schema_has_three_closed_exact_role_branches() -> None:
         == ["operation", "page", "view", "reference_edge", "through_vertex"]
         for branch in named_role_branches
     )
-    assert all(branch["additionalProperties"] is False for branch in branches)
+    assert all(
+        branch["additionalProperties"] is False
+        for branch in by_operation.values()
+    )
     assert all(
         branch["properties"]["reference_edge"]["properties"]["subelement"][
             "pattern"

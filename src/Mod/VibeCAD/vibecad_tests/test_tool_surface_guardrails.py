@@ -324,6 +324,9 @@ def test_provider_schema_build_captures_runtime_state_once(
         return {"edit_mode": None}
 
     monkeypatch.setattr(session, "_minimal_runtime_state", runtime_state)
+    monkeypatch.setattr(
+        session, "provider_engine_from_service", lambda _service: "vibescript"
+    )
 
     schemas = session.provider_tool_schemas(service, "PartWorkbench")
 
@@ -346,6 +349,9 @@ def test_provider_schema_build_reuses_turn_context_runtime_state(
         raise AssertionError("runtime state was captured twice")
 
     monkeypatch.setattr(session, "_minimal_runtime_state", unexpected_runtime_state)
+    monkeypatch.setattr(
+        session, "provider_engine_from_service", lambda _service: "vibescript"
+    )
 
     schemas = session.provider_tool_schemas(
         service,
@@ -550,7 +556,9 @@ def test_model_and_assembly_share_one_stable_provider_contract() -> None:
     } <= set(model.tool_names)
 
 
-def test_model_authoring_contract_survives_document_and_task_transitions(specs) -> None:
+def test_model_authoring_contract_survives_document_and_task_transitions(
+    specs, monkeypatch
+) -> None:
     import VibeCADSession as session
 
     class Service(_SurfaceService):
@@ -560,6 +568,9 @@ def test_model_authoring_contract_survives_document_and_task_transitions(specs) 
             return None
 
     service = Service("vibescript")
+    monkeypatch.setattr(
+        session, "provider_engine_from_service", lambda _service: "vibescript"
+    )
     no_document = session.provider_tool_schemas(
         service,
         "PartDesignWorkbench",

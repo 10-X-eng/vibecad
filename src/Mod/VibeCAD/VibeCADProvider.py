@@ -20,6 +20,7 @@ import time
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from VibeCADAuth import DEFAULT_GEMINI_API_BASE
 from VibeCADDebug import capture_provider_request
 from VibeCADModelingSurface import (
     is_model_assembly_workbench,
@@ -194,14 +195,19 @@ def _provider_option_value(context: dict[str, Any], name: str) -> Any:
 
 
 def _anthropic_system_blocks(context: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
+    blocks = [
         {
             "type": "text",
             "text": section,
-            "cache_control": {"type": "ephemeral"},
         }
         for section in _system_instruction_sections(context)
     ]
+    if blocks:
+        # One marker caches the complete system prefix while preserving two
+        # slots for tools and durable reference images plus the automatic
+        # growing-conversation breakpoint.
+        blocks[-1]["cache_control"] = {"type": "ephemeral"}
+    return blocks
 
 
 class ProviderUnavailable(RuntimeError):
@@ -602,6 +608,262 @@ def _codex_prompt_without_replayed_conversation(prompt: str) -> str:
         if latest_user:
             active_request = "\n\nACTIVE_USER_REQUEST\n" + latest_user
     return prefix + start + empty + end + active_request + suffix
+
+
+_PROVIDER_PROMPT_SECTIONS = (
+    (
+        "active_state",
+        "VIBECAD_CONTEXT_JSON\n",
+        "\nEND_VIBECAD_CONTEXT_JSON",
+    ),
+    (
+        "recent_conversation",
+        "RECENT_CONVERSATION_JSON\n",
+        "\nEND_RECENT_CONVERSATION_JSON",
+    ),
+    (
+        "vibescript_authoring_contract",
+        "VIBESCRIPT_AUTHORING_CONTRACT_JSON\n",
+        "\nEND_VIBESCRIPT_AUTHORING_CONTRACT_JSON",
+    ),
+)
+_CODEX_REUSABLE_PROMPT_SECTIONS = frozenset(
+    {"active_state", "vibescript_authoring_contract"}
+)
+
+
+def _provider_prompt_section_values(prompt: str) -> dict[str, str]:
+    """Extract deterministic provider prompt sections without their framing."""
+
+    text = str(prompt or "")
+    values: dict[str, str] = {}
+    cursor = 0
+    for name, start, end in _PROVIDER_PROMPT_SECTIONS:
+        candidate = text[cursor:].lstrip("\n")
+        leading_newlines = len(text[cursor:]) - len(candidate)
+        if not candidate.startswith(start):
+            continue
+        start_index = cursor + leading_newlines
+        value_start = start_index + len(start)
+        end_index = text.find(end, value_start)
+        if end_index < 0:
+            break
+        values[name] = text[value_start:end_index]
+        cursor = end_index + len(end)
+    remainder = text[cursor:].lstrip("\n") if cursor else text
+    if "\n" in remainder:
+        _prompt_section, current_request = remainder.split("\n", 1)
+    else:
+        current_request = remainder
+    values["current_request"] = current_request
+    return values
+
+
+def provider_input_budget(
+    prompt: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    """Return content-free byte accounting and a deterministic token estimate.
+
+    Provider tokenizers differ and may not be installed in FreeCAD, so this
+    diagnostic deliberately uses one transparent estimator instead of
+    pretending to report an exact billed token count.
+    """
+
+    prompt_text = str(prompt or "")
+    values = _provider_prompt_section_values(prompt_text)
+    sections: dict[str, int] = {
+        "system_instructions": len(
+            _provider_instructions(context).encode("utf-8")
+        ),
+        "provider_tool_schemas": len(
+            json.dumps(
+                _json_safe(list(context.get("provider_tool_schemas") or [])),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ),
+    }
+    prompt_content_bytes = 0
+    for name in (
+        "active_state",
+        "recent_conversation",
+        "vibescript_authoring_contract",
+        "current_request",
+    ):
+        if name not in values:
+            continue
+        encoded_bytes = len(values[name].encode("utf-8"))
+        sections[name] = encoded_bytes
+        prompt_content_bytes += encoded_bytes
+    prompt_bytes = len(prompt_text.encode("utf-8"))
+    sections["prompt_framing"] = max(0, prompt_bytes - prompt_content_bytes)
+    total_bytes = sum(sections.values())
+    return {
+        "schema": "vibecad-provider-input-budget-v1",
+        "estimator": "ceil(utf8_bytes/4)",
+        "sections": sections,
+        "total_utf8_bytes": total_bytes,
+        "estimated_input_tokens": (total_bytes + 3) // 4,
+    }
+
+
+def _codex_prompt_section_digests(prompt: str) -> dict[str, str]:
+    """Fingerprint reusable deterministic sections in one rendered prompt."""
+
+    values = _provider_prompt_section_values(prompt)
+    return {
+        name: hashlib.sha256(values[name].encode("utf-8")).hexdigest()
+        for name in ("active_state", "vibescript_authoring_contract")
+        if name in values
+    }
+
+
+def _codex_context_guard(encoded_context: str) -> dict[str, Any]:
+    """Keep live identity, revision, and selection facts beside a reference."""
+
+    try:
+        payload = json.loads(encoded_context)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    active = payload.get("active_state") if isinstance(payload, dict) else None
+    if not isinstance(active, dict):
+        return {}
+    guard: dict[str, Any] = {}
+    for name in ("work", "workbench"):
+        if active.get(name) not in (None, "", [], {}):
+            guard[name] = active[name]
+    modeling_surface = active.get("modeling_surface")
+    if isinstance(modeling_surface, dict):
+        compact_surface = {
+            name: modeling_surface[name]
+            for name in (
+                "workbench",
+                "engine",
+                "domain",
+                "surface_id",
+                "available",
+            )
+            if name in modeling_surface
+        }
+        if compact_surface:
+            guard["modeling_surface"] = compact_surface
+    document = active.get("document")
+    if isinstance(document, dict):
+        compact_document = {
+            name: document[name]
+            for name in (
+                "name",
+                "document_name",
+                "uid",
+                "revision",
+                "structural_revision",
+                "object_count",
+                "edit_object",
+            )
+            if name in document
+        }
+        if compact_document:
+            guard["document"] = compact_document
+    if active.get("selection") not in (None, "", [], {}):
+        guard["selection"] = active["selection"]
+    state = active.get("state")
+    if isinstance(state, dict):
+        compact_state = {
+            name: state[name]
+            for name in (
+                "revision",
+                "working_revision",
+                "structural_revision",
+                "state_sha256",
+                "selection",
+            )
+            if name in state and state[name] not in (None, "", [], {})
+        }
+        if compact_state:
+            guard["state"] = compact_state
+    return _json_safe(guard)
+
+
+def _codex_prompt_with_reused_context(
+    prompt: str,
+    previous_section_digests: Mapping[str, str] | None,
+    *,
+    context: Mapping[str, Any] | None = None,
+) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """Replace byte-identical resumed-thread context with hash references."""
+
+    optimized = str(prompt or "")
+    values = _provider_prompt_section_values(optimized)
+    current_digests = _codex_prompt_section_digests(optimized)
+    previous = dict(previous_section_digests or {})
+    reused: list[str] = []
+    original_bytes = len(optimized.encode("utf-8"))
+    for name, start, end in _PROVIDER_PROMPT_SECTIONS:
+        if name not in _CODEX_REUSABLE_PROMPT_SECTIONS:
+            continue
+        digest = current_digests.get(name)
+        if not digest or previous.get(name) != digest or name not in values:
+            continue
+        reference: dict[str, Any] = {
+            "section": name,
+            "status": "unchanged_from_previous_successful_turn",
+            "sha256": digest,
+            "instruction": (
+                "Reuse the exact named section from the previous successful turn; "
+                "current_guard is authoritative."
+            ),
+        }
+        if name == "active_state":
+            guard = _codex_context_guard(values[name])
+            surface = (
+                context.get("provider_tool_surface")
+                if isinstance(context, Mapping)
+                else None
+            )
+            if isinstance(surface, Mapping):
+                guard["provider_tool_surface"] = {
+                    field: surface[field]
+                    for field in (
+                        "frozen",
+                        "engine",
+                        "domain",
+                        "surface_id",
+                        "schema_sha256",
+                    )
+                    if field in surface
+                }
+            if guard:
+                reference["current_guard"] = guard
+        replacement = json.dumps(
+            {"__vibecad_context_reference__": reference},
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(replacement.encode("utf-8")) >= len(values[name].encode("utf-8")):
+            continue
+        section_start = optimized.find(start)
+        if section_start < 0:
+            continue
+        value_start = section_start + len(start)
+        section_end = optimized.find(end, value_start)
+        if section_end < 0:
+            continue
+        optimized = optimized[:value_start] + replacement + optimized[section_end:]
+        reused.append(name)
+    optimized_bytes = len(optimized.encode("utf-8"))
+    saved_bytes = max(0, original_bytes - optimized_bytes)
+    return (
+        optimized,
+        current_digests,
+        {
+            "reused_sections": reused,
+            "saved_utf8_bytes": saved_bytes,
+            "saved_estimated_tokens": (saved_bytes + 3) // 4,
+        },
+    )
 
 
 def _codex_tool_image_content_items(
@@ -1396,14 +1658,50 @@ class CodexProvider(BaseProvider):
             if managed_lease is not None:
                 managed_lease.remember_thread(thread_id)
 
+            turn_prompt = (
+                _codex_prompt_without_replayed_conversation(prompt)
+                if resumed_thread
+                else prompt
+            )
+            prompt_section_digests = _codex_prompt_section_digests(turn_prompt)
+            prompt_reuse = {
+                "reused_sections": [],
+                "saved_utf8_bytes": 0,
+                "saved_estimated_tokens": 0,
+            }
+            if resumed_thread and managed_lease is not None:
+                (
+                    turn_prompt,
+                    prompt_section_digests,
+                    prompt_reuse,
+                ) = _codex_prompt_with_reused_context(
+                    turn_prompt,
+                    managed_lease.previous_prompt_section_digests,
+                    context=live_context,
+                )
+            # A hash reference may point only at a full section in the
+            # immediately preceding successful turn, never at another
+            # reference. This also re-anchors exact state across compaction.
+            prompt_section_digests_to_remember = {
+                name: digest
+                for name, digest in prompt_section_digests.items()
+                if name not in prompt_reuse["reused_sections"]
+            }
+            input_budget = provider_input_budget(turn_prompt, live_context)
+            _emit_provider_progress(
+                progress_callback,
+                {
+                    "event": "provider_input_budget",
+                    "provider": self.provider_label,
+                    "resumed_thread": resumed_thread,
+                    "budget": input_budget,
+                    **prompt_reuse,
+                },
+            )
             turn_request: dict[str, Any] = {
                 "threadId": thread_id,
                 "input": _codex_turn_input(
-                    (
-                        _codex_prompt_without_replayed_conversation(prompt)
-                        if resumed_thread
-                        else prompt
-                    ),
+                    turn_prompt,
                     live_context,
                 ),
                 "environments": [],
@@ -1490,6 +1788,10 @@ class CodexProvider(BaseProvider):
                     or f"Codex turn ended with {completed_status or 'unknown status'}."
                 )
             if not final_output and transition_requested.is_set():
+                if managed_lease is not None:
+                    managed_lease.remember_prompt_section_digests(
+                        prompt_section_digests_to_remember
+                    )
                 return ProviderResult(
                     final_output="",
                     raw={
@@ -1508,6 +1810,10 @@ class CodexProvider(BaseProvider):
                     "Codex completed without a final agent message; VibeCAD refused "
                     "to accept an empty result. The provider may have truncated or "
                     f"exhausted its context.{context_note}"
+                )
+            if managed_lease is not None:
+                managed_lease.remember_prompt_section_digests(
+                    prompt_section_digests_to_remember
                 )
             return ProviderResult(
                 final_output=final_output,
@@ -1548,6 +1854,58 @@ class CodexProvider(BaseProvider):
                     except Exception:
                         pass
                 client.close()
+
+
+class GeminiProvider(BaseProvider):
+    """Google Gemini adapter over its OpenAI-compatible Chat Completions API."""
+
+    def __init__(
+        self,
+        model: str = "gemini-flash-latest",
+        api_key: str | None = None,
+        reasoning_effort: str = "high",
+        timeout_seconds: float | None = None,
+        max_turns: int | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        self.model = model
+        self.api_key = api_key
+        self.reasoning_effort = reasoning_effort
+        self.timeout_seconds = timeout_seconds
+        self.max_turns = max_turns
+        self.base_url = base_url or DEFAULT_GEMINI_API_BASE
+
+    def run(
+        self,
+        prompt: str,
+        context: dict[str, Any],
+        tool_runner: ToolRunner | None = None,
+        cancellation_check: CancellationCheck | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ProviderResult:
+        try:
+            return _run_provider_subprocess(
+                prompt=prompt,
+                context=context,
+                tool_runner=tool_runner,
+                model=self.model,
+                api_key=self.api_key,
+                reasoning_effort=self.reasoning_effort,
+                timeout_seconds=self.timeout_seconds,
+                max_turns=self.max_turns,
+                base_url=self.base_url,
+                cancellation_check=cancellation_check,
+                progress_callback=progress_callback,
+                child_main=_gemini_child_main,
+                provider_label="Google Gemini provider",
+            )
+        except TimeoutError as exc:
+            if self.timeout_seconds and self.timeout_seconds > 0:
+                raise ProviderUnavailable(
+                    "Google Gemini provider timed out after "
+                    f"{self.timeout_seconds:g} seconds."
+                ) from exc
+            raise
 
 
 class AnthropicProvider(BaseProvider):
@@ -2451,6 +2809,20 @@ def _anthropic_tool_definition(schema: dict[str, Any]) -> dict[str, Any]:
         "name": _provider_function_name(tool_name),
         "description": str(schema.get("description") or ""),
         "input_schema": _provider_tool_parameters(schema),
+    }
+
+
+def _gemini_tool_definition(schema: dict[str, Any]) -> dict[str, Any]:
+    tool_name = str(schema.get("name") or "").strip()
+    if not tool_name:
+        raise ValueError("Provider tool schema is missing name.")
+    return {
+        "type": "function",
+        "function": {
+            "name": _provider_function_name(tool_name),
+            "description": str(schema.get("description") or ""),
+            "parameters": _provider_tool_parameters(schema),
+        },
     }
 
 
@@ -3819,7 +4191,7 @@ def _context_image_delivery_notes(context: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _anthropic_user_content(
+def _gemini_user_content(
     prompt: str, context: dict[str, Any]
 ) -> str | list[dict[str, Any]]:
     blocks = _context_image_blocks(context)
@@ -3830,6 +4202,64 @@ def _anthropic_user_content(
     for note in delivery_notes:
         content.append({"type": "text", "text": note})
     for label_text, mime_type, image_data in blocks:
+        content.append({"type": "text", "text": label_text})
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{mime_type};base64,{image_data}",
+                },
+            }
+        )
+    return content
+
+
+def _anthropic_user_content(
+    prompt: str, context: dict[str, Any]
+) -> str | list[dict[str, Any]]:
+    prompt, authoring_blocks = _anthropic_split_authoring_contract(prompt)
+    prompt, history_blocks = _anthropic_split_recent_conversation(prompt)
+    blocks = _context_image_blocks(context)
+    delivery_notes = _context_image_delivery_notes(context)
+    if (
+        not blocks
+        and not delivery_notes
+        and not authoring_blocks
+        and not history_blocks
+    ):
+        return prompt
+
+    # Durable references precede the changing prompt so their exact image
+    # prefix can be reused across requests. They remain in the logical input;
+    # prompt caching only avoids reprocessing identical bytes.
+    reference_blocks = [block for block in blocks if block[0].startswith("R")]
+    observation_blocks = [
+        block for block in blocks if not block[0].startswith("R")
+    ]
+    content: list[dict[str, Any]] = []
+    for label_text, mime_type, image_data in reference_blocks:
+        content.append({"type": "text", "text": label_text})
+        content.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": image_data,
+                },
+            }
+        )
+    content.extend(authoring_blocks)
+    if authoring_blocks:
+        content[-1]["cache_control"] = {"type": "ephemeral"}
+    elif reference_blocks:
+        content[-1]["cache_control"] = {"type": "ephemeral"}
+
+    content.extend(history_blocks)
+    content.append({"type": "text", "text": prompt})
+    for note in delivery_notes:
+        content.append({"type": "text", "text": note})
+    for label_text, mime_type, image_data in observation_blocks:
         content.append({"type": "text", "text": label_text})
         content.append(
             {
@@ -3844,8 +4274,109 @@ def _anthropic_user_content(
     return content
 
 
+def _anthropic_split_authoring_contract(
+    prompt: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Move exact stable VibeScript signatures into the cached prefix."""
+
+    text = str(prompt or "")
+    start = "VIBESCRIPT_AUTHORING_CONTRACT_JSON\n"
+    end = "\nEND_VIBESCRIPT_AUTHORING_CONTRACT_JSON"
+    start_index = text.find(start)
+    if start_index < 0:
+        return text, []
+    value_start = start_index + len(start)
+    end_index = text.find(end, value_start)
+    if end_index < 0:
+        return text, []
+    encoded_contract = text[value_start:end_index]
+    try:
+        contract = json.loads(encoded_contract)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return text, []
+    if not isinstance(contract, dict):
+        return text, []
+    placeholder = json.dumps(
+        {
+            "delivered_as_preceding_content_block": True,
+            "sha256": hashlib.sha256(encoded_contract.encode("utf-8")).hexdigest(),
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    contract_block = {
+        "type": "text",
+        "text": text[start_index : end_index + len(end)],
+    }
+    return text[:value_start] + placeholder + text[end_index:], [contract_block]
+
+
+def _anthropic_split_recent_conversation(
+    prompt: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Move stable prior turns ahead of changing state for prefix caching."""
+
+    text = str(prompt or "")
+    start = "RECENT_CONVERSATION_JSON\n"
+    end = "\nEND_RECENT_CONVERSATION_JSON"
+    start_index = text.find(start)
+    if start_index < 0:
+        return text, []
+    value_start = start_index + len(start)
+    end_index = text.find(end, value_start)
+    if end_index < 0:
+        return text, []
+    try:
+        payload = json.loads(text[value_start:end_index])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return text, []
+    if not isinstance(payload, dict):
+        return text, []
+    turns = [
+        {
+            "role": str(turn.get("role") or ""),
+            "content": str(turn.get("content") or ""),
+        }
+        for turn in list(payload.get("turns") or [])
+        if isinstance(turn, dict)
+        and str(turn.get("role") or "") in {"user", "assistant"}
+        and str(turn.get("content") or "")
+    ]
+    if not turns:
+        return text, []
+
+    history_blocks = [
+        {
+            "type": "text",
+            "text": (
+                "RECENT_CONVERSATION_TURN_JSON\n"
+                + json.dumps(
+                    turn,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+                + "\nEND_RECENT_CONVERSATION_TURN_JSON"
+            ),
+        }
+        for turn in turns
+    ]
+    history_blocks[-1]["cache_control"] = {"type": "ephemeral"}
+    placeholder = json.dumps(
+        {
+            "turns": [],
+            "delivered_turn_count": len(turns),
+            "turn_delivery": "preceding_RECENT_CONVERSATION_TURN_JSON_blocks",
+            "omitted_turn_count": int(payload.get("omitted_turn_count") or 0),
+            "truncated_turn_count": int(payload.get("truncated_turn_count") or 0),
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return text[:value_start] + placeholder + text[end_index:], history_blocks
+
+
 def _anthropic_visual_repin_content(
-    context: dict[str, Any], screenshot_summary: dict[str, Any]
+    _context: dict[str, Any], screenshot_summary: dict[str, Any]
 ) -> list[dict[str, Any]]:
     if (
         not isinstance(screenshot_summary, dict)
@@ -3853,13 +4384,9 @@ def _anthropic_visual_repin_content(
         or not screenshot_summary.get("new_observation", True)
     ):
         return []
-    references = context.get("reference_images")
-    has_references = bool(isinstance(references, dict) and references.get("images"))
     visual_context = {
         "view_screenshot": screenshot_summary,
     }
-    if has_references:
-        visual_context["reference_images"] = references
     blocks = _context_image_blocks(visual_context)
     if not blocks:
         return []
@@ -3925,7 +4452,10 @@ def _anthropic_adaptive_effort(reasoning_effort: str | None) -> str | None:
 def _anthropic_request_tools(
     cad_tools: list[dict[str, Any]], web_search_enabled: bool
 ) -> list[dict[str, Any]]:
-    tools = list(cad_tools)
+    # Anthropic hashes tools before system content, so the system breakpoint
+    # cumulatively caches this prefix. Reserve the remaining explicit slots
+    # for durable images and growing conversation history.
+    tools = [dict(tool) for tool in cad_tools]
     if web_search_enabled:
         tools.append(
             {
@@ -4054,7 +4584,7 @@ def _anthropic_response_summary(response: Any) -> dict[str, Any]:
             )
             if name:
                 tool_names.append(str(name))
-    return {
+    summary = {
         "stop_reason": str(getattr(response, "stop_reason", "") or ""),
         "block_counts": counts,
         "text_chars": text_chars,
@@ -4062,6 +4592,31 @@ def _anthropic_response_summary(response: Any) -> dict[str, Any]:
         "tool_names": tool_names[:8],
         "tool_name_count": len(tool_names),
     }
+    raw_usage = getattr(response, "usage", None)
+    if isinstance(raw_usage, Mapping):
+        usage_payload = dict(raw_usage)
+    else:
+        model_dump = getattr(raw_usage, "model_dump", None)
+        dumped = (
+            model_dump(mode="json", exclude_none=True)
+            if callable(model_dump)
+            else {}
+        )
+        usage_payload = dumped if isinstance(dumped, dict) else {}
+    token_usage = {
+        name: usage_payload[name]
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation",
+        )
+        if name in usage_payload and usage_payload[name] is not None
+    }
+    if token_usage:
+        summary["token_usage"] = _json_safe(token_usage)
+    return summary
 
 
 def _anthropic_stream_event_summary(event: Any) -> dict[str, Any]:
@@ -4554,6 +5109,441 @@ def _anthropic_compaction_resume_message(
     )
 
 
+def _anthropic_compaction_resume_content(
+    compaction: dict[str, Any], context: dict[str, Any]
+) -> str | list[dict[str, Any]]:
+    """Restore durable visual references once after dropping prior messages."""
+
+    reference_context: dict[str, Any] = {}
+    references = context.get("reference_images")
+    if isinstance(references, dict) and references.get("images"):
+        reference_context["reference_images"] = references
+    return _anthropic_user_content(
+        _anthropic_compaction_resume_message(compaction, context),
+        reference_context,
+    )
+
+
+def _gemini_tool_call_extra_content(tool_call: Any) -> dict[str, Any] | None:
+    direct = getattr(tool_call, "extra_content", None)
+    if isinstance(direct, dict) and direct:
+        return _json_safe(direct)
+    model_extra = getattr(tool_call, "model_extra", None)
+    if isinstance(model_extra, dict):
+        nested = model_extra.get("extra_content")
+        if isinstance(nested, dict) and nested:
+            return _json_safe(nested)
+    payload = _object_payload(tool_call)
+    nested = payload.get("extra_content")
+    if isinstance(nested, dict) and nested:
+        return _json_safe(nested)
+    return None
+
+
+def _gemini_forced_tool_completion(
+    *,
+    prompt: str,
+    context: dict[str, Any],
+    model: str,
+    api_key: str | None,
+    reasoning_effort: str | None,
+    timeout_seconds: float | None,
+    base_url: str | None,
+    instructions: str,
+    tool_schema: dict[str, Any],
+    operation_label: str,
+) -> dict[str, Any]:
+    if not str(api_key or "").strip():
+        raise ProviderUnavailable("No Google Gemini API key is configured.")
+    import openai
+
+    definition = _gemini_tool_definition(tool_schema)
+    function_name = str(definition["function"]["name"])
+    request: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": prompt},
+        ],
+        "tools": [definition],
+        "tool_choice": "required",
+    }
+    if reasoning_effort:
+        request["reasoning_effort"] = reasoning_effort
+    endpoint = base_url or DEFAULT_GEMINI_API_BASE
+    client_kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": endpoint,
+        "max_retries": 2,
+    }
+    if timeout_seconds is not None and timeout_seconds > 0:
+        client_kwargs["timeout"] = timeout_seconds
+    _capture_outbound_request(
+        context,
+        provider="gemini",
+        sdk_call=f"OpenAI.chat.completions.create.{operation_label}",
+        turn=1,
+        request=request,
+        base_url=endpoint,
+    )
+    client = openai.OpenAI(**client_kwargs)
+    try:
+        response = client.chat.completions.create(**request)
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+    choices = list(getattr(response, "choices", None) or [])
+    message = getattr(choices[0], "message", None) if choices else None
+    calls = list(getattr(message, "tool_calls", None) or [])
+    if len(calls) != 1:
+        raise RuntimeError(
+            f"Google Gemini {operation_label} did not return exactly one "
+            "structured function call."
+        )
+    function = getattr(calls[0], "function", None)
+    if str(getattr(function, "name", None) or "") != function_name:
+        raise RuntimeError(f"Google Gemini {operation_label} called the wrong function.")
+    arguments_json = str(getattr(function, "arguments", None) or "")
+    try:
+        arguments = json.loads(arguments_json)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Google Gemini {operation_label} returned invalid function arguments."
+        ) from exc
+    if not isinstance(arguments, dict):
+        raise RuntimeError(
+            f"Google Gemini {operation_label} function arguments were not an object."
+        )
+    return _json_safe(arguments)
+
+
+def _gemini_child_main(
+    conn,
+    prompt: str,
+    context: dict[str, Any],
+    model: str,
+    api_key: str | None,
+    reasoning_effort: str | None,
+    timeout_seconds: float | None,
+    max_turns: int | None,
+    clear_inherited_modules: bool,
+    base_url: str | None = None,
+) -> None:
+    try:
+        if clear_inherited_modules:
+            _clear_inherited_sdk_modules()
+        import openai
+    except Exception as exc:
+        _send_child_error(
+            conn,
+            "Google Gemini SDK initialization",
+            ProviderUnavailable(
+                "Install the bundled 'openai' package and configure Gemini "
+                f"authentication. ({exc})"
+            ),
+        )
+        conn.close()
+        return
+
+    client = None
+    try:
+        live_context = dict(context)
+
+        def build_tool_surface(
+            surface_context: dict[str, Any],
+        ) -> tuple[dict[str, str], list[dict[str, Any]]]:
+            _validate_provider_wire_surface(surface_context)
+            by_name: dict[str, str] = {}
+            definitions: list[dict[str, Any]] = []
+            for index, schema in enumerate(
+                surface_context.get("provider_tool_schemas") or []
+            ):
+                if not isinstance(schema, dict):
+                    raise ValueError(f"Provider tool schema {index} must be an object.")
+                tool_name = str(schema.get("name") or "").strip()
+                if not tool_name:
+                    raise ValueError(f"Provider tool schema {index} is missing name.")
+                definition = _gemini_tool_definition(schema)
+                function_name = str(definition["function"]["name"])
+                if function_name in by_name:
+                    raise ValueError(
+                        f"Duplicate provider function name: {function_name}"
+                    )
+                by_name[function_name] = tool_name
+                definitions.append(definition)
+            return by_name, definitions
+
+        tools_by_name, tool_definitions = build_tool_surface(live_context)
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": _provider_instructions(live_context),
+            },
+            {
+                "role": "user",
+                "content": _gemini_user_content(
+                    prompt, _model_visible_context(live_context)
+                ),
+            },
+        ]
+
+        client_kwargs: dict[str, Any] = {
+            "base_url": base_url or DEFAULT_GEMINI_API_BASE,
+            "max_retries": 2,
+        }
+        if api_key:
+            client_kwargs["api_key"] = api_key
+        if timeout_seconds is not None and timeout_seconds > 0:
+            client_kwargs["timeout"] = timeout_seconds
+        client = openai.OpenAI(**client_kwargs)
+
+        turn = 1
+        while max_turns is None or max_turns <= 0 or turn <= max_turns:
+            sdk_request: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+            }
+            if tool_definitions:
+                sdk_request["tools"] = tool_definitions
+            if reasoning_effort:
+                sdk_request["reasoning_effort"] = reasoning_effort
+            _capture_outbound_request(
+                live_context,
+                provider="gemini",
+                sdk_call="OpenAI.chat.completions.create",
+                turn=turn,
+                request=sdk_request,
+                base_url=str(client_kwargs["base_url"]),
+            )
+            _send_child_progress(
+                conn,
+                {
+                    "event": "gemini_request_started",
+                    "turn": turn,
+                    "model": model,
+                    "message_count": len(messages),
+                    "tool_count": len(tool_definitions),
+                },
+            )
+
+            stream = client.chat.completions.create(**sdk_request)
+            text_parts: list[str] = []
+            streamed_calls: dict[int, dict[str, Any]] = {}
+            delta_batcher = _ProviderStreamDeltaBatcher(
+                lambda event: _send_child_progress(conn, event),
+                provider="Google Gemini",
+                turn=turn,
+            )
+            chunk_count = 0
+            finish_reason = ""
+            for chunk in stream:
+                chunk_count += 1
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                finish_reason = str(
+                    getattr(choice, "finish_reason", None) or finish_reason
+                )
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                content_delta = getattr(delta, "content", None)
+                if content_delta:
+                    clean_delta = str(content_delta)
+                    text_parts.append(clean_delta)
+                    delta_batcher.append("provider_text_delta", clean_delta)
+                for fallback_index, tool_delta in enumerate(
+                    getattr(delta, "tool_calls", None) or []
+                ):
+                    raw_index = getattr(tool_delta, "index", fallback_index)
+                    try:
+                        call_index = int(raw_index)
+                    except (TypeError, ValueError):
+                        call_index = fallback_index
+                    accumulated = streamed_calls.setdefault(
+                        call_index,
+                        {
+                            "id": "",
+                            "type": "function",
+                            "name": "",
+                            "arguments": "",
+                        },
+                    )
+                    call_id = str(getattr(tool_delta, "id", None) or "")
+                    if call_id:
+                        accumulated["id"] = call_id
+                    call_type = str(getattr(tool_delta, "type", None) or "")
+                    if call_type:
+                        accumulated["type"] = call_type
+                    function = getattr(tool_delta, "function", None)
+                    function_name = str(getattr(function, "name", None) or "")
+                    if function_name:
+                        if accumulated["name"] and accumulated["name"] != function_name:
+                            accumulated["name"] += function_name
+                        else:
+                            accumulated["name"] = function_name
+                    arguments_delta = str(
+                        getattr(function, "arguments", None) or ""
+                    )
+                    if arguments_delta:
+                        if (
+                            str(accumulated["arguments"]).strip() == "{}"
+                            and arguments_delta.strip() != "{}"
+                        ):
+                            accumulated["arguments"] = ""
+                        accumulated["arguments"] += arguments_delta
+                    extra_content = _gemini_tool_call_extra_content(tool_delta)
+                    if extra_content:
+                        prior_extra = accumulated.get("extra_content")
+                        if isinstance(prior_extra, dict):
+                            accumulated["extra_content"] = {
+                                **prior_extra,
+                                **extra_content,
+                            }
+                        else:
+                            accumulated["extra_content"] = extra_content
+            delta_batcher.flush()
+            _send_child_progress(
+                conn,
+                {
+                    "event": "gemini_stream_completed",
+                    "turn": turn,
+                    "chunk_count": chunk_count,
+                    "finish_reason": finish_reason,
+                },
+            )
+
+            response_text = "".join(text_parts).strip()
+            if not streamed_calls:
+                if not response_text:
+                    raise RuntimeError(
+                        "Google Gemini completed the turn without any user-visible "
+                        f"text (finish_reason={finish_reason or 'unknown'})."
+                    )
+                conn.send(
+                    {
+                        "type": "done",
+                        "final_output": response_text,
+                        "raw": None,
+                    }
+                )
+                return
+
+            assistant_tool_calls: list[dict[str, Any]] = []
+            for call_index in sorted(streamed_calls):
+                accumulated = streamed_calls[call_index]
+                call_id = str(accumulated.get("id") or "").strip()
+                function_name = str(accumulated.get("name") or "").strip()
+                if not call_id or not function_name:
+                    raise RuntimeError(
+                        "Google Gemini streamed an incomplete function call "
+                        f"at index {call_index}."
+                    )
+                arguments_json = str(accumulated.get("arguments") or "{}")
+                tool_call: dict[str, Any] = {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": function_name,
+                        "arguments": arguments_json,
+                    },
+                }
+                extra_content = accumulated.get("extra_content")
+                if isinstance(extra_content, dict) and extra_content:
+                    tool_call["extra_content"] = extra_content
+                assistant_tool_calls.append(tool_call)
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": response_text or None,
+                    "tool_calls": assistant_tool_calls,
+                }
+            )
+
+            for tool_call in assistant_tool_calls:
+                function = tool_call["function"]
+                function_name = str(function["name"])
+                tool_name = tools_by_name.get(function_name)
+                updated_context = None
+                if tool_name is None:
+                    result: Any = {
+                        "ok": False,
+                        "error": f"Unknown VibeCAD tool: {function_name}",
+                    }
+                else:
+                    conn.send(
+                        {
+                            "type": "tool",
+                            "tool_name": tool_name,
+                            "arguments_json": str(function["arguments"]),
+                            "provider_call_id": str(tool_call["id"]),
+                        }
+                    )
+                    bridge = conn.recv()
+                    if bridge.get("type") != "tool_result":
+                        raise RuntimeError("Invalid VibeCAD tool bridge response.")
+                    result = bridge.get("result")
+                    if not isinstance(result, dict):
+                        result = {
+                            "ok": False,
+                            "error": "VibeCAD tool returned no structured result.",
+                        }
+                    updated_context = bridge.get("context")
+                    if bridge.get("turn_transition") is True:
+                        conn.send(
+                            {
+                                "type": "done",
+                                "final_output": "",
+                                "raw": {"cad_transition": True},
+                            }
+                        )
+                        return
+                if isinstance(updated_context, dict):
+                    live_context = updated_context
+                    tools_by_name, tool_definitions = build_tool_surface(live_context)
+                    messages[0]["content"] = _provider_instructions(live_context)
+                state_after = _provider_state_after_tool(
+                    live_context,
+                    result if isinstance(result, dict) else None,
+                )
+                if isinstance(result, dict) and state_after:
+                    result["vibecad_state_after"] = state_after
+                visible_result = (
+                    _provider_visible_tool_result(result, tool_name=tool_name or "")
+                    if isinstance(result, dict)
+                    else result
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "name": function_name,
+                        "tool_call_id": str(tool_call["id"]),
+                        "content": json.dumps(_json_safe(visible_result)),
+                    }
+                )
+            turn += 1
+        conn.send(
+            {
+                "type": "error",
+                "error": "Google Gemini provider turn limit reached.",
+            }
+        )
+    except BaseException as exc:
+        _send_child_error(conn, "Google Gemini provider", exc)
+    finally:
+        if client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        conn.close()
+
+
 def _anthropic_child_main(
     conn,
     prompt: str,
@@ -4647,6 +5637,7 @@ def _anthropic_child_main(
         request_kwargs: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
+            "cache_control": {"type": "ephemeral"},
             "system": system_blocks,
             "tools": _anthropic_request_tools(tool_definitions, web_search_enabled),
         }
@@ -4877,7 +5868,7 @@ def _anthropic_child_main(
                 messages = [
                     {
                         "role": "user",
-                        "content": _anthropic_compaction_resume_message(
+                        "content": _anthropic_compaction_resume_content(
                             previous_compaction, live_context
                         ),
                     }
@@ -4937,6 +5928,7 @@ def _anthropic_child_main(
             tool_results: list[dict[str, Any]] = []
             visual_repin_blocks: list[dict[str, Any]] = []
             for block in tool_use_blocks:
+                previous_context = live_context
                 tool_name = tools_by_name.get(block.name)
                 updated_context = None
                 if tool_name is None:
@@ -4945,7 +5937,11 @@ def _anthropic_child_main(
                         "error": f"Unknown VibeCAD tool: {block.name}",
                     }
                 else:
-                    arguments_json = json.dumps(_json_safe(block.input or {}))
+                    arguments_json = json.dumps(
+                        _json_safe(block.input or {}),
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                    )
                     conn.send(
                         {
                             "type": "tool",
@@ -4982,6 +5978,7 @@ def _anthropic_child_main(
                 state_after = _provider_state_after_tool(
                     live_context,
                     result if isinstance(result, dict) else None,
+                    previous_context=previous_context,
                 )
                 if isinstance(result, dict) and state_after:
                     result["vibecad_state_after"] = state_after
@@ -5024,7 +6021,11 @@ def _anthropic_child_main(
                     {
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": json.dumps(_json_safe(visible_result)),
+                        "content": json.dumps(
+                            _json_safe(visible_result),
+                            ensure_ascii=True,
+                            separators=(",", ":"),
+                        ),
                     }
                 )
             messages.append(
@@ -5050,7 +6051,13 @@ def _clear_inherited_sdk_modules() -> None:
             or name.startswith("pydantic.")
             or name == "anthropic"
             or name.startswith("anthropic.")
+            or name == "openai"
+            or name.startswith("openai.")
             or name == "httpx"
             or name.startswith("httpx.")
+            or name == "httpx2"
+            or name.startswith("httpx2.")
+            or name == "httpcore2"
+            or name.startswith("httpcore2.")
         ):
             sys.modules.pop(name, None)

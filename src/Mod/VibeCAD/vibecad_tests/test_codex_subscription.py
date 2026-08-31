@@ -63,7 +63,7 @@ def _surface_context(*names: str, workbench: str = "PartDesignWorkbench") -> dic
 def _scripted_context() -> dict:
     return _surface_context(
         "vibescript.read_source",
-        "vibescript.create_program",
+        "vibescript.create_part",
     )
 
 
@@ -99,6 +99,111 @@ def test_resumed_surface_turn_reanchors_the_exact_user_request() -> None:
     assert resumed.endswith(
         "CURRENT_SESSION_EVENT\nAnalysis tools now match the study."
     )
+
+
+def test_codex_reuses_unchanged_prompt_sections_with_a_live_guard() -> None:
+    context = _part_vibescript_context()
+    context.update(
+        {
+            "document": {
+                "name": "Bracket",
+                "uid": "doc-1",
+                "object_count": 42,
+                "revision": 7,
+                "notes": "STABLE_STATE_SENTINEL" + "x" * 1024,
+            },
+            "selection": {
+                "selection_count": 1,
+                "selection": ["MountingFace"],
+            },
+            "editable_sources": {
+                "schema": "vibecad-editable-sources-v1",
+                "domain": "part",
+                "source_count": 1,
+                "sources": [
+                    {
+                        "program": "BracketProgram",
+                        "label": "STABLE_SOURCE_SENTINEL",
+                    }
+                ],
+                "core_api": {
+                    "schema": "vibecad-authoring-contract-v1",
+                    "functions": ["STABLE_CONTRACT_SENTINEL" + "x" * 512],
+                },
+            },
+        }
+    )
+    prompt = session._provider_prompt("Continue.", context)
+    previous = provider._codex_prompt_section_digests(prompt)
+
+    optimized, current, reuse = provider._codex_prompt_with_reused_context(
+        prompt,
+        previous,
+        context=context,
+    )
+
+    assert current == previous
+    assert reuse["reused_sections"] == [
+        "active_state",
+        "vibescript_authoring_contract",
+    ]
+    assert reuse["saved_utf8_bytes"] > 0
+    assert reuse["saved_estimated_tokens"] == (
+        reuse["saved_utf8_bytes"] + 3
+    ) // 4
+    assert len(optimized.encode("utf-8")) < len(prompt.encode("utf-8"))
+    assert optimized.count('"__vibecad_context_reference__"') == 2
+    assert "STABLE_SOURCE_SENTINEL" not in optimized
+    assert "STABLE_STATE_SENTINEL" not in optimized
+    assert "STABLE_CONTRACT_SENTINEL" not in optimized
+    assert '"revision":7' in optimized
+    assert '"selection":["MountingFace"]' in optimized
+    assert context["provider_tool_surface"]["schema_sha256"] in optimized
+
+
+def test_codex_resends_a_changed_context_but_reuses_the_authoring_contract() -> None:
+    context = _part_vibescript_context()
+    context["document"] = {"name": "Bracket", "revision": 7}
+    context["editable_sources"] = {
+        "schema": "vibecad-editable-sources-v1",
+        "domain": "part",
+        "source_count": 1,
+        "sources": [{"program": "BracketProgram"}],
+        "core_api": {
+            "schema": "contract-v1",
+            "functions": ["stable.call" + "x" * 512],
+        },
+    }
+    first = session._provider_prompt("Inspect.", context)
+    previous = provider._codex_prompt_section_digests(first)
+    context["document"] = {"name": "Bracket", "revision": 8}
+    second = session._provider_prompt("Continue.", context)
+
+    optimized, current, reuse = provider._codex_prompt_with_reused_context(
+        second,
+        previous,
+    )
+
+    assert current["active_state"] != previous["active_state"]
+    assert reuse["reused_sections"] == ["vibescript_authoring_contract"]
+    assert '"revision":8' in optimized
+    assert "stable.call" not in optimized
+
+
+def test_codex_never_parses_user_marker_text_as_a_reusable_section() -> None:
+    context = _part_vibescript_context()
+    fake_contract = (
+        "Keep this literal example:\n"
+        "VIBESCRIPT_AUTHORING_CONTRACT_JSON\n"
+        '{"user_text":true}\n'
+        "END_VIBESCRIPT_AUTHORING_CONTRACT_JSON"
+    )
+    prompt = session._provider_prompt(fake_contract, context)
+
+    digests = provider._codex_prompt_section_digests(prompt)
+
+    assert set(digests) == {"active_state"}
+    assert fake_contract in prompt
 
 
 def test_turn_start_surface_accepts_one_workbench_vibescript_domain() -> None:
@@ -156,7 +261,7 @@ def test_codex_dynamic_tools_preserve_vibecad_namespaces_and_schema() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_scripted_context())
     assert names == {
         ("vibescript", "read_source"): "vibescript.read_source",
-        ("vibescript", "create_program"): "vibescript.create_program",
+        ("vibescript", "create_part"): "vibescript.create_part",
     }
     assert [namespace["name"] for namespace in tools] == ["vibescript"]
     read_tool = tools[0]["tools"][0]
@@ -220,12 +325,12 @@ def test_codex_dynamic_tools_flatten_for_third_party_responses_endpoints() -> No
 
     assert names == {
         ("", "vibescript__read_source"): "vibescript.read_source",
-        ("", "vibescript__create_program"): "vibescript.create_program",
+        ("", "vibescript__create_part"): "vibescript.create_part",
     }
     assert [tool["type"] for tool in tools] == ["function", "function"]
     assert [tool["name"] for tool in tools] == [
         "vibescript__read_source",
-        "vibescript__create_program",
+        "vibescript__create_part",
     ]
     assert tools[0]["inputSchema"] == _scripted_context()[
         "provider_tool_schemas"
@@ -1604,6 +1709,11 @@ def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
     codex.reset_managed_codex_sessions()
     monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
     context = _surface_context("core.set_view")
+    context["document"] = {
+        "name": "Bracket",
+        "revision": 7,
+        "notes": "stable-context-" + "x" * 1024,
+    }
     context["_vibecad_codex_session"] = {
         "conversation_id": "a" * 32,
         "conversation_path": "/project/conversations/" + "a" * 32 + ".json",
@@ -1618,6 +1728,11 @@ def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
         api_key="test-key",
         auth_mode="api_key",
     )
+    third_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+    )
     first_prompt = session._provider_prompt("Make a plan.", context)
     second_prompt = session._provider_prompt(
         "Build it.",
@@ -1627,11 +1742,13 @@ def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
             {"role": "assistant", "content": "Plan saved."},
         ],
     )
+    third_prompt = session._provider_prompt("Double-check it.", context)
 
     requests_before_cleanup: list[tuple[str, dict]] = []
     try:
         planned = first_provider.run(first_prompt, context)
         built = second_provider.run(second_prompt, context)
+        checked = third_provider.run(third_prompt, context)
     finally:
         if _Client.instance is not None:
             requests_before_cleanup = list(_Client.instance.requests)
@@ -1641,21 +1758,33 @@ def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
     assert client is not None
     assert planned.final_output == "Plan saved."
     assert built.final_output == "Plan used."
+    assert checked.final_output == "Plan used."
     methods = [method for method, _params in requests_before_cleanup]
     assert methods.count("thread/start") == 1
-    assert methods.count("thread/resume") == 1
-    assert methods.count("turn/start") == 2
+    assert methods.count("thread/resume") == 2
+    assert methods.count("turn/start") == 3
     assert "thread/delete" not in methods
     turns = [
         params for method, params in requests_before_cleanup if method == "turn/start"
     ]
     assert all("collaborationMode" not in turn for turn in turns)
+    first_text_input = next(
+        item["text"] for item in turns[0]["input"] if item["type"] == "text"
+    )
+    assert '"__vibecad_context_reference__"' not in first_text_input
+    assert "stable-context-" in first_text_input
     second_turn = turns[1]
     text_input = next(
         item["text"] for item in second_turn["input"] if item["type"] == "text"
     )
     assert '"turns":[]' in text_input
     assert "Plan saved." not in text_input
+    assert '"__vibecad_context_reference__"' in text_input
+    third_text_input = next(
+        item["text"] for item in turns[2]["input"] if item["type"] == "text"
+    )
+    assert '"__vibecad_context_reference__"' not in third_text_input
+    assert "stable-context-" in third_text_input
 
 
 def test_system_instructions_do_not_forbid_requested_planning() -> None:

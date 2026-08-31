@@ -762,6 +762,7 @@ class _ManagedCodexRuntime:
     state_lock: threading.RLock
     client: Any = None
     thread_ids: dict[str, str] = field(default_factory=dict)
+    prompt_section_digests: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -773,13 +774,35 @@ class ManagedCodexSession:
     _runtime: _ManagedCodexRuntime
     _thread_key: str
 
+    @property
+    def previous_prompt_section_digests(self) -> dict[str, str]:
+        with self._runtime.state_lock:
+            return dict(
+                self._runtime.prompt_section_digests.get(self._thread_key) or {}
+            )
+
     def remember_thread(self, thread_id: str) -> None:
         clean = str(thread_id or "").strip()
         if not clean:
             raise ValueError("Codex thread id cannot be empty.")
         with self._runtime.state_lock:
+            previous = str(self._runtime.thread_ids.get(self._thread_key) or "")
+            if previous and previous != clean:
+                self._runtime.prompt_section_digests.pop(self._thread_key, None)
             self._runtime.thread_ids[self._thread_key] = clean
             self.thread_id = clean
+
+    def remember_prompt_section_digests(
+        self,
+        section_digests: Mapping[str, str],
+    ) -> None:
+        clean = {
+            str(name): str(digest)
+            for name, digest in section_digests.items()
+            if str(name).strip() and str(digest).strip()
+        }
+        with self._runtime.state_lock:
+            self._runtime.prompt_section_digests[self._thread_key] = clean
 
 
 _managed_codex_lock = threading.RLock()
@@ -873,6 +896,7 @@ def _take_managed_codex_runtimes() -> list[tuple[Any, tuple[str, ...]]]:
             thread_ids = tuple(dict.fromkeys(runtime.thread_ids.values()))
             runtime.client = None
             runtime.thread_ids.clear()
+            runtime.prompt_section_digests.clear()
         if client is not None:
             detached.append((client, thread_ids))
     return detached
@@ -894,6 +918,7 @@ def reset_managed_codex_sessions() -> None:
                 thread_ids = tuple(dict.fromkeys(runtime.thread_ids.values()))
                 runtime.client = None
                 runtime.thread_ids.clear()
+                runtime.prompt_section_digests.clear()
             if client is None:
                 continue
             try:

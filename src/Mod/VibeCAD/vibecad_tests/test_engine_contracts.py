@@ -56,12 +56,12 @@ def test_linux_bundle_smokes_python_dependencies_independently() -> None:
         "jsonschema",
         "mcp",
         "mcp_types",
+        "openai",
         "secretstorage",
         "keyring.backends.SecretService",
     ):
         assert dependency in linux_bundle
     assert "importlib.import_module('${dependency}')" in linux_bundle
-    assert "importlib.util.find_spec('openai') is None" in linux_bundle
     assert "importlib.util.find_spec('agents') is None" in linux_bundle
 
 

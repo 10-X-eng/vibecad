@@ -87,6 +87,46 @@ class TestVibeCADNativePanelStartup(unittest.TestCase):
 class TestVibeCADResponsiveAssistant(unittest.TestCase):
     """Exercise the compact composer against the real Qt layout engine."""
 
+    def test_crash_recovery_is_non_modal_and_draft_autosave_is_debounced(
+        self,
+    ) -> None:
+        import FreeCAD as App
+
+        if not App.GuiUp:
+            self.skipTest("FreeCAD GUI mode is required")
+
+        from PySide import QtCore, QtWidgets
+
+        import VibeCADGui
+
+        application = QtWidgets.QApplication.instance()
+        self.assertIsNotNone(application)
+        root = VibeCADGui._build_panel_widget()
+        try:
+            banner = root.findChild(QtWidgets.QFrame, "VibeSessionRecoveryBanner")
+            label = root.findChild(QtWidgets.QLabel, "VibeSessionRecoveryText")
+            restore = root.findChild(
+                QtWidgets.QPushButton, "VibeSessionRecoveryRestore"
+            )
+            discard = root.findChild(
+                QtWidgets.QPushButton, "VibeSessionRecoveryDiscard"
+            )
+            timer = root.findChild(
+                QtCore.QTimer, "VibeSessionRecoveryDraftTimer"
+            )
+
+            self.assertIsNotNone(banner)
+            self.assertFalse(banner.isVisible())
+            self.assertIsNotNone(label)
+            self.assertEqual(restore.text(), "Restore")
+            self.assertEqual(discard.text(), "Discard")
+            self.assertTrue(timer.isSingleShot())
+            self.assertEqual(timer.interval(), 500)
+        finally:
+            root.close()
+            root.deleteLater()
+            application.processEvents()
+
     def test_ctrl_enter_sends_while_plain_enter_edits(self) -> None:
         import FreeCAD as App
 
@@ -1278,6 +1318,11 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     monkeypatch.setitem(sys.modules, "FreeCAD", app)
     monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
     monkeypatch.setitem(sys.modules, "VibeCADGui", gui)
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
+    )
 
     namespace = runpy.run_path(str(ROOT / "src/Mod/VibeCAD/InitGui.py"))
     assert preferences.disabled == "TestWorkbench,NoneWorkbench"
@@ -1343,6 +1388,11 @@ def test_vibecad_bootstrap_helpers_survive_freecad_exec_namespace(monkeypatch) -
         SimpleNamespace(
             ensure_commands_registered=lambda: startup_events.append("assistant")
         ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -1430,6 +1480,11 @@ def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> Non
             ensure_commands_registered=lambda: None,
             _dispatch_to_document_thread=dispatch,
         ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
     )
     monkeypatch.setitem(
         sys.modules,

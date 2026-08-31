@@ -47,10 +47,19 @@ def test_authorization_accepts_only_one_exact_regular_output_destination(
     with pytest.raises(NativeOutputError, match="regular file"):
         authorize_native_output_path(request, directory)
 
+
+def test_authorization_rejects_symlink_destination(tmp_path: Path) -> None:
+    request = _request()
+
     target = tmp_path / "Target.asmt"
     target.write_text("existing", encoding="utf-8")
     link = tmp_path / "Linked.asmt"
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     with pytest.raises(NativeOutputError, match="regular file"):
         authorize_native_output_path(request, link)
 

@@ -4911,6 +4911,94 @@ class VibeCADService:
         self._set_conversation_cache(result)
         return result
 
+    def prepare_session_recovery(
+        self,
+        phase: str,
+        prompt: str,
+        *,
+        instance_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Capture recovery identity on the document thread without artifact I/O."""
+
+        scope = self.project_scope_snapshot()
+        project_root = str(scope.get("root") or "").strip()
+        document = scope.get("document")
+        document_info = document if isinstance(document, dict) else {}
+        document_uid = str(
+            document_info.get("uid") or self._active_document_uid() or ""
+        ).strip()
+        if not project_root or not document_uid:
+            raise RuntimeError("Open a CAD document before saving VibeCAD recovery.")
+
+        conversation_id: str | None = None
+        cache_key = str(self._conversation_cache_key or "").strip()
+        if cache_key:
+            cached_path = Path(cache_key)
+            candidate = cached_path.stem.lower()
+            if (
+                cached_path.parent.parent == Path(project_root)
+                and re.fullmatch(r"[0-9a-f]{32}", candidate)
+            ):
+                conversation_id = candidate
+        prepared = {
+            "project_root": project_root,
+            "phase": str(phase or "").strip().lower(),
+            "prompt": str(prompt or ""),
+            "document_uid": document_uid,
+            "document_name": str(document_info.get("document") or "").strip(),
+            "file_path": str(document_info.get("file_path") or "").strip(),
+            "conversation_id": conversation_id,
+        }
+        clean_instance_id = str(instance_id or "").strip()
+        if clean_instance_id:
+            prepared["instance_id"] = clean_instance_id
+        return prepared
+
+    @staticmethod
+    def persist_prepared_session_recovery(
+        prepared: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically persist one document-thread recovery capture."""
+
+        from VibeCADSessionRecovery import SessionRecoveryStore
+
+        project_root = str(prepared.get("project_root") or "").strip()
+        if not project_root:
+            raise RuntimeError("Prepared VibeCAD recovery has no project root.")
+        return SessionRecoveryStore(project_root).write(prepared)
+
+    def session_recovery(self) -> dict[str, Any]:
+        """Load a recovery snapshot only for the active document and thread."""
+
+        from VibeCADSessionRecovery import SessionRecoveryStore
+
+        scope = self.project_scope_snapshot()
+        project_root = str(scope.get("root") or "").strip()
+        conversation_id: str | None = None
+        cache_key = str(self._conversation_cache_key or "").strip()
+        if cache_key:
+            cached_path = Path(cache_key)
+            candidate = cached_path.stem.lower()
+            if (
+                cached_path.parent.parent == Path(project_root)
+                and re.fullmatch(r"[0-9a-f]{32}", candidate)
+            ):
+                conversation_id = candidate
+        return SessionRecoveryStore(project_root).load(
+            document_uid=str(self._active_document_uid() or ""),
+            conversation_id=conversation_id,
+        )
+
+    def discard_session_recovery(self) -> dict[str, Any]:
+        """Discard only the active project's crash-recovery snapshot."""
+
+        from VibeCADSessionRecovery import SessionRecoveryStore
+
+        project_root = str(self.project_scope_snapshot().get("root") or "").strip()
+        if not project_root:
+            return {"written": False, "discarded": False, "path": ""}
+        return SessionRecoveryStore(project_root).discard()
+
     def relocate_conversation_store_for_document_file(
         self,
         file_path: str | Path,

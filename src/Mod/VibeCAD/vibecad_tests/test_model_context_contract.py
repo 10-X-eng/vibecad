@@ -103,6 +103,51 @@ def test_turn_prompt_contains_only_the_approved_exact_facts() -> None:
         assert forbidden not in serialized
 
 
+def test_provider_input_budget_reports_section_bytes_without_prompt_content() -> None:
+    context = {
+        **_active_state(),
+        "provider_tool_schemas": [
+            {
+                "name": "core.inspect",
+                "description": "Inspect exact state.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            }
+        ],
+    }
+    prompt = session._provider_prompt(
+        "Keep the mounting datum.",
+        context,
+        recent_conversation=[
+            {"role": "user", "content": "Build a bracket."},
+            {"role": "assistant", "content": "Bracket complete."},
+        ],
+    )
+
+    budget = provider.provider_input_budget(prompt, context)
+
+    assert budget["schema"] == "vibecad-provider-input-budget-v1"
+    assert budget["estimator"] == "ceil(utf8_bytes/4)"
+    assert set(budget["sections"]) == {
+        "system_instructions",
+        "provider_tool_schemas",
+        "active_state",
+        "recent_conversation",
+        "current_request",
+        "prompt_framing",
+    }
+    assert all(value > 0 for value in budget["sections"].values())
+    assert budget["total_utf8_bytes"] == sum(budget["sections"].values())
+    assert budget["estimated_input_tokens"] == (
+        budget["total_utf8_bytes"] + 3
+    ) // 4
+    assert "mounting" not in json.dumps(budget)
+
+
 def test_first_prompt_context_json_includes_toplevel_aero() -> None:
     """VIBECAD_CONTEXT_JSON is the first-prompt path, not steering.
 
@@ -716,6 +761,16 @@ def test_unsaved_run_prompt_reaches_provider_and_includes_active_thread_once(
         for event in progress_events
         if event.get("event") == "provider_turn_started"
     )
+    context_ready = next(
+        event
+        for event in progress_events
+        if event.get("event") == "context_build_completed"
+    )
+    assert context_ready["input_budget"]["schema"] == (
+        "vibecad-provider-input-budget-v1"
+    )
+    assert context_ready["input_budget"]["total_utf8_bytes"] > 0
+    assert "diameter" not in json.dumps(context_ready["input_budget"])
     assert started["provider_runtime"] == service.conversation[-1]["metadata"][
         "provider_runtime"
     ]

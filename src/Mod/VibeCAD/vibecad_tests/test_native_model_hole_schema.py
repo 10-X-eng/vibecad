@@ -37,7 +37,7 @@ def test_hole_contract_matches_the_current_typed_task_controls() -> None:
 
     assert definition.name == "model.hole"
     assert definition.variants[0].action_ids == frozenset({"PartDesign_Hole"})
-    assert set(branch["required"]) == {"operation", *_plain_arguments()}
+    assert set(branch["required"]) == set(_plain_arguments())
     assert branch["additionalProperties"] is False
     assert branch["properties"]["targets"]["minItems"] == 1
     assert branch["properties"]["targets"]["maxItems"] == 16
@@ -78,8 +78,9 @@ def test_hole_catalog_contract_is_a_bounded_model_read() -> None:
 
     assert definition.name == "model.catalog"
     assert definition.primary_classification == "read"
-    assert branch["required"] == ["operation", "standard"]
+    assert branch["required"] == []
     assert branch["additionalProperties"] is False
+    assert branch["properties"]["standard"]["enum"]
 
 
 def test_hole_parser_builds_exact_cut_targets_and_rejects_extra_nested_fields() -> None:

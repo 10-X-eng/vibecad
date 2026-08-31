@@ -37,15 +37,39 @@ def test_section_position_schema_is_closed_exact_and_unambiguous() -> None:
         "align_edge_to_vertex",
     )
     assert definition.primary_classification == "mutation"
-    assert len(schema["parameters"]["oneOf"]) == 2
+    parameters = schema["parameters"]
+    assert "oneOf" not in parameters
+    assert parameters["additionalProperties"] is False
+    assert parameters["required"] == ["operation", "page", "section_view"]
+    assert parameters["properties"]["operation"]["enum"] == [
+        "align_axis",
+        "align_edge_to_vertex",
+    ]
+    assert set(parameters["properties"]) == {
+        "operation",
+        "page",
+        "section_view",
+        "axis",
+        "section_edge",
+        "base_view",
+        "base_vertex",
+    }
 
-    axis = _branch(schema, "align_axis")
+    exact_schema = {
+        "parameters": {
+            "oneOf": [
+                variant.provider_parameters() for variant in definition.variants
+            ]
+        }
+    }
+
+    axis = _branch(exact_schema, "align_axis")
     assert axis["additionalProperties"] is False
     assert axis["properties"]["axis"]["enum"] == ["horizontal", "vertical"]
     assert axis["required"] == ["operation", "page", "section_view", "axis"]
     assert axis["properties"]["section_view"]["additionalProperties"] is False
 
-    geometry = _branch(schema, "align_edge_to_vertex")
+    geometry = _branch(exact_schema, "align_edge_to_vertex")
     assert geometry["additionalProperties"] is False
     assert geometry["required"] == [
         "operation",

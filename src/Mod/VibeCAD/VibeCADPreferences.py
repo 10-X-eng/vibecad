@@ -18,6 +18,7 @@ import threading
 import FreeCAD as App
 
 from VibeCADAuth import (
+    DEFAULT_GEMINI_API_BASE,
     DEFAULT_PROVIDER,
     PROVIDERS,
     delete_keyring_key,
@@ -45,11 +46,13 @@ DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"
 DEFAULT_CHATGPT_MODEL = ""
 DEFAULT_GROK_MODEL = "grok-4.6"
+DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
 DEFAULT_MODELS = {
     "openai": DEFAULT_MODEL,
     "anthropic": DEFAULT_ANTHROPIC_MODEL,
     "chatgpt": DEFAULT_CHATGPT_MODEL,
     "grok": DEFAULT_GROK_MODEL,
+    "gemini": DEFAULT_GEMINI_MODEL,
 }
 REASONING_EFFORTS = (
     "none",
@@ -61,6 +64,13 @@ REASONING_EFFORTS = (
     "max",
     "ultra",
 )
+GEMINI_REASONING_EFFORTS = (
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+)
 DEFAULT_REASONING_EFFORT = "high"
 DEFAULT_SCRIPTED_TIMEOUT_SECONDS = 300.0
 DEFAULT_SCRIPTED_MEMORY_LIMIT_MB = 6144
@@ -71,6 +81,12 @@ DEFAULT_NEW_DOCUMENT_AUTHORING_MODE = "ask"
 def normalize_provider(value: str | None) -> str:
     clean = (value or "").strip().lower()
     return clean if clean in PROVIDERS else DEFAULT_PROVIDER
+
+
+def reasoning_efforts_for_provider(provider: str | None) -> tuple[str, ...]:
+    if normalize_provider(provider) == "gemini":
+        return GEMINI_REASONING_EFFORTS
+    return REASONING_EFFORTS
 
 
 def normalize_new_document_authoring_mode(value: str | None) -> str:
@@ -92,6 +108,7 @@ class VibeCADSettings:
     anthropic_model: str = DEFAULT_ANTHROPIC_MODEL
     chatgpt_model: str = DEFAULT_CHATGPT_MODEL
     grok_model: str = DEFAULT_GROK_MODEL
+    gemini_model: str = DEFAULT_GEMINI_MODEL
     web_search_enabled: bool = False
     design_review_enabled: bool = False
     codex_skills_enabled: bool = False
@@ -102,6 +119,7 @@ class VibeCADSettings:
     anthropic_intent_memory_model: str = ""
     chatgpt_intent_memory_model: str = ""
     grok_intent_memory_model: str = ""
+    gemini_intent_memory_model: str = ""
     scripted_timeout_seconds: float = DEFAULT_SCRIPTED_TIMEOUT_SECONDS
     scripted_memory_limit_mb: int = DEFAULT_SCRIPTED_MEMORY_LIMIT_MB
     mcp_enabled: bool = False
@@ -123,6 +141,8 @@ class VibeCADSettings:
             return self.chatgpt_model.strip()
         if provider == "grok":
             return self.grok_model.strip() or DEFAULT_GROK_MODEL
+        if provider == "gemini":
+            return self.gemini_model.strip() or DEFAULT_GEMINI_MODEL
         return self.model.strip() or DEFAULT_MODEL
 
     @property
@@ -133,6 +153,8 @@ class VibeCADSettings:
             return None
         if provider == "grok":
             return DEFAULT_XAI_API_BASE
+        if provider == "gemini":
+            return DEFAULT_GEMINI_API_BASE
         if provider == "anthropic":
             override = self.anthropic_base_url.strip()
         else:
@@ -146,6 +168,8 @@ class VibeCADSettings:
             return None
         if clean_provider == "grok":
             return DEFAULT_XAI_API_BASE
+        if clean_provider == "gemini":
+            return DEFAULT_GEMINI_API_BASE
         if clean_provider == "anthropic":
             override = self.anthropic_base_url.strip()
         else:
@@ -161,6 +185,8 @@ class VibeCADSettings:
             return self.chatgpt_model.strip()
         if clean_provider == "grok":
             return self.grok_model.strip() or DEFAULT_GROK_MODEL
+        if clean_provider == "gemini":
+            return self.gemini_model.strip() or DEFAULT_GEMINI_MODEL
         return self.model.strip() or DEFAULT_MODEL
 
     def intent_memory_model_for(self, provider: str) -> str:
@@ -172,6 +198,8 @@ class VibeCADSettings:
             override = self.chatgpt_intent_memory_model.strip()
         elif clean_provider == "grok":
             override = self.grok_intent_memory_model.strip()
+        elif clean_provider == "gemini":
+            override = self.gemini_intent_memory_model.strip()
         else:
             override = self.openai_intent_memory_model.strip()
         return override or self.model_for(provider)
@@ -233,6 +261,8 @@ def load_settings() -> VibeCADSettings:
         or DEFAULT_ANTHROPIC_MODEL,
         chatgpt_model=pref.GetString("ChatGPTModel", DEFAULT_CHATGPT_MODEL),
         grok_model=pref.GetString("GrokModel", DEFAULT_GROK_MODEL) or DEFAULT_GROK_MODEL,
+        gemini_model=pref.GetString("GeminiModel", DEFAULT_GEMINI_MODEL)
+        or DEFAULT_GEMINI_MODEL,
         web_search_enabled=pref.GetBool("WebSearchEnabled", False),
         design_review_enabled=pref.GetBool("DesignReviewEnabled", False),
         codex_skills_enabled=pref.GetBool("CodexSkillsEnabled", False),
@@ -243,6 +273,7 @@ def load_settings() -> VibeCADSettings:
         anthropic_intent_memory_model=pref.GetString("AnthropicIntentMemoryModel", ""),
         chatgpt_intent_memory_model=pref.GetString("ChatGPTIntentMemoryModel", ""),
         grok_intent_memory_model=pref.GetString("GrokIntentMemoryModel", ""),
+        gemini_intent_memory_model=pref.GetString("GeminiIntentMemoryModel", ""),
         scripted_timeout_seconds=_positive_float(
             pref.GetFloat("ScriptedTimeoutSeconds", DEFAULT_SCRIPTED_TIMEOUT_SECONDS),
             DEFAULT_SCRIPTED_TIMEOUT_SECONDS,
@@ -283,6 +314,9 @@ def save_settings(settings: VibeCADSettings) -> None:
     )
     pref.SetString("ChatGPTModel", settings.chatgpt_model.strip())
     pref.SetString("GrokModel", settings.grok_model.strip() or DEFAULT_GROK_MODEL)
+    pref.SetString(
+        "GeminiModel", settings.gemini_model.strip() or DEFAULT_GEMINI_MODEL
+    )
     pref.SetBool("WebSearchEnabled", bool(settings.web_search_enabled))
     pref.SetBool("DesignReviewEnabled", bool(settings.design_review_enabled))
     pref.SetBool("CodexSkillsEnabled", bool(settings.codex_skills_enabled))
@@ -300,6 +334,9 @@ def save_settings(settings: VibeCADSettings) -> None:
     )
     pref.SetString(
         "GrokIntentMemoryModel", settings.grok_intent_memory_model.strip()
+    )
+    pref.SetString(
+        "GeminiIntentMemoryModel", settings.gemini_intent_memory_model.strip()
     )
     pref.SetFloat(
         "ScriptedTimeoutSeconds",
@@ -333,6 +370,7 @@ def reset_settings() -> None:
     pref.RemString("AnthropicModel")
     pref.RemString("ChatGPTModel")
     pref.RemString("GrokModel")
+    pref.RemString("GeminiModel")
     pref.RemBool("WebSearchEnabled")
     pref.RemBool("DesignReviewEnabled")
     pref.RemBool("CodexSkillsEnabled")
@@ -343,6 +381,7 @@ def reset_settings() -> None:
     pref.RemString("AnthropicIntentMemoryModel")
     pref.RemString("ChatGPTIntentMemoryModel")
     pref.RemString("GrokIntentMemoryModel")
+    pref.RemString("GeminiIntentMemoryModel")
     pref.RemFloat("ScriptedTimeoutSeconds")
     pref.RemInt("ScriptedMemoryLimitMB")
     pref.RemBool("ContextDebugEnabled")
@@ -465,6 +504,11 @@ class VibeCADPreferencesPage:
         self.grok_model.setEditable(True)
         layout.addRow("Grok model", self.grok_model)
 
+        self.gemini_model = QtWidgets.QComboBox(self.form)
+        self.gemini_model.setObjectName("VibeCADPrefGeminiModel")
+        self.gemini_model.setEditable(True)
+        layout.addRow("Gemini model", self.gemini_model)
+
         self.web_search_enabled = QtWidgets.QCheckBox(self.form)
         self.web_search_enabled.setObjectName("VibeCADPrefWebSearchEnabled")
         self.web_search_enabled.setToolTip(
@@ -556,6 +600,13 @@ class VibeCADPreferencesPage:
         )
         self.grok_intent_memory_model.addItem("Use active Grok model", "")
         layout.addRow("Grok memory model", self.grok_intent_memory_model)
+
+        self.gemini_intent_memory_model = QtWidgets.QComboBox(self.form)
+        self.gemini_intent_memory_model.setObjectName(
+            "VibeCADPrefGeminiIntentMemoryModel"
+        )
+        self.gemini_intent_memory_model.addItem("Use active Gemini model", "")
+        layout.addRow("Gemini memory model", self.gemini_intent_memory_model)
 
         self.rebuild_intent_memory = QtWidgets.QPushButton(
             "Rebuild Intent Memory", self.form
@@ -762,7 +813,8 @@ class VibeCADPreferencesPage:
         self._set_form_row_visible(self.anthropic_model, provider == "anthropic")
         self._set_form_row_visible(self.chatgpt_model, provider == "chatgpt")
         self._set_form_row_visible(self.grok_model, provider == "grok")
-        self._set_form_row_visible(self.web_search_enabled, True)
+        self._set_form_row_visible(self.gemini_model, provider == "gemini")
+        self._set_form_row_visible(self.web_search_enabled, provider != "gemini")
         self._set_form_row_visible(self.design_review_enabled, True)
         self._set_form_row_visible(self.codex_skills_enabled, provider == "chatgpt")
         self._set_form_row_visible(self.openai_base_url, provider == "openai")
@@ -779,7 +831,10 @@ class VibeCADPreferencesPage:
         self._set_form_row_visible(
             self.grok_intent_memory_model, provider == "grok"
         )
-        api_key_provider = provider in {"openai", "anthropic"}
+        self._set_form_row_visible(
+            self.gemini_intent_memory_model, provider == "gemini"
+        )
+        api_key_provider = provider in {"openai", "anthropic", "gemini"}
         self._set_form_row_visible(self.dotenv_row, api_key_provider)
         self._set_form_row_visible(self.api_key_row, api_key_provider)
         self._set_form_row_visible(self.chatgpt_auth_row, provider == "chatgpt")
@@ -793,7 +848,7 @@ class VibeCADPreferencesPage:
     def _refresh_reasoning_efforts(self) -> None:
         provider = self._selected_provider()
         current = self.reasoning_effort.currentText().strip()
-        allowed = list(REASONING_EFFORTS)
+        allowed = list(reasoning_efforts_for_provider(provider))
         preferred = current or DEFAULT_REASONING_EFFORT
         if provider == "chatgpt":
             model_id = str(self.chatgpt_model.currentData() or "").strip()
@@ -1276,6 +1331,8 @@ class VibeCADPreferencesPage:
             return self.chatgpt_model
         if provider == "grok":
             return self.grok_model
+        if provider == "gemini":
+            return self.gemini_model
         return self.model
 
     def _provider_memory_combo(self, provider: str):
@@ -1285,6 +1342,8 @@ class VibeCADPreferencesPage:
             return self.chatgpt_intent_memory_model
         if provider == "grok":
             return self.grok_intent_memory_model
+        if provider == "gemini":
+            return self.gemini_intent_memory_model
         return self.openai_intent_memory_model
 
     def _provider_active_memory_label(self, provider: str) -> str:
@@ -1294,6 +1353,8 @@ class VibeCADPreferencesPage:
             return "Use active ChatGPT model"
         if provider == "grok":
             return "Use active Grok model"
+        if provider == "gemini":
+            return "Use active Gemini model"
         return "Use active OpenAI model"
 
     def _apply_provider_models(
@@ -1479,6 +1540,8 @@ class VibeCADPreferencesPage:
             or DEFAULT_ANTHROPIC_MODEL,
             chatgpt_model=str(self.chatgpt_model.currentData() or "").strip(),
             grok_model=self.grok_model.currentText().strip() or DEFAULT_GROK_MODEL,
+            gemini_model=self.gemini_model.currentText().strip()
+            or DEFAULT_GEMINI_MODEL,
             web_search_enabled=self.web_search_enabled.isChecked(),
             design_review_enabled=self.design_review_enabled.isChecked(),
             codex_skills_enabled=self.codex_skills_enabled.isChecked(),
@@ -1496,6 +1559,9 @@ class VibeCADPreferencesPage:
             ),
             grok_intent_memory_model=(
                 self._memory_model_value(self.grok_intent_memory_model)
+            ),
+            gemini_intent_memory_model=(
+                self._memory_model_value(self.gemini_intent_memory_model)
             ),
             scripted_timeout_seconds=persisted.scripted_timeout_seconds,
             scripted_memory_limit_mb=persisted.scripted_memory_limit_mb,
@@ -1573,6 +1639,7 @@ class VibeCADPreferencesPage:
         else:
             self.chatgpt_model.setCurrentIndex(0)
         self._set_combo_text(self.grok_model, settings.grok_model)
+        self._set_combo_text(self.gemini_model, settings.gemini_model)
         self.web_search_enabled.setChecked(settings.web_search_enabled)
         self.design_review_enabled.setChecked(settings.design_review_enabled)
         self.codex_skills_enabled.setChecked(settings.codex_skills_enabled)
@@ -1605,6 +1672,12 @@ class VibeCADPreferencesPage:
             [],
             settings.grok_intent_memory_model,
             "Use active Grok model",
+        )
+        self._set_memory_models(
+            self.gemini_intent_memory_model,
+            [],
+            settings.gemini_intent_memory_model,
+            "Use active Gemini model",
         )
         self.api_key.clear()
         self._update_provider_visibility()
