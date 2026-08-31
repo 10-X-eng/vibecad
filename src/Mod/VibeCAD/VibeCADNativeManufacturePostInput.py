@@ -33,6 +33,7 @@ from VibeCADNativeTargets import read_current_selection
 MAX_POST_OPERATIONS = 64
 MAX_POST_SOURCE_BYTES = 16 * 1024 * 1024
 MAX_POST_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
+_BINARY_OPEN = getattr(os, "O_BINARY", 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,7 +345,11 @@ def _freecadcmd() -> FileIdentity:
 
 
 def _write_private(path: Path, data: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | _BINARY_OPEN,
+        0o600,
+    )
     try:
         offset = 0
         while offset < len(data):

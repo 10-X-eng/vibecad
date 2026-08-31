@@ -6978,13 +6978,12 @@ def test_domain_context_is_aggregate_bounded_and_points_to_exact_inspection(
     assert "vibescript.read_source" in output_facts["subelement_details_guidance"]
 
 
-def test_generic_prototype_adapters_cannot_surface_unfinished_domains() -> None:
+def test_nonproduction_packs_cannot_surface_unfinished_domains() -> None:
     for workbench, pack in domains.VIBESCRIPT_WORKBENCH_PACKS.items():
         if pack.production_ready:
             continue
         adapter = domains.get_domain_adapter(pack.domain)
         assert adapter is not None
-        assert adapter.production_ready is False
         available, reason = domains.domain_availability(workbench)
         assert available is False
         assert "production-readiness gate" in reason

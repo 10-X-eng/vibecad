@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+import VibeCADNativeManufacturePostChild as Child
 import VibeCADNativeManufacturePostWorker as Worker
 from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufacturePostSchema import (
@@ -91,6 +93,21 @@ def test_result_reader_preserves_child_failure_code_without_exposing_diagnostics
         "error_code": "NATIVE_MANUFACTURE_POST_PROCESSOR_UNSUPPORTED",
         "message": "Configure a modern class-based processor.",
     }
+
+
+@pytest.mark.parametrize("reader", (Worker._hash_file, Child._hash))
+def test_snapshot_hash_reads_windows_ctrl_z_as_binary_data(
+    tmp_path: Path,
+    reader,
+) -> None:
+    snapshot = tmp_path / "snapshot.FCStd"
+    payload = b"PK\x03\x04document-prefix\x1adocument-suffix"
+    snapshot.write_bytes(payload)
+
+    size, digest = reader(snapshot, 1024)
+
+    assert size == len(payload)
+    assert digest == hashlib.sha256(payload).hexdigest()
 
 
 def test_result_reader_rejects_symlinks(tmp_path: Path) -> None:

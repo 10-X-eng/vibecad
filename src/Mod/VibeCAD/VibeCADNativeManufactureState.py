@@ -204,6 +204,15 @@ def _stable_property_value(value: Any) -> Any:
         return [_stable_property_value(item) for item in value]
     if isinstance(value, (bytes, bytearray, memoryview)):
         return {"bytes_sha256": hashlib.sha256(bytes(value)).hexdigest()}
+    try:
+        persistent_uuid = str(getattr(value, "UUID", "") or "").strip()
+    except Exception:
+        persistent_uuid = ""
+    if persistent_uuid:
+        # Native material properties expose a fresh Python wrapper on every
+        # read.  Its repr contains a process address, while UUID is the exact
+        # identity persisted in the FCStd document.
+        return {"uuid": persistent_uuid}
     document = getattr(value, "Document", None)
     object_name = str(getattr(value, "Name", "") or "")
     if document is not None and object_name:

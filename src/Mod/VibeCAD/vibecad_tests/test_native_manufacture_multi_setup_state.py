@@ -81,6 +81,23 @@ def test_job_inventory_count_has_no_product_setup_cap() -> None:
     assert _job_count(10_000) == 10_000
 
 
+def test_persistent_value_uses_uuid_instead_of_wrapper_address() -> None:
+    class MaterialValue:
+        UUID = "11111111-2222-3333-4444-555555555555"
+
+        def __init__(self, address: str) -> None:
+            self._address = address
+
+        def __str__(self) -> str:
+            return f"<Material at {self._address}>"
+
+    first = manufacture_state._stable_property_value(MaterialValue("0000000000000001"))
+    second = manufacture_state._stable_property_value(MaterialValue("0000000000000002"))
+
+    assert first == {"uuid": MaterialValue.UUID}
+    assert second == first
+
+
 def test_job_model_state_survives_history_replacement(monkeypatch) -> None:
     shape = SimpleNamespace(
         ShapeType="Solid",

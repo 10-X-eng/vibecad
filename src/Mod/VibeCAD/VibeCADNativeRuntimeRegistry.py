@@ -276,6 +276,10 @@ from VibeCADNativeManufactureToolRuntime import (
     NativeManufactureToolCatalogRuntime,
     NativeManufactureToolRuntime,
 )
+from VibeCADNativeManufactureToolSchema import (
+    MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
+    MANUFACTURE_TOOL_CAPABILITY_NAME,
+)
 from VibeCADNativeManufactureToolOutputBindings import (
     manufacture_tool_output_runtime_bindings,
 )
@@ -576,7 +580,11 @@ def build_native_runtime_bindings(
         if MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME in tool_names
         else None
     )
-    manufacture_tool_catalog = NativeManufactureToolCatalogRuntime(context)
+    manufacture_tool_catalog = (
+        NativeManufactureToolCatalogRuntime(context)
+        if MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME in tool_names
+        else None
+    )
     manufacture_tool = NativeManufactureToolRuntime(context)
     manufacture_tool_output = NativeManufactureToolOutputRuntime(context)
     drawing_page = NativeDrawingPageRuntime(context)
@@ -737,9 +745,13 @@ def build_native_runtime_bindings(
             if manufacture_follow_up is not None
             else {}
         ),
-        **manufacture_tool_runtime_bindings(
-            manufacture_tool_catalog,
-            manufacture_tool,
+        **(
+            manufacture_tool_runtime_bindings(
+                manufacture_tool_catalog,
+                manufacture_tool,
+            )
+            if manufacture_tool_catalog is not None
+            else {MANUFACTURE_TOOL_CAPABILITY_NAME: manufacture_tool}
         ),
         **manufacture_focused_tool_runtime_bindings(manufacture_tool),
         **manufacture_tool_output_runtime_bindings(manufacture_tool_output),
