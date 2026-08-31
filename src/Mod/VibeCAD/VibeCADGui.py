@@ -71,6 +71,11 @@ _pending_question_request: list[dict[str, Any]] = []
 _conversation_persist_queue: queue.Queue[tuple[Any, dict[str, Any]]] = queue.Queue()
 _conversation_persist_thread: threading.Thread | None = None
 _conversation_persist_lock = threading.RLock()
+_session_recovery_persist_queue: queue.Queue[tuple[Any, dict[str, Any]]] = queue.Queue()
+_session_recovery_persist_thread: threading.Thread | None = None
+_session_recovery_persist_lock = threading.RLock()
+_session_recovery_instance_id = uuid.uuid4().hex
+_active_session_recovery: dict[str, str] | None = None
 _assistant_document_refresh_scheduled = False
 _legacy_architecture_warning_documents: set[str] = set()
 _pending_document_render_refreshes: set[str] = set()
@@ -233,11 +238,45 @@ def _dispatch_to_document_thread(operation: Any) -> Any:
     return request.result
 
 
+def _persist_session_recovery_before_shutdown() -> None:
+    """Synchronously capture the latest draft or active request before Qt exits."""
+
+    try:
+        dock = _find_dock()
+        if dock is None or not _assistant_panel_is_built(dock):
+            return
+        banner = _find_child("QFrame", "VibeSessionRecoveryBanner", dock)
+        # Keep an unclaimed snapshot intact when the user quits without choosing.
+        if banner is not None and banner.isVisible():
+            return
+        # The direct shutdown write must be last. Otherwise an older queued
+        # autosave could finish afterward and replace the exact final state.
+        _session_recovery_persist_queue.join()
+        active = _active_session_recovery
+        if active is not None:
+            phase = "running"
+            prompt_text = str(active.get("prompt") or "")
+        else:
+            prompt = _find_child("QPlainTextEdit", "VibePrompt", dock)
+            phase = "draft"
+            prompt_text = str(prompt.toPlainText() or "") if prompt is not None else ""
+        service = get_service()
+        prepared = service.prepare_session_recovery(
+            phase,
+            prompt_text,
+            instance_id=_session_recovery_instance_id,
+        )
+        service.persist_prepared_session_recovery(prepared)
+    except Exception as exc:
+        _warn(f"VibeCAD session recovery shutdown save failed: {exc}")
+
+
 def _shutdown_internal_assistant() -> None:
     """Cancel active internal work before Qt stops servicing queued calls."""
 
     if _application_shutting_down.is_set():
         return
+    _persist_session_recovery_before_shutdown()
     _application_shutting_down.set()
     _assistant_run_controller.request_cancel()
     _intent_memory_rebuild_cancel_event.set()
@@ -686,6 +725,7 @@ def _select_authoring_mode_from_header(index: int) -> None:
     )
     _render_saved_conversation(dock)
     _refresh_conversation_selector(dock)
+    _refresh_session_recovery(dock)
     _render_assistant_run_state(dock)
     _refresh_authoring_mode_selector(dock)
 
@@ -1322,6 +1362,170 @@ def _conversation_persist_loop() -> None:
             _conversation_persist_queue.task_done()
 
 
+def _ensure_session_recovery_persist_thread() -> None:
+    """Start the ordered recovery writer without blocking Qt."""
+
+    global _session_recovery_persist_thread
+    with _session_recovery_persist_lock:
+        if (
+            _session_recovery_persist_thread is not None
+            and _session_recovery_persist_thread.is_alive()
+        ):
+            return
+        _session_recovery_persist_thread = threading.Thread(
+            target=_session_recovery_persist_loop,
+            name="VibeCAD-session-recovery-persistence",
+            daemon=True,
+        )
+        _session_recovery_persist_thread.start()
+
+
+def _session_recovery_persist_loop() -> None:
+    while True:
+        service, prepared = _session_recovery_persist_queue.get()
+        try:
+            service.persist_prepared_session_recovery(prepared)
+        except Exception as exc:
+            message = f"VibeCAD session recovery save failed: {exc}"
+            # FreeCAD's console accepts worker-thread messages. Do not make this
+            # writer synchronously enter Qt: shutdown waits for this queue to
+            # drain on the document thread before writing the final snapshot.
+            _warn(message)
+        finally:
+            _session_recovery_persist_queue.task_done()
+
+
+def _queue_session_recovery(phase: str, prompt: str) -> None:
+    """Capture identity on Qt, then atomically persist recovery off-thread."""
+
+    try:
+        service = get_service()
+        prepared = service.prepare_session_recovery(
+            phase,
+            prompt,
+            instance_id=_session_recovery_instance_id,
+        )
+        _ensure_session_recovery_persist_thread()
+        _session_recovery_persist_queue.put((service, prepared))
+    except Exception as exc:
+        _warn(f"VibeCAD session recovery save failed: {exc}")
+
+
+def _persist_prompt_recovery(prompt: Any) -> None:
+    if _is_assistant_run_active() or not _assistant_document_state().get("enabled"):
+        return
+    dock = _find_dock()
+    banner = _find_child("QFrame", "VibeSessionRecoveryBanner", dock)
+    if banner is not None and banner.isVisible():
+        return
+    _queue_session_recovery("draft", str(prompt.toPlainText() or ""))
+
+
+def _clear_prompt_without_recovery(prompt: Any) -> None:
+    """Clear composer text without discarding another thread's saved draft."""
+
+    recovery_timer = getattr(
+        prompt,
+        "_vibecad_session_recovery_timer",
+        None,
+    )
+    if recovery_timer is not None:
+        recovery_timer.stop()
+    blocked = prompt.blockSignals(True)
+    try:
+        prompt.clear()
+    finally:
+        prompt.blockSignals(blocked)
+
+
+def _session_recovery_banner_text(snapshot: dict[str, Any]) -> str:
+    if snapshot.get("recoverable") is False:
+        return (
+            "Saved VibeCAD recovery could not be read. Discard it to continue "
+            "without the saved draft."
+        )
+    if snapshot.get("phase") == "running":
+        return (
+            "A VibeCAD CAD run was interrupted. Restore its request to review and "
+            "send again; previous CAD actions will not replay automatically."
+        )
+    return "VibeCAD recovered an unsent draft. Restore it to the composer?"
+
+
+def _session_recovery_is_current_instance(snapshot: dict[str, Any]) -> bool:
+    return str(snapshot.get("instance_id") or "") == _session_recovery_instance_id
+
+
+def _refresh_session_recovery(dock: Any | None = None) -> None:
+    if dock is None:
+        dock = _find_dock()
+    banner = _find_child("QFrame", "VibeSessionRecoveryBanner", dock)
+    if banner is None:
+        return
+    if not _assistant_document_state().get("enabled"):
+        banner.setVisible(False)
+        return
+    try:
+        snapshot = get_service().session_recovery()
+    except Exception as exc:
+        _warn(f"VibeCAD session recovery load failed: {exc}")
+        banner.setVisible(False)
+        return
+    if not snapshot.get("available") or _session_recovery_is_current_instance(snapshot):
+        banner.setVisible(False)
+        return
+    label = _find_child("QLabel", "VibeSessionRecoveryText", dock)
+    restore = _find_child("QPushButton", "VibeSessionRecoveryRestore", dock)
+    if label is not None:
+        label.setText(_session_recovery_banner_text(snapshot))
+    if restore is not None:
+        restore.setEnabled(bool(snapshot.get("recoverable")))
+    banner.setVisible(True)
+
+
+def _restore_session_recovery_from_panel(dock: Any | None = None) -> None:
+    if dock is None:
+        dock = _find_dock()
+    try:
+        snapshot = get_service().session_recovery()
+    except Exception as exc:
+        _set_status_line(f"Could not restore the VibeCAD session: {exc}", dock=dock)
+        return
+    if not snapshot.get("available") or not snapshot.get("recoverable"):
+        _set_status_line("The saved VibeCAD session cannot be restored.", dock=dock)
+        return
+    from VibeCADSessionRecovery import recovery_composer_text
+
+    text = recovery_composer_text(snapshot)
+    prompt = _find_child("QPlainTextEdit", "VibePrompt", dock)
+    banner = _find_child("QFrame", "VibeSessionRecoveryBanner", dock)
+    if prompt is None or not text:
+        _set_status_line(
+            "The saved VibeCAD session has no recoverable request.",
+            dock=dock,
+        )
+        return
+    prompt.setPlainText(text)
+    prompt.setFocus()
+    if banner is not None:
+        banner.setVisible(False)
+    _queue_session_recovery("draft", text)
+    _set_status_line(
+        "Recovered request ready for review. Press Send when it is safe to retry.",
+        dock=dock,
+    )
+
+
+def _discard_session_recovery_from_panel(dock: Any | None = None) -> None:
+    if dock is None:
+        dock = _find_dock()
+    _queue_session_recovery("draft", "")
+    banner = _find_child("QFrame", "VibeSessionRecoveryBanner", dock)
+    if banner is not None:
+        banner.setVisible(False)
+    _set_status_line("Discarded the saved VibeCAD recovery.", dock=dock)
+
+
 def _format_saved_conversation(conversation: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     labels = {
@@ -1509,7 +1713,7 @@ def _clear_conversation_transients(dock: Any) -> None:
     _clear_thinking(dock)
     prompt = _find_child("QPlainTextEdit", "VibePrompt", dock)
     if prompt is not None:
-        prompt.clear()
+        _clear_prompt_without_recovery(prompt)
 
 
 def _activate_conversation_from_selector(index: int) -> None:
@@ -1531,6 +1735,7 @@ def _activate_conversation_from_selector(index: int) -> None:
         _clear_conversation_transients(dock)
         _render_saved_conversation(dock)
         _refresh_conversation_selector(dock)
+        _refresh_session_recovery(dock)
         _render_assistant_run_state(dock)
     except Exception as exc:
         _warn(f"VibeCAD conversation switch failed: {exc}")
@@ -1557,6 +1762,7 @@ def _new_conversation_from_panel() -> None:
         _clear_conversation_transients(dock)
         _render_saved_conversation(dock)
         _refresh_conversation_selector(dock)
+        _refresh_session_recovery(dock)
         _render_assistant_run_state(dock)
         prompt = _find_child("QPlainTextEdit", "VibePrompt", dock)
         if prompt is not None:
@@ -3150,7 +3356,7 @@ def _execute_assistant_run(
     prompt: str | None = None,
     continuation_event: dict[str, Any] | None = None,
 ) -> None:
-    global _assistant_run_thread
+    global _assistant_run_thread, _active_session_recovery
     if not _internal_agent_allowed():
         _render_assistant_run_state(dock)
         return
@@ -3172,6 +3378,8 @@ def _execute_assistant_run(
     _ensure_document_thread_invoker()
     prefer_online = service.use_online_provider_by_default()
     run_id = _assistant_run_controller.begin()
+    _active_session_recovery = {"phase": "running", "prompt": clean_prompt}
+    _queue_session_recovery("running", clean_prompt)
     _render_assistant_run_state(
         dock,
         text=(
@@ -3245,7 +3453,7 @@ def _execute_assistant_run(
         _dispatch_to_document_thread(lambda: _progress_on_document_thread(event_copy))
 
     def _complete_run(response: Any | None, failure: BaseException | None) -> None:
-        global _assistant_run_thread
+        global _assistant_run_thread, _active_session_recovery
         current_dock = _find_dock() or dock
         run_succeeded = False
         surface_continuation = None
@@ -3292,6 +3500,8 @@ def _execute_assistant_run(
                 surface_continuation = _native_surface_continuation_event(response)
 
         _assistant_run_controller.finish(run_id)
+        _active_session_recovery = None
+        _queue_session_recovery("draft", "")
         _cancel_question_round()
         if surface_continuation is not None:
             _sketch_close_continuation_controller.clear()
@@ -3548,7 +3758,7 @@ def _run_prompt_from_panel() -> None:
     if _is_assistant_run_active():
         result = service.queue_steering_message(prompt)
         if result.get("ok"):
-            prompt_box.clear()
+            _clear_prompt_without_recovery(prompt_box)
             _append_conversation(
                 "User", prompt, persist=True, metadata={"source": "steering"}
             )
@@ -3567,7 +3777,7 @@ def _run_prompt_from_panel() -> None:
     # The background session persists the prompt after capturing only the
     # active document identity on the GUI thread.
     _append_conversation("User", prompt)
-    prompt_box.clear()
+    _clear_prompt_without_recovery(prompt_box)
     _execute_assistant_run(
         dock,
         service,
@@ -4017,6 +4227,7 @@ def _refresh_assistant_for_document_change() -> None:
     _clear_thinking(dock)
     _render_saved_conversation(dock)
     _refresh_conversation_selector(dock)
+    _refresh_session_recovery(dock)
     _refresh_reference_chips(dock)
     _refresh_view_status(dock)
     _render_assistant_run_state(dock)
@@ -4584,6 +4795,35 @@ def _build_panel_widget():
     layout.setContentsMargins(10, 8, 10, 10)
     layout.setSpacing(8)
 
+    recovery_banner = QtWidgets.QFrame(root)
+    recovery_banner.setObjectName("VibeSessionRecoveryBanner")
+    recovery_banner.setVisible(False)
+    recovery_layout = QtWidgets.QHBoxLayout(recovery_banner)
+    recovery_layout.setContentsMargins(8, 6, 8, 6)
+    recovery_layout.setSpacing(6)
+
+    recovery_text = QtWidgets.QLabel(recovery_banner)
+    recovery_text.setObjectName("VibeSessionRecoveryText")
+    recovery_text.setWordWrap(True)
+    recovery_layout.addWidget(recovery_text, 1)
+
+    recovery_restore = QtWidgets.QPushButton("Restore", recovery_banner)
+    recovery_restore.setObjectName("VibeSessionRecoveryRestore")
+    recovery_restore.setToolTip("Restore the saved request for review")
+    recovery_restore.clicked.connect(
+        lambda: _restore_session_recovery_from_panel(_find_dock())
+    )
+    recovery_layout.addWidget(recovery_restore)
+
+    recovery_discard = QtWidgets.QPushButton("Discard", recovery_banner)
+    recovery_discard.setObjectName("VibeSessionRecoveryDiscard")
+    recovery_discard.setToolTip("Discard this saved recovery snapshot")
+    recovery_discard.clicked.connect(
+        lambda: _discard_session_recovery_from_panel(_find_dock())
+    )
+    recovery_layout.addWidget(recovery_discard)
+    layout.addWidget(recovery_banner)
+
     splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical, root)
     splitter.setObjectName("VibeContentSplitter")
     splitter.setChildrenCollapsible(True)
@@ -4747,6 +4987,13 @@ def _build_panel_widget():
     )
     _install_prompt_paste_filter(prompt)
     _install_prompt_submit_filter(prompt)
+    recovery_timer = QtCore.QTimer(prompt)
+    recovery_timer.setObjectName("VibeSessionRecoveryDraftTimer")
+    recovery_timer.setSingleShot(True)
+    recovery_timer.setInterval(500)
+    recovery_timer.timeout.connect(lambda: _persist_prompt_recovery(prompt))
+    prompt.textChanged.connect(lambda: recovery_timer.start())
+    prompt._vibecad_session_recovery_timer = recovery_timer
     composer_layout.addWidget(prompt)
 
     composer_buttons = QtWidgets.QWidget(composer)
@@ -4907,6 +5154,7 @@ def _show_panel(text: str = "") -> None:
     else:
         _render_saved_conversation(dock)
     _refresh_conversation_selector(dock)
+    _refresh_session_recovery(dock)
     _refresh_view_status(dock)
     _refresh_reference_chips(dock)
     _render_questions(dock)
@@ -5015,6 +5263,7 @@ def _on_workbench_activated(workbench_name: str) -> None:
                         _warn(f"VibeCAD initial conversation failed: {exc}")
                 _render_saved_conversation(dock)
                 _refresh_conversation_selector(dock)
+                _refresh_session_recovery(dock)
                 _refresh_reference_chips(dock)
                 _refresh_view_status(dock)
                 _render_assistant_run_state(dock)
