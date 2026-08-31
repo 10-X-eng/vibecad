@@ -18,6 +18,7 @@ from VibeCADNativeDrawingCosmeticCurveState import (
     NativeDrawingCosmeticCurveStateError,
     normalize_cosmetic_curve_host_plan,
 )
+from vibecad_tests.schema_test_helpers import exact_provider_branches
 
 
 MOD_ROOT = Path(__file__).resolve().parents[2]
@@ -68,12 +69,15 @@ def _plan(kind: str, points: list[dict[str, float]], geometry: dict) -> dict:
 def test_cosmetic_curve_schema_has_four_closed_named_role_branches() -> None:
     definition = drawing_cosmetic_curve_capability_definition()
     schema = definition.provider_schema(DRAWING_COSMETIC_CURVE_OPERATIONS)
-    branches = schema["parameters"]["oneOf"]
-    by_operation = {
-        branch["properties"]["operation"]["const"]: branch for branch in branches
-    }
+    by_operation = exact_provider_branches(
+        definition, DRAWING_COSMETIC_CURVE_OPERATIONS
+    )
 
     assert definition.name == DRAWING_COSMETIC_CURVE_CAPABILITY_NAME
+    assert "oneOf" not in schema["parameters"]
+    assert schema["parameters"]["properties"]["operation"]["enum"] == list(
+        DRAWING_COSMETIC_CURVE_OPERATIONS
+    )
     assert tuple(by_operation) == DRAWING_COSMETIC_CURVE_OPERATIONS
     assert by_operation["create_one_point_circle"]["required"] == [
         "operation",
@@ -96,7 +100,10 @@ def test_cosmetic_curve_schema_has_four_closed_named_role_branches() -> None:
         "start_vertex",
         "end_vertex",
     ]
-    assert all(branch["additionalProperties"] is False for branch in branches)
+    assert all(
+        branch["additionalProperties"] is False
+        for branch in by_operation.values()
+    )
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.casefold()
     assert "selection" not in encoded.casefold()

@@ -1318,6 +1318,11 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     monkeypatch.setitem(sys.modules, "FreeCAD", app)
     monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
     monkeypatch.setitem(sys.modules, "VibeCADGui", gui)
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
+    )
 
     namespace = runpy.run_path(str(ROOT / "src/Mod/VibeCAD/InitGui.py"))
     assert preferences.disabled == "TestWorkbench,NoneWorkbench"
@@ -1383,6 +1388,11 @@ def test_vibecad_bootstrap_helpers_survive_freecad_exec_namespace(monkeypatch) -
         SimpleNamespace(
             ensure_commands_registered=lambda: startup_events.append("assistant")
         ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -1469,6 +1479,11 @@ def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> Non
             ensure_commands_registered=lambda: None,
             _dispatch_to_document_thread=dispatch,
         ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
     )
     monkeypatch.setitem(
         sys.modules,

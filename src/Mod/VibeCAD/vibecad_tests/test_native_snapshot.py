@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -39,6 +40,50 @@ class _Object:
     def isDerivedFrom(self, expected: str) -> bool:
         return self.TypeId == expected
 
+    def isValid(self) -> bool:
+        return True
+
+
+@pytest.fixture(autouse=True)
+def _snapshot_runtime_stubs(monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "PartDesign",
+        SimpleNamespace(validateDesign=lambda _sketch: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "TechDrawGui",
+        SimpleNamespace(drawingLineAttributes=lambda _view: []),
+    )
+    monkeypatch.setattr(
+        drawing_snapshot_module,
+        "drawing_line_defaults_state",
+        lambda: {
+            "state_sha256": "0" * 64,
+            "scope": "application_session",
+            "line_standard": "ISO",
+            "standards_body": "ISO",
+            "line_number": 1,
+            "style_code": 0,
+            "style_name": "Continuous",
+            "width_mm": 0.25,
+            "width_choice": "thin",
+            "available_widths": {
+                "thin_mm": 0.25,
+                "middle_mm": 0.5,
+                "thick_mm": 0.7,
+            },
+            "color_rgb": {"red": 0.0, "green": 0.0, "blue": 0.0},
+            "visible": True,
+            "cascade_spacing_mm": 5.0,
+            "delta_distance_mm": 2.0,
+            "available_style_count": 1,
+            "valid": True,
+            "issues": [],
+        },
+    )
+
 
 class _Document:
     Uid = "document-a"
@@ -55,6 +100,9 @@ class _Document:
 
     def getObject(self, name: str):
         return next((value for value in self.Objects if value.Name == name), None)
+
+    def getBookedTransactionID(self) -> int:
+        return 0
 
 
 class _ReadTouchObject:
@@ -129,6 +177,7 @@ def _document() -> _Document:
     sheet = document.add("Parameters", "Spreadsheet::Sheet")
     sheet.getNonEmptyCells = lambda: ["A1", "B2"]
     sheet.getAlias = lambda cell: "width" if cell == "A1" else ""
+    sheet.getContents = lambda cell: "42 mm" if cell == "A1" else "=A1 * 2"
     feature.ExpressionEngine = [("Length", "Parameters.width")]
     return document
 
@@ -744,7 +793,7 @@ def test_model_snapshot_exposes_exact_editable_standard_fastener_definition(
                 "length_mm": 10.0,
                 "model_thread": False,
                 "left_handed": False,
-                "options": {},
+                "catalog_option_overrides": {},
             },
         }
     ]

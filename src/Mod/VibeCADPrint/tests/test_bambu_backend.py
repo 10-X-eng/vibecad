@@ -264,6 +264,74 @@ def test_bambu_catalog_resolves_inheritance_and_exact_compatibility(
     assert resolved["printer_model"] == "Test Printer"
 
 
+def test_bambu_catalog_includes_compatible_user_filament_without_instantiation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "profiles"
+    config = tmp_path / "BambuStudio"
+    _profile_store(root)
+    user_filament = config / "user" / "123456" / "filament" / "base"
+    user_filament.mkdir(parents=True)
+    (user_filament / "Custom PETG.json").write_text(
+        json.dumps(
+            {
+                "name": "Custom PETG",
+                "from": "User",
+                "inherits": "Generic PLA @TEST",
+                "compatible_printers": ["Test Printer 0.4 nozzle"],
+                "filament_settings_id": ["Custom PETG"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (user_filament / "Other Printer PETG.json").write_text(
+        json.dumps(
+            {
+                "name": "Other Printer PETG",
+                "from": "User",
+                "inherits": "Generic PLA @TEST",
+                "compatible_printers": ["Another Printer"],
+                "filament_settings_id": ["Other Printer PETG"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cached_system_filament = config / "system" / "BBL" / "filament" / "base"
+    cached_system_filament.mkdir(parents=True)
+    (cached_system_filament / "Cached system base.json").write_text(
+        json.dumps(
+            {
+                "name": "Cached system base",
+                "from": "system",
+                "inherits": "Generic PLA @TEST",
+                "compatible_printers": ["Test Printer 0.4 nozzle"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    installation = VibeCADPrint.SlicerInstallation(
+        backend_id="bambustudio",
+        version="2.8.2.61",
+        gui_command=("bambu-studio",),
+        cli_command=("bambu-studio",),
+        source="path",
+        display_name="Bambu Studio",
+        config_dir=str(config),
+        resource_dir=str(root),
+        tested_version=(2, 8, 2),
+    )
+
+    catalog = BambuStudio.query_compatible_profiles(
+        installation,
+        "Test Printer 0.4 nozzle",
+    )
+
+    assert [
+        material.name for material in catalog.print_profiles[0].materials
+    ] == ["Custom PETG", "Generic PLA @TEST"]
+    assert catalog.print_profiles[0].materials[0].is_user is True
+
+
 def test_profile_store_uses_its_index_for_exact_name_queries(tmp_path: Path) -> None:
     root = tmp_path / "profiles"
     _profile_store(root)

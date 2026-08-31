@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 
 _MODULE_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +66,32 @@ def test_native_domains_have_no_raw_surface_or_edit_activation_calls() -> None:
                 violations.append((path.name, node.lineno, node.func.attr))
 
     assert violations == []
+
+
+def test_shared_surface_authority_owns_raw_gui_activation(monkeypatch) -> None:
+    from VibeCADSurfaceAuthority import activate_workbench, enter_edit_mode
+
+    calls = []
+    gui_document = SimpleNamespace(
+        setEdit=lambda object_name: calls.append(("edit", object_name)) or True
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "FreeCADGui",
+        SimpleNamespace(
+            activateWorkbench=lambda workbench: calls.append(
+                ("workbench", workbench)
+            )
+        ),
+    )
+
+    activate_workbench("TechDrawWorkbench")
+
+    assert enter_edit_mode(gui_document, "Sketch") is True
+    assert calls == [
+        ("workbench", "TechDrawWorkbench"),
+        ("edit", "Sketch"),
+    ]
 
 
 def test_only_session_assembly_can_import_the_complete_registry() -> None:

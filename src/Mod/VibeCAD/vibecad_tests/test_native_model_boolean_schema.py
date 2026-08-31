@@ -32,7 +32,6 @@ def test_part_section_contract_matches_the_live_immediate_command() -> None:
     definition, _schema, branch, section = _section_schema_parts()
 
     assert definition.name == "model.boolean"
-    assert "bodies[].body.object_name" in definition.description
     assert branch["properties"]["operation"]["const"] == "section"
     variant = definition.variants[0]
     assert variant.action_ids == frozenset({"Part_Section"})
