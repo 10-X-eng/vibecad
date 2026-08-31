@@ -481,6 +481,33 @@ class TestModelTreeBrowser(unittest.TestCase):
             output_key="UtilityBlade",
         )
 
+        self.document.openTransaction("Publish browser VibeScript history")
+        self.vibe_operation = self.document.addObject(
+            "PartDesign::DesignScriptOperation",
+            "VibeProgramOperation",
+        )
+        self.vibe_operation.Label = "Vibe Program"
+        edit = PartDesign.beginDesignOperationEdit(self.vibe_operation)
+        PartDesign.setDesignScriptOutputs(
+            edit,
+            self.vibe_component.Name,
+            model_id,
+            "accepted",
+            [],
+            [],
+            [],
+            [],
+            ["UtilityBlade"],
+            ["solid"],
+        )
+        self.assertEqual(PartDesign.finalizeDesignOperationEdit(edit), [])
+        _tag_scripted_object(
+            self.vibe_operation,
+            role="implementation",
+            model_id=model_id,
+        )
+        self.document.commitTransaction()
+
         self.profile_alpha.Visibility = False
         self.profile_beta.Visibility = False
         self.reference.Visibility = False
@@ -606,7 +633,7 @@ class TestModelTreeBrowser(unittest.TestCase):
                 "Parameters",
                 "Bodies",
                 "Sketches",
-                "Operations",
+                "Design History",
                 "References",
                 "Groups",
             },
@@ -661,7 +688,7 @@ class TestModelTreeBrowser(unittest.TestCase):
             [self.manufacturing_note.Label],
         )
 
-        operations = _child(component, "Operations", BROWSER_FOLDER_TYPE)
+        operations = _child(component, "Design History", BROWSER_FOLDER_TYPE)
         self.assertEqual(
             [item.text(0) for item in _visible_children(operations)],
             [self.component_operation.Label],
@@ -715,12 +742,108 @@ class TestModelTreeBrowser(unittest.TestCase):
                 for item in _visible_children(vibe_component)
                 if item.type() == BROWSER_FOLDER_TYPE
             },
-            {"Bodies", "Sketches", "References"},
+            {
+                "Bodies",
+                "Design History",
+                "Published Outputs",
+                "Sketches",
+                "References",
+            },
         )
 
         for item in _visible_walk(document_item):
             if item.type() == BROWSER_FOLDER_TYPE:
                 self.assertFalse(item.icon(0).isNull(), item.text(0))
+
+    def test_vibescript_program_roles_are_clear_and_keep_exact_identity(self):
+        def role_items():
+            tree, document_item = self._tree_and_document_item()
+            component = _child(document_item, self.vibe_component.Label)
+            bodies = _child(component, "Bodies", BROWSER_FOLDER_TYPE)
+            history = _child(component, "Design History", BROWSER_FOLDER_TYPE)
+            published = _child(
+                component,
+                "Published Outputs",
+                BROWSER_FOLDER_TYPE,
+            )
+            body = _child(bodies, self.vibe_body.Label)
+            operation = _child(history, self.vibe_operation.Label)
+            output = _child(published, self.vibe_output.Label)
+            values = (
+                tree,
+                document_item,
+                component,
+                bodies,
+                history,
+                published,
+                body,
+                operation,
+                output,
+            )
+            return values if all(value is not None for value in values) else None
+
+        observed = _wait_until(role_items)
+        self.assertIsNotNone(observed, self._snapshot())
+        (
+            tree,
+            _document_item,
+            component,
+            bodies,
+            _history,
+            _published,
+            body,
+            operation,
+            output,
+        ) = observed
+
+        folder_labels = [
+            item.text(0)
+            for item in _visible_children(component)
+            if item.type() == BROWSER_FOLDER_TYPE
+        ]
+        self.assertEqual(
+            folder_labels[:3],
+            ["Bodies", "Design History", "Published Outputs"],
+        )
+        self.assertTrue(bodies.isExpanded())
+        self.assertEqual(
+            [
+                child.text(0)
+                for child in _visible_children(operation)
+                if child.type() == BROWSER_DETAIL_TYPE
+            ],
+            ["Produces UtilityBlade"],
+        )
+        self.assertEqual(
+            self.vibe_operation.ViewObject.ToggleVisibility,
+            "NoToggleVisibility",
+        )
+        self.assertNotEqual(body.icon(0).cacheKey(), output.icon(0).cacheKey())
+        self.assertNotEqual(
+            operation.icon(0).cacheKey(),
+            body.icon(0).cacheKey(),
+        )
+
+        operation_visibility = self.vibe_operation.Visibility
+        body_visibility = self.vibe_body.Visibility
+        output_visibility = self.vibe_output.Visibility
+        self._toggle_tree_item(tree, operation)
+        self.assertEqual(self.vibe_operation.Visibility, operation_visibility)
+        self.assertEqual(self.vibe_body.Visibility, body_visibility)
+        self.assertEqual(self.vibe_output.Visibility, output_visibility)
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.vibe_operation)
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: (
+                    (items := role_items()) is not None
+                    and items[7].isSelected()
+                    and Gui.Selection.getSelection() == [self.vibe_operation]
+                )
+            ),
+            self._snapshot(),
+        )
 
     @unittest.skipIf(Fem is None, "Requires FEM")
     def test_analyze_folder_preserves_study_membership_without_duplicates(self):
@@ -924,7 +1047,7 @@ class TestModelTreeBrowser(unittest.TestCase):
             component = _child(document_item, self.vibe_component.Label)
             category = _child(
                 component,
-                "VibeCAD Outputs",
+                "Published Outputs",
                 BROWSER_FOLDER_TYPE,
             )
             generated = _child(category, output.Label)
@@ -1497,7 +1620,7 @@ class TestModelTreeBrowser(unittest.TestCase):
             )
         )
 
-    def test_publication_is_internal_and_body_tip_is_the_only_solid(self):
+    def test_publication_is_secondary_and_body_tip_is_the_only_solid(self):
         def browser_state():
             document = self._snapshot()
             component = _snapshot_child(document, "Vibe Program")
@@ -1506,13 +1629,26 @@ class TestModelTreeBrowser(unittest.TestCase):
                 "Bodies",
                 BROWSER_FOLDER_TYPE,
             )
+            published = _snapshot_child(
+                component,
+                "Published Outputs",
+                BROWSER_FOLDER_TYPE,
+            )
             body = _snapshot_child(bodies, self.vibe_body.Label)
-            if component is None or bodies is None or body is None:
+            output = _snapshot_child(published, self.vibe_output.Label)
+            if (
+                component is None
+                or bodies is None
+                or published is None
+                or body is None
+                or output is None
+            ):
                 return None
             return (
                 [child[0] for child in bodies[2]],
                 _snapshot_labels(component),
                 len(body[2]),
+                [child[0] for child in published[2]],
             )
 
         state = _wait_until(browser_state)
@@ -1522,12 +1658,13 @@ class TestModelTreeBrowser(unittest.TestCase):
             [self.vibe_body.Label],
         )
         self.assertEqual(state[2], 0)
+        self.assertEqual(state[3], [self.vibe_output.Label])
 
         visible_labels = list(state[1])
         self.assertNotIn(self.vibe_result.Label, visible_labels)
         self.assertEqual(
             visible_labels.count(self.vibe_body.Label),
-            1,
+            2,
         )
         self.assertFalse(self.vibe_output.Visibility)
         self.assertIs(self.vibe_output.getLinkedObject(), self.vibe_body)
@@ -1544,7 +1681,7 @@ class TestModelTreeBrowser(unittest.TestCase):
         visible_labels = list(_snapshot_labels(component))
         self.assertEqual(
             visible_labels.count(self.vibe_body.Label),
-            1,
+            2,
         )
         self.document.ShowHidden = False
 
@@ -2458,7 +2595,35 @@ class TestModelTreeBrowser(unittest.TestCase):
             self.vibe_result = self.document.getObject("VibeResult")
             self.vibe_sketch = self.document.getObject("VibeBladeProfile")
             self.vibe_output = self.document.getObject("VibeUtilityBlade")
+            self.vibe_component = self.document.getObject("VibeProgram")
+            self.vibe_operation = self.document.getObject("VibeProgramOperation")
             self.assertIsNotNone(_wait_until(self._browser_ready))
+
+            def restored_role_items():
+                _tree, document_item = self._tree_and_document_item()
+                component = _child(document_item, self.vibe_component.Label)
+                bodies = _child(component, "Bodies", BROWSER_FOLDER_TYPE)
+                history = _child(component, "Design History", BROWSER_FOLDER_TYPE)
+                published = _child(
+                    component,
+                    "Published Outputs",
+                    BROWSER_FOLDER_TYPE,
+                )
+                body = _child(bodies, self.vibe_body.Label)
+                operation = _child(history, self.vibe_operation.Label)
+                output = _child(published, self.vibe_output.Label)
+                values = (
+                    component,
+                    bodies,
+                    history,
+                    published,
+                    body,
+                    operation,
+                    output,
+                )
+                return values if all(value is not None for value in values) else None
+
+            self.assertIsNotNone(_wait_until(restored_role_items), self._snapshot())
 
             from VibeCADVibeScriptDomainPublication import (
                 restore_partdesign_history_presentation,

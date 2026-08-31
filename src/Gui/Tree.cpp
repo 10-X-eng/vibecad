@@ -5787,7 +5787,7 @@ void DocumentItem::rebuildModelBrowser()
             entry.object,
             parent,
             logicalParent,
-            entry.publishedImplementation || entry.bodyRepresentation
+            entry.publishedImplementation
         );
         if (!item) {
             return nullptr;
@@ -6546,6 +6546,8 @@ void DocumentItem::rebuildModelBrowser()
         if (!componentItem) {
             return;
         }
+        const bool vibeScriptProgram =
+            Projection::isVibeScriptProgram(componentEntry.object);
 
         const auto nestedComponents = componentRoleEntries(componentEntry.object, Role::Component);
         for (const auto* nested : nestedComponents) {
@@ -6600,6 +6602,64 @@ void DocumentItem::rebuildModelBrowser()
             for (const auto* body : bodies) {
                 renderBody(*body, folder, componentItem);
             }
+            if (firstBuild && vibeScriptProgram) {
+                folder->setExpanded(true);
+            }
+        }
+
+        const auto renderComponentHistory = [&]() {
+            const auto operations = filterBucket(
+                findBucket(
+                    entriesByComponentRole,
+                    RoleContextKey {componentEntry.object, Role::History}
+                ),
+                [&](const Entry& entry) {
+                    return !entry.body && !isMeshesGroup(entry.group);
+                }
+            );
+            renderCategory(
+                componentItem,
+                componentItem,
+                componentEntry.object,
+                "design-history",
+                TreeWidget::tr("Design History"),
+                vibeScriptProgram ? "vibecad" : "PartDesignWorkbench",
+                operations
+            );
+        };
+
+        const auto renderComponentOutputs = [&]() {
+            const auto vibeCADOutputs = filterBucket(
+                findBucket(
+                    entriesByComponentRole,
+                    RoleContextKey {componentEntry.object, Role::VibeCADOutput}
+                ),
+                [&](const Entry& entry) {
+                    // A complete Body-backed publication is a secondary,
+                    // stable downstream interface for a VibeScript program.
+                    // Other components retain the compatibility behavior that
+                    // suppresses a duplicate Body representation.
+                    return vibeScriptProgram || !entry.bodyRepresentation;
+                }
+            );
+            renderCategory(
+                componentItem,
+                componentItem,
+                componentEntry.object,
+                vibeScriptProgram ? "published-outputs" : "vibecad-outputs",
+                vibeScriptProgram ? TreeWidget::tr("Published Outputs")
+                                  : TreeWidget::tr("VibeCAD Outputs"),
+                "vibecad",
+                vibeCADOutputs
+            );
+        };
+
+        // VibeScript's three primary roles stay together: editable Bodies,
+        // their source-level Design History, and stable published interfaces.
+        // Generic components retain the established category ordering below.
+        if (vibeScriptProgram) {
+            renderComponentHistory();
+            renderComponentOutputs();
         }
 
         const auto sketches = componentRoleEntries(componentEntry.object, Role::Sketch);
@@ -6631,43 +6691,10 @@ void DocumentItem::rebuildModelBrowser()
         renderAnalyze(componentItem, componentItem, componentEntry.object);
         renderDrawings(componentItem, componentItem, componentEntry.object);
 
-        const auto operations = filterBucket(
-            findBucket(
-                entriesByComponentRole,
-                RoleContextKey {componentEntry.object, Role::History}
-            ),
-            [&](const Entry& entry) {
-                return !entry.body && !isMeshesGroup(entry.group);
-            }
-        );
-        renderCategory(
-            componentItem,
-            componentItem,
-            componentEntry.object,
-            "operations",
-            TreeWidget::tr("Operations"),
-            "PartDesignWorkbench",
-            operations
-        );
-
-        const auto vibeCADOutputs = filterBucket(
-            findBucket(
-                entriesByComponentRole,
-                RoleContextKey {componentEntry.object, Role::VibeCADOutput}
-            ),
-            [](const Entry& entry) {
-                return !entry.bodyRepresentation;
-            }
-        );
-        renderCategory(
-            componentItem,
-            componentItem,
-            componentEntry.object,
-            "vibecad-outputs",
-            TreeWidget::tr("VibeCAD Outputs"),
-            "vibecad",
-            vibeCADOutputs
-        );
+        if (!vibeScriptProgram) {
+            renderComponentHistory();
+            renderComponentOutputs();
+        }
 
         const auto references = componentRoleEntries(componentEntry.object, Role::Reference);
         renderReferences(

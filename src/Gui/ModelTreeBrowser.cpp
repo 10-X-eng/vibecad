@@ -129,6 +129,33 @@ App::DocumentObject* geoParent(const App::DocumentObject* object)
     return App::GeoFeatureGroupExtension::getGroupOfObject(object);
 }
 
+App::DocumentObject* exactVibeScriptProgramFor(
+    App::Document* document,
+    const App::DocumentObject* operation
+)
+{
+    if (!document || !isDerivedFrom(operation, "PartDesign::DesignScriptOperation")
+        || stringProperty(operation, "VibeCADScriptedRole") != "implementation"
+        || stringProperty(operation, "VibeCADScriptedEngine") != "vibescript:partdesign") {
+        return nullptr;
+    }
+
+    const std::string programObjectName = stringProperty(operation, "ProgramObjectName");
+    const std::string programId = stringProperty(operation, "ProgramId");
+    if (programObjectName.empty() || programId.empty()) {
+        return nullptr;
+    }
+
+    auto* program = document->getObject(programObjectName.c_str());
+    if (!ModelTreeBrowserProjection::isVibeScriptProgram(program)
+        || stringProperty(program, "VibeCADScriptedModelId") != programId) {
+        // Incomplete or conflicting metadata remains at document root so the
+        // browser never guesses a semantic owner from labels or link shape.
+        return nullptr;
+    }
+    return program;
+}
+
 }  // namespace
 
 ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
@@ -283,6 +310,13 @@ ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
         // valid getSubObject() path.
         const Ownership selectionOwnership = resolveOwnership(object);
         Ownership ownership = selectionOwnership;
+        if (auto* program = exactVibeScriptProgramFor(document, object)) {
+            // DesignScriptOperation is deliberately Design-global and must
+            // not enter the App::Part containment graph. Its exact persisted
+            // program identity supplies presentation ownership only; logical
+            // selection paths continue to use selectionOwnership below.
+            ownership.component = program;
+        }
         if (const auto owner = modelOccurrenceOwners.find(object);
             owner != modelOccurrenceOwners.end() && owner->second) {
             ownership.component = owner->second;
@@ -499,6 +533,14 @@ bool ModelTreeBrowserProjection::isComponent(const App::DocumentObject* object)
 {
     return object && !isBody(object)
         && object->hasExtension(App::OriginGroupExtension::getExtensionClassTypeId());
+}
+
+bool ModelTreeBrowserProjection::isVibeScriptProgram(const App::DocumentObject* object)
+{
+    return isComponent(object)
+        && stringProperty(object, "VibeCADScriptedRole") == "model"
+        && stringProperty(object, "VibeCADScriptedEngine") == "vibescript:partdesign"
+        && !stringProperty(object, "VibeCADScriptedModelId").empty();
 }
 
 ModelTreeBrowserProjection::Ownership

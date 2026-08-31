@@ -122,6 +122,7 @@ public:
 
     static bool isBody(const App::DocumentObject* object);
     static bool isComponent(const App::DocumentObject* object);
+    static bool isVibeScriptProgram(const App::DocumentObject* object);
 
 private:
     struct Ownership
