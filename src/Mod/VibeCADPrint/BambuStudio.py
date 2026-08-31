@@ -373,7 +373,17 @@ def _instantiated_profiles(
 ) -> tuple[tuple[_ProfileRecord, dict[str, Any]], ...]:
     selected: dict[str, _ProfileRecord] = {}
     for record in store.records_for(profile_type):
-        if _truthy(record.data.get("instantiation")):
+        # Bambu Studio omits the system-profile ``instantiation`` marker from
+        # user-owned presets saved in its filament library. Those files are
+        # selectable presets; compatibility is still enforced after resolving
+        # their inherited data in ``_compatible_profile_catalog``.
+        user_filament = (
+            profile_type == "filament"
+            and record.is_user
+            and str(record.data.get("from", "")).strip().casefold() == "user"
+            and "instantiation" not in record.data
+        )
+        if user_filament or _truthy(record.data.get("instantiation")):
             current = selected.get(record.name)
             if current is None or (record.is_user and not current.is_user):
                 selected[record.name] = record

@@ -63,7 +63,7 @@ def _surface_context(*names: str, workbench: str = "PartDesignWorkbench") -> dic
 def _scripted_context() -> dict:
     return _surface_context(
         "vibescript.read_source",
-        "vibescript.create_program",
+        "vibescript.create_part",
     )
 
 
@@ -261,7 +261,7 @@ def test_codex_dynamic_tools_preserve_vibecad_namespaces_and_schema() -> None:
     tools, names = provider._codex_dynamic_tool_surface(_scripted_context())
     assert names == {
         ("vibescript", "read_source"): "vibescript.read_source",
-        ("vibescript", "create_program"): "vibescript.create_program",
+        ("vibescript", "create_part"): "vibescript.create_part",
     }
     assert [namespace["name"] for namespace in tools] == ["vibescript"]
     read_tool = tools[0]["tools"][0]
@@ -325,12 +325,12 @@ def test_codex_dynamic_tools_flatten_for_third_party_responses_endpoints() -> No
 
     assert names == {
         ("", "vibescript__read_source"): "vibescript.read_source",
-        ("", "vibescript__create_program"): "vibescript.create_program",
+        ("", "vibescript__create_part"): "vibescript.create_part",
     }
     assert [tool["type"] for tool in tools] == ["function", "function"]
     assert [tool["name"] for tool in tools] == [
         "vibescript__read_source",
-        "vibescript__create_program",
+        "vibescript__create_part",
     ]
     assert tools[0]["inputSchema"] == _scripted_context()[
         "provider_tool_schemas"

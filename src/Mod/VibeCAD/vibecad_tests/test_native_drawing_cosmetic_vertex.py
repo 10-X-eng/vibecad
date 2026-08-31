@@ -22,6 +22,7 @@ from VibeCADNativeDrawingCosmeticVertexState import (
     normalize_quadrant_vertex_host_plan,
     normalize_vertex_intersection_host_plan,
 )
+from vibecad_tests.schema_test_helpers import exact_provider_branches
 
 
 MOD_ROOT = Path(__file__).resolve().parents[2]
@@ -111,12 +112,15 @@ def _quadrant_plan(*, created: bool = False) -> dict:
 def test_cosmetic_vertex_schema_has_five_closed_exact_branches() -> None:
     definition = drawing_cosmetic_vertex_capability_definition()
     schema = definition.provider_schema(DRAWING_COSMETIC_VERTEX_OPERATIONS)
-    branches = schema["parameters"]["oneOf"]
-    by_operation = {
-        branch["properties"]["operation"]["const"]: branch for branch in branches
-    }
+    by_operation = exact_provider_branches(
+        definition, DRAWING_COSMETIC_VERTEX_OPERATIONS
+    )
 
     assert definition.name == DRAWING_COSMETIC_VERTEX_CAPABILITY_NAME
+    assert "oneOf" not in schema["parameters"]
+    assert schema["parameters"]["properties"]["operation"]["enum"] == list(
+        DRAWING_COSMETIC_VERTEX_OPERATIONS
+    )
     assert tuple(by_operation) == DRAWING_COSMETIC_VERTEX_OPERATIONS
     assert by_operation["create_intersections"]["required"] == [
         "operation",
@@ -152,7 +156,10 @@ def test_cosmetic_vertex_schema_has_five_closed_exact_branches() -> None:
     quadrant_edges = by_operation["create_quadrants"]["properties"]["edges"]
     assert quadrant_edges["minItems"] == 1
     assert quadrant_edges["maxItems"] == 64
-    assert all(branch["additionalProperties"] is False for branch in branches)
+    assert all(
+        branch["additionalProperties"] is False
+        for branch in by_operation.values()
+    )
     assert {
         action for variant in definition.variants for action in variant.action_ids
     } == {

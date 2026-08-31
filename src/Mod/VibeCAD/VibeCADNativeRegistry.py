@@ -315,7 +315,13 @@ from VibeCADNativeMeshApproximateSchema import (
     register_mesh_approximate_capability_definition,
 )
 from VibeCADNativeMeshRebuildSchema import register_mesh_rebuild_capability_definition
+from VibeCADNativeMeshReconstructParametricSchema import (
+    register_mesh_reconstruct_parametric_capability_definition,
+)
 from VibeCADNativeReverseBindings import register_reverse_capability_implementations
+from VibeCADNativeReconstructParametricBindings import (
+    register_mesh_reconstruct_parametric_capability_implementation,
+)
 from VibeCADNativeMeshExportBindings import (
     register_mesh_export_capability_implementation,
 )
@@ -860,7 +866,9 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_mesh_points_capability_implementation(registry)
     register_mesh_rebuild_capability_definition(registry)
     register_mesh_approximate_capability_definition(registry)
+    register_mesh_reconstruct_parametric_capability_definition(registry)
     register_reverse_capability_implementations(registry)
+    register_mesh_reconstruct_parametric_capability_implementation(registry)
     register_common_capability_definitions(registry)
     register_common_capability_implementations(registry)
     register_inspection_compare_capability_definition(registry)

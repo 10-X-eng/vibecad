@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
-import socket
 import sys
 import threading
 import time
@@ -84,16 +84,27 @@ def test_mcp_wire_surface_rejects_ambiguous_names() -> None:
 
 def test_mcp_ipc_address_rejects_live_owner_and_removes_stale_socket(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     address = str(tmp_path / "mcp.sock")
-    first = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        first.bind(address)
-        first.listen()
-        with pytest.raises(RuntimeError, match="another VibeCAD instance"):
-            mcp._prepare_mcp_ipc_address(address, "AF_UNIX")
-    finally:
-        first.close()
+    Path(address).touch()
+    probe_results = iter((0, errno.ECONNREFUSED))
+
+    class _Probe:
+        def settimeout(self, _timeout: float) -> None:
+            return None
+
+        def connect_ex(self, _address: str) -> int:
+            return next(probe_results)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(mcp.socket, "socket", lambda *_args: _Probe())
+    monkeypatch.setattr(mcp.socket, "AF_UNIX", object(), raising=False)
+
+    with pytest.raises(RuntimeError, match="another VibeCAD instance"):
+        mcp._prepare_mcp_ipc_address(address, "AF_UNIX")
     assert Path(address).exists()
     mcp._prepare_mcp_ipc_address(address, "AF_UNIX")
     assert not Path(address).exists()
