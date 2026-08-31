@@ -32,8 +32,8 @@ for requirements_file in "${requirements}" "${aero_requirements}"; do
     fi
 done
 
-echo "Removing the retired direct OpenAI SDK from ${env_root}"
-"${python_exe}" -m pip uninstall --yes openai openai-agents
+echo "Removing the retired OpenAI Agents SDK from ${env_root}"
+"${python_exe}" -m pip uninstall --yes openai-agents
 
 echo "Installing VibeCAD Python and Aero dependencies into ${env_root}"
 "${python_exe}" -m pip install \
@@ -54,6 +54,7 @@ for module_name in (
     "jsonschema",
     "mcp",
     "mcp_types",
+    "openai",
     "tuf",
     "numpy",
     "casadi",
@@ -79,10 +80,10 @@ else:
     importlib.import_module("secretstorage")
     importlib.import_module("keyring.backends.SecretService")
 
-for removed_module in ("openai", "agents"):
+for removed_module in ("agents",):
     if importlib.util.find_spec(removed_module) is not None:
         raise RuntimeError(
-            f"The retired direct OpenAI module {removed_module!r} is still present."
+            f"The retired OpenAI Agents module {removed_module!r} is still present."
         )
 
 print("VibeCAD Python, Aero, and OS keyring dependencies import ok")
