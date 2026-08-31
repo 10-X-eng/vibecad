@@ -1745,6 +1745,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_sketch_radius_gui_case.py
         vibecad_tests/native_sketch_geometry_gui_integration.py
         vibecad_tests/native_sketch_geometry_catalog_gui_case.py
+        vibecad_tests/native_viewprovider_observer_gui_integration.py
         vibecad_tests/native_model_structure_gui_integration.py
         vibecad_tests/native_mutation_gui_integration.py
         vibecad_tests/native_component_interface_integration.py
