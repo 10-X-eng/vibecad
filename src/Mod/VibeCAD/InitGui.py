@@ -219,6 +219,87 @@ try:
         except Exception as exc:
             _warn(f"VibeCAD standard-component commands failed to register: {exc}")
 
+    def _setup_development_identity() -> None:
+        """Mark only repo-launcher sessions with their exact source revision."""
+
+        try:
+            import os
+
+            if str(os.environ.get("VIBECAD_DEV_MODE") or "").strip() != "1":
+                return
+            from PySide import QtWidgets
+            import FreeCADGui as Gui
+
+            source_sha = str(
+                os.environ.get("VIBECAD_DEV_SOURCE_SHA") or "unknown"
+            ).strip()
+            if (
+                str(os.environ.get("VIBECAD_DEV_ATTESTATION_REQUIRED") or "").strip()
+                == "1"
+            ):
+                import VibeCADAgentControl
+
+                runtime_identity = VibeCADAgentControl.development_runtime_identity()
+                if runtime_identity is None:
+                    raise RuntimeError(
+                        "The attested development runtime identity is unavailable."
+                    )
+                source_sha = str(runtime_identity["commit"])
+            source_sha = source_sha[:12]
+            marker = f"VibeCAD DEV • {source_sha}"
+            main_window = Gui.getMainWindow()
+            if main_window is None:
+                return
+
+            title_guard_property = "VibeCADDevelopmentIdentityTitleGuard"
+            if not bool(main_window.property(title_guard_property)):
+
+                def preserve_development_title(
+                    title,
+                    guarded_window=main_window,
+                    guarded_marker=marker,
+                ):
+                    current = str(title or "")
+                    if guarded_marker in current:
+                        return
+                    guarded_window.setWindowTitle(
+                        f"{current} — {guarded_marker}" if current else guarded_marker
+                    )
+
+                main_window.windowTitleChanged.connect(preserve_development_title)
+                main_window.setProperty(title_guard_property, True)
+
+            current_title = str(main_window.windowTitle() or "")
+            if marker not in current_title:
+                main_window.setWindowTitle(
+                    f"{current_title} — {marker}" if current_title else marker
+                )
+
+            status_bar = main_window.statusBar()
+            if status_bar is None:
+                return
+            label = status_bar.findChild(
+                QtWidgets.QLabel,
+                "VibeCADDevelopmentIdentity",
+            )
+            if label is None:
+                label = QtWidgets.QLabel(status_bar)
+                label.setObjectName("VibeCADDevelopmentIdentity")
+                status_bar.addPermanentWidget(label)
+            label.setText(marker)
+            label.setToolTip(
+                "Development VibeCAD launched from the current source checkout."
+            )
+        except Exception as exc:
+            try:
+                import FreeCAD as _App
+
+                _App.Console.PrintWarning(
+                    f"VibeCAD development identity failed to install: {exc}\n"
+                )
+            except Exception:
+                pass
+
     def _setup_always_on_grid() -> None:
         try:
             import VibeCADGrid
@@ -234,13 +315,16 @@ try:
 
     def _setup_agent_control() -> None:
         try:
+            import os
+
             from PySide import QtWidgets
             import VibeCADAgentControl
             import VibeCADGui
 
-            VibeCADAgentControl.ensure_server_started(
-                document_thread_dispatch=VibeCADGui._dispatch_to_document_thread,
-            )
+            starter = VibeCADAgentControl.ensure_server_started
+            if str(os.environ.get("VIBECAD_DEV_MODE") or "").strip() == "1":
+                starter = VibeCADAgentControl.ensure_fail_closed_server_started
+            starter(document_thread_dispatch=VibeCADGui._dispatch_to_document_thread)
             application = QtWidgets.QApplication.instance()
             if application is not None:
                 application.aboutToQuit.connect(
@@ -271,6 +355,7 @@ try:
             except Exception:
                 pass
 
+    QtCore.QTimer.singleShot(0, _setup_development_identity)
     QtCore.QTimer.singleShot(0, _setup_always_on_grid)
     QtCore.QTimer.singleShot(0, _setup_agent_control)
     QtCore.QTimer.singleShot(0, _setup_aero_ribbon)

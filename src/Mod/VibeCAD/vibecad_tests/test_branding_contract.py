@@ -1328,6 +1328,7 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     assert preferences.disabled == "TestWorkbench,NoneWorkbench"
     assert startup_events == [
         "commands",
+        "scheduled:_setup_development_identity",
         "scheduled:_setup_always_on_grid",
         "scheduled:_setup_agent_control",
         "scheduled:_setup_aero_ribbon",
@@ -1454,6 +1455,7 @@ def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> Non
             pass
 
     started: list[dict] = []
+    fail_closed_started: list[dict] = []
     warnings: list[str] = []
     dispatch = object()
     app = SimpleNamespace(
@@ -1490,8 +1492,16 @@ def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> Non
         "VibeCADAgentControl",
         SimpleNamespace(
             ensure_server_started=lambda **kwargs: started.append(kwargs),
+            ensure_fail_closed_server_started=lambda **kwargs: fail_closed_started.append(
+                kwargs
+            ),
             shutdown_server=lambda **_kwargs: None,
         ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -1513,10 +1523,28 @@ def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> Non
         loader_locals,
     )
 
+    monkeypatch.delenv("VIBECAD_DEV_MODE", raising=False)
     loader_locals["_setup_agent_control"]()
 
     assert started == [{"document_thread_dispatch": dispatch}]
+    assert fail_closed_started == []
     assert not any("failed to start" in warning for warning in warnings)
+
+    monkeypatch.setenv("VIBECAD_DEV_MODE", "true")
+    loader_locals["_setup_agent_control"]()
+    assert started == [
+        {"document_thread_dispatch": dispatch},
+        {"document_thread_dispatch": dispatch},
+    ]
+    assert fail_closed_started == []
+
+    monkeypatch.setenv("VIBECAD_DEV_MODE", "1")
+    loader_locals["_setup_agent_control"]()
+    assert started == [
+        {"document_thread_dispatch": dispatch},
+        {"document_thread_dispatch": dispatch},
+    ]
+    assert fail_closed_started == [{"document_thread_dispatch": dispatch}]
 
 
 def test_vibecad_bootstrap_migrates_removed_bim_preferences(monkeypatch) -> None:
