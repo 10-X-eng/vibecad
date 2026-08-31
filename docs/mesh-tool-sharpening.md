@@ -34,6 +34,7 @@ total. Document state can remove an inapplicable shared tool before a turn.
 | Compare | `inspect.compare` | Computes cached signed deviations in an isolated process and publishes frozen Inspection results without blocking the document thread. |
 | Point clouds | `mesh.points` | Imports, converts, structures, merges, or cuts point clouds while preserving supported attributes. |
 | Reconstruction | `mesh.rebuild`, `mesh.approximate` | Runs Poisson reconstruction, triangulation, and analytic or polynomial fitting as approximate outputs. |
+| Parametric reconstruction | `mesh.reconstruct_parametric` | Separate modeling task: ask the human to select printables `reverse/<body>.ir.json` (`schema_version: 1`), validate it off-thread, rebuild one retained millimetre B-rep, and optionally publish human-authorized STEP/STL files. Does **not** overload `mesh.to_shape`. |
 
 The shared tools are `native.job`, `state.read`, `view.control`, `inspect.query`,
 `inspect.compare`, `document.save`, `document.undo`, and `workspace.switch`. Provider schemas for a
@@ -98,6 +99,7 @@ must not be described as structured 3MF import.
 - Repair can change triangles. When exact geometry must be preserved, an invalid
   solid conversion is refused.
 - A faceted solid is editable CAD topology but is not a recovered feature tree.
+- Parametric reconstruction from scan/mesh sketches is `mesh.reconstruct_parametric`. It consumes printables reverse IR and must not be implemented by calling `mesh.to_shape`.
 - Reconstruction and surface fitting are approximations and report their retained
   parameters; they do not claim exact reverse engineering.
 - Netgen-dependent paths exist only in builds that include Netgen.
