@@ -10,7 +10,7 @@ VibeCAD is an AI-native parametric CAD platform for designing real 3D parts thro
 
 ## Before You Start
 
-You need a **ChatGPT subscription**, a **Grok / X (xAI) login**, or an **API key** for the provider you select. VibeCAD runs ChatGPT-subscription, Grok OAuth, and OpenAI-API-key requests through its bundled Codex runtime, connects directly to Anthropic, and can still route Codex through OpenAI-compatible endpoints such as an xAI API key, Ollama, and other local model servers.
+You need a **ChatGPT subscription**, a **Grok / X (xAI) login**, or an **API key** for the provider you select. VibeCAD runs ChatGPT-subscription, Grok OAuth, and OpenAI-API-key requests through its bundled Codex runtime, connects directly to Anthropic and Google Gemini, and can still route Codex through OpenAI-compatible endpoints such as an xAI API key, Ollama, and other local model servers.
 
 Store the key in one of these places:
 
@@ -64,7 +64,7 @@ SHA256 files are published beside release artifacts so downloads can be verified
 Open **Preferences**, then select **VibeCAD > VibeCAD**.
 
 1. Enable **Use online provider**.
-2. Select **ChatGPT subscription**, **Grok (X / xAI)**, **OpenAI API key (Codex)**, or **Anthropic** under **Provider**.
+2. Select **ChatGPT subscription**, **Grok (X / xAI)**, **OpenAI API key (Codex)**, **Anthropic**, or **Google Gemini** under **Provider**.
 3. For ChatGPT or Grok, use the account sign-in controls described below. For an API provider, configure its key and leave the base URL blank unless you use a compatible or local endpoint.
 4. Configure the selected provider's authentication.
 5. Click **Fetch models**, then select a returned model.
@@ -93,7 +93,17 @@ Grok OAuth tokens are stored only under the private VibeCAD Grok credential dire
 
 If OAuth login succeeds but model calls return HTTP 403, xAI may be gating the OAuth API surface by subscription tier. Use the API-key fallback below in that case.
 
-ChatGPT subscription, Grok OAuth, OpenAI-compatible, Anthropic, and offline/debug turns all
+### Configure Google Gemini
+
+1. Obtain a Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey).
+2. Select **Google Gemini** as the provider.
+3. Paste the key into **API key**, click **Save Key**, and then click **Validate**.
+4. Click **Fetch models** and select a compatible Gemini model, or keep the default `gemini-flash-latest` alias.
+5. Choose a reasoning effort supported by the model, then click **Apply** or **OK**.
+
+Gemini requests use Google's OpenAI-compatible Chat Completions endpoint at `https://generativelanguage.googleapis.com/v1beta/openai/`. This endpoint is fixed for the Gemini provider; VibeCAD does not reuse the OpenAI base-URL override. Gemini supports VibeCAD tool calls, reference images, Design Review, and Intent Memory. Web research is hidden while Gemini is selected because Google Search grounding is not enabled by this integration.
+
+ChatGPT subscription, Grok OAuth, OpenAI-compatible, Anthropic, Gemini, and offline/debug turns all
 use the same frozen authoring-surface resolver. The human chooses either
 **VibeScript** or **Native** in the Assistant header. VibeScript exposes the
 active workbench's exact source-backed API. Native exposes only the complete
@@ -102,7 +112,7 @@ never select or switch a workbench, ribbon, or authoring mode for itself.
 
 ### Save a Key in the OS Keyring
 
-1. Select the provider first. Keys are stored separately for OpenAI and Anthropic.
+1. Select the provider first. Keys are stored separately for OpenAI, Anthropic, and Gemini.
 2. Paste the provider key into **API key**.
 3. Click **Save Key**. The field clears after VibeCAD hands the key to the operating system's credential store.
 4. Click **Validate**. A successful check reports `verified` in **Auth status**.
@@ -120,6 +130,9 @@ OPENAI_API_KEY=your-key-here
 
 # Anthropic
 ANTHROPIC_API_KEY=your-key-here
+
+# Google Gemini
+GEMINI_API_KEY=your-key-here
 ```
 
 In VibeCAD Preferences:

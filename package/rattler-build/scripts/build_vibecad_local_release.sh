@@ -50,7 +50,7 @@ fi
 
 "${freecadcmd_executable}" --safe-mode --version
 "${freecadcmd_executable}" --safe-mode -c \
-    "import importlib.util, anthropic, jsonschema, keyring, mcp, mcp_types, numpy, casadi, neuralfoil, aerosandbox, jsbsim; assert int(numpy.__version__.split('.', 1)[0]) < 2; assert importlib.util.find_spec('openai') is None; assert importlib.util.find_spec('agents') is None; print('VibeCAD Python and Aero dependencies import ok')"
+    "import importlib.util, anthropic, jsonschema, keyring, mcp, mcp_types, openai, numpy, casadi, neuralfoil, aerosandbox, jsbsim; assert int(numpy.__version__.split('.', 1)[0]) < 2; assert importlib.util.find_spec('agents') is None; print('VibeCAD Python and Aero dependencies import ok')"
 "${freecadcmd_executable}" --safe-mode -c \
     "import FreeCAD as App, AeroResults; from VibeCADAeroContext import document_aero_summary; doc=App.newDocument('VibeCADAeroReportSmoke'); AeroResults.write_report(doc, {'CL': 0.81, 'CD': 0.037, 'CM': -0.021, 'CLalpha': 5.1, 'Cmalpha': -0.4, 'PitchUnstable': False, 'source': 'smoke', 'corrections': ['Pitch stable.']}); assistant=doc.getObject('AeroAssistantJson'); assert assistant is not None; assert getattr(doc, 'AeroAssistantJson') is assistant; summary=document_aero_summary(doc); assert summary['assistant_json']['CL'] == 0.81; App.closeDocument(doc.Name); print('VibeCAD Aero report document smoke ok')"
 "${freecadcmd_executable}" --safe-mode -c \
