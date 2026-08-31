@@ -1328,6 +1328,7 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     assert preferences.disabled == "TestWorkbench,NoneWorkbench"
     assert startup_events == [
         "commands",
+        "scheduled:_setup_development_identity",
         "scheduled:_setup_always_on_grid",
         "scheduled:_setup_agent_control",
         "scheduled:_setup_aero_ribbon",

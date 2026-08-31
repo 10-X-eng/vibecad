@@ -313,6 +313,7 @@ def test_windows_dev_launcher_writes_collision_safe_build_and_launch_attestation
     for name in (
         "InitGui.py",
         "VibeCADAgentControl.py",
+        "VibeCADAgentCli.py",
         "VibeCADGui.py",
         "Invoke-VibeCAD-VisibleTour.ps1",
         "Launch-VibeCAD-Dev.ps1",
@@ -371,6 +372,8 @@ def test_windows_dev_launcher_waits_for_authenticated_agent_control_readiness():
     assert '"Authorization" = "Bearer $Token"' in script
     assert 'Invoke-RestMethod -Uri "$($Endpoint.base_url)/v1/status"' in script
     assert '$Status.channel -eq "vibecad-agent-control"' in script
+    assert "$Endpoint.fail_closed" in script
+    assert "$Status.fail_closed" in script
     assert "$Status.gui_up" in script
     assert "Agent control ready:" in script
     assert "Wait-VibeCADAgentControl `" in script
@@ -386,6 +389,13 @@ def test_windows_dev_launcher_prepares_the_embedded_python_runtime():
     assert "PySide6" in script
     assert "jsonschema" in script
     assert "mcp_types" in script
+    assert '"openai",' in script
+    assert 'importlib.util.find_spec("agents")' in script
+    assert "VIBECAD_RUNTIME_REQUIREMENTS" in script
+    assert "Requirement(requirement_text)" in script
+    assert "installed_version not in requirement.specifier" in script
+    assert "pip uninstall --yes openai openai-agents" not in script
+    assert "pip uninstall --yes openai-agents" in script
     assert 'python.exe' in script
     assert '$env:PYTHONNOUSERSITE = "1"' in script
     assert '$env:FC_PYTHONHOME = $ResolvedEnvRoot' in script

@@ -114,7 +114,7 @@ function Resolve-VibeCADInstalledModuleRoot {
     )
     foreach ($Candidate in $Candidates) {
         $Complete = $true
-        foreach ($Name in @("InitGui.py", "VibeCADAgentControl.py", "VibeCADGui.py")) {
+        foreach ($Name in @("InitGui.py", "VibeCADAgentControl.py", "VibeCADAgentCli.py", "VibeCADGui.py")) {
             if (-not (Test-Path -LiteralPath (Join-Path $Candidate $Name) -PathType Leaf)) {
                 $Complete = $false
                 break
@@ -138,6 +138,7 @@ function Get-VibeCADModuleIdentities {
     $Specs = @(
         [ordered]@{ name = "InitGui.py"; source = "src\Mod\VibeCAD\InitGui.py"; installed = "InitGui.py" },
         [ordered]@{ name = "VibeCADAgentControl.py"; source = "src\Mod\VibeCAD\VibeCADAgentControl.py"; installed = "VibeCADAgentControl.py" },
+        [ordered]@{ name = "VibeCADAgentCli.py"; source = "src\Mod\VibeCAD\VibeCADAgentCli.py"; installed = "VibeCADAgentCli.py" },
         [ordered]@{ name = "VibeCADGui.py"; source = "src\Mod\VibeCAD\VibeCADGui.py"; installed = "VibeCADGui.py" },
         [ordered]@{ name = "Invoke-VibeCAD-VisibleTour.ps1"; source = "Invoke-VibeCAD-VisibleTour.ps1"; installed = $null },
         [ordered]@{ name = "Launch-VibeCAD-Dev.ps1"; source = "Launch-VibeCAD-Dev.ps1"; installed = $null }
@@ -787,7 +788,13 @@ function Resolve-VibeCADPixi {
 function Get-VibeCADPythonRuntimeProbe {
     return @'
 import importlib
+import importlib.util
+import importlib.metadata
+import json
+import os
 import sys
+
+from packaging.requirements import Requirement
 
 for module_name in (
     "PySide6",
@@ -796,6 +803,7 @@ for module_name in (
     "jsonschema",
     "mcp",
     "mcp_types",
+    "openai",
     "tuf",
     "numpy",
     "casadi",
@@ -804,6 +812,26 @@ for module_name in (
     "jsbsim",
 ):
     importlib.import_module(module_name)
+
+if importlib.util.find_spec("agents") is not None:
+    raise RuntimeError("The retired OpenAI Agents SDK is present in this runtime.")
+
+requirement_paths = json.loads(os.environ["VIBECAD_RUNTIME_REQUIREMENTS"])
+for requirement_path in requirement_paths:
+    with open(requirement_path, encoding="utf-8") as requirement_file:
+        for raw_line in requirement_file:
+            requirement_text = raw_line.split("#", 1)[0].strip()
+            if not requirement_text:
+                continue
+            requirement = Requirement(requirement_text)
+            if requirement.marker is not None and not requirement.marker.evaluate():
+                continue
+            installed_version = importlib.metadata.version(requirement.name)
+            if requirement.specifier and installed_version not in requirement.specifier:
+                raise RuntimeError(
+                    f"{requirement.name} {installed_version} does not satisfy "
+                    f"{requirement.specifier}."
+                )
 
 numpy = importlib.import_module("numpy")
 if int(numpy.__version__.split(".", 1)[0]) >= 2:
@@ -870,9 +898,9 @@ function Install-VibeCADPythonRuntime {
     }
 
     Write-Host "Installing the checkout's pinned VibeCAD Python and Aero runtime..."
-    & $PythonExecutable -m pip uninstall --yes openai openai-agents
+    & $PythonExecutable -m pip uninstall --yes openai-agents
     if ($LASTEXITCODE -ne 0) {
-        throw "Could not remove retired direct OpenAI SDK packages from the repo-local environment."
+        throw "Could not remove the retired OpenAI Agents SDK from the repo-local environment."
     }
 
     & $PythonExecutable -m pip install `
@@ -926,6 +954,9 @@ function Wait-VibeCADAgentControl {
                     if ($BaseUrl.Scheme -ne "http" -or $BaseUrl.Host -ne "127.0.0.1") {
                         throw "The agent endpoint is not a 127.0.0.1 HTTP endpoint."
                     }
+                    if ($Endpoint.fail_closed -isnot [bool] -or -not [bool]$Endpoint.fail_closed) {
+                        throw "The development endpoint is not running in fail-closed mode."
+                    }
                     if ($Endpoint.process_id -ne $GuiProcess.Id) {
                         throw "The agent endpoint belongs to PID $($Endpoint.process_id), not launched GUI PID $($GuiProcess.Id)."
                     }
@@ -961,6 +992,9 @@ if ([string]::IsNullOrWhiteSpace([string]$Endpoint.server_instance_id)) {
                         -TimeoutSec 5
                     if ($Status.process_id -ne $GuiProcess.Id) {
                         throw "The authenticated status belongs to PID $($Status.process_id), not launched GUI PID $($GuiProcess.Id)."
+                    }
+                    if ($Status.fail_closed -isnot [bool] -or -not [bool]$Status.fail_closed) {
+                        throw "The authenticated development status is not fail-closed."
                     }
                     if ($Endpoint.server_instance_id -ne $Status.server_instance_id) {
                         throw "The endpoint and authenticated status report different server instances."
@@ -1204,6 +1238,18 @@ VibeCAD was not started. The launcher will not substitute an external Qt runtime
 $Executable = $LaunchRuntime.ExecutablePath
 
 $PythonExecutable = Join-Path $EnvRoot "python.exe"
+$RuntimeRequirementFiles = @(
+    (Join-Path $RepoRoot "src\Mod\VibeCAD\requirements.txt"),
+    (Join-Path $RepoRoot "src\Mod\VibeCADAero\requirements-aero.txt")
+)
+foreach ($RequirementFile in $RuntimeRequirementFiles) {
+    if (-not (Test-Path -LiteralPath $RequirementFile -PathType Leaf)) {
+        throw "Required VibeCAD runtime manifest was not found: $RequirementFile"
+    }
+}
+$env:VIBECAD_RUNTIME_REQUIREMENTS = ConvertTo-Json `
+    -InputObject $RuntimeRequirementFiles `
+    -Compress
 $null = New-Item -ItemType Directory -Path $PythonUserBase -Force
 $env:PYTHONNOUSERSITE = "1"
 $env:PYTHONUSERBASE = $PythonUserBase

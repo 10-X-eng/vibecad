@@ -52,7 +52,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1"})
 
 
 class EndpointSafetyError(RuntimeError):
-    """The endpoint file did not describe an authenticated loopback channel."""
+    """The endpoint file did not describe an authenticated control channel."""
 
 
 def _control_module():
@@ -247,50 +247,58 @@ def _control_command(command: str) -> str:
     }.get(command, command)
 
 
-def _endpoint_context() -> tuple[str, str, str]:
+def _endpoint_context() -> tuple[str, str, str, bool]:
     control = _control_module()
     endpoint = control.load_endpoint() or {}
+    fail_closed = endpoint.get("fail_closed") is True
     try:
         host = str(endpoint.get("host") or control.AGENT_HOST)
         port = int(endpoint.get("port") or control.configured_port())
         base_url = str(endpoint.get("base_url") or f"http://{host}:{port}")
-        parsed = urlsplit(base_url)
-        parsed_port = parsed.port
     except (TypeError, ValueError, OverflowError) as exc:
         raise EndpointSafetyError(
-            "The VibeCAD agent endpoint is not a valid loopback HTTP URL."
+            "The VibeCAD agent endpoint does not contain a valid host and port."
         ) from exc
-    endpoint_host = host.strip().lower()
-    url_host = str(parsed.hostname or "").strip().lower()
-    if (
-        parsed.scheme.lower() != "http"
-        or url_host not in _LOOPBACK_HOSTS
-        or endpoint_host not in _LOOPBACK_HOSTS
-        or url_host != endpoint_host
-        or parsed_port is None
-        or parsed_port != port
-        or not 1 <= port <= 65535
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise EndpointSafetyError(
-            "The VibeCAD agent endpoint must be an exact loopback HTTP origin."
-        )
+    if fail_closed:
+        try:
+            parsed = urlsplit(base_url)
+            parsed_port = parsed.port
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise EndpointSafetyError(
+                "The fail-closed VibeCAD endpoint is not a valid loopback HTTP URL."
+            ) from exc
+        endpoint_host = host.strip().lower()
+        url_host = str(parsed.hostname or "").strip().lower()
+        if (
+            parsed.scheme.lower() != "http"
+            or url_host not in _LOOPBACK_HOSTS
+            or endpoint_host not in _LOOPBACK_HOSTS
+            or url_host != endpoint_host
+            or parsed_port is None
+            or parsed_port != port
+            or not 1 <= port <= 65535
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise EndpointSafetyError(
+                "The fail-closed VibeCAD endpoint must be the exact "
+                "http://127.0.0.1:<port> origin."
+            )
 
-    # Read the bearer token only after the endpoint has been proven local. This
-    # keeps a forged endpoint file from turning the CLI into a credential relay.
+    # Fail-closed development endpoints are proven local before this read.
+    # Compatibility endpoints retain their original owner-configured authority.
     token = control.load_token() or control.load_or_create_token()
     server_instance_id = str(endpoint.get("server_instance_id") or "")
-    return base_url.rstrip("/"), token, server_instance_id
+    return base_url.rstrip("/"), token, server_instance_id, fail_closed
 
 
 def _endpoint_and_token() -> tuple[str, str]:
     """Preserve the original public helper shape for existing callers."""
 
-    base_url, token, _server_instance_id = _endpoint_context()
+    base_url, token, _server_instance_id, _fail_closed = _endpoint_context()
     return base_url, token
 
 
@@ -432,7 +440,7 @@ def call_http(
     """Return a payload if the GUI answered, or None if nothing is listening."""
 
     try:
-        base_url, token, server_instance_id = _endpoint_context()
+        base_url, token, server_instance_id, fail_closed = _endpoint_context()
     except EndpointSafetyError as exc:
         return {
             "ok": False,
@@ -449,8 +457,9 @@ def call_http(
     data = None
     operation_id = ""
     if method == "POST":
-        operation_id = str(uuid.uuid4())
-        arguments = {**arguments, "operation_id": operation_id}
+        if fail_closed:
+            operation_id = str(uuid.uuid4())
+            arguments = {**arguments, "operation_id": operation_id}
         headers["Content-Type"] = "application/json"
         data = json.dumps(arguments).encode("utf-8")
     http_request = request.Request(url, data=data, headers=headers, method=method)
@@ -486,7 +495,11 @@ def call_http(
         UnicodeDecodeError,
         json.JSONDecodeError,
     ) as exc:
-        if method != "POST" or _is_proven_connection_refusal(exc):
+        if (
+            method != "POST"
+            or not fail_closed
+            or _is_proven_connection_refusal(exc)
+        ):
             return None
         return _poll_operation_completion(
             base_url=base_url,
@@ -497,7 +510,7 @@ def call_http(
         )
     if isinstance(payload, dict):
         return payload
-    if method != "POST":
+    if method != "POST" or not fail_closed:
         return None
     return _poll_operation_completion(
         base_url=base_url,

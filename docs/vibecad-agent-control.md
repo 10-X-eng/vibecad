@@ -77,8 +77,9 @@ the top level of `/v1/status`:
 | `process_id` | Actual VibeCAD process ID |
 | `server_started_at_utc` | UTC server-start timestamp |
 | `runtime_identity` | Strict attested identity below, or `null` for compatible normal/skip-rebuild startup |
+| `fail_closed` | `true` only for the opt-in loopback development server; `false` for the compatibility starter |
 
-The endpoint and authenticated status must match on all four fields. A caller
+The endpoint and authenticated status must match on all five fields. A caller
 that launched VibeCAD itself must additionally compare `process_id` with the
 process it started; freshness by endpoint-file timestamp or window title alone
 is insufficient.
@@ -156,8 +157,8 @@ lowercase SHA-256):
 ```
 
 The required module set is `InitGui.py`, `VibeCADAgentControl.py`,
-`VibeCADGui.py`, `Invoke-VibeCAD-VisibleTour.ps1`, and
-`Launch-VibeCAD-Dev.ps1`. The first three must have installed copies identical
+`VibeCADAgentCli.py`, `VibeCADGui.py`, `Invoke-VibeCAD-VisibleTour.ps1`, and
+`Launch-VibeCAD-Dev.ps1`. The first four must have installed copies identical
 to their checkout sources; the last two are source-only identities. The build
 receipt uses `vibecad.dev-build-attestation.v1` and the launch receipt uses
 `vibecad.dev-launch-attestation.v1`. Missing, altered, cross-checkout, partial,
@@ -373,14 +374,17 @@ document operation owns that gate they return `DOCUMENT_OPERATION_BUSY`
 immediately, and a normal authenticated status is rechecked after tracked
 completion.
 
-The bundled CLI adds a fresh operation UUID to every POST automatically. If
-the POST response times out, resets, is truncated, or is not valid JSON, the
-CLI polls that exact operation on the same authenticated server instance and
-never falls back to a second local mutation. Only a proven connection refusal
-before a listener accepts the request preserves the original local fallback.
-If completion cannot be proven, the CLI returns
+When `endpoint.json` advertises `fail_closed: true`, the bundled CLI adds a
+fresh operation UUID to every POST automatically. If the POST response times
+out, resets, is truncated, or is not valid JSON, the CLI polls that exact
+operation on the same authenticated server instance and never falls back to a
+second local mutation. Only a proven connection refusal before a listener
+accepts the request preserves the original local fallback. If completion
+cannot be proven, the CLI returns
 `REMOTE_OUTCOME_UNRESOLVED` with the operation ID instead of guessing or
-redispatching.
+redispatching. Compatibility endpoints retain their pre-existing POST payloads,
+explicit-host support, and local-fallback behavior; they can opt into operation
+tracking explicitly by supplying an `operation_id` through the HTTP API.
 
 ### Semantic UI activation and the independent cursor
 

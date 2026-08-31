@@ -124,7 +124,7 @@ uses `vibecad.dev-launch-attestation.v1`. Together they bind:
   attested plugin path, including the loaded plugin path/hash, probe Python
   path/hash, and UTC check time;
 - source and installed paths and SHA-256 values for `InitGui.py`,
-  `VibeCADAgentControl.py`, and `VibeCADGui.py` (the installed copies must be
+  `VibeCADAgentControl.py`, `VibeCADAgentCli.py`, and `VibeCADGui.py` (the installed copies must be
   byte-for-byte equal to the checkout sources);
 - source paths and SHA-256 values for `Launch-VibeCAD-Dev.ps1` and
   `Invoke-VibeCAD-VisibleTour.ps1`; and

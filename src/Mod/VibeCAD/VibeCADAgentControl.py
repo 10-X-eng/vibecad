@@ -77,6 +77,7 @@ DEVELOPMENT_IDENTITY_ENV_VARS = (
 _ATTESTED_RUNTIME_MODULES = (
     "InitGui.py",
     "VibeCADAgentControl.py",
+    "VibeCADAgentCli.py",
     "VibeCADGui.py",
 )
 _ATTESTED_SOURCE_ONLY_MODULES = (
@@ -308,6 +309,9 @@ def _actual_runtime_module_paths() -> dict[str, Path]:
         "VibeCADAgentControl.py": _canonical_path(
             Path(__file__), kind="VibeCADAgentControl.py"
         ),
+        "VibeCADAgentCli.py": _canonical_path(
+            module_root / "VibeCADAgentCli.py", kind="VibeCADAgentCli.py"
+        ),
         "VibeCADGui.py": _canonical_path(gui_path, kind="VibeCADGui.py"),
     }
 
@@ -317,6 +321,7 @@ def _expected_source_paths(repository_root: Path) -> dict[str, Path]:
     return {
         "InitGui.py": module_root / "InitGui.py",
         "VibeCADAgentControl.py": module_root / "VibeCADAgentControl.py",
+        "VibeCADAgentCli.py": module_root / "VibeCADAgentCli.py",
         "VibeCADGui.py": module_root / "VibeCADGui.py",
         "Invoke-VibeCAD-VisibleTour.ps1": (
             repository_root / "Invoke-VibeCAD-VisibleTour.ps1"
@@ -1270,6 +1275,7 @@ def _server_identity_fields() -> dict[str, Any]:
         "process_id": os.getpid(),
         "server_started_at_utc": _server_started_at_utc or _process_started_at_utc,
         "runtime_identity": _active_runtime_identity,
+        "fail_closed": bool(getattr(_server, "vibecad_fail_closed", False)),
     }
 
 
@@ -3536,6 +3542,7 @@ def _ensure_server_started(
             "process_id": os.getpid(),
             "server_started_at_utc": listener_started_at_utc,
             "runtime_identity": _operation_json_copy(runtime_identity),
+            "fail_closed": bool(fail_closed),
         }
         load_or_create_token()
         requested = DEFAULT_AGENT_PORT if port is None else int(port)

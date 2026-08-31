@@ -268,6 +268,11 @@ def _development_attestations(tmp_path, monkeypatch):
             installed_root / "VibeCADAgentControl.py",
         ),
         (
+            "VibeCADAgentCli.py",
+            source_root / "VibeCADAgentCli.py",
+            installed_root / "VibeCADAgentCli.py",
+        ),
+        (
             "VibeCADGui.py",
             source_root / "VibeCADGui.py",
             installed_root / "VibeCADGui.py",
@@ -426,6 +431,7 @@ def test_development_runtime_identity_binds_actual_files(tmp_path, monkeypatch) 
     assert {module["name"] for module in identity["modules"]} == {
         "InitGui.py",
         "VibeCADAgentControl.py",
+        "VibeCADAgentCli.py",
         "VibeCADGui.py",
         "Invoke-VibeCAD-VisibleTour.ps1",
         "Launch-VibeCAD-Dev.ps1",
@@ -564,6 +570,7 @@ def test_endpoint_and_status_publish_matching_process_runtime_identity(
     assert endpoint["process_id"] == status["process_id"] == control.os.getpid()
     assert endpoint["server_started_at_utc"] == status["server_started_at_utc"] == started_at
     assert endpoint["runtime_identity"] == status["runtime_identity"] == identity
+    assert endpoint["fail_closed"] is status["fail_closed"] is False
     assert endpoint["token_path"] == str(control.token_path().resolve())
 
 
@@ -2388,6 +2395,7 @@ def test_http_routes_and_bearer_auth(tmp_path, monkeypatch) -> None:
             assert payload["ok"] is True
             assert payload["provider"] == "chatgpt"
             assert payload["assistant_available"] is True
+            assert payload["fail_closed"] is True
 
             operation_id = "20158312-5c69-4822-a720-d87630f97d0a"
             monkeypatch.setattr(
@@ -2497,7 +2505,7 @@ def test_cli_recovers_timed_out_mutation_by_operation_id_without_redispatch(
     monkeypatch.setattr(
         cli,
         "_endpoint_context",
-        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a"),
+        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a", True),
     )
     monkeypatch.setattr(cli.uuid, "uuid4", lambda: cli.uuid.UUID(operation_id))
     monkeypatch.setattr(cli.request, "urlopen", fake_urlopen)
@@ -2550,7 +2558,7 @@ def test_cli_never_redispatches_ambiguous_mutation_without_completion_proof(
     monkeypatch.setattr(
         cli,
         "_endpoint_context",
-        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a"),
+        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a", True),
     )
     monkeypatch.setattr(cli.uuid, "uuid4", lambda: cli.uuid.UUID(operation_id))
     monkeypatch.setattr(cli.request, "urlopen", fake_urlopen)
@@ -2575,7 +2583,7 @@ def test_cli_keeps_local_fallback_for_proven_connection_refusal(monkeypatch) -> 
     monkeypatch.setattr(
         cli,
         "_endpoint_context",
-        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a"),
+        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a", True),
     )
     monkeypatch.setattr(
         cli.request,
@@ -2610,6 +2618,7 @@ def test_cli_refuses_non_loopback_endpoint_before_attaching_token(monkeypatch) -
                 "host": "attacker.example",
                 "port": 443,
                 "base_url": "https://attacker.example",
+                "fail_closed": True,
                 "server_instance_id": "forged-server",
             },
             configured_port=lambda: 8766,
@@ -2631,6 +2640,111 @@ def test_cli_refuses_non_loopback_endpoint_before_attaching_token(monkeypatch) -
     assert opened == []
 
 
+def test_cli_preserves_explicit_host_compatibility_endpoint(monkeypatch) -> None:
+    opened: list[request.Request] = []
+    monkeypatch.setattr(
+        cli,
+        "_control_module",
+        lambda: SimpleNamespace(
+            AGENT_HOST="127.0.0.1",
+            load_endpoint=lambda: {
+                "host": "192.0.2.10",
+                "port": 8766,
+                "base_url": "http://192.0.2.10:8766",
+                "fail_closed": False,
+                "server_instance_id": "compatibility-server",
+            },
+            configured_port=lambda: 8766,
+            load_token=lambda: "secret-token",
+            load_or_create_token=lambda: "secret-token",
+        ),
+    )
+
+    def fake_urlopen(http_request, **_kwargs):
+        opened.append(http_request)
+        return SimpleNamespace(
+            read=lambda: b'{"ok":true}',
+            close=lambda: None,
+        )
+
+    monkeypatch.setattr(cli.request, "urlopen", fake_urlopen)
+
+    assert cli.call_http("status", {}) == {"ok": True}
+    assert len(opened) == 1
+    assert opened[0].full_url == "http://192.0.2.10:8766/v1/status"
+    assert opened[0].get_header("Authorization") == "Bearer secret-token"
+
+
+def test_cli_preserves_legacy_compatibility_base_url(monkeypatch) -> None:
+    opened: list[request.Request] = []
+    monkeypatch.setattr(
+        cli,
+        "_control_module",
+        lambda: SimpleNamespace(
+            AGENT_HOST="127.0.0.1",
+            load_endpoint=lambda: {
+                "host": "gateway.example",
+                "port": 443,
+                "base_url": "https://gateway.example/vibecad-control",
+                "fail_closed": False,
+            },
+            configured_port=lambda: 8766,
+            load_token=lambda: "secret-token",
+            load_or_create_token=lambda: "secret-token",
+        ),
+    )
+    monkeypatch.setattr(
+        cli.request,
+        "urlopen",
+        lambda http_request, **_kwargs: opened.append(http_request)
+        or SimpleNamespace(read=lambda: b'{"ok":true}', close=lambda: None),
+    )
+
+    assert cli.call_http("status", {}) == {"ok": True}
+    assert opened[0].full_url == (
+        "https://gateway.example/vibecad-control/v1/status"
+    )
+
+
+def test_cli_compatibility_timeout_preserves_local_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_endpoint_context",
+        lambda: ("http://192.0.2.10:8766", "secret-token", "", False),
+    )
+    monkeypatch.setattr(
+        cli.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TimeoutError("compatibility endpoint timed out")
+        ),
+    )
+
+    assert cli.call_http("save", {"document": "Part"}) is None
+
+
+def test_cli_compatibility_post_preserves_original_payload(monkeypatch) -> None:
+    opened: list[request.Request] = []
+    monkeypatch.setattr(
+        cli,
+        "_endpoint_context",
+        lambda: ("http://192.0.2.10:8766", "secret-token", "", False),
+    )
+
+    def fake_urlopen(http_request, **_kwargs):
+        opened.append(http_request)
+        return SimpleNamespace(read=lambda: b'{"ok":true}', close=lambda: None)
+
+    monkeypatch.setattr(cli.request, "urlopen", fake_urlopen)
+
+    arguments = {"document": "Part", "path": "C:/models/part.FCStd"}
+    assert cli.call_http("save-as", arguments) == {"ok": True}
+    assert len(opened) == 1
+    assert opened[0].get_header("Content-type") == "application/json"
+    assert json.loads(opened[0].data.decode("utf-8")) == arguments
+    assert "operation_id" not in json.loads(opened[0].data.decode("utf-8"))
+
+
 @pytest.mark.parametrize(
     "endpoint",
     (
@@ -2638,26 +2752,31 @@ def test_cli_refuses_non_loopback_endpoint_before_attaching_token(monkeypatch) -
             "host": "127.0.0.1",
             "port": "not-a-port",
             "base_url": "http://127.0.0.1:8766",
+            "fail_closed": True,
         },
         {
             "host": "127.0.0.1",
             "port": 8766,
             "base_url": "http://127.0.0.1:8766/credential-relay",
+            "fail_closed": True,
         },
         {
             "host": "localhost",
             "port": 8766,
             "base_url": "http://127.0.0.1:8766",
+            "fail_closed": True,
         },
         {
             "host": "localhost",
             "port": 8766,
             "base_url": "http://localhost:8766",
+            "fail_closed": True,
         },
         {
             "host": "127.0.0.1",
             "port": 8766,
             "base_url": "http://user@127.0.0.1:8766",
+            "fail_closed": True,
         },
     ),
 )
@@ -2716,7 +2835,7 @@ def test_cli_refuses_completed_operation_from_another_server_instance(
     monkeypatch.setattr(
         cli,
         "_endpoint_context",
-        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a"),
+        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a", True),
     )
     monkeypatch.setattr(cli.uuid, "uuid4", lambda: cli.uuid.UUID(operation_id))
     monkeypatch.setattr(cli.request, "urlopen", fake_urlopen)
