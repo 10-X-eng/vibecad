@@ -93,14 +93,21 @@ def test_result_reader_preserves_child_failure_code_without_exposing_diagnostics
     }
 
 
-def test_result_reader_rejects_symlinks_and_over_limit_metadata(tmp_path: Path) -> None:
+def test_result_reader_rejects_symlinks(tmp_path: Path) -> None:
     target = tmp_path / "target.json"
     target.write_text('{"ok":true}', encoding="utf-8")
     link = tmp_path / "result.json"
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     with pytest.raises(NativeManufactureError, match="unreadable result metadata"):
         Worker._read_result(link)
 
+
+def test_result_reader_rejects_over_limit_metadata(tmp_path: Path) -> None:
     oversized = tmp_path / "oversized.json"
     oversized.write_bytes(b"{" + b" " * (Worker.MAX_POST_RESULT_BYTES + 1) + b"}")
     with pytest.raises(NativeManufactureError) as raised:

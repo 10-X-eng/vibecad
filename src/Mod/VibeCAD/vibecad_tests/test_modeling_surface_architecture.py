@@ -444,6 +444,7 @@ def test_geometry_worker_release_smoke_executes_real_brep_validation(
         "worker_executable",
         lambda: Path("/runtime/bin/VibeCADGeometryWorker"),
     )
+    expected_worker = str(Path("/runtime/bin/VibeCADGeometryWorker"))
 
     def validate(candidate, **kwargs):
         assert candidate is shape
@@ -453,7 +454,7 @@ def test_geometry_worker_release_smoke_executes_real_brep_validation(
     monkeypatch.setattr(geometry_worker, "validate_shape", validate)
 
     assert geometry_worker.runtime_execution_smoke() == {
-        "worker": "/runtime/bin/VibeCADGeometryWorker",
+        "worker": expected_worker,
         "valid": True,
         "elapsed_seconds": 0.125,
     }

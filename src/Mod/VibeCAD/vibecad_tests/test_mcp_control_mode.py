@@ -101,6 +101,7 @@ def test_mcp_ipc_address_rejects_live_owner_and_removes_stale_socket(
             return None
 
     monkeypatch.setattr(mcp.socket, "socket", lambda *_args: _Probe())
+    monkeypatch.setattr(mcp.socket, "AF_UNIX", object(), raising=False)
 
     with pytest.raises(RuntimeError, match="another VibeCAD instance"):
         mcp._prepare_mcp_ipc_address(address, "AF_UNIX")
