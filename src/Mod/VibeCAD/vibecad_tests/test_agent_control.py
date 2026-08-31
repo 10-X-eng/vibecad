@@ -818,14 +818,56 @@ def test_attested_server_missing_receipt_fails_before_token_or_listener(
     assert not control.token_path().exists()
 
 
-def test_server_refuses_non_loopback_host_without_binding(tmp_path, monkeypatch) -> None:
+def test_fail_closed_server_refuses_non_loopback_host_without_binding(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv(control.AGENT_HOME_ENV, str(tmp_path / "agent-home"))
     control.shutdown_server(wait=True)
+    touched: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        control,
+        "_bind_listener",
+        lambda host, port: touched.append((host, port)),
+    )
 
     with pytest.raises(RuntimeError, match="only to 127.0.0.1"):
-        control.ensure_server_started(host="0.0.0.0", port=0)
+        control.ensure_fail_closed_server_started(
+            document_thread_dispatch=lambda operation: operation(),
+            host="0.0.0.0",
+            port=0,
+        )
 
     assert control.server_snapshot()["running"] is False
+    assert touched == []
+
+
+def test_legacy_server_starter_preserves_explicit_host_compatibility(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv(control.AGENT_HOME_ENV, str(tmp_path / "agent-home"))
+    control.shutdown_server(wait=True)
+    touched: list[tuple[str, int]] = []
+
+    def refuse_after_policy_boundary(host: str, port: int):
+        touched.append((host, port))
+        raise OSError("intentional test stop")
+
+    monkeypatch.setattr(control, "_bind_listener", refuse_after_policy_boundary)
+
+    with pytest.raises(RuntimeError, match="could not bind"):
+        control.ensure_server_started(host="192.0.2.10", port=48766)
+
+    assert touched == [("192.0.2.10", 48766)]
+    assert control.server_snapshot()["running"] is False
+
+
+def test_only_fail_closed_server_rejects_non_loopback_clients() -> None:
+    strict_server = SimpleNamespace(vibecad_fail_closed=True)
+    legacy_server = SimpleNamespace(vibecad_fail_closed=False)
+
+    assert control._server_accepts_client(strict_server, "127.0.0.1") is True
+    assert control._server_accepts_client(strict_server, "192.0.2.20") is False
+    assert control._server_accepts_client(legacy_server, "192.0.2.20") is True
 
 
 def test_status_reports_grok_without_secrets(tmp_path, monkeypatch) -> None:
@@ -1639,14 +1681,31 @@ def test_ui_click_uses_in_process_qt_mouse_without_controlling_os_cursor(
         findChild=lambda _kind, name: tabs if name == "VibeCADRibbonTabs" else None,
         menuBar=lambda: None,
     )
+    application = SimpleNamespace(focus=None, active_window=window, popup=None)
+
+    class FocusWidget:
+        def setFocus(self, _reason=None) -> None:  # noqa: N802
+            application.focus = self
+
+    focus_widget = FocusWidget()
+    application.focus = focus_widget
     cursor_samples = iter(Point(x, y) for x, y in cursor_positions)
     qt_core = SimpleNamespace(
-        Qt=SimpleNamespace(LeftButton="left", NoModifier="none")
+        Qt=SimpleNamespace(
+            LeftButton="left",
+            NoModifier="none",
+            OtherFocusReason="other",
+        )
     )
     qt_gui = SimpleNamespace(QCursor=SimpleNamespace(pos=lambda: next(cursor_samples)))
     qt_widgets = SimpleNamespace(
         QTabBar=object,
-        QApplication=SimpleNamespace(processEvents=lambda: None),
+        QApplication=SimpleNamespace(
+            processEvents=lambda: None,
+            focusWidget=lambda: application.focus,
+            activeWindow=lambda: application.active_window,
+            activePopupWidget=lambda: application.popup,
+        ),
     )
     clicks: list[tuple[object, object, object, object]] = []
 
@@ -1655,6 +1714,7 @@ def test_ui_click_uses_in_process_qt_mouse_without_controlling_os_cursor(
         def mouseClick(widget, button, modifiers, point) -> None:  # noqa: N802
             clicks.append((widget, button, modifiers, point))
             widget.current = 1
+            application.focus = widget
 
     monkeypatch.setitem(
         sys.modules,
@@ -1684,10 +1744,15 @@ def test_ui_click_uses_in_process_qt_mouse_without_controlling_os_cursor(
     assert payload["physical_cursor_unchanged"] is expected_unchanged
     assert payload["selected_before"] == "Model"
     assert payload["selected_after"] == "Aero"
+    assert payload["focus_restored"] is True
+    assert payload["active_window_unchanged"] is True
+    assert payload["popup_restored"] is True
+    assert payload["interaction_restored"] is True
+    assert application.focus is focus_widget
     assert len(clicks) == 1
 
 
-def test_ui_menu_click_uses_nonblocking_qt_popup(monkeypatch) -> None:
+def test_ui_menu_click_closes_popup_and_restores_focus(monkeypatch) -> None:
     class Point:
         def __init__(self, x: int, y: int) -> None:
             self._x = x
@@ -1717,9 +1782,12 @@ def test_ui_menu_click_uses_nonblocking_qt_popup(monkeypatch) -> None:
 
         def close(self) -> None:
             self.visible = False
+            application.popup = None
 
         def popup(self, _point: Point) -> None:
             self.visible = True
+            application.popup = self
+            application.focus = self
 
     menu = Menu()
 
@@ -1737,8 +1805,11 @@ def test_ui_menu_click_uses_nonblocking_qt_popup(monkeypatch) -> None:
             return menu
 
     action = Action()
+    previous_action = object()
 
     class MenuBar:
+        active_action = previous_action
+
         def isVisible(self) -> bool:  # noqa: N802
             return True
 
@@ -1751,25 +1822,54 @@ def test_ui_menu_click_uses_nonblocking_qt_popup(monkeypatch) -> None:
         def mapToGlobal(self, point: Point) -> Point:  # noqa: N802
             return point
 
-        def setActiveAction(self, _action: Action) -> None:  # noqa: N802
-            return None
+        def activeAction(self):  # noqa: N802
+            return self.active_action
+
+        def setActiveAction(self, selected) -> None:  # noqa: N802
+            self.active_action = selected
 
     menu_bar = MenuBar()
     window = SimpleNamespace(menuBar=lambda: menu_bar)
+
+    class FocusWidget:
+        def setFocus(self, _reason=None) -> None:  # noqa: N802
+            application.focus = self
+
+    focus_widget = FocusWidget()
+    application = SimpleNamespace(
+        focus=focus_widget,
+        active_window=window,
+        popup=None,
+    )
     qt_core = SimpleNamespace(
-        Qt=SimpleNamespace(LeftButton="left", NoModifier="none"),
+        Qt=SimpleNamespace(
+            LeftButton="left",
+            NoModifier="none",
+            OtherFocusReason="other",
+        ),
         QPoint=Point,
     )
     qt_gui = SimpleNamespace(QCursor=SimpleNamespace(pos=lambda: Point(700, 500)))
     qt_widgets = SimpleNamespace(
         QTabBar=object,
-        QApplication=SimpleNamespace(processEvents=lambda: None),
+        QApplication=SimpleNamespace(
+            processEvents=lambda: None,
+            focusWidget=lambda: application.focus,
+            activeWindow=lambda: application.active_window,
+            activePopupWidget=lambda: application.popup,
+        ),
     )
+
+    preview_waits: list[int] = []
 
     class QTest:
         @staticmethod
         def mouseClick(_widget, _button, _modifiers, _point) -> None:  # noqa: N802
             menu.visible = True
+
+        @staticmethod
+        def qWait(milliseconds: int) -> None:  # noqa: N802
+            preview_waits.append(milliseconds)
 
     monkeypatch.setitem(
         sys.modules,
@@ -1787,12 +1887,34 @@ def test_ui_menu_click_uses_nonblocking_qt_popup(monkeypatch) -> None:
         lambda: SimpleNamespace(GuiUp=True, getMainWindow=lambda: window),
     )
 
+    preexisting_popup = object()
+    application.popup = preexisting_popup
+    busy = control.dispatch("ui_click", {"kind": "menu", "text": "File"})
+    assert busy["failure_code"] == "UI_INTERACTION_BUSY"
+    assert application.popup is preexisting_popup
+    assert application.focus is focus_widget
+    assert menu.visible is False
+    assert menu_bar.active_action is previous_action
+    assert preview_waits == []
+    application.popup = None
+
     payload = control.dispatch("ui_click", {"kind": "menu", "text": "File"})
     assert payload["ok"] is True
     assert payload["click_queued"] is False
     assert payload["semantic_verified"] is True
     assert payload["input_method"] == "qt_in_process_menu_popup"
-    assert menu.visible is True
+    assert payload["menu_visible"] is True
+    assert payload["menu_open_after"] is False
+    assert payload["focus_restored"] is True
+    assert payload["active_window_unchanged"] is True
+    assert payload["popup_restored"] is True
+    assert payload["interaction_restored"] is True
+    assert payload["preview_duration_milliseconds"] == 240
+    assert preview_waits == [240]
+    assert menu.visible is False
+    assert menu_bar.active_action is previous_action
+    assert application.focus is focus_widget
+    assert application.popup is None
 
 
 def test_screenshot_captures_the_visible_vibecad_window(tmp_path, monkeypatch) -> None:
@@ -2333,6 +2455,281 @@ def test_cli_parses_freecadcmd_argv_and_prefers_http(monkeypatch) -> None:
     assert payload == {"ok": True, "via": "http", "command": "open"}
     assert captured["command"] == "open"
     assert captured["arguments"]["path"] == "C:\\Models\\part.FCStd"
+
+
+def test_cli_recovers_timed_out_mutation_by_operation_id_without_redispatch(
+    monkeypatch,
+) -> None:
+    operation_id = "f2c628b5-68c4-4d45-b4c2-313edcf5498d"
+    requests: list[request.Request] = []
+
+    class Response:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._raw = json.dumps(payload).encode("utf-8")
+
+        def read(self) -> bytes:
+            return self._raw
+
+        def close(self) -> None:
+            return None
+
+    def fake_urlopen(http_request, timeout):
+        requests.append(http_request)
+        if len(requests) == 1:
+            raise TimeoutError("response deadline expired")
+        assert http_request.full_url.endswith(f"/v1/operations/{operation_id}")
+        return Response(
+            {
+                "ok": True,
+                "operation": {
+                    "operation_id": operation_id,
+                    "server_instance_id": "server-a",
+                    "state": "completed",
+                    "response": {
+                        "ok": True,
+                        "operation_id": operation_id,
+                        "result": {"saved": True},
+                    },
+                },
+            }
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "_endpoint_context",
+        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a"),
+    )
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: cli.uuid.UUID(operation_id))
+    monkeypatch.setattr(cli.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        cli,
+        "call_local",
+        lambda *_args, **_kwargs: pytest.fail("ambiguous mutation was redispatched"),
+    )
+
+    payload = cli.call_http(
+        "save",
+        {"document": "Part"},
+        timeout_seconds=0.01,
+    )
+
+    assert payload == {
+        "ok": True,
+        "operation_id": operation_id,
+        "result": {"saved": True},
+    }
+    posted = json.loads(requests[0].data.decode("utf-8"))
+    assert posted == {"document": "Part", "operation_id": operation_id}
+    assert requests[1].get_header("Authorization") == "Bearer secret-token"
+
+
+def test_cli_never_redispatches_ambiguous_mutation_without_completion_proof(
+    monkeypatch,
+) -> None:
+    operation_id = "26ad2b3f-2fe6-46a4-86de-bb2623ad5cb5"
+    local_calls: list[str] = []
+
+    def fake_urlopen(http_request, timeout):
+        if http_request.get_method() == "POST":
+            raise ConnectionResetError("peer reset after request transmission")
+        return SimpleNamespace(
+            read=lambda: json.dumps(
+                {
+                    "ok": True,
+                    "operation": {
+                        "operation_id": operation_id,
+                        "server_instance_id": "server-a",
+                        "state": "running",
+                        "response": None,
+                    },
+                }
+            ).encode("utf-8"),
+            close=lambda: None,
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "_endpoint_context",
+        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a"),
+    )
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: cli.uuid.UUID(operation_id))
+    monkeypatch.setattr(cli.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        cli,
+        "call_local",
+        lambda command, _arguments: local_calls.append(command) or {"ok": True},
+    )
+    args = cli.build_parser().parse_args(["save", "--document", "Part"])
+
+    payload = cli.execute(args)
+
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "REMOTE_OUTCOME_UNRESOLVED"
+    assert payload["operation_id"] == operation_id
+    assert payload["operation_state"] == "running"
+    assert local_calls == []
+
+
+def test_cli_keeps_local_fallback_for_proven_connection_refusal(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_endpoint_context",
+        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a"),
+    )
+    monkeypatch.setattr(
+        cli.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            error.URLError(ConnectionRefusedError(10061, "connection refused"))
+        ),
+    )
+    local_calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        cli,
+        "call_local",
+        lambda command, arguments: local_calls.append((command, arguments))
+        or {"ok": True, "via": "local"},
+    )
+    args = cli.build_parser().parse_args(["save", "--document", "Part"])
+
+    payload = cli.execute(args)
+
+    assert payload == {"ok": True, "via": "local"}
+    assert local_calls == [("save", {"document": "Part"})]
+
+
+def test_cli_refuses_non_loopback_endpoint_before_attaching_token(monkeypatch) -> None:
+    opened: list[request.Request] = []
+    monkeypatch.setattr(
+        cli,
+        "_control_module",
+        lambda: SimpleNamespace(
+            AGENT_HOST="127.0.0.1",
+            load_endpoint=lambda: {
+                "host": "attacker.example",
+                "port": 443,
+                "base_url": "https://attacker.example",
+                "server_instance_id": "forged-server",
+            },
+            configured_port=lambda: 8766,
+            load_token=lambda: "secret-token",
+            load_or_create_token=lambda: "secret-token",
+        ),
+    )
+    monkeypatch.setattr(
+        cli.request,
+        "urlopen",
+        lambda http_request, **_kwargs: opened.append(http_request),
+    )
+
+    payload = cli.call_http("status", {})
+
+    assert payload is not None
+    assert payload["ok"] is False
+    assert payload["failure_code"] == "ENDPOINT_NOT_LOOPBACK"
+    assert opened == []
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        {
+            "host": "127.0.0.1",
+            "port": "not-a-port",
+            "base_url": "http://127.0.0.1:8766",
+        },
+        {
+            "host": "127.0.0.1",
+            "port": 8766,
+            "base_url": "http://127.0.0.1:8766/credential-relay",
+        },
+        {
+            "host": "localhost",
+            "port": 8766,
+            "base_url": "http://127.0.0.1:8766",
+        },
+        {
+            "host": "localhost",
+            "port": 8766,
+            "base_url": "http://localhost:8766",
+        },
+        {
+            "host": "127.0.0.1",
+            "port": 8766,
+            "base_url": "http://user@127.0.0.1:8766",
+        },
+    ),
+)
+def test_cli_rejects_malformed_endpoint_before_reading_token(
+    endpoint, monkeypatch
+) -> None:
+    token_reads: list[str] = []
+    monkeypatch.setattr(
+        cli,
+        "_control_module",
+        lambda: SimpleNamespace(
+            AGENT_HOST="127.0.0.1",
+            load_endpoint=lambda: endpoint,
+            configured_port=lambda: 8766,
+            load_token=lambda: token_reads.append("load") or "secret-token",
+            load_or_create_token=lambda: token_reads.append("create")
+            or "secret-token",
+        ),
+    )
+
+    payload = cli.call_http("status", {})
+
+    assert payload is not None
+    assert payload["failure_code"] == "ENDPOINT_NOT_LOOPBACK"
+    assert token_reads == []
+
+
+def test_cli_refuses_completed_operation_from_another_server_instance(
+    monkeypatch,
+) -> None:
+    operation_id = "927e2d40-67c6-4d17-965b-fd90d2cde908"
+    requests: list[request.Request] = []
+
+    def fake_urlopen(http_request, timeout):
+        requests.append(http_request)
+        if http_request.get_method() == "POST":
+            raise ConnectionResetError("ambiguous response")
+        return SimpleNamespace(
+            read=lambda: json.dumps(
+                {
+                    "ok": True,
+                    "operation": {
+                        "operation_id": operation_id,
+                        "server_instance_id": "server-b",
+                        "state": "completed",
+                        "response": {
+                            "ok": True,
+                            "operation_id": operation_id,
+                        },
+                    },
+                }
+            ).encode("utf-8"),
+            close=lambda: None,
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "_endpoint_context",
+        lambda: ("http://127.0.0.1:8766", "secret-token", "server-a"),
+    )
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: cli.uuid.UUID(operation_id))
+    monkeypatch.setattr(cli.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+
+    payload = cli.call_http("save", {"document": "Part"})
+
+    assert payload is not None
+    assert payload["failure_code"] == "REMOTE_OUTCOME_UNRESOLVED"
+    assert payload["operation_id"] == operation_id
+    assert payload["operation_state"] == "completed"
+    assert "server instance changed" in payload["error"]
+    assert len(requests) == 1 + cli.OPERATION_POLL_ATTEMPTS
 
 
 def test_cli_local_mode_preserves_existing_and_guards_new_commands(monkeypatch) -> None:

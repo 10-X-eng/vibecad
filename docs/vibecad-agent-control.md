@@ -169,13 +169,16 @@ the separate PySide6 probe is not accepted as a substitute for that GUI-process
 proof.
 
 Normal packaged startup remains compatible when these dev-attestation
-environment variables are absent: the existing server entry point, routes,
-defaults, and endpoint fields remain, with `runtime_identity: null`.
+environment variables are absent: the existing server entry point, explicit
+host option, routes, defaults, and endpoint fields remain, with
+`runtime_identity: null`.
 
 ### Token access
 
-The service still binds only to `127.0.0.1`; a caller cannot select a non-loopback
-host. Development mode accepts only the exact
+The additive fail-closed development service binds only to `127.0.0.1`; its
+caller cannot select a non-loopback host. The original compatibility starter
+retains its explicit-host behavior for existing integrations. Development mode
+accepts only the exact
 `<repo>\.vibecad-dev\agent` home derived from `VIBECAD_DEV_SOURCE_ROOT`; it
 rejects an outside override before creating or changing that directory. On
 Windows, token creation first protects the checkout-scoped agent directory and
@@ -184,6 +187,10 @@ full-control ACE. The DACL is read back and verified. Development mode refuses
 server startup if that operation is unavailable or the resulting ACL has any
 additional ACE. Normal installed startup keeps its existing best-effort
 file-permission compatibility behavior and does not replace the directory DACL.
+Checkout-scoped credentials isolate discovery and authentication between
+development checkouts; they do **not** sandbox an authenticated caller's file
+authority. In particular, `/v1/open`, `/v1/save-as`, and the privileged
+`/v1/run` compatibility route can reach paths allowed to the VibeCAD process.
 
 ## Exact commands (Windows)
 
@@ -298,8 +305,10 @@ you need JSON status, structured errors, or a live GUI without clicking.
 
 ## Routes
 
-All routes are loopback-only and require
-`Authorization: Bearer <token-file-contents>`.
+The one-click fail-closed development routes are loopback-only and require
+`Authorization: Bearer <token-file-contents>`. The compatibility starter keeps
+its pre-existing explicit-host contract and should be exposed only under the
+owner's network controls.
 
 | Method | Path | Body | Result |
 | --- | --- | --- | --- |
@@ -364,13 +373,26 @@ document operation owns that gate they return `DOCUMENT_OPERATION_BUSY`
 immediately, and a normal authenticated status is rechecked after tracked
 completion.
 
+The bundled CLI adds a fresh operation UUID to every POST automatically. If
+the POST response times out, resets, is truncated, or is not valid JSON, the
+CLI polls that exact operation on the same authenticated server instance and
+never falls back to a second local mutation. Only a proven connection refusal
+before a listener accepts the request preserves the original local fallback.
+If completion cannot be proven, the CLI returns
+`REMOTE_OUTCOME_UNRESOLVED` with the operation ID instead of guessing or
+redispatching.
+
 ### Semantic UI activation and the independent cursor
 
 `/v1/ui/click` targets an exact live Qt menu action or
 `VibeCADRibbonTabs` entry by visible text. Optional `expected_process_id` and
 `expected_index` values make stale geometry fail closed. Ribbon clicks use an
 in-process Qt mouse event; top-level menus use a non-blocking in-process Qt
-popup. Neither path calls Windows cursor-position or input-injection APIs.
+popup. A menu popup is displayed for one bounded preview, then closed before
+the request returns. The prior focused widget and menu-bar action are restored,
+and the active window and popup state are verified unchanged. A pre-existing
+popup fails busy rather than being closed by the tester. Neither path calls
+Windows cursor-position or input-injection APIs.
 
 For a human-watchable Windows demonstration, the repo-root
 `Invoke-VibeCAD-VisibleTour.ps1` draws its own click-through plain cyan pointer

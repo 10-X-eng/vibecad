@@ -237,6 +237,13 @@ or Internet development server. See
 [vibecad-agent-control.md](vibecad-agent-control.md) for the route schemas and
 security contract.
 
+That checkout separation is a credential-discovery boundary, not a filesystem
+sandbox. Once authenticated, the tester can open and save files wherever the
+VibeCAD process already has access, and the explicitly authorized `/v1/run`
+compatibility route executes in that same process authority. Use bounded routes
+where available and authorize file targets and compatibility scripts just as
+you would for a local developer tool.
+
 The launcher sets the literal opt-in `VIBECAD_DEV_MODE=1`. That makes this
 checkout use the fail-closed server entry point: a callable Qt document-thread
 dispatcher must exist before the endpoint starts, operations are serialized,
@@ -302,6 +309,13 @@ attachment, or foreground-window activation. If the exact validated VibeCAD
 window is minimized, it is shown with `SW_SHOWNOACTIVATE` so restoration does
 not take keyboard focus.
 
+Each top-level menu is shown only for a short, bounded Qt preview while the cyan
+pointer is visibly pressed. The popup is then closed before the route returns;
+the previous focus and menu-bar action are restored, and the active window and
+popup state are verified unchanged. If a human already has a popup open, the
+tester fails busy rather than closing or replacing it. Ribbon activation uses
+the same focus/window restoration contract.
+
 With no `-Targets` argument, the script discovers the exact running checkout's
 currently visible, enabled top-level menus and enabled ribbon tabs, then tours
 that live semantic inventory. It does not assume that a feature-specific tab or
@@ -319,8 +333,9 @@ menu exists. To run a focused tour:
 
 Each successful run writes an ignored JSON receipt under
 `.vibecad-dev\tours`. The receipt binds every target to the exact process ID,
-semantic index, geometry, selected/menu-visible postcondition, Qt input method,
-and `physical_cursor_control: none`. A person may continue to move their own
+semantic index, geometry, selected or visibly-observed menu activation,
+restored interaction postcondition, Qt input method, and
+`physical_cursor_control: none`. A person may continue to move their own
 physical mouse during the tour; that independent movement is sampled but is
 never blocked or redirected.
 

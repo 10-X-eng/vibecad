@@ -404,6 +404,13 @@ def test_visible_tour_discovers_live_menus_and_tabs_without_feature_assumptions(
     assert "$VerificationTimeoutSeconds = 30" in source
     assert "selected_text" in source
     assert "menu_visible" in source
+    assert "menu_open_after" in source
+    assert "focus_restored" in source
+    assert "active_window_unchanged" in source
+    assert "popup_restored" in source
+    assert "active_action_restored" in source
+    assert "interaction_restored" in source
+    assert "preview_duration_milliseconds" in source
     assert "Start-Sleep" in source
     assert "throw" in source
 

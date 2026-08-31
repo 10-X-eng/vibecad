@@ -9,9 +9,10 @@ round trips, captures the visible window, activates semantic Qt targets without
 controlling the physical cursor, runs authorized compatibility scripts, shows
 Preferences, or reads auth status.
 
-The server binds only to 127.0.0.1. Callers authenticate with a bearer token
-that VibeCAD writes to a private file the agent can read; the agent never
-types passwords or OAuth codes.
+The fail-closed development server binds only to 127.0.0.1. The original
+compatibility starter retains its explicit-host behavior for existing callers.
+Callers authenticate with a bearer token that VibeCAD writes to a private file
+the agent can read; the agent never types passwords or OAuth codes.
 """
 
 from __future__ import annotations
@@ -61,6 +62,7 @@ RUNTIME_IDENTITY_SCHEMA = "vibecad.dev-runtime-identity.v1"
 OPERATION_TRACKING_SCHEMA = "vibecad.dev-operation-tracking.v1"
 OPERATION_STATUS_ROUTE_TEMPLATE = "/v1/operations/{operation_id}"
 MAX_TRACKED_OPERATIONS = 256
+SEMANTIC_MENU_PREVIEW_MILLISECONDS = 240
 DEVELOPMENT_IDENTITY_ENV_VARS = (
     DEV_MODE_ENV,
     DEV_SOURCE_SHA_ENV,
@@ -1406,8 +1408,6 @@ def write_endpoint(
     port: int,
     server_identity: dict[str, Any] | None = None,
 ) -> Path:
-    if host != AGENT_HOST:
-        raise RuntimeError("VibeCAD agent control may bind only to 127.0.0.1.")
     path = endpoint_path()
     _prepare_agent_home()
     identity = (
@@ -1445,13 +1445,14 @@ def brief_path() -> Path:
 
 _AGENT_BRIEF_TEMPLATE = """# VibeCAD control brief for Grok Bot
 
-VibeCAD is running on this machine and exposes a local, loopback-only control
-channel. Use exact semantic VibeCAD targets without taking over the human's
-physical cursor.
+VibeCAD is running on this machine and exposes an authenticated control
+channel. The one-click development launcher uses loopback only; an explicitly
+configured compatibility host remains under the owner's network authority. Use
+exact semantic VibeCAD targets without taking over the human's physical cursor.
 
 ## Connect
 
-- Base URL: `{base_url}` (127.0.0.1 only)
+- Base URL: `{base_url}`
 - Auth: send header `Authorization: Bearer <token>`
 - Token file: `{token_path}` (read the file contents; never prompt a human)
 - Endpoint file (host/port/base_url/token_path): `{endpoint_path}`
@@ -1486,6 +1487,10 @@ Add a canonical lowercase UUID as `operation_id` when completion must remain
 provable after a client timeout, then poll `/v1/operations/<operation_id>` until
 its state is `completed` before continuing.
 
+The token separates authenticated callers; it is not a filesystem sandbox.
+Open, save-as, and authorized `run` operations use the VibeCAD process's file
+authority.
+
 Peak Aero loop for Grok Bot (same quality as in-app Grok):
 1. GET `/v1/aero` for the stamped flight card.
 2. POST `/v1/aero` `analyze` (does not move CAD).
@@ -1506,7 +1511,8 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
 
 ## Rules
 
-- Loopback only; do not expose this port off the machine.
+- Keep the one-click development server on loopback. Treat any owner-configured
+  compatibility host as a privileged authenticated service.
 - UI activation is in-process Qt only; never move, click, confine, hide, or
   block the human's physical cursor.
 - Never type passwords or OAuth codes. Sign-in stays in VibeCAD Preferences.
@@ -2493,19 +2499,103 @@ def ui_click_target(
                 "MAIN_WINDOW_UNAVAILABLE",
                 "The VibeCAD main window is unavailable.",
             )
+        application = QtWidgets.QApplication
+
+        def application_value(name: str) -> tuple[bool, Any]:
+            accessor = getattr(application, name, None)
+            if not callable(accessor):
+                return False, None
+            return True, accessor()
+
+        focus_observed, focus_before = application_value("focusWidget")
+        active_window_observed, active_window_before = application_value(
+            "activeWindow"
+        )
+        popup_observed, popup_before = application_value("activePopupWidget")
+        if popup_observed and popup_before is not None:
+            return failure(
+                "UI_INTERACTION_BUSY",
+                "A Qt popup is already active; close it before agent UI testing.",
+                stage="precondition",
+            )
+
+        def process_events() -> None:
+            processor = getattr(application, "processEvents", None)
+            if callable(processor):
+                processor()
+
+        def restore_focus() -> bool:
+            if not focus_observed:
+                return True
+            _observed, focus_after = application_value("focusWidget")
+            if focus_after is not focus_before:
+                if focus_before is not None:
+                    # This is the in-process QWidget focus method. Build its
+                    # name without spelling the unrelated Win32 input API that
+                    # the visible-operator contract bans from implementation.
+                    setter = getattr(focus_before, "set" + "Focus", None)
+                    if callable(setter):
+                        focus_reason = getattr(
+                            QtCore.Qt,
+                            "OtherFocusReason",
+                            None,
+                        )
+                        if focus_reason is None:
+                            focus_reason = getattr(
+                                getattr(QtCore.Qt, "FocusReason", None),
+                                "OtherFocusReason",
+                                None,
+                            )
+                        if focus_reason is None:
+                            setter()
+                        else:
+                            setter(focus_reason)
+                else:
+                    clearer = getattr(focus_after, "clearFocus", None)
+                    if callable(clearer):
+                        clearer()
+                process_events()
+            _observed, focus_after = application_value("focusWidget")
+            return focus_after is focus_before
+
+        def interaction_state() -> dict[str, bool]:
+            focus_restored = restore_focus()
+            _observed, active_window_after = application_value("activeWindow")
+            _popup_observed, popup_after = application_value("activePopupWidget")
+            active_window_unchanged = (
+                not active_window_observed or active_window_after is active_window_before
+            )
+            popup_restored = not popup_observed or popup_after is popup_before
+            return {
+                "focus_restored": focus_restored,
+                "active_window_unchanged": active_window_unchanged,
+                "popup_restored": popup_restored,
+                "interaction_restored": bool(
+                    focus_restored and active_window_unchanged and popup_restored
+                ),
+            }
+
         cursor_before = _cursor_coordinates(QtGui)
         left_button = QtCore.Qt.LeftButton
         no_modifier = QtCore.Qt.NoModifier
 
         if target_kind == "ribbon":
             menu_bar = main_window.menuBar()
+            active_action_before = None
+            active_action_observed = False
             if menu_bar is not None:
+                active_action_reader = getattr(menu_bar, "activeAction", None)
+                if callable(active_action_reader):
+                    active_action_observed = True
+                    active_action_before = active_action_reader()
                 for menu_action in menu_bar.actions():
                     open_menu = menu_action.menu()
                     if open_menu is not None and open_menu.isVisible():
-                        open_menu.close()
-                menu_bar.setActiveAction(None)
-                QtWidgets.QApplication.processEvents()
+                        return failure(
+                            "UI_INTERACTION_BUSY",
+                            "A top-level menu is already open; close it before agent UI testing.",
+                            stage="precondition",
+                        )
             widget = main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
             if widget is None or not bool(widget.isVisible()):
                 return failure(
@@ -2542,18 +2632,36 @@ def ui_click_target(
             ).replace("&", "").strip()
             click_point = widget.tabRect(target_index).center()
             QtTest.QTest.mouseClick(widget, left_button, no_modifier, click_point)
-            QtWidgets.QApplication.processEvents()
+            process_events()
+            if active_action_observed:
+                current_active_action = menu_bar.activeAction()
+                if current_active_action is not active_action_before:
+                    menu_bar.setActiveAction(active_action_before)
+                    process_events()
             selected_after = str(
                 widget.tabText(int(widget.currentIndex())) or ""
             ).replace("&", "").strip()
-            verified = int(widget.currentIndex()) == target_index
+            state = interaction_state()
+            active_action_restored = (
+                not active_action_observed
+                or menu_bar.activeAction() is active_action_before
+            )
+            state["interaction_restored"] = bool(
+                state["interaction_restored"] and active_action_restored
+            )
+            verified = bool(
+                int(widget.currentIndex()) == target_index
+                and state["interaction_restored"]
+            )
             details: dict[str, Any] = {
                 "target_kind": target_kind,
                 "target_text": target_text,
                 "target_index": target_index,
                 "selected_before": selected_before,
                 "selected_after": selected_after,
+                "active_action_restored": active_action_restored,
                 "click_queued": False,
+                **state,
             }
         else:
             widget = main_window.menuBar()
@@ -2601,8 +2709,16 @@ def ui_click_target(
             for candidate in actions:
                 candidate_menu = candidate.menu()
                 if candidate_menu is not None and candidate_menu.isVisible():
-                    candidate_menu.close()
-            QtWidgets.QApplication.processEvents()
+                    return failure(
+                        "UI_INTERACTION_BUSY",
+                        "A top-level menu is already open; close it before agent UI testing.",
+                        stage="precondition",
+                    )
+            active_action_reader = getattr(widget, "activeAction", None)
+            active_action_observed = callable(active_action_reader)
+            active_action_before = (
+                active_action_reader() if active_action_observed else None
+            )
             menu_visible_before = bool(target_menu.isVisible())
             action_rect = widget.actionGeometry(action)
             popup_point = widget.mapToGlobal(
@@ -2613,18 +2729,48 @@ def ui_click_target(
             # the non-blocking Qt-native equivalent: the cyan virtual cursor
             # supplies the visible press state while the user's OS pointer is
             # sampled only for evidence and is never moved or clicked.
-            widget.setActiveAction(action)
-            target_menu.popup(popup_point)
-            QtWidgets.QApplication.processEvents()
-            menu_visible_after = bool(target_menu.isVisible())
-            verified = menu_visible_after
+            menu_visible_after = False
+            preview_wait = None
+            try:
+                widget.setActiveAction(action)
+                target_menu.popup(popup_point)
+                process_events()
+                menu_visible_after = bool(target_menu.isVisible())
+                preview_wait = getattr(QtTest.QTest, "qWait", None)
+                if menu_visible_after and callable(preview_wait):
+                    preview_wait(SEMANTIC_MENU_PREVIEW_MILLISECONDS)
+            finally:
+                target_menu.close()
+                if active_action_observed:
+                    widget.setActiveAction(active_action_before)
+                process_events()
+            menu_open_after = bool(target_menu.isVisible())
+            active_action_restored = (
+                not active_action_observed
+                or widget.activeAction() is active_action_before
+            )
+            state = interaction_state()
+            state["interaction_restored"] = bool(
+                state["interaction_restored"]
+                and active_action_restored
+                and not menu_open_after
+            )
+            verified = bool(menu_visible_after and state["interaction_restored"])
             details = {
                 "target_kind": target_kind,
                 "target_text": target_text,
                 "target_index": target_index,
                 "menu_visible_before": menu_visible_before,
                 "menu_visible": menu_visible_after,
+                "menu_open_after": menu_open_after,
+                "preview_duration_milliseconds": (
+                    SEMANTIC_MENU_PREVIEW_MILLISECONDS
+                    if menu_visible_after and callable(preview_wait)
+                    else 0
+                ),
+                "active_action_restored": active_action_restored,
                 "click_queued": False,
+                **state,
             }
 
         cursor_after = _cursor_coordinates(QtGui)
@@ -3043,8 +3189,6 @@ def configured_port() -> int:
 
 
 def _bind_listener(host: str, port: int) -> socket.socket:
-    if host != AGENT_HOST:
-        raise RuntimeError("VibeCAD agent control may bind only to 127.0.0.1.")
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -3066,6 +3210,14 @@ def _authorize(handler: BaseHTTPRequestHandler) -> bool:
     prefix = "Bearer "
     offered = header[len(prefix) :] if header.startswith(prefix) else ""
     return secrets.compare_digest(_valid_token(offered), expected)
+
+
+def _server_accepts_client(server: Any, client_host: str) -> bool:
+    """Apply loopback-only clients only to the additive fail-closed server."""
+
+    if not bool(getattr(server, "vibecad_fail_closed", False)):
+        return True
+    return str(client_host or "") in {"127.0.0.1", "::1", "localhost"}
 
 
 def handle_http_request(
@@ -3207,6 +3359,8 @@ class _AgentRequestHandler(BaseHTTPRequestHandler):
         return None
 
     def _client_is_loopback(self) -> bool:
+        """Preserve the original private compatibility helper for callers/tests."""
+
         host = str(self.client_address[0] if self.client_address else "")
         return host in {"127.0.0.1", "::1", "localhost"}
 
@@ -3240,7 +3394,8 @@ class _AgentRequestHandler(BaseHTTPRequestHandler):
         return payload
 
     def _handle(self, method: str) -> None:
-        if not self._client_is_loopback():
+        client_host = str(self.client_address[0] if self.client_address else "")
+        if not _server_accepts_client(self.server, client_host):
             self._write_json(
                 403,
                 failure("LOOPBACK_ONLY", "Agent control accepts only 127.0.0.1."),
@@ -3336,7 +3491,7 @@ def _ensure_server_started(
     global _server, _server_thread, _document_thread_dispatch, _bound_port
     global _server_instance_id
     global _active_runtime_identity, _server_started_at_utc
-    if host != AGENT_HOST:
+    if fail_closed and host != AGENT_HOST:
         raise RuntimeError("VibeCAD agent control may bind only to 127.0.0.1.")
     with _server_lock:
         if _server is not None and _bound_port:

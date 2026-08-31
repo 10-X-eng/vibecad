@@ -852,10 +852,46 @@ try {
         ) {
             throw "The UI click did not use the independent in-process Qt path."
         }
-        $Verified = Wait-ForSemanticTarget `
-            -Kind $Target.Kind `
-            -Text $Target.Text `
-            -Cursor $VirtualCursor
+        foreach ($RestorationField in @(
+            "focus_restored",
+            "active_window_unchanged",
+            "popup_restored",
+            "active_action_restored",
+            "interaction_restored"
+        )) {
+            $RestorationValue = $Click.PSObject.Properties[$RestorationField].Value
+            if ($RestorationValue -isnot [bool] -or -not [bool]$RestorationValue) {
+                throw "The UI click did not restore $RestorationField for $($Target.Kind):$($Target.Text)."
+            }
+        }
+        if ($Target.Kind -eq "menu") {
+            if (
+                $Click.menu_visible -isnot [bool] -or
+                -not [bool]$Click.menu_visible -or
+                $Click.menu_open_after -isnot [bool] -or
+                [bool]$Click.menu_open_after -or
+                [int]$Click.preview_duration_milliseconds -lt 200
+            ) {
+                throw "The menu preview was not visibly activated and closed before control returned."
+            }
+            $Verified = Get-VibeCADUiSnapshot -Kind "menu"
+            $VerifiedMenu = @(
+                $Verified.menus |
+                    Where-Object { [string]$_.text -eq $Target.Text }
+            )
+            if (
+                $VerifiedMenu.Count -ne 1 -or
+                [bool]$VerifiedMenu[0].menu_visible
+            ) {
+                throw "The menu preview remained open after interaction restoration."
+            }
+        }
+        else {
+            $Verified = Wait-ForSemanticTarget `
+                -Kind $Target.Kind `
+                -Text $Target.Text `
+                -Cursor $VirtualCursor
+        }
         Wait-WithVirtualCursor `
             -Milliseconds $AfterClickDwellMilliseconds `
             -Cursor $VirtualCursor
