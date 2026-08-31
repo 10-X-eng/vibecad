@@ -207,9 +207,11 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     branch = schema["parameters"]["oneOf"][0]
     assert set(branch["properties"]) == {
         "operation",
+        "label",
         "job",
         "tool_controller",
         "geometry",
+        "coolant",
     }
     assert set(branch["required"]) == {"job", "tool_controller", "geometry"}
     return NativeTurnSnapshot.from_provider_surface(

@@ -200,6 +200,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
         "job",
         "tool_controller",
         "geometry",
+        "coolant",
     }
     assert set(branch["required"]) == {"job", "tool_controller", "geometry"}
     return NativeTurnSnapshot.from_provider_surface(

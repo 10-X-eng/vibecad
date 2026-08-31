@@ -485,6 +485,8 @@ def _run() -> None:
                 _arguments(job, operation),
             )
             cancelled_id = cancelled_start["job"]["job_id"]
+            assert cancelled_start["job"]["terminal"] is False
+            assert manager.snapshot(cancelled_id).changes_document is True
             assert entered.wait(2.0)
             cancel_result = call(
                 NATIVE_BACKGROUND_CAPABILITY_NAME,

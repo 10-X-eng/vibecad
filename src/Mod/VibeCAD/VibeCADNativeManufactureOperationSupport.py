@@ -36,6 +36,7 @@ LINKING_STRATEGIES = {
     "tool_shape": "Tool Shape",
 }
 _SUBELEMENT_NAME = re.compile(r"^(Face|Edge|Vertex)([1-9][0-9]*)$")
+_CANONICAL_BREP_TOLERANCE_MM = 1.0e-7
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +294,25 @@ def shape_sha256(shape: Any, noun: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _canonical_geometry_sha256(shape: Any, noun: str) -> str:
+    """Hash geometry while excluding non-geometric OCCT tolerance drift."""
+
+    copy_shape = getattr(shape, "copy", None)
+    if not callable(copy_shape):
+        return shape_sha256(shape, noun)
+    try:
+        canonical = copy_shape()
+        fix_tolerance = getattr(canonical, "fixTolerance", None)
+        if callable(fix_tolerance):
+            fix_tolerance(_CANONICAL_BREP_TOLERANCE_MM)
+    except Exception as exc:
+        raise NativeManufactureError(
+            f"The exact {noun} geometry could not be canonicalized.",
+            error_code="NATIVE_MANUFACTURE_STATE_INVALID",
+        ) from exc
+    return shape_sha256(canonical, noun)
+
+
 def _public_shape_is_unchanged(
     actual_shape: Any,
     frozen_shape: Any,
@@ -305,7 +325,13 @@ def _public_shape_is_unchanged(
     if callable(same_shape) and same_shape(frozen_shape):
         return True, frozen_shape_sha256
     actual_shape_sha256 = shape_sha256(actual_shape, noun)
-    return actual_shape_sha256 == frozen_shape_sha256, actual_shape_sha256
+    if actual_shape_sha256 == frozen_shape_sha256:
+        return True, actual_shape_sha256
+    unchanged = _canonical_geometry_sha256(
+        actual_shape,
+        noun,
+    ) == _canonical_geometry_sha256(frozen_shape, noun)
+    return unchanged, actual_shape_sha256
 
 
 def _job_resources_are_unchanged(

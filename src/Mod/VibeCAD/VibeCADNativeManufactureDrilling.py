@@ -741,10 +741,6 @@ def create_drilling(
         "Path.Op.Gui.Drilling"
     )
 
-    def configure(operation: Any) -> None:
-        operation.Label = prepared.label
-        operation.CoolantMode = _COOLANT_MODES[prepared.coolant]
-
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
@@ -756,6 +752,15 @@ def create_drilling(
         payload={"parameters": _parameter_payload(prepared)},
     )
     return extend_native_operation_draft(draft, drilling_prepared=prepared)
+
+
+def _apply_drilling_defaults(
+    operation: Any,
+    *,
+    prepared: PreparedDrillingDefaults,
+) -> None:
+    operation.Label = prepared.label
+    operation.CoolantMode = _COOLANT_MODES[prepared.coolant]
 
 
 def create_drilling_defaults(
@@ -780,7 +785,7 @@ def create_drilling_defaults(
         operation_factory=PathDrilling.Create,
         provider_factory=provider_factory,
         provider_resource=provider_resource,
-        configure=configure,
+        configure=partial(_apply_drilling_defaults, prepared=prepared),
         payload={"parameters": {"source": "setup_defaults"}},
     )
     return extend_native_operation_draft(draft, drilling_defaults=prepared)

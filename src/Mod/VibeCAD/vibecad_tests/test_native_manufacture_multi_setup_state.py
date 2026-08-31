@@ -14,6 +14,7 @@ from VibeCADNativeManufactureJob import _job_count
 from VibeCADNativeManufactureOperationSupport import (
     _job_resources_are_unchanged,
     _public_shape_is_unchanged,
+    shape_sha256,
 )
 
 
@@ -163,6 +164,51 @@ def test_public_shape_snapshot_rejects_changed_brep() -> None:
 
     assert unchanged is False
     assert actual_sha256 == hashlib.sha256(b"after").hexdigest()
+
+
+def test_shape_fingerprint_ignores_only_kernel_tolerance_drift() -> None:
+    class Shape:
+        def __init__(self, geometry: str, tolerance: float):
+            self.geometry = geometry
+            self.tolerance = tolerance
+
+        def copy(self):
+            return Shape(self.geometry, self.tolerance)
+
+        def fixTolerance(self, value):
+            self.tolerance = value
+
+        def exportBrepToString(self):
+            return f"{self.geometry}:{self.tolerance:.12g}"
+
+    before = Shape("same-geometry", 1.00000011e-7)
+    after = Shape("same-geometry", 1.00000001e-7)
+    changed = Shape("changed-geometry", 1.00000001e-7)
+
+    before_sha256 = shape_sha256(before, "CAM model Body")
+    after_sha256 = shape_sha256(after, "CAM model Body")
+    assert before_sha256 != after_sha256
+    assert shape_sha256(before, "CAM model Body") != shape_sha256(
+        changed, "CAM model Body"
+    )
+    unchanged, actual_sha256 = _public_shape_is_unchanged(
+        after,
+        before,
+        before_sha256,
+        "CAM model Body",
+    )
+    assert unchanged is True
+    assert actual_sha256 == after_sha256
+    changed_geometry, changed_sha256 = _public_shape_is_unchanged(
+        changed,
+        before,
+        before_sha256,
+        "CAM model Body",
+    )
+    assert changed_geometry is False
+    assert changed_sha256 == shape_sha256(changed, "CAM model Body")
+    assert before.tolerance == 1.00000011e-7
+    assert after.tolerance == 1.00000001e-7
 
 
 def test_operation_resource_proof_ignores_only_transient_recompute_state() -> None:
