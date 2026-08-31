@@ -317,6 +317,18 @@ for current platform-specific details.
 - **The assistant input is disabled:** save the active CAD document.
 - **The assistant panel was closed:** reopen it from **View > Panels > VibeCAD Assistant**.
 
+## Developer Tests
+
+Run the standalone Aero and 3D-printing component suites with one command:
+
+```bash
+python3 tools/run_vibecad_component_tests.py
+```
+
+The runner uses a separate pytest process for each component so their installed
+`tests` packages cannot collide. Use `--suite aero` or `--suite print` to run
+one component, and put additional pytest arguments after `--`.
+
 ## Project Status
 
 VibeCAD is under active development. The current focus is reliable, readable AI-assisted part design with explicit human control over the document, workbench, and design direction.
