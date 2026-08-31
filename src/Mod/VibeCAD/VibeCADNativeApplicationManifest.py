@@ -94,6 +94,11 @@ APPLICATION_STRIP_WIDGET_IDS = frozenset(
 ASSISTANT_CHROME_IDS = frozenset(
     {
         "VibePanelRoot",
+        "VibeSessionRecoveryBanner",
+        "VibeSessionRecoveryText",
+        "VibeSessionRecoveryRestore",
+        "VibeSessionRecoveryDiscard",
+        "VibeSessionRecoveryDraftTimer",
         "VibeContentSplitter",
         "VibeConversationPanel",
         "VibeConversationHeader",

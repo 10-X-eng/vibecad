@@ -87,6 +87,46 @@ class TestVibeCADNativePanelStartup(unittest.TestCase):
 class TestVibeCADResponsiveAssistant(unittest.TestCase):
     """Exercise the compact composer against the real Qt layout engine."""
 
+    def test_crash_recovery_is_non_modal_and_draft_autosave_is_debounced(
+        self,
+    ) -> None:
+        import FreeCAD as App
+
+        if not App.GuiUp:
+            self.skipTest("FreeCAD GUI mode is required")
+
+        from PySide import QtCore, QtWidgets
+
+        import VibeCADGui
+
+        application = QtWidgets.QApplication.instance()
+        self.assertIsNotNone(application)
+        root = VibeCADGui._build_panel_widget()
+        try:
+            banner = root.findChild(QtWidgets.QFrame, "VibeSessionRecoveryBanner")
+            label = root.findChild(QtWidgets.QLabel, "VibeSessionRecoveryText")
+            restore = root.findChild(
+                QtWidgets.QPushButton, "VibeSessionRecoveryRestore"
+            )
+            discard = root.findChild(
+                QtWidgets.QPushButton, "VibeSessionRecoveryDiscard"
+            )
+            timer = root.findChild(
+                QtCore.QTimer, "VibeSessionRecoveryDraftTimer"
+            )
+
+            self.assertIsNotNone(banner)
+            self.assertFalse(banner.isVisible())
+            self.assertIsNotNone(label)
+            self.assertEqual(restore.text(), "Restore")
+            self.assertEqual(discard.text(), "Discard")
+            self.assertTrue(timer.isSingleShot())
+            self.assertEqual(timer.interval(), 500)
+        finally:
+            root.close()
+            root.deleteLater()
+            application.processEvents()
+
     def test_ctrl_enter_sends_while_plain_enter_edits(self) -> None:
         import FreeCAD as App
 
