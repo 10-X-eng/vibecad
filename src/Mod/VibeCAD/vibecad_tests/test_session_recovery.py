@@ -370,6 +370,47 @@ def test_shutdown_waits_for_queued_recovery_before_final_snapshot(
     assert calls[2] == ("persist", {"prepared": True})
 
 
+def test_recovery_writer_failure_does_not_wait_on_the_document_thread(
+    monkeypatch,
+) -> None:
+    class _StopLoop(BaseException):
+        pass
+
+    class _Queue:
+        @staticmethod
+        def get():
+            return _Service(), {"prepared": True}
+
+        @staticmethod
+        def task_done() -> None:
+            raise _StopLoop
+
+    class _Service:
+        @staticmethod
+        def persist_prepared_session_recovery(_prepared) -> None:
+            raise OSError("recovery disk unavailable")
+
+    dispatches: list[object] = []
+    warnings: list[str] = []
+    monkeypatch.setattr(gui, "_session_recovery_persist_queue", _Queue())
+    monkeypatch.setattr(
+        gui,
+        "_dispatch_to_document_thread",
+        lambda operation: dispatches.append(operation),
+    )
+    monkeypatch.setattr(gui, "_warn", warnings.append)
+
+    try:
+        gui._session_recovery_persist_loop()
+    except _StopLoop:
+        pass
+
+    assert dispatches == []
+    assert warnings == [
+        "VibeCAD session recovery save failed: recovery disk unavailable"
+    ]
+
+
 def test_assistant_run_marks_running_recovery_then_clears_it(
     monkeypatch,
 ) -> None:

@@ -1387,10 +1387,10 @@ def _session_recovery_persist_loop() -> None:
             service.persist_prepared_session_recovery(prepared)
         except Exception as exc:
             message = f"VibeCAD session recovery save failed: {exc}"
-            try:
-                _dispatch_to_document_thread(lambda: _warn(message))
-            except Exception:
-                pass
+            # FreeCAD's console accepts worker-thread messages. Do not make this
+            # writer synchronously enter Qt: shutdown waits for this queue to
+            # drain on the document thread before writing the final snapshot.
+            _warn(message)
         finally:
             _session_recovery_persist_queue.task_done()
 
