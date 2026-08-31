@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import ntpath
 import os
 from pathlib import Path
 import signal
@@ -99,10 +100,13 @@ def terminate_process_tree(process: subprocess.Popen[Any]) -> None:
         return
     try:
         if sys.platform == "win32":
-            system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-            taskkill = system_root / "System32" / "taskkill.exe"
+            taskkill = ntpath.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                "System32",
+                "taskkill.exe",
+            )
             subprocess.run(
-                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                [taskkill, "/PID", str(process.pid), "/T", "/F"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

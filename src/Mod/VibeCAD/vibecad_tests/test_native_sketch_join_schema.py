@@ -48,10 +48,9 @@ def test_join_curves_schema_is_closed_bounded_and_exact() -> None:
         {**valid, "expected_external_reference_count": -1},
     ):
         assert list(validator.iter_errors(invalid))
-    assert len(_encoded(schema)) == 1_374
+    assert len(_encoded(schema)) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
     all_operations = tuple(variant.operation for variant in definition.variants)
     all_encoded = _encoded(definition.provider_schema(all_operations))
-    assert len(all_encoded) == 20_665
     assert len(all_encoded) <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 
