@@ -22,9 +22,11 @@ from VibeCADProvider import (
     ProviderUnavailable,
     _capture_outbound_request,
     _clear_inherited_sdk_modules,
+    _gemini_forced_tool_completion,
     _json_safe,
     _provider_reasoning_effort,
     _run_provider_subprocess,
+    _send_child_error,
 )
 
 
@@ -293,6 +295,46 @@ def _anthropic_review_child_main(
         conn.close()
 
 
+def _gemini_review_child_main(
+    conn,
+    prompt: str,
+    context: dict[str, Any],
+    model: str,
+    api_key: str | None,
+    reasoning_effort: str | None,
+    timeout_seconds: float | None,
+    _max_turns: int | None,
+    clear_inherited_modules: bool,
+    base_url: str | None = None,
+) -> None:
+    try:
+        if clear_inherited_modules:
+            _clear_inherited_sdk_modules()
+        review = _gemini_forced_tool_completion(
+            prompt=prompt,
+            context=context,
+            model=model,
+            api_key=api_key,
+            reasoning_effort=reasoning_effort,
+            timeout_seconds=timeout_seconds,
+            base_url=base_url,
+            instructions=REVIEW_INSTRUCTIONS,
+            tool_schema=_review_tool_schema(),
+            operation_label="design review",
+        )
+        conn.send(
+            {
+                "type": "done",
+                "final_output": "",
+                "raw": _validate_review(review),
+            }
+        )
+    except BaseException as exc:
+        _send_child_error(conn, "Google Gemini design reviewer", exc)
+    finally:
+        conn.close()
+
+
 def _codex_review(
     *,
     provider: str,
@@ -535,7 +577,13 @@ def run_design_review(
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     clean_provider = str(provider or "").strip().lower()
-    if clean_provider not in {"openai", "anthropic", "chatgpt", "grok"}:
+    if clean_provider not in {
+        "openai",
+        "anthropic",
+        "chatgpt",
+        "grok",
+        "gemini",
+    }:
         raise ValueError(f"Unsupported design-review provider: {provider!r}.")
     prompt = _review_prompt(customer_intent, design_draft, context)
     if clean_provider in {"openai", "chatgpt", "grok"}:
@@ -562,7 +610,11 @@ def run_design_review(
         base_url=base_url,
         cancellation_check=cancellation_check,
         progress_callback=progress_callback,
-        child_main=_anthropic_review_child_main,
+        child_main=(
+            _gemini_review_child_main
+            if clean_provider == "gemini"
+            else _anthropic_review_child_main
+        ),
         provider_label="VibeCAD design reviewer",
     )
     if not isinstance(result.raw, dict):
