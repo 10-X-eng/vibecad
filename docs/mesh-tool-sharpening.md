@@ -34,7 +34,7 @@ total. Document state can remove an inapplicable shared tool before a turn.
 | Compare | `inspect.compare` | Computes cached signed deviations in an isolated process and publishes frozen Inspection results without blocking the document thread. |
 | Point clouds | `mesh.points` | Imports, converts, structures, merges, or cuts point clouds while preserving supported attributes. |
 | Reconstruction | `mesh.rebuild`, `mesh.approximate` | Runs Poisson reconstruction, triangulation, and analytic or polynomial fitting as approximate outputs. |
-| Parametric reconstruction | `mesh.reconstruct_parametric` | Separate modeling task: consume printables `reverse/<body>.ir.json` (`schema_version: 1`), rebuild sketches/features as editable millimetre B-rep, export AP214 STEP + binary STL. Does **not** overload `mesh.to_shape`. |
+| Parametric reconstruction | `mesh.reconstruct_parametric` | Separate modeling task: ask the human to select printables `reverse/<body>.ir.json` (`schema_version: 1`), validate it off-thread, rebuild one retained millimetre B-rep, and optionally publish human-authorized STEP/STL files. Does **not** overload `mesh.to_shape`. |
 
 The shared tools are `native.job`, `state.read`, `view.control`, `inspect.query`,
 `inspect.compare`, `document.save`, `document.undo`, and `workspace.switch`. Provider schemas for a

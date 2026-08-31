@@ -20,7 +20,9 @@ def _execute(call: Any) -> Mapping[str, Any]:
     runtime = getattr(call, "runtime", None)
     arguments = getattr(call, "arguments", None)
     if not isinstance(runtime, NativeReconstructParametricRuntime):
-        raise TypeError("A reconstruct_parametric call requires NativeReconstructParametricRuntime.")
+        raise TypeError(
+            "A reconstruct_parametric call requires NativeReconstructParametricRuntime."
+        )
     if not isinstance(arguments, Mapping):
         raise TypeError("A reconstruct_parametric call requires argument data.")
     return runtime.execute(arguments, ticket=getattr(call, "ticket", None))

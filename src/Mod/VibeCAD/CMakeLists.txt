@@ -1443,6 +1443,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/test_mesh_acceptance.py
     vibecad_tests/test_native_mesh_boolean_background.py
     vibecad_tests/test_native_mesh_io.py
+    vibecad_tests/test_native_mesh_reconstruct_parametric.py
     vibecad_tests/test_native_mesh_tessellation_background.py
     vibecad_tests/gui_api_thread_guard_integration.py
     vibecad_tests/native_provider_thread_gui_integration.py

@@ -7,6 +7,9 @@ from VibeCADNativeBackgroundSchema import NATIVE_BACKGROUND_CAPABILITY_NAME
 from VibeCADNativeDrawingDimensionSchema import DRAWING_DIMENSION_CAPABILITY_NAMES
 from VibeCADNativeDrawingPlacementSchema import DRAWING_PLACEMENT_CAPABILITY_NAMES
 from VibeCADNativeInspectionCompareSchema import INSPECTION_COMPARE_CAPABILITY_NAME
+from VibeCADNativeMeshReconstructParametricSchema import (
+    MESH_RECONSTRUCT_PARAMETRIC_CAPABILITY_NAME,
+)
 from VibeCADNativeModelHistoryBindings import MODEL_HISTORY_CAPABILITY_NAMES
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeSketchBatchBindings import SKETCH_BATCH_CAPABILITY_NAME
@@ -18,6 +21,7 @@ def test_production_registry_has_every_finished_contract_and_binding() -> None:
 
     assert registry.shared_definition_names == (
         NATIVE_BACKGROUND_CAPABILITY_NAME,
+        MESH_RECONSTRUCT_PARAMETRIC_CAPABILITY_NAME,
         *COMMON_NATIVE_CAPABILITY_NAMES,
         INSPECTION_COMPARE_CAPABILITY_NAME,
         WORKSPACE_CAPABILITY_NAME,
