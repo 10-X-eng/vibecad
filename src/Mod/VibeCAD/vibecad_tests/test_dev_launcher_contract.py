@@ -16,6 +16,20 @@ def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def test_windows_dev_launcher_uses_standalone_hash_provider_before_runtime_probe():
+    script = _text(POWERSHELL)
+
+    hash_helper = "function Get-VibeCADSha256"
+    runtime_probe = "function Test-VibeCADQtPlatformRuntime"
+
+    assert "[System.Security.Cryptography.SHA256]::Create()" in script
+    assert "[System.IO.File]::OpenRead($Path)" in script
+    assert "[System.BitConverter]::ToString($HashBytes)" in script
+    assert "Get-FileHash" not in script
+    assert "Import-Module Microsoft.PowerShell.Utility" not in script
+    assert script.index(hash_helper) < script.index(runtime_probe)
+
+
 def test_windows_dev_launcher_is_repo_local_and_rebuilds_current_checkout():
     script = _text(POWERSHELL)
 
@@ -104,6 +118,26 @@ def test_windows_dev_launcher_load_probes_qwindows_for_recovery_and_prelaunch():
     assert "qt_process = [ordered]@{" in script
     assert "loaded_qwindows_path = $QtRuntimeIdentity.qwindows_path" in script
     assert "loaded_qwindows_sha256 = $QtRuntimeIdentity.qwindows_sha256" in script
+
+
+def test_windows_dev_launcher_streams_qt_probe_over_stdin():
+    script = _text(POWERSHELL)
+
+    assert '$ProbeOutput = @($ProbeCode | & $PythonExecutable - 2>&1)' in script
+    assert "& $PythonExecutable -c $ProbeCode" not in script
+
+
+def test_windows_dev_launcher_streams_python_runtime_probe_over_stdin():
+    script = _text(POWERSHELL)
+
+    runtime_probe_start = script.index("function Get-VibeCADPythonRuntimeProbe")
+    runtime_probe_end = script.index("function Install-VibeCADPythonRuntime")
+    runtime_probe = script[runtime_probe_start:runtime_probe_end]
+
+    assert "$RuntimeProbe = Get-VibeCADPythonRuntimeProbe" in runtime_probe
+    assert "$RuntimeProbe | & $PythonExecutable -" in runtime_probe
+    assert "& $PythonExecutable -c" not in runtime_probe
+    assert "& $PythonExecutable -c (Get-VibeCADPythonRuntimeProbe)" not in script
 
 
 def test_windows_dev_launcher_rejects_qwindows_resolving_outside_env_root():
@@ -217,6 +251,38 @@ def test_release_attestation_forces_and_records_a_cold_pixi_build():
     assert script.index(
         "Preparing an exact cold repo-local release-attestation build"
     ) < script.index("& $Pixi install -e default --frozen")
+
+
+def test_cold_build_safely_detaches_repo_local_pixi_staging_before_install():
+    script = _text(POWERSHELL)
+
+    helper_start = script.index("function Move-VibeCADLocalBuildStagingAside")
+    helper_end = script.index("function Resolve-VibeCADQtLaunchRuntime")
+    helper = script[helper_start:helper_end]
+
+    assert 'Join-Path $ResolvedPackageRoot ".pixi"' in helper
+    assert 'Join-Path $PixiRoot "bld"' in helper
+    assert "Test-VibeCADPathWithinRoot" in helper
+    assert "[System.IO.FileAttributes]::ReparsePoint" in helper
+    assert "resolved outside the repository package root" in helper
+    assert "vibecad-build-staging-quarantine-" in helper
+    assert '[guid]::NewGuid().ToString("N")' in helper
+    assert "Move-Item -LiteralPath $LocalBuildRoot" in helper
+    assert "-Destination $QuarantinePath" in helper
+    assert "Remove-Item -LiteralPath $LocalBuildRoot -Recurse" not in helper
+
+    detach = "Move-VibeCADLocalBuildStagingAside -PackageRoot $PackageRoot"
+    assert script.count(detach) == 2
+    release_start = script.index("if ($ReleaseAttestation) {")
+    recovery_start = script.index("elseif (-not $LaunchRuntime.Complete)", release_start)
+    normal_rebuild_start = script.index("elseif (-not $SkipRebuild)", recovery_start)
+    release_block = script[release_start:recovery_start]
+    recovery_block = script[recovery_start:normal_rebuild_start]
+    for block in (release_block, recovery_block):
+        assert block.index("& $Pixi clean --build") < block.index(detach)
+        assert block.index(detach) < block.index("& $Pixi install -e default --frozen")
+    assert "local_build_staging_reset_at_utc" in release_block
+    assert "local_build_staging_quarantine_path" in release_block
 
 
 def test_windows_dev_launcher_sets_visible_identity_environment():

@@ -27,7 +27,20 @@ function Get-VibeCADSha256 {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Cannot hash missing file: $Path"
     }
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $Stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $Hasher = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $HashBytes = $Hasher.ComputeHash($Stream)
+        }
+        finally {
+            $Hasher.Dispose()
+        }
+    }
+    finally {
+        $Stream.Dispose()
+    }
+    return ([System.BitConverter]::ToString($HashBytes)).Replace("-", "").ToLowerInvariant()
 }
 
 function Get-VibeCADUtcTimestamp {
@@ -176,6 +189,104 @@ function Test-VibeCADPathWithinRoot {
             [System.StringComparison]::OrdinalIgnoreCase
         )
     )
+}
+
+function Move-VibeCADLocalBuildStagingAside {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $PackageRoot -PathType Container)) {
+        throw "The repository package root does not exist: $PackageRoot"
+    }
+    $ResolvedPackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
+    $PixiRoot = Join-Path $ResolvedPackageRoot ".pixi"
+    if (-not (Test-Path -LiteralPath $PixiRoot -PathType Container)) {
+        return $null
+    }
+    $PixiRoot = (Resolve-Path -LiteralPath $PixiRoot).Path
+    $PixiRootItem = Get-Item -LiteralPath $PixiRoot -Force
+    if (
+        $PixiRoot.Equals(
+            $ResolvedPackageRoot,
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not (Test-VibeCADPathWithinRoot `
+            -ResolvedRoot $ResolvedPackageRoot `
+            -ResolvedPath $PixiRoot) -or
+        ($PixiRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) `
+            -ne 0
+    ) {
+        throw "The repo-local Pixi root resolved outside the repository package root or through a reparse point: $PixiRoot"
+    }
+
+    $LocalBuildRoot = Join-Path $PixiRoot "bld"
+    if (-not (Test-Path -LiteralPath $LocalBuildRoot)) {
+        return $null
+    }
+    $LocalBuildRoot = (Resolve-Path -LiteralPath $LocalBuildRoot).Path
+    $LocalBuildRootItem = Get-Item -LiteralPath $LocalBuildRoot -Force
+    if (
+        $LocalBuildRoot.Equals(
+            $PixiRoot,
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not (Test-VibeCADPathWithinRoot `
+            -ResolvedRoot $PixiRoot `
+            -ResolvedPath $LocalBuildRoot) -or
+        ($LocalBuildRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) `
+            -ne 0
+    ) {
+        throw "The repo-local Pixi build staging path resolved outside the repository package root or through a reparse point: $LocalBuildRoot"
+    }
+
+    $QuarantineName = "vibecad-build-staging-quarantine-{0}-{1}" -f `
+        [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssfffffffZ"), `
+        [guid]::NewGuid().ToString("N")
+    $QuarantinePath = [System.IO.Path]::GetFullPath(
+        (Join-Path $PixiRoot $QuarantineName)
+    )
+    if (
+        $QuarantinePath.Equals(
+            $PixiRoot,
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not (Test-VibeCADPathWithinRoot `
+            -ResolvedRoot $PixiRoot `
+            -ResolvedPath $QuarantinePath) -or
+        (Test-Path -LiteralPath $QuarantinePath)
+    ) {
+        throw "The repo-local Pixi build-staging quarantine destination is not a new child of the verified Pixi root: $QuarantinePath"
+    }
+
+    $AttemptLimit = 5
+    for ($Attempt = 1; $Attempt -le $AttemptLimit; $Attempt += 1) {
+        try {
+            if (
+                -not (Test-Path -LiteralPath $LocalBuildRoot) -and
+                (Test-Path -LiteralPath $QuarantinePath -PathType Container)
+            ) {
+                return $QuarantinePath
+            }
+            Move-Item -LiteralPath $LocalBuildRoot `
+                -Destination $QuarantinePath `
+                -ErrorAction Stop
+            if (
+                (Test-Path -LiteralPath $LocalBuildRoot) -or
+                -not (Test-Path -LiteralPath $QuarantinePath -PathType Container)
+            ) {
+                throw "The repo-local Pixi build staging directory was not atomically detached from the active build path."
+            }
+            return $QuarantinePath
+        }
+        catch {
+            if ($Attempt -ge $AttemptLimit) {
+                throw "Could not safely detach repo-local Pixi build staging after $AttemptLimit attempts: $($_.Exception.Message)"
+            }
+            Start-Sleep -Milliseconds (250 * $Attempt)
+        }
+    }
 }
 
 function Resolve-VibeCADQtLaunchRuntime {
@@ -547,7 +658,7 @@ print(
             $PreviousEnvironment["PATH"].Value
         ) -join ";"
 
-        $ProbeOutput = @(& $PythonExecutable -c $ProbeCode 2>&1)
+        $ProbeOutput = @($ProbeCode | & $PythonExecutable - 2>&1)
         $ProbeExitCode = $LASTEXITCODE
     }
     catch {
@@ -708,15 +819,38 @@ if sys.platform == "win32":
 function Test-VibeCADPythonRuntime {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$PythonExecutable
+        [string]$PythonExecutable,
+        [switch]$EmitDiagnostic
     )
 
     if (-not (Test-Path $PythonExecutable)) {
         return $false
     }
 
-    & $PythonExecutable -c (Get-VibeCADPythonRuntimeProbe) *> $null
-    return $LASTEXITCODE -eq 0
+    $RuntimeProbe = Get-VibeCADPythonRuntimeProbe
+    $RuntimeProbeOutput = @()
+    $RuntimeProbeExitCode = -1
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $RuntimeProbeOutput = @($RuntimeProbe | & $PythonExecutable - 2>&1)
+        $RuntimeProbeExitCode = $LASTEXITCODE
+    }
+    catch {
+        $RuntimeProbeOutput = @($RuntimeProbeOutput) + @($_.ToString())
+        if ($null -ne $LASTEXITCODE) {
+            $RuntimeProbeExitCode = $LASTEXITCODE
+        }
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    if ($EmitDiagnostic) {
+        foreach ($Line in $RuntimeProbeOutput) {
+            Write-Host ([string]$Line)
+        }
+    }
+    return $RuntimeProbeExitCode -eq 0
 }
 
 function Install-VibeCADPythonRuntime {
@@ -914,6 +1048,8 @@ $ReleaseEvidence = [ordered]@{
     pre_build_checked_at_utc = $null
     environment_cleaned_at_utc = $null
     build_cache_cleaned_at_utc = $null
+    local_build_staging_reset_at_utc = $null
+    local_build_staging_quarantine_path = $null
     pre_receipt_checked_at_utc = $null
 }
 if ($ReleaseAttestation) {
@@ -993,6 +1129,9 @@ try {
             throw "pixi clean --build failed while preparing the release-attestation build."
         }
         $ReleaseEvidence["build_cache_cleaned_at_utc"] = Get-VibeCADUtcTimestamp
+        $StagingQuarantinePath = Move-VibeCADLocalBuildStagingAside -PackageRoot $PackageRoot
+        $ReleaseEvidence["local_build_staging_reset_at_utc"] = Get-VibeCADUtcTimestamp
+        $ReleaseEvidence["local_build_staging_quarantine_path"] = $StagingQuarantinePath
         & $Pixi install -e default --frozen
         if ($LASTEXITCODE -ne 0) {
             throw "pixi install -e default failed."
@@ -1015,6 +1154,9 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "pixi clean --build failed while recovering the development environment."
         }
+        $StagingQuarantinePath = Move-VibeCADLocalBuildStagingAside -PackageRoot $PackageRoot
+        $ReleaseEvidence["local_build_staging_reset_at_utc"] = Get-VibeCADUtcTimestamp
+        $ReleaseEvidence["local_build_staging_quarantine_path"] = $StagingQuarantinePath
         Write-Host "Creating the repo-local VibeCAD development environment..."
         & $Pixi install -e default --frozen
         if ($LASTEXITCODE -ne 0) {
@@ -1070,8 +1212,9 @@ if (-not (Test-VibeCADPythonRuntime -PythonExecutable $PythonExecutable)) {
         -PythonExecutable $PythonExecutable `
         -RepoRoot $RepoRoot
 }
-if (-not (Test-VibeCADPythonRuntime -PythonExecutable $PythonExecutable)) {
-    & $PythonExecutable -c (Get-VibeCADPythonRuntimeProbe)
+if (-not (Test-VibeCADPythonRuntime `
+    -PythonExecutable $PythonExecutable `
+    -EmitDiagnostic)) {
     throw "The repo-local VibeCAD Python runtime is incomplete after installation."
 }
 
