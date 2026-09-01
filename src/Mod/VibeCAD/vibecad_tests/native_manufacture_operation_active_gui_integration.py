@@ -23,11 +23,20 @@ import PathCommands
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
-from VibeCADNativeCapabilityRegistry import NativeProviderSurface
-from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeManufactureModifySchema import (
-    MANUFACTURE_MODIFY_CAPABILITY_NAME,
+from VibeCADNativeCapabilityRegistry import (
+    MAX_NATIVE_SCHEMAS_JSON_BYTES_BY_SURFACE,
+    NativeProviderSurface,
+    resolve_native_provider_surface,
 )
+from VibeCADNativeDispatch import NativeTurnDispatcher
+from VibeCADNativeManufactureFocusedModifySchema import (
+    MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES,
+)
+from VibeCADNativeManufactureProviderScope import (
+    scope_manufacture_provider_surface,
+)
+from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot
+
 from VibeCADNativeManufactureState import job_state, operation_reference_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -36,6 +45,9 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CAPABILITY_NAME = MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES["set_active"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -72,7 +84,7 @@ def _target(state: dict) -> dict:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_MODIFY_CAPABILITY_NAME)
+    definition = registry.definition(CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(("set_active",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
@@ -85,7 +97,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_MODIFY_CAPABILITY_NAME,),
+            tool_names=(CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -178,7 +190,7 @@ def _run() -> None:
             plan.classification.human_only,
         )
         assert actual_plan == (
-            MANUFACTURE_MODIFY_CAPABILITY_NAME,
+            CAPABILITY_NAME,
             "set_active",
             "ExactCamJobAndOperationActiveStates",
             True,
@@ -201,6 +213,28 @@ def _run() -> None:
         }
 
         registry = build_native_capability_registry()
+        production_surface = resolve_native_provider_surface(surface, registry)
+        assert production_surface.available, production_surface.debug_summary()
+        scoped_surface = scope_manufacture_provider_surface(
+            production_surface,
+            {
+                "surface_id": "manufacture",
+                "domain": build_manufacture_snapshot(document),
+            },
+            registry=registry,
+        )
+        schema_bytes = len(
+            json.dumps(
+                scoped_surface.schemas,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        assert schema_bytes <= MAX_NATIVE_SCHEMAS_JSON_BYTES_BY_SURFACE["manufacture"]
+        assert "manufacture.operations" in scoped_surface.tool_names
+        assert "manufacture.dressup" in scoped_surface.tool_names
+        assert "manufacture.modify" not in scoped_surface.tool_names
         turn = _turn(surface, registry)
         frozen = turn.surface
         service = get_service()
@@ -237,7 +271,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_MODIFY_CAPABILITY_NAME,
+                CAPABILITY_NAME,
                 json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-active-{call_index}",
             )
@@ -380,7 +414,8 @@ def _run() -> None:
             "VIBECAD_NATIVE_MANUFACTURE_OPERATION_ACTIVE_GUI_OK "
             "exact_job=true explicit_states=true batch=true dressup=true "
             "rollback=true selection=true visibility=true history=true "
-            "undo=true redo=true reopen=true",
+            "undo=true redo=true reopen=true "
+            f"surface_bytes={schema_bytes}",
             flush=True,
         )
         exit_code = 0

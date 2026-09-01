@@ -96,6 +96,10 @@ SET(PathPythonDressupGui_SRCS
 SET(PathPythonMain_SRCS
     Path/Main/__init__.py
     Path/Main/Job.py
+    Path/Main/JobRelationship.py
+    Path/Main/JobSetup.py
+    Path/Main/JobStock.py
+    Path/Main/JobWorkCoordinate.py
     Path/Main/Simulation.py
     Path/Main/SimulatorGLPreparation.py
     Path/Main/Stock.py
@@ -602,6 +606,7 @@ SET(Tests_SRCS
     CAMTests/TestPathRotaryWrap.py
     CAMTests/TestPathRotationGenerator.py
     CAMTests/TestPathSetupSheet.py
+    CAMTests/TestPathSimulation.py
     CAMTests/TestPathSpiralGenerator.py
     CAMTests/TestPathStock.py
     CAMTests/TestPathTapGenerator.py

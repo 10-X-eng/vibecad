@@ -1112,6 +1112,24 @@ def set_sketch_annotations(view: Any, mode: str) -> dict[str, Any]:
     }
 
 
+def _view_visibility_snapshot(objects: Iterator[Any]) -> list[tuple[Any, bool]]:
+    snapshots = []
+    for obj in objects:
+        view_object = getattr(obj, "ViewObject", None)
+        if view_object is not None:
+            snapshots.append((view_object, bool(view_object.Visibility)))
+    return snapshots
+
+
+def _restore_view_visibility(snapshots: list[tuple[Any, bool]]) -> None:
+    # Restore hidden containers before visible descendants. Hiding a FreeCAD
+    # group can hide its children as a side effect, regardless of document order.
+    for visible in (False, True):
+        for view_object, original in snapshots:
+            if original is visible and bool(view_object.Visibility) is not original:
+                view_object.Visibility = original
+
+
 @contextmanager
 def temporarily_isolate_objects(
     document: Any,
@@ -1121,13 +1139,13 @@ def temporarily_isolate_objects(
 ) -> Iterator[None]:
     keep = _visible_container_closure(document, object_names)
     preserve = _linked_render_support_names(document, object_names) - keep
-    snapshots: list[tuple[Any, bool]] = []
-    for obj in list(document.Objects):
+    objects = list(document.Objects)
+    snapshots = _view_visibility_snapshot(iter(objects))
+    for obj in objects:
         view_object = getattr(obj, "ViewObject", None)
         if view_object is None:
             continue
         visible = bool(view_object.Visibility)
-        snapshots.append((view_object, visible))
         # App::Link owns the occurrence's visibility, but its view provider may
         # still consume the linked definition's currently enabled Body Tip or
         # group children. Preserve those implementation switches without
@@ -1145,8 +1163,7 @@ def temporarily_isolate_objects(
     try:
         yield
     finally:
-        for view_object, visible in snapshots:
-            view_object.Visibility = visible
+        _restore_view_visibility(snapshots)
 
 
 @contextmanager
@@ -1155,23 +1172,22 @@ def temporarily_show_objects(
     object_names: list[str],
 ) -> Iterator[list[str]]:
     show = _visible_container_closure(document, object_names)
-    snapshots: list[tuple[Any, bool]] = []
+    objects = [document.getObject(name) for name in show]
+    objects = [obj for obj in objects if obj is not None]
+    snapshots = _view_visibility_snapshot(iter(objects))
     changed: list[str] = []
-    for name in show:
-        obj = document.getObject(name)
-        view_object = getattr(obj, "ViewObject", None) if obj is not None else None
+    for obj in objects:
+        view_object = getattr(obj, "ViewObject", None)
         if view_object is None:
             continue
         visible = bool(view_object.Visibility)
-        snapshots.append((view_object, visible))
         if not visible:
             view_object.Visibility = True
-            changed.append(name)
+            changed.append(obj.Name)
     try:
         yield changed
     finally:
-        for view_object, visible in snapshots:
-            view_object.Visibility = visible
+        _restore_view_visibility(snapshots)
 
 
 @contextmanager
@@ -1179,21 +1195,20 @@ def temporarily_hide_objects(
     document: Any,
     object_names: list[str],
 ) -> Iterator[None]:
-    snapshots: list[tuple[Any, bool]] = []
-    for name in object_names:
-        obj = document.getObject(name)
-        view_object = getattr(obj, "ViewObject", None) if obj is not None else None
+    objects = [document.getObject(name) for name in object_names]
+    objects = [obj for obj in objects if obj is not None]
+    snapshots = _view_visibility_snapshot(iter(objects))
+    for obj in objects:
+        view_object = getattr(obj, "ViewObject", None)
         if view_object is None:
             continue
         visible = bool(view_object.Visibility)
-        snapshots.append((view_object, visible))
         if visible:
             view_object.Visibility = False
     try:
         yield
     finally:
-        for view_object, visible in snapshots:
-            view_object.Visibility = visible
+        _restore_view_visibility(snapshots)
 
 
 def _visible_container_closure(document: Any, object_names: list[str]) -> set[str]:

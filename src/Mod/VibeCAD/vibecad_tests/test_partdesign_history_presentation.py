@@ -23,6 +23,22 @@ class _View:
         self.Visibility = bool(visible)
 
 
+class _MaterialObject:
+    def __init__(self, material: Any) -> None:
+        self.ViewObject = _View(True)
+        self._shape_material = material
+        self.material_assignments = 0
+
+    @property
+    def ShapeMaterial(self) -> Any:
+        return self._shape_material
+
+    @ShapeMaterial.setter
+    def ShapeMaterial(self, value: Any) -> None:
+        self.material_assignments += 1
+        self._shape_material = value
+
+
 class _Object:
     def __init__(
         self,
@@ -202,6 +218,23 @@ def test_configure_visible_body_renders_only_tip_and_preserves_sketch() -> None:
         getattr(body, publication.PROP_PARTDESIGN_HISTORY_PRESENTATION)
         == publication.PARTDESIGN_HISTORY_PRESENTATION_SCHEMA
     )
+
+
+def test_copy_native_body_presentation_does_not_reassign_equal_material(
+    monkeypatch,
+) -> None:
+    material = object()
+    source = _MaterialObject(material)
+    body = _MaterialObject(material)
+    monkeypatch.setattr(
+        publication,
+        "_material_card_state",
+        lambda value: {"identity": id(value)},
+    )
+
+    publication._copy_native_body_presentation(source, body)
+
+    assert body.material_assignments == 0
 
 
 def test_configure_hidden_body_hides_all_results_but_not_sketch() -> None:

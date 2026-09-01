@@ -802,6 +802,12 @@ class VibeCADService:
                 str(document.Uid),
                 capability_prefix="analyze.",
             )
+        elif surface.surface_id == "manufacture":
+            background_job = self._native_background_jobs.document_snapshots(
+                str(document.Uid),
+                capability_prefix="manufacture.",
+                active_only=True,
+            )
         return build_active_snapshot(
             document,
             surface.surface_id,

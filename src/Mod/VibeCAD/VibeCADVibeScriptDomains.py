@@ -977,7 +977,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "Define native jobs, stock, tools, operations, and worker-generated "
         "toolpaths. Generated files remain project artifacts until human export.",
         ("job", "stock", "tool", "operation", "generate_toolpath", "postprocess"),
-        production_ready=True,
+        production_ready=False,
     ),
     "TechDrawWorkbench": _pack(
         "TechDrawWorkbench",

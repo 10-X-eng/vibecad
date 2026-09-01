@@ -33,6 +33,7 @@ class NativeBackgroundSnapshot:
     job_id: str
     document_uid: str
     capability_name: str
+    resource_scope: str
     phase: str
     progress_percent: int
     progress_message: str
@@ -58,6 +59,7 @@ class _Job:
     job_id: str
     document_uid: str
     capability_name: str
+    resource_scope: str = "document"
     phase: str = "queued"
     progress_percent: int = 0
     progress_message: str = "Queued"
@@ -159,7 +161,7 @@ class NativeBackgroundManager:
             raise TypeError("diagnostic_sink must be callable")
         self._diagnostic_sink = diagnostic_sink
         self._jobs: OrderedDict[str, _Job] = OrderedDict()
-        self._active_documents: dict[str, str] = {}
+        self._active_resources: dict[tuple[str, str], str] = {}
         self._lock = threading.RLock()
 
     def submit(
@@ -175,12 +177,18 @@ class NativeBackgroundManager:
         cleanup: CleanupHandler | None = None,
         changes_document: bool = False,
         document_change_resolver: DocumentChangeResolver | None = None,
+        resource_scope: str = "document",
     ) -> NativeBackgroundSnapshot:
         uid = str(document_uid or "").strip()
         capability = str(capability_name or "").strip()
         if not uid or not capability:
             raise NativeBackgroundError(
                 "A background Native job needs exact document and capability IDs."
+            )
+        scope = str(resource_scope or "document").strip()
+        if not scope or len(scope) > 160 or any(ord(value) < 32 for value in scope):
+            raise NativeBackgroundError(
+                "A background Native resource scope must be 1 through 160 printable characters."
             )
         if not all(
             callable(callback)
@@ -204,15 +212,29 @@ class NativeBackgroundManager:
                 "A background Native finalization message exceeds its bound."
             )
         with self._lock:
-            active_job_id = self._active_documents.get(uid)
-            if active_job_id is not None:
+            active_key = (uid, scope)
+            conflict_keys = (
+                tuple(
+                    key for key in self._active_resources if key[0] == uid
+                )
+                if scope == "document"
+                else ((uid, "document"), active_key)
+            )
+            for conflict_key in conflict_keys:
+                active_job_id = self._active_resources.get(conflict_key)
+                if active_job_id is None:
+                    continue
                 active_job = self._jobs.get(active_job_id)
                 if active_job is not None and active_job.phase in _TERMINAL_PHASES:
-                    self._active_documents.pop(uid, None)
-                else:
-                    raise NativeBackgroundError(
+                    self._active_resources.pop(conflict_key, None)
+                    continue
+                raise NativeBackgroundError(
+                    (
                         "The exact document already has a background Native operation."
+                        if scope == "document" or conflict_key[1] == "document"
+                        else "The exact document resource already has a background Native operation."
                     )
+                )
             if len(self._jobs) >= MAX_BACKGROUND_JOBS:
                 removable = next(
                     (
@@ -232,10 +254,11 @@ class NativeBackgroundManager:
                 secrets.token_hex(16),
                 uid,
                 capability,
+                scope,
                 changes_document=changes_document,
             )
             self._jobs[job.job_id] = job
-            self._active_documents[uid] = job.job_id
+            self._active_resources[active_key] = job.job_id
             self._trim_jobs_locked()
         thread = threading.Thread(
             target=self._run,
@@ -347,7 +370,9 @@ class NativeBackgroundManager:
                         except Exception:
                             pass
             with self._lock:
-                self._active_documents.pop(job.document_uid, None)
+                active_key = (job.document_uid, job.resource_scope)
+                if self._active_resources.get(active_key) == job.job_id:
+                    self._active_resources.pop(active_key, None)
                 job.completed.set()
                 self._trim_jobs_locked()
 
@@ -378,8 +403,15 @@ class NativeBackgroundManager:
     def cancel_document(self, document_uid: str) -> bool:
         uid = str(document_uid or "").strip()
         with self._lock:
-            job_id = self._active_documents.get(uid)
-        return self.cancel(job_id) if job_id else False
+            job_ids = tuple(
+                job_id
+                for (document, _scope), job_id in self._active_resources.items()
+                if document == uid
+            )
+        accepted = False
+        for job_id in job_ids:
+            accepted = self.cancel(job_id) or accepted
+        return accepted
 
     def snapshot(self, job_id: str) -> NativeBackgroundSnapshot:
         with self._lock:
@@ -413,6 +445,36 @@ class NativeBackgroundManager:
             )
             return self._snapshot_locked(job) if job is not None else None
 
+    def document_snapshots(
+        self,
+        document_uid: str,
+        *,
+        capability_prefix: str = "",
+        active_only: bool = False,
+        limit: int = MAX_BACKGROUND_JOBS,
+    ) -> tuple[NativeBackgroundSnapshot, ...]:
+        """Return newest bounded jobs for one document without collapsing scopes."""
+
+        uid = str(document_uid or "").strip()
+        prefix = str(capability_prefix or "").strip()
+        if not uid:
+            raise NativeBackgroundError("A background job lookup needs a document UID.")
+        if type(active_only) is not bool:
+            raise TypeError("active_only must be a boolean")
+        if type(limit) is not int or not 1 <= limit <= MAX_BACKGROUND_JOBS:
+            raise NativeBackgroundError(
+                f"A background job catalog limit must be 1 through {MAX_BACKGROUND_JOBS}."
+            )
+        with self._lock:
+            jobs = tuple(
+                candidate
+                for candidate in reversed(tuple(self._jobs.values()))
+                if candidate.document_uid == uid
+                and (not prefix or candidate.capability_name.startswith(prefix))
+                and (not active_only or candidate.phase not in _TERMINAL_PHASES)
+            )[:limit]
+            return tuple(self._snapshot_locked(job) for job in jobs)
+
     @staticmethod
     def _snapshot_locked(job: _Job) -> NativeBackgroundSnapshot:
         now = time.monotonic()
@@ -421,6 +483,7 @@ class NativeBackgroundManager:
             job_id=job.job_id,
             document_uid=job.document_uid,
             capability_name=job.capability_name,
+            resource_scope=job.resource_scope,
             phase=job.phase,
             progress_percent=job.progress_percent,
             progress_message=job.progress_message,

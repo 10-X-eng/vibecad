@@ -204,6 +204,15 @@ def _stable_property_value(value: Any) -> Any:
         return [_stable_property_value(item) for item in value]
     if isinstance(value, (bytes, bytearray, memoryview)):
         return {"bytes_sha256": hashlib.sha256(bytes(value)).hexdigest()}
+    try:
+        persistent_uuid = str(getattr(value, "UUID", "") or "").strip()
+    except Exception:
+        persistent_uuid = ""
+    if persistent_uuid:
+        # Native material properties expose a fresh Python wrapper on every
+        # read.  Its repr contains a process address, while UUID is the exact
+        # identity persisted in the FCStd document.
+        return {"uuid": persistent_uuid}
     document = getattr(value, "Document", None)
     object_name = str(getattr(value, "Name", "") or "")
     if document is not None and object_name:
@@ -512,12 +521,34 @@ def _is_usable(obj: Any, document: Any) -> bool:
         return False
 
 
-def candidate_model_state(obj: Any) -> dict[str, Any]:
+def _validated_model_state(
+    obj: Any,
+    *,
+    require_history_usable: bool,
+) -> dict[str, Any]:
     document = getattr(obj, "Document", None)
-    if document is None or not _is_usable(obj, document):
+    name = str(getattr(obj, "Name", "") or "")
+    if (
+        document is None
+        or not name
+        or document.getObject(name) is not obj
+        or (require_history_usable and not _is_usable(obj, document))
+    ):
         raise NativeManufactureError(
             "The CAM model candidate is not usable at the current History position.",
             error_code="NATIVE_MANUFACTURE_TARGET_STALE",
+        )
+    try:
+        import Path.Base.Util as PathUtil
+    except ImportError as exc:
+        raise NativeManufactureError(
+            "The CAM Job model validator is unavailable.",
+            error_code="NATIVE_MANUFACTURE_ENVIRONMENT_UNAVAILABLE",
+        ) from exc
+    if not PathUtil.isValidBaseObject(obj):
+        raise NativeManufactureError(
+            "The object is not a valid CAM Job model.",
+            error_code="NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
         )
     state = mesh_object_state(obj)
     shape = getattr(obj, "Shape", None)
@@ -534,6 +565,16 @@ def candidate_model_state(obj: Any) -> dict[str, Any]:
     }
     state["state_sha256"] = _digest(digest_source)
     return state
+
+
+def candidate_model_state(obj: Any) -> dict[str, Any]:
+    return _validated_model_state(obj, require_history_usable=True)
+
+
+def _job_model_state(obj: Any) -> dict[str, Any]:
+    """Fingerprint an exact Job-owned source after its History replacement."""
+
+    return _validated_model_state(obj, require_history_usable=False)
 
 
 def _operation_reference_state(obj: Any) -> dict[str, Any]:
@@ -956,7 +997,7 @@ def job_state(
     for resource in model_group:
         public = _public_model(job, resource)
         try:
-            state = candidate_model_state(public)
+            state = _job_model_state(public)
         except NativeManufactureError:
             state = _fallback_resource_state(public)
         models.append(
@@ -966,6 +1007,13 @@ def job_state(
                 "type_id": state.get("type_id"),
                 "state_sha256": state.get("state_sha256"),
                 "resource_name": str(getattr(resource, "Name", "") or ""),
+                "resource_placement": _placement_state(resource),
+                "resource_state_sha256": _digest(
+                    {
+                        "source_state_sha256": state.get("state_sha256"),
+                        "placement": _placement_state(resource),
+                    }
+                ),
             }
         )
     operation_states = []
@@ -978,6 +1026,15 @@ def job_state(
     result = concise_object(job)
     result["settings_sha256"] = _property_state_sha256(job)
     result["machine"] = configured_machine_state(job)
+    try:
+        from Path.Main.JobSetup import setup_configuration_state
+
+        result["configuration"] = setup_configuration_state(job)
+    except Exception as exc:
+        raise NativeManufactureError(
+            "The CAM setup configuration could not be read.",
+            error_code="NATIVE_MANUFACTURE_STATE_INVALID",
+        ) from exc
     result.update(
         models=models[:model_limit],
         tools=tool_states[:tool_limit],
@@ -996,7 +1053,15 @@ def job_state(
     )
     stock = getattr(job, "Stock", None)
     if stock is not None:
-        result["stock"] = concise_object(stock)
+        try:
+            from Path.Main.JobStock import stock_configuration_state
+
+            result["stock"] = stock_configuration_state(job)
+        except Exception as exc:
+            raise NativeManufactureError(
+                "The CAM stock configuration could not be read.",
+                error_code="NATIVE_MANUFACTURE_STATE_INVALID",
+            ) from exc
         stock_shape = getattr(stock, "Shape", None)
         bounds = _bounds(stock_shape) if stock_shape is not None else None
         if bounds is not None:
@@ -1005,8 +1070,17 @@ def job_state(
     if postprocessor:
         result["postprocessor"] = postprocessor[:160]
     digest_source = _semantic(result)
+    for name in (
+        "models",
+        "tools",
+        "operations",
+        "models_truncated",
+        "tools_truncated",
+        "operations_truncated",
+    ):
+        digest_source.pop(name, None)
     digest_source["model_states"] = [
-        value.get("state_sha256") for value in models
+        value.get("resource_state_sha256") for value in models
     ]
     digest_source["tool_states"] = [
         value.get("state_sha256") for value in tool_states
@@ -1016,6 +1090,38 @@ def job_state(
     ]
     result["state_sha256"] = _digest(digest_source)
     return result
+
+
+def capture_other_job_states(
+    document: Any,
+    owned_jobs: tuple[Any, ...],
+) -> tuple[tuple[Any, str], ...]:
+    """Freeze every CAM Job not owned by one exact operation boundary."""
+
+    owned = tuple(owned_jobs)
+    return tuple(
+        (candidate, str(job_state(candidate)["state_sha256"]))
+        for candidate in tuple(document.Objects)
+        if is_job(candidate)
+        and not any(candidate is owned_job for owned_job in owned)
+    )
+
+
+def other_job_states_are_current(
+    document: Any,
+    frozen: tuple[tuple[Any, str], ...],
+) -> bool:
+    """Return whether every frozen CAM Job retains identity and semantic state."""
+
+    try:
+        return all(
+            getattr(job, "Document", None) is document
+            and document.getObject(str(job.Name)) is job
+            and job_state(job).get("state_sha256") == expected
+            for job, expected in frozen
+        )
+    except (AttributeError, ReferenceError, RuntimeError, TypeError):
+        return False
 
 
 def _resolve_target(
@@ -1043,12 +1149,17 @@ def _resolve_target(
         )
     current = state_reader(obj)
     if current.get("state_sha256") != expected:
+        current_target = {
+            "object_name": name,
+            "expected_state_sha256": current.get("state_sha256"),
+        }
         raise NativeManufactureError(
             f"The exact {noun} target changed after turn start.",
             error_code="NATIVE_MANUFACTURE_STATE_STALE",
             repair={
                 "object_name": name,
                 "current_state_sha256": current.get("state_sha256"),
+                "target": current_target,
             },
         )
     return obj, current
@@ -1062,12 +1173,43 @@ def resolve_operation_target(
     document: Any,
     value: Mapping[str, Any],
 ) -> tuple[Any, dict[str, Any]]:
-    return _resolve_target(
-        document,
-        value,
-        state_reader=operation_state,
-        noun="CAM operation",
-    )
+    if not isinstance(value, Mapping) or set(value) != {
+        "object_name",
+        "expected_state_sha256",
+    }:
+        raise NativeManufactureError(
+            "The exact CAM operation target must contain object_name and "
+            "expected_state_sha256.",
+            error_code="NATIVE_ARGUMENTS_INVALID",
+        )
+    name = str(value.get("object_name") or "").strip()
+    expected = str(value.get("expected_state_sha256") or "").strip()
+    operation = document.getObject(name) if name else None
+    if operation is None or getattr(operation, "Document", None) is not document:
+        raise NativeManufactureError(
+            "The exact CAM operation target no longer exists.",
+            error_code="NATIVE_MANUFACTURE_TARGET_STALE",
+        )
+    current = operation_state(operation)
+    reference = operation_reference_state(operation)
+    if expected not in {
+        current.get("state_sha256"),
+        reference.get("state_sha256"),
+    }:
+        current_target = {
+            "object_name": name,
+            "expected_state_sha256": current.get("state_sha256"),
+        }
+        raise NativeManufactureError(
+            "The exact CAM operation target changed after turn start.",
+            error_code="NATIVE_MANUFACTURE_STATE_STALE",
+            repair={
+                "object_name": name,
+                "current_state_sha256": current.get("state_sha256"),
+                "target": current_target,
+            },
+        )
+    return operation, current
 
 
 def resolve_model_target(document: Any, value: Mapping[str, Any]) -> tuple[Any, dict[str, Any]]:
@@ -1095,9 +1237,31 @@ def resolve_tool_bit_target(
     document: Any,
     value: Mapping[str, Any],
 ) -> tuple[Any, dict[str, Any]]:
-    return _resolve_target(
-        document,
-        value,
-        state_reader=tool_bit_state,
-        noun="CAM ToolBit",
-    )
+    try:
+        return _resolve_target(
+            document,
+            value,
+            state_reader=tool_bit_state,
+            noun="CAM ToolBit",
+        )
+    except NativeManufactureError as exc:
+        name = str(value.get("object_name") or "") if isinstance(value, Mapping) else ""
+        controller = document.getObject(name) if name else None
+        tool = getattr(controller, "Tool", None)
+        if (
+            exc.error_code == "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID"
+            and tool is not None
+            and getattr(tool, "Document", None) is document
+        ):
+            current = tool_bit_state(tool)
+            raise NativeManufactureError(
+                "The exact ToolBit target is read_setup tools[].tool, not its controller.",
+                error_code="NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
+                repair={
+                    "target": {
+                        "object_name": current["object_name"],
+                        "expected_state_sha256": current["state_sha256"],
+                    }
+                },
+            ) from exc
+        raise

@@ -17,10 +17,10 @@ from VibeCADNativeManufactureOperationSupport import (
 from VibeCADNativeManufactureState import (
     copy_configuration_state,
     job_state,
-    operation_reference_state,
     operation_state,
     persistent_resource_state,
     resolve_job_target,
+    resolve_operation_target,
     tool_controller_state,
 )
 from VibeCADNativeMutation import NativeMutationDraft
@@ -400,22 +400,7 @@ def preflight_array_dressup(
 
     job, job_before = resolve_job_target(document, _target(spec.job, "Array dress-up job"))
     base_target = _target(spec.base_operation, "Array dress-up base_operation")
-    base = document.getObject(base_target["object_name"])
-    if base is None or getattr(base, "Document", None) is not document:
-        _error(
-            f"CAM Array dress-up base {base_target['object_name']!r} no longer exists.",
-            "NATIVE_MANUFACTURE_TARGET_STALE",
-        )
-    base_reference = operation_reference_state(base)
-    if base_reference.get("state_sha256") != base_target["expected_state_sha256"]:
-        _error(
-            f"CAM Array dress-up base {base_target['object_name']!r} changed after turn start.",
-            "NATIVE_MANUFACTURE_STATE_STALE",
-            repair={
-                "object_name": base_target["object_name"],
-                "current_state_sha256": base_reference.get("state_sha256"),
-            },
-        )
+    base, base_reference = resolve_operation_target(document, base_target)
 
     try:
         import Path.Base.Util as PathUtil
@@ -512,7 +497,7 @@ def _assert_preflight_current(document: Any, prepared: PreparedArrayDressup) -> 
         or tuple(prepared.job.Operations.Group or ()) != prepared.job_operations_before
         or job_state(prepared.job).get("state_sha256")
         != prepared.job_before.get("state_sha256")
-        or operation_reference_state(prepared.base) != prepared.base_reference_before
+        or operation_state(prepared.base) != prepared.base_reference_before
         or persistent_resource_state(prepared.base) != prepared.base_state_before
         or tool_controller_state(prepared.controller).get("state_sha256")
         != prepared.controller_before.get("state_sha256")

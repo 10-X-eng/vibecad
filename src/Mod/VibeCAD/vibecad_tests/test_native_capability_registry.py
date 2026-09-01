@@ -178,6 +178,65 @@ def test_single_purpose_provider_tool_does_not_repeat_its_operation_name() -> No
     assert parameters["required"] == ["target"]
 
 
+def test_provider_compacts_nested_closed_style_union() -> None:
+    definition = NativeCapabilityDefinition(
+        name="model.focused",
+        description="Perform one focused operation.",
+        primary_classification="mutation",
+        variants=(
+            _variant(
+                "first",
+                "Focused_First",
+                transaction_behavior="document",
+                parameters=_parameters(
+                    lead={
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "style": {"type": "string", "const": "arc"},
+                                    "radius_mm": {
+                                        "type": "number",
+                                        "exclusiveMinimum": 0,
+                                    },
+                                },
+                                "required": ["style", "radius_mm"],
+                                "additionalProperties": False,
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "style": {"type": "string", "const": "line"},
+                                    "length_mm": {
+                                        "type": "number",
+                                        "exclusiveMinimum": 0,
+                                    },
+                                },
+                                "required": ["style", "length_mm"],
+                                "additionalProperties": False,
+                            },
+                        ]
+                    }
+                ),
+            ),
+        ),
+    )
+
+    parameters = provider_visible_native_schema(
+        definition.provider_schema(("first",))
+    )["parameters"]["oneOf"][0]
+    lead = parameters["properties"]["lead"]
+
+    assert "oneOf" not in lead
+    assert lead["properties"]["style"] == {
+        "type": "string",
+        "enum": ["arc", "line"],
+    }
+    assert lead["required"] == ["style"]
+    assert "arc=radius_mm" in lead["description"]
+    assert "line=length_mm" in lead["description"]
+
+
 def test_operation_projection_accepts_an_exact_singleton_provider_schema() -> None:
     definition = NativeCapabilityDefinition(
         name="model.focused",

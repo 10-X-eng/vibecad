@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -15,7 +16,7 @@ from VibeCADNativeManufactureSimulationResultInput import (
 from VibeCADNativeManufactureSimulationResultWorker import (
     PreparedNativeSimulation,
 )
-from VibeCADNativeManufactureState import job_state, operation_reference_state
+from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeMeshState import mesh_object_state
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity, object_reference, read_current_selection
@@ -81,9 +82,21 @@ def _set_provenance(result: Any, prepared: PreparedNativeSimulation) -> None:
     frozen = prepared.frozen
     _add_read_only_property(
         result,
+        "App::PropertyLink",
+        "SimulationJob",
+        "Exact CAM Job used to create this retained material result",
+    )
+    _add_read_only_property(
+        result,
         "App::PropertyString",
         "SimulationJobName",
         "Exact CAM Job used to create this retained material result",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyString",
+        "SimulationJobStateSHA256",
+        "Exact CAM Job state used to create this retained material result",
     )
     _add_read_only_property(
         result,
@@ -109,11 +122,70 @@ def _set_provenance(result: Any, prepared: PreparedNativeSimulation) -> None:
         "SimulationProgramSHA256",
         "Digest of the exact placed CAM program and simulation settings",
     )
+    _add_read_only_property(
+        result,
+        "Part::PropertyPartShape",
+        "RetainedStockShape",
+        "Solid remaining stock represented by this simulation result",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyString",
+        "RetainedStockShapeSHA256",
+        "Digest of the solid remaining stock",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyInteger",
+        "RetainedStockSolidCount",
+        "Solid regions in the remaining stock",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyBool",
+        "SimulationProtectedModelChecked",
+        "Whether cutter sweeps were checked against the protected model",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyBool",
+        "SimulationProtectedModelCollision",
+        "Whether a cutting or rapid tool sweep entered protected model volume",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyInteger",
+        "SimulationCollisionCommandCount",
+        "Motion commands whose tool sweep entered protected model volume",
+    )
+    _add_read_only_property(
+        result,
+        "App::PropertyString",
+        "SimulationVerificationJSON",
+        "Structured verification coverage and findings",
+    )
+    result.SimulationJob = frozen.job
     result.SimulationJobName = str(frozen.job.Name)
+    result.SimulationJobStateSHA256 = frozen.expected_job_state_sha256
     result.SimulationOperationNames = [run.operation_name for run in frozen.runs]
     result.SimulationQuality = frozen.quality
     result.SimulationResolution = frozen.stock_resolution_mm
     result.SimulationProgramSHA256 = prepared.program_sha256
+    result.RetainedStockShape = prepared.stock_shape
+    result.RetainedStockShapeSHA256 = prepared.stock_shape_sha256
+    result.RetainedStockSolidCount = prepared.stock_solid_count
+    protected = prepared.verification["protected_model"]
+    result.SimulationProtectedModelChecked = bool(protected["checked"])
+    result.SimulationProtectedModelCollision = bool(protected["collision"])
+    result.SimulationCollisionCommandCount = int(
+        protected["collision_command_count"]
+    )
+    result.SimulationVerificationJSON = json.dumps(
+        prepared.verification,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def create_native_simulation_result(
@@ -243,6 +315,9 @@ def verify_native_simulation_result(
             for actual, expected in zip(color, _RESULT_COLOR)
         )
         or str(getattr(result, "SimulationJobName", "")) != str(frozen.job.Name)
+        or getattr(result, "SimulationJob", None) is not frozen.job
+        or str(getattr(result, "SimulationJobStateSHA256", ""))
+        != frozen.expected_job_state_sha256
         or list(getattr(result, "SimulationOperationNames", ()) or ())
         != expected_operations
         or int(getattr(result, "SimulationQuality", 0) or 0) != frozen.quality
@@ -254,6 +329,28 @@ def verify_native_simulation_result(
         )
         or str(getattr(result, "SimulationProgramSHA256", ""))
         != prepared.program_sha256
+        or getattr(result, "RetainedStockShape", None) is None
+        or result.RetainedStockShape.isNull()
+        or str(result.RetainedStockShape.ShapeType) != prepared.stock_shape_type
+        or len(tuple(result.RetainedStockShape.Solids))
+        != prepared.stock_solid_count
+        or str(getattr(result, "RetainedStockShapeSHA256", ""))
+        != prepared.stock_shape_sha256
+        or int(getattr(result, "RetainedStockSolidCount", 0) or 0)
+        != prepared.stock_solid_count
+        or bool(getattr(result, "SimulationProtectedModelChecked", False))
+        is not bool(prepared.verification["protected_model"]["checked"])
+        or bool(getattr(result, "SimulationProtectedModelCollision", False))
+        is not bool(prepared.verification["protected_model"]["collision"])
+        or int(getattr(result, "SimulationCollisionCommandCount", -1))
+        != int(prepared.verification["protected_model"]["collision_command_count"])
+        or str(getattr(result, "SimulationVerificationJSON", ""))
+        != json.dumps(
+            prepared.verification,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         or str(getattr(result, "VibeCADTimelineRole", "") or "") != "operation"
         or getattr(result, "VibeCADTimelineOwner", None) is not None
         or tuple(getattr(result, "VibeCADTimelineReplacedInputs", ()) or ())
@@ -278,7 +375,7 @@ def verify_native_simulation_result(
         job_state(frozen.job).get("state_sha256")
         != frozen.expected_job_state_sha256
         or any(
-            operation_reference_state(run.operation).get("state_sha256")
+            operation_state(run.operation).get("state_sha256")
             != run.expected_state_sha256
             for run in frozen.runs
         )
@@ -310,5 +407,6 @@ def verify_native_simulation_result(
                 ),
                 "modified_cells": int(statistics["modified_cells"]),
             },
+            "verification": dict(prepared.verification),
         }
     }

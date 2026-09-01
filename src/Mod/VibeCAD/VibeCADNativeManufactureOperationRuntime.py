@@ -5,15 +5,19 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from VibeCADNativeArguments import strict_variant_arguments
-from VibeCADNativeImmediate import run_immediate_mutation
+from VibeCADNativeImmediate import run_immediate_mutation as _run_immediate_mutation
 from VibeCADNativeManufactureAdaptive import (
     AdaptiveCreateSpec,
+    AdaptiveDefaultsSpec,
     create_adaptive,
+    create_adaptive_defaults,
     preflight_adaptive_create,
+    preflight_adaptive_defaults,
     verify_created_adaptive,
+    verify_created_adaptive_defaults,
 )
 from VibeCADNativeManufactureArray import (
     ArrayCreateSpec,
@@ -22,10 +26,10 @@ from VibeCADNativeManufactureArray import (
     verify_created_array,
 )
 from VibeCADNativeManufactureDrilling import (
-    DrillingCreateSpec,
-    create_drilling,
-    preflight_drilling_create,
-    verify_created_drilling,
+    DrillingDefaultsSpec,
+    create_drilling_defaults,
+    preflight_drilling_defaults,
+    verify_created_drilling_defaults,
 )
 from VibeCADNativeManufactureDeburr import (
     DeburrCreateSpec,
@@ -46,16 +50,16 @@ from VibeCADNativeManufactureHelix import (
     verify_created_helix,
 )
 from VibeCADNativeManufactureMillFacing import (
-    MillFacingCreateSpec,
-    create_mill_facing,
-    preflight_mill_facing_create,
-    verify_created_mill_facing,
+    MillFacingDefaultsSpec,
+    create_mill_facing_defaults,
+    preflight_mill_facing_defaults,
+    verify_created_mill_facing_defaults,
 )
 from VibeCADNativeManufactureProfile import (
-    ProfileCreateSpec,
-    create_profile,
-    preflight_profile_create,
-    verify_created_profile,
+    ProfileDefaultsSpec,
+    create_profile_defaults,
+    preflight_profile_defaults,
+    verify_created_profile_defaults,
 )
 from VibeCADNativeManufactureSlot import (
     SlotCreateSpec,
@@ -94,10 +98,10 @@ from VibeCADNativeManufacturePocket3D import (
     verify_created_pocket_3d,
 )
 from VibeCADNativeManufacturePocketShape import (
-    PocketShapeCreateSpec,
-    create_pocket_shape,
-    preflight_pocket_shape_create,
-    verify_created_pocket_shape,
+    PocketShapeDefaultsSpec,
+    create_pocket_shape_defaults,
+    preflight_pocket_shape_defaults,
+    verify_created_pocket_shape_defaults,
 )
 from VibeCADNativeManufactureSurface import (
     SurfaceCreateSpec,
@@ -127,9 +131,7 @@ _PROFILE_FIELDS = frozenset(
         "job",
         "tool_controller",
         "geometry",
-        "profile",
-        "depths",
-        "heights",
+        "cut_side",
         "coolant",
     }
 )
@@ -139,10 +141,6 @@ _POCKET_SHAPE_FIELDS = frozenset(
         "job",
         "tool_controller",
         "geometry",
-        "pocket",
-        "depths",
-        "heights",
-        "extensions",
         "coolant",
     }
 )
@@ -198,10 +196,6 @@ _MILL_FACING_FIELDS = frozenset(
         "label",
         "job",
         "tool_controller",
-        "facing",
-        "depths",
-        "heights",
-        "linking",
         "coolant",
     }
 )
@@ -232,6 +226,15 @@ _ADAPTIVE_FIELDS = frozenset(
         "coolant",
     }
 )
+_ADAPTIVE_DEFAULTS_FIELDS = frozenset(
+    {
+        "label",
+        "job",
+        "tool_controller",
+        "geometry",
+        "coolant",
+    }
+)
 _SLOT_FIELDS = frozenset(
     {
         "label",
@@ -248,11 +251,7 @@ _DRILLING_FIELDS = frozenset(
         "label",
         "job",
         "tool_controller",
-        "targets",
-        "process",
-        "depths",
-        "heights",
-        "linking",
+        "geometry",
         "coolant",
     }
 )
@@ -319,13 +318,41 @@ _ARRAY_FIELDS = frozenset(
 )
 _SIMPLE_COPY_FIELDS = frozenset({"label", "job", "source_operations"})
 _START_POINT_FIELDS = frozenset({"job", "target", "point_mm"})
+_PATH_GENERATION_OPERATIONS = frozenset(
+    {
+        "profile",
+        "pocket_shape",
+        "pocket_3d",
+        "surface",
+        "waterline",
+        "rotary_surface",
+        "mill_facing",
+        "helix",
+        "adaptive",
+        "adaptive_defaults",
+        "slot",
+        "drilling",
+        "thread_milling",
+        "engrave",
+        "deburr",
+        "v_carve",
+    }
+)
 
 
 class NativeManufactureOperationRuntime:
-    def __init__(self, context: NativeRuntimeContext) -> None:
+    def __init__(
+        self,
+        context: NativeRuntimeContext,
+        *,
+        mutation_executor: Callable[..., Mapping[str, Any]] = _run_immediate_mutation,
+    ) -> None:
         if not isinstance(context, NativeRuntimeContext):
             raise TypeError("context must be a NativeRuntimeContext")
+        if not callable(mutation_executor):
+            raise TypeError("mutation_executor must be callable")
         self._context = context
+        self._mutation_executor = mutation_executor
 
     def mutate_operation(
         self,
@@ -345,6 +372,7 @@ class NativeManufactureOperationRuntime:
                 "mill_facing": _MILL_FACING_FIELDS,
                 "helix": _HELIX_FIELDS,
                 "adaptive": _ADAPTIVE_FIELDS,
+                "adaptive_defaults": _ADAPTIVE_DEFAULTS_FIELDS,
                 "slot": _SLOT_FIELDS,
                 "drilling": _DRILLING_FIELDS,
                 "thread_milling": _THREAD_MILLING_FIELDS,
@@ -355,6 +383,13 @@ class NativeManufactureOperationRuntime:
                 "simple_copy": _SIMPLE_COPY_FIELDS,
                 "set_start_point": _START_POINT_FIELDS,
             },
+            defaults={
+                "profile": {"label": "Profile", "coolant": "none"},
+                "pocket_shape": {"label": "Pocket Shape", "coolant": "none"},
+                "mill_facing": {"label": "Mill Facing", "coolant": "none"},
+                "adaptive_defaults": {"label": "Adaptive", "coolant": "none"},
+                "drilling": {"label": "Drilling", "coolant": "none"},
+            },
         )
         context = self._context
         context.guard()
@@ -363,6 +398,21 @@ class NativeManufactureOperationRuntime:
         current = context.state.current_revision(context.document_uid)
         if current != ticket.expected_revision:
             raise NativeRevisionConflict(ticket.expected_revision, current)
+
+        def run_immediate_mutation(
+            runtime_context: NativeRuntimeContext,
+            **options: Any,
+        ) -> Mapping[str, Any]:
+            if (
+                operation not in _PATH_GENERATION_OPERATIONS
+                or self._mutation_executor is _run_immediate_mutation
+            ):
+                return _run_immediate_mutation(runtime_context, **options)
+            return self._mutation_executor(
+                runtime_context,
+                request={"operation": operation, **values},
+                **options,
+            )
         if operation == "set_start_point":
             prepared = preflight_start_point(
                 context.document,
@@ -376,40 +426,34 @@ class NativeManufactureOperationRuntime:
             mutate = partial(set_start_point, prepared=prepared)
             verify = verify_start_point
         elif operation == "profile":
-            prepared = preflight_profile_create(
+            prepared = preflight_profile_defaults(
                 context.document,
-                ProfileCreateSpec(
+                ProfileDefaultsSpec(
                     label=values["label"],
                     job=values["job"],
                     tool_controller=values["tool_controller"],
-                    geometry=values["geometry"],
-                    profile=values["profile"],
-                    depths=values["depths"],
-                    heights=values["heights"],
+                    geometry=tuple(values["geometry"]),
+                    cut_side=values["cut_side"],
                     coolant=values["coolant"],
                 ),
             )
             transaction_name = "Create Native CAM Profile"
-            mutate = partial(create_profile, prepared=prepared)
-            verify = verify_created_profile
+            mutate = partial(create_profile_defaults, prepared=prepared)
+            verify = verify_created_profile_defaults
         elif operation == "pocket_shape":
-            prepared = preflight_pocket_shape_create(
+            prepared = preflight_pocket_shape_defaults(
                 context.document,
-                PocketShapeCreateSpec(
-                    label=values["label"],
+                PocketShapeDefaultsSpec(
+                    label=values.get("label", "Pocket Shape"),
                     job=values["job"],
                     tool_controller=values["tool_controller"],
-                    geometry=values["geometry"],
-                    pocket=values["pocket"],
-                    depths=values["depths"],
-                    heights=values["heights"],
-                    extensions=values["extensions"],
+                    geometry=tuple(values["geometry"]),
                     coolant=values["coolant"],
                 ),
             )
             transaction_name = "Create Native CAM Pocket Shape"
-            mutate = partial(create_pocket_shape, prepared=prepared)
-            verify = verify_created_pocket_shape
+            mutate = partial(create_pocket_shape_defaults, prepared=prepared)
+            verify = verify_created_pocket_shape_defaults
         elif operation == "pocket_3d":
             prepared = preflight_pocket_3d_create(
                 context.document,
@@ -478,22 +522,18 @@ class NativeManufactureOperationRuntime:
             mutate = partial(create_rotary_surface, prepared=prepared)
             verify = verify_created_rotary_surface
         elif operation == "mill_facing":
-            prepared = preflight_mill_facing_create(
+            prepared = preflight_mill_facing_defaults(
                 context.document,
-                MillFacingCreateSpec(
+                MillFacingDefaultsSpec(
                     label=values["label"],
                     job=values["job"],
                     tool_controller=values["tool_controller"],
-                    facing=values["facing"],
-                    depths=values["depths"],
-                    heights=values["heights"],
-                    linking=values["linking"],
                     coolant=values["coolant"],
                 ),
             )
             transaction_name = "Create Native CAM Mill Facing"
-            mutate = partial(create_mill_facing, prepared=prepared)
-            verify = verify_created_mill_facing
+            mutate = partial(create_mill_facing_defaults, prepared=prepared)
+            verify = verify_created_mill_facing_defaults
         elif operation == "helix":
             prepared = preflight_helix_create(
                 context.document,
@@ -531,6 +571,20 @@ class NativeManufactureOperationRuntime:
             transaction_name = "Create Native CAM Adaptive"
             mutate = partial(create_adaptive, prepared=prepared)
             verify = verify_created_adaptive
+        elif operation == "adaptive_defaults":
+            prepared = preflight_adaptive_defaults(
+                context.document,
+                AdaptiveDefaultsSpec(
+                    label=values["label"],
+                    job=values["job"],
+                    tool_controller=values["tool_controller"],
+                    geometry=tuple(values["geometry"]),
+                    coolant=values["coolant"],
+                ),
+            )
+            transaction_name = "Create Native CAM Adaptive"
+            mutate = partial(create_adaptive_defaults, prepared=prepared)
+            verify = verify_created_adaptive_defaults
         elif operation == "slot":
             prepared = preflight_slot_create(
                 context.document,
@@ -548,23 +602,19 @@ class NativeManufactureOperationRuntime:
             mutate = partial(create_slot, prepared=prepared)
             verify = verify_created_slot
         elif operation == "drilling":
-            prepared = preflight_drilling_create(
+            prepared = preflight_drilling_defaults(
                 context.document,
-                DrillingCreateSpec(
+                DrillingDefaultsSpec(
                     label=values["label"],
                     job=values["job"],
                     tool_controller=values["tool_controller"],
-                    targets=values["targets"],
-                    process=values["process"],
-                    depths=values["depths"],
-                    heights=values["heights"],
-                    linking=values["linking"],
+                    geometry=tuple(values["geometry"]),
                     coolant=values["coolant"],
                 ),
             )
             transaction_name = "Create Native CAM Drilling"
-            mutate = partial(create_drilling, prepared=prepared)
-            verify = verify_created_drilling
+            mutate = partial(create_drilling_defaults, prepared=prepared)
+            verify = verify_created_drilling_defaults
         elif operation == "thread_milling":
             prepared = preflight_thread_milling_create(
                 context.document,

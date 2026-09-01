@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from VibeCADNativeCapabilityRegistry import (
@@ -70,6 +69,16 @@ def provider_authorized_native_surface(
             active_state,
             registry=registry,
         )
+    if active_state is not None and surface.snapshot.surface_id == "manufacture":
+        from VibeCADNativeManufactureProviderScope import (
+            scope_manufacture_provider_surface,
+        )
+
+        surface = scope_manufacture_provider_surface(
+            surface,
+            active_state,
+            registry=registry,
+        )
     return surface
 
 
@@ -117,4 +126,10 @@ def provider_visible_native_state(state: dict[str, Any]) -> dict[str, Any]:
         from VibeCADNativeDrawingProviderState import compact_drawing_provider_state
 
         return compact_drawing_provider_state(state)
+    if state.get("surface_id") == "manufacture":
+        from VibeCADNativeManufactureProviderState import (
+            compact_manufacture_provider_state,
+        )
+
+        return compact_manufacture_provider_state(state)
     return state

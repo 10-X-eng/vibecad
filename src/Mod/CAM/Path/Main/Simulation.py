@@ -45,12 +45,50 @@ _NON_GEOMETRIC = {
     "M9",
 }
 
+_OCC_ENDPOINT_CONFUSION_MM = 1.0e-7
+_FLOAT32_MIN_NORMAL = 2.0**-126
+_FLOAT32_HALF_SUBNORMAL_STEP = 2.0**-150
+
 
 def _canonical_command(name):
     value = str(name or "").strip().upper()
     if len(value) == 3 and value[0] in {"G", "M"} and value[1] == "0":
         return value[0] + value[2]
     return value
+
+
+def _float32_half_ulp(value):
+    """Return half of one binary32 step at a finite coordinate."""
+
+    magnitude = abs(float(value))
+    if not math.isfinite(magnitude):
+        return math.inf
+    if magnitude < _FLOAT32_MIN_NORMAL:
+        return _FLOAT32_HALF_SUBNORMAL_STEP
+    _fraction, exponent = math.frexp(magnitude)
+    return 2.0 ** (exponent - 25)
+
+
+def _simulator_endpoint_tolerance(geometric_end):
+    """Bound PathSimulator's binary32 position storage plus OCC confusion."""
+
+    axis_bounds = (
+        _float32_half_ulp(coordinate) + _OCC_ENDPOINT_CONFUSION_MM
+        for coordinate in (geometric_end.x, geometric_end.y, geometric_end.z)
+    )
+    return math.sqrt(sum(bound * bound for bound in axis_bounds))
+
+
+def _simulator_endpoint_matches(simulated_end, geometric_end):
+    if not all(
+        math.isfinite(float(coordinate))
+        for point in (simulated_end, geometric_end)
+        for coordinate in (point.x, point.y, point.z)
+    ):
+        return False
+    return float((simulated_end - geometric_end).Length) <= (
+        _simulator_endpoint_tolerance(geometric_end)
+    )
 
 
 def _bounds(shape):
@@ -845,7 +883,7 @@ def analyze_operation(
     simulator = PathSimulator.PathSim()
     simulator.BeginSimulation(stock, resolution)
     simulator.SetToolShape(tool_shape, resolution)
-    endpoint_tolerance = max(1.0e-6, resolution * 1.0e-6)
+    endpoint_tolerance = 0.0
 
     position = FreeCAD.Placement(
         FreeCAD.Vector(0.0, 0.0, stock.BoundBox.ZMax),
@@ -858,7 +896,7 @@ def analyze_operation(
     cut_sweep_count = 0
 
     def apply(command, source_index, rapid):
-        nonlocal position, cut_sweep_count
+        nonlocal position, cut_sweep_count, endpoint_tolerance
         start = FreeCAD.Vector(position.Base)
         try:
             sweep, geometric_end = _swept_tool(tool, command, start)
@@ -869,7 +907,9 @@ def analyze_operation(
                 f"construction: {exc}"
             ) from exc
         position = simulator.ApplyCommand(position, command)
-        if float((position.Base - geometric_end).Length) > endpoint_tolerance:
+        command_endpoint_tolerance = _simulator_endpoint_tolerance(geometric_end)
+        endpoint_tolerance = max(endpoint_tolerance, command_endpoint_tolerance)
+        if not _simulator_endpoint_matches(position.Base, geometric_end):
             raise RuntimeError(
                 f"Native simulator endpoint {list(position.Base)} diverged from "
                 f"Path.Geom endpoint {list(geometric_end)} at command {source_index} "

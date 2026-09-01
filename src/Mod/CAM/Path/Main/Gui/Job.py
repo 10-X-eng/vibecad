@@ -34,6 +34,8 @@ import Path.Base.Util as PathUtil
 import Path.GuiInit as PathGuiInit
 import Path.Main.Gui.JobDlg as PathJobDlg
 import Path.Main.Job as PathJob
+import Path.Main.JobSetup as PathJobSetup
+import Path.Main.JobStock as PathJobStock
 import Path.Main.Stock as PathStock
 import Path.Tool.Gui.Controller as PathToolControllerGui
 import PathScripts.PathUtils as PathUtils
@@ -768,31 +770,14 @@ class StockEdit(object):
         showHide(self.form.stockCreateCylinder, editor)
         self.setFields(obj)
 
-    def setStock(self, obj, stock):
-        Path.Log.track(obj.Label, stock)
-        old_stock = obj.Stock
-        if self.timelineEdit is not None:
-            if old_stock:
-                PathUtil.recordTimelineResourceGraphReplacement(
-                    obj,
-                    self.timelineEdit,
-                    old_stock,
-                    stock,
-                )
-            else:
-                PathUtil.recordTimelineResourceGraphAddition(
-                    obj,
-                    self.timelineEdit,
-                    (stock,),
-                )
-        if old_stock:
-            Path.Log.track(old_stock.Name)
-            obj.Document.removeObject(old_stock.Name)
-        Path.Log.track(stock.Name)
-        obj.Stock = stock
-        PathStock.ApplyStockViewDefaults(stock)
+    def setStock(self, obj, create_stock):
+        Path.Log.track(obj.Label)
+        if self.timelineEdit is None:
+            raise RuntimeError("CAM stock replacement requires a staged Job edit")
+        stock = PathJobStock.replace_stock(obj, create_stock, self.timelineEdit)
         if stock.ViewObject and stock.ViewObject.Proxy:
             stock.ViewObject.Proxy.onEdit(_OpenCloseResourceEditor)
+        return stock
 
     def setLengthField(self, widget, prop):
         quantity = FreeCAD.Units.Quantity(prop.Value, FreeCAD.Units.Length)
@@ -880,10 +865,13 @@ class StockFromBaseBoundBoxEdit(StockEdit):
         Path.Log.track()
         if self.force or not self.IsStock(obj):
             Path.Log.track()
-            stock = PathStock.CreateFromBase(obj)
-            if self.force and self.editorFrame().isVisible():
-                self.getFieldsStock(stock)
-            self.setStock(obj, stock)
+            def create_stock():
+                stock = PathStock.CreateFromBase(obj)
+                if self.force and self.editorFrame().isVisible():
+                    self.getFieldsStock(stock)
+                return stock
+
+            self.setStock(obj, create_stock)
             self.force = False
         self.setLengthField(self.form.stockExtXneg, obj.Stock.ExtXneg)
         self.setLengthField(self.form.stockExtXpos, obj.Stock.ExtXpos)
@@ -984,7 +972,7 @@ class StockCreateBoxEdit(StockEdit):
 
     def setFields(self, obj):
         if self.force or not self.IsStock(obj):
-            self.setStock(obj, PathStock.CreateBox(obj))
+            self.setStock(obj, lambda: PathStock.CreateBox(obj))
             self.force = False
         self.setLengthField(self.form.stockBoxLength, obj.Stock.Length)
         self.setLengthField(self.form.stockBoxWidth, obj.Stock.Width)
@@ -1024,7 +1012,7 @@ class StockCreateCylinderEdit(StockEdit):
 
     def setFields(self, obj):
         if self.force or not self.IsStock(obj):
-            self.setStock(obj, PathStock.CreateCylinder(obj))
+            self.setStock(obj, lambda: PathStock.CreateCylinder(obj))
             self.force = False
         self.setLengthField(self.form.stockCylinderRadius, obj.Stock.Radius)
         self.setLengthField(self.form.stockCylinderHeight, obj.Stock.Height)
@@ -1051,11 +1039,19 @@ class StockFromExistingEdit(StockEdit):
             and obj.Stock.Objects[0] == stock
         ):
             if stock:
-                stock = PathJob.createResourceClone(obj, stock, self.StockLabelPrefix, "Stock")
-                stock.ViewObject.Visibility = True
-                PathStock.SetupStockObject(stock, PathStock.StockType.Unknown)
-                stock.Proxy.execute(stock)
-                self.setStock(obj, stock)
+                def create_stock():
+                    clone = PathJob.createResourceClone(
+                        obj,
+                        stock,
+                        self.StockLabelPrefix,
+                        "Stock",
+                    )
+                    clone.ViewObject.Visibility = True
+                    PathStock.SetupStockObject(clone, PathStock.StockType.Unknown)
+                    clone.Proxy.execute(clone)
+                    return clone
+
+                self.setStock(obj, create_stock)
 
     def candidates(self, obj):
         return list(PathStock.existingSolidCandidates(obj))
@@ -1309,25 +1305,21 @@ class TaskPanel:
     def getFields(self):
         """sets properties in the object to match the form"""
         if self.obj:
-            self.obj.PostProcessor = str(self.form.postProcessor.currentText())
-            self.obj.PostProcessorArgs = str(self.form.postProcessorArguments.displayText())
             self.obj.PostProcessorOutputFile = str(self.form.postProcessorOutputFile.text())
-
-            self.obj.Label = str(self.form.jobLabel.text())
-            self.obj.Description = str(self.form.jobDescription.toPlainText())
             self.obj.Operations.Group = [
                 self.form.operationsList.item(i).data(self.DataObject)
                 for i in range(self.form.operationsList.count())
             ]
+            split_output = bool(getattr(self.obj, "SplitOutput", False))
+            output_order = str(getattr(self.obj, "OrderOutputBy", "Fixture"))
+            fixtures = list(getattr(self.obj, "Fixtures", ()) or ())
             try:
-                self.obj.SplitOutput = self.form.splitOutput.isChecked()
-                self.obj.OrderOutputBy = str(self.form.orderBy.currentData())
-
-                flist = []
+                split_output = self.form.splitOutput.isChecked()
+                output_order = str(self.form.orderBy.currentData())
+                fixtures = []
                 for i in range(self.form.wcslist.count()):
                     if self.form.wcslist.item(i).checkState() == QtCore.Qt.CheckState.Checked:
-                        flist.append(self.form.wcslist.item(i).text())
-                self.obj.Fixtures = flist
+                        fixtures.append(self.form.wcslist.item(i).text())
             except Exception as e:
                 Path.Log.debug(e)
                 FreeCAD.Console.PrintWarning(
@@ -1336,11 +1328,23 @@ class TaskPanel:
 
             self.updateTooltips()
             self.stockEdit.getFields(self.obj)
-
-            self.obj.Proxy.execute(self.obj)
-
-        self.setupGlobal.getFields()
-        self.setupOps.getFields()
+            self.setupGlobal.getFields()
+            self.setupOps.getFields()
+            PathJobSetup.apply_setup_configuration(
+                self.obj,
+                {
+                    "label": str(self.form.jobLabel.text()),
+                    "description": str(self.form.jobDescription.toPlainText()),
+                    "machine": str(getattr(self.obj, "Machine", "") or ""),
+                    "postprocessor": str(self.form.postProcessor.currentText()),
+                    "postprocessor_args": str(
+                        self.form.postProcessorArguments.displayText()
+                    ),
+                    "fixtures": fixtures,
+                    "split_output": split_output,
+                    "output_order": output_order,
+                },
+            )
 
     def selectComboBoxText(self, widget, text):
         """selectInComboBox(name, combo) ...
@@ -1784,6 +1788,12 @@ class TaskPanel:
         combo.clear()
         try:
             entries = MachineFactory.list_configuration_files()
+            existing = {display.lower() for display, _filename in entries}
+            entries.extend(
+                (display, None)
+                for display in MachineFactory.list_configurations()
+                if display.lower() not in existing
+            )
         except Exception as e:
             Path.Log.warning("Failed to list machines: %s" % e)
             entries = [("<none>", None)]
@@ -1801,7 +1811,11 @@ class TaskPanel:
         if not hasattr(self.obj, "Machine"):
             return
         text = self.form.jobMachine.currentText()
-        self.obj.Machine = text if text and text != "<any>" else ""
+        PathJobSetup.apply_setup_configuration(
+            self.obj,
+            {"machine": text if text and text != "<any>" else ""},
+            recompute=False,
+        )
 
     def newMachine(self):
         """Open the Machine Editor to create a new machine, then refresh the combo."""

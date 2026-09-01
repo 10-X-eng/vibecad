@@ -23,17 +23,21 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeManufactureOperationSchema import (
-    MANUFACTURE_OPERATION_CAPABILITY_NAME,
+from VibeCADNativeManufactureFocusedOperationSchema import (
+    MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES,
 )
 from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADNativeManufactureOperationRuntime import NativeManufactureOperationRuntime
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CAPABILITY_NAME = MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES["adaptive"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -135,37 +139,21 @@ def _target(state: dict) -> dict:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_OPERATION_CAPABILITY_NAME)
+    definition = registry.definition(CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(("adaptive",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.lower()
-    for field in (
-        "geometry",
-        "cut_region",
-        "operation_type",
-        "tolerance_mm",
-        "stepover_percent",
-        "lift_distance_mm",
-        "keep_tool_down_ratio",
-        "xy_stock_to_leave_mm",
-        "force_inside_out",
-        "finishing_profile",
-        "use_outline",
-        "rest_machining",
-        "helix_entry",
-        "finish_step_mm",
-        "extensions",
-    ):
+    for field in ("job", "tool_controller", "geometry"):
         assert field in encoded
-    assert "entire_job" not in encoded
-    assert "ModelAwareExperiment" not in encoded
+    for field in ("tolerance_mm", "depths", "heights", "extensions"):
+        assert field not in encoded
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_OPERATION_CAPABILITY_NAME,),
+            tool_names=(CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -183,62 +171,14 @@ def _arguments(model, job, face_name: str, edge_name: str) -> dict:
     )
     model_target = _target(job_model)
     return {
-        "operation": "adaptive",
-        "label": "Native boss Adaptive",
         "job": _target(state),
         "tool_controller": _target(controller),
-        "geometry": {
-            "kind": "subelements",
-            "items": [
-                {
-                    "model": model_target,
-                    "subelements": [face_name],
-                }
-            ],
-        },
-        "adaptive": {
-            "cut_region": "inside",
-            "operation_type": "clearing",
-            "tolerance_mm": 0.1,
-            "stepover_percent": 55.0,
-            "lift_distance_mm": 0.5,
-            "keep_tool_down_ratio": 3.0,
-            "xy_stock_to_leave_mm": 0.1,
-            "force_inside_out": False,
-            "finishing_profile": True,
-            "use_outline": False,
-            "rest_machining": False,
-        },
-        "helix_entry": {
-            "max_pitch_mm": 1.5,
-            "max_ramp_angle_degrees": 8.0,
-            "cone_angle_degrees": 2.0,
-            "max_diameter_percent": 80,
-            "min_diameter_percent": 20,
-        },
-        "depths": {
-            "start_depth_mm": 10.0,
-            "final_depth_mm": 7.0,
-            "step_down_mm": 1.0,
-            "finish_step_mm": 0.2,
-        },
-        "heights": {
-            "safe_height_mm": 12.0,
-            "clearance_height_mm": 14.0,
-        },
-        "extensions": {
-            "kind": "explicit",
-            "default_length_mm": 2.0,
-            "extend_corners": False,
-            "items": [
-                {
-                    "model": model_target,
-                    "feature": face_name,
-                    "edges": [edge_name],
-                }
-            ],
-        },
-        "coolant": "mist",
+        "geometry": [
+            {
+                "model": model_target,
+                "subelements": [face_name],
+            }
+        ],
     }
 
 
@@ -252,8 +192,6 @@ def _assert_adaptive_graph(
     *,
     diagnostics_required: bool = True,
 ) -> None:
-    import Path.Op.FeatureExtension as FeatureExtensions
-
     assert operation is job.Operations.Group[-1]
     assert operation.VibeCADTimelineRole == "operation"
     assert PathUtil.timelineParentJob(operation) is job
@@ -263,40 +201,34 @@ def _assert_adaptive_graph(
         assert operation.ViewObject.Proxy.deleteOnReject is False
     assert tuple(operation.Base) == ((job.Model.Group[0], (face_name,)),)
     assert job.Proxy.baseObject(job, operation.Base[0][0]) is model
-    assert operation.Label == "Native boss Adaptive"
+    assert operation.Label.startswith("Adaptive")
     assert operation.Side == "Inside"
     assert operation.OperationType == "Clearing"
     assert round(float(operation.Tolerance), 9) == 0.1
-    assert round(float(operation.StepOverPercent), 9) == 55.0
-    assert round(operation.LiftDistance.getValueAs("mm"), 9) == 0.5
+    assert round(float(operation.StepOverPercent), 9) == 20.0
+    assert round(operation.LiftDistance.getValueAs("mm"), 9) == 0.0
     assert round(float(operation.KeepToolDownRatio.Value), 9) == 3.0
-    assert round(operation.StockToLeave.getValueAs("mm"), 9) == 0.1
+    assert round(operation.StockToLeave.getValueAs("mm"), 9) == 0.0
     assert operation.ForceInsideOut is False
     assert operation.FinishingProfile is True
     assert operation.UseOutline is False
     assert operation.UseRestMachining is False
-    assert round(operation.HelixMaxPitch.getValueAs("mm"), 9) == 1.5
-    assert round(float(operation.HelixMaxRampAngle.Value), 9) == 8.0
-    assert round(float(operation.HelixConeAngle.Value), 9) == 2.0
-    assert int(operation.HelixMaxDiameterPercent) == 80
-    assert int(operation.HelixMinDiameterPercent) == 20
-    assert round(operation.StartDepth.getValueAs("mm"), 9) == 10.0
-    assert round(operation.FinalDepth.getValueAs("mm"), 9) == 7.0
-    assert round(operation.StepDown.getValueAs("mm"), 9) == 1.0
-    assert round(operation.FinishDepth.getValueAs("mm"), 9) == 0.2
-    assert round(operation.SafeHeight.getValueAs("mm"), 9) == 12.0
-    assert round(operation.ClearanceHeight.getValueAs("mm"), 9) == 14.0
-    assert operation.CoolantMode == "Mist"
+    assert round(float(operation.HelixMaxRampAngle.Value), 9) == 5.0
+    assert round(float(operation.HelixConeAngle.Value), 9) == 0.0
+    assert int(operation.HelixMaxDiameterPercent) == 100
+    assert int(operation.HelixMinDiameterPercent) == 10
+    start = operation.StartDepth.getValueAs("mm")
+    final = operation.FinalDepth.getValueAs("mm")
+    safe = operation.SafeHeight.getValueAs("mm")
+    clearance = operation.ClearanceHeight.getValueAs("mm")
+    assert final < start <= safe <= clearance
+    assert operation.StepDown.getValueAs("mm") > 0.0
+    assert operation.CoolantMode == "None"
     assert operation.ModelAwareExperiment is False
     assert operation.OrderCutsByRegion is False
     assert round(operation.ZStockToLeave.getValueAs("mm"), 9) == 0.0
     assert list(operation.Locations) == []
     assert tuple(round(value, 9) for value in operation.Workplane) == (0.0, 0.0, 1.0)
-    assert FeatureExtensions.readObjExtensionFeature(operation) == [
-        (job.Model.Group[0].Name, face_name, edge_name)
-    ]
-    assert round(operation.ExtensionLengthDefault.getValueAs("mm"), 9) == 2.0
-    assert operation.ExtensionCorners is False
     assert isinstance(operation.AdaptiveInputState, dict)
     assert isinstance(operation.AdaptiveOutputState, list)
     assert tuple(document.VibeCADTimeline.Operations)[-1] is operation
@@ -333,9 +265,9 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            "manufacture.adaptive",
             "adaptive",
-            "ExactCamJobAdaptiveRegionsControllerExtensionsAndParameters",
+            "ExactCamJobAdaptiveRegionsAndController",
             True,
             False,
         )
@@ -369,12 +301,14 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
+        runtimes = build_native_runtime_bindings(context, turn.tool_names)
+        runtimes[CAPABILITY_NAME] = NativeManufactureOperationRuntime(context)
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state_store,
             registry=registry,
             turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            runtimes=runtimes,
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
@@ -384,7 +318,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_OPERATION_CAPABILITY_NAME,
+                CAPABILITY_NAME,
                 json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-adaptive-{call_index}",
             )
@@ -398,7 +332,7 @@ def _run() -> None:
         undo_before = int(document.UndoCount)
 
         stale = json.loads(json.dumps(arguments))
-        stale["geometry"]["items"][0]["model"]["expected_state_sha256"] = "0" * 64
+        stale["geometry"][0]["model"]["expected_state_sha256"] = "0" * 64
         stale_result = call(stale, succeeds=False)
         assert stale_result["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE"
         assert tuple(obj.Name for obj in document.Objects) == initial_names
@@ -407,8 +341,7 @@ def _run() -> None:
         assert int(document.UndoCount) == undo_before
 
         invalid = json.loads(json.dumps(arguments))
-        invalid["geometry"]["items"][0]["subelements"] = [edge_name]
-        invalid["extensions"] = {"kind": "none"}
+        invalid["geometry"][0]["subelements"] = [edge_name]
         invalid_result = call(invalid, succeeds=False)
         assert invalid_result["error_code"] == "NATIVE_ARGUMENTS_INVALID"
         assert "closed horizontal wires" in invalid_result["error"]
@@ -438,29 +371,12 @@ def _run() -> None:
                 }
             ],
         }
-        assert result["adaptive"]["parameters"] == {
-            "adaptive": arguments["adaptive"],
-            "helix_entry": arguments["helix_entry"],
-            "depths": arguments["depths"],
-            "heights": arguments["heights"],
-            "coolant": arguments["coolant"],
-        }
+        assert result["adaptive"]["parameters"]["source"] == "setup_defaults"
+        assert result["adaptive"]["parameters"]["cut_region"] == "Inside"
+        assert result["adaptive"]["parameters"]["operation_type"] == "Clearing"
         assert result["adaptive"]["engine"] == "libarea.Adaptive2d"
         assert result["adaptive"]["tool_diameter_mm"] > 0.0
         assert result["adaptive"]["stock"]["object_name"] == job.Stock.Name
-        assert result["adaptive"]["extensions"] == {
-            "kind": "explicit",
-            "count": 1,
-            "items": [
-                {
-                    "object_name": model.Name,
-                    "feature": face_name,
-                    "edges": [edge_name],
-                }
-            ],
-            "default_length_mm": 2.0,
-            "extend_corners": False,
-        }
         assert result["adaptive"]["cutting_command_count"] >= 1
         assert result["job"]["operation_count"] == len(initial_operations) + 1
         assert [item["object_name"] for item in result["receipt"]["created"]] == [
@@ -515,8 +431,8 @@ def _run() -> None:
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_ADAPTIVE_GUI_OK "
-            "exact_targets=true regions=true parameters=true helix_entry=true "
-            "extensions=true toolpath=true history=true rollback=true undo=true "
+            "exact_targets=true regions=true setup_defaults=true "
+            "toolpath=true history=true rollback=true undo=true "
             "redo=true reopen=true",
             flush=True,
         )

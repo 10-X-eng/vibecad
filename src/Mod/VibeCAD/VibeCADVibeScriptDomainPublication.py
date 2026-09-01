@@ -13941,7 +13941,11 @@ def _copy_native_body_presentation(source: Any, body: Any) -> None:
 
     if hasattr(source, "ShapeMaterial") and hasattr(body, "ShapeMaterial"):
         try:
-            body.ShapeMaterial = source.ShapeMaterial
+            source_material = source.ShapeMaterial
+            if _material_card_state(body.ShapeMaterial) != _material_card_state(
+                source_material
+            ):
+                body.ShapeMaterial = source_material
         except Exception as exc:
             raise scripted_publication.PublicationError(
                 f"Could not copy ShapeMaterial from "

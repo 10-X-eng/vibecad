@@ -101,6 +101,21 @@ def test_optional_inventory_is_explicit_and_does_not_change_default_counts() -> 
 
 def test_expensive_manufacture_workflows_require_background_execution() -> None:
     expected = {
+        "CAM_Profile": ("Operations", "background"),
+        "CAM_Pocket_Shape": ("Operations", "background"),
+        "CAM_Pocket3D": ("Operations", "background"),
+        "CAM_Surface": ("Operations", "background"),
+        "CAM_Waterline": ("Operations", "background"),
+        "CAM_RotarySurface": ("Operations", "background"),
+        "CAM_MillFacing": ("Operations", "background"),
+        "CAM_Helix": ("Operations", "background"),
+        "CAM_Adaptive": ("Operations", "background"),
+        "CAM_Slot": ("Operations", "background"),
+        "CAM_Drilling": ("Operations", "background"),
+        "CAM_ThreadMilling": ("Operations", "background"),
+        "CAM_Engrave": ("Operations", "background"),
+        "CAM_Deburr": ("Operations", "background"),
+        "CAM_Vcarve": ("Operations", "background"),
         "CAM_Camotics": ("Operations", "presentation"),
         "CAM_SimulatorGL": ("Program", "presentation"),
         "CAM_Simulator": ("Program", "background"),
@@ -131,6 +146,142 @@ def test_expensive_manufacture_workflows_require_background_execution() -> None:
         command_id: transaction_behavior
         for command_id, (_group_label, transaction_behavior) in expected.items()
     }
+
+
+def test_common_cam_operations_resolve_to_focused_provider_tools() -> None:
+    expected = {
+        "CAM_MillFacing": ("manufacture.face", "mill_facing"),
+        "CAM_Pocket_Shape": ("manufacture.pocket", "pocket_shape"),
+        "CAM_Profile": ("manufacture.profile", "profile"),
+        "CAM_Drilling": ("manufacture.drill", "drilling"),
+        "CAM_Pocket3D": ("manufacture.pocket_3d", "pocket_3d"),
+        "CAM_Surface": ("manufacture.surface", "surface"),
+        "CAM_Waterline": ("manufacture.waterline", "waterline"),
+        "CAM_RotarySurface": ("manufacture.rotary_surface", "rotary_surface"),
+        "CAM_Helix": ("manufacture.helix", "helix"),
+        "CAM_Adaptive": ("manufacture.adaptive", "adaptive"),
+        "CAM_Slot": ("manufacture.slot", "slot"),
+        "CAM_ThreadMilling": ("manufacture.thread_mill", "thread_milling"),
+        "CAM_Engrave": ("manufacture.engrave", "engrave"),
+        "CAM_Deburr": ("manufacture.deburr", "deburr"),
+        "CAM_Vcarve": ("manufacture.v_carve", "v_carve"),
+        "CAM_Array": ("manufacture.array", "array"),
+        "CAM_SimpleCopy": ("manufacture.copy_path", "simple_copy"),
+    }
+
+    plans = {
+        command_id: _plan(
+            "manufacture",
+            "Operations",
+            RibbonAction(
+                command_id=command_id,
+                label=command_id,
+                available=True,
+                kind="command",
+            ),
+        )
+        for command_id in expected
+    }
+
+    assert {
+        command_id: (plan.capability_family, plan.operation_variant)
+        for command_id, plan in plans.items()
+    } == expected
+
+
+def test_cam_tool_dock_resolves_to_focused_add_tool() -> None:
+    plan = _plan(
+        "manufacture",
+        "Tools",
+        RibbonAction(
+            command_id="CAM_ToolBitDock",
+            label="ToolBit Library",
+            available=True,
+            kind="command",
+        ),
+    )
+    assert (plan.capability_family, plan.operation_variant) == (
+        "manufacture.add_tool",
+        "create_controller",
+    )
+
+
+def test_cam_inspection_commands_resolve_to_focused_tools() -> None:
+    expected = {
+        "CAM_Sanity": ("manufacture.validate", "validate_job"),
+        "CAM_Inspect": ("manufacture.toolpath", "inspect_toolpath"),
+        "CAM_SelectLoop": ("manufacture.loop", "detect_loop"),
+    }
+    plans = {
+        command_id: _plan(
+            "manufacture",
+            "Operations",
+            RibbonAction(
+                command_id=command_id,
+                label=command_id,
+                available=True,
+                kind="command",
+            ),
+        )
+        for command_id in expected
+    }
+    assert {
+        command_id: (plan.capability_family, plan.operation_variant)
+        for command_id, plan in plans.items()
+    } == expected
+
+
+def test_cam_operation_edit_commands_resolve_by_intent() -> None:
+    expected = {
+        "CAM_OpActiveToggle": ("manufacture.operations", "set_active"),
+        "CAM_OperationCopy": ("manufacture.operations", "copy_operations"),
+        "CAM_DressupArray": ("manufacture.dressup", "array_dressup"),
+        "CAM_DressupZCorrect": ("manufacture.dressup", "z_correct_dressup"),
+    }
+    plans = {
+        command_id: _plan(
+            "manufacture",
+            "Modify",
+            RibbonAction(
+                command_id=command_id,
+                label=command_id,
+                available=True,
+                kind="command",
+            ),
+        )
+        for command_id in expected
+    }
+    assert {
+        command_id: (plan.capability_family, plan.operation_variant)
+        for command_id, plan in plans.items()
+    } == expected
+
+
+def test_cam_post_commands_resolve_by_output_scope() -> None:
+    expected = {
+        "CAM_Post": ("manufacture.post_job", "complete_job"),
+        "CAM_PostSelected": (
+            "manufacture.post_selected",
+            "selected_operations",
+        ),
+    }
+    plans = {
+        command_id: _plan(
+            "manufacture",
+            "Program",
+            RibbonAction(
+                command_id=command_id,
+                label=command_id,
+                available=True,
+                kind="command",
+            ),
+        )
+        for command_id in expected
+    }
+    assert {
+        command_id: (plan.capability_family, plan.operation_variant)
+        for command_id, plan in plans.items()
+    } == expected
 
 
 def test_drawing_page_actions_resolve_to_four_exact_variants() -> None:

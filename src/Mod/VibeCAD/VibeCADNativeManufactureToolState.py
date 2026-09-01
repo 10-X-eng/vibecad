@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from VibeCADNativeManufactureErrors import NativeManufactureError
 
 
-MAX_TOOL_CATALOG_PAGE_SIZE = 64
+MAX_TOOL_CATALOG_PAGE_SIZE = 128
 MAX_TOOL_CATALOG_ITEMS = 4096
 MAX_TOOL_ASSET_BYTES = 2 * 1024 * 1024
 MAX_TOOL_PROPERTIES = 64
@@ -137,9 +137,103 @@ def tool_property_state(tool: Any) -> list[dict[str, Any]]:
     return [_property_descriptor(tool, name) for name in sorted(names)]
 
 
-def apply_tool_property_changes(tool: Any, changes: tuple[Mapping[str, Any], ...]) -> None:
-    """Apply exact typed property changes to an attached ToolBit object."""
+def normalize_tool_property_changes(
+    tool: Any,
+    changes: tuple[Mapping[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    """Resolve natural values against the exact ToolBit property contract."""
 
+    current = {item["property_name"]: item for item in tool_property_state(tool)}
+    if not 1 <= len(changes) <= MAX_TOOL_PROPERTIES:
+        raise NativeManufactureError(
+            "tool_property_changes must contain 1 through 64 distinct changes.",
+            error_code="NATIVE_ARGUMENTS_INVALID",
+        )
+    normalized = []
+    seen: set[str] = set()
+    for change in changes:
+        if not isinstance(change, Mapping) or set(change) != {
+            "property_name",
+            "value",
+        }:
+            raise NativeManufactureError(
+                "Every tool property change must contain property_name and value.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+            )
+        name = str(change.get("property_name") or "").strip()
+        expected = current.get(name)
+        if expected is None or name in seen:
+            raise NativeManufactureError(
+                f"CAM tool property {name!r} is unavailable or duplicated.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+            )
+        seen.add(name)
+        supplied = change.get("value")
+        if isinstance(supplied, Mapping):
+            if set(supplied) != {"kind", "value"}:
+                raise NativeManufactureError(
+                    f"CAM tool property {name!r} has an invalid typed value.",
+                    error_code="NATIVE_ARGUMENTS_INVALID",
+                )
+            kind = str(supplied.get("kind") or "")
+            raw = supplied.get("value")
+        else:
+            kind = str(expected["kind"])
+            raw = supplied
+        if kind != expected["kind"]:
+            raise NativeManufactureError(
+                f"CAM tool property {name!r} requires value kind {expected['kind']!r}.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+                repair={"property": expected},
+            )
+        if kind in {"length_mm", "angle_degrees", "number"}:
+            if (
+                isinstance(raw, bool)
+                or not isinstance(raw, (int, float))
+                or not math.isfinite(raw)
+            ):
+                raise NativeManufactureError(
+                    f"CAM tool property {name!r} requires a finite number.",
+                    error_code="NATIVE_ARGUMENTS_INVALID",
+                )
+        elif kind == "integer":
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                raise NativeManufactureError(
+                    f"CAM tool property {name!r} requires an integer.",
+                    error_code="NATIVE_ARGUMENTS_INVALID",
+                )
+        elif kind == "boolean":
+            if not isinstance(raw, bool):
+                raise NativeManufactureError(
+                    f"CAM tool property {name!r} requires a boolean.",
+                    error_code="NATIVE_ARGUMENTS_INVALID",
+                )
+        elif not isinstance(raw, str) or len(raw) > 320:
+            raise NativeManufactureError(
+                f"CAM tool property {name!r} requires a bounded string.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+            )
+        elif kind == "choice" and raw not in expected.get("allowed_values", ()):
+            raise NativeManufactureError(
+                f"CAM tool property {name!r} rejected choice {raw!r}.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+                repair={"allowed_values": expected.get("allowed_values", [])},
+            )
+        normalized.append(
+            {"property_name": name, "value": {"kind": kind, "value": raw}}
+        )
+    return tuple(normalized)
+
+
+def apply_tool_property_changes(
+    tool: Any,
+    changes: tuple[Mapping[str, Any], ...],
+    *,
+    shape: Any = None,
+) -> None:
+    """Apply exact typed property changes to an attached or detached ToolBit."""
+
+    changes = normalize_tool_property_changes(tool, changes)
     current = {
         item["property_name"]: item for item in tool_property_state(tool)
     }
@@ -216,8 +310,16 @@ def apply_tool_property_changes(tool: Any, changes: tuple[Mapping[str, Any], ...
         try:
             setattr(tool, name, value)
             if expected.get("group") == "Shape":
-                shape = getattr(getattr(tool, "Proxy", None), "_tool_bit_shape", None)
-                set_parameter = getattr(shape, "set_parameter", None)
+                target_shape = (
+                    shape
+                    if shape is not None
+                    else getattr(
+                        getattr(tool, "Proxy", None),
+                        "_tool_bit_shape",
+                        None,
+                    )
+                )
+                set_parameter = getattr(target_shape, "set_parameter", None)
                 if callable(set_parameter):
                     set_parameter(name, tool.getPropertyByName(name))
         except Exception as exc:
@@ -253,7 +355,13 @@ class ToolCatalogState:
     state_sha256: str
     records: tuple[ToolCatalogRecord, ...]
 
-    def page(self, offset: int, page_size: int) -> dict[str, Any]:
+    def page(
+        self,
+        offset: int,
+        page_size: int,
+        *,
+        query: str = "",
+    ) -> dict[str, Any]:
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise NativeManufactureError(
                 "offset must be a non-negative integer.",
@@ -265,16 +373,39 @@ class ToolCatalogState:
             or not 1 <= page_size <= MAX_TOOL_CATALOG_PAGE_SIZE
         ):
             raise NativeManufactureError(
-                "page_size must be an integer from 1 through 64.",
+                "page_size must be an integer from 1 through 128.",
                 error_code="NATIVE_ARGUMENTS_INVALID",
             )
-        page = self.records[offset : offset + page_size]
+        clean_query = str(query or "").strip()
+        if len(clean_query) > 80:
+            raise NativeManufactureError(
+                "query must contain at most 80 characters.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+            )
+        needle = re.sub(r"[^a-z0-9]+", "", clean_query.casefold())
+        records = (
+            tuple(
+                record
+                for record in self.records
+                if needle
+                in re.sub(
+                    r"[^a-z0-9]+",
+                    "",
+                    f"{record.label} {record.shape_type}".casefold(),
+                )
+            )
+            if needle
+            else self.records
+        )
+        page = records[offset : offset + page_size]
         return {
             "state_sha256": self.state_sha256,
-            "count": len(self.records),
+            "catalog_count": len(self.records),
+            "count": len(records),
+            "query": clean_query,
             "offset": offset,
             "items": [record.summary() for record in page],
-            "next_offset": offset + len(page) if offset + len(page) < len(self.records) else None,
+            "next_offset": offset + len(page) if offset + len(page) < len(records) else None,
         }
 
 

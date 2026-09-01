@@ -17,9 +17,11 @@ from VibeCADNativeManufactureSimulation import (
     valid_simulation_shape,
 )
 from VibeCADNativeManufactureState import (
+    capture_other_job_states,
     job_state,
     operation_active_state,
-    operation_reference_state,
+    operation_state,
+    other_job_states_are_current,
     resolve_job_target,
 )
 
@@ -82,9 +84,18 @@ class SimulationTimelineState:
 
 
 @dataclass(frozen=True, slots=True)
+class FrozenMachineAxis:
+    name: str
+    kind: str
+    minimum: float
+    maximum: float
+
+
+@dataclass(frozen=True, slots=True)
 class FrozenNativeSimulation:
     job: Any
     expected_job_state_sha256: str
+    other_job_states: tuple[tuple[Any, str], ...]
     job_operations: tuple[Any, ...]
     objects_before: tuple[Any, ...]
     timeline_before: SimulationTimelineState
@@ -94,6 +105,9 @@ class FrozenNativeSimulation:
     tool_resolution_mm: float
     stock_shape: Any
     stock_z_max_mm: float
+    protected_model_shapes: tuple[Any, ...]
+    machine_name: str
+    machine_axes: tuple[FrozenMachineAxis, ...]
     runs: tuple[FrozenSimulationRun, ...]
     source_command_count: int
     executable_command_count: int
@@ -200,6 +214,83 @@ def _validate_commands(
     return executable
 
 
+def _tool_sweep_parameters(tool: Any) -> tuple[str, tuple[tuple[str, float], ...]]:
+    shape_id = str(getattr(tool, "ShapeID", "") or "").strip()
+    names = (
+        "Diameter",
+        "CuttingEdgeHeight",
+        "Length",
+        "TipAngle",
+        "CuttingEdgeAngle",
+        "TipDiameter",
+    )
+    values = []
+    properties = set(str(name) for name in getattr(tool, "PropertiesList", ()) or ())
+    for name in names:
+        if name not in properties:
+            continue
+        raw = getattr(tool, name)
+        value = float(getattr(raw, "Value", raw))
+        if not math.isfinite(value):
+            _error(
+                f"CAM ToolBit {tool.Name!r} has non-finite {name}.",
+                "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
+            )
+        values.append((name, value))
+    return shape_id, tuple(values)
+
+
+def _published_cycle_time_seconds(operation: Any) -> float | None:
+    value = str(getattr(operation, "CycleTime", "") or "").strip()
+    parts = value.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        hours, minutes, seconds = (float(part) for part in parts)
+    except (TypeError, ValueError):
+        return None
+    if (
+        any(not math.isfinite(part) or part < 0.0 for part in (hours, minutes, seconds))
+        or minutes >= 60.0
+        or seconds >= 60.0
+    ):
+        return None
+    total = hours * 3600.0 + minutes * 60.0 + seconds
+    return round(total, 6)
+
+
+def _cycle_time_estimate(operation: Any, controller: Any) -> tuple[float | None, bool]:
+    published = _published_cycle_time_seconds(operation)
+    if published is not None and published > 0.0:
+        return published, False
+    try:
+        horizontal_feed = float(controller.HorizFeed.Value)
+        vertical_feed = float(controller.VertFeed.Value)
+        horizontal_rapid = float(controller.HorizRapid.Value)
+        vertical_rapid = float(controller.VertRapid.Value)
+    except (AttributeError, TypeError, ValueError):
+        return None, False
+    values = (horizontal_feed, vertical_feed, horizontal_rapid, vertical_rapid)
+    if any(not math.isfinite(value) or value < 0.0 for value in values):
+        return None, False
+    if horizontal_feed <= 0.0 or vertical_feed <= 0.0:
+        return None, False
+    try:
+        seconds = float(
+            operation.Path.getCycleTime(
+                horizontal_feed,
+                vertical_feed,
+                horizontal_rapid,
+                vertical_rapid,
+            )
+        )
+    except Exception:
+        return None, False
+    if not math.isfinite(seconds) or seconds < 0.0:
+        return None, False
+    return round(seconds, 6), horizontal_rapid == 0.0 or vertical_rapid == 0.0
+
+
 def _simulation_resolutions(stock_shape: Any, quality: int) -> tuple[float, float, float]:
     box = stock_shape.BoundBox
     maximum_xy = max(float(box.XLength), float(box.YLength))
@@ -231,6 +322,57 @@ def _simulation_resolutions(stock_shape: Any, quality: int) -> tuple[float, floa
     return values
 
 
+def _machine_travel_configuration(job: Any) -> tuple[str, tuple[FrozenMachineAxis, ...]]:
+    machine_name = str(getattr(job, "Machine", "") or "").strip()
+    if not machine_name or machine_name == "<any>":
+        return "", ()
+    try:
+        from Machine.models.machine import MachineFactory
+
+        machine = MachineFactory.get_machine(machine_name)
+    except Exception as exc:
+        raise NativeManufactureError(
+            f"CAM machine {machine_name!r} could not be loaded for travel verification.",
+            error_code="NATIVE_MANUFACTURE_MACHINE_INVALID",
+            repair={"machine": machine_name, "reason": str(exc)[:240]},
+        ) from exc
+
+    linear_factor = 25.4 if str(machine.configuration_units) == "imperial" else 1.0
+    axes = []
+    for kind, configured_axes, factor in (
+        ("linear", machine.linear_axes, linear_factor),
+        ("rotary", machine.rotary_axes, 1.0),
+    ):
+        for axis_name, axis in sorted(configured_axes.items()):
+            minimum = float(axis.min_limit) * factor
+            maximum = float(axis.max_limit) * factor
+            if (
+                not axis_name
+                or not math.isfinite(minimum)
+                or not math.isfinite(maximum)
+                or minimum >= maximum
+            ):
+                _error(
+                    f"CAM machine {machine_name!r} has invalid {axis_name or kind!r} "
+                    "travel limits.",
+                    "NATIVE_MANUFACTURE_MACHINE_INVALID",
+                )
+            axes.append(
+                FrozenMachineAxis(
+                    name=str(axis_name).upper(),
+                    kind=kind,
+                    minimum=minimum,
+                    maximum=maximum,
+                )
+            )
+    if not axes:
+        _error(
+            f"CAM machine {machine_name!r} has no configured travel axes.",
+            "NATIVE_MANUFACTURE_MACHINE_INVALID",
+        )
+    return machine_name, tuple(axes)
+
+
 def preflight_native_simulation(
     document: Any,
     *,
@@ -260,6 +402,7 @@ def preflight_native_simulation(
         _error("Native CAM simulation requires one through 64 exact operations.")
 
     exact_job, job_before = resolve_job_target(document, job)
+    other_job_states = capture_other_job_states(document, (exact_job,))
     _usable_at_history_position(document, exact_job, "CAM Job")
     group = tuple(getattr(getattr(exact_job, "Operations", None), "Group", ()) or ())
     positions = {id(operation): index for index, operation in enumerate(group)}
@@ -358,6 +501,11 @@ def preflight_native_simulation(
                 f"CAM operation {operation.Name!r} has an invalid tool number or diameter.",
                 "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
             )
+        tool_shape_id, tool_parameters = _tool_sweep_parameters(tool)
+        cycle_time_seconds, cycle_time_rapid_fallback = _cycle_time_estimate(
+            operation,
+            controller,
+        )
         runs.append(
             FrozenSimulationRun(
                 operation=operation,
@@ -369,6 +517,10 @@ def preflight_native_simulation(
                 tool_shape=tool_shape.copy(),
                 tool_number=tool_number,
                 diameter_mm=diameter,
+                tool_shape_id=tool_shape_id,
+                tool_parameters=tool_parameters,
+                cycle_time_seconds=cycle_time_seconds,
+                cycle_time_rapid_fallback=cycle_time_rapid_fallback,
             )
         )
 
@@ -385,6 +537,17 @@ def preflight_native_simulation(
             "NATIVE_MANUFACTURE_SIMULATION_STOCK_INVALID",
         )
     _usable_at_history_position(document, stock, "CAM stock")
+    protected_model_shapes = tuple(
+        getattr(model, "Shape", None).copy()
+        for model in tuple(getattr(getattr(exact_job, "Model", None), "Group", ()) or ())
+        if valid_simulation_shape(getattr(model, "Shape", None))
+    )
+    if not protected_model_shapes:
+        _error(
+            "The exact CAM Job has no valid protected model shape.",
+            "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
+        )
+    machine_name, machine_axes = _machine_travel_configuration(exact_job)
     accuracy, stock_resolution, tool_resolution = _simulation_resolutions(
         stock_shape,
         quality,
@@ -395,8 +558,13 @@ def preflight_native_simulation(
             "The exact CAM Job changed while native simulation inputs were frozen.",
             "NATIVE_MANUFACTURE_STATE_STALE",
         )
+    if not other_job_states_are_current(document, other_job_states):
+        _error(
+            "Another CAM setup changed while simulation inputs were frozen.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
     for run in runs:
-        if operation_reference_state(run.operation).get("state_sha256") != (
+        if operation_state(run.operation).get("state_sha256") != (
             run.expected_state_sha256
         ):
             _error(
@@ -407,6 +575,7 @@ def preflight_native_simulation(
     return FrozenNativeSimulation(
         job=exact_job,
         expected_job_state_sha256=str(job_before["state_sha256"]),
+        other_job_states=other_job_states,
         job_operations=group,
         objects_before=tuple(document.Objects),
         timeline_before=_timeline_state(document),
@@ -416,6 +585,9 @@ def preflight_native_simulation(
         tool_resolution_mm=tool_resolution,
         stock_shape=stock_shape.copy(),
         stock_z_max_mm=float(stock_shape.BoundBox.ZMax),
+        protected_model_shapes=protected_model_shapes,
+        machine_name=machine_name,
+        machine_axes=machine_axes,
         runs=tuple(runs),
         source_command_count=source_count,
         executable_command_count=executable_count,
@@ -438,6 +610,7 @@ def validate_native_simulation(
         != frozen.job_operations
         or job_state(frozen.job).get("state_sha256")
         != frozen.expected_job_state_sha256
+        or not other_job_states_are_current(document, frozen.other_job_states)
         or _timeline_state(document) != frozen.timeline_before
     ):
         _error(
@@ -451,7 +624,7 @@ def validate_native_simulation(
     }
     for run in frozen.runs:
         position = positions.get(id(run.operation), -1)
-        current = operation_reference_state(run.operation)
+        current = operation_state(run.operation)
         if (
             position <= previous_position
             or current.get("state_sha256") != run.expected_state_sha256

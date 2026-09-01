@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import replace
+import importlib
+from dataclasses import dataclass, field, replace
 import hashlib
 import math
 import re
@@ -14,8 +14,10 @@ from typing import Any, Callable, Mapping
 from VibeCADNativeManufactureContract import clean_path_operation_label
 from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureState import (
+    capture_other_job_states,
     job_state,
     operation_state,
+    other_job_states_are_current,
     resolve_job_target,
     resolve_tool_controller_target,
     tool_controller_state,
@@ -34,6 +36,7 @@ LINKING_STRATEGIES = {
     "tool_shape": "Tool Shape",
 }
 _SUBELEMENT_NAME = re.compile(r"^(Face|Edge|Vertex)([1-9][0-9]*)$")
+_CANONICAL_BREP_TOLERANCE_MM = 1.0e-7
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +44,7 @@ class PreparedOperationGeometry:
     public_source: Any
     job_resource: Any
     source_state_sha256: str
+    source_shape: Any = field(repr=False, compare=False)
     shape_sha256: str
     subelements: tuple[str, ...]
     element_sha256: tuple[str, ...]
@@ -64,6 +68,7 @@ class PreparedOperationBoundary:
     geometry: tuple[PreparedOperationGeometry, ...]
     selected_types: frozenset[str]
     job_operations_before: tuple[Any, ...]
+    other_job_states: tuple[tuple[Any, str], ...]
     objects_before: tuple[Any, ...]
     visibility_before: tuple[tuple[Any, bool], ...]
     selection_before: Any
@@ -109,6 +114,55 @@ def exact_fields(value: Any, fields: frozenset[str], noun: str) -> Mapping[str, 
     if not isinstance(value, Mapping) or set(value) != fields:
         _error(f"{noun} must contain exactly: {', '.join(sorted(fields))}.")
     return value
+
+
+def merge_subelement_geometry_items(
+    raw_items: Any,
+    *,
+    noun: str,
+    max_items: int,
+    max_subelements: int,
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """Return the canonical per-model union of exact subelement selections."""
+    if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= max_items:
+        _error(f"{noun} subelements geometry requires 1 through {max_items} model items.")
+    order: list[str] = []
+    grouped: dict[str, tuple[str, list[str], set[str]]] = {}
+    total = 0
+    for item in raw_items:
+        if not isinstance(item, Mapping) or set(item) != {"model", "subelements"}:
+            _error(f"Each {noun} geometry item requires model and subelements.")
+        target = item["model"]
+        if not isinstance(target, Mapping) or set(target) != {
+            "object_name",
+            "expected_state_sha256",
+        }:
+            _error(f"Each {noun} model requires one exact state target.")
+        name = str(target.get("object_name") or "")
+        expected = str(target.get("expected_state_sha256") or "")
+        raw_names = item["subelements"]
+        if not isinstance(raw_names, list) or not raw_names:
+            _error(f"Each {noun} model requires at least one subelement.")
+        if name not in grouped:
+            order.append(name)
+            grouped[name] = (expected, [], set())
+        current_expected, names, seen_names = grouped[name]
+        if expected != current_expected:
+            _error(f"{noun} model {name!r} has conflicting exact states.")
+        for value in raw_names:
+            subelement = str(value)
+            if subelement in seen_names:
+                continue
+            total += 1
+            if total > max_subelements:
+                _error(
+                    f"A {noun} request accepts at most {max_subelements} total subelements."
+                )
+            names.append(subelement)
+            seen_names.add(subelement)
+    return tuple(
+        (name, grouped[name][0], tuple(grouped[name][1])) for name in order
+    )
 
 
 def clear_operation_expressions(
@@ -240,6 +294,77 @@ def shape_sha256(shape: Any, noun: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _canonical_geometry_sha256(shape: Any, noun: str) -> str:
+    """Hash geometry while excluding non-geometric OCCT tolerance drift."""
+
+    copy_shape = getattr(shape, "copy", None)
+    if not callable(copy_shape):
+        return shape_sha256(shape, noun)
+    try:
+        canonical = copy_shape()
+        fix_tolerance = getattr(canonical, "fixTolerance", None)
+        if callable(fix_tolerance):
+            fix_tolerance(_CANONICAL_BREP_TOLERANCE_MM)
+    except Exception as exc:
+        raise NativeManufactureError(
+            f"The exact {noun} geometry could not be canonicalized.",
+            error_code="NATIVE_MANUFACTURE_STATE_INVALID",
+        ) from exc
+    return shape_sha256(canonical, noun)
+
+
+def _public_shape_is_unchanged(
+    actual_shape: Any,
+    frozen_shape: Any,
+    frozen_shape_sha256: str,
+    noun: str,
+) -> tuple[bool, str]:
+    """Compare exact geometry when OCC returns a fresh equivalent shape identity."""
+
+    same_shape = getattr(actual_shape, "isSame", None)
+    if callable(same_shape) and same_shape(frozen_shape):
+        return True, frozen_shape_sha256
+    actual_shape_sha256 = shape_sha256(actual_shape, noun)
+    if actual_shape_sha256 == frozen_shape_sha256:
+        return True, actual_shape_sha256
+    unchanged = _canonical_geometry_sha256(
+        actual_shape,
+        noun,
+    ) == _canonical_geometry_sha256(frozen_shape, noun)
+    return unchanged, actual_shape_sha256
+
+
+def _job_resources_are_unchanged(
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> bool:
+    """Compare durable Job model/tool fingerprints, not recompute bookkeeping."""
+
+    def fingerprints(state: Mapping[str, Any], name: str, key: str) -> tuple[str, ...] | None:
+        values = state.get(name)
+        if not isinstance(values, list):
+            return None
+        result = tuple(
+            str(value.get(key) or "") if isinstance(value, Mapping) else ""
+            for value in values
+        )
+        return result if all(result) else None
+
+    return all(
+        frozen is not None and frozen == current
+        for frozen, current in (
+            (
+                fingerprints(before, "models", "resource_state_sha256"),
+                fingerprints(after, "models", "resource_state_sha256"),
+            ),
+            (
+                fingerprints(before, "tools", "state_sha256"),
+                fingerprints(after, "tools", "state_sha256"),
+            ),
+        )
+    )
+
+
 def _job_model_map(job: Any) -> dict[str, tuple[Any, Any]]:
     result: dict[str, tuple[Any, Any]] = {}
     for resource in tuple(getattr(getattr(job, "Model", None), "Group", ()) or ()):
@@ -314,6 +439,7 @@ def _prepare_geometry(
                 public_source=public,
                 job_resource=resource,
                 source_state_sha256=model_states.get(name, ""),
+                source_shape=public.Shape,
                 shape_sha256=shape_sha256(public.Shape, f"CAM model {name}"),
                 subelements=(),
                 element_sha256=(),
@@ -366,6 +492,7 @@ def _prepare_geometry(
                     public_source=public,
                     job_resource=resource,
                     source_state_sha256=expected,
+                    source_shape=public.Shape,
                     shape_sha256=shape_sha256(public.Shape, f"CAM model {name}"),
                     subelements=(),
                     element_sha256=(),
@@ -378,30 +505,18 @@ def _prepare_geometry(
             f"{noun} geometry must be entire_job, whole_models, or a closed "
             "subelements request."
         )
-    raw_items = request.get("items")
-    if (
-        not isinstance(raw_items, list)
-        or not 1 <= len(raw_items) <= MAX_OPERATION_GEOMETRY_ITEMS
-    ):
-        _error(f"{noun} subelements geometry requires 1 through 32 model items.")
+    grouped_items = merge_subelement_geometry_items(
+        request.get("items"),
+        noun=noun,
+        max_items=MAX_OPERATION_GEOMETRY_ITEMS,
+        max_subelements=MAX_OPERATION_SUBELEMENTS,
+    )
     prepared_items = []
-    seen_models: set[str] = set()
     selected_types: set[str] = set()
-    total = 0
-    for item in raw_items:
-        if not isinstance(item, Mapping) or set(item) != {"model", "subelements"}:
-            _error(f"Each {noun} geometry item requires model and subelements.")
-        target = item["model"]
-        if not isinstance(target, Mapping) or set(target) != {
-            "object_name",
-            "expected_state_sha256",
-        }:
-            _error(f"Each {noun} model requires one exact state target.")
-        name = str(target.get("object_name") or "")
-        expected = str(target.get("expected_state_sha256") or "")
-        if name in seen_models or name not in models:
+    for name, expected, names in grouped_items:
+        if name not in models:
             _error(
-                f"{noun} models must be distinct public sources owned by the exact Job.",
+                f"{noun} model {name!r} is not a public source owned by the exact Job.",
                 "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
             )
         if model_states.get(name) != expected:
@@ -415,15 +530,6 @@ def _prepare_geometry(
                 f"CAM model {name!r} no longer exists.",
                 "NATIVE_MANUFACTURE_TARGET_STALE",
             )
-        raw_names = item["subelements"]
-        if not isinstance(raw_names, list) or not raw_names:
-            _error(f"Each {noun} model requires at least one subelement.")
-        names = tuple(str(value) for value in raw_names)
-        if len(names) != len(set(names)):
-            _error(f"{noun} subelement names must be unique per model.")
-        total += len(names)
-        if total > MAX_OPERATION_SUBELEMENTS:
-            _error(f"A {noun} request accepts at most 64 total subelements.")
         element_hashes = []
         for subelement in names:
             element_type, element_hash = _validate_subelement(
@@ -434,12 +540,12 @@ def _prepare_geometry(
             )
             selected_types.add(element_type)
             element_hashes.append(element_hash)
-        seen_models.add(name)
         prepared_items.append(
             PreparedOperationGeometry(
                 public_source=public,
                 job_resource=resource,
                 source_state_sha256=expected,
+                source_shape=public.Shape,
                 shape_sha256=shape_sha256(public.Shape, f"CAM model {name}"),
                 subelements=names,
                 element_sha256=tuple(element_hashes),
@@ -509,6 +615,7 @@ def preflight_operation_boundary(
         job_operations_before=tuple(
             getattr(getattr(job, "Operations", None), "Group", ()) or ()
         ),
+        other_job_states=capture_other_job_states(document, (job,)),
         objects_before=tuple(document.Objects),
         visibility_before=tuple(
             (obj, bool(obj.ViewObject.Visibility))
@@ -579,6 +686,11 @@ def assert_operation_boundary_current(
             f"The CAM Job or controller changed before {prepared.noun} creation.",
             "NATIVE_MANUFACTURE_STATE_STALE",
         )
+    if not other_job_states_are_current(document, prepared.other_job_states):
+        _error(
+            f"Another CAM setup changed before {prepared.noun} creation.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
     for item in prepared.geometry:
         if (
             document.getObject(str(item.public_source.Name)) is not item.public_source
@@ -616,14 +728,30 @@ def _add_base_geometry(operation: Any, prepared: PreparedOperationBoundary) -> N
             operation.Proxy.addBase(operation, item.public_source, subelement)
 
 
+def native_operation_presentation(
+    module_name: str,
+) -> tuple[ProviderFactory | None, Any | None]:
+    """Resolve GUI presentation only when this process owns a GUI."""
+
+    import FreeCAD as App
+
+    clean_name = str(module_name or "").strip()
+    if not clean_name.startswith("Path.Op.Gui."):
+        raise ValueError("A CAM presentation module must be in Path.Op.Gui.")
+    if not App.GuiUp:
+        return None, None
+    module = importlib.import_module(clean_name)
+    return module.PathOpGui.ViewProvider, module.Command.res
+
+
 def create_native_operation(
     document: Any,
     *,
     prepared: PreparedOperationBoundary,
     internal_name: str,
     operation_factory: OperationFactory,
-    provider_factory: ProviderFactory,
-    provider_resource: Any,
+    provider_factory: ProviderFactory | None,
+    provider_resource: Any | None,
     configure: OperationConfigurator,
     payload: Mapping[str, Any],
 ) -> NativeMutationDraft:
@@ -638,10 +766,22 @@ def create_native_operation(
         )
         _add_base_geometry(operation, prepared)
         configure(operation)
-        provider = provider_factory(operation.ViewObject, provider_resource)
-        operation.ViewObject.Proxy = provider
-        provider.deleteOnReject = False
-        operation.ViewObject.Visibility = True
+        view = getattr(operation, "ViewObject", None)
+        if view is None:
+            if provider_factory is not None or provider_resource is not None:
+                raise RuntimeError(
+                    "A headless CAM operation cannot receive GUI presentation."
+                )
+            provider = None
+        else:
+            if provider_factory is None or provider_resource is None:
+                raise RuntimeError(
+                    "A GUI CAM operation requires its native view provider."
+                )
+            provider = provider_factory(view, provider_resource)
+            view.Proxy = provider
+            provider.deleteOnReject = False
+            view.Visibility = True
         for existing, visible in prepared.visibility_before:
             if bool(existing.ViewObject.Visibility) is not visible:
                 existing.ViewObject.Visibility = visible
@@ -818,7 +958,14 @@ def verify_native_operation(
             f"The created {prepared.noun} lost its exact tool controller.",
             "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",
         )
-    if operation.ViewObject.Proxy is not provider or bool(provider.deleteOnReject):
+    view = getattr(operation, "ViewObject", None)
+    if view is None:
+        if provider is not None:
+            _error(
+                f"The headless {prepared.noun} retained unexpected GUI presentation.",
+                "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",
+            )
+    elif provider is None or view.Proxy is not provider or bool(provider.deleteOnReject):
         _error(
             f"The created {prepared.noun} did not retain its accepted native view provider.",
             "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",
@@ -830,11 +977,14 @@ def verify_native_operation(
         )
     assert_settings(operation, payload)
     for item in prepared.geometry:
-        actual_shape_sha256 = shape_sha256(
-            item.public_source.Shape,
+        actual_shape = item.public_source.Shape
+        unchanged, actual_shape_sha256 = _public_shape_is_unchanged(
+            actual_shape,
+            item.source_shape,
+            item.shape_sha256,
             f"CAM model {item.public_source.Name}",
         )
-        if actual_shape_sha256 != item.shape_sha256:
+        if not unchanged:
             raise NativeManufactureError(
                 f"{prepared.noun} creation changed public model source "
                 f"{item.public_source.Name!r}.",
@@ -889,11 +1039,15 @@ def verify_native_operation(
     if (
         job_after["counts"]["operations"]
         != prepared.job_before["counts"]["operations"] + 1
-        or job_after["models"] != prepared.job_before["models"]
-        or job_after["tools"] != prepared.job_before["tools"]
+        or not _job_resources_are_unchanged(prepared.job_before, job_after)
     ):
         _error(
             f"{prepared.noun} creation changed unrelated CAM Job resources.",
+            "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",
+        )
+    if not other_job_states_are_current(document, prepared.other_job_states):
+        _error(
+            f"{prepared.noun} creation changed another CAM setup.",
             "NATIVE_MANUFACTURE_OPERATION_POSTCONDITION_FAILED",
         )
     extra = additional_verify(operation, payload) if additional_verify else None

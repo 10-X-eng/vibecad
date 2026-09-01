@@ -125,11 +125,20 @@ class CAMWorkbench(Workbench):
         Path.GuiInit.Startup()
 
         # build commands list
-        projcmdlist = ["CAM_Job", "CAM_PropertyBag", "CAM_Sanity"]
+        projcmdlist = [
+            "CAM_Job",
+            "CAM_FollowUpSetup",
+            "CAM_PropertyBag",
+            "CAM_Sanity",
+        ]
         postcmdlist = ["CAM_Post", "CAM_PostSelected"]
         toolcmdlist = ["CAM_Inspect", "CAM_SelectLoop", "CAM_OpActiveToggle"]
 
-        simcmdlist = ["CAM_SimulatorGL", "CAM_Simulator"]
+        simcmdlist = [
+            "CAM_SimulatorGL",
+            "CAM_Simulator",
+            "CAM_RetainSimulationResult",
+        ]
         prefs = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/CAM")
         simLegacy = prefs.GetBool("DefaultSimulatorLegacy", False)
         if simLegacy:

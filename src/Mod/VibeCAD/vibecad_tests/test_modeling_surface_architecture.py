@@ -49,7 +49,6 @@ PRODUCTION_READY_VIBESCRIPT_WORKBENCHES = frozenset(
         "InspectionWorkbench",
         "RobotWorkbench",
         "FemWorkbench",
-        "CAMWorkbench",
         "TechDrawWorkbench",
     }
 )
@@ -6979,13 +6978,12 @@ def test_domain_context_is_aggregate_bounded_and_points_to_exact_inspection(
     assert "vibescript.read_source" in output_facts["subelement_details_guidance"]
 
 
-def test_generic_prototype_adapters_cannot_surface_unfinished_domains() -> None:
+def test_nonproduction_packs_cannot_surface_unfinished_domains() -> None:
     for workbench, pack in domains.VIBESCRIPT_WORKBENCH_PACKS.items():
         if pack.production_ready:
             continue
         adapter = domains.get_domain_adapter(pack.domain)
         assert adapter is not None
-        assert adapter.production_ready is False
         available, reason = domains.domain_availability(workbench)
         assert available is False
         assert "production-readiness gate" in reason
@@ -7754,6 +7752,61 @@ def test_occurrence_screenshot_isolation_hides_definition_but_preserves_body_tip
         assert definition.ViewObject.Visibility is False
         assert tip.ViewObject.Visibility is True
         assert unrelated.ViewObject.Visibility is False
+
+    assert all(obj.ViewObject.Visibility is True for obj in objects)
+
+
+def test_screenshot_isolation_restores_children_hidden_by_container_side_effects() -> None:
+    from tool_impl.service import core_set_view
+
+    class View:
+        def __init__(self):
+            self._visible = True
+            self.children = []
+
+        @property
+        def Visibility(self):
+            return self._visible
+
+        @Visibility.setter
+        def Visibility(self, visible):
+            self._visible = bool(visible)
+            if not self._visible:
+                for child in self.children:
+                    child.Visibility = False
+
+    class Object:
+        def __init__(self, name: str, type_id: str = "Part::Feature"):
+            self.Name = name
+            self.TypeId = type_id
+            self.ViewObject = View()
+            self.Tip = None
+
+        def getParentGeoFeatureGroup(self):
+            return None
+
+        def getParentGroup(self):
+            return None
+
+    target = Object("FixtureBlock")
+    operation = Object("FaceOperation", "Path::FeaturePython")
+    controller = Object("ToolController", "Path::FeaturePython")
+    job = Object("Job", "App::DocumentObjectGroupPython")
+    job.ViewObject.children = [operation.ViewObject, controller.ViewObject]
+    objects = [target, job, operation, controller]
+
+    class Document:
+        Objects = objects
+
+        @staticmethod
+        def getObject(name):
+            return next((obj for obj in objects if obj.Name == name), None)
+
+    with core_set_view.temporarily_isolate_objects(Document(), [target.Name]):
+        assert target.ViewObject.Visibility is True
+        assert job.ViewObject.Visibility is False
+        assert operation.ViewObject.Visibility is False
+        assert controller.ViewObject.Visibility is False
 
     assert all(obj.ViewObject.Visibility is True for obj in objects)
 

@@ -23,17 +23,21 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeManufactureOperationSchema import (
-    MANUFACTURE_OPERATION_CAPABILITY_NAME,
+from VibeCADNativeManufactureFocusedOperationSchema import (
+    MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES,
 )
 from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADNativeManufactureOperationRuntime import NativeManufactureOperationRuntime
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CAPABILITY_NAME = MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES["profile"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -69,18 +73,29 @@ def _commit(document, label: str, action):
     return value
 
 
-def _create_model_and_job(document):
+def _create_model_and_job(
+    document,
+    *,
+    model_name: str = "ProfileGateModel",
+    job_name: str = "ProfileJob",
+    x_offset_mm: float = 0.0,
+):
     def create_model():
-        model = document.addObject("Part::Feature", "ProfileGateModel")
-        model.Label = "Profile gate model"
-        model.Shape = Part.makeBox(40.0, 30.0, 10.0)
+        model = document.addObject("Part::Feature", model_name)
+        model.Label = f"{job_name} model"
+        model.Shape = Part.makeBox(
+            40.0,
+            30.0,
+            10.0,
+            App.Vector(x_offset_mm, 0.0, 0.0),
+        )
         document.publishProvisionalTimelineOperationBlock(model, (), ())
         return model
 
     model = _commit(document, "Create Profile gate model", create_model)
 
     def create_job():
-        job = PathJob.Create("ProfileJob", [model], templateFile=None)
+        job = PathJob.Create(job_name, [model], templateFile=None)
         provider = PathJobGui.ViewProvider(job.ViewObject)
         job.ViewObject.Proxy = provider
         job.ViewObject.addExtension("Gui::ViewProviderGroupExtensionPython")
@@ -119,26 +134,33 @@ def _top_face_name(model) -> str:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_OPERATION_CAPABILITY_NAME)
+    definition = registry.definition(CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(("profile",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.lower()
-    for field in (
+    branch = schema["parameters"]["oneOf"][0]
+    assert set(branch["properties"]) == {
+        "operation",
+        "label",
+        "job",
         "tool_controller",
-        "subelements",
+        "geometry",
         "cut_side",
-        "step_down_mm",
-        "clearance_height_mm",
-        "profile_noncircular_holes",
-    ):
-        assert field in encoded
+        "coolant",
+    }
+    assert set(branch["required"]) == {
+        "job",
+        "tool_controller",
+        "geometry",
+        "cut_side",
+    }
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_OPERATION_CAPABILITY_NAME,),
+            tool_names=(CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -155,43 +177,15 @@ def _arguments(model, job) -> dict:
         item for item in state["models"] if item["object_name"] == model.Name
     )
     return {
-        "operation": "profile",
-        "label": "Native exterior Profile",
         "job": _target(state),
         "tool_controller": _target(controller),
-        "geometry": {
-            "kind": "subelements",
-            "items": [
-                {
-                    "model": _target(job_model),
-                    "subelements": [_top_face_name(model)],
-                }
-            ],
-        },
-        "profile": {
-            "direction": "clockwise",
-            "cut_side": "outside",
-            "cutter_compensation": True,
-            "extra_offset_mm": 0.0,
-            "pass_count": 1,
-            "stepover_mm": 0.0,
-            "multiple_features": "individually",
-            "sorting": "automatic",
-            "start_on_longest_edge": False,
-            "profile_outer_perimeter": True,
-            "profile_noncircular_holes": False,
-            "profile_circular_holes": False,
-        },
-        "depths": {
-            "start_depth_mm": 10.0,
-            "final_depth_mm": 0.0,
-            "step_down_mm": 2.0,
-        },
-        "heights": {
-            "safe_height_mm": 12.0,
-            "clearance_height_mm": 15.0,
-        },
-        "coolant": "none",
+        "geometry": [
+            {
+                "model": _target(job_model),
+                "subelements": [_top_face_name(model)],
+            }
+        ],
+        "cut_side": "inside",
     }
 
 
@@ -214,17 +208,17 @@ def _assert_profile_graph(
         assert operation.ViewObject.Proxy.deleteOnReject is False
     assert tuple(operation.Base) == ((job.Model.Group[0], (face_name,)),)
     assert job.Proxy.baseObject(job, operation.Base[0][0]) is model
-    assert operation.Label == "Native exterior Profile"
-    assert operation.Direction == "CW"
-    assert operation.Side == "Outside"
-    assert operation.UseComp is True
-    assert operation.NumPasses == 1
-    assert operation.HandleMultipleFeatures == "Individually"
-    assert operation.SortingMode == "Automatic"
-    assert operation.processPerimeter is True
-    assert operation.processHoles is False
-    assert operation.processCircles is False
-    assert operation.UseStartPoint is False
+    assert operation.Label
+    assert operation.Direction in {"CW", "CCW"}
+    assert operation.Side == "Inside"
+    expressions = {str(name) for name, _expression in operation.ExpressionEngine}
+    assert {
+        "StartDepth",
+        "FinalDepth",
+        "StepDown",
+        "SafeHeight",
+        "ClearanceHeight",
+    } <= expressions
     assert tuple(document.VibeCADTimeline.Operations)[-1] is operation
     commands = tuple(operation.Path.Commands)
     assert any(command.Name in {"G1", "G2", "G3"} for command in commands)
@@ -259,19 +253,27 @@ def _run() -> None:
             plans["CAM_Profile"].classification.mutation,
             plans["CAM_Profile"].classification.human_only,
         ) == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            CAPABILITY_NAME,
             "profile",
-            "ExactCamJobProfileGeometryControllerAndParameters",
+            "ExactCamJobProfileGeometryAndController",
             True,
             False,
         )
 
         model, job = _create_model_and_job(document)
+        _other_model, other_job = _create_model_and_job(
+            document,
+            model_name="OtherSetupModel",
+            job_name="OtherSetup",
+            x_offset_mm=60.0,
+        )
         face_name = _top_face_name(model)
         initial_names = tuple(obj.Name for obj in document.Objects)
         initial_operations = tuple(job.Operations.Group)
         initial_timeline = tuple(document.VibeCADTimeline.Operations)
         arguments = _arguments(model, job)
+
+        other_job_before = job_state(other_job)
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -295,12 +297,14 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
+        runtimes = build_native_runtime_bindings(context, turn.tool_names)
+        runtimes[CAPABILITY_NAME] = NativeManufactureOperationRuntime(context)
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state_store,
             registry=registry,
             turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            runtimes=runtimes,
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
@@ -310,7 +314,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_OPERATION_CAPABILITY_NAME,
+                CAPABILITY_NAME,
                 json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-profile-{call_index}",
             )
@@ -324,7 +328,7 @@ def _run() -> None:
         undo_before = int(document.UndoCount)
 
         stale = json.loads(json.dumps(arguments))
-        stale["geometry"]["items"][0]["model"]["expected_state_sha256"] = "0" * 64
+        stale["geometry"][0]["model"]["expected_state_sha256"] = "0" * 64
         stale_result = call(stale, succeeds=False)
         assert stale_result["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE"
         assert tuple(obj.Name for obj in document.Objects) == initial_names
@@ -332,16 +336,9 @@ def _run() -> None:
         assert tuple(document.VibeCADTimeline.Operations) == initial_timeline
         assert int(document.UndoCount) == undo_before
 
-        invalid = json.loads(json.dumps(arguments))
-        invalid["profile"]["stepover_mm"] = 1.0
-        invalid_result = call(invalid, succeeds=False)
-        assert invalid_result["error_code"] == "NATIVE_ARGUMENTS_INVALID"
-        assert tuple(obj.Name for obj in document.Objects) == initial_names
-        assert tuple(job.Operations.Group) == initial_operations
-        assert int(document.UndoCount) == undo_before
-
         result = call(arguments)
         _events(12)
+        assert job_state(other_job)["state_sha256"] == other_job_before["state_sha256"]
         operation_name = result["profile"]["object_name"]
         operation = document.getObject(operation_name)
         assert operation is not None
@@ -351,6 +348,8 @@ def _run() -> None:
             "items": [{"object_name": model.Name, "subelements": [face_name]}],
         }
         assert result["profile"]["cutting_command_count"] >= 1
+        assert result["profile"]["parameters"]["source"] == "setup_defaults"
+        assert result["profile"]["parameters"]["cut_side"] == "inside"
         assert result["job"]["operation_count"] == len(initial_operations) + 1
         assert [item["object_name"] for item in result["receipt"]["created"]] == [
             operation_name
@@ -401,7 +400,7 @@ def _run() -> None:
         print(
             "VIBECAD_NATIVE_MANUFACTURE_PROFILE_GUI_OK "
             "exact_targets=true geometry=true parameters=true toolpath=true "
-            "history=true rollback=true undo=true redo=true reopen=true",
+            "multi_setup=true history=true rollback=true undo=true redo=true reopen=true",
             flush=True,
         )
         exit_code = 0

@@ -19,10 +19,13 @@ from VibeCADNativeManufacturePostConfiguration import (
     resolve_post_configuration,
 )
 from VibeCADNativeManufactureState import (
+    capture_other_job_states,
     job_state,
     operation_active_state,
-    operation_reference_state,
+    operation_state,
+    other_job_states_are_current,
     resolve_job_target,
+    resolve_operation_target,
 )
 from VibeCADNativeTargets import read_current_selection
 
@@ -30,6 +33,7 @@ from VibeCADNativeTargets import read_current_selection
 MAX_POST_OPERATIONS = 64
 MAX_POST_SOURCE_BYTES = 16 * 1024 * 1024
 MAX_POST_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
+_BINARY_OPEN = getattr(os, "O_BINARY", 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +76,10 @@ class FrozenPostInput:
     job_name: str
     job_target: Mapping[str, Any]
     job_before: Mapping[str, Any]
+    other_job_states: tuple[tuple[Any, str], ...] = field(
+        repr=False,
+        compare=False,
+    )
     job_operations: tuple[Any, ...] = field(repr=False)
     active_operation_count: int
     command_count: int
@@ -337,7 +345,11 @@ def _freecadcmd() -> FileIdentity:
 
 
 def _write_private(path: Path, data: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | _BINARY_OPEN,
+        0o600,
+    )
     try:
         offset = 0
         while offset < len(data):
@@ -409,22 +421,9 @@ def _resolve_selected_operations(
                 "Each selected CAM operation target must contain only object_name "
                 "and expected_state_sha256."
             )
-        name = str(value.get("object_name") or "").strip()
-        expected = str(value.get("expected_state_sha256") or "").strip()
-        operation = document.getObject(name) if name else None
-        if operation is None or getattr(operation, "Document", None) is not document:
-            _error(
-                f"Selected CAM operation {name!r} no longer exists.",
-                "NATIVE_MANUFACTURE_TARGET_STALE",
-            )
-        current = operation_reference_state(operation)
-        if current.get("state_sha256") != expected:
-            _error(
-                f"Selected CAM operation {name!r} changed after turn start.",
-                "NATIVE_MANUFACTURE_STATE_STALE",
-                object_name=name,
-                current_state_sha256=current.get("state_sha256"),
-            )
+        operation, current = resolve_operation_target(document, value)
+        name = str(current["object_name"])
+        expected = str(current["state_sha256"])
         if id(operation) not in positions:
             _error(
                 f"Selected CAM operation {name!r} is not a direct entry of the exact Job.",
@@ -510,6 +509,7 @@ def _preflight_post(
             "NATIVE_MANUFACTURE_POST_UNAVAILABLE",
         )
     exact_job, before = resolve_job_target(document, job)
+    other_job_states = capture_other_job_states(document, (exact_job,))
     operations = tuple(getattr(getattr(exact_job, "Operations", None), "Group", ()) or ())
     if not 1 <= len(operations) <= MAX_POST_OPERATIONS:
         _error(
@@ -610,8 +610,13 @@ def _preflight_post(
                 "The exact CAM Job changed while its private snapshot was created.",
                 "NATIVE_MANUFACTURE_STATE_STALE",
             )
+        if not other_job_states_are_current(document, other_job_states):
+            _error(
+                "Another CAM setup changed while the private snapshot was created.",
+                "NATIVE_MANUFACTURE_STATE_STALE",
+            )
         if any(
-            operation_reference_state(operation).get("state_sha256") != expected
+            operation_state(operation).get("state_sha256") != expected
             for operation, expected in zip(
                 selected,
                 selected_states,
@@ -632,6 +637,7 @@ def _preflight_post(
             job_name=str(exact_job.Name),
             job_target=dict(job),
             job_before=before,
+            other_job_states=other_job_states,
             job_operations=operations,
             active_operation_count=len(posted),
             command_count=command_count,
@@ -686,7 +692,7 @@ def validate_post_source(document: Any, frozen: FrozenPostInput) -> None:
             == frozen.active_operation_count
             and all(operation in group for operation in frozen.selected_operations)
             and all(
-                operation_reference_state(operation).get("state_sha256") == expected
+                operation_state(operation).get("state_sha256") == expected
                 and operation_active_state(operation)
                 for operation, expected in zip(
                     frozen.selected_operations,
@@ -701,6 +707,7 @@ def validate_post_source(document: Any, frozen: FrozenPostInput) -> None:
         exact_job is not frozen.job
         or current["state_sha256"] != frozen.job_before["state_sha256"]
         or group != frozen.job_operations
+        or not other_job_states_are_current(document, frozen.other_job_states)
         or not selected_matches
         or not _state_matches(document, frozen.document_before)
     ):

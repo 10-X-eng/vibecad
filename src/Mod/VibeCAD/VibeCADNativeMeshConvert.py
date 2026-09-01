@@ -243,6 +243,7 @@ def capture_mesh_conversion(
     tolerance_mm: Any,
     sew_adjacent_faces: Any,
     make_solid: Any,
+    source_topology: str = "closed",
 ) -> Any:
     """Capture one exact detached Mesh without performing BREP work."""
 
@@ -272,6 +273,7 @@ def capture_mesh_conversion(
         tolerance_mm=_positive_number(tolerance_mm, "tolerance_mm", 10.0),
         sew_adjacent_faces=sew_adjacent_faces,
         make_solid=make_solid,
+        source_topology=source_topology,
     )
 
 
@@ -786,24 +788,7 @@ def commit_mesh_conversion(
             "The exact Mesh changed while its BREP was being prepared; the stale result was not applied.",
             error_code="NATIVE_MESH_STATE_STALE",
         )
-    try:
-        import Part
-
-        shape = Part.Shape()
-        shape.importBrep(prepared.artifact_path)
-    except Exception as exc:
-        raise NativeMeshError(
-            "The verified Mesh conversion BREP could not be imported.",
-            error_code="NATIVE_MESH_CONVERSION_ARTIFACT_INVALID",
-        ) from exc
-    # The isolated worker already performed the full BREP validity check and
-    # the background job authenticated the exact artifact.  Repeating OCC's
-    # expensive validity traversal here would freeze the document thread.
-    if shape.isNull():
-        raise NativeMeshError(
-            "The verified Mesh conversion BREP is invalid at publication.",
-            error_code="NATIVE_MESH_CONVERSION_ARTIFACT_INVALID",
-        )
+    shape = load_verified_mesh_conversion_shape(prepared)
 
     import MeshGui
     import MeshPart  # noqa: F401 - registers MeshPart::ShapeFromMesh
@@ -842,6 +827,34 @@ def commit_mesh_conversion(
         recompute_targets=(result,),
         created=(object_identity(result),),
     )
+
+
+def load_verified_mesh_conversion_shape(prepared: Any) -> Any:
+    """Load one authenticated worker artifact without repeating OCC validation."""
+
+    from VibeCADMeshConversionJob import PreparedMeshConversion
+
+    if not isinstance(prepared, PreparedMeshConversion):
+        raise TypeError("prepared must be a PreparedMeshConversion")
+    try:
+        import Part
+
+        shape = Part.Shape()
+        shape.importBrep(prepared.artifact_path)
+    except Exception as exc:
+        raise NativeMeshError(
+            "The verified Mesh conversion BREP could not be imported.",
+            error_code="NATIVE_MESH_CONVERSION_ARTIFACT_INVALID",
+        ) from exc
+    # The isolated worker already performed full BREP validation and the
+    # background job authenticated this exact artifact. Repeating OCC's
+    # traversal on the document thread can freeze the application.
+    if shape.isNull() or str(shape.ShapeType) != prepared.shape_type:
+        raise NativeMeshError(
+            "The verified Mesh conversion BREP is invalid at publication.",
+            error_code="NATIVE_MESH_CONVERSION_ARTIFACT_INVALID",
+        )
+    return shape
 
 
 def verify_committed_mesh_conversion(

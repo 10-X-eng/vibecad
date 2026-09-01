@@ -366,6 +366,10 @@ The single-workbench Part and Part Design model, compatibility boundary, and
 Body/tree behavior are documented in
 [docs/part-design-consolidation.md](docs/part-design-consolidation.md).
 
+The human and Native manufacturing workflow, multi-setup model, simulation,
+verification, and current CAM scope are documented in
+[CAM-README.md](CAM-README.md).
+
 The removed BIM and architectural surface, existing-document behavior, and
 rollback path are documented in
 [docs/bim-architecture-removal.md](docs/bim-architecture-removal.md).

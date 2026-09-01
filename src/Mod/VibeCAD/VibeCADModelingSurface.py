@@ -22,7 +22,7 @@ from VibeCADVibeScriptDomains import (
 MODELING_ENGINES = frozenset({"native", "vibescript"})
 NATIVE_ANALYSIS_SURFACES = frozenset({"analyze"})
 NATIVE_DERIVED_ARTIFACT_SURFACES = frozenset(
-    {*NATIVE_ANALYSIS_SURFACES, "drawing"}
+    {*NATIVE_ANALYSIS_SURFACES, "drawing", "manufacture"}
 )
 UNSUPPORTED_WORKBENCHES = frozenset({"NoneWorkbench", "TestWorkbench"})
 
@@ -68,9 +68,9 @@ def is_model_assembly_workbench(workbench: str | None) -> bool:
 def provider_engine_for_ribbon(authoring_engine: str, surface_id: str) -> str:
     """Return the provider engine selected by document authority and ribbon.
 
-    Analyze and Drawing own derived artifacts, not source design geometry.
-    They use their Native contracts while preserving the document's VibeScript
-    or Native geometry-authoring authority.
+    Analyze, Drawing, and Manufacture own derived artifacts, not source design
+    geometry. They use their Native contracts while preserving the document's
+    VibeScript or Native geometry-authoring authority.
     """
 
     engine = str(authoring_engine or "").strip().lower()

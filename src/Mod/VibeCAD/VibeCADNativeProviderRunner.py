@@ -159,6 +159,96 @@ class NativeProviderToolRunner:
             "job": self._background_job(snapshot),
         }
 
+    def _wait_for_submitted_document_change(
+        self,
+        tool_name: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return a provider-started mutation only after its exact commit finishes."""
+
+        if tool_name == "native.job" or result.get("ok") is not True:
+            return result
+        submitted = result.get("job")
+        if not isinstance(submitted, Mapping) or submitted.get("terminal") is not False:
+            return result
+        job_id = str(submitted.get("job_id") or "")
+        manager = self._execution.background_manager
+        document_uid = str(self._execution.document_uid or "")
+        if manager is None or not document_uid or not job_id:
+            return result
+        try:
+            snapshot = manager.snapshot(job_id)
+        except Exception:
+            return result
+        if (
+            str(getattr(snapshot, "document_uid", "") or "") != document_uid
+            or not bool(getattr(snapshot, "changes_document", False))
+        ):
+            return result
+        _emit(
+            self._progress,
+            {
+                "event": "native_background_waiting",
+                "job_id": job_id,
+                "capability": str(
+                    getattr(snapshot, "capability_name", "") or ""
+                ),
+            },
+        )
+        while not bool(getattr(snapshot, "terminal", False)) or bool(
+            getattr(snapshot, "worker_active", False)
+        ):
+            if self._cancelled is not None and self._cancelled():
+                try:
+                    manager.cancel(job_id)
+                except Exception:
+                    pass
+                return {
+                    "ok": False,
+                    "error_code": "NATIVE_RUN_CANCELLED",
+                    "error": "VibeCAD stopped before this Native call completed.",
+                    "job": self._background_job(snapshot),
+                }
+            try:
+                snapshot = manager.wait(job_id, timeout=0.1)
+            except Exception:
+                return {
+                    "ok": False,
+                    "error_code": "NATIVE_BACKGROUND_STATE_INVALID",
+                    "error": "The active document background state is unavailable.",
+                }
+        phase = str(getattr(snapshot, "phase", "") or "")
+        completed = getattr(snapshot, "result", None)
+        if phase == "completed" and isinstance(completed, Mapping) and "ok" not in completed:
+            return {
+                "ok": True,
+                **dict(completed),
+                "background_job": {
+                    "job_id": job_id,
+                    "capability": str(
+                        getattr(snapshot, "capability_name", "") or ""
+                    ),
+                    "document_changed": True,
+                },
+            }
+        failure = getattr(snapshot, "error", None)
+        return {
+            "ok": False,
+            "error_code": str(
+                failure.get("error_code")
+                if isinstance(failure, Mapping)
+                else ""
+            )
+            or "NATIVE_BACKGROUND_PREREQUISITE_FAILED",
+            "error": str(
+                failure.get("message")
+                if isinstance(failure, Mapping)
+                else ""
+            )
+            or "The active document background operation did not complete.",
+            "job": self._background_job(snapshot),
+        }
+
     def __call__(
         self,
         tool_name: str,
@@ -214,6 +304,7 @@ class NativeProviderToolRunner:
                 "error_code": "NATIVE_RESULT_INVALID",
                 "error": "Native dispatch returned no result object.",
             }
+        result = self._wait_for_submitted_document_change(name, result)
         if result.get("error_code") == "NATIVE_SURFACE_CHANGED":
             result = {
                 **result,

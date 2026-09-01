@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import traceback
+from types import SimpleNamespace
 
 import FreeCAD as App
 import FreeCADGui as Gui
@@ -31,6 +32,9 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+import VibeCADScriptedPublication as ScriptedPublication
+import VibeCADNativeManufactureFollowUpRuntime as ManufactureFollowUpRuntimeModule
+import VibeCADNativeManufactureJobRuntime as ManufactureJobRuntimeModule
 
 
 def _events(rounds: int = 16) -> None:
@@ -78,6 +82,50 @@ def _model(document, name: str, *, visible: bool, x: float):
     return _commit(document, f"Create {name}", create)
 
 
+def _body_model(document, name: str, *, visible: bool, x: float):
+    def create():
+        body = document.addObject("PartDesign::Body", name)
+        body.Label = name.replace("Model", " model")
+        body.addProperty(
+            "App::PropertyString",
+            "VibeCADTimelineRole",
+            "Timeline",
+            "Document timeline classification",
+            attr=16,
+            hidden=True,
+            locked=True,
+        )
+        body.VibeCADTimelineRole = "internal"
+        ScriptedPublication.tag_object(
+            body,
+            role=ScriptedPublication.ROLE_IMPLEMENTATION,
+            engine="vibescript:partdesign",
+            model_id="0123456789abcdef0123456789abcdef",
+            output_key="FixtureBlock",
+            revision="sketch-v1:test",
+        )
+        feature = body.newObject("PartDesign::Feature", f"{name}Feature")
+        feature.Shape = Part.makeBox(30.0, 20.0, 8.0, App.Vector(x, 0.0, 0.0))
+        document.publishProvisionalTimelineOperationBlock(feature, (), ())
+        publication = document.addObject("App::Link", f"{name}Publication")
+        publication.Label = body.Label
+        publication.LinkedObject = body
+        ScriptedPublication.tag_object(
+            publication,
+            role=ScriptedPublication.ROLE_PUBLICATION,
+            engine="vibescript:partdesign",
+            model_id="0123456789abcdef0123456789abcdef",
+            output_key="FixtureBlock",
+            revision="sketch-v1:test",
+        )
+        publication.ViewObject.Visibility = False
+        document.publishProvisionalTimelineOperationBlock(publication, (), ())
+        body.ViewObject.Visibility = visible
+        return body
+
+    return _commit(document, f"Create {name}", create)
+
+
 def _selection() -> tuple:
     return tuple(
         (item.Object.Name, tuple(item.SubElementNames))
@@ -85,14 +133,92 @@ def _selection() -> tuple:
     )
 
 
+def _visible_children(item) -> tuple:
+    return tuple(
+        item.child(index)
+        for index in range(item.childCount())
+        if not item.child(index).isHidden()
+    )
+
+
+def _tree_snapshot(item) -> tuple:
+    return (
+        item.text(0),
+        tuple(_tree_snapshot(child) for child in _visible_children(item)),
+    )
+
+
+def _tree_child(item, label: str):
+    return next(
+        (child for child in _visible_children(item) if child.text(0) == label),
+        None,
+    )
+
+
+def _tree_label_count(item, label: str) -> int:
+    return int(item.text(0) == label) + sum(
+        _tree_label_count(child, label) for child in _visible_children(item)
+    )
+
+
+def _document_tree_item(document):
+    for _attempt in range(80):
+        _events(2)
+        for tree in Gui.getMainWindow().findChildren(QtWidgets.QTreeWidget):
+            if not tree.isVisible() or not tree.viewport().isVisible():
+                continue
+            for index in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(index)
+                if not item.isHidden() and item.text(0) == document.Label:
+                    return item
+    return None
+
+
+def _assert_manufacture_tree(document, jobs) -> None:
+    document_item = _document_tree_item(document)
+    assert document_item is not None
+    snapshot = _tree_snapshot(document_item)
+    for job in jobs:
+        setup = _tree_child(document_item, job.Label)
+        assert setup is not None, snapshot
+        assert _tree_label_count(document_item, job.Label) == 1, snapshot
+        setup_children = _visible_children(setup)
+        expected_children = [job.Stock.Label, "Tools"]
+        if job.Operations.Group:
+            expected_children.append("Operations")
+        expected_children.append(job.SetupSheet.Label)
+        assert [child.text(0) for child in setup_children] == expected_children, snapshot
+        tools = setup_children[1]
+        assert len(_visible_children(tools)) == len(job.Tools.Group), snapshot
+        assert all(
+            not _visible_children(controller_item)
+            for controller_item in _visible_children(tools)
+        ), snapshot
+        if job.Operations.Group:
+            operations = _tree_child(setup, "Operations")
+            assert operations is not None, snapshot
+            assert [item.text(0) for item in _visible_children(operations)] == [
+                operation.Label for operation in job.Operations.Group
+            ], snapshot
+        assert _tree_label_count(setup, job.Model.Label) == 0, snapshot
+
+        for controller in job.Tools.Group:
+            tool = controller.Tool
+            assert _tree_label_count(document_item, tool.Label) == 0, snapshot
+            bit_body = getattr(tool, "BitBody", None)
+            if bit_body is not None:
+                assert _tree_label_count(document_item, bit_body.Label) == 0, snapshot
+
+
 def _turn(surface, registry) -> NativeTurnSnapshot:
     definition = registry.definition(MANUFACTURE_JOB_CAPABILITY_NAME)
     assert definition is not None
-    schema = definition.provider_schema(("create_job",))
+    schema = definition.provider_schema(("create_job_from_template",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.lower()
     assert "replace_in_history" in encoded
-    assert "expected_creation_state_sha256" in encoded
+    assert "expected_creation_state_sha256" not in encoded
+    assert "expected_job_count" not in encoded
     assert "expected_content_sha256" in encoded
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
@@ -109,35 +235,34 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     )
 
 
-def _arguments(snapshot: dict, *, label: str = "Native production Job") -> dict:
+def _arguments(
+    snapshot: dict,
+    *,
+    label: str = "Native production Job",
+    model_names: tuple[str, ...] = ("VisibleModel", "HiddenModel"),
+) -> dict:
     candidates = {item["object_name"]: item for item in snapshot["model_candidates"]}
     template = next(
         item for item in snapshot["job_creation"]["templates"] if item["is_default"]
     )
     return {
-        "operation": "create_job",
+        "operation": "create_job_from_template",
         "label": label,
         "models": [
             {
-                "target": {
-                    "object_name": name,
-                    "expected_state_sha256": candidates[name]["state_sha256"],
-                },
+                "object_name": name,
+                "expected_state_sha256": candidates[name]["state_sha256"],
                 "replace_in_history": candidates[name][
                     "job_create_replaces_in_history"
                 ],
             }
-            for name in ("VisibleModel", "HiddenModel")
+            for name in model_names
         ],
         "template": {
             "kind": "catalog",
             "template_id": template["template_id"],
             "expected_content_sha256": template["content_sha256"],
         },
-        "expected_creation_state_sha256": snapshot["job_creation"][
-            "state_sha256"
-        ],
-        "expected_job_count": snapshot["job_count"],
     }
 
 
@@ -150,16 +275,15 @@ def _job_resources(document, job) -> tuple:
     )
 
 
-def _assert_job_graph(document, job, visible, hidden) -> tuple:
+def _assert_job_graph(document, job, sources, replacements) -> tuple:
+    assert job.VibeCADTreeRole == "manufacture_setup"
     resources = _job_resources(document, job)
     assert resources
-    assert tuple(job.VibeCADTimelineReplacedInputs) == (visible,)
-    assert not visible.ViewObject.Visibility
-    assert not hidden.ViewObject.Visibility
-    assert len(job.Model.Group) == 2
+    assert tuple(job.VibeCADTimelineReplacedInputs) == tuple(replacements)
+    assert all(not source.ViewObject.Visibility for source in sources)
+    assert len(job.Model.Group) == len(sources)
     assert tuple(job.Proxy.baseObject(job, clone) for clone in job.Model.Group) == (
-        visible,
-        hidden,
+        *sources,
     )
     assert len(job.Tools.Group) >= 1
     assert job.Stock is not None
@@ -221,6 +345,7 @@ def _run() -> None:
 
         visible = _model(document, "VisibleModel", visible=True, x=0.0)
         hidden = _model(document, "HiddenModel", visible=False, x=40.0)
+        second_model = _body_model(document, "SecondModel", visible=True, x=80.0)
         initial_names = tuple(obj.Name for obj in document.Objects)
         initial_timeline = tuple(document.VibeCADTimeline.Operations)
         snapshot = build_manufacture_snapshot(document)
@@ -230,7 +355,11 @@ def _run() -> None:
             1 for item in snapshot["job_creation"]["templates"] if item["is_default"]
         ) == 1
         candidate_names = {item["object_name"] for item in snapshot["model_candidates"]}
-        assert candidate_names == {visible.Name, hidden.Name}, snapshot["model_candidates"]
+        assert candidate_names == {
+            visible.Name,
+            hidden.Name,
+            second_model.Name,
+        }, snapshot["model_candidates"]
         assert next(
             item for item in snapshot["model_candidates"] if item["object_name"] == visible.Name
         )["job_create_replaces_in_history"] is True
@@ -260,6 +389,29 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
+        capture_calls = []
+        original_job_capture = ManufactureJobRuntimeModule.capture_job_creation_environment
+        original_follow_up_capture = (
+            ManufactureFollowUpRuntimeModule.capture_job_creation_environment
+        )
+
+        def record_capture():
+            capture_calls.append("capture")
+            return SimpleNamespace(state_sha256="unused")
+
+        ManufactureJobRuntimeModule.capture_job_creation_environment = record_capture
+        ManufactureFollowUpRuntimeModule.capture_job_creation_environment = record_capture
+        try:
+            shared_bindings = build_native_runtime_bindings(context, ("state.read",))
+        finally:
+            ManufactureJobRuntimeModule.capture_job_creation_environment = (
+                original_job_capture
+            )
+            ManufactureFollowUpRuntimeModule.capture_job_creation_environment = (
+                original_follow_up_capture
+            )
+        assert tuple(shared_bindings) == ("state.read",)
+        assert capture_calls == []
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state_store,
@@ -288,11 +440,19 @@ def _run() -> None:
         revision_before = state_store.current_revision(context.document_uid)
         undo_before = int(document.UndoCount)
         arguments = _arguments(snapshot)
+        second_arguments = _arguments(
+            snapshot,
+            label="Independent second setup",
+            model_names=("SecondModel",),
+        )
 
-        stale_environment = dict(arguments)
-        stale_environment["expected_creation_state_sha256"] = "0" * 64
-        stale = call(stale_environment, succeeds=False)
+        template_preferences.SetString(CamPreferences.DefaultJobTemplate, "")
+        stale = call(arguments, succeeds=False)
         assert stale["error_code"] == "NATIVE_MANUFACTURE_STATE_STALE", stale
+        template_preferences.SetString(
+            CamPreferences.DefaultJobTemplate,
+            str(template_path),
+        )
         assert int(document.UndoCount) == undo_before
         assert tuple(obj.Name for obj in document.Objects) == initial_names
 
@@ -314,7 +474,12 @@ def _run() -> None:
         job_name = result["job"]["object_name"]
         job = document.getObject(job_name)
         assert job is not None
-        resources = _assert_job_graph(document, job, visible, hidden)
+        resources = _assert_job_graph(
+            document,
+            job,
+            (visible, hidden),
+            (visible,),
+        )
         resource_names = tuple(obj.Name for obj in resources)
         created_names = tuple(
             obj.Name for obj in document.Objects if obj.Name not in initial_names
@@ -358,6 +523,56 @@ def _run() -> None:
         assert not Gui.Control.activeDialog()
         created_state = job_state(job)
 
+        second_result = call(second_arguments)
+        _events(12)
+        second_job_name = second_result["job"]["object_name"]
+        second_job = document.getObject(second_job_name)
+        assert second_job is not None
+        second_resources = _assert_job_graph(
+            document,
+            second_job,
+            (second_model,),
+            (second_model,),
+        )
+        second_resource_names = tuple(obj.Name for obj in second_resources)
+        second_created_state = job_state(second_job)
+        assert job_state(job) == created_state
+        assert int(document.UndoCount) == undo_before + 2
+
+        third_arguments = _arguments(
+            build_manufacture_snapshot(document),
+            label="Independent third setup",
+            model_names=("SecondModel",),
+        )
+        third_result = call(third_arguments)
+        _events(12)
+        third_job_name = third_result["job"]["object_name"]
+        third_job = document.getObject(third_job_name)
+        assert third_job is not None
+        third_resources = _assert_job_graph(
+            document,
+            third_job,
+            (second_model,),
+            (),
+        )
+        assert third_resources
+        assert job_state(job) == created_state
+        assert job_state(second_job) == second_created_state
+        assert int(document.UndoCount) == undo_before + 3
+
+        document.undo()
+        _events(12)
+        assert document.getObject(third_job_name) is None
+        assert job_state(job) == created_state
+        assert job_state(second_job) == second_created_state
+
+        document.undo()
+        _events(12)
+        assert document.getObject(second_job_name) is None
+        assert all(document.getObject(name) is None for name in second_resource_names)
+        assert job_state(job) == created_state
+        assert second_model.ViewObject.Visibility
+
         document.undo()
         _events(12)
         assert not any(document.getObject(name) for name in created_names)
@@ -367,31 +582,76 @@ def _run() -> None:
 
         document.redo()
         _events(12)
+        document.redo()
+        _events(12)
         job = document.getObject(job_name)
+        second_job = document.getObject(second_job_name)
         visible = document.getObject("VisibleModel")
         hidden = document.getObject("HiddenModel")
-        assert job is not None and visible is not None and hidden is not None
-        _assert_job_graph(document, job, visible, hidden)
+        second_model = document.getObject("SecondModel")
+        assert (
+            job is not None
+            and second_job is not None
+            and visible is not None
+            and hidden is not None
+            and second_model is not None
+        )
+        _assert_job_graph(document, job, (visible, hidden), (visible,))
+        _assert_job_graph(document, second_job, (second_model,), (second_model,))
         assert job_state(job)["state_sha256"] == created_state["state_sha256"]
+        assert job_state(second_job)["state_sha256"] == (
+            second_created_state["state_sha256"]
+        )
 
+        # Exercise additive migration of CAM Jobs saved before the explicit
+        # Manufacture tree role existed. The restored proxy must add the role,
+        # and the final browser rebuild must not retain its legacy claim tree.
+        job.removeProperty("VibeCADTreeRole")
+        second_job.removeProperty("VibeCADTreeRole")
         document.saveAs(str(save_path))
         document_name = document.Name
         App.closeDocument(document_name)
         document = App.openDocument(str(save_path))
         job = document.getObject(job_name)
+        second_job = document.getObject(second_job_name)
         visible = document.getObject("VisibleModel")
         hidden = document.getObject("HiddenModel")
-        assert job is not None and visible is not None and hidden is not None
-        reopened_resources = _assert_job_graph(document, job, visible, hidden)
+        second_model = document.getObject("SecondModel")
+        assert (
+            job is not None
+            and second_job is not None
+            and visible is not None
+            and hidden is not None
+            and second_model is not None
+        )
+        reopened_resources = _assert_job_graph(
+            document,
+            job,
+            (visible, hidden),
+            (visible,),
+        )
+        reopened_second_resources = _assert_job_graph(
+            document,
+            second_job,
+            (second_model,),
+            (second_model,),
+        )
         assert {obj.Name for obj in reopened_resources} == set(resource_names)
+        assert {obj.Name for obj in reopened_second_resources} == set(
+            second_resource_names
+        )
         assert all(document.getObject(name) is not None for name in created_names)
         assert job_state(job)["state_sha256"] == created_state["state_sha256"]
+        assert job_state(second_job)["state_sha256"] == (
+            second_created_state["state_sha256"]
+        )
         assert job.ViewObject.Proxy.__class__.__name__ == "ViewProvider"
         assert job.Description == "Catalog-authenticated Native Job"
+        _assert_manufacture_tree(document, (job, second_job))
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_JOB_GUI_OK "
-            "exact_targets=true replacement=true resource_graph=true "
+            "exact_targets=true replacement=true resource_graph=true multi_setup=true "
             "rollback=true undo=true redo=true reopen=true",
             flush=True,
         )

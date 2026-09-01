@@ -30,6 +30,7 @@ from VibeCADNativeManufactureOperationSupport import shape_sha256
 from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADNativeManufactureOperationRuntime import NativeManufactureOperationRuntime
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
 from VibeCADNativeTurn import NativeTurnSnapshot
@@ -485,7 +486,7 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            "manufacture.pocket_3d",
             "pocket_3d",
             "ExactCamJobPocket3DFeaturesControllerAndParameters",
             True,
@@ -529,12 +530,16 @@ def _run() -> None:
             ),
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
+        runtimes = build_native_runtime_bindings(context, turn.tool_names)
+        runtimes[MANUFACTURE_OPERATION_CAPABILITY_NAME] = (
+            NativeManufactureOperationRuntime(context)
+        )
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state_store,
             registry=registry,
             turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            runtimes=runtimes,
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )

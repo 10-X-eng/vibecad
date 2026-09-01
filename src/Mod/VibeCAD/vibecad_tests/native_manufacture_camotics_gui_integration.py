@@ -35,7 +35,7 @@ from VibeCADNativeManufactureCamoticsSchema import (
     MANUFACTURE_CAMOTICS_CAPABILITY_NAME,
 )
 from VibeCADNativeManufactureErrors import NativeManufactureError
-from VibeCADNativeManufactureState import job_state, operation_reference_state
+from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
@@ -118,7 +118,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     schema = definition.provider_schema(("camotics",))
     background_schema = background.provider_schema(("status", "cancel"))
     branch = schema["parameters"]["oneOf"][0]
-    assert branch["required"] == ["operation", "job", "operations", "request"]
+    assert branch["required"] == ["job", "operations", "request"]
     assert branch["additionalProperties"] is False
     request = branch["properties"]["request"]
     assert [item["properties"]["kind"]["const"] for item in request["oneOf"]] == [
@@ -236,7 +236,7 @@ def _arguments(job, operation, kind: str, resolution: str = "medium") -> dict:
     return {
         "operation": "camotics",
         "job": _target(job_state(job)),
-        "operations": [_target(operation_reference_state(operation))],
+        "operations": [_target(operation_state(operation))],
         "request": {"kind": kind, "resolution": resolution},
     }
 
@@ -506,6 +506,9 @@ def _run() -> None:
 
         App.setActiveDocument(document.Name)
         _events(8)
+        turn = _turn(surface, registry)
+        frozen_surface = turn.surface
+        dispatcher = make_dispatcher(document)
         before_instances = len(FakeCamoticsSimulation.instances)
         switch_start = call(
             MANUFACTURE_CAMOTICS_CAPABILITY_NAME,

@@ -18,6 +18,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     validate_operation_tool,
@@ -538,16 +539,19 @@ def create_v_carve(
 
     if not isinstance(prepared, PreparedVCarveCreate):
         raise TypeError("prepared must be a PreparedVCarveCreate")
-    import Path.Op.Gui.Vcarve as PathVCarveGui
     import Path.Op.Vcarve as PathVCarve
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Vcarve"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Vcarve",
         operation_factory=PathVCarve.Create,
-        provider_factory=PathVCarveGui.PathOpGui.ViewProvider,
-        provider_resource=PathVCarveGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )

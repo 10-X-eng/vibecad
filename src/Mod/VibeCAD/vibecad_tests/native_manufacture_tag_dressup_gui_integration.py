@@ -28,10 +28,13 @@ from VibeCADNativeManufactureDressupTag import (
     preflight_tag_dressup,
 )
 from VibeCADNativeManufactureErrors import NativeManufactureError
-from VibeCADNativeManufactureModifySchema import MANUFACTURE_MODIFY_CAPABILITY_NAME
+from VibeCADNativeManufactureFocusedModifySchema import (
+    MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES,
+)
+
 from VibeCADNativeManufactureState import (
     job_state,
-    operation_reference_state,
+    operation_state,
     persistent_resource_state,
 )
 from VibeCADNativeRegistry import build_native_capability_registry
@@ -41,6 +44,9 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CAPABILITY_NAME = MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES["tag_dressup"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -83,7 +89,7 @@ def _arguments(job, base, placement, *, label="Native CAM Holding Tags") -> dict
         "operation": "tag_dressup",
         "label": label,
         "job": _target(job_state(job)),
-        "base_operation": _target(operation_reference_state(base)),
+        "base_operation": _target(operation_state(base)),
         "placement": placement,
     }
 
@@ -119,7 +125,7 @@ def _explicit() -> dict:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_MODIFY_CAPABILITY_NAME)
+    definition = registry.definition(CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(("tag_dressup",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
@@ -146,7 +152,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_MODIFY_CAPABILITY_NAME,),
+            tool_names=(CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -246,7 +252,7 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_MODIFY_CAPABILITY_NAME,
+            CAPABILITY_NAME,
             "tag_dressup",
             "ExactCamJobOperationAndHoldingTagDefinition",
             True,
@@ -295,7 +301,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_MODIFY_CAPABILITY_NAME,
+                CAPABILITY_NAME,
                 json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-tag-{call_index}",
             )
@@ -367,7 +373,7 @@ def _run() -> None:
 
         copy_placement = {
             "kind": "copy_enabled_from_dressup",
-            "source_tag_dressup": _target(operation_reference_state(auto_output)),
+            "source_tag_dressup": _target(operation_state(auto_output)),
         }
         copy_result = call(_arguments(job, copy_base, copy_placement))
         copy_output = document.getObject(copy_result["object_name"])

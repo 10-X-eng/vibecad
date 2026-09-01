@@ -39,6 +39,7 @@ class MeshConversionRequest:
     cache_root: str
     freecadcmd: str
     child_script: str
+    source_topology: str = "closed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +76,7 @@ def conversion_cache_key(request: MeshConversionRequest) -> str:
         "tolerance_mm": request.tolerance_mm,
         "sew_adjacent_faces": request.sew_adjacent_faces,
         "make_solid": request.make_solid,
+        "source_topology": request.source_topology,
         "refine_shape": True,
     }
     encoded = json.dumps(
@@ -235,6 +237,7 @@ def run_mesh_conversion(
                     "tolerance_mm": request.tolerance_mm,
                     "sew_adjacent_faces": request.sew_adjacent_faces,
                     "make_solid": request.make_solid,
+                    "source_topology": request.source_topology,
                 },
                 ensure_ascii=True,
                 sort_keys=True,
@@ -267,7 +270,10 @@ def make_request(
     tolerance_mm: float,
     sew_adjacent_faces: bool,
     make_solid: bool,
+    source_topology: str = "closed",
 ) -> MeshConversionRequest:
+    if source_topology not in {"closed", "sewable"}:
+        raise ValueError("source_topology must be closed or sewable")
     return MeshConversionRequest(
         target=target,
         detached_mesh=detached_mesh,
@@ -279,4 +285,5 @@ def make_request(
         cache_root=str(cache_root()),
         freecadcmd=str(freecadcmd_path()),
         child_script=str(Path(__file__).resolve().with_name("VibeCADMeshConversionChild.py")),
+        source_topology=source_topology,
     )

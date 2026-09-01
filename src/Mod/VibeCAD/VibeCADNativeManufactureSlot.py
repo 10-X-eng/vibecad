@@ -18,6 +18,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     preflight_operation_without_geometry,
     quantity_mm,
@@ -665,15 +666,18 @@ def create_slot(
     if not isinstance(prepared, PreparedSlotCreate):
         raise TypeError("prepared must be a PreparedSlotCreate")
     import Path.Op.Slot as PathSlot
-    import Path.Op.Gui.Slot as PathSlotGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Slot"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Slot",
         operation_factory=PathSlot.Create,
-        provider_factory=PathSlotGui.PathOpGui.ViewProvider,
-        provider_resource=PathSlotGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )

@@ -23,7 +23,7 @@ def _inspect(call: Any) -> Mapping[str, Any]:
         raise TypeError("A Manufacture inspection call requires its exact runtime.")
     if not isinstance(arguments, Mapping):
         raise TypeError("A Manufacture inspection call requires argument data.")
-    return runtime.inspect(arguments)
+    return runtime.inspect(arguments, ticket=getattr(call, "ticket", None))
 
 
 def register_manufacture_inspect_capability_implementation(

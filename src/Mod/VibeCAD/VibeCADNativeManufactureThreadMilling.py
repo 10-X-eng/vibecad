@@ -19,6 +19,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     validate_operation_tool_linking,
@@ -643,16 +644,19 @@ def create_thread_milling(
 
     if not isinstance(prepared, PreparedThreadMillingCreate):
         raise TypeError("prepared must be a PreparedThreadMillingCreate")
-    import Path.Op.Gui.ThreadMilling as PathThreadMillingGui
     import Path.Op.ThreadMilling as PathThreadMilling
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.ThreadMilling"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="ThreadMilling",
         operation_factory=PathThreadMilling.Create,
-        provider_factory=PathThreadMillingGui.PathOpGui.ViewProvider,
-        provider_resource=PathThreadMillingGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )

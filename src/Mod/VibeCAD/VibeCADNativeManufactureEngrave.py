@@ -19,6 +19,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     validate_operation_tool_linking,
@@ -399,15 +400,18 @@ def create_engrave(
     if not isinstance(prepared, PreparedEngraveCreate):
         raise TypeError("prepared must be a PreparedEngraveCreate")
     import Path.Op.Engrave as PathEngrave
-    import Path.Op.Gui.Engrave as PathEngraveGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Engrave"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Engrave",
         operation_factory=PathEngrave.Create,
-        provider_factory=PathEngraveGui.PathOpGui.ViewProvider,
-        provider_resource=PathEngraveGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )

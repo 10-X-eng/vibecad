@@ -1076,13 +1076,13 @@ NATIVE_CONTEXT_ACTIONS = (
     ),
     _action(
         "VibeCAD_ManufactureReadJob", ("manufacture",), ("task_panel",),
-        "read", "manufacture.inspect", "read_job",
+        "read", "manufacture.read_setup", "read_job",
         "ExactCamJobGraphAndState", "none",
         source_command_id="CAM_Job",
     ),
     _action(
         "VibeCAD_ManufactureReadThreadCatalog", ("manufacture",), ("task_panel",),
-        "read", "manufacture.inspect", "read_thread_catalog",
+        "read", "manufacture.threads", "read_thread_catalog",
         "ShippedCamThreadCatalog", "none",
         source_command_id="CAM_ThreadMilling",
     ),
@@ -1100,15 +1100,20 @@ NATIVE_CONTEXT_ACTIONS = (
     ),
     _action(
         "VibeCAD_ManufactureUpdateController", ("manufacture",), ("task_panel",),
-        "mutation", "manufacture.tool", "update_controller",
+        "mutation", "manufacture.set_controller", "update_controller",
         "ExactCamToolControllerState", "document",
         source_command_id="CAM_ToolBitDock",
     ),
     _action(
         "VibeCAD_ManufactureUpdateToolBit", ("manufacture",), ("task_panel",),
-        "mutation", "manufacture.tool", "update_tool_bit",
+        "mutation", "manufacture.update_tool", "update_tool_bit",
         "ExactCamToolBitState", "document",
         source_command_id="CAM_ToolBitDock",
+    ),
+    _action(
+        "CAMSimulationClose", ("manufacture",), ("task_panel",),
+        "view", "manufacture.close_simulation", "close",
+        "NativeOwnedCamSimulation", "presentation", interactive=True,
     ),
     _action(
         "CAM_ExportTemplate", ("manufacture",), ("workbench_context", "menu"),
@@ -1118,7 +1123,7 @@ NATIVE_CONTEXT_ACTIONS = (
     ),
     _action(
         "CAM_SetStartPoint", ("manufacture",), ("workbench_context",),
-        "mutation", "manufacture.operation", "set_start_point",
+        "mutation", "manufacture.start_point", "set_start_point",
         "ExactCamJobOperationAndPlanarStartPoint", "document",
         source_command_id="CAM_SetStartPoint",
     ),

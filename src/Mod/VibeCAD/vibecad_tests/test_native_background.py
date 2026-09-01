@@ -340,6 +340,107 @@ def test_only_one_background_operation_owns_a_document() -> None:
     manager.wait(submitted.job_id, 2.0)
 
 
+def test_independent_resource_scopes_can_prepare_in_one_document() -> None:
+    manager = NativeBackgroundManager()
+    entered_a = threading.Event()
+    entered_b = threading.Event()
+    release = threading.Event()
+
+    def prepare(entered):
+        def run(_cancelled, _progress):
+            entered.set()
+            release.wait(1.0)
+            return {"ready": True}
+
+        return run
+
+    first = manager.submit(
+        **_callbacks(prepare=prepare(entered_a)),
+        resource_scope="manufacture:SetupA",
+    )
+    second = manager.submit(
+        **_callbacks(prepare=prepare(entered_b)),
+        resource_scope="manufacture:SetupB",
+    )
+
+    assert entered_a.wait(1.0) and entered_b.wait(1.0)
+    with pytest.raises(NativeBackgroundError, match="resource already has"):
+        manager.submit(
+            **_callbacks(prepare=lambda _cancelled, _progress: {}),
+            resource_scope="manufacture:SetupA",
+        )
+    release.set()
+    assert manager.wait(first.job_id, 2.0).phase == "completed"
+    assert manager.wait(second.job_id, 2.0).phase == "completed"
+
+
+def test_document_job_catalog_preserves_every_active_resource_scope() -> None:
+    manager = NativeBackgroundManager()
+    release = threading.Event()
+
+    def prepare(_cancelled, _progress):
+        release.wait(1.0)
+        return {"ready": True}
+
+    first = manager.submit(
+        **_callbacks(prepare=prepare),
+        resource_scope="manufacture:SetupA",
+    )
+    second = manager.submit(
+        **_callbacks(prepare=prepare),
+        resource_scope="manufacture:SetupB",
+    )
+
+    snapshots = manager.document_snapshots(
+        "document-a",
+        capability_prefix="mesh.",
+        active_only=True,
+    )
+    assert {snapshot.job_id for snapshot in snapshots} == {
+        first.job_id,
+        second.job_id,
+    }
+    assert {snapshot.resource_scope for snapshot in snapshots} == {
+        "manufacture:SetupA",
+        "manufacture:SetupB",
+    }
+    release.set()
+    manager.wait(first.job_id, 2.0)
+    manager.wait(second.job_id, 2.0)
+
+
+def test_document_scoped_work_conflicts_with_every_resource_scope() -> None:
+    manager = NativeBackgroundManager()
+    release = threading.Event()
+
+    document_job = manager.submit(
+        **_callbacks(
+            prepare=lambda _cancelled, _progress: release.wait(1.0) or {}
+        )
+    )
+    with pytest.raises(NativeBackgroundError, match="already has"):
+        manager.submit(
+            **_callbacks(prepare=lambda _cancelled, _progress: {}),
+            resource_scope="manufacture:SetupA",
+        )
+    release.set()
+    manager.wait(document_job.job_id, 2.0)
+
+    release.clear()
+    resource_job = manager.submit(
+        **_callbacks(
+            prepare=lambda _cancelled, _progress: release.wait(1.0) or {}
+        ),
+        resource_scope="manufacture:SetupA",
+    )
+    with pytest.raises(NativeBackgroundError, match="already has"):
+        manager.submit(
+            **_callbacks(prepare=lambda _cancelled, _progress: {}),
+        )
+    manager.cancel(resource_job.job_id)
+    manager.wait(resource_job.job_id, 2.0)
+
+
 def test_result_and_progress_contracts_are_bounded(monkeypatch) -> None:
     monkeypatch.setattr(background_module, "MAX_BACKGROUND_RESULT_BYTES", 20)
     manager = NativeBackgroundManager()

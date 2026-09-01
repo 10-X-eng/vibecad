@@ -52,6 +52,10 @@ class PathSim(BaseClass):
         """Return one complete outer-and-inner material-result mesh."""
         ...
 
+    def GetRemainingStockShape(self) -> TopoShape:
+        """Return the simulated remaining stock as valid solid regions."""
+        ...
+
     def GetSimulationStats(self) -> dict[str, Any]:
         """Return voxel resolution, command counters, and removed-stock statistics."""
         ...

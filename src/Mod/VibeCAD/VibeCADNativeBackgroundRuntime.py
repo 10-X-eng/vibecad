@@ -24,6 +24,7 @@ def _summary(snapshot: NativeBackgroundSnapshot) -> dict[str, Any]:
     result: dict[str, Any] = {
         "job_id": snapshot.job_id,
         "capability": snapshot.capability_name,
+        "resource_scope": snapshot.resource_scope,
         "phase": snapshot.phase,
         "progress_percent": snapshot.progress_percent,
         "progress_message": snapshot.progress_message,

@@ -29,6 +29,7 @@ from VibeCADNativeManufactureOperationSchema import (
 from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADNativeManufactureOperationRuntime import NativeManufactureOperationRuntime
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
 from VibeCADNativeTurn import NativeTurnSnapshot
@@ -339,7 +340,7 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            "manufacture.slot",
             "slot",
             "ExactCamJobSlotPathControllerAndParameters",
             True,
@@ -375,12 +376,16 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
+        runtimes = build_native_runtime_bindings(context, turn.tool_names)
+        runtimes[MANUFACTURE_OPERATION_CAPABILITY_NAME] = (
+            NativeManufactureOperationRuntime(context)
+        )
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state_store,
             registry=registry,
             turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            runtimes=runtimes,
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
@@ -517,7 +522,12 @@ def _run() -> None:
             path_kind="custom_points",
         )
         assert operation_state(feature_slot)["state_sha256"] == feature_state["state_sha256"]
-        assert operation_state(custom_slot)["state_sha256"] == custom_state["state_sha256"]
+        restored_custom_state = operation_state(custom_slot)
+        assert restored_custom_state["state_sha256"] == custom_state["state_sha256"], {
+            key: (custom_state.get(key), restored_custom_state.get(key))
+            for key in set(custom_state) | set(restored_custom_state)
+            if custom_state.get(key) != restored_custom_state.get(key)
+        }
 
         document.saveAs(str(save_path))
         App.closeDocument(document.Name)
@@ -546,7 +556,12 @@ def _run() -> None:
             diagnostics_required=False,
         )
         assert operation_state(feature_slot)["state_sha256"] == feature_state["state_sha256"]
-        assert operation_state(custom_slot)["state_sha256"] == custom_state["state_sha256"]
+        reopened_custom_state = operation_state(custom_slot)
+        assert reopened_custom_state["state_sha256"] == custom_state["state_sha256"], {
+            key: (custom_state.get(key), reopened_custom_state.get(key))
+            for key in set(custom_state) | set(reopened_custom_state)
+            if custom_state.get(key) != reopened_custom_state.get(key)
+        }
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_SLOT_GUI_OK "

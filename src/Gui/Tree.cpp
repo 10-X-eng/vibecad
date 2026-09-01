@@ -57,6 +57,7 @@
 #include <App/AutoTransaction.h>
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/Link.h>
+#include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <App/SuppressibleExtension.h>
 
@@ -5718,15 +5719,24 @@ void DocumentItem::rebuildModelBrowser()
         return object ? objectKey(object) : std::string("$document");
     };
 
-    auto isMeshesGroup = [](const App::DocumentObject* object) {
-        if (!object
-            || !object->hasExtension(App::GroupExtension::getExtensionClassTypeId())) {
-            return false;
+    auto treeRole = [](const App::DocumentObject* object) -> std::string_view {
+        if (!object) {
+            return {};
         }
         const auto* role = dynamic_cast<const App::PropertyString*>(
             object->getPropertyByName("VibeCADTreeRole")
         );
-        return role && std::string_view(role->getValue()) == "meshes";
+        return role ? std::string_view(role->getValue()) : std::string_view {};
+    };
+
+    auto isMeshesGroup = [&](const App::DocumentObject* object) {
+        return object
+            && object->hasExtension(App::GroupExtension::getExtensionClassTypeId())
+            && treeRole(object) == "meshes";
+    };
+
+    auto isManufactureSetup = [&](const App::DocumentObject* object) {
+        return treeRole(object) == "manufacture_setup";
     };
 
     auto logicalItem = [&](App::DocumentObject* object, DocumentObjectItem* fallback) {
@@ -5881,6 +5891,10 @@ void DocumentItem::rebuildModelBrowser()
     // explicit browser treatment as an FEM Analysis.
     std::unordered_map<const App::DocumentObject*, EntryBucket> drawingPagesByComponent;
     std::unordered_map<const App::DocumentObject*, EntryBucket> drawingChildren;
+    // CAM Jobs keyed by their owning component. A marked Job owns the complete
+    // human-facing setup tree, just as an FEM Analysis owns its study members
+    // and a TechDraw Page owns its drawing graph.
+    std::unordered_map<const App::DocumentObject*, EntryBucket> manufactureSetupsByComponent;
 
     const Base::Type drawingPageType = Base::Type::fromName("TechDraw::DrawPage");
     auto isDrawingPage = [drawingPageType](const App::DocumentObject* object) {
@@ -5908,6 +5922,9 @@ void DocumentItem::rebuildModelBrowser()
         }
         if (isDrawingPage(entry.object)) {
             drawingPagesByComponent[entry.component].push_back(&entry);
+        }
+        if (isManufactureSetup(entry.object)) {
+            manufactureSetupsByComponent[entry.component].push_back(&entry);
         }
         if (isDrawingObject(entry.object)) {
             auto* viewProvider = getViewProvider(entry.object);
@@ -5954,6 +5971,71 @@ void DocumentItem::rebuildModelBrowser()
             analyzeEntriesByComponent[entry.component].push_back(&entry);
         }
     }
+
+    auto linkedObject = [](const App::DocumentObject* object,
+                           const char* propertyName) {
+        if (!object) {
+            return static_cast<App::DocumentObject*>(nullptr);
+        }
+        const auto* link = dynamic_cast<const App::PropertyLink*>(
+            object->getPropertyByName(propertyName)
+        );
+        return link ? link->getValue() : nullptr;
+    };
+
+    auto groupMembers = [](App::DocumentObject* object) {
+        const auto* group = object
+            ? object->getExtensionByType<App::GroupExtension>(true, false)
+            : nullptr;
+        return group ? group->getObjects() : std::vector<App::DocumentObject*> {};
+    };
+
+    // Consume every object that belongs exclusively to a CAM setup before
+    // generic type folders are rendered. In particular, a ToolBit's Body,
+    // Sketch, features, Origin, and datums are implementation details of the
+    // selected cutter, not document design geometry. ViewProvider ownership is
+    // authoritative for that tool-only subtree.
+    std::set<App::DocumentObject*> manufactureOwnedObjects;
+    std::function<void(App::DocumentObject*)> consumeClaimedChildren;
+    consumeClaimedChildren = [&](App::DocumentObject* object) {
+        if (!object || !manufactureOwnedObjects.insert(object).second) {
+            return;
+        }
+        auto* viewProvider = getViewProvider(object);
+        if (!viewProvider) {
+            return;
+        }
+        for (auto* child : viewProvider->claimChildren()) {
+            consumeClaimedChildren(child);
+        }
+    };
+    for (const auto& [component, setupEntries] : manufactureSetupsByComponent) {
+        (void)component;
+        for (const auto* setupEntry : setupEntries) {
+            auto* setup = setupEntry->object;
+            manufactureOwnedObjects.insert(setup);
+            auto* operations = linkedObject(setup, "Operations");
+            auto* model = linkedObject(setup, "Model");
+            auto* stock = linkedObject(setup, "Stock");
+            auto* setupSheet = linkedObject(setup, "SetupSheet");
+            auto* tools = linkedObject(setup, "Tools");
+            for (auto* owned : {operations, model, stock, setupSheet, tools}) {
+                if (owned) {
+                    manufactureOwnedObjects.insert(owned);
+                }
+            }
+            for (auto* operation : groupMembers(operations)) {
+                manufactureOwnedObjects.insert(operation);
+            }
+            for (auto* modelResource : groupMembers(model)) {
+                manufactureOwnedObjects.insert(modelResource);
+            }
+            for (auto* controller : groupMembers(tools)) {
+                consumeClaimedChildren(controller);
+            }
+        }
+    }
+    rendered.insert(manufactureOwnedObjects.begin(), manufactureOwnedObjects.end());
 
     auto findBucket = [](const auto& buckets, const auto& key) -> const EntryBucket* {
         const auto it = buckets.find(key);
@@ -6299,6 +6381,91 @@ void DocumentItem::rebuildModelBrowser()
         }
     };
 
+    auto renderManufacture = [&](QTreeWidgetItem* parent,
+                                 DocumentObjectItem* contextItem,
+                                 App::DocumentObject* contextObject) {
+        const auto setupBucket = findBucket(
+            manufactureSetupsByComponent,
+            static_cast<const App::DocumentObject*>(contextObject)
+        );
+        if (!setupBucket) {
+            return;
+        }
+
+        auto renderLinkedObject = [&](App::DocumentObject* object,
+                                      QTreeWidgetItem* visualParent,
+                                      DocumentObjectItem* logicalParent) {
+            const Entry* entry = projection.find(object);
+            return entry ? renderObject(*entry, visualParent, logicalParent) : nullptr;
+        };
+
+        for (const auto* setupEntry : *setupBucket) {
+            auto* setupItem = renderObject(
+                *setupEntry,
+                parent,
+                logicalItem(setupEntry->logicalParent, contextItem)
+            );
+            if (!setupItem) {
+                continue;
+            }
+
+            auto* setup = setupEntry->object;
+            renderLinkedObject(linkedObject(setup, "Stock"), setupItem, setupItem);
+
+            auto* toolsFolder = makeFolder(
+                setupItem,
+                setupItem,
+                contextKey(setup),
+                "tools",
+                TreeWidget::tr("Tools"),
+                "CAM_ToolController"
+            );
+            for (auto* controller : groupMembers(linkedObject(setup, "Tools"))) {
+                auto* controllerItem = renderLinkedObject(controller, toolsFolder, setupItem);
+                if (!controllerItem) {
+                    continue;
+                }
+                const auto* number = dynamic_cast<const App::PropertyIntegerConstraint*>(
+                    controller->getPropertyByName("ToolNumber")
+                );
+                auto* tool = linkedObject(controller, "Tool");
+                if (number && tool) {
+                    controllerItem->setText(
+                        0,
+                        TreeWidget::tr("T%1 · %2")
+                            .arg(number->getValue())
+                            .arg(QString::fromUtf8(tool->Label.getValue()))
+                    );
+                }
+                controllerItem->setChildIndicatorPolicy(
+                    QTreeWidgetItem::DontShowIndicator
+                );
+            }
+
+            auto* operationsFolder = makeFolder(
+                setupItem,
+                setupItem,
+                contextKey(setup),
+                "operations",
+                TreeWidget::tr("Operations"),
+                "CAM_Toolpath"
+            );
+            for (auto* operation : groupMembers(linkedObject(setup, "Operations"))) {
+                renderLinkedObject(operation, operationsFolder, setupItem);
+            }
+
+            renderLinkedObject(
+                linkedObject(setup, "SetupSheet"),
+                setupItem,
+                setupItem
+            );
+            setupItem->setChildIndicatorPolicy(
+                setupItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
+                                            : QTreeWidgetItem::DontShowIndicator
+            );
+        }
+    };
+
     auto renderReferences = [&](
                                 QTreeWidgetItem* parent,
                                 DocumentObjectItem* contextItem,
@@ -6445,6 +6612,8 @@ void DocumentItem::rebuildModelBrowser()
             "Sketcher_NewSketch",
             sketches
         );
+
+        renderManufacture(componentItem, componentItem, componentEntry.object);
 
         const auto meshGroups = filterBucket(
             findBucket(
@@ -6636,6 +6805,8 @@ void DocumentItem::rebuildModelBrowser()
         "Sketcher_NewSketch",
         rootSketches
     );
+
+    renderManufacture(this, nullptr, nullptr);
 
     const auto rootMeshGroups = filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Group}),
@@ -7414,7 +7585,8 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
         || changedProperty == "VibeCADScriptedEngine"
         || changedProperty == "VibeCADScriptedModelId"
         || changedProperty == "VibeCADScriptedOutputKey"
-        || changedProperty == "VibeCADNativeFeatureRole";
+        || changedProperty == "VibeCADNativeFeatureRole"
+        || changedProperty == "VibeCADTreeRole";
     auto* geoGroup = changedProperty == "Group"
         ? obj->getExtensionByType<App::GeoFeatureGroupExtension>(true)
         : nullptr;

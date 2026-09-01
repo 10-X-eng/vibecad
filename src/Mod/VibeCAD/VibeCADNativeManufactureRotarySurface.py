@@ -20,6 +20,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     verify_native_operation,
@@ -907,16 +908,19 @@ def create_rotary_surface(
 
     if not isinstance(prepared, PreparedRotarySurfaceCreate):
         raise TypeError("prepared must be a PreparedRotarySurfaceCreate")
-    import Path.Op.Gui.RotarySurface as PathRotarySurfaceGui
     import Path.Op.RotarySurface as PathRotarySurface
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.RotarySurface"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="RotarySurface",
         operation_factory=PathRotarySurface.Create,
-        provider_factory=PathRotarySurfaceGui.PathOpGui.ViewProvider,
-        provider_resource=PathRotarySurfaceGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )

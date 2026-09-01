@@ -27,7 +27,10 @@ from VibeCADNativeManufactureDressupLeadInOut import (
     LeadInOutDressupSpec,
     preflight_lead_in_out_dressup,
 )
-from VibeCADNativeManufactureModifySchema import MANUFACTURE_MODIFY_CAPABILITY_NAME
+from VibeCADNativeManufactureFocusedModifySchema import (
+    MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES,
+)
+
 from VibeCADNativeManufactureState import (
     copy_configuration_state,
     job_state,
@@ -41,6 +44,9 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CAPABILITY_NAME = MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES["lead_in_out_dressup"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -173,15 +179,21 @@ def _style_requests() -> tuple[dict, ...]:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_MODIFY_CAPABILITY_NAME)
+    definition = registry.definition(CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(("lead_in_out_dressup",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.lower()
     variant = schema["parameters"]["oneOf"][0]["properties"]
     assert variant["lead_in"]["oneOf"] == variant["lead_out"]["oneOf"]
+    assert len(variant["lead_in"]["oneOf"]) == 10
     styles = {
-        item["properties"]["style"]["const"] for item in variant["lead_in"]["oneOf"]
+        style
+        for item in variant["lead_in"]["oneOf"]
+        for style in item["properties"]["style"].get(
+            "enum",
+            [item["properties"]["style"].get("const")],
+        )
     }
     assert styles == {"disabled", *(request["style"] for request in _style_requests())}
     assert all(
@@ -190,13 +202,21 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     arc_z_follow = next(
         item
         for item in variant["lead_in"]["oneOf"]
-        if item["properties"]["style"].get("const") == "arc_z_follow"
+        if "arc_z_follow"
+        in item["properties"]["style"].get(
+            "enum",
+            [item["properties"]["style"].get("const")],
+        )
     )
     assert arc_z_follow["properties"]["angle_degrees"]["maximum"] == 179.0
     line_z_follow = next(
         item
         for item in variant["lead_in"]["oneOf"]
-        if item["properties"]["style"].get("const") == "line_z_follow"
+        if "line_z_follow"
+        in item["properties"]["style"].get(
+            "enum",
+            [item["properties"]["style"].get("const")],
+        )
     )
     assert line_z_follow["properties"]["angle_degrees"]["maximum"] == 89.0
     return NativeTurnSnapshot.from_provider_surface(
@@ -204,7 +224,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_MODIFY_CAPABILITY_NAME,),
+            tool_names=(CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -286,7 +306,7 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_MODIFY_CAPABILITY_NAME,
+            CAPABILITY_NAME,
             "lead_in_out_dressup",
             "ExactCamJobOperationAndLeadInOutMotionDefinition",
             True,
@@ -345,7 +365,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_MODIFY_CAPABILITY_NAME,
+                CAPABILITY_NAME,
                 json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-lead-in-out-{call_index}",
             )

@@ -36,9 +36,7 @@ from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
 
 _READ_VARIANTS = {
-    "list_tools": frozenset(
-        {"expected_catalog_state_sha256", "offset", "page_size"}
-    ),
+    "list_tools": frozenset({"query", "offset", "page_size"}),
     "read_tool": frozenset({"catalog_tool"}),
 }
 _MUTATION_VARIANTS = {
@@ -72,20 +70,30 @@ class NativeManufactureToolCatalogRuntime:
         if not isinstance(context, NativeRuntimeContext):
             raise TypeError("context must be a NativeRuntimeContext")
         self._context = context
+        self._catalog_state_sha256 = capture_tool_catalog().state_sha256
 
     def inspect(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _READ_VARIANTS)
-        self._context.guard()
+        operation, values = strict_variant_arguments(
+            arguments,
+            _READ_VARIANTS,
+            defaults={
+                "list_tools": {"query": "", "offset": 0, "page_size": 32}
+            },
+        )
+        self._context.guard(allow_owned_cam_simulation=True)
         if operation == "list_tools":
             catalog = capture_tool_catalog()
-            expected = str(values["expected_catalog_state_sha256"] or "")
-            if catalog.state_sha256 != expected:
+            if catalog.state_sha256 != self._catalog_state_sha256:
                 raise NativeManufactureError(
                     "The CAM tool catalog changed after turn start.",
                     error_code="NATIVE_MANUFACTURE_TOOL_CATALOG_STALE",
                     repair={"current_catalog_state_sha256": catalog.state_sha256},
                 )
-            return catalog.page(values["offset"], values["page_size"])
+            return catalog.page(
+                values["offset"],
+                values["page_size"],
+                query=values["query"],
+            )
         target = values["catalog_tool"]
         catalog, record = resolve_catalog_record(
             target["catalog_id"],
@@ -109,7 +117,17 @@ class NativeManufactureToolRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
-        operation, values = strict_variant_arguments(arguments, _MUTATION_VARIANTS)
+        operation, values = strict_variant_arguments(
+            arguments,
+            _MUTATION_VARIANTS,
+            defaults={
+                "create_controller": {
+                    "tool_label": None,
+                    "tool_property_changes": [],
+                    "controller": None,
+                }
+            },
+        )
         context = self._context
         context.guard()
         if not isinstance(ticket, NativeCallTicket):
@@ -125,7 +143,11 @@ class NativeManufactureToolRuntime:
                     catalog_tool=_catalog_target(values["catalog_tool"]),
                     tool_label=values["tool_label"],
                     tool_property_changes=tuple(values["tool_property_changes"]),
-                    controller=_controller(values["controller"]),
+                    controller=(
+                        _controller(values["controller"])
+                        if values["controller"] is not None
+                        else None
+                    ),
                 ),
             )
             return run_immediate_mutation(

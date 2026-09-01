@@ -25,6 +25,7 @@ Command and task window handler for the OpenGL based CAM simulator
 """
 
 import os
+import uuid
 import FreeCAD
 import Path.Base.Util as PathUtil
 import Path.Dressup.Utils as PathDressup
@@ -108,6 +109,7 @@ class CAMSimulation:
         self.operations = []
         self.baseShape = None
         self.nativePrepared = False
+        self.nativeSimulationId = None
         self._preparedStockMesh = None
         self._preparedBaseMesh = None
         self._preparedRuns = ()
@@ -385,6 +387,7 @@ def activate_prepared_simulation(**prepared):
     if _active_native_prepared_simulation is not None:
         raise RuntimeError("A Native prepared GL simulation is already active")
     simulation = CAMSimulation()
+    simulation.nativeSimulationId = uuid.uuid4().hex
     simulation.ActivatePrepared(**prepared)
     _active_native_prepared_simulation = simulation
     return simulation
@@ -393,8 +396,16 @@ def activate_prepared_simulation(**prepared):
 def owns_active_prepared_simulation(document):
     """Return whether the active task belongs to this exact Native document."""
 
+    global _active_native_prepared_simulation
     simulation = _active_native_prepared_simulation
-    if simulation is None or simulation.job.Document is not document:
+    if simulation is None:
+        return False
+    try:
+        simulation_document = simulation.job.Document
+    except (AttributeError, ReferenceError, RuntimeError):
+        _active_native_prepared_simulation = None
+        return False
+    if simulation_document is not document:
         return False
     try:
         guiDocument = FreeCADGui.getDocument(document)
