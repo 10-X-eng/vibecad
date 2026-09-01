@@ -255,8 +255,9 @@ class CAMWorkbench(Workbench):
                     import opencamlib as ocl
                 from Path.Op.Gui import Surface
                 from Path.Op.Gui import Waterline
+                from Path.Op.Gui import SteepShallow  # noqa: F401
 
-                threedopcmdlist.extend(["CAM_Surface", "CAM_Waterline"])
+                threedopcmdlist.extend(["CAM_Surface", "CAM_Waterline", "CAM_SteepShallow"])
 
                 if Path.Preferences.experimentalFeaturesEnabled():
                     from Path.Op.Gui import RotarySurface  # noqa: F401

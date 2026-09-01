@@ -18,6 +18,7 @@ from PySide import QtCore, QtWidgets
 import Path.Base.Util as PathUtil
 import Path.Main.Gui.Job as PathJobGui
 import Path.Main.Job as PathJob
+import Path.Op.Gui.Slot as PathSlotGui
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
@@ -62,7 +63,7 @@ def _commit(document, label: str, action):
     assert transaction
     try:
         value = action()
-        assert document.recompute(None, True, True) is not False
+        assert document.recompute() is not False
     except Exception:
         App.closeActiveTransaction(True, transaction)
         raise
@@ -127,9 +128,7 @@ def _edge_names(model) -> tuple[str, str]:
 
 def _job_resource(job, source):
     matches = tuple(
-        resource
-        for resource in job.Model.Group
-        if job.Proxy.baseObject(job, resource) is source
+        resource for resource in job.Model.Group if job.Proxy.baseObject(job, resource) is source
     )
     assert len(matches) == 1, matches
     return matches[0]
@@ -137,8 +136,7 @@ def _job_resource(job, source):
 
 def _selection() -> tuple:
     return tuple(
-        (item.Object.Name, tuple(item.SubElementNames))
-        for item in Gui.Selection.getSelectionEx()
+        (item.Object.Name, tuple(item.SubElementNames)) for item in Gui.Selection.getSelectionEx()
     )
 
 
@@ -169,6 +167,11 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
         "reverse_direction",
         "start_depth_mm",
         "clearance_height_mm",
+        "cut_mode",
+        "trochoid_width_mm",
+        "trochoid_stepover_percent",
+        "entry_mode",
+        "ramp_angle_degrees",
     ):
         assert field in encoded
     return NativeTurnSnapshot.from_provider_surface(
@@ -209,9 +212,7 @@ def _common_arguments(job, *, label: str, slot: dict) -> dict:
 
 def _feature_arguments(model, job, edge_name: str) -> dict:
     state = job_state(job)
-    job_model = next(
-        item for item in state["models"] if item["object_name"] == model.Name
-    )
+    job_model = next(item for item in state["models"] if item["object_name"] == model.Name)
     return {
         "operation": "slot",
         "label": "Native edge Slot",
@@ -260,6 +261,47 @@ def _custom_arguments(job) -> dict:
     )
 
 
+def _trochoidal_arguments(job) -> dict:
+    return _common_arguments(
+        job,
+        label="Native trochoidal Slot",
+        slot={
+            "path": {
+                "kind": "custom_points",
+                "start_point_mm": {"x_mm": 10.0, "y_mm": 10.0, "z_mm": 8.0},
+                "end_point_mm": {"x_mm": 50.0, "y_mm": 10.0, "z_mm": 8.0},
+            },
+            "extend_start_mm": 0.0,
+            "extend_end_mm": 0.0,
+            "layer_mode": "trochoidal",
+            "reverse_direction": False,
+            "cut_mode": "climb",
+            "trochoid_width_mm": 0.0,
+            "trochoid_stepover_percent": 25,
+        },
+    )
+
+
+def _ramp_arguments(job) -> dict:
+    return _common_arguments(
+        job,
+        label="Native ramp Slot",
+        slot={
+            "path": {
+                "kind": "custom_points",
+                "start_point_mm": {"x_mm": 10.0, "y_mm": 30.0, "z_mm": 8.0},
+                "end_point_mm": {"x_mm": 50.0, "y_mm": 30.0, "z_mm": 8.0},
+            },
+            "extend_start_mm": 0.5,
+            "extend_end_mm": 0.5,
+            "layer_mode": "directional",
+            "reverse_direction": False,
+            "entry_mode": "ramp",
+            "ramp_angle_degrees": 3.0,
+        },
+    )
+
+
 def _assert_slot_graph(
     document,
     job,
@@ -268,6 +310,7 @@ def _assert_slot_graph(
     label: str,
     expected_base: tuple,
     path_kind: str,
+    variant: str = "legacy",
     diagnostics_required: bool = True,
 ) -> None:
     assert operation in tuple(job.Operations.Group)
@@ -302,6 +345,26 @@ def _assert_slot_graph(
         assert round(operation.ExtendPathStart.getValueAs("mm"), 9) == 1.0
         assert round(operation.ExtendPathEnd.getValueAs("mm"), 9) == 2.0
         assert operation.CoolantMode == "Flood"
+    elif variant == "trochoidal":
+        assert operation.PathOrientation == "Start to End"
+        assert operation.CutPattern == "Trochoidal"
+        assert operation.CutMode == "Climb"
+        assert round(operation.TrochoidWidth.getValueAs("mm"), 9) == 0.0
+        assert int(operation.TrochoidStepover) == 25
+        assert operation.ReverseDirection is False
+        assert round(operation.ExtendPathStart.getValueAs("mm"), 9) == 0.0
+        assert round(operation.ExtendPathEnd.getValueAs("mm"), 9) == 0.0
+        assert operation.CoolantMode == "Mist"
+        assert any(command.Name in {"G2", "G3"} for command in commands)
+    elif variant == "ramp":
+        assert operation.PathOrientation == "Start to End"
+        assert operation.CutPattern == "Directional"
+        assert operation.EntryMode == "Ramp"
+        assert round(float(operation.RampAngle.getValueAs("deg")), 9) == 3.0
+        assert operation.ReverseDirection is False
+        assert round(operation.ExtendPathStart.getValueAs("mm"), 9) == 0.5
+        assert round(operation.ExtendPathEnd.getValueAs("mm"), 9) == 0.5
+        assert operation.CoolantMode == "Mist"
     else:
         assert operation.PathOrientation == "Start to End"
         assert operation.CutPattern == "Bidirectional"
@@ -316,6 +379,74 @@ def _assert_slot_graph(
         assert diagnostics["error"] is None, diagnostics
 
 
+def _assert_advanced_human_task_panel(operation, *, variant: str) -> None:
+    """Exercise the actual human Slot task panel for the advanced settings."""
+
+    page = PathSlotGui.TaskPanelOpPage(
+        operation,
+        operation.Proxy.opFeatures(operation),
+    )
+    page.initPage(operation)
+    try:
+        page.setFields(operation)
+        page.pageRegisterSignalHandlers()
+        for name in (
+            "cutMode",
+            "trochoidWidth",
+            "trochoidStepover",
+            "entryMode",
+            "rampAngle",
+        ):
+            assert hasattr(page.form, name), name
+
+        if variant == "trochoidal":
+            assert not page.form.cutMode.isHidden()
+            assert not page.form.trochoidWidth.isHidden()
+            assert not page.form.trochoidStepover.isHidden()
+            assert page.form.entryMode.isHidden()
+            assert page.form.rampAngle.isHidden()
+            page.form.cutPattern.setCurrentText("Directional")
+            assert page.form.cutMode.isHidden()
+            assert not page.form.entryMode.isHidden()
+            page.form.cutPattern.setCurrentText("Trochoidal")
+            assert not page.form.cutMode.isHidden()
+            assert page.form.entryMode.isHidden()
+            original_mode = str(operation.CutMode)
+            original_width = operation.TrochoidWidth.UserString
+            original_stepover = int(operation.TrochoidStepover)
+            page.form.cutMode.setCurrentText("Conventional")
+            page.form.trochoidWidth.setText("8 mm")
+            page.form.trochoidStepover.setValue(35)
+            page.getFields(operation)
+            assert operation.CutMode == "Conventional"
+            assert round(operation.TrochoidWidth.getValueAs("mm"), 9) == 8.0
+            assert int(operation.TrochoidStepover) == 35
+            page.form.cutMode.setCurrentText(original_mode)
+            page.form.trochoidWidth.setText(original_width)
+            page.form.trochoidStepover.setValue(original_stepover)
+            page.getFields(operation)
+        elif variant == "ramp":
+            assert page.form.cutMode.isHidden()
+            assert page.form.trochoidWidth.isHidden()
+            assert page.form.trochoidStepover.isHidden()
+            assert not page.form.entryMode.isHidden()
+            assert not page.form.rampAngle.isHidden()
+            page.form.entryMode.setCurrentText("Plunge")
+            assert page.form.rampAngle.isHidden()
+            page.form.entryMode.setCurrentText("Ramp")
+            assert not page.form.rampAngle.isHidden()
+            original_angle = operation.RampAngle.UserString
+            page.form.rampAngle.setText("4 deg")
+            page.getFields(operation)
+            assert round(operation.RampAngle.getValueAs("deg"), 9) == 4.0
+            page.form.rampAngle.setText(original_angle)
+            page.getFields(operation)
+        else:
+            raise AssertionError(variant)
+    finally:
+        page.pageCleanup()
+
+
 def _run() -> None:
     application = QtWidgets.QApplication.instance()
     document = None
@@ -328,10 +459,7 @@ def _run() -> None:
         document.UndoMode = 1
         VibeGui._connect_document_observer()
         controller, surface = _surface()
-        plans = {
-            plan.command_id: plan
-            for plan in resolve_native_action_inventory(surface).plans
-        }
+        plans = {plan.command_id: plan for plan in resolve_native_action_inventory(surface).plans}
         plan = plans["CAM_Slot"]
         assert (
             plan.capability_family,
@@ -377,9 +505,7 @@ def _run() -> None:
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
         runtimes = build_native_runtime_bindings(context, turn.tool_names)
-        runtimes[MANUFACTURE_OPERATION_CAPABILITY_NAME] = (
-            NativeManufactureOperationRuntime(context)
-        )
+        runtimes[MANUFACTURE_OPERATION_CAPABILITY_NAME] = NativeManufactureOperationRuntime(context)
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state_store,
@@ -529,6 +655,94 @@ def _run() -> None:
             if custom_state.get(key) != restored_custom_state.get(key)
         }
 
+        trochoidal_arguments = _trochoidal_arguments(job)
+        names_before_new = tuple(obj.Name for obj in document.Objects)
+        undo_before_new = int(document.UndoCount)
+        revision_before_new = state_store.current_revision(context.document_uid)
+
+        second_dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=runtimes,
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
+
+        def second_call(payload: dict, *, succeeds: bool = True) -> dict:
+            nonlocal call_index
+            call_index += 1
+            response = second_dispatcher.call(
+                MANUFACTURE_OPERATION_CAPABILITY_NAME,
+                json.dumps(payload, separators=(",", ":")),
+                f"native-manufacture-slot-{call_index}",
+            )
+            assert response.get("ok") is succeeds, response
+            return response
+
+        mixed = json.loads(json.dumps(trochoidal_arguments))
+        mixed["slot"]["layer_mode"] = "directional"
+        mixed_result = second_call(mixed, succeeds=False)
+        assert mixed_result["error_code"] == "NATIVE_ARGUMENTS_INVALID", mixed_result
+        assert tuple(obj.Name for obj in document.Objects) == names_before_new
+        assert int(document.UndoCount) == undo_before_new
+
+        trochoidal_result = second_call(trochoidal_arguments)
+        _events(12)
+        trochoidal_name = trochoidal_result["slot"]["object_name"]
+        trochoidal_slot = document.getObject(trochoidal_name)
+        assert trochoidal_slot is not None
+        _assert_slot_graph(
+            document,
+            job,
+            trochoidal_slot,
+            label="Native trochoidal Slot",
+            expected_base=(),
+            path_kind="custom_points",
+            variant="trochoidal",
+        )
+        assert trochoidal_result["slot"]["geometry"] == {"kind": "custom_points"}
+        assert trochoidal_result["slot"]["parameters"]["slot"] == trochoidal_arguments["slot"]
+        assert trochoidal_result["slot"]["path_kind"] == "custom_points"
+        assert trochoidal_result["slot"]["cutting_command_count"] >= 1
+        ramp_arguments = _ramp_arguments(job)
+        ramp_result = second_call(ramp_arguments)
+        _events(12)
+        ramp_name = ramp_result["slot"]["object_name"]
+        ramp_slot = document.getObject(ramp_name)
+        assert ramp_slot is not None
+        _assert_slot_graph(
+            document,
+            job,
+            ramp_slot,
+            label="Native ramp Slot",
+            expected_base=(),
+            path_kind="custom_points",
+            variant="ramp",
+        )
+        assert ramp_result["slot"]["geometry"] == {"kind": "custom_points"}
+        assert ramp_result["slot"]["parameters"]["slot"] == ramp_arguments["slot"]
+        assert ramp_result["slot"]["path_kind"] == "custom_points"
+        assert ramp_result["slot"]["cutting_command_count"] >= 1
+        assert ramp_result["job"]["operation_count"] == len(initial_operations) + 4
+        assert int(document.UndoCount) == undo_before_new + 2
+        assert state_store.current_revision(context.document_uid) == revision_before_new + 2
+        _assert_advanced_human_task_panel(
+            trochoidal_slot,
+            variant="trochoidal",
+        )
+        _assert_advanced_human_task_panel(ramp_slot, variant="ramp")
+        assert document.recompute(None, True, True) is not False
+        _events(12)
+        trochoidal_state = operation_state(trochoidal_slot)
+        ramp_state = operation_state(ramp_slot)
+
+        # Snapshot every operation after exercising the human task panel;
+        # save/reopen must preserve these exact custom-point inputs and paths.
+        feature_state = operation_state(feature_slot)
+        custom_state = operation_state(custom_slot)
+
         document.saveAs(str(save_path))
         App.closeDocument(document.Name)
         document = App.openDocument(str(save_path))
@@ -536,7 +750,19 @@ def _run() -> None:
         job = document.getObject("SlotJob")
         feature_slot = document.getObject(feature_name)
         custom_slot = document.getObject(custom_name)
-        assert all(value is not None for value in (model, job, feature_slot, custom_slot))
+        trochoidal_slot = document.getObject(trochoidal_name)
+        ramp_slot = document.getObject(ramp_name)
+        assert all(
+            value is not None
+            for value in (
+                model,
+                job,
+                feature_slot,
+                custom_slot,
+                trochoidal_slot,
+                ramp_slot,
+            )
+        )
         _assert_slot_graph(
             document,
             job,
@@ -562,11 +788,34 @@ def _run() -> None:
             for key in set(custom_state) | set(reopened_custom_state)
             if custom_state.get(key) != reopened_custom_state.get(key)
         }
+        _assert_slot_graph(
+            document,
+            job,
+            trochoidal_slot,
+            label="Native trochoidal Slot",
+            expected_base=(),
+            path_kind="custom_points",
+            variant="trochoidal",
+            diagnostics_required=False,
+        )
+        _assert_slot_graph(
+            document,
+            job,
+            ramp_slot,
+            label="Native ramp Slot",
+            expected_base=(),
+            path_kind="custom_points",
+            variant="ramp",
+            diagnostics_required=False,
+        )
+        assert operation_state(trochoidal_slot)["state_sha256"] == trochoidal_state["state_sha256"]
+        assert operation_state(ramp_slot)["state_sha256"] == ramp_state["state_sha256"]
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_SLOT_GUI_OK "
             "exact_targets=true feature_path=true custom_points=true parameters=true "
-            "toolpath=true history=true rollback=true undo=true redo=true reopen=true",
+            "toolpath=true history=true rollback=true undo=true redo=true reopen=true "
+            "trochoidal=true ramp=true human_task_panel=true",
             flush=True,
         )
         exit_code = 0

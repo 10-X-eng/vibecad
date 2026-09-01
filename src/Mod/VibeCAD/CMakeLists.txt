@@ -683,6 +683,7 @@ set(VibeCAD_Scripts
     VibeCADNativeManufacturePocket3D.py
     VibeCADNativeManufactureProfile.py
     VibeCADNativeManufactureRotarySurface.py
+    VibeCADNativeManufactureSteepShallow.py
     VibeCADNativeManufactureSurface.py
     VibeCADNativeManufactureWaterline.py
     VibeCADNativeManufactureReadiness.py
@@ -1349,6 +1350,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_manufacture_surface_gui_integration.py
     vibecad_tests/native_manufacture_waterline_gui_integration.py
     vibecad_tests/native_manufacture_rotary_surface_gui_integration.py
+    vibecad_tests/native_manufacture_steep_shallow_gui_integration.py
     vibecad_tests/native_manufacture_operation_active_gui_integration.py
     vibecad_tests/native_manufacture_start_point_gui_integration.py
     vibecad_tests/native_manufacture_gl_simulation_gui_integration.py

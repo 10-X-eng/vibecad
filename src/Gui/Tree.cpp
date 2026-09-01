@@ -5921,6 +5921,24 @@ void DocumentItem::rebuildModelBrowser()
     // human-facing setup tree, just as an FEM Analysis owns its study members
     // and a TechDraw Page owns its drawing graph.
     std::unordered_map<const App::DocumentObject*, EntryBucket> manufactureSetupsByComponent;
+    // Durable retained-stock simulations are document History operations, but
+    // their explicit SimulationJob link makes the originating CAM setup their
+    // human-facing owner. Keep that association separate from executable
+    // toolpaths: simulation output verifies a setup; it is not a machine
+    // operation.
+    std::unordered_map<const App::DocumentObject*, EntryBucket>
+        manufactureSimulationResultsBySetup;
+
+    auto linkedObject = [](const App::DocumentObject* object,
+                           const char* propertyName) {
+        if (!object) {
+            return static_cast<App::DocumentObject*>(nullptr);
+        }
+        const auto* link = dynamic_cast<const App::PropertyLink*>(
+            object->getPropertyByName(propertyName)
+        );
+        return link ? link->getValue() : nullptr;
+    };
 
     const Base::Type drawingPageType = Base::Type::fromName("TechDraw::DrawPage");
     auto isDrawingPage = [drawingPageType](const App::DocumentObject* object) {
@@ -5951,6 +5969,10 @@ void DocumentItem::rebuildModelBrowser()
         }
         if (isManufactureSetup(entry.object)) {
             manufactureSetupsByComponent[entry.component].push_back(&entry);
+        }
+        if (auto* setup = linkedObject(entry.object, "SimulationJob");
+            isManufactureSetup(setup)) {
+            manufactureSimulationResultsBySetup[setup].push_back(&entry);
         }
         if (isDrawingObject(entry.object)) {
             auto* viewProvider = getViewProvider(entry.object);
@@ -5997,17 +6019,6 @@ void DocumentItem::rebuildModelBrowser()
             analyzeEntriesByComponent[entry.component].push_back(&entry);
         }
     }
-
-    auto linkedObject = [](const App::DocumentObject* object,
-                           const char* propertyName) {
-        if (!object) {
-            return static_cast<App::DocumentObject*>(nullptr);
-        }
-        const auto* link = dynamic_cast<const App::PropertyLink*>(
-            object->getPropertyByName(propertyName)
-        );
-        return link ? link->getValue() : nullptr;
-    };
 
     auto groupMembers = [](App::DocumentObject* object) {
         const auto* group = object
@@ -6058,6 +6069,12 @@ void DocumentItem::rebuildModelBrowser()
             }
             for (auto* controller : groupMembers(tools)) {
                 consumeClaimedChildren(controller);
+            }
+            const auto results = manufactureSimulationResultsBySetup.find(setup);
+            if (results != manufactureSimulationResultsBySetup.end()) {
+                for (const auto* result : results->second) {
+                    manufactureOwnedObjects.insert(result->object);
+                }
             }
         }
     }
@@ -6478,6 +6495,47 @@ void DocumentItem::rebuildModelBrowser()
             );
             for (auto* operation : groupMembers(linkedObject(setup, "Operations"))) {
                 renderLinkedObject(operation, operationsFolder, setupItem);
+            }
+
+            const auto resultBucket = findBucket(
+                manufactureSimulationResultsBySetup,
+                static_cast<const App::DocumentObject*>(setup)
+            );
+            if (resultBucket && !resultBucket->empty()) {
+                auto* resultsFolder = makeFolder(
+                    setupItem,
+                    setupItem,
+                    contextKey(setup),
+                    "simulation-results",
+                    TreeWidget::tr("Simulation Results"),
+                    "CAM_Simulator"
+                );
+                for (std::size_t index = 0; index < resultBucket->size(); ++index) {
+                    const auto* result = (*resultBucket)[index];
+                    auto* resultItem = renderObject(
+                        *result,
+                        resultsFolder,
+                        logicalItem(result->logicalParent, contextItem)
+                    );
+                    if (!resultItem) {
+                        continue;
+                    }
+                    const QString generatedLabel = defaultLabelBase(
+                        resultItem->text(0),
+                        {QStringLiteral("CutMaterial")}
+                    );
+                    if (!generatedLabel.isEmpty()) {
+                        resultItem->setText(
+                            0,
+                            resultBucket->size() == 1
+                                ? TreeWidget::tr("Remaining Stock")
+                                : TreeWidget::tr("Remaining Stock %1").arg(index + 1)
+                        );
+                    }
+                    resultItem->setChildIndicatorPolicy(
+                        QTreeWidgetItem::DontShowIndicator
+                    );
+                }
             }
 
             renderLinkedObject(

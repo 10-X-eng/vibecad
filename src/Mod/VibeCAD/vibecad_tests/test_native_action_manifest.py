@@ -79,6 +79,7 @@ def test_optional_inventory_is_explicit_and_does_not_change_default_counts() -> 
         "CAM_Surface",
         "CAM_Waterline",
         "CAM_RotarySurface",
+        "CAM_SteepShallow",
     )
     assert OPTIONAL_ACTIONS_BY_SURFACE["drawing"] == (
         "TechDraw_ExtentGroup",

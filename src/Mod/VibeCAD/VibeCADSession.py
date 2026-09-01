@@ -1559,6 +1559,7 @@ def prewarm_analyze_context(
     service: VibeCADService,
     document_thread_dispatch: DocumentThreadDispatch | None,
     *,
+    cancellation_check: CancellationCheck | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any] | None:
     """Populate the read-only Analyze cache before the human presses Send."""
@@ -1566,6 +1567,7 @@ def prewarm_analyze_context(
     return _build_responsive_analyze_native_state(
         service,
         document_thread_dispatch,
+        cancellation_check=cancellation_check,
         progress_callback=progress_callback,
     )
 
@@ -1718,6 +1720,7 @@ def prewarm_drawing_context(
     service: VibeCADService,
     document_thread_dispatch: DocumentThreadDispatch | None,
     *,
+    cancellation_check: CancellationCheck | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any] | None:
     """Populate the Drawing source cache before the human presses Send."""
@@ -1725,6 +1728,7 @@ def prewarm_drawing_context(
     return _build_responsive_drawing_native_state(
         service,
         document_thread_dispatch,
+        cancellation_check=cancellation_check,
         progress_callback=progress_callback,
     )
 

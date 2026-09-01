@@ -521,6 +521,7 @@ def manufacture_surface_variants(
                 "CAM_Pocket3D",
                 "CAM_Surface",
                 "CAM_Waterline",
+                "CAM_SteepShallow",
             ]
             if experimental:
                 advanced_children.append("CAM_RotarySurface")

@@ -21,6 +21,7 @@ import Commands  # noqa: E402
 class TestMcMasterRibbon(unittest.TestCase):
     def test_workbench_registers_when_initgui_has_no_file_global(self):
         registered = []
+        messages = []
 
         class DummyWorkbench:
             pass
@@ -28,7 +29,7 @@ class TestMcMasterRibbon(unittest.TestCase):
         freecad = ModuleType("FreeCAD")
         freecad.getResourceDir = lambda: "C:/VibeCAD/"
         freecad.Console = SimpleNamespace(
-            PrintMessage=lambda _message: None,
+            PrintMessage=messages.append,
             PrintError=lambda _message: None,
             PrintWarning=lambda _message: None,
         )
@@ -67,6 +68,47 @@ class TestMcMasterRibbon(unittest.TestCase):
                 "C:/VibeCAD/Mod/McMasterInsert/icons/mcmaster-workbench.svg"
             ),
         )
+        self.assertEqual(messages, [])
+
+    def test_module_discovery_and_successful_ui_install_are_quiet(self):
+        messages = []
+        freecad = ModuleType("FreeCAD")
+        freecad.Console = SimpleNamespace(PrintMessage=messages.append)
+
+        class Signal:
+            @staticmethod
+            def connect(_callback):
+                return None
+
+        class Timer:
+            def __init__(self):
+                self.timeout = Signal()
+
+            @staticmethod
+            def setInterval(_interval):
+                return None
+
+            @staticmethod
+            def stop():
+                return None
+
+            @staticmethod
+            def start():
+                return None
+
+        pyside = ModuleType("PySide")
+        pyside.QtCore = SimpleNamespace(QTimer=Timer)
+        successful = {"menu": True, "ribbon_tab": True, "ribbon_hook": True}
+
+        with mock.patch.dict(sys.modules, {"FreeCAD": freecad, "PySide": pyside}):
+            source = (ROOT / "Init.py").read_text(encoding="utf-8")
+            exec(compile(source, str(ROOT / "Init.py"), "exec"), {})
+            with mock.patch.object(InstallUI, "install_once", return_value=successful):
+                InstallUI._timer = None
+                InstallUI.install_with_retry(max_tries=1, interval_ms=1)
+                InstallUI._timer = None
+
+        self.assertEqual(messages, [])
 
     def test_ribbon_buttons_are_catalog_and_import(self):
         labels = tuple(label for label, _command, _icon in InstallUI.BUTTONS)
