@@ -694,14 +694,30 @@ def analyze_provider_tool_names(
         if "thermal" in physics:
             allowed.update({ANALYZE_TEMPERATURE_RESULTS, ANALYZE_SHOW_TEMPERATURE})
     run_status = domain.get("run_status")
-    if (
-        isinstance(run_status, Mapping)
-        and str(run_status.get("phase") or "idle") != "idle"
-        and str(run_status.get("job_id") or "")
-    ):
+    job_statuses: list[Mapping[str, Any]] = []
+    if isinstance(run_status, Mapping):
+        background_jobs = run_status.get("background_jobs")
+        if isinstance(background_jobs, list):
+            job_statuses = [
+                job for job in background_jobs if isinstance(job, Mapping)
+            ]
+        elif str(run_status.get("job_id") or ""):
+            job_statuses = [run_status]
+    observable_jobs = [
+        job
+        for job in job_statuses
+        if str(job.get("phase") or "idle") != "idle"
+        and str(job.get("job_id") or "")
+    ]
+    if observable_jobs:
         allowed.add("native.job")
-        if run_status.get("terminal") is False:
-            allowed.discard(ANALYZE_GENERATE_GMSH)
+    active_jobs = [job for job in observable_jobs if job.get("terminal") is False]
+    if active_jobs:
+        allowed.discard(ANALYZE_GENERATE_GMSH)
+        if any(
+            not str(job.get("resource_scope") or "").startswith("analyze:")
+            for job in active_jobs
+        ):
             allowed.discard(ANALYZE_RUN_SOLVER)
 
     return tuple(name for name in available_tool_names if name in allowed)

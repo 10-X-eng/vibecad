@@ -523,6 +523,20 @@ def _exercise_multiple_independent_studies(
     publication = publish_candidate(service, prepared, validated)
     accepted = accept_candidate(prepared, publication)
     _assert_multi_study_outputs(source_document, accepted)
+    stable_names = {
+        name: str(obj.Name) for name, obj in _outputs(source_document, accepted).items()
+    }
+    source_name = str(source_object.Name)
+    source_document.undo()
+    assert all(
+        source_document.getObject(name) is None for name in stable_names.values()
+    )
+    assert source_document.getObject(source_name) is source_object
+    source_document.redo()
+    assert {
+        name: str(obj.Name) for name, obj in _outputs(source_document, accepted).items()
+    } == stable_names
+    _assert_multi_study_outputs(source_document, accepted)
     save_path = root / "fem-multiple-independent-studies.FCStd"
     source_document.saveAs(str(save_path))
     App.closeDocument(source_document.Name)
@@ -918,6 +932,7 @@ def _run_integration() -> int:
             True,
             True,
         )
+        multi_document.UndoMode = 1
         multi_source = multi_document.addObject("Part::Feature", "SourceSolid")
         multi_source.Label = "Shared geometry for independent studies"
         multi_source.Shape = Part.makeCompound(

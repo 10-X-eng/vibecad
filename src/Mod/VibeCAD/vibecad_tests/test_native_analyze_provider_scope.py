@@ -1160,6 +1160,56 @@ def test_background_job_control_appears_only_for_a_live_analyze_job() -> None:
     assert "analyze.generate_gmsh" not in _names(running)
 
 
+def test_independent_background_jobs_keep_exact_job_control_available() -> None:
+    running = _domain(
+        "mechanical",
+        mesh_count=1,
+        generated_mesh_count=1,
+        solver_count=1,
+    )
+    running["run_status"] = {
+        "phase": "running",
+        "terminal": False,
+        "background_jobs": [
+            {
+                "phase": "running",
+                "job_id": "a" * 32,
+                "resource_scope": "analyze:StudyA",
+                "terminal": False,
+            },
+            {
+                "phase": "completed",
+                "job_id": "b" * 32,
+                "resource_scope": "analyze:StudyB",
+                "terminal": True,
+            },
+        ],
+    }
+
+    assert "native.job" in _names(running)
+
+
+def test_scoped_solver_job_does_not_block_another_independent_study() -> None:
+    running = _domain(
+        "mechanical",
+        mesh_count=1,
+        generated_mesh_count=1,
+        solver_count=1,
+    )
+    running["run_status"] = {
+        "phase": "running",
+        "job_id": "a" * 32,
+        "resource_scope": "analyze:StudyA",
+        "terminal": False,
+    }
+
+    names = _names(running)
+
+    assert "native.job" in names
+    assert "analyze.run_solver" in names
+    assert "analyze.generate_gmsh" not in names
+
+
 def test_multiple_studies_compose_declared_physics_without_guessing() -> None:
     domain = _domain("mechanical")
     domain["analysis_count"] = 2
