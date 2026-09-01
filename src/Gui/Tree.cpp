@@ -152,6 +152,31 @@ static QString vibeCADProvenanceToolTip(
     return toolTip.isEmpty() ? provenance : provenance + QLatin1Char('\n') + toolTip;
 }
 
+static QString modelBrowserPresentationLabel(
+    const ModelTreeBrowserProjection::Entry& entry
+)
+{
+    if (!entry.object) {
+        return {};
+    }
+    if (entry.role == ModelTreeBrowserProjection::Role::History
+        && ModelTreeBrowserProjection::isVibeScriptProgram(entry.component)
+        && entry.object->getTypeId().getName()
+            == std::string_view("PartDesign::DesignScriptOperation")) {
+        // The saved operation Label and internal name remain available in the
+        // Property inspector. The browser describes the operation's role.
+        return TreeWidget::tr("VibeScript Build");
+    }
+    if (entry.publishedOutput && entry.bodyRepresentation) {
+        // FreeCAD makes sibling Labels unique by appending a numeric suffix.
+        // A publication row represents the exact paired Body to downstream
+        // consumers, so present that Body's human label while retaining the
+        // publication Link's own exact identity in the Property inspector.
+        return QString::fromUtf8(entry.bodyRepresentation->Label.getValue());
+    }
+    return QString::fromUtf8(entry.object->Label.getValue());
+}
+
 void TreeParams::onItemBackgroundChanged()
 {
     if (getItemBackground()) {
@@ -5792,6 +5817,7 @@ void DocumentItem::rebuildModelBrowser()
         if (!item) {
             return nullptr;
         }
+        item->setText(0, modelBrowserPresentationLabel(entry));
         try {
             const auto* detailProvider =
                 dynamic_cast<const TreeViewDetailProvider*>(item->object());
@@ -6621,7 +6647,7 @@ void DocumentItem::rebuildModelBrowser()
                 componentItem,
                 componentItem,
                 componentEntry.object,
-                "design-history",
+                "operations",
                 TreeWidget::tr("Design History"),
                 vibeScriptProgram ? "vibecad" : "PartDesignWorkbench",
                 operations
@@ -6859,7 +6885,7 @@ void DocumentItem::rebuildModelBrowser()
         nullptr,
         nullptr,
         "operations",
-        TreeWidget::tr("Operations"),
+        TreeWidget::tr("Design History"),
         "PartDesignWorkbench",
         rootOperations
     );
@@ -7666,11 +7692,41 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
         const char* label = obj->Label.getValue();
         auto firstData = *itEntry->second.begin();
         if (firstData->label != label) {
+            ModelTreeBrowserProjection projection(obj->getDocument());
+            const auto* projectionEntry = projection.find(obj);
+            const QString browserLabel = projectionEntry
+                ? modelBrowserPresentationLabel(*projectionEntry)
+                : QString::fromUtf8(label);
             for (const auto& data : itEntry->second) {
                 data->label = label;
                 auto displayName = QString::fromUtf8(label);
                 for (auto item : data->items) {
-                    item->setText(0, displayName);
+                    item->setText(
+                        0,
+                        item->isBrowserProxy() ? browserLabel : displayName
+                    );
+                }
+            }
+
+            // A Body rename also changes the presentation name of its exact
+            // paired publication, even though the Link's own Label property
+            // did not change and therefore emits no separate notification.
+            for (const auto& entry : projection.entries()) {
+                if (entry.bodyRepresentation != obj || !entry.object) {
+                    continue;
+                }
+                const auto publicationIt = ObjectTable.find(entry.object);
+                if (publicationIt == ObjectTable.end()) {
+                    continue;
+                }
+                const QString publicationLabel =
+                    modelBrowserPresentationLabel(entry);
+                for (const auto& data : publicationIt->second) {
+                    for (auto* item : data->items) {
+                        if (item->isBrowserProxy()) {
+                            item->setText(0, publicationLabel);
+                        }
+                    }
                 }
             }
         }

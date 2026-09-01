@@ -21,6 +21,9 @@ public:
     ~ViewProviderDesignScriptOperation() override;
 
     void attach(App::DocumentObject* object) override;
+    bool doubleClicked() override;
+    const char* getTransactionText() const override;
+    void setupContextMenu(QMenu* menu, QObject* receiver, const char* member) override;
     std::vector<Gui::TreeViewDetail> getTreeViewDetails() const override;
 };
 

@@ -33,10 +33,16 @@ def test_vibescript_component_has_clear_primary_tree_roles() -> None:
     assert 'TreeWidget::tr("Design History")' in source
     assert 'TreeWidget::tr("Published Outputs")' in source
     assert 'TreeWidget::tr("Bodies")' in source
+    assert 'TreeWidget::tr("VibeScript Build")' in source
+    assert "modelBrowserPresentationLabel" in source
+    assert "entry.bodyRepresentation->Label.getValue()" in source
     assert 'Projection::isVibeScriptProgram(' in source
-    assert 'vibeScriptProgram ? "design-history" : "operations"' not in source
     assert (
-        '"design-history",\n                TreeWidget::tr("Design History"),'
+        '"operations",\n                TreeWidget::tr("Design History"),'
+        in source
+    )
+    assert (
+        'nullptr,\n        "operations",\n        TreeWidget::tr("Design History"),'
         in source
     )
     assert "return vibeScriptProgram || !entry.bodyRepresentation;" in source
@@ -45,6 +51,8 @@ def test_vibescript_component_has_clear_primary_tree_roles() -> None:
         "logicalParent,\n            entry.publishedImplementation\n        );"
         in source
     )
+    assert '"vibecad-tree-overlay"' in source
+    assert "isVibeCADCreatedObject" in source
 
 
 def test_script_history_view_provider_is_non_rendering_and_lists_outputs() -> None:
@@ -55,13 +63,24 @@ def test_script_history_view_provider_is_non_rendering_and_lists_outputs() -> No
     design_header = _source(
         SOURCE_ROOT / "Mod" / "PartDesign" / "App" / "DesignFeature.h"
     )
+    generic_source = _source(
+        PARTDESIGN_GUI_ROOT / "ViewProviderDesignOperation.cpp"
+    )
 
     assert "Gui::TreeViewDetailProvider" in header
     assert "getTreeViewDetails() const override" in header
-    assert "NoToggleVisibility" in source
+    assert "NoToggleVisibility" in generic_source
     assert "ProgramOutputKeys" in source
     assert "ProgramOutputTypes" in source
-    assert '"Produces "' in source
+    assert 'QObject::tr("Produces %1")' in source
+    assert "const std::size_t outputCount = keys.size();" in source
+    assert "index < types.size() ? types[index] : std::string {}" in source
+    assert "maxPublishedRows" not in source
+    assert "approvedDocumentTimelineCommand" in source
+    assert "EditCommandPropertyName" in source
+    assert '"VibeCADTimelineOperationEditor"' in source
+    assert "ViewProviderDesignOperation::getTransactionText()" in source
+    assert "doubleClicked()" in source
     assert "ViewProviderDesignScriptOperation::init()" in app_source
     assert "ViewProviderDesignScriptOperation.cpp" in cmake_source
     assert "ViewProviderDesignScriptOperation.h" in cmake_source
