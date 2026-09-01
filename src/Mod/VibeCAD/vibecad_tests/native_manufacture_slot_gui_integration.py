@@ -18,6 +18,7 @@ from PySide import QtCore, QtWidgets
 import Path.Base.Util as PathUtil
 import Path.Main.Gui.Job as PathJobGui
 import Path.Main.Job as PathJob
+import Path.Op.Gui.Slot as PathSlotGui
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
@@ -62,7 +63,7 @@ def _commit(document, label: str, action):
     assert transaction
     try:
         value = action()
-        assert document.recompute(None, True, True) is not False
+        assert document.recompute() is not False
     except Exception:
         App.closeActiveTransaction(True, transaction)
         raise
@@ -127,9 +128,7 @@ def _edge_names(model) -> tuple[str, str]:
 
 def _job_resource(job, source):
     matches = tuple(
-        resource
-        for resource in job.Model.Group
-        if job.Proxy.baseObject(job, resource) is source
+        resource for resource in job.Model.Group if job.Proxy.baseObject(job, resource) is source
     )
     assert len(matches) == 1, matches
     return matches[0]
@@ -137,8 +136,7 @@ def _job_resource(job, source):
 
 def _selection() -> tuple:
     return tuple(
-        (item.Object.Name, tuple(item.SubElementNames))
-        for item in Gui.Selection.getSelectionEx()
+        (item.Object.Name, tuple(item.SubElementNames)) for item in Gui.Selection.getSelectionEx()
     )
 
 
@@ -214,9 +212,7 @@ def _common_arguments(job, *, label: str, slot: dict) -> dict:
 
 def _feature_arguments(model, job, edge_name: str) -> dict:
     state = job_state(job)
-    job_model = next(
-        item for item in state["models"] if item["object_name"] == model.Name
-    )
+    job_model = next(item for item in state["models"] if item["object_name"] == model.Name)
     return {
         "operation": "slot",
         "label": "Native edge Slot",
@@ -337,10 +333,7 @@ def _assert_slot_graph(
     assert tuple(round(value, 9) for value in operation.StartPoint) == (0.0, 0.0, 0.0)
     first = operation.CustomPoint1
     second = operation.CustomPoint2
-    assert (
-        abs(float(first.x) - float(second.x)) + abs(float(first.y) - float(second.y))
-        > 0.1
-    )
+    assert abs(float(first.x) - float(second.x)) + abs(float(first.y) - float(second.y)) > 0.1
     assert tuple(document.VibeCADTimeline.Operations).count(operation) == 1
     commands = tuple(operation.Path.Commands)
     assert any(command.Name in {"G1", "G2", "G3"} for command in commands)
@@ -386,6 +379,74 @@ def _assert_slot_graph(
         assert diagnostics["error"] is None, diagnostics
 
 
+def _assert_advanced_human_task_panel(operation, *, variant: str) -> None:
+    """Exercise the actual human Slot task panel for the advanced settings."""
+
+    page = PathSlotGui.TaskPanelOpPage(
+        operation,
+        operation.Proxy.opFeatures(operation),
+    )
+    page.initPage(operation)
+    try:
+        page.setFields(operation)
+        page.pageRegisterSignalHandlers()
+        for name in (
+            "cutMode",
+            "trochoidWidth",
+            "trochoidStepover",
+            "entryMode",
+            "rampAngle",
+        ):
+            assert hasattr(page.form, name), name
+
+        if variant == "trochoidal":
+            assert not page.form.cutMode.isHidden()
+            assert not page.form.trochoidWidth.isHidden()
+            assert not page.form.trochoidStepover.isHidden()
+            assert page.form.entryMode.isHidden()
+            assert page.form.rampAngle.isHidden()
+            page.form.cutPattern.setCurrentText("Directional")
+            assert page.form.cutMode.isHidden()
+            assert not page.form.entryMode.isHidden()
+            page.form.cutPattern.setCurrentText("Trochoidal")
+            assert not page.form.cutMode.isHidden()
+            assert page.form.entryMode.isHidden()
+            original_mode = str(operation.CutMode)
+            original_width = operation.TrochoidWidth.UserString
+            original_stepover = int(operation.TrochoidStepover)
+            page.form.cutMode.setCurrentText("Conventional")
+            page.form.trochoidWidth.setText("8 mm")
+            page.form.trochoidStepover.setValue(35)
+            page.getFields(operation)
+            assert operation.CutMode == "Conventional"
+            assert round(operation.TrochoidWidth.getValueAs("mm"), 9) == 8.0
+            assert int(operation.TrochoidStepover) == 35
+            page.form.cutMode.setCurrentText(original_mode)
+            page.form.trochoidWidth.setText(original_width)
+            page.form.trochoidStepover.setValue(original_stepover)
+            page.getFields(operation)
+        elif variant == "ramp":
+            assert page.form.cutMode.isHidden()
+            assert page.form.trochoidWidth.isHidden()
+            assert page.form.trochoidStepover.isHidden()
+            assert not page.form.entryMode.isHidden()
+            assert not page.form.rampAngle.isHidden()
+            page.form.entryMode.setCurrentText("Plunge")
+            assert page.form.rampAngle.isHidden()
+            page.form.entryMode.setCurrentText("Ramp")
+            assert not page.form.rampAngle.isHidden()
+            original_angle = operation.RampAngle.UserString
+            page.form.rampAngle.setText("4 deg")
+            page.getFields(operation)
+            assert round(operation.RampAngle.getValueAs("deg"), 9) == 4.0
+            page.form.rampAngle.setText(original_angle)
+            page.getFields(operation)
+        else:
+            raise AssertionError(variant)
+    finally:
+        page.pageCleanup()
+
+
 def _run() -> None:
     application = QtWidgets.QApplication.instance()
     document = None
@@ -398,10 +459,7 @@ def _run() -> None:
         document.UndoMode = 1
         VibeGui._connect_document_observer()
         controller, surface = _surface()
-        plans = {
-            plan.command_id: plan
-            for plan in resolve_native_action_inventory(surface).plans
-        }
+        plans = {plan.command_id: plan for plan in resolve_native_action_inventory(surface).plans}
         plan = plans["CAM_Slot"]
         assert (
             plan.capability_family,
@@ -447,9 +505,7 @@ def _run() -> None:
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
         runtimes = build_native_runtime_bindings(context, turn.tool_names)
-        runtimes[MANUFACTURE_OPERATION_CAPABILITY_NAME] = (
-            NativeManufactureOperationRuntime(context)
-        )
+        runtimes[MANUFACTURE_OPERATION_CAPABILITY_NAME] = NativeManufactureOperationRuntime(context)
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state_store,
@@ -546,9 +602,9 @@ def _run() -> None:
         assert custom_result["slot"]["path_kind"] == "custom_points"
         assert custom_result["slot"]["cutting_command_count"] >= 1
         assert custom_result["job"]["operation_count"] == len(initial_operations) + 2
-        assert [
-            item["object_name"] for item in custom_result["receipt"]["created"]
-        ] == [custom_name]
+        assert [item["object_name"] for item in custom_result["receipt"]["created"]] == [
+            custom_name
+        ]
         assert custom_result["assistant_undo_available"] is True
         assert int(document.UndoCount) == undo_before + 2
         assert state_store.current_revision(context.document_uid) == revision_before + 2
@@ -574,9 +630,7 @@ def _run() -> None:
         job = document.getObject("SlotJob")
         feature_slot = document.getObject(feature_name)
         custom_slot = document.getObject(custom_name)
-        assert all(
-            value is not None for value in (model, job, feature_slot, custom_slot)
-        )
+        assert all(value is not None for value in (model, job, feature_slot, custom_slot))
         _assert_slot_graph(
             document,
             job,
@@ -593,10 +647,7 @@ def _run() -> None:
             expected_base=(),
             path_kind="custom_points",
         )
-        assert (
-            operation_state(feature_slot)["state_sha256"]
-            == feature_state["state_sha256"]
-        )
+        assert operation_state(feature_slot)["state_sha256"] == feature_state["state_sha256"]
         restored_custom_state = operation_state(custom_slot)
         assert restored_custom_state["state_sha256"] == custom_state["state_sha256"], {
             key: (custom_state.get(key), restored_custom_state.get(key))
@@ -652,14 +703,9 @@ def _run() -> None:
             variant="trochoidal",
         )
         assert trochoidal_result["slot"]["geometry"] == {"kind": "custom_points"}
-        assert (
-            trochoidal_result["slot"]["parameters"]["slot"]
-            == trochoidal_arguments["slot"]
-        )
+        assert trochoidal_result["slot"]["parameters"]["slot"] == trochoidal_arguments["slot"]
         assert trochoidal_result["slot"]["path_kind"] == "custom_points"
         assert trochoidal_result["slot"]["cutting_command_count"] >= 1
-        trochoidal_state = operation_state(trochoidal_slot)
-
         ramp_arguments = _ramp_arguments(job)
         ramp_result = second_call(ramp_arguments)
         _events(12)
@@ -681,18 +727,19 @@ def _run() -> None:
         assert ramp_result["slot"]["cutting_command_count"] >= 1
         assert ramp_result["job"]["operation_count"] == len(initial_operations) + 4
         assert int(document.UndoCount) == undo_before_new + 2
-        assert (
-            state_store.current_revision(context.document_uid)
-            == revision_before_new + 2
+        assert state_store.current_revision(context.document_uid) == revision_before_new + 2
+        _assert_advanced_human_task_panel(
+            trochoidal_slot,
+            variant="trochoidal",
         )
+        _assert_advanced_human_task_panel(ramp_slot, variant="ramp")
+        assert document.recompute(None, True, True) is not False
+        _events(12)
+        trochoidal_state = operation_state(trochoidal_slot)
         ramp_state = operation_state(ramp_slot)
 
-        # Path/Op/Slot.py writes extended endpoints back into CustomPoint1/2
-        # (pre-existing upstream behavior), so a custom-points slot with
-        # nonzero extends drifts whenever a later document recompute
-        # re-executes it. The op creations above triggered one such
-        # re-execution; re-snapshot the pre-existing operations so the
-        # save/reopen comparison checks persistence of the current state.
+        # Snapshot every operation after exercising the human task panel;
+        # save/reopen must preserve these exact custom-point inputs and paths.
         feature_state = operation_state(feature_slot)
         custom_state = operation_state(custom_slot)
 
@@ -734,10 +781,7 @@ def _run() -> None:
             path_kind="custom_points",
             diagnostics_required=False,
         )
-        assert (
-            operation_state(feature_slot)["state_sha256"]
-            == feature_state["state_sha256"]
-        )
+        assert operation_state(feature_slot)["state_sha256"] == feature_state["state_sha256"]
         reopened_custom_state = operation_state(custom_slot)
         assert reopened_custom_state["state_sha256"] == custom_state["state_sha256"], {
             key: (custom_state.get(key), reopened_custom_state.get(key))
@@ -764,17 +808,14 @@ def _run() -> None:
             variant="ramp",
             diagnostics_required=False,
         )
-        assert (
-            operation_state(trochoidal_slot)["state_sha256"]
-            == trochoidal_state["state_sha256"]
-        )
+        assert operation_state(trochoidal_slot)["state_sha256"] == trochoidal_state["state_sha256"]
         assert operation_state(ramp_slot)["state_sha256"] == ramp_state["state_sha256"]
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_SLOT_GUI_OK "
             "exact_targets=true feature_path=true custom_points=true parameters=true "
             "toolpath=true history=true rollback=true undo=true redo=true reopen=true "
-            "trochoidal=true ramp=true",
+            "trochoidal=true ramp=true human_task_panel=true",
             flush=True,
         )
         exit_code = 0

@@ -683,6 +683,7 @@ set(VibeCAD_Scripts
     VibeCADNativeManufacturePocket3D.py
     VibeCADNativeManufactureProfile.py
     VibeCADNativeManufactureRotarySurface.py
+    VibeCADNativeManufactureSteepShallow.py
     VibeCADNativeManufactureSurface.py
     VibeCADNativeManufactureWaterline.py
     VibeCADNativeManufactureReadiness.py

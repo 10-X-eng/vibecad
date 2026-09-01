@@ -38,7 +38,6 @@ from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
 
-
 _TOLERANCE = 1.0e-7
 
 
@@ -83,9 +82,7 @@ def _surface():
     )
     Gui.activateWorkbench("CAMWorkbench")
     _events(24)
-    controller = Gui.getMainWindow().findChild(
-        QtCore.QObject, "VibeCADRibbonController"
-    )
+    controller = Gui.getMainWindow().findChild(QtCore.QObject, "VibeCADRibbonController")
     assert controller is not None
     surface = read_active_ribbon_surface(controller)
     assert surface.surface_id == "manufacture"
@@ -94,7 +91,7 @@ def _surface():
 
 
 def _create_fixture(document):
-    def create_model():
+    def create_models():
         model = document.addObject("Part::Feature", "SteepShallowGateModel")
         model.Label = "Steep/Shallow gate model"
         base = Part.makeBox(40.0, 30.0, 5.0)
@@ -102,12 +99,33 @@ def _create_fixture(document):
         model.Shape = base.fuse(boss).removeSplitter()
         assert model.Shape.isValid() and len(model.Shape.Solids) == 1
         document.publishProvisionalTimelineOperationBlock(model, (), ())
-        return model
+        secondary = document.addObject(
+            "Part::Feature",
+            "SteepShallowSecondaryModel",
+        )
+        secondary.Label = "Steep/Shallow secondary model"
+        secondary.Shape = Part.makeBox(
+            12.0,
+            10.0,
+            7.0,
+            App.Vector(50.0, 5.0, 0.0),
+        )
+        assert secondary.Shape.isValid() and len(secondary.Shape.Solids) == 1
+        document.publishProvisionalTimelineOperationBlock(secondary, (), ())
+        return model, secondary
 
-    model = _commit(document, "Create Steep/Shallow gate model", create_model)
+    model, secondary = _commit(
+        document,
+        "Create Steep/Shallow gate models",
+        create_models,
+    )
 
     def create_job():
-        job = PathJob.Create("SteepShallowJob", [model], templateFile=None)
+        job = PathJob.Create(
+            "SteepShallowJob",
+            [model, secondary],
+            templateFile=None,
+        )
         provider = PathJobGui.ViewProvider(job.ViewObject)
         job.ViewObject.Proxy = provider
         job.ViewObject.addExtension("Gui::ViewProviderGroupExtensionPython")
@@ -121,13 +139,12 @@ def _create_fixture(document):
         return job
 
     job = _commit(document, "Create Steep/Shallow gate Job", create_job)
-    return model, job, job.Tools.Group[0]
+    return model, secondary, job, job.Tools.Group[0]
 
 
 def _selection() -> tuple:
     return tuple(
-        (item.Object.Name, tuple(item.SubElementNames))
-        for item in Gui.Selection.getSelectionEx()
+        (item.Object.Name, tuple(item.SubElementNames)) for item in Gui.Selection.getSelectionEx()
     )
 
 
@@ -156,9 +173,7 @@ def _target(state: dict) -> dict:
 
 
 def _controller_target(state: dict, controller) -> dict:
-    return _target(
-        next(item for item in state["tools"] if item["object_name"] == controller.Name)
-    )
+    return _target(next(item for item in state["tools"] if item["object_name"] == controller.Name))
 
 
 def _arguments(
@@ -287,13 +302,9 @@ def _assert_operation(
     assert _mm(operation, "SampleInterval") == sample_interval_mm
     assert operation.CutMode == cut_mode
     assert bool(operation.UseRestMachining) is use_rest_machining
-    assert _mm(operation, "RestReferenceToolDiameter") == (
-        rest_reference_tool_diameter_mm
-    )
+    assert _mm(operation, "RestReferenceToolDiameter") == (rest_reference_tool_diameter_mm)
     assert _mm(operation, "LinearDeflection") == linear_deflection_mm
-    assert (
-        round(float(operation.AngularDeflection.Value), 7) == angular_deflection_radians
-    )
+    assert round(float(operation.AngularDeflection.Value), 7) == angular_deflection_radians
     assert _mm(operation, "StartDepth") == start_depth_mm
     assert _mm(operation, "FinalDepth") == final_depth_mm
     assert _mm(operation, "StepDown") == step_down_mm
@@ -301,9 +312,7 @@ def _assert_operation(
     assert _mm(operation, "ClearanceHeight") == clearance_height_mm
     assert operation.CoolantMode == coolant
     assert tuple(document.VibeCADTimeline.Operations).count(operation) == 1
-    expressions = {
-        str(path).lstrip(".") for path, _expression in tuple(operation.ExpressionEngine)
-    }
+    expressions = {str(path).lstrip(".") for path, _expression in tuple(operation.ExpressionEngine)}
     assert not {
         "StartDepth",
         "FinalDepth",
@@ -312,16 +321,10 @@ def _assert_operation(
         "ClearanceHeight",
     }.intersection(expressions)
     cutting = tuple(
-        command
-        for command in operation.Path.Commands
-        if command.Name in {"G1", "G2", "G3"}
+        command for command in operation.Path.Commands if command.Name in {"G1", "G2", "G3"}
     )
     assert cutting
-    lowest = min(
-        float(command.Parameters["Z"])
-        for command in cutting
-        if "Z" in command.Parameters
-    )
+    lowest = min(float(command.Parameters["Z"]) for command in cutting if "Z" in command.Parameters)
     assert lowest >= final_depth_mm - _TOLERANCE, lowest
 
 
@@ -362,18 +365,15 @@ def _run() -> None:
             )
             exit_code = 0
             return
-        temporary = tempfile.TemporaryDirectory(
-            prefix="vibecad-native-cam-steep-shallow-"
-        )
+        temporary = tempfile.TemporaryDirectory(prefix="vibecad-native-cam-steep-shallow-")
         save_path = Path(temporary.name) / "native-manufacture-steep-shallow.FCStd"
         document = App.newDocument("NativeManufactureSteepShallowGate")
         document.UndoMode = 1
         VibeGui._connect_document_observer()
         ribbon_controller, surface = _surface()
-        plan = {
-            item.command_id: item
-            for item in resolve_native_action_inventory(surface).plans
-        }["CAM_SteepShallow"]
+        plan = {item.command_id: item for item in resolve_native_action_inventory(surface).plans}[
+            "CAM_SteepShallow"
+        ]
         assert (
             plan.capability_family,
             plan.operation_variant,
@@ -388,7 +388,7 @@ def _run() -> None:
             False,
         )
 
-        model, job, controller = _create_fixture(document)
+        model, secondary, job, controller = _create_fixture(document)
         tool_diameter = getattr(controller.Tool, "Diameter", None)
         tool_diameter_mm = round(
             float(getattr(tool_diameter, "Value", tool_diameter)),
@@ -400,6 +400,9 @@ def _run() -> None:
         source_hash = shape_sha256(model.Shape, model.Name)
         source_signature = _shape_signature(model.Shape)
         source_visibility = bool(model.ViewObject.Visibility)
+        secondary_hash = shape_sha256(secondary.Shape, secondary.Name)
+        secondary_signature = _shape_signature(secondary.Shape)
+        secondary_visibility = bool(secondary.ViewObject.Visibility)
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -419,15 +422,11 @@ def _run() -> None:
             undo_ledger=undo_ledger,
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
-            active_surface_id=lambda: (
-                read_active_ribbon_surface(ribbon_controller).surface_id
-            ),
+            active_surface_id=lambda: (read_active_ribbon_surface(ribbon_controller).surface_id),
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
         runtimes = build_native_runtime_bindings(context, turn.tool_names)
-        runtimes[MANUFACTURE_OPERATION_CAPABILITY_NAME] = (
-            NativeManufactureOperationRuntime(context)
-        )
+        runtimes[MANUFACTURE_OPERATION_CAPABILITY_NAME] = NativeManufactureOperationRuntime(context)
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state_store,
@@ -465,9 +464,7 @@ def _run() -> None:
 
         stale_job = json.loads(json.dumps(rest_off_arguments))
         stale_job["job"]["expected_state_sha256"] = "0" * 64
-        assert call(stale_job, succeeds=False)["error_code"] == (
-            "NATIVE_MANUFACTURE_STATE_STALE"
-        )
+        assert call(stale_job, succeeds=False)["error_code"] == ("NATIVE_MANUFACTURE_STATE_STALE")
         stale_controller = json.loads(json.dumps(rest_off_arguments))
         stale_controller["tool_controller"]["expected_state_sha256"] = "0" * 64
         assert call(stale_controller, succeeds=False)["error_code"] == (
@@ -476,27 +473,19 @@ def _run() -> None:
 
         invalid_slope = json.loads(json.dumps(rest_off_arguments))
         invalid_slope["steep_shallow"]["slope_threshold_degrees"] = 90.5
-        assert call(invalid_slope, succeeds=False)["error_code"] == (
-            "NATIVE_ARGUMENTS_INVALID"
-        )
+        assert call(invalid_slope, succeeds=False)["error_code"] == ("NATIVE_ARGUMENTS_INVALID")
 
         invalid_interval = json.loads(json.dumps(rest_off_arguments))
         invalid_interval["steep_shallow"]["sample_interval_mm"] = 0.0
-        assert call(invalid_interval, succeeds=False)["error_code"] == (
-            "NATIVE_ARGUMENTS_INVALID"
-        )
+        assert call(invalid_interval, succeeds=False)["error_code"] == ("NATIVE_ARGUMENTS_INVALID")
 
         invalid_overlap = json.loads(json.dumps(rest_off_arguments))
         invalid_overlap["steep_shallow"]["boundary_overlap_mm"] = -0.5
-        assert call(invalid_overlap, succeeds=False)["error_code"] == (
-            "NATIVE_ARGUMENTS_INVALID"
-        )
+        assert call(invalid_overlap, succeeds=False)["error_code"] == ("NATIVE_ARGUMENTS_INVALID")
 
         rest_without_flag = json.loads(json.dumps(rest_off_arguments))
         rest_without_flag["steep_shallow"]["rest_reference_tool_diameter_mm"] = 12.0
-        assert call(rest_without_flag, succeeds=False)["error_code"] == (
-            "NATIVE_ARGUMENTS_INVALID"
-        )
+        assert call(rest_without_flag, succeeds=False)["error_code"] == ("NATIVE_ARGUMENTS_INVALID")
 
         small_reference = _arguments(
             job,
@@ -550,12 +539,20 @@ def _run() -> None:
             coolant="Mist",
         )
         assert rest_off_result["steep_shallow"]["target_mode"] == "entire_job"
+        assert rest_off_result["steep_shallow"]["model_names"] == [
+            model.Name,
+            secondary.Name,
+        ]
         assert rest_off_result["steep_shallow"]["use_rest_machining"] is False
-        assert rest_off_result["steep_shallow"]["tool_diameter_mm"] == (
-            tool_diameter_mm
-        )
+        assert rest_off_result["steep_shallow"]["tool_diameter_mm"] == (tool_diameter_mm)
         assert rest_off_result["steep_shallow"]["estimated_processing_cells"] > 0
         assert rest_off_result["steep_shallow"]["cutting_command_count"] > 0
+        rest_off_x = [
+            float(command.Parameters["X"])
+            for command in rest_off_operation.Path.Commands
+            if command.Name == "G1" and "X" in command.Parameters
+        ]
+        assert any(49.0 <= x <= 63.0 for x in rest_off_x), rest_off_x
         assert rest_off_result["assistant_undo_available"] is True
         rest_off_state = operation_state(rest_off_operation)
 
@@ -603,22 +600,20 @@ def _run() -> None:
             coolant="Flood",
         )
         assert rest_on_result["steep_shallow"]["use_rest_machining"] is True
-        assert rest_on_result["steep_shallow"]["rest_reference_tool_diameter_mm"] == (
-            12.0
-        )
+        assert rest_on_result["steep_shallow"]["rest_reference_tool_diameter_mm"] == (12.0)
         assert rest_on_result["steep_shallow"]["cutting_command_count"] > 0
         assert rest_on_result["assistant_undo_available"] is True
         rest_on_state = operation_state(rest_on_operation)
 
         assert len(job.Operations.Group) == len(initial_operations) + 2
         assert int(document.UndoCount) == undo_before + 2
-        assert state_store.current_revision(context.document_uid) == (
-            revision_before + 2
-        )
+        assert state_store.current_revision(context.document_uid) == (revision_before + 2)
         assert _selection() == selection_before
         assert not Gui.Control.activeDialog()
         assert shape_sha256(model.Shape, model.Name) == source_hash
         assert bool(model.ViewObject.Visibility) is source_visibility
+        assert shape_sha256(secondary.Shape, secondary.Name) == secondary_hash
+        assert bool(secondary.ViewObject.Visibility) is secondary_visibility
 
         names = (rest_off_name, rest_on_name)
         for expected_name in reversed(names):
@@ -653,9 +648,10 @@ def _run() -> None:
         assert document.recompute(None, True, True) is not False
         _events(16)
         model = document.getObject("SteepShallowGateModel")
+        secondary = document.getObject("SteepShallowSecondaryModel")
         job = document.getObject("SteepShallowJob")
         controller = document.getObject(controller_name)
-        assert all(item is not None for item in (model, job, controller))
+        assert all(item is not None for item in (model, secondary, job, controller))
         reopened_specs = (
             (
                 rest_off_name,
@@ -701,10 +697,11 @@ def _run() -> None:
             assert operation.ToolController is controller
             _assert_regenerated(redo_states[name], operation_state(operation))
         assert _shape_signature(model.Shape) == source_signature
+        assert _shape_signature(secondary.Shape) == secondary_signature
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_STEEP_SHALLOW_GUI_OK "
-            "exact_targets=true entire_job=true rest_off=true rest_on=true "
+            "exact_targets=true entire_job=true multi_model=true rest_off=true rest_on=true "
             "climb=true conventional=true bounded_work=true toolpath=true "
             "gouge_free=true history=true rollback=true sources_preserved=true "
             "undo=true redo=true reopen=true",

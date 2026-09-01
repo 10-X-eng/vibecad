@@ -20,6 +20,7 @@
 
 import math
 import unittest
+from unittest import mock
 
 import FreeCAD
 import Part
@@ -42,6 +43,7 @@ except ImportError:
 
 if HAVE_OCL:
     import Path.Op.SteepShallow as PathSteepShallow
+    import Path.Op.SurfaceSupport as SurfaceSupport
 
 Path.Log.setLevel(Path.Log.Level.INFO, Path.Log.thisModule())
 
@@ -182,9 +184,7 @@ class TestPathSteepShallow(PathTestBase):
                 self.assertGreaterEqual(
                     z,
                     _model_surface_z(x, y) - tol,
-                    "command at ({:.2f}, {:.2f}) Z={:.3f} gouges the surface".format(
-                        x, y, z
-                    ),
+                    "command at ({:.2f}, {:.2f}) Z={:.3f} gouges the surface".format(x, y, z),
                 )
                 self.assertGreaterEqual(z, -1e-9, "command below FinalDepth")
 
@@ -195,9 +195,7 @@ class TestPathSteepShallow(PathTestBase):
         self.assertGreater(len(g0_zs), 0)
         surface_top = BOX_HEIGHT + SPHERE_RADIUS
         for z in g0_zs:
-            self.assertGreaterEqual(
-                z, surface_top - 1e-6, "rapid below the surface top"
-            )
+            self.assertGreaterEqual(z, surface_top - 1e-6, "rapid below the surface top")
 
     def test03_invalid_parameters_yield_empty_path(self):
         """Invalid user parameters produce a console error and an empty
@@ -206,9 +204,7 @@ class TestPathSteepShallow(PathTestBase):
         op.SampleInterval = 0.0
         self.doc.recompute()
         cutting = [c for c in op.Path.Commands if c.Name in ("G1", "G01")]
-        self.assertEqual(
-            len(cutting), 0, "invalid SampleInterval should yield no cutting moves"
-        )
+        self.assertEqual(len(cutting), 0, "invalid SampleInterval should yield no cutting moves")
 
     def test04_cut_mode_reverses_traversal(self):
         """Conventional reverses every pass traversal relative to Climb."""
@@ -221,25 +217,19 @@ class TestPathSteepShallow(PathTestBase):
         for a, b in zip(climb_passes, conv_passes):
             fa = [(round(p[0], 6), round(p[1], 6), round(p[2], 6)) for p in a]
             fb = [(round(p[0], 6), round(p[1], 6), round(p[2], 6)) for p in b]
-            self.assertEqual(
-                fa, list(reversed(fb)), "pass not reversed under Conventional"
-            )
+            self.assertEqual(fa, list(reversed(fb)), "pass not reversed under Conventional")
 
     def test05_rest_toggle_roundtrip_restores_baseline(self):
         """Enabling then disabling rest machining restores the exact
         baseline path (rest-off output is unaffected by the new props)."""
         op = self._build_op()
         self.assertFalse(op.UseRestMachining, "rest machining must default to off")
-        baseline = [
-            (c.Name, tuple(sorted(c.Parameters.items()))) for c in op.Path.Commands
-        ]
+        baseline = [(c.Name, tuple(sorted(c.Parameters.items()))) for c in op.Path.Commands]
         op.UseRestMachining = True
         self.doc.recompute()
         op.UseRestMachining = False
         self.doc.recompute()
-        restored = [
-            (c.Name, tuple(sorted(c.Parameters.items()))) for c in op.Path.Commands
-        ]
+        restored = [(c.Name, tuple(sorted(c.Parameters.items()))) for c in op.Path.Commands]
         self.assertEqual(baseline, restored, "rest-off path differs from baseline")
 
     def test06_rest_machining_restricts_passes(self):
@@ -257,12 +247,8 @@ class TestPathSteepShallow(PathTestBase):
         rest_passes, _ = _split_passes(op.Path.Commands)
         rest_pts = [p for pts in rest_passes for p in pts]
 
-        self.assertGreater(
-            len(rest_pts), 0, "rest machining should leave passes to cut"
-        )
-        self.assertLess(
-            len(rest_pts), baseline_g1, "rest passes should be fewer than baseline"
-        )
+        self.assertGreater(len(rest_pts), 0, "rest machining should leave passes to cut")
+        self.assertLess(len(rest_pts), baseline_g1, "rest passes should be fewer than baseline")
 
         # Legitimate rest material exists in exactly two regions: (a) the
         # concave junction ring where the sphere flank meets the flat top
@@ -276,10 +262,7 @@ class TestPathSteepShallow(PathTestBase):
         edge_band = BOX_SIZE / 2.0 - 1.5  # outer nodes plus one-cell dilation
 
         def in_rest_region(p):
-            return (
-                math.hypot(p[0], p[1]) <= ring_bound
-                or max(abs(p[0]), abs(p[1])) >= edge_band
-            )
+            return math.hypot(p[0], p[1]) <= ring_bound or max(abs(p[0]), abs(p[1])) >= edge_band
 
         self.assertTrue(
             any(not in_rest_region(p) for p in baseline_pts),
@@ -288,9 +271,7 @@ class TestPathSteepShallow(PathTestBase):
         for x, y, z in rest_pts:
             self.assertTrue(
                 in_rest_region((x, y, z)),
-                "rest pass at ({:.2f}, {:.2f}) is outside both rest regions".format(
-                    x, y
-                ),
+                "rest pass at ({:.2f}, {:.2f}) is outside both rest regions".format(x, y),
             )
 
     def test07_rest_invalid_reference_diameter_yields_empty_path(self):
@@ -305,4 +286,62 @@ class TestPathSteepShallow(PathTestBase):
             len(cutting),
             0,
             "invalid RestReferenceToolDiameter should yield no cutting moves",
+        )
+
+    def test08_machines_every_job_model(self):
+        """One operation covers every separated model owned by its Job."""
+        first = self.doc.addObject("Part::Feature", "FirstModel")
+        first.Shape = Part.makeBox(10.0, 10.0, 5.0)
+        second = self.doc.addObject("Part::Feature", "SecondModel")
+        second.Shape = Part.makeBox(
+            10.0,
+            10.0,
+            5.0,
+            FreeCAD.Vector(30.0, 0.0, 0.0),
+        )
+        job = PathJob.Create("Job_MultiModelSteepShallow", [first, second])
+        op = PathSteepShallow.Create("MultiModelSteepShallow", parentJob=job)
+        for prop in ("StartDepth", "FinalDepth", "StepDown"):
+            op.setExpression(prop, None)
+        op.StartDepth = 5.0
+        op.FinalDepth = 0.0
+        op.StepDown = 1.0
+        op.SlopeThreshold = 90.0
+        op.StepOver = 1.0
+        op.SampleInterval = 1.0
+        op.LinearDeflection = 0.1
+        op.ToolController.Tool.Diameter = 2.0
+        self.doc.recompute()
+
+        passes, _ = _split_passes(op.Path.Commands)
+        points = [point for path in passes for point in path]
+        self.assertTrue(
+            any(-1.0 <= x <= 11.0 for x, _y, _z in points),
+            "first Job model was not machined",
+        )
+        self.assertTrue(
+            any(29.0 <= x <= 41.0 for x, _y, _z in points),
+            "second Job model was not machined",
+        )
+
+    def test09_unsupported_cutter_yields_empty_path(self):
+        """An unsupported physical cutter is never replaced by a flat end mill."""
+        op = self._build_op()
+
+        class UnsupportedOCLTool:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def getOclTool(self):
+                return False
+
+        with mock.patch.object(SurfaceSupport, "OCL_Tool", UnsupportedOCLTool):
+            op.touch()
+            self.doc.recompute()
+
+        cutting = [c for c in op.Path.Commands if c.Name in ("G1", "G01")]
+        self.assertEqual(
+            cutting,
+            [],
+            "unsupported cutter must not generate a path with substitute geometry",
         )

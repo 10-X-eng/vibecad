@@ -26,7 +26,6 @@ from VibeCADNativeManufactureOperationSupport import (
 )
 from VibeCADNativeMutation import NativeMutationDraft
 
-
 _BASE_FIELDS = frozenset(
     {
         "slope_threshold_degrees",
@@ -87,6 +86,9 @@ class SteepShallowGeometryFacts:
     model_bottom_mm: float
     layer_ceiling: int
     estimated_processing_cells: int
+    # Additive multi-model metadata. Keeping this optional and last preserves
+    # compatibility for callers that construct the original facts shape.
+    model_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,10 +157,7 @@ def _normalize_parameters(spec: SteepShallowCreateSpec) -> SteepShallowParameter
             "Steep/Shallow use_rest_machining",
         )
         if use_rest:
-            _error(
-                "Steep/Shallow use_rest_machining requires "
-                "rest_reference_tool_diameter_mm."
-            )
+            _error("Steep/Shallow use_rest_machining requires " "rest_reference_tool_diameter_mm.")
         rest_diameter = 0.0
     slope = finite_number(
         settings["slope_threshold_degrees"],
@@ -249,30 +248,35 @@ def _inspect_geometry(
     tool: OCLToolFacts,
 ) -> SteepShallowGeometryFacts:
     models = boundary.geometry
-    if len(models) != 1:
+    if not models:
         _error(
-            "Steep/Shallow requires an exact CAM Job with one model; the "
-            "shipped operation machines only the first model and silently "
-            "ignores every model after it.",
+            "Steep/Shallow requires at least one valid Job model shape.",
             "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
         )
-    item = models[0]
-    shape = getattr(item.job_resource, "Shape", None)
-    if not _valid_shape(shape):
-        _error(
-            "Steep/Shallow requires one valid Job model shape.",
-            "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
-        )
-    bounds = shape.BoundBox
-    x_span = float(bounds.XLength)
-    y_span = float(bounds.YLength)
+    model_names = []
+    bounds = []
+    for item in models:
+        shape = getattr(item.job_resource, "Shape", None)
+        if not _valid_shape(shape):
+            _error(
+                f"Steep/Shallow Job model {item.public_source.Name!r} has no valid shape.",
+                "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
+            )
+        model_names.append(str(item.public_source.Name))
+        bounds.append(shape.BoundBox)
+    x_min = min(float(item.XMin) for item in bounds)
+    x_max = max(float(item.XMax) for item in bounds)
+    y_min = min(float(item.YMin) for item in bounds)
+    y_max = max(float(item.YMax) for item in bounds)
+    x_span = x_max - x_min
+    y_span = y_max - y_min
     if math.hypot(x_span, y_span) <= _SETTING_TOLERANCE:
         _error(
             "The Steep/Shallow Job model has no usable XY projection.",
             "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID",
         )
-    model_top = float(bounds.ZMax)
-    model_bottom = float(bounds.ZMin)
+    model_top = max(float(item.ZMax) for item in bounds)
+    model_bottom = min(float(item.ZMin) for item in bounds)
     if parameters.start_depth_mm < model_top:
         _error(
             "Steep/Shallow start_depth_mm must be at or above the exact model "
@@ -285,8 +289,7 @@ def _inspect_geometry(
         )
     if (
         parameters.use_rest_machining
-        and parameters.rest_reference_tool_diameter_mm
-        <= tool.diameter_mm + _SETTING_TOLERANCE
+        and parameters.rest_reference_tool_diameter_mm <= tool.diameter_mm + _SETTING_TOLERANCE
     ):
         _error(
             "Steep/Shallow rest_reference_tool_diameter_mm must exceed the "
@@ -310,12 +313,12 @@ def _inspect_geometry(
     layers = max(
         1,
         math.ceil(
-            (parameters.start_depth_mm - parameters.final_depth_mm)
-            / parameters.step_down_mm
+            (parameters.start_depth_mm - parameters.final_depth_mm) / parameters.step_down_mm
         ),
     )
     return SteepShallowGeometryFacts(
-        model_name=str(item.public_source.Name),
+        model_name=model_names[0],
+        model_names=tuple(model_names),
         x_span_mm=round(x_span, 9),
         y_span_mm=round(y_span, 9),
         model_top_mm=round(model_top, 9),
@@ -369,9 +372,7 @@ def _parameter_payload(prepared: PreparedSteepShallowCreate) -> dict[str, Any]:
         },
     }
     if parameters.use_rest_machining:
-        settings["rest_reference_tool_diameter_mm"] = (
-            parameters.rest_reference_tool_diameter_mm
-        )
+        settings["rest_reference_tool_diameter_mm"] = parameters.rest_reference_tool_diameter_mm
     return {
         "steep_shallow": settings,
         "depths": {
@@ -405,9 +406,7 @@ def _apply_settings(
     operation.CutMode = _CUT_MODES[parameters.cut_mode]
     operation.SampleInterval = f"{parameters.sample_interval_mm} mm"
     operation.UseRestMachining = parameters.use_rest_machining
-    operation.RestReferenceToolDiameter = (
-        f"{parameters.rest_reference_tool_diameter_mm} mm"
-    )
+    operation.RestReferenceToolDiameter = f"{parameters.rest_reference_tool_diameter_mm} mm"
     operation.LinearDeflection = f"{parameters.linear_deflection_mm} mm"
     operation.AngularDeflection = parameters.angular_deflection_radians
     operation.StartDepth = f"{parameters.start_depth_mm} mm"
@@ -429,9 +428,7 @@ def create_steep_shallow(
         raise TypeError("prepared must be a PreparedSteepShallowCreate")
     import Path.Op.SteepShallow as PathSteepShallow
 
-    provider_factory, provider_resource = native_operation_presentation(
-        "Path.Op.Gui.SteepShallow"
-    )
+    provider_factory, provider_resource = native_operation_presentation("Path.Op.Gui.SteepShallow")
 
     draft = create_native_operation(
         document,
@@ -450,9 +447,7 @@ def _expression(operation: Any, property_name: str) -> Any:
     return next(
         (
             expression
-            for path, expression in tuple(
-                getattr(operation, "ExpressionEngine", ()) or ()
-            )
+            for path, expression in tuple(getattr(operation, "ExpressionEngine", ()) or ())
             if str(path).lstrip(".") == property_name
         ),
         None,
@@ -512,9 +507,7 @@ def _assert_steep_shallow_settings(
         actual_value = actual[name]
         if isinstance(expected_value, bool) or isinstance(actual_value, bool):
             matches = actual_value is expected_value
-        elif isinstance(expected_value, float) and isinstance(
-            actual_value, (float, int)
-        ):
+        elif isinstance(expected_value, float) and isinstance(actual_value, (float, int)):
             matches = _same_number(actual_value, expected_value)
         else:
             matches = actual_value == expected_value
@@ -535,9 +528,7 @@ def _assert_steep_shallow_settings(
             }
     if mismatches:
         raise NativeManufactureError(
-            "The created Steep/Shallow did not retain: "
-            + ", ".join(sorted(mismatches))
-            + ".",
+            "The created Steep/Shallow did not retain: " + ", ".join(sorted(mismatches)) + ".",
             error_code="NATIVE_MANUFACTURE_STEEP_SHALLOW_POSTCONDITION_FAILED",
             repair={"parameter_mismatches": mismatches},
         )
@@ -574,13 +565,12 @@ def _steep_shallow_result(
     return {
         "target_mode": "entire_job",
         "model_name": prepared.geometry.model_name,
+        "model_names": list(prepared.geometry.model_names or (prepared.geometry.model_name,)),
         "tool_shape_type": prepared.tool.shape_type,
         "ocl_cutter": prepared.tool.ocl_cutter,
         "tool_diameter_mm": prepared.tool.diameter_mm,
         "use_rest_machining": prepared.parameters.use_rest_machining,
-        "rest_reference_tool_diameter_mm": (
-            prepared.parameters.rest_reference_tool_diameter_mm
-        ),
+        "rest_reference_tool_diameter_mm": (prepared.parameters.rest_reference_tool_diameter_mm),
         "layer_ceiling": prepared.geometry.layer_ceiling,
         "estimated_processing_cells": (prepared.geometry.estimated_processing_cells),
         "cutting_command_count": cutting_commands,

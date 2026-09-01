@@ -62,9 +62,7 @@ import Path
 __title__ = "Steep/Shallow 3D Finishing Generator"
 __author__ = "FreeCAD CAM developers"
 __url__ = "https://www.freecad.org"
-__doc__ = (
-    "Generate steep (constant-Z) and shallow (surface-following) finishing passes."
-)
+__doc__ = "Generate steep (constant-Z) and shallow (surface-following) finishing passes."
 
 __all__ = ["generate"]
 
@@ -261,22 +259,12 @@ def _contour_polylines(z, xs, ys, level: float, cell_mask):
         j = int(cell[1])
         c = int(case[i, j])
         if c in (5, 10):
-            center = (
-                z_adj[i, j] + z_adj[i + 1, j] + z_adj[i, j + 1] + z_adj[i + 1, j + 1]
-            ) / 4.0
+            center = (z_adj[i, j] + z_adj[i + 1, j] + z_adj[i, j + 1] + z_adj[i + 1, j + 1]) / 4.0
             center_inside = center > level
             if c == 5:
-                pairs = (
-                    (("b", "r"), ("t", "l"))
-                    if center_inside
-                    else (("b", "l"), ("t", "r"))
-                )
+                pairs = (("b", "r"), ("t", "l")) if center_inside else (("b", "l"), ("t", "r"))
             else:
-                pairs = (
-                    (("b", "l"), ("t", "r"))
-                    if center_inside
-                    else (("b", "r"), ("t", "l"))
-                )
+                pairs = (("b", "l"), ("t", "r")) if center_inside else (("b", "r"), ("t", "l"))
         else:
             pairs = _CASE_SEGMENTS[c]
         for a, b in pairs:
@@ -292,11 +280,7 @@ def _contour_polylines(z, xs, ys, level: float, cell_mask):
         poly = []
         for key in chain:
             p = pts[key]
-            if (
-                poly
-                and abs(p[0] - poly[-1][0]) < 1e-9
-                and abs(p[1] - poly[-1][1]) < 1e-9
-            ):
+            if poly and abs(p[0] - poly[-1][0]) < 1e-9 and abs(p[1] - poly[-1][1]) < 1e-9:
                 continue
             poly.append(p)
         if len(poly) >= 2:
@@ -304,11 +288,13 @@ def _contour_polylines(z, xs, ys, level: float, cell_mask):
     return polylines
 
 
-def _shallow_passes(z, xs, ys, mask, stepover: float):
+def _shallow_passes(z, xs, ys, mask, stepover: float, valid=None):
     """Build surface-following parallel passes along X, stepping over in
     Y by `stepover`, restricted to grid columns where `mask` is True.
     Returns a list of [(x, y, z)] passes in ascending-y order."""
     passes = []
+    if valid is None:
+        valid = numpy.ones(z.shape, dtype=bool)
     y_positions = []
     y = float(ys[0])
     y_end = float(ys[-1])
@@ -325,7 +311,16 @@ def _shallow_passes(z, xs, ys, mask, stepover: float):
         t = min(max(t, 0.0), 1.0)
         z_row = z[:, j] * (1.0 - t) + z[:, j + 1] * t
         j_near = j if t < 0.5 else j + 1
-        included = mask[:, j_near]
+        if t <= 1e-12:
+            sample_valid = valid[:, j]
+        elif t >= 1.0 - 1e-12:
+            sample_valid = valid[:, j + 1]
+        else:
+            # A bilinear sample needs both bracketing rows. Never
+            # interpolate a cutter position through an OCL no-contact
+            # sample.
+            sample_valid = valid[:, j] & valid[:, j + 1]
+        included = mask[:, j_near] & sample_valid
         run = []
         for i in range(n_x):
             if included[i]:
@@ -354,9 +349,7 @@ def _emit_commands(passes, safe_height: float, horiz_feed: float, vert_feed: flo
         commands.append(Path.Command("G0", {"X": x0, "Y": y0, "Z": safe_height}))
         commands.append(Path.Command("G1", {"X": x0, "Y": y0, "Z": z0, "F": vert_feed}))
         for x, y, zz in pts[1:]:
-            commands.append(
-                Path.Command("G1", {"X": x, "Y": y, "Z": zz, "F": horiz_feed})
-            )
+            commands.append(Path.Command("G1", {"X": x, "Y": y, "Z": zz, "F": horiz_feed}))
     if commands:
         commands.append(Path.Command("G0", {"Z": safe_height}))
     return commands
@@ -383,8 +376,9 @@ def generate(
     heightfield : 2-D array-like, shape (len(xs), len(ys))
         Cutter-location heights: heightfield[i][j] is the lowest
         gouge-free Z for the tool control point at (xs[i], ys[j]).
-        NaN entries (no surface contact) are treated as the minimum
-        finite height.
+        NaN entries mean the cutter found no surface contact. They are
+        excluded from every emitted pass and split otherwise continuous
+        passes rather than being converted into cutting positions.
     xs, ys : 1-D sequences of floats
         Grid coordinates, strictly increasing, at least 2 points each.
     slope_threshold : float
@@ -489,6 +483,9 @@ def generate(
     finite = numpy.isfinite(z)
     if not finite.any():
         raise ValueError("heightfield has no finite values")
+    # Numeric operations need a finite working grid, but ``finite`` remains
+    # the authoritative machinable-region mask throughout generation. The
+    # fill value is never itself eligible for path emission.
     if not finite.all():
         z = numpy.where(finite, z, z[finite].min())
 
@@ -501,6 +498,7 @@ def generate(
     gx, gy = numpy.gradient(z, xs_arr, ys_arr)
     slope_deg = numpy.degrees(numpy.arctan(numpy.hypot(gx, gy)))
     steep = slope_deg >= float(slope_threshold)
+    steep &= finite
 
     min_step = float(min(numpy.diff(xs_arr).min(), numpy.diff(ys_arr).min()))
     overlap_iterations = 0
@@ -515,6 +513,7 @@ def generate(
         rest = _rest_mask(z, xs_arr, ys_arr, float(rest_reference_diameter))
         if overlap_iterations and rest.any():
             rest = _dilate(rest, overlap_iterations)
+        rest &= finite
 
     passes = []
 
@@ -522,10 +521,10 @@ def generate(
     # participates when any of its corners is steep so contours reach
     # all the way to the classification boundary.
     cell_steep = steep[:-1, :-1] | steep[1:, :-1] | steep[:-1, 1:] | steep[1:, 1:]
+    cell_valid = finite[:-1, :-1] & finite[1:, :-1] & finite[:-1, 1:] & finite[1:, 1:]
+    cell_steep &= cell_valid
     if rest is not None:
-        cell_steep = cell_steep & (
-            rest[:-1, :-1] | rest[1:, :-1] | rest[:-1, 1:] | rest[1:, 1:]
-        )
+        cell_steep = cell_steep & (rest[:-1, :-1] | rest[1:, :-1] | rest[:-1, 1:] | rest[1:, 1:])
     if cell_steep.any():
         level = z_max - float(stepdown)
         while level > z_min + 1e-9:
@@ -535,17 +534,24 @@ def generate(
 
     # Shallow regions: surface-following parallel passes, optionally
     # dilated into the steep region by boundary_overlap.
-    shallow = ~steep
+    shallow = finite & ~steep
     if overlap_iterations and shallow.any():
-        shallow = _dilate(shallow, overlap_iterations)
+        shallow = _dilate(shallow, overlap_iterations) & finite
     if rest is not None:
         shallow = shallow & rest
     if shallow.any():
-        passes.extend(_shallow_passes(z, xs_arr, ys_arr, shallow, float(stepover)))
+        passes.extend(
+            _shallow_passes(
+                z,
+                xs_arr,
+                ys_arr,
+                shallow,
+                float(stepover),
+                valid=finite,
+            )
+        )
 
     if direction == "Conventional":
         passes = [list(reversed(p)) for p in passes]
 
-    return _emit_commands(
-        passes, float(safe_height), float(horiz_feed), float(vert_feed)
-    )
+    return _emit_commands(passes, float(safe_height), float(horiz_feed), float(vert_feed))

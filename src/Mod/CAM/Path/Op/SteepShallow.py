@@ -26,6 +26,7 @@ __doc__ = "Class and implementation of the Steep/Shallow 3D finishing operation.
 import math
 
 import FreeCAD
+import Part
 from PySide import QtCore
 
 import Path
@@ -237,9 +238,7 @@ class ObjectSteepShallow(PathOp.ObjectOp):
             try:
                 setattr(obj, name, value)
             except Exception as e:
-                Path.Log.warning(
-                    "SteepShallow: failed to set default for {}: {}".format(name, e)
-                )
+                Path.Log.warning("SteepShallow: failed to set default for {}: {}".format(name, e))
 
     # ------------------------------------------------------------------
     # Heightfield sampling
@@ -301,19 +300,13 @@ class ObjectSteepShallow(PathOp.ObjectOp):
 
         job = PathUtils.findParentJob(obj)
         if job is None:
-            Path.Log.error(
-                translate("CAM_SteepShallow", "Steep/Shallow: no parent Job.")
-            )
+            Path.Log.error(translate("CAM_SteepShallow", "Steep/Shallow: no parent Job."))
             return
 
         models = job.Model.Group if hasattr(job.Model, "Group") else []
         if not models:
-            Path.Log.error(
-                translate("CAM_SteepShallow", "Steep/Shallow: Job has no model.")
-            )
+            Path.Log.error(translate("CAM_SteepShallow", "Steep/Shallow: Job has no model."))
             return
-        model = models[0]
-
         sample_interval = float(obj.SampleInterval.Value)
         if sample_interval <= 0.0:
             Path.Log.error(
@@ -327,18 +320,14 @@ class ObjectSteepShallow(PathOp.ObjectOp):
         step_over = float(obj.StepOver.Value)
         if step_over <= 0.0:
             Path.Log.error(
-                translate(
-                    "CAM_SteepShallow", "Steep/Shallow: StepOver must be positive."
-                )
+                translate("CAM_SteepShallow", "Steep/Shallow: StepOver must be positive.")
             )
             return
 
         step_down = float(obj.StepDown.Value)
         if step_down <= 0.0:
             Path.Log.error(
-                translate(
-                    "CAM_SteepShallow", "Steep/Shallow: StepDown must be positive."
-                )
+                translate("CAM_SteepShallow", "Steep/Shallow: StepDown must be positive.")
             )
             return
 
@@ -363,14 +352,17 @@ class ObjectSteepShallow(PathOp.ObjectOp):
                     )
                 )
 
-        # Tessellate the model for OCL.
+        # Tessellate every model owned by the Job into one OCL surface. A
+        # CAM Job may legitimately contain multiple separated models; using
+        # only Group[0] silently left the remaining geometry unmachined.
         try:
-            stl = SurfaceSupport._makeSTL(model, obj, ocl)
+            model_shape = Part.makeCompound([model.Shape.copy() for model in models])
+            if model_shape.isNull():
+                raise ValueError("combined Job model shape is null")
+            stl = SurfaceSupport._makeSTL(model_shape, obj, ocl)
         except Exception as e:
             Path.Log.error(
-                translate(
-                    "CAM_SteepShallow", "Steep/Shallow: failed to tessellate model:"
-                )
+                translate("CAM_SteepShallow", "Steep/Shallow: failed to tessellate model:")
                 + " {}".format(e)
             )
             return
@@ -380,13 +372,18 @@ class ObjectSteepShallow(PathOp.ObjectOp):
         oclt.setFromTool(self.tool) if hasattr(oclt, "setFromTool") else None
         cutter = oclt.getOclTool() if hasattr(oclt, "getOclTool") else None
         if not cutter:
-            # Fallback to a flat cutter sized to the tool diameter.
-            cutter = ocl.CylCutter(max(self.radius * 2.0, 0.5), 50.0)
+            Path.Log.error(
+                translate(
+                    "CAM_SteepShallow",
+                    "Steep/Shallow: the selected tool shape is not supported by "
+                    "OpenCamLib. Choose an OCL-supported cutter.",
+                )
+            )
+            return
 
         # Sampling grid: model bounding box expanded by the tool radius
         # so the cutter can roll off vertical walls at the model edge.
-        shape = model.Shape
-        bb = shape.BoundBox
+        bb = model_shape.BoundBox
         margin = float(self.radius)
         x_min = bb.XMin - margin
         x_max = bb.XMax + margin
@@ -402,24 +399,34 @@ class ObjectSteepShallow(PathOp.ObjectOp):
             heightfield = self._sample_heightfield(stl, cutter, xs, ys)
         except Exception as e:
             Path.Log.error(
-                translate(
-                    "CAM_SteepShallow", "Steep/Shallow: drop-cutter sampling failed:"
-                )
+                translate("CAM_SteepShallow", "Steep/Shallow: drop-cutter sampling failed:")
                 + " {}".format(e)
             )
             return
 
-        # Depth handling: no-contact samples and everything below
-        # FinalDepth are clamped to FinalDepth so the cut never exceeds
-        # the operation's depth limit.
+        # Depth handling: finite contacts below FinalDepth are clamped to the
+        # depth limit. No-contact samples remain NaN so the generator can
+        # exclude them rather than inventing cuts through empty space.
         final_depth = float(obj.FinalDepth.Value)
-        heightfield = numpy.where(numpy.isfinite(heightfield), heightfield, final_depth)
-        heightfield = numpy.maximum(heightfield, final_depth)
+        finite = numpy.isfinite(heightfield)
+        if not finite.any():
+            Path.Log.error(
+                translate(
+                    "CAM_SteepShallow",
+                    "Steep/Shallow: OpenCamLib found no cutter contact on the Job models.",
+                )
+            )
+            return
+        heightfield = numpy.where(
+            finite,
+            numpy.maximum(heightfield, final_depth),
+            numpy.nan,
+        )
 
         # SafeHeight must clear the sampled surface; lift it if the CL
         # heights (surface + cutter geometry) exceed the configured value.
         safe_height = float(obj.SafeHeight.Value)
-        z_max = float(heightfield.max())
+        z_max = float(numpy.nanmax(heightfield))
         if safe_height < z_max:
             Path.Log.warning(
                 "Steep/Shallow: SafeHeight {:.3f} is below the sampled surface "
@@ -458,9 +465,7 @@ class ObjectSteepShallow(PathOp.ObjectOp):
             )
         except (TypeError, ValueError) as e:
             Path.Log.error(
-                translate(
-                    "CAM_SteepShallow", "Steep/Shallow: toolpath generation failed:"
-                )
+                translate("CAM_SteepShallow", "Steep/Shallow: toolpath generation failed:")
                 + " {}".format(e)
             )
             return

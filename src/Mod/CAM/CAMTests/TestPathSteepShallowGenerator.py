@@ -76,9 +76,7 @@ def _step_fillet(wall_x=SF_WALL_X, fillet_r=SF_FILLET_R, height=SF_WALL_H):
         if x >= wall_x:
             profile[i] = height
         elif x > wall_x - fillet_r:
-            profile[i] = fillet_r - numpy.sqrt(
-                fillet_r**2 - (x - (wall_x - fillet_r)) ** 2
-            )
+            profile[i] = fillet_r - numpy.sqrt(fillet_r**2 - (x - (wall_x - fillet_r)) ** 2)
     z = numpy.repeat(profile[:, None], ys.size, axis=1)
     return z, xs, ys
 
@@ -302,9 +300,7 @@ class TestPathSteepShallowGenerator(PathTestUtils.PathTestBase):
             for pts in passes:
                 if not _isShallowPass(pts):
                     continue
-                if all(abs(p[1]) < 1e-9 for p in pts) and any(
-                    abs(p[0]) < cell for p in pts
-                ):
+                if all(abs(p[1]) < 1e-9 for p in pts) and any(abs(p[0]) < cell for p in pts):
                     best = max(abs(p[0]) for p in pts)
             return best
 
@@ -362,20 +358,50 @@ class TestPathSteepShallowGenerator(PathTestUtils.PathTestBase):
         self.assertTrue(all(_isShallowPass(pts) for pts in passes))
 
     def test07(self):
-        """Test NaN heightfield entries are tolerated as minimum height"""
+        """No-contact samples split shallow passes instead of becoming cuts."""
         args = _resetArgs()
-        z = args["heightfield"].copy()
-        z[0, 0] = float("nan")
-        z[-1, -1] = float("nan")
+        z = numpy.full((7, 5), 3.0)
+        xs = numpy.arange(7.0)
+        ys = numpy.arange(5.0)
+        z[3, :] = float("nan")
         args["heightfield"] = z
-        cmds = generator.generate(**args)
-        self.assertTrue(cmds)
-        # NaN cells collapse to the minimum finite height: no output
-        # position may lie below it
-        z_min = numpy.nanmin(z)
-        for cmd in cmds:
-            if cmd.Name == "G1" and "Z" in cmd.Parameters:
-                self.assertTrue(cmd.Parameters["Z"] >= z_min - 1e-9)
+        args["xs"] = xs
+        args["ys"] = ys
+        args["slope_threshold"] = 90.0
+        args["stepover"] = 1.0
+
+        passes, _ = _splitPasses(generator.generate(**args))
+
+        self.assertTrue(passes)
+        self.assertTrue(all(_isShallowPass(points) for points in passes))
+        for points in passes:
+            x_values = [point[0] for point in points]
+            self.assertTrue(
+                max(x_values) < 3.0 or min(x_values) > 3.0,
+                "a shallow pass crossed the no-contact strip",
+            )
+
+    def test07b(self):
+        """No-contact corners cannot participate in steep contour cells."""
+        args = _resetArgs()
+        z = numpy.zeros((5, 5), dtype=float)
+        xs = numpy.arange(5.0)
+        ys = numpy.arange(5.0)
+        z[:2, :] = 8.0
+        z[2, :] = float("nan")
+        args["heightfield"] = z
+        args["xs"] = xs
+        args["ys"] = ys
+        args["slope_threshold"] = 0.0
+        args["stepdown"] = 2.0
+
+        passes, _ = _splitPasses(generator.generate(**args))
+
+        self.assertEqual(
+            passes,
+            [],
+            "steep contours must not bridge a no-contact strip",
+        )
 
     def test08(self):
         """Test rest disabled (None) output is identical to a plain run"""
