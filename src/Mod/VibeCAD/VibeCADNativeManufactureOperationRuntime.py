@@ -121,6 +121,12 @@ from VibeCADNativeManufactureRotarySurface import (
     preflight_rotary_surface_create,
     verify_created_rotary_surface,
 )
+from VibeCADNativeManufactureSteepShallow import (
+    SteepShallowCreateSpec,
+    create_steep_shallow,
+    preflight_steep_shallow_create,
+    verify_created_steep_shallow,
+)
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket, NativeRevisionConflict
 
@@ -187,6 +193,17 @@ _ROTARY_SURFACE_FIELDS = frozenset(
         "tool_controller",
         "geometry",
         "rotary_surface",
+        "heights",
+        "coolant",
+    }
+)
+_STEEP_SHALLOW_FIELDS = frozenset(
+    {
+        "label",
+        "job",
+        "tool_controller",
+        "steep_shallow",
+        "depths",
         "heights",
         "coolant",
     }
@@ -326,6 +343,7 @@ _PATH_GENERATION_OPERATIONS = frozenset(
         "surface",
         "waterline",
         "rotary_surface",
+        "steep_shallow",
         "mill_facing",
         "helix",
         "adaptive",
@@ -369,6 +387,7 @@ class NativeManufactureOperationRuntime:
                 "surface": _SURFACE_FIELDS,
                 "waterline": _WATERLINE_FIELDS,
                 "rotary_surface": _ROTARY_SURFACE_FIELDS,
+                "steep_shallow": _STEEP_SHALLOW_FIELDS,
                 "mill_facing": _MILL_FACING_FIELDS,
                 "helix": _HELIX_FIELDS,
                 "adaptive": _ADAPTIVE_FIELDS,
@@ -413,6 +432,7 @@ class NativeManufactureOperationRuntime:
                 request={"operation": operation, **values},
                 **options,
             )
+
         if operation == "set_start_point":
             prepared = preflight_start_point(
                 context.document,
@@ -521,6 +541,22 @@ class NativeManufactureOperationRuntime:
             transaction_name = "Create Native CAM Rotary Surface"
             mutate = partial(create_rotary_surface, prepared=prepared)
             verify = verify_created_rotary_surface
+        elif operation == "steep_shallow":
+            prepared = preflight_steep_shallow_create(
+                context.document,
+                SteepShallowCreateSpec(
+                    label=values["label"],
+                    job=values["job"],
+                    tool_controller=values["tool_controller"],
+                    steep_shallow=values["steep_shallow"],
+                    depths=values["depths"],
+                    heights=values["heights"],
+                    coolant=values["coolant"],
+                ),
+            )
+            transaction_name = "Create Native CAM Steep Shallow"
+            mutate = partial(create_steep_shallow, prepared=prepared)
+            verify = verify_created_steep_shallow
         elif operation == "mill_facing":
             prepared = preflight_mill_facing_defaults(
                 context.document,

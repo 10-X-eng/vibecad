@@ -404,6 +404,7 @@ SET(PathPythonOp_SRCS
     Path/Op/Profile.py
     Path/Op/RotarySurface.py
     Path/Op/Slot.py
+    Path/Op/SteepShallow.py
     Path/Op/Surface.py
     Path/Op/SurfaceSupport.py
     Path/Op/Tapping.py
@@ -439,6 +440,7 @@ SET(PathPythonOpGui_SRCS
     Path/Op/Gui/Selection.py
     Path/Op/Gui/SimpleCopy.py
     Path/Op/Gui/Slot.py
+    Path/Op/Gui/SteepShallow.py
     Path/Op/Gui/Stop.py
     Path/Op/Gui/Surface.py
     Path/Op/Gui/Tapping.py
@@ -472,9 +474,11 @@ SET(PathPythonBaseGenerator_SRCS
     Path/Base/Generator/rotary_wrap.py
     Path/Base/Generator/rotation.py
     Path/Base/Generator/spiral.py
+    Path/Base/Generator/steep_shallow.py
     Path/Base/Generator/tapping.py
     Path/Base/Generator/threadmilling.py
     Path/Base/Generator/toolchange.py
+    Path/Base/Generator/trochoidal.py
 )
 
 SET(PathPythonGui_SRCS
@@ -609,9 +613,12 @@ SET(Tests_SRCS
     CAMTests/TestPathSimulation.py
     CAMTests/TestPathSpiralGenerator.py
     CAMTests/TestPathStock.py
+    CAMTests/TestPathSteepShallow.py
+    CAMTests/TestPathSteepShallowGenerator.py
     CAMTests/TestPathTapGenerator.py
     CAMTests/TestPathToolChangeGenerator.py
     CAMTests/TestPathThreadMilling.py
+    CAMTests/TestPathTrochoidalGenerator.py
     CAMTests/TestPathThreadMillingGenerator.py
     CAMTests/TestPathToolAsset.py
     CAMTests/TestPathToolAssetCache.py

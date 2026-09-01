@@ -32,6 +32,10 @@ from VibeCADNativeMutation import NativeMutationDraft
 _SLOT_FIELDS = frozenset(
     {"path", "extend_start_mm", "extend_end_mm", "layer_mode", "reverse_direction"}
 )
+_SLOT_RAMP_FIELDS = _SLOT_FIELDS | frozenset({"entry_mode", "ramp_angle_degrees"})
+_SLOT_TROCHOID_FIELDS = _SLOT_FIELDS | frozenset(
+    {"cut_mode", "trochoid_width_mm", "trochoid_stepover_percent"}
+)
 _DEPTH_FIELDS = frozenset({"start_depth_mm", "final_depth_mm", "step_down_mm"})
 _HEIGHT_FIELDS = frozenset({"safe_height_mm", "clearance_height_mm"})
 _REFERENCE_NAMES = {
@@ -49,7 +53,10 @@ _ORIENTATION_PUBLIC = {value: key for key, value in _ORIENTATIONS.items()}
 _LAYER_MODES = {
     "directional": "Directional",
     "bidirectional": "Bidirectional",
+    "trochoidal": "Trochoidal",
 }
+_CUT_MODES = {"climb": "Climb", "conventional": "Conventional"}
+_ENTRY_MODES = {"plunge": "Plunge", "ramp": "Ramp"}
 _COOLANT_MODES = {"none": "None", "flood": "Flood", "mist": "Mist"}
 _POINT_FIELDS = frozenset({"x_mm", "y_mm", "z_mm"})
 _POINT_TOLERANCE_MM = 1.0e-7
@@ -77,6 +84,11 @@ class SlotParameters:
     extend_start_mm: float
     extend_end_mm: float
     layer_mode: str
+    cut_mode: str | None
+    trochoid_width_mm: float | None
+    trochoid_stepover_percent: int | None
+    entry_mode: str | None
+    ramp_angle_degrees: float | None
     reverse_direction: bool
     start_depth_mm: float
     final_depth_mm: float
@@ -113,11 +125,16 @@ def _positive(value: Any, noun: str) -> float:
     return result
 
 
+def _percent(value: Any, noun: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 100:
+        _error(f"{noun} must be one integer between 1 and 100.")
+    return value
+
+
 def _point(value: Any, noun: str) -> tuple[float, float, float]:
     point = exact_fields(value, _POINT_FIELDS, noun)
     return tuple(
-        finite_number(point[f"{axis}_mm"], f"{noun} {axis}")
-        for axis in ("x", "y", "z")
+        finite_number(point[f"{axis}_mm"], f"{noun} {axis}") for axis in ("x", "y", "z")
     )
 
 
@@ -208,9 +225,7 @@ def _path_request(
     elif kind == "two_vertices":
         path, model = _model_target(
             raw,
-            frozenset(
-                {"kind", "model", "start_vertex", "end_vertex", "orientation"}
-            ),
+            frozenset({"kind", "model", "start_vertex", "end_vertex", "orientation"}),
             "Two-vertex Slot path",
         )
         names = (
@@ -292,7 +307,17 @@ def _reference(value: Any, noun: str) -> str:
 def _normalize_parameters(
     spec: SlotCreateSpec,
 ) -> tuple[SlotParameters, Mapping[str, Any] | None, tuple[str, ...]]:
-    slot = exact_fields(spec.slot, _SLOT_FIELDS, "Slot settings")
+    if not isinstance(spec.slot, Mapping):
+        _error("Slot settings must be one closed settings object.")
+    provided = set(spec.slot)
+    if provided & {"cut_mode", "trochoid_width_mm", "trochoid_stepover_percent"}:
+        slot = exact_fields(
+            spec.slot, _SLOT_TROCHOID_FIELDS, "Trochoidal Slot settings"
+        )
+    elif provided & {"entry_mode", "ramp_angle_degrees"}:
+        slot = exact_fields(spec.slot, _SLOT_RAMP_FIELDS, "Ramp-entry Slot settings")
+    else:
+        slot = exact_fields(spec.slot, _SLOT_FIELDS, "Slot settings")
     depths = exact_fields(spec.depths, _DEPTH_FIELDS, "Slot depths")
     heights = exact_fields(spec.heights, _HEIGHT_FIELDS, "Slot heights")
     (
@@ -307,7 +332,38 @@ def _normalize_parameters(
     ) = _path_request(slot["path"])
     layer_mode = str(slot["layer_mode"] or "")
     if layer_mode not in _LAYER_MODES:
-        _error("Slot layer_mode must be directional or bidirectional.")
+        _error("Slot layer_mode must be directional, bidirectional, or trochoidal.")
+    cut_mode: str | None = None
+    trochoid_width: float | None = None
+    trochoid_stepover: int | None = None
+    entry_mode: str | None = None
+    ramp_angle: float | None = None
+    if "cut_mode" in slot:
+        if layer_mode != "trochoidal":
+            _error("Slot trochoid settings require layer_mode trochoidal.")
+        cut_mode = str(slot["cut_mode"] or "")
+        if cut_mode not in _CUT_MODES:
+            _error("Slot cut_mode must be climb or conventional.")
+        trochoid_width = finite_number(
+            slot["trochoid_width_mm"], "Slot trochoid width", minimum=0.0
+        )
+        trochoid_stepover = _percent(
+            slot["trochoid_stepover_percent"], "Slot trochoid stepover"
+        )
+    elif layer_mode == "trochoidal":
+        _error(
+            "Slot layer_mode trochoidal requires cut_mode, trochoid_width_mm, "
+            "and trochoid_stepover_percent."
+        )
+    elif "entry_mode" in slot:
+        entry_mode = str(slot["entry_mode"] or "")
+        if entry_mode not in _ENTRY_MODES:
+            _error("Slot entry_mode must be plunge or ramp.")
+        ramp_angle = finite_number(slot["ramp_angle_degrees"], "Slot ramp angle")
+        if not 0.0 < ramp_angle < 90.0:
+            _error(
+                "Slot ramp_angle_degrees must be between 0 and 90 degrees, exclusive."
+            )
     start = finite_number(depths["start_depth_mm"], "Slot start depth")
     final = finite_number(depths["final_depth_mm"], "Slot final depth")
     if final >= start:
@@ -329,10 +385,19 @@ def _normalize_parameters(
             reference1=reference1,
             reference2=reference2,
             orientation=orientation,
-            extend_start_mm=finite_number(slot["extend_start_mm"], "Slot start extension"),
+            extend_start_mm=finite_number(
+                slot["extend_start_mm"], "Slot start extension"
+            ),
             extend_end_mm=finite_number(slot["extend_end_mm"], "Slot end extension"),
             layer_mode=layer_mode,
-            reverse_direction=_boolean(slot["reverse_direction"], "Slot reverse_direction"),
+            cut_mode=cut_mode,
+            trochoid_width_mm=trochoid_width,
+            trochoid_stepover_percent=trochoid_stepover,
+            entry_mode=entry_mode,
+            ramp_angle_degrees=ramp_angle,
+            reverse_direction=_boolean(
+                slot["reverse_direction"], "Slot reverse_direction"
+            ),
             start_depth_mm=start,
             final_depth_mm=final,
             step_down_mm=_positive(depths["step_down_mm"], "Slot step down"),
@@ -363,10 +428,13 @@ def _is_straight_edge(edge: Any) -> bool:
         return True
     if len(edge.Vertexes) != 2:
         return False
-    return abs(
-        float(edge.Vertexes[0].Point.distanceToPoint(edge.Vertexes[1].Point))
-        - float(edge.Length)
-    ) <= 1.0e-7
+    return (
+        abs(
+            float(edge.Vertexes[0].Point.distanceToPoint(edge.Vertexes[1].Point))
+            - float(edge.Length)
+        )
+        <= 1.0e-7
+    )
 
 
 def _reference_point(shape: Any, reference: str) -> tuple[float, float, float]:
@@ -431,7 +499,9 @@ def _validate_selected_path(
             ):
                 _error("A full-circle Slot does not accept start or end extensions.")
         elif not _is_straight_edge(edge):
-            _error("A single-edge Slot requires a line, circular arc, or straight Edge.")
+            _error(
+                "A single-edge Slot requires a line, circular arc, or straight Edge."
+            )
         if len(edge.Vertexes) == 2:
             first = edge.Vertexes[0].Point
             second = edge.Vertexes[1].Point
@@ -444,7 +514,9 @@ def _validate_selected_path(
         face = shapes[0]
         if abs(abs(float(_normal(face).z)) - 1.0) > 1.0e-7:
             _error("single_horizontal_face requires a horizontal Face.")
-        if len(face.Edges) != 4 or not all(_is_straight_edge(edge) for edge in face.Edges):
+        if len(face.Edges) != 4 or not all(
+            _is_straight_edge(edge) for edge in face.Edges
+        ):
             _error("A horizontal-face Slot requires one four-sided straight Face.")
         directions = []
         for edge in face.Edges:
@@ -489,7 +561,9 @@ def _validate_selected_path(
         raise RuntimeError("Unexpected selected Slot path kind")
 
 
-def _prepare_stock(document: Any, boundary: PreparedOperationBoundary) -> tuple[Any, str]:
+def _prepare_stock(
+    document: Any, boundary: PreparedOperationBoundary
+) -> tuple[Any, str]:
     stock = getattr(boundary.job, "Stock", None)
     shape = getattr(stock, "Shape", None)
     if (
@@ -534,6 +608,15 @@ def preflight_slot_create(document: Any, spec: SlotCreateSpec) -> PreparedSlotCr
             allow_entire_job=False,
         )
     tool_diameter = validate_operation_tool(boundary)
+    if (
+        parameters.layer_mode == "trochoidal"
+        and parameters.trochoid_width_mm is not None
+        and parameters.trochoid_width_mm > 0.0
+        and parameters.trochoid_width_mm <= tool_diameter + _POINT_TOLERANCE_MM
+    ):
+        _error(
+            "Slot trochoid_width_mm must exceed the tool diameter, or be 0 for auto."
+        )
     if parameters.path_kind != "custom_points":
         _validate_selected_path(boundary, parameters, tool_diameter)
     stock, stock_hash = _prepare_stock(document, boundary)
@@ -558,7 +641,10 @@ def _assert_stock_current(prepared: PreparedSlotCreate) -> None:
         or shape is None
         or shape_sha256(shape, "CAM Job stock") != prepared.stock_shape_sha256
     ):
-        _error("CAM Job stock changed before Slot creation.", "NATIVE_MANUFACTURE_STATE_STALE")
+        _error(
+            "CAM Job stock changed before Slot creation.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
 
 
 def _parameter_payload(prepared: PreparedSlotCreate) -> dict[str, Any]:
@@ -584,14 +670,26 @@ def _parameter_payload(prepared: PreparedSlotCreate) -> dict[str, Any]:
         elif parameters.path_kind in {"two_edges", "two_vertical_faces"}:
             path["start_reference"] = _REFERENCE_PUBLIC[parameters.reference1]
             path["end_reference"] = _REFERENCE_PUBLIC[parameters.reference2]
+    slot_settings: dict[str, Any] = {
+        "path": path,
+        "extend_start_mm": parameters.extend_start_mm,
+        "extend_end_mm": parameters.extend_end_mm,
+        "layer_mode": parameters.layer_mode,
+        "reverse_direction": parameters.reverse_direction,
+    }
+    if parameters.cut_mode is not None:
+        slot_settings.update(
+            cut_mode=parameters.cut_mode,
+            trochoid_width_mm=parameters.trochoid_width_mm,
+            trochoid_stepover_percent=parameters.trochoid_stepover_percent,
+        )
+    if parameters.entry_mode is not None:
+        slot_settings.update(
+            entry_mode=parameters.entry_mode,
+            ramp_angle_degrees=parameters.ramp_angle_degrees,
+        )
     return {
-        "slot": {
-            "path": path,
-            "extend_start_mm": parameters.extend_start_mm,
-            "extend_end_mm": parameters.extend_end_mm,
-            "layer_mode": parameters.layer_mode,
-            "reverse_direction": parameters.reverse_direction,
-        },
+        "slot": slot_settings,
         "depths": {
             "start_depth_mm": parameters.start_depth_mm,
             "final_depth_mm": parameters.final_depth_mm,
@@ -640,6 +738,13 @@ def _apply_settings(operation: Any, prepared: PreparedSlotCreate) -> None:
     operation.ExtendPathStart = f"{parameters.extend_start_mm} mm"
     operation.ExtendPathEnd = f"{parameters.extend_end_mm} mm"
     operation.CutPattern = _LAYER_MODES[parameters.layer_mode]
+    if parameters.cut_mode is not None:
+        operation.CutMode = _CUT_MODES[parameters.cut_mode]
+        operation.TrochoidWidth = f"{parameters.trochoid_width_mm} mm"
+        operation.TrochoidStepover = parameters.trochoid_stepover_percent
+    if parameters.entry_mode is not None:
+        operation.EntryMode = _ENTRY_MODES[parameters.entry_mode]
+        operation.RampAngle = f"{parameters.ramp_angle_degrees} deg"
     operation.PathOrientation = parameters.orientation
     operation.ReverseDirection = parameters.reverse_direction
     operation.StartDepth = f"{parameters.start_depth_mm} mm"
@@ -738,6 +843,26 @@ def _assert_slot_settings(
         "use_start_point": False,
         "start_point_mm": (0.0, 0.0, 0.0),
     }
+    if parameters.cut_mode is not None:
+        actual.update(
+            cut_mode=str(operation.CutMode),
+            trochoid_width_mm=quantity_mm(operation, "TrochoidWidth"),
+            trochoid_stepover_percent=int(operation.TrochoidStepover),
+        )
+        expected.update(
+            cut_mode=_CUT_MODES[parameters.cut_mode],
+            trochoid_width_mm=parameters.trochoid_width_mm,
+            trochoid_stepover_percent=parameters.trochoid_stepover_percent,
+        )
+    if parameters.entry_mode is not None:
+        actual.update(
+            entry_mode=str(operation.EntryMode),
+            ramp_angle_degrees=round(float(operation.RampAngle.getValueAs("deg")), 9),
+        )
+        expected.update(
+            entry_mode=_ENTRY_MODES[parameters.entry_mode],
+            ramp_angle_degrees=parameters.ramp_angle_degrees,
+        )
     mismatches = {
         name: {"expected": value, "actual": actual.get(name)}
         for name, value in expected.items()
@@ -750,10 +875,13 @@ def _assert_slot_settings(
             "expected": "two finite points",
             "actual": (resolved_start, resolved_end),
         }
-    elif math.hypot(
-        resolved_start[0] - resolved_end[0],
-        resolved_start[1] - resolved_end[1],
-    ) <= _POINT_TOLERANCE_MM:
+    elif (
+        math.hypot(
+            resolved_start[0] - resolved_end[0],
+            resolved_start[1] - resolved_end[1],
+        )
+        <= _POINT_TOLERANCE_MM
+    ):
         mismatches["resolved_points"] = {
             "expected": "two distinct XY points",
             "actual": (resolved_start, resolved_end),

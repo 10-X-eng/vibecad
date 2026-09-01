@@ -482,7 +482,7 @@ class ToolBitShape(Asset):
             doc = FreeCAD.newDocument(
                 "TemporaryShapeDoc",
                 hidden=True,
-                temporary=True,
+                temp=True,
             )
 
             # Add the shape's body to the temporary document

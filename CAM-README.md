@@ -75,10 +75,16 @@ posted program before running a machine.
 
 The sharpened production path targets common three-axis milling workflows:
 profile, pocket, facing, drilling, helix, adaptive, slot, engraving, deburring,
-V-carving, three-dimensional pocketing, probing, operation copies, and supported
-dress-ups. Rotary, 3+2, simultaneous multi-axis, turning, laser/plasma,
-waterjet, robot, holder/fixture collision, and full machine-kinematic simulation
-are not represented as complete when their required runtime is absent.
+V-carving, three-dimensional pocketing, steep-and-shallow finishing, probing,
+operation copies, and supported dress-ups. Steep-and-shallow finishing combines
+constant-Z passes on steep regions with surface-following passes on shallow
+regions and can restrict a smaller tool to material left by a larger reference
+tool. Slot operations support plunge or ramp entry and directional,
+bidirectional, or trochoidal cutting.
+
+Rotary, 3+2, simultaneous multi-axis, turning, laser/plasma, waterjet, robot,
+holder/fixture collision, and full machine-kinematic simulation are not
+represented as complete when their required runtime is absent.
 
 The implementation charter, benchmark method, and acceptance evidence are in
 [docs/cam-tool-sharpening.md](docs/cam-tool-sharpening.md).

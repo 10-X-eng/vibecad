@@ -701,6 +701,7 @@ OPTIONAL_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "CAM_Surface",
         "CAM_Waterline",
         "CAM_RotarySurface",
+        "CAM_SteepShallow",
     ),
     "mesh": (),
     "model": (
@@ -928,6 +929,7 @@ _BACKGROUND_COMMAND_IDS = frozenset(
         "CAM_Surface",
         "CAM_Waterline",
         "CAM_RotarySurface",
+        "CAM_SteepShallow",
         "CAM_MillFacing",
         "CAM_Helix",
         "CAM_Adaptive",
@@ -1175,6 +1177,7 @@ _CAPABILITY_OVERRIDES = {
     "CAM_Surface": "manufacture.surface",
     "CAM_Waterline": "manufacture.waterline",
     "CAM_RotarySurface": "manufacture.rotary_surface",
+    "CAM_SteepShallow": "manufacture.steep_shallow",
     "CAM_Helix": "manufacture.helix",
     "CAM_Adaptive": "manufacture.adaptive",
     "CAM_Slot": "manufacture.slot",
@@ -1718,6 +1721,7 @@ _OPERATION_VARIANT_OVERRIDES = {
     "CAM_Surface": "surface",
     "CAM_Waterline": "waterline",
     "CAM_RotarySurface": "rotary_surface",
+    "CAM_SteepShallow": "steep_shallow",
     "CAM_OpActiveToggle": "set_active",
     "CAM_OperationCopy": "copy_operations",
     "CAM_Array": "array",
@@ -1935,6 +1939,7 @@ _EXACT_TARGET_TYPE_OVERRIDES = {
     "CAM_RotarySurface": (
         "ExactCamJobMachineCylinderRotaryFacesControllerAndParameters"
     ),
+    "CAM_SteepShallow": "ExactCamJobModelControllerAndSteepShallowParameters",
     "CAM_OpActiveToggle": "ExactCamJobAndOperationActiveStates",
     "CAM_OperationCopy": "ExactCamOperationCopySet",
     "CAM_Array": "ExactCamJobBaseToolpathsArrayPatternAndPointSources",

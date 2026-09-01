@@ -46,6 +46,8 @@ _COOLANT_SCHEMA = {
     "type": "string",
     "enum": ["none", "flood", "mist"],
 }
+
+
 def _closed(properties: dict, required: tuple[str, ...]) -> dict:
     return {
         "type": "object",
@@ -989,6 +991,109 @@ _ROTARY_SURFACE_SETTINGS = _closed(
         "mesh",
     ),
 )
+_STEEP_SHALLOW_MESH = _closed(
+    {
+        "linear_deflection_mm": {
+            "type": "number",
+            "minimum": 0.001,
+            "maximum": 25.4,
+        },
+        "angular_deflection_radians": {
+            "type": "number",
+            "minimum": 0.001,
+            "maximum": 1.570796327,
+        },
+    },
+    ("linear_deflection_mm", "angular_deflection_radians"),
+)
+_STEEP_SHALLOW_SETTINGS = {
+    "oneOf": [
+        _closed(
+            {
+                "slope_threshold_degrees": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 90.0,
+                    "description": (
+                        "Slope separating steep constant-Z contours from "
+                        "shallow surface-following passes."
+                    ),
+                },
+                "stepover_mm": {
+                    "type": "number",
+                    "minimum": 0.001,
+                    "maximum": 1_000_000.0,
+                },
+                "boundary_overlap_mm": _NONNEGATIVE_DISTANCE_MM,
+                "sample_interval_mm": {
+                    "type": "number",
+                    "minimum": 0.001,
+                    "maximum": 1_000_000.0,
+                },
+                "cut_mode": {
+                    "type": "string",
+                    "enum": ["climb", "conventional"],
+                },
+                "use_rest_machining": {"type": "boolean", "const": False},
+                "mesh": _STEEP_SHALLOW_MESH,
+            },
+            (
+                "slope_threshold_degrees",
+                "stepover_mm",
+                "boundary_overlap_mm",
+                "sample_interval_mm",
+                "cut_mode",
+                "use_rest_machining",
+                "mesh",
+            ),
+        ),
+        _closed(
+            {
+                "slope_threshold_degrees": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 90.0,
+                },
+                "stepover_mm": {
+                    "type": "number",
+                    "minimum": 0.001,
+                    "maximum": 1_000_000.0,
+                },
+                "boundary_overlap_mm": _NONNEGATIVE_DISTANCE_MM,
+                "sample_interval_mm": {
+                    "type": "number",
+                    "minimum": 0.001,
+                    "maximum": 1_000_000.0,
+                },
+                "cut_mode": {
+                    "type": "string",
+                    "enum": ["climb", "conventional"],
+                },
+                "use_rest_machining": {"type": "boolean", "const": True},
+                "rest_reference_tool_diameter_mm": {
+                    "type": "number",
+                    "minimum": 0.001,
+                    "maximum": 1_000_000.0,
+                    "description": (
+                        "Diameter of the previous, larger tool; only material "
+                        "it could not reach is cut."
+                    ),
+                },
+                "mesh": _STEEP_SHALLOW_MESH,
+            },
+            (
+                "slope_threshold_degrees",
+                "stepover_mm",
+                "boundary_overlap_mm",
+                "sample_interval_mm",
+                "cut_mode",
+                "use_rest_machining",
+                "rest_reference_tool_diameter_mm",
+                "mesh",
+            ),
+        ),
+    ]
+}
 _EXTENSION_ITEM = _closed(
     {
         "model": _EXACT_TARGET,
@@ -1370,25 +1475,86 @@ _SLOT_PATH = {
         ),
     ]
 }
-_SLOT_SETTINGS = _closed(
-    {
-        "path": _SLOT_PATH,
-        "extend_start_mm": _DISTANCE_MM,
-        "extend_end_mm": _DISTANCE_MM,
-        "layer_mode": {
-            "type": "string",
-            "enum": ["directional", "bidirectional"],
-        },
-        "reverse_direction": {"type": "boolean"},
-    },
-    (
-        "path",
-        "extend_start_mm",
-        "extend_end_mm",
-        "layer_mode",
-        "reverse_direction",
-    ),
-)
+_SLOT_LAYER_MODE = {
+    "type": "string",
+    "enum": ["directional", "bidirectional"],
+}
+_SLOT_SETTINGS = {
+    "oneOf": [
+        _closed(
+            {
+                "path": _SLOT_PATH,
+                "extend_start_mm": _DISTANCE_MM,
+                "extend_end_mm": _DISTANCE_MM,
+                "layer_mode": _SLOT_LAYER_MODE,
+                "reverse_direction": {"type": "boolean"},
+            },
+            (
+                "path",
+                "extend_start_mm",
+                "extend_end_mm",
+                "layer_mode",
+                "reverse_direction",
+            ),
+        ),
+        _closed(
+            {
+                "path": _SLOT_PATH,
+                "extend_start_mm": _DISTANCE_MM,
+                "extend_end_mm": _DISTANCE_MM,
+                "layer_mode": _SLOT_LAYER_MODE,
+                "reverse_direction": {"type": "boolean"},
+                "entry_mode": {
+                    "type": "string",
+                    "enum": ["plunge", "ramp"],
+                },
+                "ramp_angle_degrees": {
+                    "type": "number",
+                    "exclusiveMinimum": 0.0,
+                    "exclusiveMaximum": 90.0,
+                },
+            },
+            (
+                "path",
+                "extend_start_mm",
+                "extend_end_mm",
+                "layer_mode",
+                "reverse_direction",
+                "entry_mode",
+                "ramp_angle_degrees",
+            ),
+        ),
+        _closed(
+            {
+                "path": _SLOT_PATH,
+                "extend_start_mm": _DISTANCE_MM,
+                "extend_end_mm": _DISTANCE_MM,
+                "layer_mode": {"type": "string", "const": "trochoidal"},
+                "reverse_direction": {"type": "boolean"},
+                "cut_mode": {
+                    "type": "string",
+                    "enum": ["climb", "conventional"],
+                },
+                "trochoid_width_mm": _NONNEGATIVE_DISTANCE_MM,
+                "trochoid_stepover_percent": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                },
+            },
+            (
+                "path",
+                "extend_start_mm",
+                "extend_end_mm",
+                "layer_mode",
+                "reverse_direction",
+                "cut_mode",
+                "trochoid_width_mm",
+                "trochoid_stepover_percent",
+            ),
+        ),
+    ]
+}
 
 _DRILL_FEATURE = _closed(
     {
@@ -1926,9 +2092,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 ),
                 action_ids=frozenset({"CAM_Surface"}),
                 surface_ids=frozenset({"manufacture"}),
-                exact_target_type=(
-                    "ExactCamJobSurfaceFacesControllerAndParameters"
-                ),
+                exact_target_type=("ExactCamJobSurfaceFacesControllerAndParameters"),
                 transaction_behavior="background",
                 background_required=True,
                 parameters=_closed(
@@ -2030,6 +2194,43 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 ),
             ),
             NativeCapabilityVariant(
+                operation="steep_shallow",
+                description=(
+                    "Finish steep walls with constant-Z contours and shallow "
+                    "regions with surface-following passes in one operation."
+                ),
+                action_ids=frozenset({"CAM_SteepShallow"}),
+                surface_ids=frozenset({"manufacture"}),
+                exact_target_type=(
+                    "ExactCamJobModelControllerAndSteepShallowParameters"
+                ),
+                transaction_behavior="background",
+                background_required=True,
+                parameters=_closed(
+                    {
+                        "label": LABEL_SCHEMA,
+                        "job": _EXACT_TARGET,
+                        "tool_controller": _EXACT_TARGET,
+                        "steep_shallow": _STEEP_SHALLOW_SETTINGS,
+                        "depths": _DEPTHS,
+                        "heights": _HEIGHTS,
+                        "coolant": {
+                            "type": "string",
+                            "enum": ["none", "flood", "mist"],
+                        },
+                    },
+                    (
+                        "label",
+                        "job",
+                        "tool_controller",
+                        "steep_shallow",
+                        "depths",
+                        "heights",
+                        "coolant",
+                    ),
+                ),
+            ),
+            NativeCapabilityVariant(
                 operation="mill_facing",
                 description=(
                     "Face the exact setup stock using its machining defaults."
@@ -2054,9 +2255,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="helix",
-                description=(
-                    "Helically mill selected circular Faces or Edges."
-                ),
+                description=("Helically mill selected circular Faces or Edges."),
                 action_ids=frozenset({"CAM_Helix"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobHoleFeaturesControllerAndHelixParameters",
@@ -2272,9 +2471,7 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="deburr",
-                description=(
-                    "Chamfer or deburr selected Edges and Faces."
-                ),
+                description=("Chamfer or deburr selected Edges and Faces."),
                 action_ids=frozenset({"CAM_Deburr"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobDeburrFeaturesControllerAndParameters",

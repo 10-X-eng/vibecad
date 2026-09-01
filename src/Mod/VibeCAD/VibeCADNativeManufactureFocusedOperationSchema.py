@@ -21,6 +21,7 @@ MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES = {
     "surface": "manufacture.surface",
     "waterline": "manufacture.waterline",
     "rotary_surface": "manufacture.rotary_surface",
+    "steep_shallow": "manufacture.steep_shallow",
     "mill_facing": "manufacture.face",
     "helix": "manufacture.helix",
     "adaptive": "manufacture.adaptive",

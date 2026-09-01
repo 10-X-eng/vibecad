@@ -169,6 +169,11 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
         "reverse_direction",
         "start_depth_mm",
         "clearance_height_mm",
+        "cut_mode",
+        "trochoid_width_mm",
+        "trochoid_stepover_percent",
+        "entry_mode",
+        "ramp_angle_degrees",
     ):
         assert field in encoded
     return NativeTurnSnapshot.from_provider_surface(
@@ -260,6 +265,47 @@ def _custom_arguments(job) -> dict:
     )
 
 
+def _trochoidal_arguments(job) -> dict:
+    return _common_arguments(
+        job,
+        label="Native trochoidal Slot",
+        slot={
+            "path": {
+                "kind": "custom_points",
+                "start_point_mm": {"x_mm": 10.0, "y_mm": 10.0, "z_mm": 8.0},
+                "end_point_mm": {"x_mm": 50.0, "y_mm": 10.0, "z_mm": 8.0},
+            },
+            "extend_start_mm": 0.0,
+            "extend_end_mm": 0.0,
+            "layer_mode": "trochoidal",
+            "reverse_direction": False,
+            "cut_mode": "climb",
+            "trochoid_width_mm": 0.0,
+            "trochoid_stepover_percent": 25,
+        },
+    )
+
+
+def _ramp_arguments(job) -> dict:
+    return _common_arguments(
+        job,
+        label="Native ramp Slot",
+        slot={
+            "path": {
+                "kind": "custom_points",
+                "start_point_mm": {"x_mm": 10.0, "y_mm": 30.0, "z_mm": 8.0},
+                "end_point_mm": {"x_mm": 50.0, "y_mm": 30.0, "z_mm": 8.0},
+            },
+            "extend_start_mm": 0.5,
+            "extend_end_mm": 0.5,
+            "layer_mode": "directional",
+            "reverse_direction": False,
+            "entry_mode": "ramp",
+            "ramp_angle_degrees": 3.0,
+        },
+    )
+
+
 def _assert_slot_graph(
     document,
     job,
@@ -268,6 +314,7 @@ def _assert_slot_graph(
     label: str,
     expected_base: tuple,
     path_kind: str,
+    variant: str = "legacy",
     diagnostics_required: bool = True,
 ) -> None:
     assert operation in tuple(job.Operations.Group)
@@ -290,7 +337,10 @@ def _assert_slot_graph(
     assert tuple(round(value, 9) for value in operation.StartPoint) == (0.0, 0.0, 0.0)
     first = operation.CustomPoint1
     second = operation.CustomPoint2
-    assert abs(float(first.x) - float(second.x)) + abs(float(first.y) - float(second.y)) > 0.1
+    assert (
+        abs(float(first.x) - float(second.x)) + abs(float(first.y) - float(second.y))
+        > 0.1
+    )
     assert tuple(document.VibeCADTimeline.Operations).count(operation) == 1
     commands = tuple(operation.Path.Commands)
     assert any(command.Name in {"G1", "G2", "G3"} for command in commands)
@@ -302,6 +352,26 @@ def _assert_slot_graph(
         assert round(operation.ExtendPathStart.getValueAs("mm"), 9) == 1.0
         assert round(operation.ExtendPathEnd.getValueAs("mm"), 9) == 2.0
         assert operation.CoolantMode == "Flood"
+    elif variant == "trochoidal":
+        assert operation.PathOrientation == "Start to End"
+        assert operation.CutPattern == "Trochoidal"
+        assert operation.CutMode == "Climb"
+        assert round(operation.TrochoidWidth.getValueAs("mm"), 9) == 0.0
+        assert int(operation.TrochoidStepover) == 25
+        assert operation.ReverseDirection is False
+        assert round(operation.ExtendPathStart.getValueAs("mm"), 9) == 0.0
+        assert round(operation.ExtendPathEnd.getValueAs("mm"), 9) == 0.0
+        assert operation.CoolantMode == "Mist"
+        assert any(command.Name in {"G2", "G3"} for command in commands)
+    elif variant == "ramp":
+        assert operation.PathOrientation == "Start to End"
+        assert operation.CutPattern == "Directional"
+        assert operation.EntryMode == "Ramp"
+        assert round(float(operation.RampAngle.getValueAs("deg")), 9) == 3.0
+        assert operation.ReverseDirection is False
+        assert round(operation.ExtendPathStart.getValueAs("mm"), 9) == 0.5
+        assert round(operation.ExtendPathEnd.getValueAs("mm"), 9) == 0.5
+        assert operation.CoolantMode == "Mist"
     else:
         assert operation.PathOrientation == "Start to End"
         assert operation.CutPattern == "Bidirectional"
@@ -476,9 +546,9 @@ def _run() -> None:
         assert custom_result["slot"]["path_kind"] == "custom_points"
         assert custom_result["slot"]["cutting_command_count"] >= 1
         assert custom_result["job"]["operation_count"] == len(initial_operations) + 2
-        assert [item["object_name"] for item in custom_result["receipt"]["created"]] == [
-            custom_name
-        ]
+        assert [
+            item["object_name"] for item in custom_result["receipt"]["created"]
+        ] == [custom_name]
         assert custom_result["assistant_undo_available"] is True
         assert int(document.UndoCount) == undo_before + 2
         assert state_store.current_revision(context.document_uid) == revision_before + 2
@@ -504,7 +574,9 @@ def _run() -> None:
         job = document.getObject("SlotJob")
         feature_slot = document.getObject(feature_name)
         custom_slot = document.getObject(custom_name)
-        assert all(value is not None for value in (model, job, feature_slot, custom_slot))
+        assert all(
+            value is not None for value in (model, job, feature_slot, custom_slot)
+        )
         _assert_slot_graph(
             document,
             job,
@@ -521,13 +593,108 @@ def _run() -> None:
             expected_base=(),
             path_kind="custom_points",
         )
-        assert operation_state(feature_slot)["state_sha256"] == feature_state["state_sha256"]
+        assert (
+            operation_state(feature_slot)["state_sha256"]
+            == feature_state["state_sha256"]
+        )
         restored_custom_state = operation_state(custom_slot)
         assert restored_custom_state["state_sha256"] == custom_state["state_sha256"], {
             key: (custom_state.get(key), restored_custom_state.get(key))
             for key in set(custom_state) | set(restored_custom_state)
             if custom_state.get(key) != restored_custom_state.get(key)
         }
+
+        trochoidal_arguments = _trochoidal_arguments(job)
+        names_before_new = tuple(obj.Name for obj in document.Objects)
+        undo_before_new = int(document.UndoCount)
+        revision_before_new = state_store.current_revision(context.document_uid)
+
+        second_dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=runtimes,
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
+
+        def second_call(payload: dict, *, succeeds: bool = True) -> dict:
+            nonlocal call_index
+            call_index += 1
+            response = second_dispatcher.call(
+                MANUFACTURE_OPERATION_CAPABILITY_NAME,
+                json.dumps(payload, separators=(",", ":")),
+                f"native-manufacture-slot-{call_index}",
+            )
+            assert response.get("ok") is succeeds, response
+            return response
+
+        mixed = json.loads(json.dumps(trochoidal_arguments))
+        mixed["slot"]["layer_mode"] = "directional"
+        mixed_result = second_call(mixed, succeeds=False)
+        assert mixed_result["error_code"] == "NATIVE_ARGUMENTS_INVALID", mixed_result
+        assert tuple(obj.Name for obj in document.Objects) == names_before_new
+        assert int(document.UndoCount) == undo_before_new
+
+        trochoidal_result = second_call(trochoidal_arguments)
+        _events(12)
+        trochoidal_name = trochoidal_result["slot"]["object_name"]
+        trochoidal_slot = document.getObject(trochoidal_name)
+        assert trochoidal_slot is not None
+        _assert_slot_graph(
+            document,
+            job,
+            trochoidal_slot,
+            label="Native trochoidal Slot",
+            expected_base=(),
+            path_kind="custom_points",
+            variant="trochoidal",
+        )
+        assert trochoidal_result["slot"]["geometry"] == {"kind": "custom_points"}
+        assert (
+            trochoidal_result["slot"]["parameters"]["slot"]
+            == trochoidal_arguments["slot"]
+        )
+        assert trochoidal_result["slot"]["path_kind"] == "custom_points"
+        assert trochoidal_result["slot"]["cutting_command_count"] >= 1
+        trochoidal_state = operation_state(trochoidal_slot)
+
+        ramp_arguments = _ramp_arguments(job)
+        ramp_result = second_call(ramp_arguments)
+        _events(12)
+        ramp_name = ramp_result["slot"]["object_name"]
+        ramp_slot = document.getObject(ramp_name)
+        assert ramp_slot is not None
+        _assert_slot_graph(
+            document,
+            job,
+            ramp_slot,
+            label="Native ramp Slot",
+            expected_base=(),
+            path_kind="custom_points",
+            variant="ramp",
+        )
+        assert ramp_result["slot"]["geometry"] == {"kind": "custom_points"}
+        assert ramp_result["slot"]["parameters"]["slot"] == ramp_arguments["slot"]
+        assert ramp_result["slot"]["path_kind"] == "custom_points"
+        assert ramp_result["slot"]["cutting_command_count"] >= 1
+        assert ramp_result["job"]["operation_count"] == len(initial_operations) + 4
+        assert int(document.UndoCount) == undo_before_new + 2
+        assert (
+            state_store.current_revision(context.document_uid)
+            == revision_before_new + 2
+        )
+        ramp_state = operation_state(ramp_slot)
+
+        # Path/Op/Slot.py writes extended endpoints back into CustomPoint1/2
+        # (pre-existing upstream behavior), so a custom-points slot with
+        # nonzero extends drifts whenever a later document recompute
+        # re-executes it. The op creations above triggered one such
+        # re-execution; re-snapshot the pre-existing operations so the
+        # save/reopen comparison checks persistence of the current state.
+        feature_state = operation_state(feature_slot)
+        custom_state = operation_state(custom_slot)
 
         document.saveAs(str(save_path))
         App.closeDocument(document.Name)
@@ -536,7 +703,19 @@ def _run() -> None:
         job = document.getObject("SlotJob")
         feature_slot = document.getObject(feature_name)
         custom_slot = document.getObject(custom_name)
-        assert all(value is not None for value in (model, job, feature_slot, custom_slot))
+        trochoidal_slot = document.getObject(trochoidal_name)
+        ramp_slot = document.getObject(ramp_name)
+        assert all(
+            value is not None
+            for value in (
+                model,
+                job,
+                feature_slot,
+                custom_slot,
+                trochoidal_slot,
+                ramp_slot,
+            )
+        )
         _assert_slot_graph(
             document,
             job,
@@ -555,18 +734,47 @@ def _run() -> None:
             path_kind="custom_points",
             diagnostics_required=False,
         )
-        assert operation_state(feature_slot)["state_sha256"] == feature_state["state_sha256"]
+        assert (
+            operation_state(feature_slot)["state_sha256"]
+            == feature_state["state_sha256"]
+        )
         reopened_custom_state = operation_state(custom_slot)
         assert reopened_custom_state["state_sha256"] == custom_state["state_sha256"], {
             key: (custom_state.get(key), reopened_custom_state.get(key))
             for key in set(custom_state) | set(reopened_custom_state)
             if custom_state.get(key) != reopened_custom_state.get(key)
         }
+        _assert_slot_graph(
+            document,
+            job,
+            trochoidal_slot,
+            label="Native trochoidal Slot",
+            expected_base=(),
+            path_kind="custom_points",
+            variant="trochoidal",
+            diagnostics_required=False,
+        )
+        _assert_slot_graph(
+            document,
+            job,
+            ramp_slot,
+            label="Native ramp Slot",
+            expected_base=(),
+            path_kind="custom_points",
+            variant="ramp",
+            diagnostics_required=False,
+        )
+        assert (
+            operation_state(trochoidal_slot)["state_sha256"]
+            == trochoidal_state["state_sha256"]
+        )
+        assert operation_state(ramp_slot)["state_sha256"] == ramp_state["state_sha256"]
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_SLOT_GUI_OK "
             "exact_targets=true feature_path=true custom_points=true parameters=true "
-            "toolpath=true history=true rollback=true undo=true redo=true reopen=true",
+            "toolpath=true history=true rollback=true undo=true redo=true reopen=true "
+            "trochoidal=true ramp=true",
             flush=True,
         )
         exit_code = 0

@@ -120,8 +120,11 @@ from CAMTests.TestPathToolLibrarySerializer import (
     TestLinuxCNCLibrarySerializer,
     TestPathToolLibrarySerializerBase,
 )
+from CAMTests.TestPathSteepShallow import TestPathSteepShallow
+from CAMTests.TestPathSteepShallowGenerator import TestPathSteepShallowGenerator
 from CAMTests.TestPathToolChangeGenerator import TestPathToolChangeGenerator
 from CAMTests.TestPathToolController import TestPathToolController
+from CAMTests.TestPathTrochoidalGenerator import TestPathTrochoidalGenerator
 from CAMTests.TestPathUtil import TestPathUtil, TestCompass
 from CAMTests.TestPathVcarve import TestPathVcarve
 from CAMTests.TestPathVoronoi import TestPathVoronoi

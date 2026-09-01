@@ -53,6 +53,7 @@ _COMMON_OPERATIONS = frozenset(
         "manufacture.surface",
         "manufacture.waterline",
         "manufacture.rotary_surface",
+        "manufacture.steep_shallow",
         "manufacture.helix",
         "manufacture.adaptive",
         "manufacture.slot",
