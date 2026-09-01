@@ -56,6 +56,62 @@ def _events(rounds: int = 12) -> None:
         QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 20)
 
 
+def _visible_children(item) -> tuple:
+    return tuple(
+        item.child(index)
+        for index in range(item.childCount())
+        if not item.child(index).isHidden()
+    )
+
+
+def _tree_snapshot(item) -> tuple:
+    return (
+        item.text(0),
+        tuple(_tree_snapshot(child) for child in _visible_children(item)),
+    )
+
+
+def _tree_child(item, label: str):
+    return next(
+        (child for child in _visible_children(item) if child.text(0) == label),
+        None,
+    )
+
+
+def _tree_label_count(item, label: str) -> int:
+    return int(item.text(0) == label) + sum(
+        _tree_label_count(child, label) for child in _visible_children(item)
+    )
+
+
+def _document_tree_item(document):
+    for _attempt in range(80):
+        _events(2)
+        for tree in Gui.getMainWindow().findChildren(QtWidgets.QTreeWidget):
+            if not tree.isVisible() or not tree.viewport().isVisible():
+                continue
+            for index in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(index)
+                if not item.isHidden() and item.text(0) == document.Label:
+                    return item
+    return None
+
+
+def _assert_simulation_tree(document, job, result) -> None:
+    document_item = _document_tree_item(document)
+    assert document_item is not None
+    snapshot = _tree_snapshot(document_item)
+    setup = _tree_child(document_item, job.Label)
+    assert setup is not None, snapshot
+    results = _tree_child(setup, "Simulation Results")
+    assert results is not None, snapshot
+    assert [item.text(0) for item in _visible_children(results)] == [
+        "Remaining Stock"
+    ], snapshot
+    assert _tree_label_count(document_item, result.Label) == 0, snapshot
+    assert _tree_label_count(document_item, "Remaining Stock") == 1, snapshot
+
+
 def _surface():
     Gui.activateWorkbench("CAMWorkbench")
     _events(24)
@@ -637,6 +693,7 @@ def _run() -> None:
         result_state = payload["simulation_result"]["result"]
         result = document.getObject(result_state["object_name"])
         _assert_retained_result(document, result, job, operation, 10)
+        _assert_simulation_tree(document, job, result)
         assert payload["simulation_result"]["job"] == {
             "document_uid": document_uid(document),
             "object_name": job.Name,
@@ -711,6 +768,7 @@ def _run() -> None:
         operation = document.getObject(operation_name)
         result = document.getObject(result_name)
         _assert_retained_result(document, result, job, operation, 10)
+        _assert_simulation_tree(document, job, result)
         assert result.Mesh.CountFacets == result_facet_count
         assert result.SimulationProgramSHA256 == result_program
 
@@ -936,7 +994,7 @@ def _run() -> None:
             "durable_mesh=true provenance=true history=true receipt=true undo=true "
             "redo=true reopen=true selection=true visibility=true low_noise=true",
             "follow_up=true related_setup=true branching=true stale=true "
-            "remaining_stock=true acyclic=true",
+            "remaining_stock=true acyclic=true tree=true",
             flush=True,
         )
         exit_code = 0
