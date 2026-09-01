@@ -798,9 +798,17 @@ class VibeCADService:
             raise RuntimeError("The active ribbon has no Native provider surface.")
         background_job = None
         if surface.surface_id == "analyze":
-            background_job = self._native_background_jobs.latest_document_snapshot(
+            jobs = self._native_background_jobs.document_snapshots(
                 str(document.Uid),
                 capability_prefix="analyze.",
+                active_only=False,
+            )
+            background_job = (
+                jobs[0]
+                if len(jobs) == 1
+                else jobs
+                if jobs
+                else None
             )
         elif surface.surface_id == "manufacture":
             background_job = self._native_background_jobs.document_snapshots(
@@ -838,9 +846,17 @@ class VibeCADService:
         ) != "native":
             return None
         native_state = self.native_document_state()
-        background_job = self._native_background_jobs.latest_document_snapshot(
+        jobs = self._native_background_jobs.document_snapshots(
             str(document.Uid),
             capability_prefix="analyze.",
+            active_only=False,
+        )
+        background_job = (
+            jobs[0]
+            if len(jobs) == 1
+            else jobs
+            if jobs
+            else None
         )
         analysis_artifacts = drawing_analysis_artifact_names(document)
         base = capture_active_snapshot_base(
@@ -856,8 +872,13 @@ class VibeCADService:
             analysis_artifact_names=analysis_artifacts,
         )
         revision = int(native_state.get("structural_revision", 0) or 0)
-        cacheable = bool(
-            background_job is None or bool(getattr(background_job, "terminal", False))
+        cacheable = (
+            all(bool(getattr(job, "terminal", False)) for job in background_job)
+            if isinstance(background_job, tuple)
+            else bool(
+                background_job is None
+                or bool(getattr(background_job, "terminal", False))
+            )
         )
         cache_hit = bool(
             cacheable
@@ -4053,15 +4074,13 @@ class VibeCADService:
 
     def _get_fem_analysis(self, analysis_name: str | None = None):
         analyses = self._fem_analyses()
-        if analysis_name:
-            for analysis in analyses:
-                if (
-                    analysis.Name == analysis_name
-                    or getattr(analysis, "Label", None) == analysis_name
-                ):
-                    return analysis
+        clean_name = str(analysis_name or "").strip()
+        if not clean_name:
             return None
-        return analyses[0] if analyses else None
+        return next(
+            (analysis for analysis in analyses if str(analysis.Name) == clean_name),
+            None,
+        )
 
     @staticmethod
     def _fem_member_category(obj: Any) -> str:
@@ -4096,17 +4115,32 @@ class VibeCADService:
         item["member_categories"] = counts
         return item
 
-    def fem_summary(self, analysis_name: str | None = None) -> dict[str, Any]:
+    def fem_summary(
+        self,
+        analysis_name: str | None = None,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> dict[str, Any]:
         analyses = self._fem_analyses()
         selected = self._get_fem_analysis(analysis_name)
         doc = self._active_document()
+        if type(offset) is not int or offset < 0:
+            raise ValueError("FEM analysis offset must be a non-negative integer.")
+        if type(limit) is not int or not 1 <= limit <= 80:
+            raise ValueError("FEM analysis limit must be an integer from 1 through 80.")
+        page = analyses[offset : offset + limit]
         return {
             "document": doc.Name if doc else None,
             "analysis_count": len(analyses),
+            "returned_count": len(page),
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(page) < len(analyses),
             "requested": analysis_name,
             "selected": self._fem_analysis_summary(selected) if selected else None,
             "analyses": [
-                self._fem_analysis_summary(analysis) for analysis in analyses[:20]
+                self._fem_analysis_summary(analysis) for analysis in page
             ],
         }
 

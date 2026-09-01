@@ -1422,12 +1422,27 @@ def techdraw_summary(service: Any, page_name: str | None = None) -> dict[str, An
     }
 
 
-def fem_summary(service: Any, analysis_name: str | None = None) -> dict[str, Any]:
+def fem_summary(
+    service: Any,
+    analysis_name: str | None = None,
+    *,
+    offset: int = 0,
+    limit: int = 80,
+) -> dict[str, Any]:
     analyses = service._fem_analyses()
     analysis = service._get_fem_analysis(analysis_name)
+    if type(offset) is not int or offset < 0:
+        raise ValueError("FEM analysis offset must be a non-negative integer.")
+    if type(limit) is not int or not 1 <= limit <= 80:
+        raise ValueError("FEM analysis limit must be an integer from 1 through 80.")
+    page = analyses[offset : offset + limit]
     return {
         "analysis_count": len(analyses),
-        "analyses": [service._fem_analysis_summary(item) for item in analyses],
+        "returned_count": len(page),
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(page) < len(analyses),
+        "analyses": [service._fem_analysis_summary(item) for item in page],
         "selected_analysis": service._fem_analysis_summary(analysis)
         if analysis
         else None,

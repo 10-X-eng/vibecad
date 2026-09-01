@@ -432,7 +432,7 @@ def _inline_mesh(
 
 
 class FEMDomainAPI:
-    """Exact native linear-analysis graph, meshing, and CalculiX API."""
+    """Exact native FEM study-graph, meshing, and CalculiX API."""
 
     __slots__ = ()
 
@@ -477,7 +477,7 @@ class FEMDomainAPI:
         reduced_integration: bool = True,
         label: str = "",
     ) -> DomainValue:
-        """Define one native CalculiX solver object."""
+        """Define one native CalculiX solver object for one independent study."""
 
         return self._value(
             "solver",
@@ -660,7 +660,7 @@ class FEMDomainAPI:
         order: int = 1,
         label: str = "",
     ) -> DomainValue:
-        """Build one native FEM mesh from inline connectivity or worker-side Gmsh."""
+        """Build one native FEM mesh for one study from inline connectivity or worker-side Gmsh."""
 
         clean_method = _choice("mesh", "method", method, ("inline", "gmsh"))
         if type(order) is not int or order not in {1, 2}:
@@ -742,7 +742,7 @@ class FEMDomainAPI:
         *,
         label: str = "",
     ) -> DomainValue:
-        """Assemble one exact native FEM analysis graph."""
+        """Assemble one exact native FEM analysis graph; several may coexist independently."""
 
         return self._value(
             "analysis",
@@ -761,7 +761,7 @@ class FEMDomainAPI:
         execution: str,
         label: str = "",
     ) -> DomainValue:
-        """Validate a CalculiX input deck or execute CalculiX in the worker."""
+        """Create one result set for an analysis by validating or executing CalculiX in the worker."""
 
         return self._value(
             "solve",

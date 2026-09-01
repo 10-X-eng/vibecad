@@ -10,6 +10,7 @@ from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeSolverExecution import (
     capture_solver_execution_request,
     commit_solver_execution,
+    solver_resource_scope,
     validate_captured_solver_execution,
     verify_solver_execution,
 )
@@ -105,6 +106,7 @@ class NativeAnalyzeSolverExecutionRuntime:
                 finalize_message="Importing verified FEM results",
                 cleanup=cleanup,
                 changes_document=True,
+                resource_scope=solver_resource_scope(captured),
             )
         except NativeBackgroundError as exc:
             workspace.cleanup()

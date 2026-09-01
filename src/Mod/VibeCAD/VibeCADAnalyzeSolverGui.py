@@ -15,6 +15,7 @@ from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeSolverExecution import (
     capture_solver_execution_request,
     commit_solver_execution,
+    solver_resource_scope,
     validate_captured_solver_execution,
     verify_solver_execution,
 )
@@ -149,6 +150,7 @@ class _SolverRunUi:
             dispatch_to_document_thread=VibeCADGui._dispatch_to_document_thread,
             finalize_message=f"Importing verified {self.backend} results",
             cleanup=lambda _prepared: workspace.cleanup(),
+            resource_scope=solver_resource_scope(captured),
         )
         self.job_id = str(snapshot.job_id)
         _ACTIVE_RUNS[self.job_id] = self

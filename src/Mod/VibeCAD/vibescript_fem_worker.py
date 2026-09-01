@@ -1548,6 +1548,11 @@ def _solve_analysis(
     result_obj = None
     status = "input_validated"
     solver_executed = False
+    existing_result_names = {
+        str(getattr(obj, "Name", ""))
+        for obj in list(getattr(analysis, "Group", ()) or ())
+        if str(getattr(obj, "TypeId", "")) == "Fem::FemResultObjectPython"
+    }
     if execution == "calculix":
         ccx = shutil.which("ccx")
         if ccx is None:
@@ -1587,13 +1592,18 @@ def _solve_analysis(
             for obj in list(analysis.Group)
             if str(getattr(obj, "TypeId", "")) == "Fem::FemResultObjectPython"
         ]
-        if len(candidates) != 1:
+        new_candidates = [
+            obj
+            for obj in candidates
+            if str(getattr(obj, "Name", "")) not in existing_result_names
+        ]
+        if len(new_candidates) != 1:
             raise _fail(
-                f"CalculiX produced {len(candidates)} mechanical result objects; "
-                "this FEM contract requires exactly one.",
+                f"CalculiX produced {len(new_candidates)} new mechanical result "
+                "objects; this FEM contract requires exactly one per result set.",
                 stage="solver_result_readback",
             )
-        result_obj = candidates[0]
+        result_obj = new_candidates[0]
         status = "solved"
     if result_obj is None:
         result_obj = ObjectsFem.makeResultMechanical(document, f"FEMResult{index:03d}")
@@ -1651,7 +1661,7 @@ def validate_and_build_fem(
     expected_outputs: list[dict[str, str]],
     root: Path,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Build and validate one complete native FEM graph in the worker."""
+    """Build and validate independent native FEM study graphs in the worker."""
 
     expected_names = [str(item["name"]) for item in expected_outputs]
     if list(raw_result) != expected_names:
@@ -1685,11 +1695,10 @@ def validate_and_build_fem(
         keys[name] = key
         output_by_key[key] = (name, output_type)
         counts[output_type] += 1
-    exact_counts = {"analysis": 1, "solver": 1, "mesh": 1, "result": 1}
-    for output_type, expected_count in exact_counts.items():
-        if counts[output_type] != expected_count:
+    for output_type in ("analysis", "solver", "mesh", "result"):
+        if counts[output_type] < 1:
             raise _fail(
-                f"A FEM program must return exactly {expected_count} {output_type} "
+                f"A FEM program must return at least one {output_type} "
                 f"output; received {counts[output_type]}.",
                 stage="graph_membership",
             )
@@ -1754,112 +1763,202 @@ def validate_and_build_fem(
             },
         }
 
-    analysis_name = next(
-        name for name, definition in definitions.items() if definition["operation"] == "analysis"
-    )
-    analysis_definition = definitions[analysis_name]
     import ObjectsFem
 
-    analysis_obj = ObjectsFem.makeAnalysis(document, "FEMAnalysis")
-    solver_name, solver_record = _require_output(
-        output_by_key,
-        records,
-        analysis_definition["arguments"][0],
-        "solver",
-        context=f"result.{analysis_name}.solver",
-    )
-    material_names = []
-    material_records = []
-    for index, definition in enumerate(analysis_definition["arguments"][1]):
-        output_name, record = _require_output(
-            output_by_key,
-            records,
-            definition,
-            "material",
-            context=f"result.{analysis_name}.materials[{index}]",
-        )
-        material_names.append(output_name)
-        material_records.append(record)
-    load_case_names = []
-    load_case_records = []
-    constraint_records: dict[str, Mapping[str, Any]] = {}
-    for index, definition in enumerate(analysis_definition["arguments"][2]):
-        output_name, record = _require_output(
-            output_by_key,
-            records,
-            definition,
-            "load_case",
-            context=f"result.{analysis_name}.load_cases[{index}]",
-        )
-        load_case_names.append(output_name)
-        load_case_records.append(record)
-        for constraint_name in record["data"]["constraint_outputs"]:
-            constraint_records[constraint_name] = records[keys[constraint_name]]
-    mesh_name, mesh_record = _require_output(
-        output_by_key,
-        records,
-        analysis_definition["arguments"][3],
-        "mesh",
-        context=f"result.{analysis_name}.mesh",
-    )
-    for record in (
-        solver_record,
-        *material_records,
-        *constraint_records.values(),
-        *load_case_records,
-        mesh_record,
-    ):
-        analysis_obj.addObject(record["object"])
-    records[keys[analysis_name]] = {
-        "object": analysis_obj,
-        "data": {
-            "native_type": str(analysis_obj.TypeId),
-            "solver_output": solver_name,
-            "material_outputs": material_names,
-            "constraint_outputs": sorted(constraint_records),
-            "load_case_outputs": load_case_names,
-            "mesh_output": mesh_name,
-        },
-    }
-
-    solve_name = next(
-        name for name, definition in definitions.items() if definition["operation"] == "solve"
-    )
-    solve_definition = definitions[solve_name]
-    linked_analysis_name, linked_analysis = _require_output(
-        output_by_key,
-        records,
-        solve_definition["arguments"][0],
-        "analysis",
-        context=f"result.{solve_name}.analysis",
-    )
-    if linked_analysis_name != analysis_name:
+    analysis_names = [
+        name
+        for name, definition in definitions.items()
+        if definition["operation"] == "analysis"
+    ]
+    solve_names = [
+        name
+        for name, definition in definitions.items()
+        if definition["operation"] == "solve"
+    ]
+    if not analysis_names or not solve_names:
         raise _fail(
-            f"Result {solve_name!r} does not reference the returned analysis.",
+            "A FEM program must return at least one analysis and result graph.",
             stage="graph_membership",
         )
-    mesh_mapping = _validate_constraint_mesh_coverage(
-        mesh_record["object"], list(constraint_records.values())
-    )
-    material_mapping = _validate_material_mesh_coverage(
-        mesh_record["object"],
-        list(zip(material_names, material_records)),
-    )
-    records[keys[analysis_name]]["data"]["material_mesh_mapping"] = material_mapping
-    result_record = _solve_analysis(
-        document,
-        linked_analysis["object"],
-        solver_record["object"],
-        mesh_record["object"],
-        solve_definition,
-        expected_outputs.index(next(item for item in expected_outputs if item["name"] == solve_name)),
-        root,
-    )
-    result_record["data"]["mesh_constraint_mapping"] = mesh_mapping
-    result_record["data"]["material_mesh_mapping"] = material_mapping
-    result_record["data"]["analysis_output"] = analysis_name
-    result_record["data"]["mesh_output"] = mesh_name
-    records[keys[solve_name]] = result_record
+
+    claimed_resources: dict[str, str] = {}
+    claimed_constraints: dict[str, str] = {}
+
+    def claim_resource(output_name: str, analysis_name: str, *, kind: str) -> None:
+        previous = claimed_resources.get(output_name)
+        if previous is not None:
+            raise _fail(
+                f"{kind.title()} output {output_name!r} belongs to both "
+                f"{previous!r} and {analysis_name!r}.",
+                stage="graph_membership",
+                output=output_name,
+            )
+        claimed_resources[output_name] = analysis_name
+
+    analysis_contexts: dict[str, dict[str, Any]] = {}
+    for analysis_index, analysis_name in enumerate(analysis_names):
+        analysis_definition = definitions[analysis_name]
+        analysis_object_name = (
+            "FEMAnalysis"
+            if analysis_index == 0
+            else f"FEMAnalysis{analysis_index:03d}"
+        )
+        analysis_obj = ObjectsFem.makeAnalysis(document, analysis_object_name)
+        solver_name, solver_record = _require_output(
+            output_by_key,
+            records,
+            analysis_definition["arguments"][0],
+            "solver",
+            context=f"result.{analysis_name}.solver",
+        )
+        claim_resource(solver_name, analysis_name, kind="solver")
+        material_names = []
+        material_records = []
+        for member_index, member_definition in enumerate(
+            analysis_definition["arguments"][1]
+        ):
+            output_name, record = _require_output(
+                output_by_key,
+                records,
+                member_definition,
+                "material",
+                context=f"result.{analysis_name}.materials[{member_index}]",
+            )
+            claim_resource(output_name, analysis_name, kind="material")
+            material_names.append(output_name)
+            material_records.append(record)
+        load_case_names = []
+        load_case_records = []
+        constraint_records: dict[str, Mapping[str, Any]] = {}
+        for member_index, member_definition in enumerate(
+            analysis_definition["arguments"][2]
+        ):
+            output_name, record = _require_output(
+                output_by_key,
+                records,
+                member_definition,
+                "load_case",
+                context=f"result.{analysis_name}.load_cases[{member_index}]",
+            )
+            claim_resource(output_name, analysis_name, kind="load case")
+            load_case_names.append(output_name)
+            load_case_records.append(record)
+            for constraint_name in record["data"]["constraint_outputs"]:
+                constraint_owner = claimed_constraints.get(constraint_name)
+                if constraint_owner not in {None, analysis_name}:
+                    raise _fail(
+                        f"Constraint output {constraint_name!r} belongs to both "
+                        f"{constraint_owner!r} and {analysis_name!r}.",
+                        stage="graph_membership",
+                        output=constraint_name,
+                    )
+                claimed_constraints[constraint_name] = analysis_name
+                constraint_records[constraint_name] = records[keys[constraint_name]]
+        mesh_name, mesh_record = _require_output(
+            output_by_key,
+            records,
+            analysis_definition["arguments"][3],
+            "mesh",
+            context=f"result.{analysis_name}.mesh",
+        )
+        claim_resource(mesh_name, analysis_name, kind="mesh")
+        for record in (
+            solver_record,
+            *material_records,
+            *constraint_records.values(),
+            *load_case_records,
+            mesh_record,
+        ):
+            analysis_obj.addObject(record["object"])
+        analysis_record = {
+            "object": analysis_obj,
+            "data": {
+                "native_type": str(analysis_obj.TypeId),
+                "solver_output": solver_name,
+                "material_outputs": material_names,
+                "constraint_outputs": sorted(constraint_records),
+                "load_case_outputs": load_case_names,
+                "mesh_output": mesh_name,
+            },
+        }
+        records[keys[analysis_name]] = analysis_record
+        analysis_contexts[analysis_name] = {
+            "analysis_definition": analysis_definition,
+            "analysis_record": analysis_record,
+            "solver_record": solver_record,
+            "mesh_record": mesh_record,
+            "material_names": material_names,
+            "material_records": material_records,
+            "constraint_records": constraint_records,
+            "mesh_name": mesh_name,
+        }
+
+    result_names_by_analysis: dict[str, list[str]] = {
+        name: [] for name in analysis_names
+    }
+    solver_executed = False
+    for solve_name in solve_names:
+        solve_definition = definitions[solve_name]
+        linked_analysis_name, linked_analysis = _require_output(
+            output_by_key,
+            records,
+            solve_definition["arguments"][0],
+            "analysis",
+            context=f"result.{solve_name}.analysis",
+        )
+        context = analysis_contexts.get(linked_analysis_name)
+        if context is None:
+            raise _fail(
+                f"Result {solve_name!r} references an unavailable analysis.",
+                stage="graph_membership",
+                output=solve_name,
+            )
+        mesh_mapping = _validate_constraint_mesh_coverage(
+            context["mesh_record"]["object"],
+            list(context["constraint_records"].values()),
+        )
+        material_mapping = _validate_material_mesh_coverage(
+            context["mesh_record"]["object"],
+            list(
+                zip(
+                    context["material_names"],
+                    context["material_records"],
+                )
+            ),
+        )
+        context["analysis_record"]["data"]["material_mesh_mapping"] = material_mapping
+        result_record = _solve_analysis(
+            document,
+            linked_analysis["object"],
+            context["solver_record"]["object"],
+            context["mesh_record"]["object"],
+            solve_definition,
+            expected_outputs.index(
+                next(item for item in expected_outputs if item["name"] == solve_name)
+            ),
+            root,
+        )
+        result_record["data"]["mesh_constraint_mapping"] = mesh_mapping
+        result_record["data"]["material_mesh_mapping"] = material_mapping
+        result_record["data"]["analysis_output"] = linked_analysis_name
+        result_record["data"]["mesh_output"] = context["mesh_name"]
+        records[keys[solve_name]] = result_record
+        result_names_by_analysis[linked_analysis_name].append(solve_name)
+        solver_executed = solver_executed or bool(
+            result_record["data"]["solver_executed"]
+        )
+
+    missing_results = [
+        analysis_name
+        for analysis_name, result_names in result_names_by_analysis.items()
+        if not result_names
+    ]
+    if missing_results:
+        raise _fail(
+            "Every FEM analysis must own at least one result set.",
+            stage="graph_membership",
+            analyses=missing_results,
+        )
 
     outputs = []
     summaries = []
@@ -1900,9 +1999,11 @@ def validate_and_build_fem(
         "schema": VALIDATION_SCHEMA,
         "output_count": len(outputs),
         "outputs": summaries,
-        "analysis_output": analysis_name,
-        "result_output": solve_name,
-        "solver_executed": bool(result_record["data"]["solver_executed"]),
+        "analysis_outputs": analysis_names,
+        "result_outputs": solve_names,
+        "analysis_output": analysis_names[0] if len(analysis_names) == 1 else "",
+        "result_output": solve_names[0] if len(solve_names) == 1 else "",
+        "solver_executed": solver_executed,
     }
     _encoded(validation)
     return outputs, validation

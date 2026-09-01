@@ -413,6 +413,17 @@ def capture_solver_execution_request(
     )
 
 
+def solver_resource_scope(captured: CapturedSolverExecutionRequest) -> str:
+    """Return the exact study scope that owns one captured solver request."""
+
+    if not isinstance(captured, CapturedSolverExecutionRequest):
+        raise TypeError("captured must be a CapturedSolverExecutionRequest")
+    analysis_name = str(solver_state(captured.target.solver).get("analysis") or "")
+    if not analysis_name:
+        raise NativeAnalyzeError("The captured FEM solver has no exact study owner.")
+    return f"analyze:{analysis_name}"
+
+
 def validate_captured_solver_execution(
     document: Any,
     captured: CapturedSolverExecutionRequest,

@@ -331,9 +331,6 @@ class StudySetupWidget(QtWidgets.QWidget):
             return
 
         try:
-            import FemGui
-
-            FemGui.setActiveAnalysis(analysis)
             self.label_edit.setText(str(analysis.Label))
             self._intent = study_intent_state(analysis)
             self._inventory = study_inventory(analysis)
@@ -562,12 +559,9 @@ class StudySetupWidget(QtWidgets.QWidget):
                 physics=physics,
                 regime=str(self.regime_combo.currentData()),
             )
-            import FemGui
-
-            FemGui.setActiveAnalysis(analysis)
             self._analysis_name = str(analysis.Name)
             self.refresh()
-            App.Console.PrintMessage(f"FEM study {analysis.Label} is active.\n")
+            App.Console.PrintMessage(f"FEM study {analysis.Label} was updated.\n")
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
                 Gui.getMainWindow(),

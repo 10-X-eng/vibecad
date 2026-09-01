@@ -12912,6 +12912,8 @@ def _validate_fem_execution(
         "schema",
         "output_count",
         "outputs",
+        "analysis_outputs",
+        "result_outputs",
         "analysis_output",
         "result_output",
         "solver_executed",
@@ -12929,6 +12931,31 @@ def _validate_fem_execution(
     summaries = validation.get("outputs")
     if not isinstance(summaries, list) or len(summaries) != len(outputs):
         raise ValueError("The FEM worker validation output list is inconsistent.")
+    analysis_outputs = validation.get("analysis_outputs")
+    result_outputs = validation.get("result_outputs")
+    output_names_by_type = {
+        output_type: [
+            str(item["name"]) for item in outputs if str(item["type"]) == output_type
+        ]
+        for output_type in ("analysis", "result")
+    }
+    if (
+        not isinstance(analysis_outputs, list)
+        or not analysis_outputs
+        or not all(isinstance(name, str) for name in analysis_outputs)
+        or len(analysis_outputs) != len(set(analysis_outputs))
+        or analysis_outputs != output_names_by_type["analysis"]
+        or not isinstance(result_outputs, list)
+        or not result_outputs
+        or not all(isinstance(name, str) for name in result_outputs)
+        or len(result_outputs) != len(set(result_outputs))
+        or result_outputs != output_names_by_type["result"]
+    ):
+        raise ValueError("The FEM worker study output lists are inconsistent.")
+    if not isinstance(validation.get("analysis_output"), str) or not isinstance(
+        validation.get("result_output"), str
+    ):
+        raise ValueError("The FEM worker legacy output aliases are malformed.")
     if type(validation.get("solver_executed")) is not bool:
         raise ValueError("The FEM worker solver-executed verdict is malformed.")
 
@@ -13189,7 +13216,7 @@ def _validate_fem_execution(
     expected_summaries = []
     analysis_names = []
     result_names = []
-    solver_executed = None
+    solver_executed = False
     for item in outputs:
         name = str(item["name"])
         output_type = str(item["type"])
@@ -13570,7 +13597,7 @@ def _validate_fem_execution(
                 raise ValueError(
                     f"FEM result output {name!r} has an inconsistent verdict."
                 )
-            solver_executed = bool(data["solver_executed"])
+            solver_executed = solver_executed or bool(data["solver_executed"])
             deck = data.get("input_deck")
             if not isinstance(deck, dict) or set(deck) != {
                 "artifact_kind",
@@ -13714,7 +13741,7 @@ def _validate_fem_execution(
                     next(
                         item["fem_data"]["constraint_outputs"]
                         for item in outputs
-                        if item["type"] == "analysis"
+                        if item["name"] == expected_analysis
                     )
                 )
             ):
@@ -13791,14 +13818,41 @@ def _validate_fem_execution(
         )
     if summaries != expected_summaries:
         raise ValueError("The FEM worker validation output order is inconsistent.")
+    if analysis_names != analysis_outputs or result_names != result_outputs:
+        raise ValueError("The FEM worker study output order is inconsistent.")
     if (
-        len(analysis_names) != 1
-        or len(result_names) != 1
-        or validation["analysis_output"] != analysis_names[0]
-        or validation["result_output"] != result_names[0]
+        validation["analysis_output"]
+        != (analysis_names[0] if len(analysis_names) == 1 else "")
+        or validation["result_output"]
+        != (result_names[0] if len(result_names) == 1 else "")
         or validation["solver_executed"] != solver_executed
     ):
         raise ValueError("The FEM worker graph summary is inconsistent.")
+    owned_resources: dict[str, str] = {}
+    for analysis_name in analysis_names:
+        analysis_data = next(
+            item["fem_data"] for item in outputs if item["name"] == analysis_name
+        )
+        for field in (
+            "solver_output",
+            "material_outputs",
+            "constraint_outputs",
+            "load_case_outputs",
+            "mesh_output",
+        ):
+            values = (
+                [analysis_data[field]]
+                if field in {"solver_output", "mesh_output"}
+                else list(analysis_data[field])
+            )
+            for resource_name in values:
+                previous = owned_resources.get(str(resource_name))
+                if previous is not None and previous != analysis_name:
+                    raise ValueError(
+                        f"FEM resource {resource_name!r} is shared by independent "
+                        f"analyses {previous!r} and {analysis_name!r}."
+                    )
+                owned_resources[str(resource_name)] = analysis_name
     return dict(validation)
 
 
@@ -22034,8 +22088,9 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                 },
                 "operating_scope": {
                     "production_scope": (
-                        "One native CalculiX mechanical graph over authenticated document "
-                        "geometry. The production numerical path is a static 3D continuum "
+                        "One or more independent native CalculiX mechanical study graphs may "
+                        "share authenticated document geometry without sharing their solver, "
+                        "mesh, constraints, or results. Each graph is a static 3D continuum "
                         "solid analysis with isotropic materials and fixed, resultant-force, "
                         "or pressure boundary conditions."
                     ),
@@ -22047,7 +22102,7 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                     ),
                 },
                 "operation_selection": {
-                    "solver": "Create once for one analysis and configure native CalculiX settings.",
+                    "solver": "Create one solver for each independent analysis and configure native CalculiX settings.",
                     "material": (
                         "Create one global material, or multiple materials with disjoint geometric "
                         "assignments and at most one unassigned remainder material."
@@ -22061,15 +22116,17 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                         "independent solver step or alternative scenario."
                     ),
                     "mesh": (
-                        "Choose one: inline for already-known bounded connectivity, or gmsh to "
-                        "derive a mesh from authenticated shape geometry in the worker."
+                        "Create one mesh per analysis: inline for already-known bounded connectivity, "
+                        "or Gmsh to derive a mesh from authenticated shape geometry in the worker."
                     ),
                     "analysis": (
-                        "Assemble the exact returned solver, materials, load cases, and mesh once."
+                        "Assemble each independent analysis from its exact returned solver, materials, "
+                        "load cases, and mesh."
                     ),
                     "solve": (
-                        "Choose validate_only to generate and authenticate the CalculiX input deck "
-                        "without solving, or calculix for a real external static solve."
+                        "Create one or more result sets per analysis. Choose validate_only to generate "
+                        "and authenticate the CalculiX input deck without solving, or calculix for a "
+                        "real external static solve."
                     ),
                 },
                 "canonical_operations": {
@@ -22090,10 +22147,10 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                         "One native FEM mesh selected by method: bounded inline "
                         "connectivity or worker-side Gmsh."
                     ),
-                    "analysis": "One exact returned solver/material/load-case/mesh graph.",
+                    "analysis": "One exact returned solver/material/load-case/mesh graph per study.",
                     "solve": (
-                        "One native result selected by execution: authenticated input-deck "
-                        "validation or worker-side CalculiX execution."
+                        "One native result set per solve call, selected by execution: authenticated "
+                        "input-deck validation or worker-side CalculiX execution."
                     ),
                 },
                 "redundancy_contract": (
@@ -22104,10 +22161,11 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                 ),
                 "composition_contract": {
                     "exact_values": (
-                        "analysis consumes the exact returned solver/material/load_case/mesh "
+                        "Each analysis consumes the exact returned solver/material/load_case/mesh "
                         "values; load_case consumes exact returned constraints; solve consumes "
                         "the exact returned analysis. Every consumed value must also be returned "
-                        "under its own declared stable output."
+                        "under its own declared stable output. Independent analyses may share input "
+                        "geometry, but never a mutable study resource."
                     ),
                     "result": (
                         "result keys, output types, and insertion order must exactly equal "
@@ -22118,6 +22176,11 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                         "Use one load_case containing all simultaneously active constraints for "
                         "the normal path. Multiple load_case values are unioned into the same "
                         "analysis; they do not run separate cases."
+                    ),
+                    "independent_studies": (
+                        "Return separate solver, material, constraint, load_case, mesh, analysis, "
+                        "and solve values for each study. A result links to exactly one analysis, "
+                        "and each analysis owns at least one result set."
                     ),
                 },
                 "semantic_reference_contract": {
@@ -22227,7 +22290,8 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                     "calculix": (
                         "Requires an isolated-worker ccx executable, waits only in that worker, "
                         "requires exit code zero, imports exactly one finite bounded mechanical "
-                        "result, and reports status=solved and solver_executed=true."
+                        "result per result set, and reports status=solved and "
+                        "solver_executed=true."
                     ),
                     "claim_rule": (
                         "Never describe a model as solved from input_validated, a non-empty deck, "
@@ -22295,9 +22359,10 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                         "references and semantic regions from domain context."
                     ),
                     "graph": (
-                        "Verify native solver settings, exact analysis membership, one-scenario load "
-                        "semantics, material properties/regions, constraint magnitudes/directions/"
-                        "selections, mesh topology/order/source, and exact stable links."
+                        "Verify every native solver and analysis membership independently, one-scenario "
+                        "load semantics inside each study, material properties/regions, constraint "
+                        "magnitudes/directions/selections, mesh topology/order/source, result ownership, "
+                        "and exact stable links."
                     ),
                     "evidence": (
                         "Verify constraint_mesh_mapping, material_mesh_mapping, authenticated input "

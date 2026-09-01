@@ -41,6 +41,30 @@ def test_solver_execution_schema_is_one_sharp_background_operation() -> None:
     assert set(variant.parameters["properties"]) == {"target", "timeout_seconds"}
 
 
+def test_solver_resource_scope_is_derived_from_exact_analysis(monkeypatch) -> None:
+    import VibeCADNativeAnalyzeSolverExecution as execution
+
+    target = execution.PreparedSolverTarget(
+        solver=SimpleNamespace(Name="Solver"),
+        kind="calculix",
+        expected_state_sha256="a" * 64,
+    )
+    captured = execution.CapturedSolverExecutionRequest(
+        target,
+        (),
+        3600,
+        False,
+        (),
+    )
+    monkeypatch.setattr(
+        execution,
+        "solver_state",
+        lambda _solver: {"analysis": "StudyA"},
+    )
+
+    assert execution.solver_resource_scope(captured) == "analyze:StudyA"
+
+
 def test_process_sequence_is_exact_bounded_and_shell_free(tmp_path: Path) -> None:
     first = _program(
         tmp_path / "first",

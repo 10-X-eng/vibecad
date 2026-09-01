@@ -276,11 +276,29 @@ def _run_status(
             "terminal": True,
             "solver_result_count": result_count,
         }
+    if isinstance(background_job, (tuple, list)):
+        jobs = [
+            _run_status(document, solvers, job)
+            for job in background_job
+        ]
+        if not jobs:
+            return {
+                "phase": "idle",
+                "terminal": True,
+                "solver_result_count": result_count,
+            }
+        return {
+            "phase": "completed" if all(job["terminal"] for job in jobs) else "running",
+            "terminal": all(job["terminal"] for job in jobs),
+            "background_jobs": jobs,
+            "solver_result_count": result_count,
+        }
     if str(getattr(background_job, "document_uid", "") or "") != str(document.Uid):
         raise RuntimeError("Analyze background status belongs to another document.")
     result = {
         "job_id": str(background_job.job_id),
         "capability": str(background_job.capability_name),
+        "resource_scope": str(getattr(background_job, "resource_scope", "") or ""),
         "phase": str(background_job.phase),
         "progress_percent": int(background_job.progress_percent),
         "progress_message": str(background_job.progress_message)[:160],
@@ -659,14 +677,21 @@ _COLLECTION_LIMITS = {
 def _background_job_payload(
     document_uid: str,
     background_job: Any | None,
-) -> dict[str, Any] | None:
+) -> dict[str, Any] | list[dict[str, Any]] | None:
     if background_job is None:
         return None
+    if isinstance(background_job, (tuple, list)):
+        payloads = [
+            _background_job_payload(document_uid, job)
+            for job in background_job
+        ]
+        return [payload for payload in payloads if isinstance(payload, dict)]
     if str(getattr(background_job, "document_uid", "") or "") != document_uid:
         raise RuntimeError("Analyze background status belongs to another document.")
     result: dict[str, Any] = {
         "job_id": str(background_job.job_id),
         "capability": str(background_job.capability_name),
+        "resource_scope": str(getattr(background_job, "resource_scope", "") or ""),
         "phase": str(background_job.phase),
         "progress_percent": int(background_job.progress_percent),
         "progress_message": str(background_job.progress_message)[:160],
@@ -1260,11 +1285,17 @@ def finish_analyze_snapshot_capture(
         int(state.get("result_count", 0) or 0) for state in solver_states.values()
     )
     background_job = request.get("background_job")
-    run_status = (
-        dict(background_job)
-        if isinstance(background_job, Mapping)
-        else {"phase": "idle", "terminal": True}
-    )
+    if isinstance(background_job, Mapping):
+        run_status = dict(background_job)
+    elif isinstance(background_job, list):
+        terminal = all(bool(job.get("terminal")) for job in background_job)
+        run_status = {
+            "phase": "completed" if terminal else "running",
+            "terminal": terminal,
+            "background_jobs": [dict(job) for job in background_job],
+        }
+    else:
+        run_status = {"phase": "idle", "terminal": True}
     run_status["solver_result_count"] = result_count
     analysis_count = len(expected_analyses)
     return {

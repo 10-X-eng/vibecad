@@ -85,6 +85,32 @@ EXPECTED_OUTPUTS = [
     {"name": "Mesh", "type": "mesh"},
     {"name": "Result", "type": "result"},
 ]
+MULTI_STUDY_EXPECTED_OUTPUTS = [
+    {"name": "StudyASolver", "type": "solver"},
+    {"name": "StudyAMaterial", "type": "material"},
+    {"name": "StudyAFixed", "type": "constraint"},
+    {"name": "StudyAForce", "type": "constraint"},
+    {"name": "StudyALoadCase", "type": "load_case"},
+    {"name": "StudyAMesh", "type": "mesh"},
+    {"name": "StudyAAnalysis", "type": "analysis"},
+    {"name": "StudyAResult", "type": "result"},
+    {"name": "StudyBSolver", "type": "solver"},
+    {"name": "StudyBMaterial", "type": "material"},
+    {"name": "StudyBFixed", "type": "constraint"},
+    {"name": "StudyBForce", "type": "constraint"},
+    {"name": "StudyBLoadCase", "type": "load_case"},
+    {"name": "StudyBMesh", "type": "mesh"},
+    {"name": "StudyBAnalysis", "type": "analysis"},
+    {"name": "StudyBResult", "type": "result"},
+    {"name": "StudyCSolver", "type": "solver"},
+    {"name": "StudyCMaterial", "type": "material"},
+    {"name": "StudyCFixed", "type": "constraint"},
+    {"name": "StudyCForce", "type": "constraint"},
+    {"name": "StudyCLoadCase", "type": "load_case"},
+    {"name": "StudyCMesh", "type": "mesh"},
+    {"name": "StudyCAnalysis", "type": "analysis"},
+    {"name": "StudyCResult", "type": "result"},
+]
 
 
 class _Service:
@@ -344,6 +370,7 @@ def _creation_arguments(
     *,
     program_name: str,
     source: str,
+    expected_outputs: list[dict[str, str]] = EXPECTED_OUTPUTS,
 ) -> dict[str, object]:
     return {
         "program_name": program_name,
@@ -356,8 +383,157 @@ def _creation_arguments(
             },
             "force": 1000.0,
         },
-        "expected_outputs": EXPECTED_OUTPUTS,
+        "expected_outputs": expected_outputs,
     }
+
+
+def _multi_study_program_source() -> str:
+    mesh = (
+        "nodes=[[0,0,0],[10,0,0],[10,8,0],[0,8,0],"
+        "[0,0,6],[10,0,6],[10,8,6],[0,8,6],"
+        "[20,0,0],[30,0,0],[30,8,0],[20,8,0],"
+        "[20,0,6],[30,0,6],[30,8,6],[20,8,6]], "
+        "elements=[[0,1,2,3,4,5,6,7],[8,9,10,11,12,13,14,15]], "
+        "element_type='hexa8', order=1"
+    )
+    return (
+        "solver_a = api.solver(label='Study A solver')\n"
+        "material_a = api.material(name='Study A steel', youngs_modulus_mpa=210000, "
+        "poisson_ratio=0.3, density_kg_m3=7850, label='Study A material')\n"
+        "fixed_a = api.constraint('fixed', inputs['solid'], "
+        "{'type':'subelement','name':'Face1'}, label='Study A fixed')\n"
+        "force_a = api.constraint('force', inputs['solid'], "
+        "{'type':'subelement','name':'Face2'}, magnitude=inputs['force'], "
+        "direction=[1,0,0], label='Study A force')\n"
+        "case_a = api.load_case([fixed_a, force_a], label='Study A load case')\n"
+        f"mesh_a = api.mesh(inputs['solid'], method='inline', {mesh}, "
+        "label='Study A mesh')\n"
+        "analysis_a = api.analysis(solver_a, [material_a], [case_a], mesh_a, "
+        "label='Study A')\n"
+        "result_a = api.solve(analysis_a, execution='validate_only', "
+        "label='Study A result')\n"
+        "solver_b = api.solver(reduced_integration=False, label='Study B solver')\n"
+        "material_b = api.material(name='Study B aluminium', youngs_modulus_mpa=69000, "
+        "poisson_ratio=0.33, density_kg_m3=2700, label='Study B material')\n"
+        "fixed_b = api.constraint('fixed', inputs['solid'], "
+        "{'type':'subelement','name':'Face1'}, label='Study B fixed')\n"
+        "force_b = api.constraint('force', inputs['solid'], "
+        "{'type':'subelement','name':'Face2'}, magnitude=inputs['force'] * 0.5, "
+        "direction=[0,1,0], label='Study B force')\n"
+        "case_b = api.load_case([fixed_b, force_b], label='Study B load case')\n"
+        f"mesh_b = api.mesh(inputs['solid'], method='inline', {mesh}, "
+        "label='Study B mesh')\n"
+        "analysis_b = api.analysis(solver_b, [material_b], [case_b], mesh_b, "
+        "label='Study B')\n"
+        "result_b = api.solve(analysis_b, execution='validate_only', "
+        "label='Study B result')\n"
+        "solver_c = api.solver(reduced_integration=True, label='Study C solver')\n"
+        "material_c = api.material(name='Study C titanium', youngs_modulus_mpa=116000, "
+        "poisson_ratio=0.34, density_kg_m3=4500, label='Study C material')\n"
+        "fixed_c = api.constraint('fixed', inputs['solid'], "
+        "{'type':'subelement','name':'Face1'}, label='Study C fixed')\n"
+        "force_c = api.constraint('force', inputs['solid'], "
+        "{'type':'subelement','name':'Face2'}, magnitude=inputs['force'] * 0.25, "
+        "direction=[0,0,1], label='Study C force')\n"
+        "case_c = api.load_case([fixed_c, force_c], label='Study C load case')\n"
+        f"mesh_c = api.mesh(inputs['solid'], method='inline', {mesh}, "
+        "label='Study C mesh')\n"
+        "analysis_c = api.analysis(solver_c, [material_c], [case_c], mesh_c, "
+        "label='Study C')\n"
+        "result_c = api.solve(analysis_c, execution='validate_only', "
+        "label='Study C result')\n"
+        "result = {'StudyASolver': solver_a, 'StudyAMaterial': material_a, "
+        "'StudyAFixed': fixed_a, 'StudyAForce': force_a, "
+        "'StudyALoadCase': case_a, 'StudyAMesh': mesh_a, "
+        "'StudyAAnalysis': analysis_a, 'StudyAResult': result_a, "
+        "'StudyBSolver': solver_b, 'StudyBMaterial': material_b, "
+        "'StudyBFixed': fixed_b, 'StudyBForce': force_b, "
+        "'StudyBLoadCase': case_b, 'StudyBMesh': mesh_b, "
+        "'StudyBAnalysis': analysis_b, 'StudyBResult': result_b, "
+        "'StudyCSolver': solver_c, 'StudyCMaterial': material_c, "
+        "'StudyCFixed': fixed_c, 'StudyCForce': force_c, "
+        "'StudyCLoadCase': case_c, 'StudyCMesh': mesh_c, "
+        "'StudyCAnalysis': analysis_c, 'StudyCResult': result_c}\n"
+    )
+
+
+def _assert_multi_study_outputs(document, accepted: dict[str, object]) -> None:
+    outputs = _outputs(document, accepted)
+    assert set(outputs) == {
+        item["name"] for item in MULTI_STUDY_EXPECTED_OUTPUTS
+    }
+    analysis_a = outputs["StudyAAnalysis"]
+    analysis_b = outputs["StudyBAnalysis"]
+    analysis_c = outputs["StudyCAnalysis"]
+    assert len({analysis_a, analysis_b, analysis_c}) == 3
+    for prefix, analysis in (("A", analysis_a), ("B", analysis_b), ("C", analysis_c)):
+        assert set(analysis.Group) == {
+            outputs[name]
+            for name in (
+                f"Study{prefix}Solver",
+                f"Study{prefix}Material",
+                f"Study{prefix}Fixed",
+                f"Study{prefix}Force",
+                f"Study{prefix}LoadCase",
+                f"Study{prefix}Mesh",
+                f"Study{prefix}Result",
+            )
+        }
+    assert set(analysis_a.Group).isdisjoint(set(analysis_b.Group))
+    assert set(analysis_a.Group).isdisjoint(set(analysis_c.Group))
+    assert set(analysis_b.Group).isdisjoint(set(analysis_c.Group))
+    assert outputs["StudyAResult"].VibeCADAnalysisObjectName == analysis_a.Name
+    assert outputs["StudyBResult"].VibeCADAnalysisObjectName == analysis_b.Name
+    assert outputs["StudyCResult"].VibeCADAnalysisObjectName == analysis_c.Name
+
+
+def _exercise_multiple_independent_studies(
+    root: Path,
+    source_document,
+    source_object,
+    service: _Service,
+) -> None:
+    App.setActiveDocument(source_document.Name)
+    captured = _captured(
+        root,
+        source_document,
+        operation="create_program",
+        arguments=_creation_arguments(
+            source_document,
+            source_object,
+            program_name="Independent FEM studies fixture",
+            source=_multi_study_program_source(),
+            expected_outputs=MULTI_STUDY_EXPECTED_OUTPUTS,
+        ),
+    )
+    prepared, execution, validated = _prepare_execute_validate(captured, service)
+    assert execution.get("ok") is True, execution
+    assert validated is not None
+    assert execution["fem_validation"]["analysis_outputs"] == [
+        "StudyAAnalysis",
+        "StudyBAnalysis",
+        "StudyCAnalysis",
+    ]
+    assert execution["fem_validation"]["result_outputs"] == [
+        "StudyAResult",
+        "StudyBResult",
+        "StudyCResult",
+    ]
+    retain_candidate(prepared, status="validated")
+    publication = publish_candidate(service, prepared, validated)
+    accepted = accept_candidate(prepared, publication)
+    _assert_multi_study_outputs(source_document, accepted)
+    save_path = root / "fem-multiple-independent-studies.FCStd"
+    source_document.saveAs(str(save_path))
+    App.closeDocument(source_document.Name)
+    reopened = App.openDocument(str(save_path))
+    assert reopened is not None
+    try:
+        _assert_multi_study_outputs(reopened, accepted)
+        reopened.recompute()
+        _assert_multi_study_outputs(reopened, accepted)
+    finally:
+        App.closeDocument(reopened.Name)
 
 
 def _program_source(
@@ -673,6 +849,7 @@ def _exercise_missing_external_capabilities(
     source_object,
     service: _Service,
 ) -> None:
+    App.setActiveDocument(document.Name)
     empty_path = root / "no-external-fem-tools"
     empty_path.mkdir()
     cases = (
@@ -691,7 +868,19 @@ def _exercise_missing_external_capabilities(
                 source=program_source,
             ),
         )
-        with patch.dict(os.environ, {"PATH": str(empty_path)}, clear=False):
+        # Keep the Pixi runtime directories available so the isolated worker can
+        # load Python and FreeCAD DLLs on Windows, while preventing executable
+        # discovery for the capability under test.
+        with patch.dict(
+            os.environ,
+            {
+                "PATH": os.pathsep.join(
+                    (str(empty_path), os.environ.get("PATH", ""))
+                ),
+                "PATHEXT": ".VIBE",
+            },
+            clear=False,
+        ):
             prepared, execution, validated = _prepare_execute_validate(
                 captured, service
             )
@@ -723,6 +912,27 @@ def _run_integration() -> int:
         service = _Service(root)
         document.commitTransaction()
         _exercise_source_api(str(document.Uid))
+        multi_document = App.newDocument(
+            "VibeCADFEMMultipleStudies",
+            "VibeCAD FEM multiple independent studies",
+            True,
+            True,
+        )
+        multi_source = multi_document.addObject("Part::Feature", "SourceSolid")
+        multi_source.Label = "Shared geometry for independent studies"
+        multi_source.Shape = Part.makeCompound(
+            [
+                Part.makeBox(10, 8, 6),
+                Part.makeBox(10, 8, 6, App.Vector(20, 0, 0)),
+            ]
+        )
+        multi_document.commitTransaction()
+        _exercise_multiple_independent_studies(
+            root,
+            multi_document,
+            multi_source,
+            _Service(root),
+        )
         _exercise_missing_external_capabilities(
             root,
             document,
@@ -1147,6 +1357,7 @@ def _run_integration() -> int:
                 "explicit_deletion_rollback": True,
                 "save_reopen": True,
                 "external_reference_guard": True,
+                "multiple_independent_studies": True,
             },
             sort_keys=True,
             separators=(",", ":"),

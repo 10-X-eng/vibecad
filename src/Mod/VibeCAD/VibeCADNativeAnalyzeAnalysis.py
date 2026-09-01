@@ -144,9 +144,6 @@ def verify_analysis_create(
         or not bool(solver.isValid())
     ):
         raise NativeAnalyzeError("The default FEM solver failed its exact postcondition.")
-    import FemGui
-
-    FemGui.setActiveAnalysis(analysis)
     current_analysis = analysis_state(analysis)
     result = {
         "created_analysis": current_analysis,

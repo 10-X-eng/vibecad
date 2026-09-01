@@ -18,7 +18,10 @@ from VibeCADNativeAnalyzeContext import (
     capture_responsive_analyze_snapshot,
 )
 from VibeCADNativeAnalyzeGeometrySources import active_analyze_geometry_sources
-from VibeCADNativeAnalyzeSnapshot import begin_analyze_snapshot_capture
+from VibeCADNativeAnalyzeSnapshot import (
+    begin_analyze_snapshot_capture,
+    finish_analyze_snapshot_capture,
+)
 
 
 def _request(revision: int = 7, count: int = 10) -> dict:
@@ -93,6 +96,36 @@ def test_analyze_capture_schedules_only_effectively_available_objects(
 
     assert request["object_names"] == ["VisibleBody", "Analysis"]
     assert request["analysis_names"] == ["Analysis"]
+
+
+def test_analyze_snapshot_preserves_independent_background_job_scopes() -> None:
+    snapshot = finish_analyze_snapshot_capture(
+        {
+            "analysis_names": [],
+            "background_job": [
+                {
+                    "job_id": "job-a",
+                    "resource_scope": "analyze:StudyA",
+                    "phase": "running",
+                    "terminal": False,
+                },
+                {
+                    "job_id": "job-b",
+                    "resource_scope": "analyze:StudyB",
+                    "phase": "completed",
+                    "terminal": True,
+                },
+            ],
+        },
+        [{"analyses": [], "solver_states": {}}],
+        {},
+    )
+
+    assert snapshot["run_status"]["phase"] == "running"
+    assert snapshot["run_status"]["terminal"] is False
+    assert [
+        job["resource_scope"] for job in snapshot["run_status"]["background_jobs"]
+    ] == ["analyze:StudyA", "analyze:StudyB"]
 
 
 def test_context_coordinator_coalesces_callers_and_reuses_the_revision() -> None:
