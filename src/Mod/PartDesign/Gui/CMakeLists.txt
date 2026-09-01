@@ -107,6 +107,8 @@ SET(PartDesignGuiViewProvider_SRCS
     ViewProviderBoolean.h
     ViewProviderDesignOperation.cpp
     ViewProviderDesignOperation.h
+    ViewProviderDesignScriptOperation.cpp
+    ViewProviderDesignScriptOperation.h
     ViewProviderPrimitive.h
     ViewProviderPrimitive.cpp
     ViewProviderPipe.h

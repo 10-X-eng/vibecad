@@ -850,7 +850,7 @@ public:
 
     const char* getViewProviderName() const override
     {
-        return "PartDesignGui::ViewProviderDesignOperation";
+        return "PartDesignGui::ViewProviderDesignScriptOperation";
     }
 };
 
