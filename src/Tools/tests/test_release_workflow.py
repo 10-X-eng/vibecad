@@ -7,6 +7,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "vibecad-release.yml"
+UPDATE_VALIDATION_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "vibecad-update-validate.yml"
+)
 
 
 def _job_source(workflow: str, job: str) -> str:
@@ -64,6 +67,20 @@ class TestReleaseWorkflow(unittest.TestCase):
             with self.subTest(pattern=required_pattern):
                 self.assertIn(required_pattern, release)
         self.assertIn("-o -name '*.dmg'", release)
+
+    def test_windows_update_launcher_is_exercised_on_a_windows_runner(self) -> None:
+        workflow = UPDATE_VALIDATION_WORKFLOW.read_text(encoding="utf-8")
+        windows = _job_source(workflow, "validate-windows-launch")
+        self.assertIn("runs-on: windows-2022", windows)
+        self.assertIn(
+            "test_windows_detached_helper_executes_powershell_after_parent_exits",
+            windows,
+        )
+        self.assertIn("test_spawn_detached_helper_outlives_the_parent_process", windows)
+        self.assertIn(
+            "test_in_app_updater_launches_normal_installer_without_flags",
+            windows,
+        )
 
 
 if __name__ == "__main__":
