@@ -465,9 +465,20 @@ void PropertyData::addProperty(OffsetBase offsetBase,const char* PropName, Prope
         auto &index = impl->propertyData.get<1>();
         auto it = index.find(PropName);
         if(it == index.end()) {
-            if(parentMerged)
-                throw Base::RuntimeError("Cannot add static property");
-            index.emplace(PropName, PropertyGroup, PropertyDocu, offset, Type);
+            const bool restoreParentMerge = parentMerged;
+            auto* parent = const_cast<PropertyData*>(parentPropertyData);
+            if(restoreParentMerge)
+                split(parent);
+            try {
+                index.emplace(PropName, PropertyGroup, PropertyDocu, offset, Type);
+            }
+            catch(...) {
+                if(restoreParentMerge)
+                    merge(parent);
+                throw;
+            }
+            if(restoreParentMerge)
+                merge(parent);
         } else{
 #ifdef FC_DEBUG
             if(it->Offset != offset) {
@@ -653,4 +664,3 @@ void PropertyData::visitProperties(OffsetBase offsetBase,
         visitor(reinterpret_cast<Property*>(spec.Offset + offset));
     };
 }
-

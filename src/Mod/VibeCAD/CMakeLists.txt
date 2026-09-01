@@ -758,6 +758,7 @@ set(VibeCAD_Scripts
     VibeCADNativeMeshBooleanRuntime.py
     VibeCADNativeMeshBooleanSchema.py
     VibeCADIsolatedMeshWorker.py
+    VibeCADMeshCacheAtomic.py
     VibeCADMeshBooleanChild.py
     VibeCADMeshBooleanGui.py
     VibeCADMeshBooleanJob.py

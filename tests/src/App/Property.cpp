@@ -23,6 +23,9 @@
  *                                                                          *
  ****************************************************************************/
 
+#include <array>
+#include <cstddef>
+
 #include <gtest/gtest.h>
 
 #include <FCConfig.h>
@@ -88,6 +91,50 @@ TEST_F(PropertyFloatTest, testWriteRead)
     App::PropertyFloat prop2;
     prop2.Restore(reader);
     EXPECT_DOUBLE_EQ(prop2.getValue(), value);
+}
+
+namespace
+{
+struct LateStaticPropertyStorage
+{
+    std::array<std::byte, 256> containerStorage;
+    App::PropertyInteger parentProperty;
+    App::PropertyInteger childProperty;
+};
+}
+
+TEST(PropertyData, addStaticPropertyAfterParentMetadataWasRead)
+{
+    LateStaticPropertyStorage storage;
+    App::PropertyData parentData;
+    App::PropertyData childData;
+    auto* container = reinterpret_cast<App::PropertyContainer*>(&storage);
+    parentData.parentPropertyData = nullptr;
+    childData.parentPropertyData = &parentData;
+
+    parentData.addProperty(
+        container,
+        "ParentProperty",
+        &storage.parentProperty
+    );
+    childData.merge();
+    ASSERT_TRUE(childData.parentMerged);
+
+    EXPECT_NO_THROW(
+        childData.addProperty(
+            container,
+            "ChildProperty",
+            &storage.childProperty
+        )
+    );
+    EXPECT_EQ(
+        childData.getPropertyByName(container, "ParentProperty"),
+        &storage.parentProperty
+    );
+    EXPECT_EQ(
+        childData.getPropertyByName(container, "ChildProperty"),
+        &storage.childProperty
+    );
 }
 
 std::string RenameProperty::_docName;
