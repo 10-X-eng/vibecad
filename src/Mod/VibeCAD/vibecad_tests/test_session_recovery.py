@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -357,6 +358,7 @@ def test_shutdown_waits_for_queued_recovery_before_final_snapshot(
     )
     monkeypatch.setattr(gui, "get_service", lambda: _Service())
     monkeypatch.setattr(gui, "_active_session_recovery", None)
+    monkeypatch.setattr(gui.App, "ActiveDocument", object(), raising=False)
 
     gui._persist_session_recovery_before_shutdown()
 
@@ -368,6 +370,105 @@ def test_shutdown_waits_for_queued_recovery_before_final_snapshot(
         gui._session_recovery_instance_id,
     )
     assert calls[2] == ("persist", {"prepared": True})
+
+
+def test_shutdown_without_a_document_only_drains_prepared_recovery(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    warnings: list[str] = []
+
+    class _Queue:
+        @staticmethod
+        def join() -> None:
+            calls.append("join")
+
+    class _Banner:
+        @staticmethod
+        def isVisible() -> bool:
+            return False
+
+    dock = object()
+    monkeypatch.setattr(gui, "_session_recovery_persist_queue", _Queue())
+    monkeypatch.setattr(gui, "_find_dock", lambda: dock)
+    monkeypatch.setattr(gui, "_assistant_panel_is_built", lambda value: value is dock)
+    monkeypatch.setattr(
+        gui,
+        "_find_child",
+        lambda widget_type, name, _dock=None: (
+            _Banner()
+            if (widget_type, name) == ("QFrame", "VibeSessionRecoveryBanner")
+            else None
+        ),
+    )
+    monkeypatch.setattr(gui.App, "ActiveDocument", None, raising=False)
+    monkeypatch.setattr(
+        gui,
+        "get_service",
+        lambda: (_ for _ in ()).throw(AssertionError("no document-scoped save")),
+    )
+    monkeypatch.setattr(gui, "_warn", warnings.append)
+
+    gui._persist_session_recovery_before_shutdown()
+
+    assert calls == ["join"]
+    assert warnings == []
+
+
+def test_shutdown_cancels_and_joins_native_context_prewarm(monkeypatch) -> None:
+    from VibeCADNativeAnalyzeContext import AnalyzeContextCancelled
+    import VibeCADCodex
+
+    entered = threading.Event()
+    cancelled = threading.Event()
+    warnings: list[str] = []
+
+    def prewarm_analyze(
+        _service,
+        _dispatch,
+        *,
+        cancellation_check=None,
+        progress_callback=None,
+    ):
+        del progress_callback
+        entered.set()
+        if not callable(cancellation_check):
+            raise RuntimeError("Native context prewarm has no shutdown cancellation")
+        while not cancellation_check():
+            time.sleep(0.005)
+        cancelled.set()
+        raise AnalyzeContextCancelled("Application shutdown")
+
+    monkeypatch.setattr(gui, "prewarm_analyze_context", prewarm_analyze)
+    monkeypatch.setattr(
+        gui,
+        "prewarm_drawing_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Drawing prewarm must not start after cancellation")
+        ),
+    )
+    monkeypatch.setattr(gui, "get_service", object)
+    monkeypatch.setattr(gui, "_warn", warnings.append)
+    monkeypatch.setattr(gui, "_persist_session_recovery_before_shutdown", lambda: None)
+    monkeypatch.setattr(gui, "_cancel_question_round", lambda: None)
+    monkeypatch.setattr(VibeCADCodex, "shutdown_managed_codex_sessions", lambda: None)
+    monkeypatch.setattr(gui, "_assistant_run_thread", None)
+    monkeypatch.setattr(gui, "_intent_memory_rebuild_thread", None)
+    gui._application_shutting_down.clear()
+    gui._analyze_context_prewarm_thread = None
+    try:
+        gui._schedule_analyze_context_prewarm()
+        assert entered.wait(1.0)
+        gui._shutdown_internal_assistant()
+
+        worker = gui._analyze_context_prewarm_thread
+        assert worker is not None and not worker.is_alive()
+        assert cancelled.is_set()
+        assert warnings == []
+    finally:
+        gui._application_shutting_down.clear()
+        gui._intent_memory_rebuild_cancel_event.clear()
+        gui._analyze_context_prewarm_thread = None
 
 
 def test_recovery_writer_failure_does_not_wait_on_the_document_thread(

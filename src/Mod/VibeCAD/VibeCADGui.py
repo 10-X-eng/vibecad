@@ -252,6 +252,11 @@ def _persist_session_recovery_before_shutdown() -> None:
         # The direct shutdown write must be last. Otherwise an older queued
         # autosave could finish afterward and replace the exact final state.
         _session_recovery_persist_queue.join()
+        # Recovery belongs to a saved CAD document. Queued snapshots above
+        # remain worth flushing, but there is no new state to capture after
+        # the final document has already closed.
+        if App.ActiveDocument is None:
+            return
         active = _active_session_recovery
         if active is not None:
             phase = "running"
@@ -290,7 +295,11 @@ def _shutdown_internal_assistant() -> None:
         _warn(f"VibeCAD Codex shutdown failed: {exc}")
 
     current = threading.current_thread()
-    for worker in (_assistant_run_thread, _intent_memory_rebuild_thread):
+    for worker in (
+        _assistant_run_thread,
+        _intent_memory_rebuild_thread,
+        _analyze_context_prewarm_thread,
+    ):
         if worker is None or worker is current or not worker.is_alive():
             continue
         worker.join(timeout=_ASSISTANT_SHUTDOWN_JOIN_SECONDS)
@@ -5174,7 +5183,11 @@ def _schedule_analyze_context_prewarm() -> None:
     """Warm responsive Native provider state without occupying Qt."""
 
     global _analyze_context_prewarm_thread
+    if _application_shutting_down.is_set():
+        return
     with _analyze_context_prewarm_lock:
+        if _application_shutting_down.is_set():
+            return
         if (
             _analyze_context_prewarm_thread is not None
             and _analyze_context_prewarm_thread.is_alive()
@@ -5201,11 +5214,13 @@ def _schedule_analyze_context_prewarm() -> None:
                 prewarm_analyze_context(
                     get_service(),
                     _dispatch_to_document_thread,
+                    cancellation_check=_application_shutting_down.is_set,
                     progress_callback=progress,
                 )
                 prewarm_drawing_context(
                     get_service(),
                     _dispatch_to_document_thread,
+                    cancellation_check=_application_shutting_down.is_set,
                     progress_callback=progress,
                 )
             except Exception as exc:
@@ -5218,7 +5233,7 @@ def _schedule_analyze_context_prewarm() -> None:
                     DrawingContextStale,
                 )
 
-                if not isinstance(
+                if not _application_shutting_down.is_set() and not isinstance(
                     exc,
                     (
                         AnalyzeContextCancelled,

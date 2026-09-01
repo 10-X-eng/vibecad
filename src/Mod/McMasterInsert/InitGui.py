@@ -38,7 +38,6 @@ class McMasterWorkbench(Workbench):
         )
         self.appendMenu("McMaster-Carr", list(Commands.COMMANDS))
         InstallUI.install_with_retry()
-        Log("Loading McMaster-Carr workbench... done\n")
 
     def Activated(self):
         try:
@@ -47,10 +46,9 @@ class McMasterWorkbench(Workbench):
             InstallUI.install_once()
         except Exception:
             pass
-        Msg("McMasterWorkbench::Activated()\n")
 
     def Deactivated(self):
-        Msg("McMasterWorkbench::Deactivated()\n")
+        pass
 
     def GetClassName(self):
         return "Gui::PythonWorkbench"
@@ -58,7 +56,6 @@ class McMasterWorkbench(Workbench):
 
 try:
     Gui.addWorkbench(McMasterWorkbench())
-    FreeCAD.Console.PrintMessage("McMaster-Carr workbench registered\n")
 except Exception as exc:
     FreeCAD.Console.PrintError(f"McMaster-Carr workbench failed to register: {exc}\n")
 
