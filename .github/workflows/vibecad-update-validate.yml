@@ -73,3 +73,24 @@ jobs:
           src.Tools.tests.test_generate_update_manifest
           src.Tools.tests.test_release_workflow
           src.Tools.tests.test_vibecad_update
+
+  validate-windows-launch:
+    name: Validate Windows updater process launch
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Exercise the Windows installer handoff
+        shell: pwsh
+        run: >-
+          python -m unittest
+          src.Tools.tests.test_vibecad_update.UpdateServiceTests.test_windows_detached_helper_executes_powershell_after_parent_exits
+          src.Tools.tests.test_vibecad_update.UpdateServiceTests.test_spawn_detached_helper_outlives_the_parent_process
+          src.Tools.tests.test_windows_installer_version.TestWindowsInstallerVersion.test_in_app_updater_launches_normal_installer_without_flags

@@ -88,6 +88,12 @@ class TestWindowsInstallerVersion(unittest.TestCase):
 
         self.assertIn("$vibecad | Wait-Process", helper)
         self.assertIn("Start-Process -FilePath $Installer", helper)
+        self.assertIn('[IO.File]::WriteAllText($Started, "$PID")', helper)
+        self.assertIn("wait_for_install_helper_start(started)", helper)
+        self.assertLess(
+            helper.index('[IO.File]::WriteAllText($Started, "$PID")'),
+            helper.index("$vibecad | Wait-Process"),
+        )
         self.assertNotIn("-ArgumentList", helper)
         self.assertNotIn("/S", helper)
         self.assertNotIn("/VIBECADUPDATE", helper)
