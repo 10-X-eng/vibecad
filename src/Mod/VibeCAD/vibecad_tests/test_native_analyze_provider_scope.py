@@ -1425,6 +1425,9 @@ def test_operation_scope_publishes_only_calls_that_match_current_study_state() -
     fluid_domain["mesh_definition_count"] = 1
     fluid_domain["mesh_definitions"] = [{"mesher": "gmsh"}]
     fluid_domain["provider_scope"]["mesh_definition_count"] = 1
+    fluid_domain["analysis_workflows"][0]["study_inventory"][
+        "mesh_definition_count"
+    ] = 1
     fluid_with_mesh = scope_analyze_provider_surface(
         surface,
         {"surface_id": "analyze", "domain": fluid_domain},
@@ -1485,6 +1488,7 @@ def test_operation_scope_publishes_only_calls_that_match_current_study_state() -
     assert fluid_operations["analyze.model"] == {
         "create_analysis",
         "update_study",
+        "update_study_dependencies",
     }
     assert fluid_operations[ANALYZE_MATERIAL_CATALOG] == {"search"}
     assert "analyze.inspect" not in fluid_operations
@@ -1517,6 +1521,7 @@ def test_operation_scope_publishes_only_calls_that_match_current_study_state() -
     assert "analyze.inspect" not in mechanical_operations
     assert truncated_mechanical_operations["analyze.inspect"] == {
         "assignments",
+        "studies",
         "validate_assignments",
     }
 

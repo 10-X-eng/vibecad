@@ -9,6 +9,7 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometryCreate import references_match
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
@@ -350,7 +351,7 @@ def update_load(document: Any, prepared: PreparedLoadUpdate) -> NativeMutationDr
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     load = prepared.target.load
-    load.Label = prepared.label
+    prepared = assign_prepared_label(load, prepared)
     if prepared.values_changed:
         apply_load_values(load, prepared.values)
     load.References = reference_value(prepared.references)

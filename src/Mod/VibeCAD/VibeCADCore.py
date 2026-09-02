@@ -798,9 +798,10 @@ class VibeCADService:
             raise RuntimeError("The active ribbon has no Native provider surface.")
         background_job = None
         if surface.surface_id == "analyze":
-            background_job = self._native_background_jobs.latest_document_snapshot(
+            background_job = self._native_background_jobs.document_snapshots(
                 str(document.Uid),
                 capability_prefix="analyze.",
+                active_only=True,
             )
         elif surface.surface_id == "manufacture":
             background_job = self._native_background_jobs.document_snapshots(
@@ -838,9 +839,10 @@ class VibeCADService:
         ) != "native":
             return None
         native_state = self.native_document_state()
-        background_job = self._native_background_jobs.latest_document_snapshot(
+        background_job = self._native_background_jobs.document_snapshots(
             str(document.Uid),
             capability_prefix="analyze.",
+            active_only=True,
         )
         analysis_artifacts = drawing_analysis_artifact_names(document)
         base = capture_active_snapshot_base(
@@ -852,19 +854,18 @@ class VibeCADService:
         details = begin_analyze_snapshot_capture(
             document,
             background_job=background_job,
+            selection=base.get("_selection"),
             validate_brep=False,
             analysis_artifact_names=analysis_artifacts,
         )
         revision = int(native_state.get("structural_revision", 0) or 0)
-        cacheable = bool(
-            background_job is None or bool(getattr(background_job, "terminal", False))
-        )
+        cacheable = not bool(background_job)
         cache_hit = bool(
             cacheable
             and self._native_analyze_contexts.has_cached(
                 str(document.Uid),
                 revision,
-                variant=str(details.get("active_analysis_name") or ""),
+                variant=str(details.get("focused_analysis_name") or ""),
             )
         )
         detached_clipping = capture_analyze_clipping(document, details)

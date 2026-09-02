@@ -19,6 +19,7 @@ from VibeCADNativeAnalyzeHistory import (
     verify_operation_block,
     verify_new_operation_resource,
 )
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeMaterials import material_map
 from VibeCADNativeAnalyzeState import (
     analysis_state,
@@ -187,7 +188,7 @@ def create_material(
     material = _factory(document, prepared.kind)
     if material is None or material_kind(material) != prepared.kind:
         raise NativeAnalyzeError("The FEM material factory returned the wrong object type.")
-    material.Label = prepared.label
+    prepared = assign_prepared_label(material, prepared)
     material.Material = _map(prepared.material)
     material.UUID = prepared.material_uuid
     material.References = reference_value(prepared.references)
@@ -392,7 +393,7 @@ def create_nonlinear_material(
     if nonlinear is None or material_kind(nonlinear) != "nonlinear":
         raise NativeAnalyzeError("The nonlinear-material factory returned the wrong type.")
     try:
-        nonlinear.Label = prepared.label
+        prepared = assign_prepared_label(nonlinear, prepared)
         nonlinear.MaterialModelNonlinearity = prepared.model
         nonlinear.YieldPoints = native_yield_points(prepared.yield_points)
     except Exception as exc:

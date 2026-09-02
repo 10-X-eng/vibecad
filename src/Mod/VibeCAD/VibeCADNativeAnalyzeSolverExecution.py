@@ -24,6 +24,13 @@ from VibeCADNativeAnalyzeSolverState import (
     solver_still_exact,
 )
 from VibeCADNativeAnalyzeState import is_live
+from VibeCADNativeAnalyzeOwnership import owning_study, study_history_operations
+from VibeCADNativeAnalyzeMeshState import fem_mesh_definition_context_state
+from VibeCADNativeAnalyzeTargets import (
+    PreparedFemMeshDefinitionTarget,
+    fem_mesh_definition_target_still_exact,
+    prepare_fem_mesh_definition_target,
+)
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity
 
@@ -69,6 +76,7 @@ class SolverExecutionRequest:
     keep_results: bool
     importer_state: Mapping[str, Any]
     runtime_preferences: tuple[tuple[str, str, str, Any], ...] = ()
+    mesh: PreparedFemMeshDefinitionTarget | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +88,7 @@ class CapturedSolverExecutionRequest:
     timeout_seconds: int
     keep_results: bool
     runtime_preferences: tuple[tuple[str, str, str, Any], ...]
+    mesh: PreparedFemMeshDefinitionTarget | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +115,56 @@ def _require_history_root(document: Any, solver: Any) -> tuple[Any, ...]:
             "The FEM solver is not one durable root operation in current History.",
             error_code="NATIVE_ANALYZE_HISTORY_TARGET_INVALID",
         )
-    return operations
+    return study_history_operations(owning_study(document, solver))
+
+
+def _analysis_meshes(analysis: Any) -> tuple[Any, ...]:
+    meshes = []
+    for member in tuple(getattr(analysis, "Group", ()) or ()):
+        try:
+            is_mesh = bool(member.isDerivedFrom("Fem::FemMeshObject"))
+        except Exception:
+            is_mesh = False
+        if is_mesh and not bool(getattr(member, "Suppressed", False)):
+            meshes.append(member)
+    return tuple(meshes)
+
+
+def _solver_mesh(
+    document: Any,
+    document_uid: str,
+    analysis: Any,
+    value: Any,
+) -> PreparedFemMeshDefinitionTarget | None:
+    meshes = _analysis_meshes(analysis)
+    if value is not None:
+        prepared = prepare_fem_mesh_definition_target(document, document_uid, value)
+        if prepared.mesh not in meshes:
+            raise NativeAnalyzeError(
+                "The selected FEM mesh does not belong to the solver's study.",
+                error_code="NATIVE_ANALYZE_SOLVER_MESH_INVALID",
+            )
+        return prepared
+    if len(meshes) > 1:
+        raise NativeAnalyzeError(
+            "This FEM study has several meshes; select the mesh for this solver run.",
+            error_code="NATIVE_ANALYZE_SOLVER_MESH_REQUIRED",
+            repair={
+                "analysis": str(analysis.Name),
+                "mesh_names": [str(mesh.Name) for mesh in meshes],
+            },
+        )
+    if len(meshes) == 1:
+        state = fem_mesh_definition_context_state(meshes[0])
+        kind = str(state["backend"])
+        if kind == "netgen_legacy":
+            kind = "netgen"
+        return PreparedFemMeshDefinitionTarget(
+            meshes[0],
+            kind,
+            str(state["state_sha256"]),
+        )
+    return None
 
 
 def _input_digest(root: Path) -> tuple[str, int]:
@@ -375,6 +433,7 @@ def capture_solver_execution_request(
     document_uid: str,
     *,
     target: Any,
+    mesh: Any = None,
     timeout_seconds: Any,
 ) -> CapturedSolverExecutionRequest:
     """Capture exact solver guards without generating files or running tools."""
@@ -385,6 +444,11 @@ def capture_solver_execution_request(
         raise NativeAnalyzeError("A suppressed FEM solver cannot be run.")
     analysis_name = str(state.get("analysis") or "")
     analysis = document.getObject(analysis_name) if analysis_name else None
+    selected_mesh = (
+        _solver_mesh(document, document_uid, analysis, mesh)
+        if analysis is not None
+        else None
+    )
     validation = validate_assignments(analysis) if analysis is not None else None
     if analysis_name and (
         not isinstance(validation, Mapping) or validation.get("valid") is not True
@@ -410,6 +474,7 @@ def capture_solver_execution_request(
         _timeout(timeout_seconds),
         _keep_results_from_runtime_preferences(runtime_preferences),
         runtime_preferences,
+        selected_mesh,
     )
 
 
@@ -435,6 +500,16 @@ def validate_captured_solver_execution(
             "Document History changed while FEM execution was being prepared.",
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
+    if captured.mesh is not None:
+        analysis = owning_study(document, solver)
+        if (
+            captured.mesh.mesh not in _analysis_meshes(analysis)
+            or not fem_mesh_definition_target_still_exact(captured.mesh)
+        ):
+            raise NativeAnalyzeError(
+                "The selected FEM mesh changed while execution was being prepared.",
+                error_code="NATIVE_ANALYZE_STATE_STALE",
+            )
     current_preferences = _current_solver_runtime_preferences(captured.target.kind)
     if (
         _keep_results_from_runtime_preferences(current_preferences)
@@ -456,6 +531,7 @@ def prepare_solver_execution_request(
     document_uid: str,
     *,
     target: Any,
+    mesh: Any = None,
     timeout_seconds: Any,
     working_directory: str | Path | None = None,
     progress: Callable[[int, str], None] | None = None,
@@ -471,6 +547,7 @@ def prepare_solver_execution_request(
         document,
         document_uid,
         target=target,
+        mesh=mesh,
         timeout_seconds=timeout_seconds,
     )
     prepared = captured.target
@@ -521,6 +598,7 @@ def prepare_solver_execution_request(
             captured.keep_results,
             importer_state,
             captured.runtime_preferences,
+            captured.mesh,
         )
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
@@ -686,10 +764,16 @@ def commit_solver_execution(
             "The exact FEM solver changed while execution was running; results were not applied.",
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
-    timeline = getattr(document, "VibeCADTimeline", None)
-    if tuple(getattr(timeline, "Operations", ()) or ()) != request.history_operations:
+    if _require_history_root(document, solver) != request.history_operations:
         raise NativeAnalyzeError(
-            "Document History changed while the FEM solver was running; results were not applied.",
+            "The FEM study History changed while the solver was running; results were not applied.",
+            error_code="NATIVE_ANALYZE_STATE_STALE",
+        )
+    if request.mesh is not None and not fem_mesh_definition_target_still_exact(
+        request.mesh
+    ):
+        raise NativeAnalyzeError(
+            "The selected FEM mesh changed while the solver was running; results were not applied.",
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     if _current_keep_results() is not request.keep_results:
@@ -703,6 +787,15 @@ def commit_solver_execution(
     _ensure_exact_retained_result_graph(solver)
     graph = _unpack_result_graph(_import_tool(request).update_properties())
     root, resources, root_is_new, reconciliation = graph
+    if request.mesh is not None:
+        if "VibeCADAnalyzeInputMesh" not in tuple(root.PropertiesList):
+            root.addProperty(
+                "App::PropertyLink",
+                "VibeCADAnalyzeInputMesh",
+                "VibeCAD",
+                "Mesh used to produce this result.",
+            )
+        root.VibeCADAnalyzeInputMesh = request.mesh.mesh
     _finalize_timeline_result_graph(
         solver,
         root,
@@ -731,6 +824,11 @@ def _result_summary(
         "label": str(root.Label),
         "type_id": str(root.TypeId),
         "solver": str(solver.Name),
+        "mesh": (
+            str(getattr(root, "VibeCADAnalyzeInputMesh", None).Name)
+            if getattr(root, "VibeCADAnalyzeInputMesh", None) is not None
+            else None
+        ),
         "resource_count": len(resources),
         "resources": [
             {
@@ -815,6 +913,9 @@ def verify_solver_execution(
             "implementation": request.implementation,
             "input_sha256": request.input_sha256,
             "input_file_count": request.input_file_count,
+            "mesh_name": (
+                str(request.mesh.mesh.Name) if request.mesh is not None else None
+            ),
             "stages": list(prepared.stages),
         },
     }

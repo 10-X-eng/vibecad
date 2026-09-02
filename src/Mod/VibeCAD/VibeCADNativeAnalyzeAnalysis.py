@@ -15,6 +15,7 @@ from VibeCADNativeAnalyzeHistory import (
     require_boundary,
     verify_operation_block,
 )
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeState import analysis_state, is_live
 from VibeCADNativeAnalyzeStudy import (
     configure_study_intent,
@@ -83,7 +84,7 @@ def create_analysis(
     )
     if analysis is None or not analysis.isDerivedFrom("Fem::FemAnalysis"):
         raise NativeAnalyzeError("The FEM analysis factory returned the wrong object type.")
-    analysis.Label = prepared.label
+    prepared = assign_prepared_label(analysis, prepared)
     if prepared.study is not None:
         configure_study_intent(
             analysis,
@@ -144,9 +145,6 @@ def verify_analysis_create(
         or not bool(solver.isValid())
     ):
         raise NativeAnalyzeError("The default FEM solver failed its exact postcondition.")
-    import FemGui
-
-    FemGui.setActiveAnalysis(analysis)
     current_analysis = analysis_state(analysis)
     result = {
         "created_analysis": current_analysis,

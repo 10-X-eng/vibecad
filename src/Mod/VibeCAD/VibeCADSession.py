@@ -1468,7 +1468,7 @@ def _build_responsive_analyze_native_state(
             raise RuntimeError("Analyze context request returned no object.")
         uid = str(request.get("document_uid") or "")
         revision = int(request.get("structural_revision", 0) or 0)
-        cache_variant = str(request.get("active_analysis_name") or "")
+        cache_variant = str(request.get("focused_analysis_name") or "")
         coordinator = coordinator_reader()
 
         def build(cancelled, report):

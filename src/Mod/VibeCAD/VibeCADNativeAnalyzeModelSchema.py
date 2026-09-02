@@ -13,6 +13,8 @@ from VibeCADNativeAnalyzeStudy import STUDY_INTENT_SCHEMA
 
 
 ANALYZE_MODEL_CAPABILITY_NAME = "analyze.model"
+ANALYZE_CREATE_STUDY = "analyze.create_study"
+ANALYZE_CONFIGURE_STUDY = "analyze.configure_study"
 _OBJECT_NAME = {
     "type": "string",
     "minLength": 1,
@@ -228,6 +230,26 @@ def analyze_model_capability_definition() -> NativeCapabilityDefinition:
                 provider_supplemental=True,
             ),
             _variant(
+                "update_study_dependencies",
+                "Set prerequisite studies for one analysis.",
+                "VibeCAD_AnalyzeConfigureStudy",
+                {
+                    "type": "object",
+                    "properties": {
+                        "target": _ANALYSIS_TARGET,
+                        "depends_on": {
+                            "type": "array",
+                            "items": _ANALYSIS_TARGET,
+                            "maxItems": 64,
+                            "uniqueItems": True,
+                        },
+                    },
+                    "required": ["target", "depends_on"],
+                    "additionalProperties": False,
+                },
+                provider_supplemental=True,
+            ),
+            _variant(
                 "create_solid_material",
                 "Create a solid material.",
                 "FEM_MaterialSolid",
@@ -303,7 +325,70 @@ def analyze_model_capability_definition() -> NativeCapabilityDefinition:
     )
 
 
+def _focused_study_definition(
+    name: str,
+    description: str,
+    operation: str,
+    action_id: str,
+    properties: dict,
+    required: list[str],
+) -> NativeCapabilityDefinition:
+    return NativeCapabilityDefinition(
+        name=name,
+        description=description,
+        primary_classification="mutation",
+        variants=(
+            NativeCapabilityVariant(
+                operation=operation,
+                description=description,
+                action_ids=frozenset({action_id}),
+                surface_ids=frozenset({"analyze"}),
+                exact_target_type="CurrentNamedFemStudy",
+                transaction_behavior="document",
+                background_required=False,
+                parameters={
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                    "additionalProperties": False,
+                },
+                provider_supplemental=True,
+            ),
+        ),
+    )
+
+
+def analyze_study_lifecycle_capability_definitions(
+) -> tuple[NativeCapabilityDefinition, ...]:
+    physics = dict(STUDY_INTENT_SCHEMA["properties"]["physics"])
+    regime = dict(STUDY_INTENT_SCHEMA["properties"]["regime"])
+    return (
+        _focused_study_definition(
+            ANALYZE_CREATE_STUDY,
+            "Create a FEM study.",
+            "create",
+            "VibeCAD_AnalyzeCreateStudyFocused",
+            {"label": _LABEL, "physics": physics, "regime": regime},
+            ["label", "physics", "regime"],
+        ),
+        _focused_study_definition(
+            ANALYZE_CONFIGURE_STUDY,
+            "Set a study's physics and regime.",
+            "configure",
+            "VibeCAD_AnalyzeConfigureStudyFocused",
+            {
+                "analysis_name": _OBJECT_NAME,
+                "physics": physics,
+                "regime": regime,
+            },
+            ["analysis_name", "physics", "regime"],
+        ),
+    )
+
+
 def register_analyze_model_capability_definition(registry: NativeCapabilityRegistry) -> None:
     if not isinstance(registry, NativeCapabilityRegistry):
         raise TypeError("registry must be a NativeCapabilityRegistry")
     registry.register_definition(analyze_model_capability_definition())
+    for definition in analyze_study_lifecycle_capability_definitions():
+        registry.register_definition(definition)

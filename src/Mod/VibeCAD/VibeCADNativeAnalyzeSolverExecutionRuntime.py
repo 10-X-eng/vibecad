@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeOwnership import owning_study, study_resource_scope
 from VibeCADNativeAnalyzeSolverExecution import (
     capture_solver_execution_request,
     commit_solver_execution,
@@ -42,7 +43,8 @@ class NativeAnalyzeSolverExecutionRuntime:
     ) -> dict[str, Any]:
         _operation, values = strict_variant_arguments(
             arguments,
-            {"run": frozenset({"target", "timeout_seconds"})},
+            {"run": frozenset({"target", "mesh", "timeout_seconds"})},
+            defaults={"run": {"mesh": None}},
         )
         context = self._context
         context.guard()
@@ -57,6 +59,9 @@ class NativeAnalyzeSolverExecutionRuntime:
             context.document,
             context.document_uid,
             **values,
+        )
+        scope = study_resource_scope(
+            owning_study(context.document, captured.target.solver)
         )
         workspace = create_solver_execution_workspace()
 
@@ -105,6 +110,7 @@ class NativeAnalyzeSolverExecutionRuntime:
                 finalize_message="Importing verified FEM results",
                 cleanup=cleanup,
                 changes_document=True,
+                resource_scope=scope,
             )
         except NativeBackgroundError as exc:
             workspace.cleanup()
@@ -137,6 +143,7 @@ class NativeAnalyzeSolverExecutionRuntime:
             "job": {
                 "job_id": str(snapshot.job_id),
                 "capability": str(snapshot.capability_name),
+                "resource_scope": str(snapshot.resource_scope),
                 "phase": str(snapshot.phase),
                 "progress_percent": int(snapshot.progress_percent),
                 "progress_message": str(snapshot.progress_message),

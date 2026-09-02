@@ -65,7 +65,10 @@ def _source(obj: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         "shape_type": str(source.Shape.ShapeType),
         "topology": dict(source_state.get("topology") or {}),
     }
-    return visible, {**visible, "object_id": int(source.ID)}
+    return visible, {
+        **visible,
+        "object_id": int(source.ID),
+    }
 
 
 def _stable_property(value: Any) -> Any:

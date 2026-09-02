@@ -30,6 +30,11 @@ from VibeCADNativeAnalyzeStudyEdit import (
     update_study_intent,
     verify_study_update,
 )
+from VibeCADNativeAnalyzeStudyDependencies import (
+    prepare_study_dependency_update,
+    update_study_dependencies,
+    verify_study_dependency_update,
+)
 from VibeCADNativeAnalyzeSolidDomain import (
     create_solid_domain,
     prepare_solid_domain,
@@ -69,6 +74,10 @@ _FIELDS = {
     "update_study": (
         frozenset({"target", "study"}),
         frozenset({"target", "study"}),
+    ),
+    "update_study_dependencies": (
+        frozenset({"target", "depends_on"}),
+        frozenset({"target", "depends_on"}),
     ),
     "create_solid_material": (
         frozenset({"analysis", "label", "references"}),
@@ -186,6 +195,19 @@ class NativeAnalyzeModelRuntime:
                 transaction_name="Edit FEM Study",
                 mutate=lambda document: update_study_intent(document, prepared),
                 verify=verify_study_update,
+            )
+        if operation == "update_study_dependencies":
+            prepared = prepare_study_dependency_update(
+                context.document,
+                context.document_uid,
+                **values,
+            )
+            return run_immediate_mutation(
+                context,
+                ticket=ticket,
+                transaction_name="Edit FEM Study Dependencies",
+                mutate=lambda document: update_study_dependencies(document, prepared),
+                verify=verify_study_dependency_update,
             )
         if operation in _KINDS:
             prepared = prepare_material_create(

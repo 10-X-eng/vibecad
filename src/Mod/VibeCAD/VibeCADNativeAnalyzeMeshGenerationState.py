@@ -10,6 +10,7 @@ from typing import Any
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeMeshRefinementState import mesh_refinement_state
 from VibeCADNativeAnalyzeMeshState import fem_mesh_definition_state
+from VibeCADNativeAnalyzeOwnership import owning_study, study_history_operations
 from VibeCADNativeAnalyzeTargets import (
     PreparedFemMeshDefinitionTarget,
     fem_mesh_definition_target_still_exact,
@@ -127,8 +128,7 @@ def prepare_mesh_generation_target(
         expected_kind=backend,
     )
     mesh = target.mesh
-    timeline = getattr(document, "VibeCADTimeline", None)
-    operations = tuple(getattr(timeline, "Operations", ()) or ())
+    operations = study_history_operations(owning_study(document, mesh))
     if (
         mesh not in operations
         or str(getattr(mesh, "VibeCADTimelineRole", "") or "") != "operation"
@@ -181,8 +181,8 @@ def mesh_generation_resources_still_exact(
     prepared: PreparedMeshGenerationTarget,
 ) -> bool:
     try:
-        timeline = getattr(prepared.mesh.Document, "VibeCADTimeline", None)
-        if tuple(getattr(timeline, "Operations", ()) or ()) != prepared.history_operations:
+        study = owning_study(prepared.mesh.Document, prepared.mesh)
+        if study_history_operations(study) != prepared.history_operations:
             return False
         if _resource_inventory(prepared.mesh) != tuple(
             item.resource for item in prepared.resources
