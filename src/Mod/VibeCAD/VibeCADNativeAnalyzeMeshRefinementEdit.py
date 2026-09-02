@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -185,7 +186,7 @@ def update_mesh_refinement(
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     refinement = prepared.target.refinement
-    refinement.Label = prepared.label
+    prepared = assign_prepared_label(refinement, prepared)
     if prepared.target.mode != "shape":
         refinement.References = reference_value(prepared.references)
     apply_refinement_values(refinement, prepared.values)

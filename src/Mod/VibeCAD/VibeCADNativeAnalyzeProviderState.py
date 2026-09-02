@@ -128,7 +128,10 @@ def _compact_study(
         "intent": intent,
         "readiness": dict(workflow.get("engineering_readiness") or {}),
     }
-    for name in ("label", "active"):
+    dependencies = workflow.get("dependencies")
+    if isinstance(dependencies, Mapping):
+        result["dependencies"] = dict(dependencies)
+    for name in ("label", "active", "focused"):
         if name in source:
             result[name] = source[name]
     inventory = _nonempty_values(workflow.get("study_inventory"))
@@ -230,6 +233,13 @@ def compact_analyze_provider_state(state: Mapping[str, Any]) -> dict[str, Any]:
         or int(run_status.get("solver_result_count", 0) or 0) > 0
     ):
         compact_domain["run_status"] = dict(run_status)
+    background_jobs = [
+        dict(value)
+        for value in list(domain.get("background_jobs") or ())
+        if isinstance(value, Mapping)
+    ]
+    if background_jobs:
+        compact_domain["background_jobs"] = background_jobs
     clipping = domain.get("clipping")
     if isinstance(clipping, Mapping) and int(clipping.get("plane_count", 0) or 0):
         compact_domain["clipping"] = dict(clipping)

@@ -258,7 +258,10 @@ def _request() -> tuple[dict[str, Any], Path, Path, str]:
     }
     if (
         not isinstance(value, dict)
-        or set(value) != required
+        or frozenset(value) not in {
+            frozenset(required),
+            frozenset({*required, "mesh"}),
+        }
         or value.get("protocol") != _PROTOCOL
         or Path(str(value.get("workspace") or "")).resolve() != root
         or value.get("snapshot") != "document.FCStd"
@@ -269,6 +272,7 @@ def _request() -> tuple[dict[str, Any], Path, Path, str]:
             "NATIVE_ANALYZE_SOLVER_INPUT_INVALID",
             "The detached FEM request failed protocol validation.",
         )
+    value.setdefault("mesh", None)
     return value, root, root / "result.json", request_sha256
 
 
@@ -298,6 +302,52 @@ def _solver_descriptor(value: Any) -> dict[str, Any]:
             "The detached FEM solver descriptor is invalid.",
         )
     return result
+
+
+def _mesh_descriptor(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    required = {"object_name", "object_id", "type_id", "kind", "state_sha256"}
+    if not isinstance(value, Mapping) or set(value) != required:
+        _fail(
+            "NATIVE_ANALYZE_SOLVER_INPUT_INVALID",
+            "The detached FEM mesh descriptor is malformed.",
+        )
+    result = dict(value)
+    if (
+        not str(result["object_name"] or "")
+        or type(result["object_id"]) is not int
+        or result["object_id"] < 1
+        or not str(result["type_id"] or "")
+        or str(result["kind"]) not in {"gmsh", "netgen"}
+        or len(str(result["state_sha256"] or "")) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in str(result["state_sha256"])
+        )
+    ):
+        _fail(
+            "NATIVE_ANALYZE_SOLVER_INPUT_INVALID",
+            "The detached FEM mesh descriptor is invalid.",
+        )
+    return result
+
+
+def _isolate_solver_mesh(analysis: Any, selected: Any) -> None:
+    """Keep one explicitly selected mesh in the private solver snapshot."""
+
+    if selected not in tuple(getattr(analysis, "Group", ()) or ()):
+        _fail(
+            "NATIVE_ANALYZE_SOLVER_INPUT_INVALID",
+            "The selected FEM mesh is outside the solver's study.",
+        )
+    for member in tuple(analysis.Group or ()):
+        try:
+            is_mesh = bool(member.isDerivedFrom("Fem::FemMeshObject"))
+        except Exception:
+            is_mesh = False
+        if is_mesh and member is not selected:
+            analysis.removeObject(member)
 
 
 def _preferences(
@@ -389,6 +439,7 @@ def _execute(
     import FreeCAD as App
 
     solver_spec = _solver_descriptor(request["solver"])
+    mesh_spec = _mesh_descriptor(request["mesh"])
     timeout = request["timeout_seconds"]
     keep_results = request["keep_results"]
     snapshot_size = request["snapshot_bytes"]
@@ -459,6 +510,42 @@ def _execute(
                 "NATIVE_ANALYZE_STATE_STALE",
                 "The exact FEM solver changed in its frozen snapshot.",
             )
+        mesh = None
+        if mesh_spec is not None:
+            mesh = document.getObject(str(mesh_spec["object_name"]))
+            if (
+                mesh is None
+                or int(mesh.ID) != mesh_spec["object_id"]
+                or str(mesh.TypeId) != mesh_spec["type_id"]
+            ):
+                _fail(
+                    "NATIVE_ANALYZE_STATE_STALE",
+                    "The selected FEM mesh is unavailable in its frozen snapshot.",
+                )
+            from VibeCADNativeAnalyzeMeshState import (
+                fem_mesh_definition_context_state,
+                fem_mesh_definition_still_exact,
+            )
+
+            mesh_state = fem_mesh_definition_context_state(mesh)
+            if (
+                mesh_state["backend"] != mesh_spec["kind"]
+                or not fem_mesh_definition_still_exact(
+                    mesh,
+                    str(mesh_spec["state_sha256"]),
+                )
+            ):
+                _fail(
+                    "NATIVE_ANALYZE_STATE_STALE",
+                    "The selected FEM mesh changed in its frozen snapshot.",
+                )
+            analysis = document.getObject(str(state.get("analysis") or ""))
+            if analysis is None:
+                _fail(
+                    "NATIVE_ANALYZE_SOLVER_INPUT_INVALID",
+                    "The solver's FEM study is unavailable in its frozen snapshot.",
+                )
+            _isolate_solver_mesh(analysis, mesh)
         from VibeCADNativeAnalyzeSolverExecution import (
             prepare_solver_execution_request,
             run_solver_execution,
@@ -471,6 +558,14 @@ def _execute(
                 "object_name": str(solver.Name),
                 "expected_state_sha256": str(solver_spec["state_sha256"]),
             },
+            mesh=(
+                {
+                    "object_name": str(mesh.Name),
+                    "expected_state_sha256": str(mesh_spec["state_sha256"]),
+                }
+                if mesh is not None and mesh_spec is not None
+                else None
+            ),
             timeout_seconds=timeout,
             working_directory=root / "case",
             progress=report,

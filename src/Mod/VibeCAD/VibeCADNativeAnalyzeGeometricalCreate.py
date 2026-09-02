@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometricalState import (
     geometrical_feature_kind,
     geometrical_feature_state,
@@ -146,7 +147,7 @@ def create_geometrical_feature(
         raise NativeAnalyzeError(
             "The FEM geometrical-feature factory returned the wrong object type."
         )
-    feature.Label = prepared.label
+    prepared = assign_prepared_label(feature, prepared)
     apply_geometrical_values(feature, prepared.values)
     feature.References = reference_value((prepared.face,))
     prepared.analysis.analysis.addObject(feature)

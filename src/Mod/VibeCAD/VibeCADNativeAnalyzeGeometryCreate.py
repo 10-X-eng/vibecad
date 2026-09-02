@@ -20,6 +20,7 @@ from VibeCADNativeAnalyzeElementValues import (
     prepare_shell_thickness,
 )
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -159,7 +160,7 @@ def create_element_definition(
         raise NativeAnalyzeError(
             "The FEM element-definition factory returned the wrong object type."
         )
-    element.Label = prepared.label
+    prepared = assign_prepared_label(element, prepared)
     apply_element_values(element, prepared.values)
     element.References = reference_value(prepared.references)
     prepared.analysis.analysis.addObject(element)

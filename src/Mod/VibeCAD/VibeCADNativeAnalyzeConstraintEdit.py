@@ -18,6 +18,7 @@ from VibeCADNativeAnalyzeConstraintValues import (
     prepare_constraint_values,
 )
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometryCreate import references_match
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
@@ -243,7 +244,7 @@ def update_constraint(
         ignore=prepared.target.constraint,
     )
     constraint = prepared.target.constraint
-    constraint.Label = prepared.label
+    prepared = assign_prepared_label(constraint, prepared)
     constraint.References = reference_value(prepared.references)
     if prepared.values_changed:
         apply_constraint_values(constraint, prepared.values)

@@ -198,6 +198,18 @@ NATIVE_CONTEXT_ACTIONS = (
         source_command_id="FEM_Analysis",
     ),
     _action(
+        "VibeCAD_AnalyzeCreateStudyFocused", ("analyze",), ("task_panel",),
+        "mutation", "analyze.create_study", "create",
+        "CurrentNamedFemStudy", "document",
+        source_command_id="FEM_Analysis",
+    ),
+    _action(
+        "VibeCAD_AnalyzeConfigureStudyFocused", ("analyze",), ("task_panel",),
+        "mutation", "analyze.configure_study", "configure",
+        "CurrentNamedFemStudy", "document",
+        source_command_id="VibeCAD_AnalyzeStudySetup",
+    ),
+    _action(
         "VibeCAD_AnalyzeReadGeometrySource", ("analyze",), ("task_panel",),
         "read", "analyze.faces", "read",
         "BoundedExactGeometryFacePage", "none",

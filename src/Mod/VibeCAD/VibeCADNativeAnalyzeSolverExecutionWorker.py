@@ -449,6 +449,7 @@ def _read_result(frozen: FrozenSolverExecution) -> PreparedSolverExecution:
             implementation=implementation,
         ),
         runtime_preferences=frozen.captured.runtime_preferences,
+        mesh=frozen.captured.mesh,
     )
     return PreparedSolverExecution(request=request, stages=_stages(value["stages"]))
 

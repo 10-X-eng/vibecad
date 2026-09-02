@@ -9,6 +9,7 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -343,7 +344,7 @@ def create_post_glyph(
             prepared.parent_group,
             document.getUniqueObjectName("Glyph"),
         )
-        glyph_filter.Label = prepared.label
+        prepared = assign_prepared_label(glyph_filter, prepared)
         glyph_filter.ViewObject.DisplayMode = "Surface"
         glyph_filter.ViewObject.SelectionStyle = "BoundBox"
         _copy_none_field_color(source, glyph_filter)

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -281,7 +282,7 @@ def create_mesh_field(document: Any, prepared: PreparedMeshFieldCreate) -> Nativ
             f"The refinement-field factory failed: {exc}",
             error_code="NATIVE_ANALYZE_FACTORY_FAILED",
         ) from exc
-    field.Label = prepared.label
+    prepared = assign_prepared_label(field, prepared)
     if prepared.values.family == "manipulate":
         field.Refinement = prepared.dependencies.objects[0]
     else:

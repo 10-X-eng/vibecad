@@ -405,7 +405,7 @@ def test_each_surface_builds_only_its_live_domain(
         monkeypatch.setattr(
             analyze_snapshot_module,
             "build_analyze_snapshot",
-            lambda _document, *, background_job=None: {
+            lambda _document, *, background_job=None, selection=None: {
                 "kind": "analyze",
                 "run_status": {
                     "phase": "idle" if background_job is None else "queued"
