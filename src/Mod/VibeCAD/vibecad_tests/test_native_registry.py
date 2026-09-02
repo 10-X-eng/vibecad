@@ -10,6 +10,9 @@ from VibeCADNativeInspectionCompareSchema import INSPECTION_COMPARE_CAPABILITY_N
 from VibeCADNativeMeshReconstructParametricSchema import (
     MESH_RECONSTRUCT_PARAMETRIC_CAPABILITY_NAME,
 )
+from VibeCADNativeManufactureFocusedInspectSchema import (
+    MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES,
+)
 from VibeCADNativeModelHistoryBindings import MODEL_HISTORY_CAPABILITY_NAMES
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeSketchBatchBindings import SKETCH_BATCH_CAPABILITY_NAME
@@ -31,6 +34,14 @@ def test_production_registry_has_every_finished_contract_and_binding() -> None:
         "model.catalog",
         "model.revolution_sketch",
         *MODEL_HISTORY_CAPABILITY_NAMES,
+        *(
+            MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES[operation]
+            for operation in (
+                "list_setups",
+                "search_setup_options",
+                "read_model_geometry",
+            )
+        ),
         "drawing.page_readiness",
         *DRAWING_DIMENSION_CAPABILITY_NAMES,
         *DRAWING_PLACEMENT_CAPABILITY_NAMES,

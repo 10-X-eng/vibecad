@@ -35,6 +35,36 @@ def _load_ribbon_extension_commands(warn=_warn) -> None:
             warn(f"VibeCAD ribbon extension {module_name} failed to load: {exc}")
 
 
+def _register_gui_commands(
+    module_name: str,
+    register_name: str,
+    failure_message: str,
+    warn=_warn,
+) -> bool:
+    """Register one GUI command surface without suppressing unrelated startup."""
+
+    try:
+        module = __import__(module_name)
+        getattr(module, register_name)()
+        return True
+    except Exception as exc:
+        warn(f"{failure_message}: {exc}")
+        return False
+
+
+def _register_assistant_commands(warn=_warn) -> bool:
+    """Register the core dock commands synchronously and independently."""
+
+    try:
+        import VibeCADGui
+
+        VibeCADGui.ensure_commands_registered()
+        return True
+    except Exception as exc:
+        warn(f"VibeCAD assistant commands failed to register: {exc}")
+        return False
+
+
 def _restore_vibecad_disabled_workbenches() -> bool:
     """Undo only the exact disabled lists previously written by VibeCAD."""
 
@@ -204,26 +234,29 @@ try:
     fasteners_available = _check_bundled_fasteners()
     from PySide import QtCore
 
-    import VibeCADGui
-
-    VibeCADGui.ensure_commands_registered()
-    import VibeCADAnalyzeStudyGui
-
-    VibeCADAnalyzeStudyGui.ensure_command_registered()
-    import VibeCADManufactureFollowUpGui
-
-    VibeCADManufactureFollowUpGui.ensure_command_registered()
-    import VibeCADManufactureSimulationResultGui
-
-    VibeCADManufactureSimulationResultGui.ensure_command_registered()
+    _register_assistant_commands()
+    _register_gui_commands(
+        "VibeCADAnalyzeStudyGui",
+        "ensure_command_registered",
+        "VibeCAD Analyze study command failed to register",
+    )
+    _register_gui_commands(
+        "VibeCADManufactureFollowUpGui",
+        "ensure_command_registered",
+        "VibeCAD retained-stock follow-up command failed to register",
+    )
+    _register_gui_commands(
+        "VibeCADManufactureSimulationResultGui",
+        "ensure_command_registered",
+        "VibeCAD retained simulation command failed to register",
+    )
     _load_ribbon_extension_commands()
     if fasteners_available:
-        try:
-            import VibeCADFastenersGui
-
-            VibeCADFastenersGui.ensure_commands_registered()
-        except Exception as exc:
-            _warn(f"VibeCAD standard-component commands failed to register: {exc}")
+        _register_gui_commands(
+            "VibeCADFastenersGui",
+            "ensure_commands_registered",
+            "VibeCAD standard-component commands failed to register",
+        )
 
     def _setup_development_identity() -> None:
         """Mark only repo-launcher sessions with their exact source revision."""
