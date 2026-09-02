@@ -15,6 +15,7 @@ from VibeCADAnalyzeStudySetup import (
     analyses_in_document,
     analysis_for_selection,
     apply_study,
+    preferred_analysis,
     readiness_rows,
 )
 from VibeCADNativeAnalyzeStudy import (
@@ -265,23 +266,16 @@ class StudySetupWidget(QtWidgets.QWidget):
     def refresh(self) -> None:
         document = _active_document()
         previous = str(self.analysis_combo.currentData() or self._analysis_name)
-        selected = (
-            analysis_for_selection(document, _selected_objects())
+        analyses = analyses_in_document(document) if document is not None else ()
+        preferred = (
+            preferred_analysis(
+                document,
+                _selected_objects(),
+                previous_name=previous,
+            )
             if document is not None
             else None
         )
-        active = _active_analysis(document) if document is not None else None
-        analyses = analyses_in_document(document) if document is not None else ()
-        preferred = selected or active
-        if preferred is None and previous:
-            preferred = next(
-                (
-                    candidate
-                    for candidate in analyses
-                    if str(candidate.Name) == previous
-                ),
-                None,
-            )
 
         self.analysis_combo.blockSignals(True)
         self.analysis_combo.clear()
@@ -331,9 +325,6 @@ class StudySetupWidget(QtWidgets.QWidget):
             return
 
         try:
-            import FemGui
-
-            FemGui.setActiveAnalysis(analysis)
             self.label_edit.setText(str(analysis.Label))
             self._intent = study_intent_state(analysis)
             self._inventory = study_inventory(analysis)
@@ -562,12 +553,9 @@ class StudySetupWidget(QtWidgets.QWidget):
                 physics=physics,
                 regime=str(self.regime_combo.currentData()),
             )
-            import FemGui
-
-            FemGui.setActiveAnalysis(analysis)
             self._analysis_name = str(analysis.Name)
             self.refresh()
-            App.Console.PrintMessage(f"FEM study {analysis.Label} is active.\n")
+            App.Console.PrintMessage(f"FEM study {analysis.Label} was saved.\n")
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
                 Gui.getMainWindow(),

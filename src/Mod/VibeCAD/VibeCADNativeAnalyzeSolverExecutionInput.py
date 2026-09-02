@@ -162,6 +162,17 @@ def freeze_solver_execution_snapshot(
             error_code="NATIVE_ANALYZE_SOLVER_SNAPSHOT_FAILED",
         ) from exc
     preferences = [list(value) for value in captured.runtime_preferences]
+    selected_mesh = getattr(captured, "mesh", None)
+    mesh_request = None
+    if selected_mesh is not None:
+        mesh = selected_mesh.mesh
+        mesh_request = {
+            "object_name": str(mesh.Name),
+            "object_id": int(mesh.ID),
+            "type_id": str(mesh.TypeId),
+            "kind": str(selected_mesh.kind),
+            "state_sha256": str(selected_mesh.expected_state_sha256),
+        }
     request_value = {
         "protocol": ANALYZE_SOLVER_EXECUTION_PROTOCOL,
         "workspace": str(workspace.path),
@@ -175,6 +186,7 @@ def freeze_solver_execution_snapshot(
             "kind": str(captured.target.kind),
             "state_sha256": str(captured.target.expected_state_sha256),
         },
+        "mesh": mesh_request,
         "timeout_seconds": int(captured.timeout_seconds),
         "keep_results": bool(captured.keep_results),
         "runtime_preferences": preferences,

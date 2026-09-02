@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeOwnership import owning_study, study_resource_scope
 from VibeCADNativeAnalyzeGmshGeneration import (
     commit_gmsh_generation,
     discard_gmsh_generation_request,
@@ -169,6 +170,9 @@ class NativeAnalyzeMeshRuntime:
             committer = commit_netgen_generation
             verifier = verify_netgen_generation
             discard = discard_netgen_generation_request
+        scope = study_resource_scope(
+            owning_study(context.document, request.target.mesh)
+        )
 
         def prepare(cancelled: Any, progress: Any) -> Any:
             return runner(request, cancelled=cancelled, progress=progress)
@@ -197,6 +201,7 @@ class NativeAnalyzeMeshRuntime:
                 finalize_message="Importing verified FEM mesh",
                 cleanup=cleanup,
                 changes_document=True,
+                resource_scope=scope,
             )
         except NativeBackgroundError as exc:
             discard(request)
@@ -211,6 +216,7 @@ class NativeAnalyzeMeshRuntime:
             "job": {
                 "job_id": str(snapshot.job_id),
                 "capability": str(snapshot.capability_name),
+                "resource_scope": str(snapshot.resource_scope),
                 "phase": str(snapshot.phase),
                 "progress_percent": int(snapshot.progress_percent),
                 "progress_message": str(snapshot.progress_message),

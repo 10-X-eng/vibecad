@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometryCreate import references_match
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
@@ -227,7 +228,7 @@ def update_thermal_condition(
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     condition = prepared.target.condition
-    condition.Label = prepared.label
+    prepared = assign_prepared_label(condition, prepared)
     apply_thermal_values(condition, prepared.values)
     if prepared.family != "initial_temperature":
         condition.References = reference_value(prepared.references)

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -171,7 +172,7 @@ def update_mesh_definition(
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     mesh = prepared.target.mesh
-    mesh.Label = prepared.label
+    prepared = assign_prepared_label(mesh, prepared)
     mesh.Shape = prepared.source.source
     apply_mesher_values(mesh, prepared.values)
     if prepared.invalidates_mesh:

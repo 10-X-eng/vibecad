@@ -41,6 +41,7 @@ from VibeCADNativeAnalyzeClipping import (
 from VibeCADNativeAnalyzeGeometrySources import active_analyze_geometry_sources
 from VibeCADNativeMeshState import mesh_object_state, mesh_object_state_cache
 from VibeCADNativeSnapshot import objects_of_type
+from VibeCADAnalyzeStudySetup import analysis_for_selection
 
 
 MAX_ANALYSES = 16
@@ -193,6 +194,7 @@ def _analysis_workflows(
                     "object_name": name,
                     "label": analysis_summary.get("label", name),
                     "active": bool(analysis_summary.get("active")),
+                    "focused": bool(analysis_summary.get("focused")),
                     "state_sha256": analysis_summary["state_sha256"],
                 },
                 "graph": {
@@ -209,6 +211,7 @@ def _analysis_workflows(
                     "blockers": blockers,
                 },
                 "study": study["intent"],
+                "dependencies": study["dependencies"],
                 "study_inventory": study["inventory"],
                 "solver_runtimes": study["solver_runtimes"],
                 "engineering_readiness": study["readiness"],
@@ -270,6 +273,8 @@ def _run_status(
     background_job: Any | None,
 ) -> dict[str, Any]:
     result_count = sum(int(state.get("result_count", 0) or 0) for state in solvers)
+    if isinstance(background_job, tuple):
+        background_job = background_job[0] if background_job else None
     if background_job is None:
         return {
             "phase": "idle",
@@ -281,6 +286,7 @@ def _run_status(
     result = {
         "job_id": str(background_job.job_id),
         "capability": str(background_job.capability_name),
+        "resource_scope": str(getattr(background_job, "resource_scope", "document")),
         "phase": str(background_job.phase),
         "progress_percent": int(background_job.progress_percent),
         "progress_message": str(background_job.progress_message)[:160],
@@ -320,6 +326,25 @@ def _active_analysis(document: Any) -> Any | None:
         return analysis if getattr(analysis, "Document", None) is document else None
     except (ImportError, AttributeError, RuntimeError):
         return None
+
+
+def _focused_analysis(
+    document: Any,
+    selection: Mapping[str, Any] | None,
+) -> Any | None:
+    if not isinstance(selection, Mapping):
+        return None
+    selected = []
+    for item in list(selection.get("items") or ()):
+        if not isinstance(item, Mapping):
+            continue
+        reference = item.get("object")
+        if not isinstance(reference, Mapping):
+            continue
+        obj = document.getObject(str(reference.get("object_name") or ""))
+        if obj is not None and getattr(obj, "Document", None) is document:
+            selected.append(obj)
+    return analysis_for_selection(document, selected)
 
 
 def _materials(document: Any) -> tuple[int, list[dict[str, Any]]]:
@@ -667,6 +692,7 @@ def _background_job_payload(
     result: dict[str, Any] = {
         "job_id": str(background_job.job_id),
         "capability": str(background_job.capability_name),
+        "resource_scope": str(getattr(background_job, "resource_scope", "document")),
         "phase": str(background_job.phase),
         "progress_percent": int(background_job.progress_percent),
         "progress_message": str(background_job.progress_message)[:160],
@@ -697,10 +723,26 @@ def _background_job_payload(
     return result
 
 
+def _background_job_payloads(
+    document_uid: str,
+    background_jobs: Any,
+) -> list[dict[str, Any]]:
+    jobs = background_jobs if isinstance(background_jobs, tuple) else (
+        (background_jobs,) if background_jobs is not None else ()
+    )
+    return [
+        value
+        for job in jobs
+        for value in [_background_job_payload(document_uid, job)]
+        if value is not None
+    ]
+
+
 def begin_analyze_snapshot_capture(
     document: Any,
     *,
     background_job: Any | None = None,
+    selection: Mapping[str, Any] | None = None,
     defer_brep_validation: bool = False,
     validate_brep: bool = True,
     analysis_artifact_names: frozenset[str] | None = None,
@@ -747,6 +789,16 @@ def begin_analyze_snapshot_capture(
         "Fem::FemAnalysis",
     )
     active = _active_analysis(document)
+    focused = _focused_analysis(document, selection)
+    analysis_names = [str(value.Name) for value in analyses]
+    detailed_analysis_names = analysis_names[:MAX_ANALYSES]
+    focused_name = str(getattr(focused, "Name", "") or "")
+    if focused_name and focused_name not in detailed_analysis_names:
+        detailed_analysis_names = [
+            *detailed_analysis_names[: MAX_ANALYSES - 1],
+            focused_name,
+        ]
+    background_jobs = _background_job_payloads(document_uid, background_job)
     validation_root = (
         str(
             Path(tempfile.gettempdir())
@@ -758,11 +810,14 @@ def begin_analyze_snapshot_capture(
     return {
         "document_uid": document_uid,
         "object_names": object_names,
-        "analysis_names": [str(value.Name) for value in analyses],
+        "analysis_names": analysis_names,
+        "detailed_analysis_names": detailed_analysis_names,
         "active_analysis_name": (
             str(getattr(active, "Name", "") or "") if active is not None else ""
         ),
-        "background_job": _background_job_payload(document_uid, background_job),
+        "focused_analysis_name": focused_name,
+        "background_job": background_jobs[0] if background_jobs else None,
+        "background_jobs": background_jobs,
         "validate_brep": validate_brep,
         "defer_brep_validation": defer_brep_validation,
         "geometry_validation_artifact_root": validation_root,
@@ -774,10 +829,12 @@ def _analysis_capture_record(
     *,
     active_analysis_name: str,
     include_summary: bool,
+    focused_analysis_name: str = "",
 ) -> dict[str, Any]:
     if include_summary:
         summary = analysis_state(analysis)
         summary["active"] = str(analysis.Name) == active_analysis_name
+        summary["focused"] = str(analysis.Name) == focused_analysis_name
         result_graph = result_purge_state(analysis)
         summary["result_graph"] = {
             key: result_graph[key]
@@ -852,6 +909,12 @@ def _capture_analyze_snapshot_batch(
     batch = SimpleNamespace(Uid=document_uid, Objects=objects)
     analysis_names = [str(name) for name in list(request.get("analysis_names") or [])]
     analysis_indexes = {name: index for index, name in enumerate(analysis_names)}
+    detailed_names = set(
+        str(name)
+        for name in list(request.get("detailed_analysis_names") or ())
+    )
+    if not detailed_names:
+        detailed_names.update(analysis_names[:MAX_ANALYSES])
     analyses = []
     for obj in objects:
         name = str(getattr(obj, "Name", "") or "")
@@ -862,7 +925,10 @@ def _capture_analyze_snapshot_batch(
             _analysis_capture_record(
                 obj,
                 active_analysis_name=str(request.get("active_analysis_name") or ""),
-                include_summary=index < MAX_ANALYSES,
+                focused_analysis_name=str(
+                    request.get("focused_analysis_name") or ""
+                ),
+                include_summary=name in detailed_names,
             )
         )
 
@@ -1072,9 +1138,11 @@ def _analysis_workflows_from_records(
     result_states: Mapping[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     workflows = []
-    for record in records[:MAX_ANALYSES]:
+    for record in records:
         analysis_summary = record.get("summary")
         study = record.get("study")
+        if analysis_summary is None:
+            continue
         if not isinstance(analysis_summary, Mapping) or not isinstance(study, Mapping):
             raise RuntimeError("Analyze workflow capture is incomplete.")
         name = str(record.get("object_name") or "")
@@ -1125,6 +1193,7 @@ def _analysis_workflows_from_records(
                     "object_name": name,
                     "label": analysis_summary.get("label", name),
                     "active": bool(analysis_summary.get("active")),
+                    "focused": bool(analysis_summary.get("focused")),
                     "state_sha256": analysis_summary["state_sha256"],
                 },
                 "graph": {
@@ -1141,6 +1210,7 @@ def _analysis_workflows_from_records(
                     "blockers": blockers,
                 },
                 "study": dict(study["intent"]),
+                "dependencies": dict(study["dependencies"]),
                 "study_inventory": dict(study["inventory"]),
                 "solver_runtimes": list(study.get("solver_runtimes") or []),
                 "engineering_readiness": dict(study.get("readiness") or {}),
@@ -1201,7 +1271,7 @@ def finish_analyze_snapshot_capture(
     )
     summarized = [
         dict(record["summary"])
-        for record in records[:MAX_ANALYSES]
+        for record in records
         if isinstance(record.get("summary"), Mapping)
     ]
     collections = {}
@@ -1259,7 +1329,14 @@ def finish_analyze_snapshot_capture(
     result_count = sum(
         int(state.get("result_count", 0) or 0) for state in solver_states.values()
     )
-    background_job = request.get("background_job")
+    background_jobs = [
+        dict(value)
+        for value in list(request.get("background_jobs") or ())
+        if isinstance(value, Mapping)
+    ]
+    background_job = background_jobs[0] if background_jobs else request.get(
+        "background_job"
+    )
     run_status = (
         dict(background_job)
         if isinstance(background_job, Mapping)
@@ -1277,6 +1354,7 @@ def finish_analyze_snapshot_capture(
         "analysis_workflows_truncated": analysis_count > len(workflows),
         "provider_scope": provider_scope,
         "run_status": run_status,
+        "background_jobs": background_jobs,
         **collections,
         "clipping": dict(clipping),
     }
@@ -1286,10 +1364,12 @@ def build_analyze_snapshot(
     document: Any,
     *,
     background_job: Any | None = None,
+    selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     request = begin_analyze_snapshot_capture(
         document,
         background_job=background_job,
+        selection=selection,
     )
     part = capture_analyze_snapshot_batch(
         document,

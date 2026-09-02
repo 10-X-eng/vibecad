@@ -22,6 +22,10 @@ from VibeCADNativeAnalyzeSolverExecutionProcess import run_solver_processes
 from VibeCADNativeAnalyzeSolverExecutionSchema import (
     analyze_solver_execution_capability_definition,
 )
+from VibeCADNativeAnalyzeSolverExecutionRuntime import (
+    NativeAnalyzeSolverExecutionRuntime,
+)
+from VibeCADNativeAnalyzeRunSchema import analyze_run_solver_capability_definition
 from VibeCADNativeBackground import NativeBackgroundCancelled
 
 
@@ -38,7 +42,50 @@ def test_solver_execution_schema_is_one_sharp_background_operation() -> None:
     variant = definition.variants[0]
     assert variant.background_required
     assert variant.transaction_behavior == "background"
-    assert set(variant.parameters["properties"]) == {"target", "timeout_seconds"}
+    assert set(variant.parameters["properties"]) == {
+        "target",
+        "mesh",
+        "timeout_seconds",
+    }
+
+
+def test_focused_solver_run_accepts_an_explicit_mesh_name() -> None:
+    variant = analyze_run_solver_capability_definition().variants[0]
+
+    assert set(variant.parameters["properties"]) == {
+        "solver_name",
+        "mesh_name",
+        "timeout_seconds",
+    }
+    assert variant.parameters["required"] == ["solver_name"]
+    assert variant.parameters["properties"]["mesh_name"]["type"] == "string"
+
+
+def test_solver_runtime_accepts_an_omitted_mesh_for_owner_resolution() -> None:
+    runtime = object.__new__(NativeAnalyzeSolverExecutionRuntime)
+    runtime._context = SimpleNamespace(
+        guard=lambda: None,
+        background_manager=None,
+        document_thread_dispatch=None,
+    )
+
+    with pytest.raises(NativeAnalyzeError) as raised:
+        runtime.execute(
+            {
+                "operation": "run",
+                "target": {
+                    "object_name": "SolverCalculiX",
+                    "expected_state_sha256": "a" * 64,
+                },
+                "timeout_seconds": 3600,
+            },
+            ticket=None,
+        )
+
+    assert (
+        raised.value.error_code
+        == "NATIVE_ANALYZE_SOLVER_BACKGROUND_UNAVAILABLE"
+    )
 
 
 def test_process_sequence_is_exact_bounded_and_shell_free(tmp_path: Path) -> None:
@@ -375,6 +422,133 @@ def test_solver_capture_does_not_generate_case_files(monkeypatch) -> None:
     )
 
 
+def test_solver_capture_requires_an_explicit_mesh_when_study_has_several(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeAnalyzeSolverExecution as execution
+
+    class Mesh:
+        def __init__(self, name: str) -> None:
+            self.Name = name
+            self.Label = name
+            self.Suppressed = False
+
+        @staticmethod
+        def isDerivedFrom(type_id: str) -> bool:
+            return type_id == "Fem::FemMeshObject"
+
+    first = Mesh("CoarseMesh")
+    second = Mesh("FineMesh")
+    analysis = SimpleNamespace(Name="Analysis", Group=(first, second))
+    document = SimpleNamespace(
+        getObject=lambda name: analysis if name == "Analysis" else None
+    )
+    solver = SimpleNamespace(Name="Solver", Document=document)
+    target = SimpleNamespace(
+        solver=solver,
+        kind="calculix",
+        expected_state_sha256="a" * 64,
+    )
+    monkeypatch.setattr(execution, "prepare_solver_target", lambda *_args: target)
+    monkeypatch.setattr(
+        execution,
+        "solver_state",
+        lambda *_args: {
+            "suppressed": False,
+            "analysis": "Analysis",
+        },
+    )
+    monkeypatch.setattr(execution, "validate_assignments", lambda *_args: {"valid": True})
+
+    with pytest.raises(NativeAnalyzeError) as raised:
+        execution.capture_solver_execution_request(
+            document,
+            "document-a",
+            target={
+                "object_name": "Solver",
+                "expected_state_sha256": "a" * 64,
+            },
+            timeout_seconds=3600,
+        )
+
+    assert raised.value.error_code == "NATIVE_ANALYZE_SOLVER_MESH_REQUIRED"
+    assert raised.value.repair == {
+        "analysis": "Analysis",
+        "mesh_names": ["CoarseMesh", "FineMesh"],
+    }
+
+
+def test_solver_capture_keeps_the_explicit_mesh_with_its_solver(monkeypatch) -> None:
+    import VibeCADNativeAnalyzeSolverExecution as execution
+
+    class Mesh:
+        Name = "FineMesh"
+        Label = "Fine mesh"
+        Suppressed = False
+
+        @staticmethod
+        def isDerivedFrom(type_id: str) -> bool:
+            return type_id == "Fem::FemMeshObject"
+
+    mesh = Mesh()
+    analysis = SimpleNamespace(Name="Analysis", Group=(mesh,))
+    document = SimpleNamespace(
+        getObject=lambda name: analysis if name == "Analysis" else None
+    )
+    solver = SimpleNamespace(Name="Solver", Document=document)
+    target = SimpleNamespace(
+        solver=solver,
+        kind="calculix",
+        expected_state_sha256="a" * 64,
+    )
+    selected = SimpleNamespace(
+        mesh=mesh,
+        kind="gmsh",
+        expected_state_sha256="b" * 64,
+    )
+    monkeypatch.setattr(execution, "prepare_solver_target", lambda *_args: target)
+    monkeypatch.setattr(
+        execution,
+        "prepare_fem_mesh_definition_target",
+        lambda *_args: selected,
+    )
+    monkeypatch.setattr(
+        execution,
+        "solver_state",
+        lambda *_args: {"suppressed": False, "analysis": "Analysis"},
+    )
+    monkeypatch.setattr(execution, "validate_assignments", lambda *_args: {"valid": True})
+    monkeypatch.setattr(execution, "_require_history_root", lambda *_args: (solver,))
+    monkeypatch.setattr(
+        execution,
+        "_current_solver_runtime_preferences",
+        lambda *_args: (
+            (
+                "User parameter:BaseApp/Preferences/Mod/Fem/General",
+                "KeepResultsOnReRun",
+                "bool",
+                False,
+            ),
+        ),
+    )
+
+    captured = execution.capture_solver_execution_request(
+        document,
+        "document-a",
+        target={
+            "object_name": "Solver",
+            "expected_state_sha256": "a" * 64,
+        },
+        mesh={
+            "object_name": "FineMesh",
+            "expected_state_sha256": "b" * 64,
+        },
+        timeout_seconds=3600,
+    )
+
+    assert captured.mesh is selected
+
+
 def test_solver_capture_rejects_assignments_outside_the_generated_mesh(
     monkeypatch,
 ) -> None:
@@ -524,6 +698,15 @@ def test_solver_snapshot_is_materialized_only_inside_owned_workspace(
             Path(path).write_bytes(b"FCStd snapshot")
             return True
 
+    selected_mesh = SimpleNamespace(
+        mesh=SimpleNamespace(
+            Name="FineMesh",
+            ID=23,
+            TypeId="Fem::FemMeshObjectPython",
+        ),
+        kind="gmsh",
+        expected_state_sha256="c" * 64,
+    )
     captured = SimpleNamespace(
         target=SimpleNamespace(
             solver=SimpleNamespace(Name="Solver", ID=17, TypeId="Fem::FemSolverObject"),
@@ -534,6 +717,7 @@ def test_solver_snapshot_is_materialized_only_inside_owned_workspace(
         timeout_seconds=3600,
         keep_results=False,
         runtime_preferences=(),
+        mesh=selected_mesh,
     )
     workspace = execution_input.SolverExecutionWorkspace(
         temporary=SimpleNamespace(cleanup=lambda: None),
@@ -561,6 +745,50 @@ def test_solver_snapshot_is_materialized_only_inside_owned_workspace(
     assert frozen.snapshot.path == tmp_path / "document.FCStd"
     assert frozen.request.path == tmp_path / "request.json"
     assert frozen.solver_name == "Solver"
+    import json
+
+    request = json.loads(frozen.request.path.read_text(encoding="utf-8"))
+    assert request["mesh"] == {
+        "object_name": "FineMesh",
+        "object_id": 23,
+        "type_id": "Fem::FemMeshObjectPython",
+        "kind": "gmsh",
+        "state_sha256": "c" * 64,
+    }
+
+
+def test_detached_solver_snapshot_keeps_only_the_selected_mesh() -> None:
+    import VibeCADNativeAnalyzeSolverExecutionChild as child
+
+    class Mesh:
+        def __init__(self, name: str, object_id: int) -> None:
+            self.Name = name
+            self.ID = object_id
+            self.TypeId = "Fem::FemMeshObjectPython"
+
+        @staticmethod
+        def isDerivedFrom(type_id: str) -> bool:
+            return type_id == "Fem::FemMeshObject"
+
+    selected = Mesh("FineMesh", 23)
+    other = Mesh("CoarseMesh", 24)
+
+    class Analysis:
+        def __init__(self) -> None:
+            self.Group = [selected, other, object()]
+
+        def removeObject(self, obj) -> None:
+            self.Group.remove(obj)
+
+    analysis = Analysis()
+
+    child._isolate_solver_mesh(
+        analysis,
+        selected,
+    )
+
+    assert selected in analysis.Group
+    assert other not in analysis.Group
 
 
 def test_human_and_ai_solver_entrypoints_do_not_call_synchronous_case_builder() -> None:

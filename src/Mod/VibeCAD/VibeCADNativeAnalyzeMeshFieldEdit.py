@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -305,7 +306,7 @@ def update_mesh_field(document: Any, prepared: PreparedMeshFieldUpdate) -> Nativ
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     field = prepared.target.refinement
-    field.Label = prepared.label
+    prepared = assign_prepared_label(field, prepared)
     if prepared.values.family == "manipulate":
         field.Refinement = prepared.dependencies.objects[0]
     else:

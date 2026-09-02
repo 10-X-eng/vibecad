@@ -5,10 +5,43 @@
 from __future__ import annotations
 
 from io import BytesIO
+from types import SimpleNamespace
 import zipfile
 
 import VibeCADNativeAnalyzeMeshState as mesh_state
 from VibeCADNativeAnalyzeMeshState import _mesh_content_sha256
+
+
+def test_mesh_definition_source_state_ignores_process_local_shape_hash(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeAnalyzeMeshState as mesh_state
+
+    class Shape:
+        ShapeType = "Solid"
+
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def hashCode(self) -> int:
+            return self.value
+
+    source = SimpleNamespace(Name="Source", ID=7, Shape=Shape(11))
+    source_state = {"state_sha256": "a" * 64}
+    monkeypatch.setattr(mesh_state, "mesh_object_state", lambda _source: source_state)
+
+    _visible, first = mesh_state._source(SimpleNamespace(Shape=source))
+    source.Shape = Shape(12)
+    _visible, second = mesh_state._source(SimpleNamespace(Shape=source))
+
+    assert first == second
+    assert "shape_hash" not in first
+
+    source_state = {"state_sha256": "b" * 64}
+    _visible, changed = mesh_state._source(SimpleNamespace(Shape=source))
+
+    assert changed["state_sha256"] == "b" * 64
+    assert changed != second
 
 
 def _archive(unv: str) -> bytes:
