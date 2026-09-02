@@ -310,7 +310,17 @@ def test_cam_human_tools_share_exact_history_input_identity():
 
     assert "while current is not None" in usable
     assert "getLinkedObject(recursive=False)" in usable
-    assert "is_document_object(current, current_document)" in usable
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "is_document_object"
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "current"
+        and isinstance(node.args[1], ast.Name)
+        and node.args[1].id == "current_document"
+        for node in ast.walk(ast.parse(usable))
+    )
     assert "gui_document.Document is document" in command_gate
     assert "document_uid" in identity
     assert "object_id" in identity

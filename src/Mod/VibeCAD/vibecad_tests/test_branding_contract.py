@@ -1433,6 +1433,103 @@ def test_vibecad_bootstrap_helpers_survive_freecad_exec_namespace(monkeypatch) -
     assert any("catalog unavailable" in warning for warning in warnings)
 
 
+def test_vibecad_bootstrap_isolates_optional_command_registration_failures(
+    monkeypatch,
+) -> None:
+    """One optional command must not suppress unrelated startup services."""
+
+    class ParameterGroup:
+        def GetString(self, _name: str, default: str) -> str:
+            return default
+
+        def SetString(self, _name: str, _value: str) -> None:
+            pass
+
+        def GetBool(self, _name: str, default: bool) -> bool:
+            return default
+
+        def SetBool(self, _name: str, _value: bool) -> None:
+            pass
+
+    warnings: list[str] = []
+    startup_events: list[str] = []
+    app = SimpleNamespace(
+        Console=SimpleNamespace(PrintWarning=warnings.append),
+        ParamGet=lambda _path: ParameterGroup(),
+    )
+    qt_core = SimpleNamespace(
+        QTimer=SimpleNamespace(
+            singleShot=lambda _delay, callback: startup_events.append(
+                f"scheduled:{callback.__name__}"
+            )
+        )
+    )
+
+    def fail_follow_up() -> None:
+        startup_events.append("follow-up-attempted")
+        raise RuntimeError("follow-up unavailable")
+
+    monkeypatch.setitem(sys.modules, "FreeCAD", app)
+    monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADGui",
+        SimpleNamespace(
+            ensure_commands_registered=lambda: startup_events.append("assistant")
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(
+            ensure_command_registered=lambda: startup_events.append("analyze")
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADManufactureFollowUpGui",
+        SimpleNamespace(ensure_command_registered=fail_follow_up),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADManufactureSimulationResultGui",
+        SimpleNamespace(
+            ensure_command_registered=lambda: startup_events.append("simulation")
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADFasteners",
+        SimpleNamespace(require_available=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADFastenersGui",
+        SimpleNamespace(
+            ensure_commands_registered=lambda: startup_events.append("fasteners")
+        ),
+    )
+
+    runpy.run_path(str(ROOT / "src/Mod/VibeCAD/InitGui.py"))
+
+    assert startup_events == [
+        "assistant",
+        "analyze",
+        "follow-up-attempted",
+        "simulation",
+        "fasteners",
+        "scheduled:_setup_development_identity",
+        "scheduled:_setup_always_on_grid",
+        "scheduled:_setup_agent_control",
+        "scheduled:_setup_aero_ribbon",
+    ]
+    assert any(
+        "retained-stock follow-up command failed to register: follow-up unavailable"
+        in warning
+        for warning in warnings
+    )
+
+
 def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> None:
     """The deferred callback must import VibeCADGui in its own body.
 
