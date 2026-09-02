@@ -50,6 +50,7 @@ _MATERIAL_CATALOG_PARAMETERS = {
 }
 
 _EXACT_TARGET_BY_OPERATION = {
+    "studies": "BoundedFemStudyCatalog",
     "study": "ExactFemStudyState",
     "analysis": "ExactFemAnalysisState",
     "assignments": "BoundedExactFemAssignmentPage",
@@ -107,6 +108,29 @@ def analyze_inspect_capability_definition() -> NativeCapabilityDefinition:
         ),
         primary_classification="read",
         variants=(
+            _variant(
+                "studies",
+                "List a bounded page of studies with exact targets.",
+                "VibeCAD_AnalyzeReadAnalysis",
+                {
+                    "type": "object",
+                    "properties": {
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 0,
+                        },
+                        "page_size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 64,
+                            "default": 64,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                provider_supplemental=True,
+            ),
             _variant(
                 "study",
                 "Read intent, completeness, runtimes, and next requirements for one study.",

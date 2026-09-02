@@ -230,6 +230,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeInspectBindings.py
     VibeCADNativeAnalyzeInspectRuntime.py
     VibeCADNativeAnalyzeInspectSchema.py
+    VibeCADNativeAnalyzeLabels.py
     VibeCADNativeAnalyzeMaterialCreate.py
     VibeCADNativeAnalyzeMaterialEdit.py
     VibeCADNativeAnalyzeMaterials.py
@@ -241,6 +242,8 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeSolidDomainSchema.py
     VibeCADNativeAnalyzeSnapshot.py
     VibeCADNativeAnalyzeStudy.py
+    VibeCADNativeAnalyzeOwnership.py
+    VibeCADNativeAnalyzeStudyDependencies.py
     VibeCADNativeAnalyzeStudyEdit.py
     VibeCADNativeAnalyzeStudyState.py
     VibeCADNativeAeroSnapshot.py

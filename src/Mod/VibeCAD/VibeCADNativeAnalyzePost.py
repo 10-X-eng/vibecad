@@ -9,6 +9,7 @@ import math
 from typing import Any
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -264,7 +265,7 @@ def create_post_pipeline(
             "Fem::FemPostPipeline",
             document.getUniqueObjectName("ResultPipeline"),
         )
-        pipeline.Label = prepared.label
+        prepared = assign_prepared_label(pipeline, prepared)
         analysis.addObject(pipeline)
         pipeline.load(result)
         pipeline.ViewObject.DisplayMode = "Surface"
@@ -418,7 +419,7 @@ def create_post_branch(
             "Fem::FemPostBranchFilter",
             document.getUniqueObjectName("Branch"),
         )
-        branch.Label = prepared.label
+        prepared = assign_prepared_label(branch, prepared)
         parent_group.addObject(branch)
         branch.Mode = prepared.mode.title()
         branch.Output = prepared.output.title()
@@ -587,7 +588,7 @@ def create_post_warp(
             "Fem::FemPostWarpVectorFilter",
             document.getUniqueObjectName("WarpVector"),
         )
-        warp.Label = prepared.label
+        prepared = assign_prepared_label(warp, prepared)
         parent_group.addObject(warp)
         warp.ViewObject.DisplayMode = "Surface"
         warp.ViewObject.SelectionStyle = "BoundBox"

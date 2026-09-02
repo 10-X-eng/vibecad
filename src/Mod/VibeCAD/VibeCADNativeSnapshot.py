@@ -172,6 +172,7 @@ def _domain_builder(
         return lambda document: build_analyze_snapshot(
             document,
             background_job=background_job,
+            selection=selection,
         )
     if surface_id == "manufacture":
         from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot

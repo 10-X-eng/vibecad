@@ -9,6 +9,7 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -323,7 +324,7 @@ def create_post_line_sample(
             "Fem::FemPostDataAlongLineFilter",
             document.getUniqueObjectName("DataAlongLine"),
         )
-        sample.Label = prepared.label
+        prepared = assign_prepared_label(sample, prepared)
         prepared.parent_group.addObject(sample)
         sample.Point1 = prepared.start_mm
         sample.Point2 = prepared.end_mm
@@ -370,7 +371,7 @@ def create_post_point_sample(
             "Fem::FemPostDataAtPointFilter",
             document.getUniqueObjectName("DataAtPoint"),
         )
-        sample.Label = prepared.label
+        prepared = assign_prepared_label(sample, prepared)
         prepared.parent_group.addObject(sample)
         sample.Center = prepared.point_mm
         sample.ViewObject.DisplayMode = "Surface"

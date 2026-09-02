@@ -9,6 +9,7 @@ from typing import Any
 
 from VibeCADNativeAnalyzeEquationState import equation_kind, equation_state
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -139,7 +140,7 @@ def create_equation(
         ) from exc
     if equation_kind(equation) != prepared.kind:
         raise NativeAnalyzeError("The Elmer equation factory returned the wrong kind.")
-    equation.Label = prepared.label
+    prepared = assign_prepared_label(equation, prepared)
     if tuple(getattr(solver, "Group", ()) or ()) != (*prepared.children_before, equation):
         raise NativeAnalyzeError("The Elmer equation was not appended to the exact solver.")
     finalize_new_operation_resource(

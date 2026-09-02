@@ -773,6 +773,9 @@ def result_state(obj: Any, *, include_ranges: bool = True) -> dict[str, Any]:
     analysis_owners = _analysis_owners(document, obj)
     post_pipeline_owners = _post_pipeline_owners(document, obj)
     timeline_chain = _timeline_chain(document, obj)
+    input_mesh_identity = _identity(
+        getattr(obj, "VibeCADAnalyzeInputMesh", None)
+    )
     details = (
         _legacy_result_state(obj, include_ranges=include_ranges)
         if kind == "result"
@@ -794,6 +797,7 @@ def result_state(obj: Any, *, include_ranges: bool = True) -> dict[str, Any]:
         "analysis_owners": analysis_owners,
         "post_pipeline_owners": post_pipeline_owners,
         "timeline_chain": timeline_chain,
+        "input_mesh": input_mesh_identity,
         "data": {
             key: value
             for key, value in details.items()
@@ -814,6 +818,9 @@ def result_state(obj: Any, *, include_ranges: bool = True) -> dict[str, Any]:
         "analysis_owners": [identity[0] for identity in analysis_owners],
         "post_pipeline_owners": [identity[0] for identity in post_pipeline_owners],
         "timeline_owner_chain": [identity[0] for identity in timeline_chain],
+        "input_mesh": (
+            input_mesh_identity[0] if input_mesh_identity is not None else None
+        ),
         **details,
         "presentation": presentation,
         "state_sha256": _digest(digest_payload),
@@ -833,6 +840,7 @@ def result_reference_state(obj: Any) -> dict[str, Any]:
             "analysis_owners",
             "post_pipeline_owners",
             "timeline_owner_chain",
+            "input_mesh",
             "data_available",
             "point_count",
             "cell_count",

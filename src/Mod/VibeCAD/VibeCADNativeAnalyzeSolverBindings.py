@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from VibeCADNativeAnalyzeCurrentTargets import current_analysis_target
 from VibeCADNativeAnalyzeSolverRuntime import NativeAnalyzeSolverRuntime
 from VibeCADNativeAnalyzeSolverSchema import ANALYZE_SOLVER_CAPABILITY_NAME
 from VibeCADNativeCapabilityRegistry import NativeCapabilityImplementation, NativeCapabilityRegistry
@@ -18,7 +19,17 @@ def _execute(call: Any) -> Mapping[str, Any]:
         raise TypeError("An Analyze solver call requires its exact runtime.")
     if not isinstance(arguments, Mapping):
         raise TypeError("An Analyze solver call requires argument data.")
-    return runtime.execute(arguments, ticket=getattr(call, "ticket", None))
+    values = dict(arguments)
+    analysis = values.get("analysis")
+    analysis_name = analysis if isinstance(analysis, str) else None
+    if analysis_name is not None:
+        values["analysis"] = current_analysis_target(runtime, analysis_name)
+    result = dict(
+        runtime.execute(values, ticket=getattr(call, "ticket", None))
+    )
+    if analysis_name is not None:
+        result["analysis_name"] = str(analysis_name)
+    return result
 
 
 def register_analyze_solver_capability_implementation(

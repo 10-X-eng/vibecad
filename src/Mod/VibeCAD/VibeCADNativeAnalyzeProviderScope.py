@@ -28,6 +28,10 @@ from VibeCADNativeAnalyzeLocalMeshSchema import (
     ANALYZE_LOCAL_MESH_SIZE,
 )
 from VibeCADNativeAnalyzeRunSchema import ANALYZE_RUN_SOLVER
+from VibeCADNativeAnalyzeModelSchema import (
+    ANALYZE_CONFIGURE_STUDY,
+    ANALYZE_CREATE_STUDY,
+)
 from VibeCADNativeAnalyzeSolidDomainSchema import ANALYZE_SOLID_DOMAIN
 from VibeCADNativeAnalyzeFlowResultSchema import (
     ANALYZE_COMPARE_FLOW,
@@ -86,7 +90,9 @@ _SHARED = frozenset(
         "view.control",
     }
 )
-_SETUP = frozenset({"analyze.model", ANALYZE_MATERIAL_CATALOG})
+_SETUP = frozenset(
+    {"analyze.model", ANALYZE_CREATE_STUDY, ANALYZE_MATERIAL_CATALOG}
+)
 _STUDY = frozenset(
     {
         "analyze.mesh",
@@ -164,6 +170,21 @@ _LIVE_KIND_SOURCES = {
         "thermal_conditions_truncated",
     ),
 }
+_FOCUSED_KIND_FIELDS = {
+    "materials": "material_kinds",
+    "element_definitions": "element_definition_kinds",
+    "electromagnetic_constraints": "electromagnetic_constraint_kinds",
+    "fluid_constraints": "fluid_constraint_kinds",
+    "geometrical_features": "geometrical_feature_kinds",
+    "support_conditions": "support_condition_kinds",
+    "connections": "connection_kinds",
+    "loads": "load_kinds",
+    "thermal_conditions": "thermal_condition_families",
+    "mesh_definitions": "mesh_kinds",
+    "mesh_refinements": "mesh_refinement_kinds",
+    "solvers": "solver_kinds",
+    "equations": "equation_kinds",
+}
 _PHYSICS = {
     "mechanical": frozenset(
         {
@@ -232,6 +253,16 @@ _MESH_SETUP = frozenset(
     }
 )
 _SOLVER_SETUP = frozenset({"analyze.solver_control"})
+_SOLVER_ONLY_BLOCKERS = frozenset(
+    {
+        "missing_solver",
+        "calculix_requires_thermomech",
+        "calculix_requires_pure_heat_transfer",
+        "calculix_requires_thermomechanical_mode",
+        "calculix_requires_steady_thermal",
+        "calculix_requires_transient_thermal",
+    }
+)
 def _nonnegative_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
@@ -400,6 +431,18 @@ def _published_scope(
 def _engineering_readiness(
     domain: Mapping[str, Any],
 ) -> tuple[Mapping[str, Any], ...] | None:
+    focused = _focused_workflow(domain)
+    if focused is not None:
+        value = focused.get("engineering_readiness")
+        blockers = value.get("blockers") if isinstance(value, Mapping) else None
+        if (
+            isinstance(value, Mapping)
+            and type(value.get("ready_to_solve")) is bool
+            and isinstance(blockers, list)
+            and all(isinstance(blocker, str) for blocker in blockers)
+        ):
+            return (value,)
+        return None
     analysis_count = _nonnegative_int(domain.get("analysis_count"))
     workflows = domain.get("analysis_workflows")
     if (
@@ -433,8 +476,12 @@ def _solver_creation_ready(domain: Mapping[str, Any]) -> bool | None:
     if readiness is None:
         return None
     return any(
-        "missing_solver" in value["blockers"]
-        and set(value["blockers"]) == {"missing_solver"}
+        not [
+            blocker
+            for blocker in value["blockers"]
+            if blocker not in _SOLVER_ONLY_BLOCKERS
+            and not blocker.startswith("solver_runtime_unavailable:")
+        ]
         for value in readiness
     )
 
@@ -478,6 +525,24 @@ def _fully_conformal_shared_domain(domain: Mapping[str, Any]) -> bool:
     )
 
 
+def _focused_workflow(domain: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    workflows = [
+        value
+        for value in list(domain.get("analysis_workflows") or ())
+        if isinstance(value, Mapping)
+    ]
+    focused = [
+        value
+        for value in workflows
+        if isinstance(value.get("analysis"), Mapping)
+        and value["analysis"].get("focused") is True
+    ]
+    if len(focused) == 1:
+        return focused[0]
+    analysis_count = _nonnegative_int(domain.get("analysis_count"))
+    return workflows[0] if analysis_count == 1 and len(workflows) == 1 else None
+
+
 def analyze_provider_tool_names(
     domain: Mapping[str, Any],
     available_tool_names: Sequence[str],
@@ -499,6 +564,8 @@ def analyze_provider_tool_names(
     analysis_count = _nonnegative_int(domain.get("analysis_count"))
     if analysis_count is None:
         return tuple(name for name in available_tool_names if name in allowed)
+    if analysis_count > 0:
+        allowed.add(ANALYZE_CONFIGURE_STUDY)
 
     published = _published_scope(domain, analysis_count)
     if published is not None:
@@ -551,6 +618,30 @@ def analyze_provider_tool_names(
             solver_count += int(counts[2])
             result_count += int(counts[3])
 
+    focused_workflow = _focused_workflow(domain)
+    ambiguous_studies = analysis_count > 1 and focused_workflow is None
+    if focused_workflow is not None:
+        focused_study = focused_workflow.get("study")
+        focused_inventory = focused_workflow.get("study_inventory")
+        if isinstance(focused_study, Mapping) and isinstance(
+            focused_inventory, Mapping
+        ):
+            values = focused_study.get("physics")
+            if focused_study.get("declared") is True and isinstance(values, list):
+                physics = {str(value) for value in values if value in _PHYSICS}
+            mesh_count = _nonnegative_int(
+                focused_inventory.get("mesh_definition_count")
+            ) or 0
+            generated_mesh_count = _nonnegative_int(
+                focused_inventory.get("generated_mesh_count")
+            ) or 0
+            solver_count = _nonnegative_int(
+                focused_inventory.get("solver_count")
+            ) or 0
+            result_count = _nonnegative_int(
+                focused_inventory.get("result_count")
+            ) or 0
+
     if physics:
         allowed.update(_STUDY)
         for name in physics:
@@ -560,36 +651,37 @@ def analyze_provider_tool_names(
         if physics == {"fluid"}:
             allowed.discard("analyze.inspect")
             allowed.discard("analyze.mesh")
-            fluid_kinds, fluid_constraints_truncated = _collection_kinds(
+            fluid_kinds, fluid_constraints_truncated = _scoped_collection_kinds(
                 domain,
                 "fluid_constraints",
                 "constraint_kind",
                 "fluid_constraints_truncated",
             )
-            if "initial_flow_velocity" in fluid_kinds:
+            if "initial_flow_velocity" in fluid_kinds and not ambiguous_studies:
                 allowed.discard(ANALYZE_INITIAL_VELOCITY)
-            if "initial_pressure" in fluid_kinds:
+            if "initial_pressure" in fluid_kinds and not ambiguous_studies:
                 allowed.discard(ANALYZE_INITIAL_PRESSURE)
             if (
                 "fluid_boundary" not in fluid_kinds
                 and not fluid_constraints_truncated
+                and not ambiguous_studies
             ):
                 allowed.discard(ANALYZE_EDIT_FLUID_BOUNDARY)
-            solver_kinds, _solvers_truncated = _collection_kinds(
+            solver_kinds, _solvers_truncated = _scoped_collection_kinds(
                 domain,
                 "solvers",
                 "solver_kind",
                 "solvers_truncated",
             )
-            if "openfoam" in solver_kinds:
+            if "openfoam" in solver_kinds and not ambiguous_studies:
                 allowed.discard(ANALYZE_OPENFOAM_SOLVER)
-        load_kinds, loads_truncated = _collection_kinds(
+        load_kinds, loads_truncated = _scoped_collection_kinds(
             domain,
             "loads",
             "load_kind",
             "loads_truncated",
         )
-        if not loads_truncated:
+        if not loads_truncated and not ambiguous_studies:
             for kind, edit_tool in (
                 ("force", ANALYZE_EDIT_FORCE),
                 ("pressure", ANALYZE_EDIT_PRESSURE),
@@ -600,13 +692,13 @@ def analyze_provider_tool_names(
                     allowed.discard(edit_tool)
             if "gravity" in load_kinds:
                 allowed.discard(ANALYZE_GRAVITY)
-        support_kinds, supports_truncated = _collection_kinds(
+        support_kinds, supports_truncated = _scoped_collection_kinds(
             domain,
             "support_conditions",
             "condition_kind",
             "support_conditions_truncated",
         )
-        if not supports_truncated:
+        if not supports_truncated and not ambiguous_studies:
             for kind, edit_tool in (
                 ("fixed", ANALYZE_EDIT_FIXED_SUPPORT),
                 ("rigid_body", ANALYZE_EDIT_RIGID_COUPLING),
@@ -616,10 +708,10 @@ def analyze_provider_tool_names(
                 if kind not in support_kinds:
                     allowed.discard(edit_tool)
         material_required = _solid_material_required(domain, physics)
-        if material_required is False or (
+        if not ambiguous_studies and (material_required is False or (
             material_required is None
             and _solid_material_coverage_complete(domain, analysis_count)
-        ):
+        )):
             allowed.discard(ANALYZE_SOLID_MATERIAL)
             allowed.discard(ANALYZE_SOLID_REGION_MATERIAL)
             allowed.discard(ANALYZE_CATALOG_MATERIAL)
@@ -632,6 +724,7 @@ def analyze_provider_tool_names(
     )
     if (
         any(domain.get(name) is True for name in _ASSIGNMENT_TRUNCATION_NAMES)
+        or analysis_count > 1
         or generated_mesh_count > 0
         or (_nonnegative_int(domain.get("fem_mesh_output_count")) or 0) > 0
         or ("mechanical" in physics and result_count > 0)
@@ -640,10 +733,11 @@ def analyze_provider_tool_names(
     if assignment_count:
         allowed.add("analyze.assignment_view")
     if mesh_count:
-        allowed.discard(ANALYZE_SOLID_MESH)
-        allowed.discard(ANALYZE_FLOW_MESH)
+        if not ambiguous_studies:
+            allowed.discard(ANALYZE_SOLID_MESH)
+            allowed.discard(ANALYZE_FLOW_MESH)
         allowed.update(_MESH_SETUP)
-        refinement_kinds, refinements_truncated = _collection_kinds(
+        refinement_kinds, refinements_truncated = _scoped_collection_kinds(
             domain,
             "mesh_refinements",
             "refinement_mode",
@@ -651,7 +745,7 @@ def analyze_provider_tool_names(
         )
         if "region" not in refinement_kinds and not refinements_truncated:
             allowed.discard(ANALYZE_EDIT_LOCAL_MESH_SIZE)
-        mesh_kinds, mesh_kinds_truncated = _collection_kinds(
+        mesh_kinds, mesh_kinds_truncated = _scoped_collection_kinds(
             domain,
             "mesh_definitions",
             "mesher",
@@ -663,7 +757,7 @@ def analyze_provider_tool_names(
         allowed.add("analyze.mesh_output")
     if solver_count:
         allowed.update(_SOLVER_SETUP)
-        solver_kinds, solvers_truncated = _collection_kinds(
+        solver_kinds, solvers_truncated = _scoped_collection_kinds(
             domain,
             "solvers",
             "solver_kind",
@@ -694,13 +788,36 @@ def analyze_provider_tool_names(
         if "thermal" in physics:
             allowed.update({ANALYZE_TEMPERATURE_RESULTS, ANALYZE_SHOW_TEMPERATURE})
     run_status = domain.get("run_status")
-    if (
+    background_jobs = domain.get("background_jobs")
+    has_job = isinstance(background_jobs, list) and any(
+        isinstance(value, Mapping) and str(value.get("job_id") or "")
+        for value in background_jobs
+    )
+    if has_job or (
         isinstance(run_status, Mapping)
         and str(run_status.get("phase") or "idle") != "idle"
         and str(run_status.get("job_id") or "")
     ):
         allowed.add("native.job")
-        if run_status.get("terminal") is False:
+        active_scopes = {
+            str(value.get("resource_scope") or "")
+            for value in background_jobs
+            if isinstance(value, Mapping) and value.get("terminal") is False
+        } if isinstance(background_jobs, list) else set()
+        workflows = [
+            value
+            for value in list(domain.get("analysis_workflows") or ())
+            if isinstance(value, Mapping)
+        ]
+        focused_names = {
+            str(value.get("analysis", {}).get("object_name") or "")
+            for value in workflows
+            if isinstance(value.get("analysis"), Mapping)
+            and value["analysis"].get("focused") is True
+        }
+        focused_scopes = {f"analyze:{name}" for name in focused_names if name}
+        focused_busy = bool(focused_scopes.intersection(active_scopes))
+        if analysis_count <= 1 or focused_busy:
             allowed.discard(ANALYZE_GENERATE_GMSH)
             allowed.discard(ANALYZE_RUN_SOLVER)
 
@@ -727,7 +844,85 @@ def _collection_kinds(
     return kinds, domain.get(truncated_name) is True
 
 
+def _focused_inventory(domain: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    workflow = _focused_workflow(domain)
+    inventory = workflow.get("study_inventory") if workflow is not None else None
+    return inventory if isinstance(inventory, Mapping) else None
+
+
+def _scoped_collection_kinds(
+    domain: Mapping[str, Any],
+    collection_name: str,
+    kind_name: str,
+    truncated_name: str,
+) -> tuple[set[str], bool]:
+    inventory = _focused_inventory(domain)
+    inventory_name = _FOCUSED_KIND_FIELDS.get(collection_name, "")
+    if inventory is not None and inventory_name in inventory:
+        values = inventory.get(inventory_name)
+        if isinstance(values, list):
+            return {str(value) for value in values if str(value or "")}, False
+    return _collection_kinds(
+        domain,
+        collection_name,
+        kind_name,
+        truncated_name,
+    )
+
+
+def _scoped_count(domain: Mapping[str, Any], name: str) -> int:
+    inventory = _focused_inventory(domain)
+    if inventory is not None and name in inventory:
+        return _nonnegative_int(inventory.get(name)) or 0
+    return _nonnegative_int(domain.get(name)) or 0
+
+
 def _solver_setup_complete(domain: Mapping[str, Any], physics: set[str]) -> bool:
+    focused = _focused_workflow(domain)
+    workflows = (
+        [focused]
+        if focused is not None
+        else [
+            value
+            for value in list(domain.get("analysis_workflows") or ())
+            if isinstance(value, Mapping)
+        ]
+    )
+    for workflow in workflows:
+        inventory = workflow.get("study_inventory")
+        if not isinstance(inventory, Mapping):
+            continue
+        solver_kinds = {
+            str(value) for value in list(inventory.get("solver_kinds") or ())
+        }
+        if not solver_kinds:
+            continue
+        if any(value != "elmer" for value in solver_kinds):
+            return True
+        study = workflow.get("study")
+        study_physics = (
+            set(study.get("physics") or ()) if isinstance(study, Mapping) else physics
+        )
+        equations = {
+            str(value) for value in list(inventory.get("equation_kinds") or ())
+        }
+        if "mechanical" in study_physics and not equations.intersection(
+            {"elasticity", "deformation"}
+        ):
+            continue
+        if "thermal" in study_physics and "heat" not in equations:
+            continue
+        if "electromagnetic" in study_physics and not equations.intersection(
+            {
+                "electrostatic",
+                "electric_force",
+                "magnetodynamic",
+                "magnetodynamic_2d",
+                "static_current",
+            }
+        ):
+            continue
+        return True
     solvers, solvers_truncated = _collection_kinds(
         domain,
         "solvers",
@@ -785,6 +980,17 @@ def _physics_state(
     analysis_count = _nonnegative_int(domain.get("analysis_count"))
     if analysis_count is None:
         return None
+    focused = _focused_workflow(domain)
+    if focused is not None:
+        study = focused.get("study")
+        physics = study.get("physics") if isinstance(study, Mapping) else None
+        if (
+            isinstance(study, Mapping)
+            and study.get("declared") is True
+            and isinstance(physics, list)
+            and all(value in _PHYSICS for value in physics)
+        ):
+            return set(physics), analysis_count
     published = _published_scope(domain, analysis_count)
     if published is None:
         return None
@@ -800,12 +1006,13 @@ def _model_operations(
     if state is not None and state[1] > 0:
         physics = state[0]
         wanted.add("update_study")
+        wanted.add("update_study_dependencies")
         if "mechanical" in physics:
             wanted.add("create_reinforced_material")
-        material_count = _nonnegative_int(domain.get("material_count")) or 0
+        material_count = _scoped_count(domain, "material_count")
         if material_count and physics != {"fluid"}:
             wanted.add("update_material")
-        material_kinds, materials_truncated = _collection_kinds(
+        material_kinds, materials_truncated = _scoped_collection_kinds(
             domain,
             "materials",
             "material_kind",
@@ -851,7 +1058,7 @@ def _geometry_operations(
         wanted.update({"create_beam_section", "create_beam_rotation"})
     if dimensions is None or "shell" in dimensions:
         wanted.add("create_shell_thickness")
-    kinds, truncated = _collection_kinds(
+    kinds, truncated = _scoped_collection_kinds(
         domain,
         "element_definitions",
         "element_definition_kind",
@@ -881,6 +1088,7 @@ def _inspect_operations(
     state = _physics_state(domain)
     wanted = set()
     if state is not None and state[1] > 0:
+        wanted.add("studies")
         if any(domain.get(name) is True for name in _ASSIGNMENT_TRUNCATION_NAMES):
             wanted.update({"assignments", "validate_assignments"})
         generated_mesh_count = _published_scope(domain, state[1])
@@ -904,6 +1112,9 @@ def _operation_scope(
     has_selection: bool,
 ) -> dict[str, tuple[str, ...]]:
     result: dict[str, tuple[str, ...]] = {}
+    analysis_count = _nonnegative_int(domain.get("analysis_count")) or 0
+    focused = _focused_workflow(domain)
+    ambiguous_studies = analysis_count > 1 and focused is None
     for name in tool_names:
         available = tuple(authorized_operations.get(name, ()))
         if not available:
@@ -919,17 +1130,23 @@ def _operation_scope(
             result[name] = _model_operations(domain, available)
             continue
         if name == ANALYZE_FLUID_MATERIAL:
+            if ambiguous_studies:
+                result[name] = available
+                continue
             operation = (
-                "update"
-                if (_nonnegative_int(domain.get("material_count")) or 0) > 0
-                else "create"
+                "update" if _scoped_count(domain, "material_count") > 0 else "create"
             )
             result[name] = tuple(
                 value for value in available if value == operation
             )
             continue
         if name == ANALYZE_GMSH_MESH:
-            kinds, _truncated = _collection_kinds(
+            if ambiguous_studies:
+                result[name] = tuple(
+                    value for value in available if value == "create"
+                )
+                continue
+            kinds, _truncated = _scoped_collection_kinds(
                 domain,
                 "mesh_definitions",
                 "mesher",
@@ -949,7 +1166,7 @@ def _operation_scope(
             result[name] = _geometry_operations(domain, available)
             continue
         if name == "analyze.fluid":
-            kinds, truncated = _collection_kinds(
+            kinds, truncated = _scoped_collection_kinds(
                 domain,
                 "fluid_constraints",
                 "constraint_kind",
@@ -968,7 +1185,7 @@ def _operation_scope(
             continue
         source = _LIVE_KIND_SOURCES.get(name)
         if source is not None:
-            kinds, truncated = _collection_kinds(domain, *source)
+            kinds, truncated = _scoped_collection_kinds(domain, *source)
             scoped = _keep_exact_updates(available, kinds, truncated)
             if name == "analyze.support":
                 scoped = tuple(
@@ -989,7 +1206,7 @@ def _operation_scope(
             result[name] = scoped
             continue
         if name == "analyze.mesh":
-            kinds, truncated = _collection_kinds(
+            kinds, truncated = _scoped_collection_kinds(
                 domain,
                 "mesh_definitions",
                 "mesher",
@@ -1020,7 +1237,7 @@ def _operation_scope(
             )
             continue
         if name == "analyze.solver_control":
-            kinds, truncated = _collection_kinds(
+            kinds, truncated = _scoped_collection_kinds(
                 domain,
                 "solvers",
                 "solver_kind",

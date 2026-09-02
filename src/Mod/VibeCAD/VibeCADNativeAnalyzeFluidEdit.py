@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeFluidCreate import (
     fluid_label,
     require_unassigned_boundary_faces,
@@ -247,7 +248,7 @@ def update_fluid_constraint(
             ignore=prepared.target.constraint,
         )
     constraint = prepared.target.constraint
-    constraint.Label = prepared.label
+    prepared = assign_prepared_label(constraint, prepared)
     constraint.References = reference_value(prepared.references)
     if prepared.values_changed:
         apply_fluid_values(constraint, prepared.values)

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from VibeCADNativeAnalyzeSolverSchema import SOLVER_TARGET
+from VibeCADNativeAnalyzeMeshSchema import _TARGET as MESH_TARGET
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityDefinition,
     NativeCapabilityRegistry,
@@ -33,6 +34,7 @@ def analyze_solver_execution_capability_definition() -> NativeCapabilityDefiniti
                     "type": "object",
                     "properties": {
                         "target": SOLVER_TARGET,
+                        "mesh": MESH_TARGET,
                         "timeout_seconds": {
                             "type": "integer",
                             "minimum": 1,

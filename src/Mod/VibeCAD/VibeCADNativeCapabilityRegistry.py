@@ -456,6 +456,7 @@ def _compact_closed_object_options(
         option.get("type") != "object"
         or option.get("additionalProperties") is not False
         or not isinstance(option.get("properties"), Mapping)
+        or any(keyword in option for keyword in ("oneOf", "anyOf", "allOf"))
         for option in options
     ):
         return None
