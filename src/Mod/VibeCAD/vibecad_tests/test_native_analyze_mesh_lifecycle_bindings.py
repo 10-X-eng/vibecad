@@ -5,7 +5,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import VibeCADNativeAnalyzeMeshLifecycleBindings as bindings
+import VibeCADNativeAnalyzeMeshRuntime as mesh_runtime
+from VibeCADNativeAnalyzeMeshGenerationState import PreparedMeshGenerationTarget
 from VibeCADNativeAnalyzeMeshRuntime import NativeAnalyzeMeshRuntime
+from VibeCADNativeAnalyzeTargets import PreparedFemMeshDefinitionTarget
 
 
 def test_focused_gmsh_edit_retargets_an_existing_mesh_definition(monkeypatch) -> None:
@@ -58,3 +61,57 @@ def test_focused_gmsh_edit_retargets_an_existing_mesh_definition(monkeypatch) ->
         }
     ]
     assert result == {"updated": True, "mesh_name": "Mesh"}
+
+
+def test_mesh_generation_job_uses_the_exact_owner_study_scope(monkeypatch) -> None:
+    runtime = object.__new__(NativeAnalyzeMeshRuntime)
+    mesh = SimpleNamespace(Name="StudyBMesh")
+    analysis = SimpleNamespace(
+        Name="StudyB",
+        Group=(mesh,),
+        isDerivedFrom=lambda type_name: type_name == "Fem::FemAnalysis",
+    )
+    document = SimpleNamespace(Objects=(analysis,))
+    mesh.Document = document
+    request = SimpleNamespace(
+        target=PreparedMeshGenerationTarget(
+            PreparedFemMeshDefinitionTarget(mesh, "gmsh", "a" * 64),
+            (),
+            (),
+        )
+    )
+    submitted: dict[str, object] = {}
+
+    class Manager:
+        def submit(self, **values):
+            submitted.update(values)
+            return SimpleNamespace(
+                job_id="a" * 32,
+                capability_name="analyze.mesh.generate_gmsh",
+                phase="prepared",
+                progress_percent=0,
+                progress_message="Queued",
+                terminal=False,
+            )
+
+    runtime._context = SimpleNamespace(
+        background_manager=Manager(),
+        document_thread_dispatch=lambda callback: callback(),
+        document=document,
+        document_uid="doc-128",
+        guard=lambda: None,
+        state=SimpleNamespace(cancel_mutation=lambda _ticket: None),
+    )
+    monkeypatch.setattr(
+        mesh_runtime,
+        "prepare_gmsh_generation_request",
+        lambda *_args, **_kwargs: request,
+    )
+
+    runtime._start_generation(
+        "gmsh",
+        {"target": {}, "timeout_seconds": 30},
+        SimpleNamespace(),
+    )
+
+    assert submitted["resource_scope"] == "analyze:StudyB"

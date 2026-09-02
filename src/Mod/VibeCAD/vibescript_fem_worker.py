@@ -186,8 +186,8 @@ def _default_correction(details: Mapping[str, Any]) -> str:
         )
     if stage == "output_identity":
         return (
-            "Remove only the duplicate definition or make it deliberately different; every declared FEM "
-            "output must have one unique graph identity."
+            "Return each declared FEM output as its own api value. Structurally equivalent values "
+            "are allowed across independent studies, but the same value cannot fill two outputs."
         )
     if stage == "output_evaluation":
         return (
@@ -1636,16 +1636,15 @@ def _solve_analysis(
 
 
 def _require_output(
-    output_by_key: Mapping[str, tuple[str, str]],
+    output_by_identity: Mapping[int, tuple[str, str]],
     records: Mapping[str, Mapping[str, Any]],
-    definition: Mapping[str, Any],
+    definition: Any,
     expected_type: str,
     *,
     context: str,
 ) -> tuple[str, Mapping[str, Any]]:
-    key = _definition_key(definition)
-    output = output_by_key.get(key)
-    record = records.get(key)
+    output = output_by_identity.get(id(definition))
+    record = records.get(output[0]) if output is not None else None
     if output is None or output[1] != expected_type or record is None:
         raise _fail(
             f"{context} must reference a returned {expected_type} output.",
@@ -1673,7 +1672,7 @@ def validate_and_build_fem(
         )
     definitions: dict[str, dict[str, Any]] = {}
     keys: dict[str, str] = {}
-    output_by_key: dict[str, tuple[str, str]] = {}
+    output_by_identity: dict[int, tuple[str, str]] = {}
     counts = {output_type: 0 for output_type in _OUTPUT_TYPES}
     for expected in expected_outputs:
         name = str(expected["name"])
@@ -1683,17 +1682,17 @@ def validate_and_build_fem(
             expected_output_type=output_type,
             context=f"result.{name}",
         )
-        key = _definition_key(definition)
-        if key in output_by_key:
+        identity = id(raw_result[name])
+        if identity in output_by_identity:
             raise _fail(
-                f"Outputs {output_by_key[key][0]!r} and {name!r} return duplicate "
-                "FEM definitions.",
+                f"Outputs {output_by_identity[identity][0]!r} and {name!r} return "
+                "the same FEM value.",
                 stage="output_identity",
                 output=name,
             )
         definitions[name] = definition
-        keys[name] = key
-        output_by_key[key] = (name, output_type)
+        keys[name] = _definition_key(definition)
+        output_by_identity[identity] = (name, output_type)
         counts[output_type] += 1
     for output_type in ("analysis", "solver", "mesh", "result"):
         if counts[output_type] < 1:
@@ -1716,17 +1715,17 @@ def validate_and_build_fem(
         definition = definitions[name]
         operation = str(definition["operation"])
         if operation == "solver":
-            records[keys[name]] = _build_solver(document, definition, index)
+            records[name] = _build_solver(document, definition, index)
         elif operation == "material":
-            records[keys[name]] = _build_material(
+            records[name] = _build_material(
                 document, definition, index, source_objects
             )
         elif operation == "constraint":
-            records[keys[name]] = _build_constraint(
+            records[name] = _build_constraint(
                 document, definition, index, source_objects
             )
         elif operation == "mesh":
-            records[keys[name]] = _build_mesh(
+            records[name] = _build_mesh(
                 document, definition, index, source_objects, root
             )
 
@@ -1735,11 +1734,12 @@ def validate_and_build_fem(
         definition = definitions[name]
         if definition["operation"] != "load_case":
             continue
+        raw_definition = raw_result[name]
         group = document.addObject("App::DocumentObjectGroup", f"FEMLoadCase{index:03d}")
         member_names = []
-        for member_index, member_definition in enumerate(definition["arguments"][0]):
+        for member_index, member_definition in enumerate(raw_definition.arguments[0]):
             output_name, record = _require_output(
-                output_by_key,
+                output_by_identity,
                 records,
                 member_definition,
                 "constraint",
@@ -1753,9 +1753,9 @@ def validate_and_build_fem(
             "Exact constraints assigned to this load case.",
         )
         group.VibeCADConstraints = [
-            records[keys[member_name]]["object"] for member_name in member_names
+            records[member_name]["object"] for member_name in member_names
         ]
-        records[keys[name]] = {
+        records[name] = {
             "object": group,
             "data": {
                 "native_type": str(group.TypeId),
@@ -1798,6 +1798,7 @@ def validate_and_build_fem(
     analysis_contexts: dict[str, dict[str, Any]] = {}
     for analysis_index, analysis_name in enumerate(analysis_names):
         analysis_definition = definitions[analysis_name]
+        raw_analysis_definition = raw_result[analysis_name]
         analysis_object_name = (
             "FEMAnalysis"
             if analysis_index == 0
@@ -1805,9 +1806,9 @@ def validate_and_build_fem(
         )
         analysis_obj = ObjectsFem.makeAnalysis(document, analysis_object_name)
         solver_name, solver_record = _require_output(
-            output_by_key,
+            output_by_identity,
             records,
-            analysis_definition["arguments"][0],
+            raw_analysis_definition.arguments[0],
             "solver",
             context=f"result.{analysis_name}.solver",
         )
@@ -1815,10 +1816,10 @@ def validate_and_build_fem(
         material_names = []
         material_records = []
         for member_index, member_definition in enumerate(
-            analysis_definition["arguments"][1]
+            raw_analysis_definition.arguments[1]
         ):
             output_name, record = _require_output(
-                output_by_key,
+                output_by_identity,
                 records,
                 member_definition,
                 "material",
@@ -1831,10 +1832,10 @@ def validate_and_build_fem(
         load_case_records = []
         constraint_records: dict[str, Mapping[str, Any]] = {}
         for member_index, member_definition in enumerate(
-            analysis_definition["arguments"][2]
+            raw_analysis_definition.arguments[2]
         ):
             output_name, record = _require_output(
-                output_by_key,
+                output_by_identity,
                 records,
                 member_definition,
                 "load_case",
@@ -1853,11 +1854,11 @@ def validate_and_build_fem(
                         output=constraint_name,
                     )
                 claimed_constraints[constraint_name] = analysis_name
-                constraint_records[constraint_name] = records[keys[constraint_name]]
+                constraint_records[constraint_name] = records[constraint_name]
         mesh_name, mesh_record = _require_output(
-            output_by_key,
+            output_by_identity,
             records,
-            analysis_definition["arguments"][3],
+            raw_analysis_definition.arguments[3],
             "mesh",
             context=f"result.{analysis_name}.mesh",
         )
@@ -1881,7 +1882,7 @@ def validate_and_build_fem(
                 "mesh_output": mesh_name,
             },
         }
-        records[keys[analysis_name]] = analysis_record
+        records[analysis_name] = analysis_record
         analysis_contexts[analysis_name] = {
             "analysis_definition": analysis_definition,
             "analysis_record": analysis_record,
@@ -1899,10 +1900,11 @@ def validate_and_build_fem(
     solver_executed = False
     for solve_name in solve_names:
         solve_definition = definitions[solve_name]
+        raw_solve_definition = raw_result[solve_name]
         linked_analysis_name, linked_analysis = _require_output(
-            output_by_key,
+            output_by_identity,
             records,
-            solve_definition["arguments"][0],
+            raw_solve_definition.arguments[0],
             "analysis",
             context=f"result.{solve_name}.analysis",
         )
@@ -1942,7 +1944,7 @@ def validate_and_build_fem(
         result_record["data"]["material_mesh_mapping"] = material_mapping
         result_record["data"]["analysis_output"] = linked_analysis_name
         result_record["data"]["mesh_output"] = context["mesh_name"]
-        records[keys[solve_name]] = result_record
+        records[solve_name] = result_record
         result_names_by_analysis[linked_analysis_name].append(solve_name)
         solver_executed = solver_executed or bool(
             result_record["data"]["solver_executed"]
@@ -1965,7 +1967,7 @@ def validate_and_build_fem(
     for expected in expected_outputs:
         name = str(expected["name"])
         output_type = str(expected["type"])
-        record = records.get(keys[name])
+        record = records.get(name)
         if record is None:
             raise _fail(
                 f"FEM output {name!r} was not evaluated.",

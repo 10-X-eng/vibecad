@@ -511,7 +511,8 @@ def analyze_provider_tool_names(
         if (
             workflow_count != analysis_count
             or not isinstance(workflows, list)
-            or len(workflows) != min(analysis_count, len(workflows))
+            or domain.get("analysis_workflows_truncated") is True
+            or len(workflows) != analysis_count
         ):
             return tuple(name for name in available_tool_names if name in allowed)
         physics = set()
@@ -712,13 +713,12 @@ def analyze_provider_tool_names(
     if observable_jobs:
         allowed.add("native.job")
     active_jobs = [job for job in observable_jobs if job.get("terminal") is False]
-    if active_jobs:
+    if any(
+        not str(job.get("resource_scope") or "").startswith("analyze:")
+        for job in active_jobs
+    ):
         allowed.discard(ANALYZE_GENERATE_GMSH)
-        if any(
-            not str(job.get("resource_scope") or "").startswith("analyze:")
-            for job in active_jobs
-        ):
-            allowed.discard(ANALYZE_RUN_SOLVER)
+        allowed.discard(ANALYZE_RUN_SOLVER)
 
     return tuple(name for name in available_tool_names if name in allowed)
 
@@ -750,9 +750,9 @@ def _solver_setup_complete(domain: Mapping[str, Any], physics: set[str]) -> bool
         "solver_kind",
         "solvers_truncated",
     )
-    if solvers_truncated or len(solvers) != 1:
+    if solvers_truncated or not solvers:
         return False
-    if "elmer" not in solvers:
+    if solvers - {"elmer"}:
         return True
     equations, equations_truncated = _collection_kinds(
         domain,

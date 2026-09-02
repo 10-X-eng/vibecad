@@ -24,6 +24,7 @@ from VibeCADNativeAnalyzeMeshEdit import (
     update_mesh_definition,
     verify_mesh_definition_update,
 )
+from VibeCADNativeAnalyzeMeshGenerationState import mesh_generation_resource_scope
 from VibeCADNativeAnalyzeNetgenGeneration import (
     commit_netgen_generation,
     discard_netgen_generation_request,
@@ -190,6 +191,7 @@ class NativeAnalyzeMeshRuntime:
             snapshot = manager.submit(
                 document_uid=context.document_uid,
                 capability_name=f"analyze.mesh.generate_{kind}",
+                resource_scope=mesh_generation_resource_scope(request.target),
                 prepare=prepare,
                 validate_before_commit=context.guard,
                 commit=commit,

@@ -1207,7 +1207,23 @@ def test_scoped_solver_job_does_not_block_another_independent_study() -> None:
 
     assert "native.job" in names
     assert "analyze.run_solver" in names
-    assert "analyze.generate_gmsh" not in names
+    assert "analyze.generate_gmsh" in names
+
+
+def test_mixed_solver_kinds_keep_exact_solver_execution_available() -> None:
+    domain = _domain(
+        "mechanical",
+        analysis_count=2,
+        mesh_count=2,
+        generated_mesh_count=2,
+        solver_count=2,
+    )
+    domain["solvers"] = [
+        {"solver_kind": "calculix"},
+        {"solver_kind": "elmer"},
+    ]
+
+    assert "analyze.run_solver" in _names(domain)
 
 
 def test_multiple_studies_compose_declared_physics_without_guessing() -> None:
@@ -1256,6 +1272,25 @@ def test_incomplete_snapshot_fails_closed_to_setup_tools() -> None:
             "analysis_workflows": [],
         }
     )
+
+    assert names == (_SHARED - {"workspace.switch"}) | {
+        "analyze.model",
+        ANALYZE_MATERIAL_CATALOG,
+    }
+
+
+def test_truncated_workflow_page_fails_closed_without_published_scope() -> None:
+    domain = _domain(
+        "mechanical",
+        analysis_count=2,
+        mesh_count=1,
+        generated_mesh_count=1,
+        solver_count=1,
+    )
+    domain.pop("provider_scope")
+    domain["analysis_workflows_truncated"] = True
+
+    names = _names(domain)
 
     assert names == (_SHARED - {"workspace.switch"}) | {
         "analyze.model",

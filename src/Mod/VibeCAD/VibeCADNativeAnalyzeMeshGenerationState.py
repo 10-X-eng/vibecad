@@ -161,6 +161,27 @@ def prepare_mesh_generation_target(
     return PreparedMeshGenerationTarget(target, tuple(frozen), operations)
 
 
+def mesh_generation_resource_scope(prepared: PreparedMeshGenerationTarget) -> str:
+    """Return the exact analysis scope that owns a prepared mesh definition."""
+
+    if not isinstance(prepared, PreparedMeshGenerationTarget):
+        raise TypeError("prepared must be a PreparedMeshGenerationTarget")
+    mesh = prepared.mesh
+    document = getattr(mesh, "Document", None)
+    owners = []
+    for obj in tuple(getattr(document, "Objects", ()) or ()):
+        try:
+            if obj.isDerivedFrom("Fem::FemAnalysis") and mesh in tuple(obj.Group or ()):
+                owners.append(obj)
+        except Exception:
+            continue
+    if len(owners) != 1:
+        raise NativeAnalyzeError(
+            "The prepared FEM mesh definition must belong to exactly one analysis."
+        )
+    return f"analyze:{owners[0].Name}"
+
+
 def mesh_generation_target_still_exact(prepared: PreparedMeshGenerationTarget) -> bool:
     if not fem_mesh_definition_target_still_exact(prepared.target):
         return False

@@ -13084,7 +13084,7 @@ def _validate_fem_execution(
         ).hexdigest()
 
     definitions: dict[str, dict[str, Any]] = {}
-    output_by_definition: dict[str, str] = {}
+    output_by_definition: dict[str, list[str]] = {}
     for item in outputs:
         name = str(item["name"])
         output_type = str(item["type"])
@@ -13097,12 +13097,8 @@ def _validate_fem_execution(
             context=f"outputs.{name}.definition",
         )
         key = definition_sha256(definition)
-        if key in output_by_definition:
-            raise ValueError(
-                f"FEM outputs {output_by_definition[key]!r} and {name!r} duplicate a definition."
-            )
         definitions[name] = definition
-        output_by_definition[key] = name
+        output_by_definition.setdefault(key, []).append(name)
         item["definition"] = definition
 
     def output_for_definition(
@@ -13110,28 +13106,49 @@ def _validate_fem_execution(
         expected_type: str,
         *,
         context: str,
+        expected_name: str | None = None,
     ) -> str:
         if not isinstance(value, dict):
             raise ValueError(f"{context} is not a FEM definition.")
-        name = output_by_definition.get(definition_sha256(value))
-        if name is None or output_types.get(name) != expected_type:
+        candidates = [
+            name
+            for name in output_by_definition.get(definition_sha256(value), [])
+            if output_types.get(name) == expected_type
+        ]
+        if expected_name is not None:
+            if expected_name not in candidates:
+                raise ValueError(
+                    f"{context} does not reference returned {expected_type} output "
+                    f"{expected_name!r}."
+                )
+            return expected_name
+        if len(candidates) != 1:
             raise ValueError(
-                f"{context} does not reference a returned {expected_type} output."
+                f"{context} does not identify exactly one returned {expected_type} output."
             )
-        return name
+        return candidates[0]
 
-    expected_load_case_members = {
-        name: [
+    expected_load_case_members = {}
+    for name, definition in definitions.items():
+        if output_types[name] != "load_case":
+            continue
+        item = next(output for output in outputs if output["name"] == name)
+        data = item.get("fem_data")
+        reported = data.get("constraint_outputs") if isinstance(data, dict) else None
+        arguments = definition["arguments"][0]
+        if not isinstance(reported, list) or len(reported) != len(arguments):
+            raise ValueError(
+                f"FEM load case output {name!r} has inconsistent member identities."
+            )
+        expected_load_case_members[name] = [
             output_for_definition(
                 member,
                 "constraint",
                 context=f"outputs.{name}.constraints[{index}]",
+                expected_name=str(reported[index]),
             )
-            for index, member in enumerate(definition["arguments"][0])
+            for index, member in enumerate(arguments)
         ]
-        for name, definition in definitions.items()
-        if output_types[name] == "load_case"
-    }
 
     def validate_material_mapping(
         value: Any,
@@ -13147,15 +13164,23 @@ def _validate_fem_execution(
             "unassigned_count",
         }:
             raise ValueError(f"{context} has malformed fields.")
+        rows = value.get("materials")
+        material_definitions = analysis_definition["arguments"][1]
+        if not isinstance(rows, list) or len(rows) != len(material_definitions):
+            raise ValueError(f"{context} has an inconsistent material list.")
         material_names = [
             output_for_definition(
                 definition,
                 "material",
                 context=f"{context}.analysis.materials[{index}]",
+                expected_name=(
+                    str(rows[index].get("output"))
+                    if isinstance(rows[index], dict)
+                    else ""
+                ),
             )
-            for index, definition in enumerate(analysis_definition["arguments"][1])
+            for index, definition in enumerate(material_definitions)
         ]
-        rows = value.get("materials")
         if (
             type(value.get("active_element_count")) is not int
             or int(value["active_element_count"]) <= 0
@@ -13164,7 +13189,6 @@ def _validate_fem_execution(
             or int(value["overlap_count"]) != 0
             or type(value.get("unassigned_count")) is not int
             or int(value["unassigned_count"]) != 0
-            or not isinstance(rows, list)
             or len(rows) != len(material_names)
         ):
             raise ValueError(f"{context} has an inconsistent coverage verdict.")
@@ -13466,12 +13490,14 @@ def _validate_fem_execution(
                 definition["arguments"][0],
                 "solver",
                 context=f"outputs.{name}.solver",
+                expected_name=str(data["solver_output"]),
             )
             expected_materials = [
                 output_for_definition(
                     value,
                     "material",
                     context=f"outputs.{name}.materials[{index}]",
+                    expected_name=str(data["material_outputs"][index]),
                 )
                 for index, value in enumerate(definition["arguments"][1])
             ]
@@ -13480,6 +13506,7 @@ def _validate_fem_execution(
                     value,
                     "load_case",
                     context=f"outputs.{name}.load_cases[{index}]",
+                    expected_name=str(data["load_case_outputs"][index]),
                 )
                 for index, value in enumerate(definition["arguments"][2])
             ]
@@ -13494,6 +13521,7 @@ def _validate_fem_execution(
                 definition["arguments"][3],
                 "mesh",
                 context=f"outputs.{name}.mesh",
+                expected_name=str(data["mesh_output"]),
             )
             expected_graph = {
                 "native_type": native_type,
@@ -13579,12 +13607,14 @@ def _validate_fem_execution(
                 definition["arguments"][0],
                 "analysis",
                 context=f"outputs.{name}.analysis",
+                expected_name=str(data.get("analysis_output") or ""),
             )
             expected_analysis_definition = definitions[expected_analysis]
             expected_mesh = output_for_definition(
                 expected_analysis_definition["arguments"][3],
                 "mesh",
                 context=f"outputs.{name}.analysis.mesh",
+                expected_name=str(data.get("mesh_output") or ""),
             )
             if (
                 data.get("execution") != execution_mode
@@ -13753,6 +13783,9 @@ def _validate_fem_execution(
                     value,
                     "load_case",
                     context=f"outputs.{name}.analysis.load_cases[{index}]",
+                    expected_name=str(
+                        analysis_data["load_case_outputs"][index]
+                    ),
                 )
                 for index, value in enumerate(
                     expected_analysis_definition["arguments"][2]
@@ -22169,8 +22202,9 @@ class FEMDomainAdapter(DeclarativeDomainAdapter):
                     ),
                     "result": (
                         "result keys, output types, and insertion order must exactly equal "
-                        "expected_outputs. Extra, missing, reordered, reconstructed, or duplicate "
-                        "definitions are rejected before native graph construction."
+                        "expected_outputs. Extra, missing, reordered, reconstructed, or repeated "
+                        "graph values are rejected before native graph construction. Separately "
+                        "created definitions may be structurally equal across independent studies."
                     ),
                     "one_scenario_rule": (
                         "Use one load_case containing all simultaneously active constraints for "

@@ -4,10 +4,14 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 from VibeCADCore import VibeCADService
 from vibescript_fem_api import FEMDomainAPI
+import vibescript_fem_worker as fem_worker
 
 
 EXPORTS = (
@@ -150,3 +154,138 @@ def test_fem_analysis_catalog_is_paged_and_keeps_exact_selection() -> None:
         "name": "Analysis001",
         "label": "Shared label",
     }
+
+
+def test_structurally_equal_definitions_remain_separate_study_outputs(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    api = FEMDomainAPI(EXPORTS, OUTPUT_TYPES)
+    first = _study(api, "doc-128", "A")
+    second = _study(api, "doc-128", "A")
+    output_order = (
+        "solver",
+        "material",
+        "constraint",
+        "load_case",
+        "mesh",
+        "analysis",
+        "result",
+    )
+    raw_result = {
+        f"First{kind.title()}": first[kind]
+        for kind in output_order
+    } | {
+        f"Second{kind.title()}": second[kind]
+        for kind in output_order
+    }
+    expected_outputs = [
+        {"name": name, "type": value.output_type}
+        for name, value in raw_result.items()
+    ]
+
+    class FakeObject:
+        def __init__(self, name: str, type_id: str) -> None:
+            self.Name = name
+            self.TypeId = type_id
+            self.Group = []
+
+        def addObject(self, value) -> None:
+            self.Group.append(value)
+
+        def addProperty(self, *_args) -> None:
+            return None
+
+    class FakeDocument:
+        def addObject(self, _type_id: str, name: str):
+            return FakeObject(name, "App::DocumentObjectGroup")
+
+    def record(kind: str, index: int) -> dict:
+        return {
+            "object": FakeObject(f"{kind}{index}", f"Fem::{kind.title()}"),
+            "data": {"native_type": f"Fem::{kind.title()}"},
+        }
+
+    monkeypatch.setattr(
+        fem_worker,
+        "_build_solver",
+        lambda _document, _definition, index: record("solver", index),
+    )
+    monkeypatch.setattr(
+        fem_worker,
+        "_build_material",
+        lambda _document, _definition, index, _sources: record("material", index),
+    )
+    monkeypatch.setattr(
+        fem_worker,
+        "_build_constraint",
+        lambda _document, _definition, index, _sources: record("constraint", index),
+    )
+    monkeypatch.setattr(
+        fem_worker,
+        "_build_mesh",
+        lambda _document, _definition, index, _sources, _root: record("mesh", index),
+    )
+    monkeypatch.setattr(
+        fem_worker,
+        "_validate_constraint_mesh_coverage",
+        lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        fem_worker,
+        "_validate_material_mesh_coverage",
+        lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        fem_worker,
+        "_solve_analysis",
+        lambda _document, _analysis, _solver, _mesh, _definition, index, _root: {
+            "object": FakeObject(f"result{index}", "Fem::FemResultObjectPython"),
+            "data": {
+                "native_type": "Fem::FemResultObjectPython",
+                "status": "validated",
+                "solver_executed": False,
+            },
+        },
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ObjectsFem",
+        SimpleNamespace(
+            makeAnalysis=lambda _document, name: FakeObject(name, "Fem::FemAnalysis")
+        ),
+    )
+
+    outputs, validation = fem_worker.validate_and_build_fem(
+        FakeDocument(),
+        raw_result,
+        expected_outputs,
+        tmp_path,
+    )
+
+    data = {item["name"]: item["fem_data"] for item in outputs}
+    assert data["FirstAnalysis"]["solver_output"] == "FirstSolver"
+    assert data["SecondAnalysis"]["solver_output"] == "SecondSolver"
+    assert data["FirstAnalysis"]["mesh_output"] == "FirstMesh"
+    assert data["SecondAnalysis"]["mesh_output"] == "SecondMesh"
+    assert data["FirstResult"]["analysis_output"] == "FirstAnalysis"
+    assert data["SecondResult"]["analysis_output"] == "SecondAnalysis"
+    assert validation["analysis_outputs"] == ["FirstAnalysis", "SecondAnalysis"]
+
+
+def test_one_fem_value_cannot_fill_two_declared_outputs(tmp_path) -> None:
+    api = FEMDomainAPI(EXPORTS, OUTPUT_TYPES)
+    solver = api.solver()
+
+    with pytest.raises(fem_worker.FEMCandidateError) as error:
+        fem_worker.validate_and_build_fem(
+            SimpleNamespace(),
+            {"FirstSolver": solver, "SecondSolver": solver},
+            [
+                {"name": "FirstSolver", "type": "solver"},
+                {"name": "SecondSolver", "type": "solver"},
+            ],
+            tmp_path,
+        )
+
+    assert error.value.details["stage"] == "output_identity"
