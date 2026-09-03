@@ -29,6 +29,7 @@ from VibeCADComponentCatalog import (  # noqa: E402
 from VibeCADCore import VibeCADService  # noqa: E402
 from VibeCADMechanismGeometry import (  # noqa: E402
     DYNAMIC_COLLISION_TRACE_SCHEMA,
+    DynamicCollisionEvaluator,
     MechanismGeometryError,
     STATIC_MECHANISM_EVIDENCE_SCHEMA,
     STATIC_PAIR_EVIDENCE_SCHEMA,
@@ -1186,7 +1187,11 @@ def _source_text(
     )
 
 
-def _simulation_source(formula: str = "initialValue + pi/2*time") -> str:
+def _simulation_source(
+    formula: str = "initialValue + pi/2*time",
+    *,
+    collision_mode: str = "full",
+) -> str:
     return (
         "base = api.component(inputs['base'], grounded=True, label='Base')\n"
         "arm = api.component(inputs['arm'], label='Arm')\n"
@@ -1197,7 +1202,8 @@ def _simulation_source(formula: str = "initialValue + pi/2*time") -> str:
         f"drive = api.motion(hinge, {formula!r}, label='Hinge Drive')\n"
         "simulation = api.simulation(model, [drive], start_time_s=0, "
         "end_time_s=0.1, time_step_s=0.02, error_tolerance=1e-6, "
-        "frames_per_second=30, label='Kinematic Trace')\n"
+        f"frames_per_second=30, collision_mode={collision_mode!r}, "
+        "label='Kinematic Trace')\n"
         "result = {'Model':model, 'Base':base, 'Arm':arm, 'Hinge':hinge, "
         "'Drive':drive, 'Simulation':simulation, 'Diagnostics':diagnostics}\n"
     )
@@ -1253,6 +1259,12 @@ def _exercise_dynamic_collision_geometry() -> dict:
 
     first = Part.makeBox(10, 10, 10)
     second = Part.makeBox(10, 10, 10)
+    evaluator = DynamicCollisionEvaluator({"First": first, "Second": second})
+    forked_evaluator = evaluator.fork()
+    assert all(
+        not evaluator._shapes[name].isPartner(forked_evaluator._shapes[name])
+        for name in evaluator.component_names
+    )
     clear = [0.0, 0.0, 0.0], [30.0, 0.0, 0.0]
     overlap = [0.0, 0.0, 0.0], [5.0, 0.0, 0.0]
     result = evaluate_dynamic_collisions(
@@ -1548,6 +1560,33 @@ def _exercise_simulation_lifecycle(root: Path, pack) -> dict:
     assert observation["joint_output"] == "Hinge"
     assert observation["motion_type"] == "angular"
     assert observation["maximum_relative_rotation_degrees"] > 8.9
+
+    playback_capture = _candidate_capture(
+        base_capture,
+        operation="create_program",
+        tool_name="vibescript.assembly.create_program",
+        arguments={
+            "program_name": "Native Kinematic Playback Only",
+            "source": _simulation_source(collision_mode="off"),
+            "input_schema": input_schema,
+            "inputs": references,
+            "expected_outputs": expected_outputs,
+        },
+    )
+    _playback_prepared, playback_execution = _prepare_and_execute(
+        playback_capture,
+        service,
+    )
+    assert playback_execution.get("ok") is True, playback_execution
+    playback_collision = playback_execution["assembly_validation"]["simulation"][
+        "collision_summary"
+    ]
+    assert playback_collision["evaluation_mode"] == "off"
+    assert playback_collision["status"] == "not_checked"
+    assert playback_collision["analysis_complete"] is False
+    assert playback_collision["collision_free"] is False
+    assert playback_collision["evaluated_frame_count"] == 0
+    assert playback_collision["requested_frame_count"] == 6
 
     changed_motion = copy.deepcopy(execution)
     changed_motion_item = next(

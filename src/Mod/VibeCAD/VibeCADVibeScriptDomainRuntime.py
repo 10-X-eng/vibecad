@@ -50,6 +50,7 @@ from VibeCADMechanismEngine import (
 )
 from VibeCADMechanismGeometry import (
     measure_static_mechanism_pairs,
+    skipped_dynamic_collision_summary,
     summarize_dynamic_collision_frames,
 )
 from VibeCADTools import tool_failure
@@ -9616,7 +9617,11 @@ def _validate_assembly_execution(
             "frames_per_second",
             "estimated_frame_limit",
         }
-        optional_simulation_properties = {"label", "motion_names"}
+        optional_simulation_properties = {
+            "label",
+            "motion_names",
+            "collision_mode",
+        }
         if (
             not isinstance(simulation_properties, dict)
             or not required_simulation_properties <= set(simulation_properties)
@@ -9667,6 +9672,9 @@ def _validate_assembly_execution(
             )
         frames_per_second = simulation_properties["frames_per_second"]
         estimated_frame_limit = simulation_properties["estimated_frame_limit"]
+        collision_mode = str(
+            simulation_properties.get("collision_mode") or "full"
+        )
         if (
             type(frames_per_second) is not int
             or not 1 <= frames_per_second <= 240
@@ -9675,6 +9683,7 @@ def _validate_assembly_execution(
             != math.ceil((end_time - start_time) / time_step) + 2
             or not 2 <= estimated_frame_limit <= 10_000
             or estimated_frame_limit * len(components) > 100_000
+            or collision_mode not in {"full", "off"}
         ):
             raise ValueError(
                 f"Simulation output {simulation_name!r} changed its bounded frame "
@@ -9874,18 +9883,35 @@ def _validate_assembly_execution(
         # operations away from the GUI thread. The host authenticates its trace
         # artifact and component inputs, validates every pair record below, and
         # independently derives the complete summary from those frame records.
-        expected_collision_summary = summarize_dynamic_collision_frames(
-            component_names,
-            [
-                {
-                    "frame_index": int(frame["frame_index"]),
-                    "nominal_time_s": frame["nominal_time_s"],
-                    "collisions": list(frame["collisions"]),
-                }
-                for frame in frames[1:]
-            ],
-            evaluation_warnings=trace.get("collision_warnings"),
-        )
+        collision_evidence_frames = [
+            {
+                "frame_index": int(frame["frame_index"]),
+                "nominal_time_s": frame["nominal_time_s"],
+                "collisions": list(frame["collisions"]),
+            }
+            for frame in frames[1:]
+        ]
+        if collision_mode == "off":
+            raw_warnings = trace.get("collision_warnings")
+            if not isinstance(raw_warnings, list) or len(raw_warnings) != 1:
+                raise ValueError(
+                    f"{context} must identify its skipped collision analysis."
+                )
+            expected_collision_summary = skipped_dynamic_collision_summary(
+                component_names,
+                requested_frame_count=len(collision_evidence_frames),
+                warning=raw_warnings[0],
+            )
+            if any(frame["collisions"] for frame in collision_evidence_frames):
+                raise ValueError(
+                    f"{context} invented collision evidence while analysis was off."
+                )
+        else:
+            expected_collision_summary = summarize_dynamic_collision_frames(
+                component_names,
+                collision_evidence_frames,
+                evaluation_warnings=trace.get("collision_warnings"),
+            )
         if (
             trace.get("collision_summary") != expected_collision_summary
             or frames[0]["collisions"] != []

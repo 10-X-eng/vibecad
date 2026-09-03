@@ -254,6 +254,29 @@ class TestAnalyzeContextStatusRendering:
         ]
 
 
+class TestVibeScriptWorkerStatusRendering:
+    def test_collision_progress_reports_frames_percent_and_eta(self) -> None:
+        import VibeCADGui as gui
+
+        event = {
+            "event": "vibescript_domain_worker_progress",
+            "domain": "assembly",
+            "phase": "simulation_collision",
+            "item_progress": {
+                "kind": "collision_frame",
+                "completed": 60,
+                "total": 141,
+                "estimated_remaining_seconds": 1086.0,
+            },
+        }
+
+        assert gui._format_progress_event(event) == (
+            "Checking motion collisions: frame 60 of 141 (43%) - "
+            "about 18 minutes remaining"
+        )
+        assert gui._progress_event_should_update_status(event) is True
+
+
 def test_private_vibescript_carriers_are_not_provider_document_objects() -> None:
     from VibeCADCore import VibeCADService
 

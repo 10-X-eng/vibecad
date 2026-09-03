@@ -132,6 +132,42 @@ def _scenario() -> dict:
     }
 
 
+def test_simulation_collision_mode_is_additive_and_defaults_to_full() -> None:
+    scenario = _scenario()
+    scenario["motions"] = [
+        {
+            "id": "Drive",
+            "label": "",
+            "joint_id": "Joint2",
+            "motion_type": "angular",
+            "formula": "time",
+        }
+    ]
+    scenario["simulation"] = {
+        "id": "Simulation",
+        "label": "",
+        "motion_ids": ["Drive"],
+        "start_time_s": 0.0,
+        "end_time_s": 1.0,
+        "time_step_s": 0.1,
+        "error_tolerance": 1.0e-6,
+        "frames_per_second": 30,
+    }
+
+    assert normalize_mechanism_scenario(scenario)["simulation"][
+        "collision_mode"
+    ] == "full"
+
+    scenario["simulation"]["collision_mode"] = "off"
+    assert normalize_mechanism_scenario(scenario)["simulation"][
+        "collision_mode"
+    ] == "off"
+
+    scenario["simulation"]["collision_mode"] = "sometimes"
+    with pytest.raises(MechanismContractError, match="collision_mode"):
+        normalize_mechanism_scenario(scenario)
+
+
 def _solved_placement(x: float = 0.0) -> dict:
     return {
         "position_mm": [x, 0.0, 0.0],
