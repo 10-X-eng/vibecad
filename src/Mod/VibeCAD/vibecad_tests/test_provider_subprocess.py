@@ -550,8 +550,19 @@ def test_anthropic_thinking_only_max_tokens_compacts_and_continues(
         ),
     ]
     messages = _SequenceAnthropicMessages(responses)
+    model_requests: list[str] = []
+
+    class _Models:
+        @staticmethod
+        def retrieve(model_id):
+            model_requests.append(model_id)
+            return SimpleNamespace(max_tokens=128_000)
+
     anthropic_module = SimpleNamespace(
-        Anthropic=lambda **_kwargs: SimpleNamespace(messages=messages),
+        Anthropic=lambda **_kwargs: SimpleNamespace(
+            messages=messages,
+            models=_Models(),
+        ),
         BadRequestError=type("BadRequestError", (Exception,), {}),
     )
     monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
@@ -601,9 +612,11 @@ def test_anthropic_thinking_only_max_tokens_compacts_and_continues(
     ]
     assert len(compaction_calls) == 1
     assert compaction_calls[0]["model"] == "memory-model"
-    assert messages.requests[0]["max_tokens"] == provider.DEFAULT_ANTHROPIC_MAX_TOKENS
+    assert compaction_calls[0]["max_tokens"] == 128_000
+    assert model_requests == ["interactive-model", "memory-model"]
+    assert messages.requests[0]["max_tokens"] == 128_000
     recovery_request = messages.requests[1]
-    assert recovery_request["max_tokens"] == provider.ANTHROPIC_RECOVERY_MAX_TOKENS
+    assert recovery_request["max_tokens"] == 128_000
     assert recovery_request["tool_choice"] == {"type": "auto"}
     assert recovery_request["output_config"] == {"effort": "low"}
     assert "one bounded action-recovery turn" in json.dumps(

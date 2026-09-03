@@ -5143,6 +5143,43 @@ def _anthropic_validate_turn_compaction_state(value: Any) -> dict[str, Any]:
     return _json_safe(value)
 
 
+def _anthropic_model_max_tokens(
+    client: Any,
+    model: str,
+    *,
+    sdk_fallback: int,
+) -> int:
+    """Return the selected model's maximum output reported by Anthropic."""
+
+    models = getattr(client, "models", None)
+    retrieve = getattr(models, "retrieve", None)
+    if not callable(retrieve):
+        # Preserve compatibility with older SDKs and Anthropic-compatible test
+        # clients that predate model capability metadata.
+        return int(sdk_fallback)
+    try:
+        model_info = retrieve(model)
+    except BaseException as exc:
+        raise RuntimeError(
+            f"Anthropic did not report the maximum output for model {model!r}: "
+            + _short_provider_error(exc)
+        ) from exc
+    value = getattr(model_info, "max_tokens", None)
+    if value is None:
+        value = _object_payload(model_info).get("max_tokens")
+    try:
+        maximum = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Anthropic returned an invalid maximum output for model {model!r}."
+        ) from exc
+    if maximum <= 0:
+        raise RuntimeError(
+            f"Anthropic returned an invalid maximum output for model {model!r}."
+        )
+    return maximum
+
+
 def _anthropic_compact_turn_in_thread(
     *,
     anthropic_module: Any,
@@ -5152,6 +5189,7 @@ def _anthropic_compact_turn_in_thread(
     debug_context: dict[str, Any],
     base_url: str | None,
     generation: int,
+    max_tokens: int = ANTHROPIC_TURN_COMPACTION_MAX_TOKENS,
 ) -> dict[str, Any]:
     """Run a tool-less, bounded compaction request outside the provider loop thread."""
 
@@ -5169,7 +5207,7 @@ def _anthropic_compact_turn_in_thread(
         )
     request = {
         "model": model,
-        "max_tokens": ANTHROPIC_TURN_COMPACTION_MAX_TOKENS,
+        "max_tokens": int(max_tokens),
         "system": ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS,
         "messages": [
             {
@@ -5798,7 +5836,6 @@ def _anthropic_child_main(
 
         tools_by_name, tool_definitions = build_tool_surface(live_context)
         thinking = _anthropic_thinking_config(reasoning_effort)
-        max_tokens = DEFAULT_ANTHROPIC_MAX_TOKENS
 
         system_blocks = _anthropic_system_blocks(live_context)
         messages: list[dict[str, Any]] = [
@@ -5824,6 +5861,20 @@ def _anthropic_child_main(
         if timeout_seconds is not None and timeout_seconds > 0:
             client_kwargs["timeout"] = timeout_seconds
         client = anthropic.Anthropic(**client_kwargs)
+        max_tokens = _anthropic_model_max_tokens(
+            client,
+            model,
+            sdk_fallback=DEFAULT_ANTHROPIC_MAX_TOKENS,
+        )
+        compaction_max_tokens = (
+            max_tokens
+            if compaction_model == model
+            else _anthropic_model_max_tokens(
+                client,
+                compaction_model,
+                sdk_fallback=ANTHROPIC_TURN_COMPACTION_MAX_TOKENS,
+            )
+        )
 
         request_kwargs: dict[str, Any] = {
             "model": model,
@@ -5849,7 +5900,7 @@ def _anthropic_child_main(
                 "system": system_blocks,
             }
             if recovery_required:
-                sdk_request["max_tokens"] = ANTHROPIC_RECOVERY_MAX_TOKENS
+                sdk_request["max_tokens"] = max_tokens
                 sdk_request["tools"] = _anthropic_recovery_request_tools(
                     list(request_kwargs["tools"])
                 )
@@ -6081,6 +6132,7 @@ def _anthropic_child_main(
                     debug_context=live_context,
                     base_url=base_url,
                     generation=compaction_count,
+                    max_tokens=compaction_max_tokens,
                 )
                 messages = [
                     {
