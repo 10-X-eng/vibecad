@@ -1489,6 +1489,20 @@ struct Gui::VibeCADRibbon::Private
         button->setAutoRaise(true);
         button->setIconSize(QSize(20, 20));
         if (action) {
+            auto* sourceCommand = Application::Instance->commandManager().getCommandByName(
+                command.toUtf8().constData()
+            );
+            QAction* shortcutAction = sourceCommand && sourceCommand->getAction()
+                ? sourceCommand->getAction()->action()
+                : nullptr;
+            if (shortcutAction && shortcutAction != action
+                && !shortcutAction->shortcut().isEmpty()
+                && !root->actions().contains(shortcutAction)) {
+                // Undo and Redo use shortcut-free toolbar actions. Associate
+                // their existing command actions with the visible ribbon so
+                // shortcuts remain active while the standard menu is hidden.
+                root->addAction(shortcutAction);
+            }
             if (ownedAction) {
                 action->setParent(button);
             }

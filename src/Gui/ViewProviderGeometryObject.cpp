@@ -78,7 +78,7 @@ ViewProviderGeometryObject::ViewProviderGeometryObject()
     ADD_PROPERTY_TYPE(BoundingBox, (false), dogroup, App::Prop_None, "Display object bounding box");
     ADD_PROPERTY_TYPE(
         Selectable,
-        (true),
+        (isSelectionEnabled()),
         sgroup,
         App::Prop_None,
         "Set if the object is selectable in the 3d view"
@@ -88,7 +88,7 @@ ViewProviderGeometryObject::ViewProviderGeometryObject()
     pickStyle->ref();
     pickStyle->style.setValue(SoPickStyle::SHAPE);
     pcRoot->insertChild(pickStyle, 1);
-    Selectable.setValue(isSelectionEnabled());
+    setSelectable(Selectable.getValue());
 
     pcShapeMaterial = new SoMaterial;
     setCoinAppearance(mat);

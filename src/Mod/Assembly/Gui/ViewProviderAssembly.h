@@ -47,6 +47,7 @@ class View3DInventorViewer;
 
 namespace AssemblyGui
 {
+class AssemblyDirectManipulation;
 class TaskAssemblyMessages;
 
 struct MovingObject
@@ -260,7 +261,20 @@ public:
         signalSetUp;
 
 private:
+    friend class AssemblyDirectManipulation;
+
     void disconnectEditSignals();
+
+    bool prepareDirectManipulation();
+    bool beginDirectManipulation(
+        const SbVec2s& cursorPos,
+        Gui::View3DInventorViewer* viewer
+    );
+    bool updateDirectManipulation(
+        const SbVec2s& cursorPos,
+        Gui::View3DInventorViewer* viewer
+    );
+    void finishDirectManipulation(bool commit);
 
     std::vector<App::DocumentObject*> dependentObjectsToDeleteWith(
         App::DocumentObject* object
