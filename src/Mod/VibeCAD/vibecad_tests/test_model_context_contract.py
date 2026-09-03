@@ -997,6 +997,20 @@ def test_concise_source_read_states_current_revision_directly() -> None:
             "complete": True,
         },
         "model_state": {"status": "accepted_current"},
+        "apply_patch": {
+            "tool": "vibescript.apply_patch",
+            "target_arguments": {
+                "program": "Audit/partdesign/Part",
+                "expected_revision": "c" * 64,
+            },
+        },
+        "edit_source": {
+            "tool": "vibescript.edit_source",
+            "target_arguments": {
+                "program": "Audit/partdesign/Part",
+                "expected_revision": "c" * 64,
+            },
+        },
         "_vibecad_source_read_result": True,
     }
 
@@ -1005,6 +1019,10 @@ def test_concise_source_read_states_current_revision_directly() -> None:
     assert visible["program"] == "Audit/partdesign/Part"
     assert visible["revision"] == "c" * 64
     assert visible["state"] == {"status": "accepted_current"}
+    assert [action["tool"] for action in visible["next_actions"]] == [
+        "vibescript.edit_source",
+        "vibescript.apply_patch",
+    ]
 
 
 def test_successful_assembly_lifecycle_result_states_solver_scope() -> None:

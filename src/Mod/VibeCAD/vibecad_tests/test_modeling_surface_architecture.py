@@ -210,6 +210,17 @@ def test_domain_lifecycle_schemas_are_stable_and_domain_specific() -> None:
         assert output_enum == list(pack.output_types)
 
 
+def test_every_vibescript_domain_accepts_the_internal_apply_patch_route() -> None:
+    import VibeCADVibeScriptDomainRuntime as runtime
+
+    for workbench in USER_WORKBENCHES:
+        pack = domains.get_vibescript_pack(workbench)
+        assert pack is not None
+        assert runtime.parse_domain_tool(
+            f"vibescript.{pack.domain}.apply_patch"
+        ) == (pack, "apply_patch")
+
+
 def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() -> None:
     universal = {spec["name"]: spec for spec in domains.universal_tool_specs()}
     assert set(universal) == {
@@ -222,6 +233,7 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         "vibescript.create_assembly",
         "vibescript.create_program",
         "vibescript.build_program",
+        "vibescript.apply_patch",
         "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
@@ -265,6 +277,13 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         "inputs",
         "expected_outputs",
     } <= set(edit["parameters"]["properties"])
+    apply_patch = universal["vibescript.apply_patch"]
+    assert apply_patch["parameters"]["required"] == [
+        "program",
+        "expected_revision",
+        "patch",
+    ]
+    assert apply_patch["parameters"]["properties"]["patch"]["type"] == "string"
     delete_output = universal["vibescript.delete_output"]
     assert delete_output["parameters"]["required"] == [
         "program",
@@ -283,6 +302,7 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
     )
     for write_name in (
         "vibescript.create_program",
+        "vibescript.apply_patch",
         "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
@@ -320,6 +340,7 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         assert "vibescript.read_geometry" in operating["context_first"]
         assert "vibescript.read_placement" in operating["context_first"]
         assert set(operating["mutation_selection"]) == {
+            "apply_patch",
             "edit_source",
             "set_inputs",
             "reconfigure_program",
@@ -562,6 +583,7 @@ def test_inspect_program_returns_machine_readable_model_state() -> None:
         "next_write_expected_revision": accepted_revision,
         "mutation_selection": {
             "source_only": "vibescript.edit_source",
+            "localized_source": "vibescript.apply_patch",
             "input_values_only": "vibescript.assembly.set_inputs",
             "contract_or_outputs": "vibescript.edit_source",
         },
@@ -630,6 +652,10 @@ def test_universal_read_source_returns_complete_code_and_declared_outputs() -> (
     assert [item["name"] for item in payload["affected_outputs"]] == ["Body"]
     assert "object_name" not in payload["affected_outputs"][0]
     assert payload["edit_source"]["target_arguments"] == {
+        "source_id": "a" * 32,
+        "expected_revision": "b" * 64,
+    }
+    assert payload["apply_patch"]["target_arguments"] == {
         "source_id": "a" * 32,
         "expected_revision": "b" * 64,
     }
@@ -1580,6 +1606,77 @@ def test_universal_edit_source_maps_to_the_active_domain_with_complete_code(
     assert result["source_id"] == "a" * 32
 
 
+@pytest.mark.parametrize(
+    ("workbench", "domain"),
+    [
+        ("PartDesignWorkbench", "partdesign"),
+        ("DraftWorkbench", "draft"),
+    ],
+)
+def test_universal_apply_patch_routes_to_each_program_domain(
+    monkeypatch: pytest.MonkeyPatch,
+    workbench: str,
+    domain: str,
+) -> None:
+    import VibeCADSession as session
+
+    observed = {}
+
+    def run_internal(_service, tool_name, arguments, **_kwargs):
+        observed["tool_name"] = tool_name
+        observed["arguments"] = arguments
+        return {
+            "ok": True,
+            "program_id": arguments["program_id"],
+            "patch_summary": {"hunk_count": 1},
+        }
+
+    monkeypatch.setattr(session, "_run_domain_vibescript_tool", run_internal)
+    document = type(
+        "Document",
+        (),
+        {"Uid": "active-document", "Name": "Active", "FileName": "", "Objects": []},
+    )()
+    service = type("Service", (), {"_active_document": lambda self: document})()
+    program = f"Active/{domain}/Patched Program"
+    result = session._run_universal_vibescript_tool(
+        service,
+        workbench,
+        "vibescript.apply_patch",
+        {
+            "program": program,
+            "expected_revision": "b" * 64,
+            "patch": "@@\n-old\n+new",
+        },
+        editable_sources={
+            "sources": [
+                {
+                    "source_id": "a" * 32,
+                    "program": program,
+                    "label": "Patched Program",
+                    "domain": domain,
+                    "current_revision": "b" * 64,
+                    "affected_outputs": [],
+                }
+            ]
+        },
+        document_thread_dispatch=None,
+        cancellation_check=None,
+        progress_callback=None,
+    )
+
+    assert observed == {
+        "tool_name": f"vibescript.{domain}.apply_patch",
+        "arguments": {
+            "program_id": "a" * 32,
+            "expected_revision": "b" * 64,
+            "patch": "@@\n-old\n+new",
+        },
+    }
+    assert result["source_id"] == "a" * 32
+    assert result["patch_summary"] == {"hunk_count": 1}
+
+
 def test_universal_delete_output_reconfigures_the_remaining_exact_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2506,6 +2603,7 @@ def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -
     assert index["tools"]["read_geometry"] == "vibescript.read_geometry"
     assert index["tools"]["read_placement"] == "vibescript.read_placement"
     assert index["tools"]["create_program"] == "vibescript.create_part"
+    assert index["tools"]["apply_patch"] == "vibescript.apply_patch"
     assert index["tools"]["edit_source"] == "vibescript.edit_source"
     assert index["tools"]["set_inputs"] == "vibescript.set_inputs"
     assert index["tools"]["reconfigure_program"] == ("vibescript.reconfigure_program")
@@ -2537,11 +2635,16 @@ def test_editable_sources_indexes_hidden_outputs_and_sources_without_outputs() -
         "include_logs": False,
     }
     assert hidden["build_tool"] == "vibescript.build_program"
+    assert hidden["patch_tool"] == "vibescript.apply_patch"
     assert hidden["build_arguments"] == {
         "program": "Design/partdesign/Body Source",
         "expected_revision": "b" * 64,
     }
     assert hidden["edit_target_arguments"] == {
+        "program": "Design/partdesign/Body Source",
+        "expected_revision": "b" * 64,
+    }
+    assert hidden["patch_target_arguments"] == {
         "program": "Design/partdesign/Body Source",
         "expected_revision": "b" * 64,
     }

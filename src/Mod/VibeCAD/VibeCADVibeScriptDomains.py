@@ -84,6 +84,7 @@ LIFECYCLE_OPERATIONS: tuple[str, ...] = (
     "describe_api",
     "inspect_program",
     "create_program",
+    "apply_patch",
     "edit_source",
     "set_inputs",
     "reconfigure_program",
@@ -98,6 +99,7 @@ UNIVERSAL_SOURCE_OPERATIONS: tuple[str, ...] = (
     "read_placement",
     "create_program",
     "build_program",
+    "apply_patch",
     "edit_source",
     "set_inputs",
     "reconfigure_program",
@@ -1390,6 +1392,7 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
                 "include_logs": False,
             },
             "build_tool": "vibescript.build_program",
+            "patch_tool": "vibescript.apply_patch",
             "edit_tool": "vibescript.edit_source",
             "delete_output_tool": "vibescript.delete_output",
             "delete_program_tool": "vibescript.delete_program",
@@ -1403,6 +1406,10 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
                 "expected_revision": revision,
             }
             source["edit_target_arguments"] = {
+                "program": source["program"],
+                "expected_revision": revision,
+            }
+            source["patch_target_arguments"] = {
                 "program": source["program"],
                 "expected_revision": revision,
             }
@@ -1457,6 +1464,7 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
                 )
             ),
             "build_program": "vibescript.build_program",
+            "apply_patch": "vibescript.apply_patch",
             "edit_source": "vibescript.edit_source",
             "set_inputs": "vibescript.set_inputs",
             "reconfigure_program": "vibescript.reconfigure_program",
@@ -1467,6 +1475,15 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
                 "expected_revision",
                 "source",
             ],
+            "apply_patch_arguments": [
+                "program",
+                "expected_revision",
+                "patch",
+            ],
+            "patch_argument": (
+                "Pass only Codex-style contextual update hunks for the changed source "
+                "regions; unchanged source is omitted."
+            ),
             "source_argument": (
                 "Pass the complete updated source text returned by "
                 "vibescript.read_source."
@@ -6366,6 +6383,34 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
                     "expected_revision": revision,
                 },
                 "required": ["program", "expected_revision"],
+                "additionalProperties": False,
+            },
+            "safety": "SAFE_WRITE",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none"],
+        },
+        {
+            "name": "vibescript.apply_patch",
+            "description": (
+                "Atomically apply Codex-style contextual update hunks to an existing "
+                "program, build it, then read_operation. Prefer this for localized "
+                "source changes; unchanged source is omitted."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "program": program,
+                    "expected_revision": revision,
+                    "patch": _property_schema(
+                        "One or more @@ contextual update hunks, optionally wrapped in "
+                        "a *** Begin Patch / *** Update File envelope.",
+                        type="string",
+                        minLength=1,
+                        maxLength=MAX_SOURCE_BYTES,
+                    ),
+                },
+                "required": ["program", "expected_revision", "patch"],
                 "additionalProperties": False,
             },
             "safety": "SAFE_WRITE",

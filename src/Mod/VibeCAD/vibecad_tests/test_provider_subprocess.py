@@ -1601,7 +1601,9 @@ def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> N
     )
     for instruction in (partdesign, assembly):
         assert "failed create without program/revision saved nothing" in instruction
-        assert "read_source before edit_source" in instruction
+        assert "read_source first" in instruction
+        assert "prefer apply_patch for localized" in instruction
+        assert "edit_source for complete rewrites" in instruction
         assert "build_program runs unchanged code" in instruction
         assert "set_inputs" in instruction
         assert "reconfigure_program" not in instruction
@@ -2099,6 +2101,13 @@ def test_source_write_result_is_compact_readable_and_actionable() -> None:
                 }
             },
             "outputs": [{"name": "Mount", "duplicate": True}],
+            "patch_summary": {
+                "hunk_count": 2,
+                "added_lines": 3,
+                "removed_lines": 1,
+                "first_changed_line": 4,
+                "last_changed_line": 18,
+            },
             "model_state": {"status": "accepted", "accepted_is_current": True},
             "_vibecad_source_lifecycle_result": True,
         }
@@ -2108,6 +2117,13 @@ def test_source_write_result_is_compact_readable_and_actionable() -> None:
         "ok": True,
         "program": "Design/partdesign/Motor Mount",
         "revision": "b" * 64,
+        "patch_summary": {
+            "hunk_count": 2,
+            "added_lines": 3,
+            "removed_lines": 1,
+            "first_changed_line": 4,
+            "last_changed_line": 18,
+        },
         "outputs": [
                 {
                     "name": "Mount",

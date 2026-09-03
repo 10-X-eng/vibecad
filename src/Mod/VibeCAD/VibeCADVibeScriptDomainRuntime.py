@@ -2410,6 +2410,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
     arguments = dict(captured["arguments"])
     project_root = Path(str(captured["project_root"]))
     staging: Path | None = None
+    patch_summary: dict[str, Any] | None = None
     try:
         if operation == "create_program":
             label = str(arguments.get("program_name") or "").strip()
@@ -2554,6 +2555,37 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                         "migration_action",
                     ):
                         manifest.pop(key, None)
+            elif operation == "apply_patch":
+                from VibeCADVibeScriptPatch import (
+                    SourcePatchError,
+                    apply_source_patch,
+                )
+
+                try:
+                    patched = apply_source_patch(
+                        previous_source,
+                        arguments.get("patch"),
+                    )
+                except SourcePatchError as exc:
+                    _raise(
+                        tool_name,
+                        exc.code,
+                        "precondition",
+                        str(exc),
+                        requested={
+                            "program_id": program_id,
+                            "expected_revision": base_revision,
+                        },
+                        observed=exc.details,
+                        required_changes=[
+                            {
+                                "tool": "vibescript.read_source",
+                                "arguments": {"source_id": program_id},
+                            }
+                        ],
+                    )
+                source = str(patched["source"])
+                patch_summary = dict(patched["summary"])
             elif operation == "set_inputs":
                 inputs = _merge_patch(dict(inputs or {}), arguments.get("patch"))
             elif operation == "reconfigure_program":
@@ -2764,6 +2796,8 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "allow_unchanged_revision": bool(captured.get("allow_unchanged_revision")),
             "finalized": False,
         }
+        if patch_summary is not None:
+            prepared["patch_summary"] = patch_summary
         return prepared if reference_requirements else finalize_candidate(prepared, [])
     except DomainRuntimeFailure:
         raise
@@ -16825,7 +16859,7 @@ def accept_candidate(
     domain = prepared["pack"].domain
     program_id = str(prepared["program_id"])
     revision = str(prepared["revision"])
-    return {
+    result = {
         "ok": True,
         "program_id": program_id,
         "program_name": str(prepared["program_name"]),
@@ -16844,6 +16878,9 @@ def accept_candidate(
             "next_write_expected_revision": revision,
         },
     }
+    if prepared.get("patch_summary"):
+        result["patch_summary"] = dict(prepared["patch_summary"])
+    return result
 
 
 def describe_api(pack: contracts.VibeScriptWorkbenchPack) -> dict[str, Any]:
@@ -17261,9 +17298,13 @@ class DeclarativeDomainAdapter:
                     "Never invent IDs, revisions, or API calls."
                 ),
                 "mutation_selection": {
+                    "apply_patch": (
+                        "Prefer for localized code edits. Supply only exact contextual "
+                        "update hunks and omit unchanged source."
+                    ),
                     "edit_source": (
-                        "Use for code edits. Include changed inputs, input_schema, or "
-                        "expected_outputs in the same call."
+                        "Use for intentional complete-source replacement or when inputs, "
+                        "input_schema, or expected_outputs must change in the same call."
                     ),
                     "set_inputs": (
                         "Use only for an RFC 7396 value patch while source, input_schema, "
@@ -17385,6 +17426,7 @@ class DeclarativeDomainAdapter:
                 "next_write_expected_revision": working_revision,
                 "mutation_selection": {
                     "source_only": "vibescript.edit_source",
+                    "localized_source": "vibescript.apply_patch",
                     "input_values_only": f"vibescript.{self.pack.domain}.set_inputs",
                     "contract_or_outputs": "vibescript.edit_source",
                 },

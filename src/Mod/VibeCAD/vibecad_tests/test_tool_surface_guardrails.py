@@ -509,6 +509,7 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "vibescript.read_geometry",
         "vibescript.read_placement",
         "vibescript.build_program",
+        "vibescript.apply_patch",
         "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
@@ -552,6 +553,7 @@ def test_model_and_assembly_share_one_stable_provider_contract() -> None:
         "assembly.stop_simulation",
         "material_catalog.search",
         "vibescript.create_part",
+        "vibescript.apply_patch",
         "vibescript.edit_source",
     } <= set(model.tool_names)
 
