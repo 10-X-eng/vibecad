@@ -248,7 +248,14 @@ class TestVibeCADAssemblyRibbonTools(unittest.TestCase):
             loop.exec()
 
     @staticmethod
-    def _send_mouse(widget, event_type, position, button, buttons):
+    def _send_mouse(
+        widget,
+        event_type,
+        position,
+        button,
+        buttons,
+        modifiers=QtCore.Qt.NoModifier,
+    ):
         global_position = widget.mapToGlobal(position)
         event = QtGui.QMouseEvent(
             event_type,
@@ -256,7 +263,7 @@ class TestVibeCADAssemblyRibbonTools(unittest.TestCase):
             global_position,
             button,
             buttons,
-            QtCore.Qt.NoModifier,
+            modifiers,
         )
         QtGui.QApplication.sendEvent(widget, event)
 
@@ -354,6 +361,91 @@ class TestVibeCADAssemblyRibbonTools(unittest.TestCase):
             QtCore.Qt.NoButton,
         )
         self._process_events(100)
+
+    def _drag_rendered_component(
+        self,
+        component,
+        *,
+        delta_x=72,
+        expect_start=True,
+        expected_transaction=0,
+        modifiers=QtCore.Qt.NoModifier,
+        move=True,
+        release=True,
+    ):
+        """Press and drag a visible Assembly occurrence without using its dragger."""
+        view = Gui.activeDocument().activeView()
+        view.viewAxonometric()
+        view.fitAll()
+        self._process_events(100)
+        viewport = view.graphicsView().viewport()
+        self.assertTrue(viewport.isVisible())
+
+        linked = component.getLinkedObject()
+        self.assertIsNotNone(linked)
+        center = component.Placement.multVec(linked.Shape.BoundBox.Center)
+        press_position = self._viewport_point(view, viewport, center)
+        bounds = viewport.rect().adjusted(8, 8, -8, -8)
+        self.assertTrue(
+            bounds.contains(press_position),
+            "The rendered Assembly occurrence is outside the viewport",
+        )
+        signed_delta_x = delta_x if press_position.x() < bounds.center().x() else -delta_x
+        target = press_position + QtCore.QPoint(signed_delta_x, 0)
+        target.setX(max(bounds.left(), min(target.x(), bounds.right())))
+
+        self._send_mouse(
+            viewport,
+            QtCore.QEvent.MouseMove,
+            press_position,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoButton,
+        )
+        self._process_events(80)
+        preselection = Gui.Selection.getPreselection()
+        self.assertTrue(
+            preselection.ObjectName,
+            f"The rendered component was not preselected: {preselection}",
+        )
+        self._send_mouse(
+            viewport,
+            QtCore.QEvent.MouseButtonPress,
+            press_position,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.LeftButton,
+            modifiers,
+        )
+        if move:
+            self._send_mouse(
+                viewport,
+                QtCore.QEvent.MouseMove,
+                target,
+                QtCore.Qt.NoButton,
+                QtCore.Qt.LeftButton,
+                modifiers,
+            )
+            self._process_events(80)
+        transaction = self.document.getBookedTransactionID()
+        if expect_start:
+            self.assertNotEqual(
+                transaction,
+                0,
+                "Direct manipulation did not begin a move transaction for "
+                f"{preselection.ObjectName} {preselection.SubElementNames}",
+            )
+        else:
+            self.assertEqual(transaction, expected_transaction)
+        if release:
+            self._send_mouse(
+                viewport,
+                QtCore.QEvent.MouseButtonRelease,
+                target,
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.NoButton,
+                modifiers,
+            )
+            self._process_events(100)
+        return viewport, target
 
     def _dismiss_task(self, *, accept):
         self.assertTrue(Gui.Control.activeDialog())
@@ -1980,6 +2072,251 @@ class TestVibeCADAssemblyRibbonTools(unittest.TestCase):
         )
         self.assertFalse(self.document.HasPendingTransaction)
         self.assertEqual(self.document.getBookedTransactionID(), 0)
+
+    def test_component_can_be_dragged_directly_outside_assembly_edit(self):
+        assembly, components = self._create_assembly_with_components(1)
+        component = components[0]
+        gui_document = Gui.getDocument(self.document.Name)
+        gui_document.resetEdit()
+        self._process_events(100)
+        self.assertIsNone(gui_document.getInEdit())
+
+        before_placement = App.Placement(component.Placement)
+        before_undo = int(self.document.UndoCount)
+        self._drag_rendered_component(component)
+
+        self.assertNotEqual(component.Placement, before_placement)
+        self.assertEqual(int(self.document.UndoCount), before_undo + 1)
+        self.assertFalse(self.document.HasPendingTransaction)
+        self.assertEqual(self.document.getBookedTransactionID(), 0)
+
+        moved_placement = App.Placement(component.Placement)
+        self.document.undo()
+        self._process_events(100)
+        self.assertEqual(component.Placement, before_placement)
+        self.document.redo()
+        self._process_events(100)
+        self.assertEqual(component.Placement, moved_placement)
+
+    def test_component_can_be_dragged_directly_from_model_ribbon(self):
+        _assembly, components = self._create_assembly_with_components(1)
+        component = components[0]
+        Gui.activeDocument().resetEdit()
+        Gui.activateWorkbench("PartDesignWorkbench")
+        self._process_events(100)
+
+        before_placement = App.Placement(component.Placement)
+        before_undo = int(self.document.UndoCount)
+        self._drag_rendered_component(component)
+
+        self.assertNotEqual(component.Placement, before_placement)
+        self.assertEqual(int(self.document.UndoCount), before_undo + 1)
+        self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_direct_component_drag_preserves_clicks_modifiers_and_escape(self):
+        _assembly, components = self._create_assembly_with_components(1)
+        component = components[0]
+        Gui.activeDocument().resetEdit()
+        self._process_events(100)
+        before_placement = App.Placement(component.Placement)
+        before_undo = int(self.document.UndoCount)
+
+        self._drag_rendered_component(
+            component,
+            expect_start=False,
+            move=False,
+        )
+        self.assertEqual(component.Placement, before_placement)
+        self.assertEqual(int(self.document.UndoCount), before_undo)
+        self.assertTrue(Gui.Selection.getSelectionEx())
+
+        self._drag_rendered_component(
+            component,
+            expect_start=False,
+            modifiers=QtCore.Qt.ControlModifier,
+        )
+        self.assertEqual(component.Placement, before_placement)
+        self.assertEqual(int(self.document.UndoCount), before_undo)
+
+        viewport, target = self._drag_rendered_component(component, release=False)
+        self.assertNotEqual(component.Placement, before_placement)
+        QtGui.QApplication.sendEvent(
+            viewport,
+            QtGui.QKeyEvent(
+                QtCore.QEvent.KeyPress,
+                QtCore.Qt.Key_Escape,
+                QtCore.Qt.NoModifier,
+            ),
+        )
+        self._process_events(100)
+        self._send_mouse(
+            viewport,
+            QtCore.QEvent.MouseButtonRelease,
+            target,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.NoButton,
+        )
+        self._process_events(100)
+        self.assertEqual(component.Placement, before_placement)
+        self.assertEqual(int(self.document.UndoCount), before_undo)
+        self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_grounded_component_cannot_be_dragged_directly(self):
+        import JointObject
+
+        assembly, components = self._create_assembly_with_components(1)
+        component = components[0]
+        joint_group = next(
+            child for child in assembly.Group if child.TypeId == "Assembly::JointGroup"
+        )
+        self.document.UndoMode = False
+        grounded_joint = joint_group.newObject(
+            "App::FeaturePython",
+            "DirectManipulationGround",
+        )
+        JointObject.GroundedJoint(grounded_joint, component)
+        JointObject.ViewProviderGroundedJoint(grounded_joint.ViewObject)
+        self.document.recompute()
+        self.document.UndoMode = True
+        self._process_events(100)
+        self.assertTrue(assembly.isPartGrounded(component))
+        Gui.Selection.clearSelection()
+        Gui.activeDocument().resetEdit()
+        self._process_events(100)
+
+        before_placement = App.Placement(component.Placement)
+        before_undo = int(self.document.UndoCount)
+        self._drag_rendered_component(component, expect_start=False)
+
+        self.assertEqual(component.Placement, before_placement)
+        self.assertEqual(int(self.document.UndoCount), before_undo)
+        self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_revolute_component_drag_preserves_its_joint(self):
+        import JointObject
+
+        assembly, components = self._create_assembly_with_components(2)
+        moving_component, fixed_component = components
+        joint_group = next(
+            child for child in assembly.Group if child.TypeId == "Assembly::JointGroup"
+        )
+        self.document.UndoMode = False
+        grounded_joint = joint_group.newObject(
+            "App::FeaturePython",
+            "DirectManipulationGround",
+        )
+        JointObject.GroundedJoint(grounded_joint, fixed_component)
+        JointObject.ViewProviderGroundedJoint(grounded_joint.ViewObject)
+        revolute_joint = joint_group.newObject(
+            "App::FeaturePython",
+            "DirectManipulationRevolute",
+        )
+        JointObject.Joint(revolute_joint, 1)
+        JointObject.ViewProviderJoint(revolute_joint.ViewObject)
+        revolute_joint.Proxy.setJointConnectors(
+            revolute_joint,
+            [
+                [fixed_component, ["Face1"]],
+                [moving_component, ["Face2"]],
+            ],
+        )
+        self.document.recompute()
+        assembly.solve()
+        self.document.recompute()
+        joint_group.Visibility = False
+        self.document.UndoMode = True
+        Gui.Selection.clearSelection()
+        Gui.activeDocument().resetEdit()
+        self._process_events(100)
+
+        before_fixed = App.Placement(fixed_component.Placement)
+        before_moving = App.Placement(moving_component.Placement)
+        before_undo = int(self.document.UndoCount)
+        self._drag_rendered_component(moving_component)
+
+        first_joint_frame = fixed_component.Placement * revolute_joint.Placement1
+        second_joint_frame = moving_component.Placement * revolute_joint.Placement2
+        first_axis = first_joint_frame.Rotation.multVec(App.Vector(0, 0, 1))
+        second_axis = second_joint_frame.Rotation.multVec(App.Vector(0, 0, 1))
+        self.assertEqual(fixed_component.Placement, before_fixed)
+        self.assertNotEqual(moving_component.Placement, before_moving)
+        self.assertLess(
+            (first_joint_frame.Base - second_joint_frame.Base).Length,
+            1e-5,
+        )
+        self.assertAlmostEqual(abs(first_axis.dot(second_axis)), 1.0, places=6)
+        self.assertTrue(assembly.isValid())
+        self.assertEqual(int(self.document.UndoCount), before_undo + 1)
+        self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_direct_component_drag_does_not_take_over_a_caller_transaction(self):
+        _assembly, components = self._create_assembly_with_components(1)
+        component = components[0]
+        Gui.activeDocument().resetEdit()
+        self._process_events(100)
+        before_placement = App.Placement(component.Placement)
+
+        self.document.openTransaction("Caller-owned direct manipulation conflict")
+        caller_transaction = self.document.getBookedTransactionID()
+        self._drag_rendered_component(
+            component,
+            expect_start=False,
+            expected_transaction=caller_transaction,
+        )
+
+        self.assertEqual(component.Placement, before_placement)
+        self.assertEqual(
+            self.document.getBookedTransactionID(),
+            caller_transaction,
+        )
+        self.document.abortTransaction()
+        self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_direct_component_drag_cancels_when_leaving_supported_ribbons(self):
+        _assembly, components = self._create_assembly_with_components(1)
+        component = components[0]
+        Gui.activeDocument().resetEdit()
+        self._process_events(100)
+        before_placement = App.Placement(component.Placement)
+        before_undo = int(self.document.UndoCount)
+
+        viewport, target = self._drag_rendered_component(component, release=False)
+        self.assertNotEqual(component.Placement, before_placement)
+        Gui.activateWorkbench("PartDesignWorkbench")
+        self._process_events(100)
+
+        self.assertEqual(component.Placement, before_placement)
+        self.assertEqual(int(self.document.UndoCount), before_undo)
+        self.assertFalse(self.document.HasPendingTransaction)
+        self._send_mouse(
+            viewport,
+            QtCore.QEvent.MouseButtonRelease,
+            target,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.NoButton,
+        )
+
+        viewport, target = self._drag_rendered_component(component, release=False)
+        self.assertNotEqual(component.Placement, before_placement)
+        Gui.activateWorkbench("TechDrawWorkbench")
+        self._process_events(100)
+
+        self.assertEqual(component.Placement, before_placement)
+        self.assertEqual(int(self.document.UndoCount), before_undo)
+        self.assertFalse(self.document.HasPendingTransaction)
+        self._send_mouse(
+            viewport,
+            QtCore.QEvent.MouseButtonRelease,
+            target,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.NoButton,
+        )
+
+        Gui.activateWorkbench("AssemblyWorkbench")
+        self._process_events(100)
+        self._drag_rendered_component(component)
+        self.assertNotEqual(component.Placement, before_placement)
+        self.assertEqual(int(self.document.UndoCount), before_undo + 1)
 
     def test_activate_assembly_refuses_a_caller_owned_transaction(self):
         Gui.runCommand("Assembly_CreateAssembly")

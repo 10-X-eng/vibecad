@@ -27,6 +27,7 @@
 #include <Base/PyObjectBase.h>
 
 #include "Commands.h"
+#include "AssemblyDirectManipulation.h"
 #include "ViewProviderAssembly.h"
 #include "ViewProviderAssemblyLink.h"
 #include "ViewProviderBom.h"
@@ -68,6 +69,7 @@ PyMOD_INIT_FUNC(AssemblyGui)
     AssemblyGui::ViewProviderJointGroup::init();
     AssemblyGui::ViewProviderViewGroup::init();
     AssemblyGui::ViewProviderSimulationGroup::init();
+    AssemblyGui::AssemblyDirectManipulation::install();
 
     PyMOD_Return(mod);
 }
