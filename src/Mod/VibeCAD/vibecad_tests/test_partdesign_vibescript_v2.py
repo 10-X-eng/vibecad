@@ -1491,7 +1491,7 @@ def test_v1_saved_data_migrates_to_a_non_executable_v2_view(tmp_path: Path) -> N
     assert migrated["domain"] == "partdesign"
     assert migrated["artifact_directory"] == str(directory)
     assert migrated["migration_required"] is True
-    assert migrated["migration_action"] == "vibescript.edit_source"
+    assert migrated["migration_action"] == "vibescript.reconfigure_program"
     assert migrated["accepted_revision"] == "saved-v1-revision"
     assert migrated["live_outputs"]["Part"]["object_name"] == "SavedPartResult"
 
@@ -1521,7 +1521,7 @@ def test_v1_source_cannot_edit_set_inputs_or_execute(tmp_path: Path) -> None:
         )
         assert failure.value.payload["retry"]["required_changes"] == [
             {
-                "tool": "vibescript.edit_source",
+                "tool": "vibescript.reconfigure_program",
                 "arguments": {
                     "source_id": PROGRAM_ID,
                     "expected_revision": "saved-v1-revision",

@@ -2538,10 +2538,10 @@ def _run_domain_vibescript_tool(
             },
             "repair_rule": (
                 "Read the source when its text or latest revision is uncertain, then "
-                "repair the smallest exact cause. Prefer vibescript.apply_patch for a "
-                "localized code repair. Use vibescript.edit_source for a complete rewrite "
-                "or to include changed inputs, schema, or output declarations. "
-                "Use vibescript.set_inputs only for a value-only patch."
+                "repair the smallest exact cause with vibescript.apply_patch. Use "
+                "vibescript.reconfigure_program only to replace source, inputs, schema, "
+                "and output declarations together. Use vibescript.set_inputs only for "
+                "a value-only patch."
             ),
         }
 

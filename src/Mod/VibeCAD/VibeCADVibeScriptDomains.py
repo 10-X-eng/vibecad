@@ -547,7 +547,8 @@ class VibeScriptWorkbenchPack:
             *(
                 f"vibescript.{operation}"
                 for operation in UNIVERSAL_SOURCE_OPERATIONS
-                if not (
+                if operation != "edit_source"
+                and not (
                     self.domain in {"partdesign", "assembly"}
                     and operation == "create_program"
                 )
@@ -5864,7 +5865,7 @@ def migrate_program_manifest(
                 "accepted live objects remain available, but this source cannot execute "
                 "in the v2 domain runtime."
             ),
-            "migration_action": "vibescript.edit_source",
+            "migration_action": "vibescript.reconfigure_program",
         }
     else:
         raise ValueError("Unsupported VibeScript program manifest schema.")
@@ -6471,7 +6472,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "name": "vibescript.reconfigure_program",
             "description": (
                 "Replace source, schema, inputs, and outputs together, then "
-                "read_operation. Prefer edit_source for new calls."
+                "read_operation. Use apply_patch for source-only changes."
             ),
             "parameters": {
                 "type": "object",
@@ -6688,8 +6689,9 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             pack,
             "reconfigure_program",
             description=(
-                f"Compatibility alias for editing a {pack.title} program. New callers "
-                "should use vibescript.edit_source."
+                f"Replace a {pack.title} program's complete source, schema, inputs, "
+                "and output contract together. Use vibescript.apply_patch for "
+                "source-only changes."
             ),
             properties={
                 "program_id": program_id,

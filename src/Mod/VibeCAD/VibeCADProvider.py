@@ -155,10 +155,10 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
             f"{', '.join(assembly_pack.output_types)}.\n"
             f"PARTS: {part_pack.instructions}\n"
             f"ASSEMBLIES: {assembly_pack.instructions}\n"
-            "For an existing source, read_source first; prefer apply_patch for localized "
-            "code changes and edit_source for complete rewrites. build_program runs "
-            "unchanged code and set_inputs changes values only. Use available_components "
-            "before catalog search."
+            "For an existing source, read_source first, then use apply_patch for source "
+            "changes. build_program runs unchanged code and set_inputs changes values "
+            "only. Use reconfigure_program only to replace source, schema, inputs, and "
+            "outputs together. Use available_components before catalog search."
         )
     component_instruction = (
         " Use a definition in available_components with api.component or api.instances. "
@@ -176,13 +176,12 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
         "signatures override prior knowledge. Poll writes with read_operation. A failed "
         "create without program/revision saved nothing. "
         f"{pack.instructions}{component_instruction}\n"
-        "Read an existing source before editing it. Prefer apply_patch for localized "
-        "code changes and edit_source for complete rewrites; build_program runs "
-        "unchanged code. "
+        "Read an existing source before editing it, then use apply_patch for source "
+        "changes; build_program runs unchanged code. "
         "Output names stay stable and types must be: "
         + ", ".join(pack.output_types)
-        + ". Use set_inputs for values only; include changed inputs, schema, or outputs "
-        "in edit_source."
+        + ". Use set_inputs for values only; use reconfigure_program only to replace "
+        "source, schema, inputs, and outputs together."
     )
 
 
@@ -2715,8 +2714,6 @@ def _provider_visible_program_source(source: dict[str, Any]) -> dict[str, Any]:
         "build_arguments",
         "patch_tool",
         "patch_target_arguments",
-        "edit_tool",
-        "edit_target_arguments",
         "delete_output_tool",
         "delete_program_tool",
         "delete_target_arguments",
@@ -2734,6 +2731,13 @@ def _provider_visible_editable_sources(editable: dict[str, Any]) -> dict[str, An
         for key, value in editable.items()
         if key not in {"sources", "all_sources", "component_sources"}
     }
+    tools = result.get("tools")
+    if isinstance(tools, dict):
+        result["tools"] = {
+            key: value
+            for key, value in tools.items()
+            if key not in {"edit_source", "edit_source_arguments"}
+        }
     for key in ("sources", "all_sources"):
         if key in editable:
             result[key] = [
@@ -3717,7 +3721,7 @@ def _provider_visible_source_read_result(result: dict[str, Any]) -> dict[str, An
     if isinstance(latest, dict) and latest.get("failure"):
         compact["latest_failure"] = latest["failure"]
     actions = []
-    for key in ("edit_source", "apply_patch", "build_program"):
+    for key in ("apply_patch", "build_program"):
         action = result.get(key)
         if isinstance(action, dict):
             actions.append(action)

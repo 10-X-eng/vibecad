@@ -1020,7 +1020,6 @@ def test_concise_source_read_states_current_revision_directly() -> None:
     assert visible["revision"] == "c" * 64
     assert visible["state"] == {"status": "accepted_current"}
     assert [action["tool"] for action in visible["next_actions"]] == [
-        "vibescript.edit_source",
         "vibescript.apply_patch",
     ]
 

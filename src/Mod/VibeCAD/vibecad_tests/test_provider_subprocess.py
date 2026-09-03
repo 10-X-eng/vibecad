@@ -1588,7 +1588,8 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
     assert "vibescript_authoring_contract_json" in text
     assert "read_operation" in text
     assert "read_source" in text
-    assert "edit_source" in text
+    assert "edit_source" not in text
+    assert "reconfigure_program" in text
     assert "build_program" in text
     assert "set_inputs" in text
     assert "api.name" in text
@@ -1602,11 +1603,11 @@ def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> N
     for instruction in (partdesign, assembly):
         assert "failed create without program/revision saved nothing" in instruction
         assert "read_source first" in instruction
-        assert "prefer apply_patch for localized" in instruction
-        assert "edit_source for complete rewrites" in instruction
+        assert "use apply_patch for source" in instruction
+        assert "edit_source" not in instruction
+        assert "reconfigure_program" in instruction
         assert "build_program runs unchanged code" in instruction
         assert "set_inputs" in instruction
-        assert "reconfigure_program" not in instruction
         assert "before writing the first program" not in instruction
         assert "after success" not in instruction
 
@@ -2314,6 +2315,12 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
     editable_sources = {
         "schema": "vibecad-editable-sources-v1",
         "domain": "part",
+        "tools": {
+            "create_program": "vibescript.create_program",
+            "apply_patch": "vibescript.apply_patch",
+            "edit_source": "vibescript.edit_source",
+            "edit_source_arguments": ["program", "expected_revision", "source"],
+        },
         "sources": [
             {
                 "source_id": "a" * 32,
@@ -2350,6 +2357,10 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
     assert visible["editable_sources"] == {
         "schema": "vibecad-editable-sources-v1",
         "domain": "part",
+        "tools": {
+            "create_program": "vibescript.create_program",
+            "apply_patch": "vibescript.apply_patch",
+        },
         "sources": [
             {
                 "program": "Design/part/Body Source",
@@ -2358,6 +2369,7 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
         ],
     }
     assert "source_id" not in json.dumps(visible)
+    assert "edit_source" not in json.dumps(visible)
     assert "vibescript_domain" not in visible
 
 

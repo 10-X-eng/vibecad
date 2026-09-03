@@ -510,7 +510,6 @@ def test_partdesign_vibescript_surface_is_its_exact_domain_pack() -> None:
         "vibescript.read_placement",
         "vibescript.build_program",
         "vibescript.apply_patch",
-        "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
         "vibescript.delete_output",
@@ -554,8 +553,9 @@ def test_model_and_assembly_share_one_stable_provider_contract() -> None:
         "material_catalog.search",
         "vibescript.create_part",
         "vibescript.apply_patch",
-        "vibescript.edit_source",
+        "vibescript.reconfigure_program",
     } <= set(model.tool_names)
+    assert "vibescript.edit_source" not in model.tool_names
 
 
 def test_model_authoring_contract_survives_document_and_task_transitions(

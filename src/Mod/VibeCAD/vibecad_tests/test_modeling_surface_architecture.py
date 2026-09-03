@@ -315,6 +315,7 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         pack = domains.get_vibescript_pack(workbench)
         assert pack is not None
         expected_provider_tools = set(universal)
+        expected_provider_tools.remove("vibescript.edit_source")
         if workbench in {"PartDesignWorkbench", "AssemblyWorkbench"}:
             expected_provider_tools.remove("vibescript.create_program")
         else:
@@ -328,7 +329,8 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
             for spec in domains.domain_tool_specs(pack)
         }
         assert "Change only input values" in specs["set_inputs"]["description"]
-        assert "Compatibility alias" in specs["reconfigure_program"]["description"]
+        assert "complete source, schema, inputs" in specs["reconfigure_program"]["description"]
+        assert "vibescript.apply_patch" in specs["reconfigure_program"]["description"]
 
         adapter = domains.get_domain_adapter(pack.domain)
         assert adapter is not None
@@ -341,7 +343,6 @@ def test_shared_vibescript_lifecycle_is_unambiguous_for_the_operating_model() ->
         assert "vibescript.read_placement" in operating["context_first"]
         assert set(operating["mutation_selection"]) == {
             "apply_patch",
-            "edit_source",
             "set_inputs",
             "reconfigure_program",
         }
@@ -582,10 +583,10 @@ def test_inspect_program_returns_machine_readable_model_state() -> None:
         "accepted_live_state_preserved": True,
         "next_write_expected_revision": accepted_revision,
         "mutation_selection": {
-            "source_only": "vibescript.edit_source",
+            "source_only": "vibescript.apply_patch",
             "localized_source": "vibescript.apply_patch",
             "input_values_only": "vibescript.assembly.set_inputs",
-            "contract_or_outputs": "vibescript.edit_source",
+            "contract_or_outputs": "vibescript.reconfigure_program",
         },
         "instruction": (
             "The accepted contract is current; verify domain-specific live evidence."
@@ -3519,7 +3520,7 @@ def test_schema_v1_migrates_to_partdesign_without_relocation(tmp_path: Path) -> 
     assert migrated["artifact_directory"] == str(v1_directory)
     assert migrated["expected_outputs"] == [{"name": "Body", "type": "solid"}]
     assert migrated["migration_required"] is True
-    assert migrated["migration_action"] == "vibescript.edit_source"
+    assert migrated["migration_action"] == "vibescript.reconfigure_program"
 
     v1_directory.mkdir(parents=True)
     (v1_directory / "model.py").write_text("result = {}\n", encoding="utf-8")

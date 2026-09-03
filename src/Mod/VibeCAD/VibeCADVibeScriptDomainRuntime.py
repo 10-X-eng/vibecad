@@ -2488,7 +2488,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                 )
             )
             if manifest.get("migration_required") and not complete_contract_replacement:
-                action = "vibescript.edit_source"
+                action = "vibescript.reconfigure_program"
                 _raise(
                     tool_name,
                     "PROGRAM_RECONFIGURATION_REQUIRED",
@@ -17299,19 +17299,16 @@ class DeclarativeDomainAdapter:
                 ),
                 "mutation_selection": {
                     "apply_patch": (
-                        "Prefer for localized code edits. Supply only exact contextual "
-                        "update hunks and omit unchanged source."
-                    ),
-                    "edit_source": (
-                        "Use for intentional complete-source replacement or when inputs, "
-                        "input_schema, or expected_outputs must change in the same call."
+                        "Use for source-code edits. Supply only exact contextual update "
+                        "hunks and omit unchanged source."
                     ),
                     "set_inputs": (
                         "Use only for an RFC 7396 value patch while source, input_schema, "
                         "and expected_outputs stay unchanged."
                     ),
                     "reconfigure_program": (
-                        "Alias: edit_source."
+                        "Use only when replacing source, input_schema, inputs, and "
+                        "expected_outputs together."
                     ),
                 },
                 "revision_rule": (
@@ -17425,13 +17422,14 @@ class DeclarativeDomainAdapter:
                 **({"migration_required": True} if migration_required else {}),
                 "next_write_expected_revision": working_revision,
                 "mutation_selection": {
-                    "source_only": "vibescript.edit_source",
+                    "source_only": "vibescript.apply_patch",
                     "localized_source": "vibescript.apply_patch",
                     "input_values_only": f"vibescript.{self.pack.domain}.set_inputs",
-                    "contract_or_outputs": "vibescript.edit_source",
+                    "contract_or_outputs": "vibescript.reconfigure_program",
                 },
                 "instruction": (
-                    "Replace the complete program contract with vibescript.edit_source, "
+                    "Replace the complete program contract with "
+                    "vibescript.reconfigure_program, "
                     "including input_schema, inputs, and expected_outputs in the same call. "
                     "The prior accepted live objects remain available until a valid v2 "
                     "candidate is accepted."
@@ -22920,7 +22918,7 @@ class TechDrawDomainAdapter(DeclarativeDomainAdapter):
                     "Create each independent view or orthographic projection group once; use a projection group for related front/top/side views and view for one orientation such as isometric.",
                     "When projected EdgeN/VertexN/FaceN names are not already known, first accept a template + view/projection + page discovery revision without dimensions.",
                     "Inspect the accepted view's dimension_reference_inventory, including the exact projection direction, geometry type, visibility, 2D coordinates, and source mapping.",
-                    "Use edit_source to add dimensions and their expected_outputs atomically, copying exact inventory names; never guess a projected index on complex geometry.",
+                    "Use reconfigure_program to add dimensions and their expected_outputs atomically, copying exact inventory names; never guess a projected index on complex geometry.",
                     "Add bounded annotations, compose every returned non-page value into exactly one page, and keep projection/page conventions identical.",
                     "After acceptance, inspect raw_value/display_text and page membership, then use a screenshot for overlap, clipping, title-block, and human drafting review.",
                 ],
