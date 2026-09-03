@@ -87,6 +87,32 @@ def test_best_effort_progress_write_never_rejects_valid_cad_work(
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_worker_item_progress_retains_rate_and_eta(tmp_path: Path) -> None:
+    import vibescript_worker_progress as progress
+
+    destination = tmp_path / "progress.json"
+    progress.configure(destination, "assembly")
+    progress.set_phase("simulation_collision", output="Simulation")
+    progress.set_item_progress(
+        "collision_frame",
+        completed=60,
+        total=141,
+        current="60",
+        rate_per_second=0.075,
+        estimated_remaining_seconds=1080.0,
+    )
+
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    assert payload["item_progress"] == {
+        "kind": "collision_frame",
+        "completed": 60,
+        "total": 141,
+        "current": "60",
+        "rate_per_second": 0.075,
+        "estimated_remaining_seconds": 1080.0,
+    }
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing flags are NT-specific")
 def test_windows_reader_allows_atomic_replacement_while_open(tmp_path: Path) -> None:
     import VibeCADVibeScriptFileIO as file_io

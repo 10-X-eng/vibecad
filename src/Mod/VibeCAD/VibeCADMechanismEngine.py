@@ -831,6 +831,7 @@ def normalize_mechanism_scenario(value: Any) -> dict[str, Any]:
                     "frames_per_second",
                 }
             ),
+            optional=frozenset({"collision_mode"}),
         )
         raw_motion_ids = simulation_raw["motion_ids"]
         if (
@@ -886,6 +887,12 @@ def normalize_mechanism_scenario(value: Any) -> dict[str, Any]:
                 "scenario.simulation",
                 "contains invalid time or tolerance bounds",
             )
+        collision_mode = str(simulation_raw.get("collision_mode") or "full")
+        if collision_mode not in {"full", "off"}:
+            raise _error(
+                "scenario.simulation.collision_mode",
+                "must be full or off",
+            )
         estimated_frames = math.ceil((end - start) / step) + 2
         if (
             estimated_frames > 10_000
@@ -910,6 +917,7 @@ def normalize_mechanism_scenario(value: Any) -> dict[str, Any]:
             "time_step_s": step,
             "error_tolerance": tolerance,
             "frames_per_second": frames_per_second,
+            "collision_mode": collision_mode,
         }
     elif motions:
         raise _error(

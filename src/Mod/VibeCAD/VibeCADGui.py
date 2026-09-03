@@ -2330,6 +2330,28 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         phase = str(event.get("phase") or "work").replace("_", " ")
         elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
         return f"VibeScript {phase} completed in {elapsed:.2f}s."
+    if name == "vibescript_domain_worker_progress":
+        phase = str(event.get("phase") or "work")
+        item = event.get("item_progress")
+        if (
+            phase == "simulation_collision"
+            and isinstance(item, dict)
+            and item.get("kind") == "collision_frame"
+        ):
+            completed = max(0, int(item.get("completed") or 0))
+            total = max(0, int(item.get("total") or 0))
+            percent = round(100.0 * completed / total) if total else 0
+            message = (
+                f"Checking motion collisions: frame {completed} of {total} "
+                f"({percent}%)"
+            )
+            remaining = item.get("estimated_remaining_seconds")
+            if isinstance(remaining, (int, float)) and remaining >= 0:
+                minutes = max(1, round(float(remaining) / 60.0))
+                unit = "minute" if minutes == 1 else "minutes"
+                message += f" - about {minutes} {unit} remaining"
+            return message
+        return f"VibeScript {phase.replace('_', ' ')}..."
     if name == "vibescript_domain_deferred_recompute_completed":
         count = int(event.get("target_count", 0) or 0)
         elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
@@ -2383,6 +2405,7 @@ _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
     "vibescript_domain_deferred_recompute_completed",
     "vibescript_domain_phase_completed",
     "vibescript_domain_phase_started",
+    "vibescript_domain_worker_progress",
 }
 
 

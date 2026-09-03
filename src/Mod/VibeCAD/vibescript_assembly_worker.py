@@ -10,6 +10,7 @@ import json
 import math
 from pathlib import Path
 import re
+import time
 from types import MappingProxyType
 from typing import Any
 
@@ -32,6 +33,7 @@ from VibeCADMechanismEngine import (
 from VibeCADMechanismGeometry import (
     evaluate_dynamic_collisions,
     measure_static_mechanism_pairs,
+    skipped_dynamic_collision_summary,
     summarize_dynamic_collision_frames,
 )
 import vibescript_worker_progress as worker_progress
@@ -2561,6 +2563,9 @@ def _mechanism_scenario_contract(
             "frames_per_second": simulation_properties.get(
                 "frames_per_second"
             ),
+            "collision_mode": str(
+                simulation_properties.get("collision_mode") or "full"
+            ),
         }
 
     return normalize_mechanism_scenario(
@@ -3477,94 +3482,21 @@ def _execute_native_simulation(
                 },
             )
 
-    worker_progress.set_phase(
-        "simulation_collision",
-        output=simulation_output,
-    )
+    collision_mode = str(properties.get("collision_mode") or "full")
     collision_warnings: list[dict[str, str]] = []
-    try:
-        collision_shapes = {}
-        collision_definition_keys = {}
-        for name, component in components.items():
-            source = getattr(component, "LinkedObject", None)
-            shape = getattr(source, "Shape", None)
-            if shape is None:
-                raise RuntimeError(
-                    f"Simulation component {name!r} has no source shape for "
-                    "collision evaluation"
-                )
-            collision_shapes[name] = shape
-            metadata = component_source_metadata.get(name)
-            definition_key = _collision_definition_key(
-                metadata,
-                component_data.get(name),
-            )
-            if len(definition_key) != 64:
-                raise RuntimeError(
-                    f"Simulation component {name!r} has no authenticated shape "
-                    "identity for collision evaluation"
-                )
-            collision_definition_keys[name] = definition_key
-        # Components in the same exact fixed-joint closure are one rigid unit
-        # for motion analysis. Their intentional mating geometry cannot develop
-        # a new dynamic interference, so do not repeat that pair at every frame.
-        # Every pair across distinct rigid units remains eligible, including
-        # imported geometry and modeled fasteners.
-        fixed_group_pairs = _fixed_collision_pairs(components, joint_data)
-
-        def report_collision_progress(event: str, frame_index: int, total: int) -> None:
-            graph_id = f"frame-{frame_index}-of-{total}"
-            if event == "started":
-                worker_progress.graph_started("collision", graph_id)
-            else:
-                worker_progress.graph_completed("collision", graph_id)
-
-        def report_collision_pair_progress(
-            event: str,
-            frame_index: int,
-            frame_total: int,
-            first: str,
-            second: str,
-            pair_index: int,
-            pair_total: int,
-        ) -> None:
-            if frame_index == 0:
-                graph_type = "collision_containment"
-                graph_id = (
-                    f"all-{frame_total}-frames:"
-                    f"pair-{pair_index}-of-{pair_total}:"
-                    f"{first}--{second}"
-                )
-            else:
-                graph_type = "collision_surface"
-                graph_id = (
-                    f"frame-{frame_index}-of-{frame_total}:"
-                    f"pair-{pair_index}-of-{pair_total}:"
-                    f"{first}--{second}"
-                )
-            if event == "started":
-                worker_progress.graph_started(graph_type, graph_id)
-            else:
-                worker_progress.graph_completed(graph_type, graph_id)
-
-        collision_trace = evaluate_dynamic_collisions(
-            collision_shapes,
-            frames,
-            definition_keys=collision_definition_keys,
-            excluded_pairs=fixed_group_pairs,
-            progress_callback=report_collision_progress,
-            pair_progress_callback=report_collision_pair_progress,
+    if collision_mode == "off":
+        worker_progress.set_phase(
+            "simulation_collision_skipped",
+            output=simulation_output,
         )
-    except Exception as exc:
-        collision_warnings.append(
-            {
-                "code": "COLLISION_ANALYSIS_INCOMPLETE",
-                "stage": "simulation_collision",
-                "message": (
-                    f"{type(exc).__name__}: {exc}"
-                )[:2048],
-            }
-        )
+        skipped_warning = {
+            "code": "COLLISION_ANALYSIS_SKIPPED",
+            "stage": "simulation_collision",
+            "message": (
+                "Collision analysis was explicitly disabled for this simulation."
+            ),
+        }
+        collision_warnings.append(skipped_warning)
         unevaluated_frames = [
             {
                 "frame_index": frame_index,
@@ -3574,17 +3506,148 @@ def _execute_native_simulation(
             for frame_index, frame in enumerate(frames[1:], start=1)
         ]
         collision_trace = {
-            "summary": summarize_dynamic_collision_frames(
+            "summary": skipped_dynamic_collision_summary(
                 list(components),
-                unevaluated_frames,
-                evaluation_warnings=collision_warnings,
+                requested_frame_count=len(unevaluated_frames),
+                warning=skipped_warning,
             ),
             "frames": unevaluated_frames,
             "evaluation": {
                 "analysis_complete": False,
-                "warning_count": len(collision_warnings),
+                "evaluation_mode": "off",
+                "warning_count": 1,
             },
         }
+    else:
+        worker_progress.set_phase(
+            "simulation_collision",
+            output=simulation_output,
+        )
+        try:
+            collision_shapes = {}
+            collision_definition_keys = {}
+            for name, component in components.items():
+                source = getattr(component, "LinkedObject", None)
+                shape = getattr(source, "Shape", None)
+                if shape is None:
+                    raise RuntimeError(
+                        f"Simulation component {name!r} has no source shape for "
+                        "collision evaluation"
+                    )
+                collision_shapes[name] = shape
+                metadata = component_source_metadata.get(name)
+                definition_key = _collision_definition_key(
+                    metadata,
+                    component_data.get(name),
+                )
+                if len(definition_key) != 64:
+                    raise RuntimeError(
+                        f"Simulation component {name!r} has no authenticated shape "
+                        "identity for collision evaluation"
+                    )
+                collision_definition_keys[name] = definition_key
+            # Components in the same exact fixed-joint closure are one rigid
+            # unit. Their intentional mating geometry cannot develop a new
+            # dynamic interference, so do not repeat those pairs every frame.
+            fixed_group_pairs = _fixed_collision_pairs(components, joint_data)
+
+            def report_collision_progress(
+                event: str, frame_index: int, total: int
+            ) -> None:
+                graph_id = f"frame-{frame_index}-of-{total}"
+                if event == "started":
+                    worker_progress.graph_started("collision", graph_id)
+                else:
+                    worker_progress.graph_completed("collision", graph_id)
+
+            def report_collision_pair_progress(
+                event: str,
+                frame_index: int,
+                frame_total: int,
+                first: str,
+                second: str,
+                pair_index: int,
+                pair_total: int,
+            ) -> None:
+                if frame_index == 0:
+                    graph_type = "collision_containment"
+                    graph_id = (
+                        f"all-{frame_total}-frames:"
+                        f"pair-{pair_index}-of-{pair_total}:"
+                        f"{first}--{second}"
+                    )
+                else:
+                    graph_type = "collision_surface"
+                    graph_id = (
+                        f"frame-{frame_index}-of-{frame_total}:"
+                        f"pair-{pair_index}-of-{pair_total}:"
+                        f"{first}--{second}"
+                    )
+                if event == "started":
+                    worker_progress.graph_started(graph_type, graph_id)
+                else:
+                    worker_progress.graph_completed(graph_type, graph_id)
+
+            collision_started = time.monotonic()
+
+            def report_collision_aggregate(completed: int, total: int) -> None:
+                elapsed = max(0.0, time.monotonic() - collision_started)
+                rate = (
+                    float(completed) / elapsed
+                    if completed > 0 and elapsed > 0
+                    else None
+                )
+                remaining = (
+                    float(total - completed) / rate
+                    if rate is not None and rate > 0.0
+                    else None
+                )
+                worker_progress.set_item_progress(
+                    "collision_frame",
+                    completed=completed,
+                    total=total,
+                    current=str(completed),
+                    rate_per_second=rate,
+                    estimated_remaining_seconds=remaining,
+                )
+
+            collision_trace = evaluate_dynamic_collisions(
+                collision_shapes,
+                frames,
+                definition_keys=collision_definition_keys,
+                excluded_pairs=fixed_group_pairs,
+                progress_callback=report_collision_progress,
+                pair_progress_callback=report_collision_pair_progress,
+                aggregate_progress_callback=report_collision_aggregate,
+            )
+        except Exception as exc:
+            collision_warnings.append(
+                {
+                    "code": "COLLISION_ANALYSIS_INCOMPLETE",
+                    "stage": "simulation_collision",
+                    "message": (f"{type(exc).__name__}: {exc}")[:2048],
+                }
+            )
+            unevaluated_frames = [
+                {
+                    "frame_index": frame_index,
+                    "nominal_time_s": frame.get("nominal_time_s"),
+                    "collisions": [],
+                }
+                for frame_index, frame in enumerate(frames[1:], start=1)
+            ]
+            collision_trace = {
+                "summary": summarize_dynamic_collision_frames(
+                    list(components),
+                    unevaluated_frames,
+                    evaluation_warnings=collision_warnings,
+                ),
+                "frames": unevaluated_frames,
+                "evaluation": {
+                    "analysis_complete": False,
+                    "warning_count": len(collision_warnings),
+                },
+            }
     worker_progress.set_phase("simulation_serialization", output=simulation_output)
     collision_frames = {
         int(item["frame_index"]): list(item["collisions"])

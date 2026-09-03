@@ -149,6 +149,7 @@ _STATIC_REQUIREMENT_TYPES = frozenset({"collision_free", "minimum_clearance"})
 _CONTACT_POLICIES = frozenset(
     {"prohibited", "clearance", "allowed", "required", "ignored"}
 )
+_COLLISION_MODES = frozenset({"full", "off"})
 _MOTION_FUNCTIONS = frozenset({"abs", "asin", "arcsin", "arctan", "cos", "sin"})
 _MOTION_NAMES = frozenset({"time", "initialValue", "pi"})
 _OCCURRENCE_PATH = re.compile(
@@ -1685,6 +1686,7 @@ class AssemblyDomainAPI:
         time_step_s: float = 0.01,
         error_tolerance: float = 1.0e-6,
         frames_per_second: int = 30,
+        collision_mode: str = "full",
         label: str = "",
     ) -> DomainValue:
         """Run native Assembly kinematics in the worker and retain its trace.
@@ -1696,6 +1698,8 @@ class AssemblyDomainAPI:
         rejects simulations exceeding 100000 component-pose samples.
         ``time_step_s`` controls trace density; ``frames_per_second`` is retained
         only as the live playback rate and does not add solver samples.
+        ``collision_mode='off'`` skips dynamic collision analysis for playback;
+        its result is explicitly reported as not checked, never collision-free.
         """
 
         operation = "simulation"
@@ -1762,6 +1766,14 @@ class AssemblyDomainAPI:
                 "must be from 1 through 240",
                 frames_per_second,
             )
+        clean_collision_mode = str(collision_mode or "").strip().lower()
+        if clean_collision_mode not in _COLLISION_MODES:
+            raise _error(
+                operation,
+                "collision_mode",
+                f"must be one of {sorted(_COLLISION_MODES)}",
+                collision_mode,
+            )
         # OndselSolver retains the input state in addition to the requested
         # output-time states.  The extra slot also covers a non-integral final
         # interval without relying on a hidden solver rounding rule.
@@ -1788,6 +1800,7 @@ class AssemblyDomainAPI:
             time_step_s=step,
             error_tolerance=tolerance,
             frames_per_second=frames_per_second,
+            collision_mode=clean_collision_mode,
             estimated_frame_limit=estimated_frames,
             label=label,
         )

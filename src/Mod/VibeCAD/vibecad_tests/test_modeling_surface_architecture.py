@@ -4785,6 +4785,13 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
         end_time_s=2,
         time_step_s=0.1,
     )
+    playback_only = api.simulation(
+        model,
+        [drive],
+        end_time_s=2,
+        time_step_s=0.1,
+        collision_mode="off",
+    )
     exploded = api.exploded_view(
         model,
         [
@@ -4844,6 +4851,8 @@ def test_assembly_api_is_explicit_graph_based_and_generated_from_runtime() -> No
     assert simulation.arguments == (model,)
     assert simulation.properties["motions"] == (drive,)
     assert simulation.properties["estimated_frame_limit"] == 22
+    assert simulation.properties["collision_mode"] == "full"
+    assert playback_only.properties["collision_mode"] == "off"
     assert exploded.arguments == (model,)
     assert exploded.properties["moves"][0]["kind"] == "normal"
     assert exploded.properties["moves"][0]["components"] == (arm,)
