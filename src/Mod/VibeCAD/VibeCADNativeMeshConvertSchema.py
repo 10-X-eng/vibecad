@@ -252,8 +252,8 @@ def mesh_to_shape_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MESH_TO_SHAPE_CAPABILITY_NAME,
         description=(
-            "Create a retained faceted OCC Shell or one validated OCC Solid "
-            "from an exact current-History Mesh."
+            "Create a retained faceted OCC Shell, one validated OCC Solid, or "
+            "a usable Part Design Body from an exact current-History Mesh."
         ),
         primary_classification="mutation",
         variants=(
@@ -284,6 +284,24 @@ def mesh_to_shape_capability_definition() -> NativeCapabilityDefinition:
                 transaction_behavior="background",
                 background_required=True,
                 provider_supplemental=True,
+                parameters={
+                    "type": "object",
+                    "properties": common,
+                    "required": ["source"],
+                    "additionalProperties": False,
+                },
+            ),
+            NativeCapabilityVariant(
+                operation="body",
+                description=(
+                    "Create exactly one validated faceted OCC Solid and place it "
+                    "in a usable Part Design Body with a linked BaseFeature."
+                ),
+                action_ids=frozenset({"MeshPart_MeshToBody"}),
+                surface_ids=frozenset({"mesh"}),
+                exact_target_type="ClosedCurrentHistoryMesh",
+                transaction_behavior="background",
+                background_required=True,
                 parameters={
                     "type": "object",
                     "properties": common,

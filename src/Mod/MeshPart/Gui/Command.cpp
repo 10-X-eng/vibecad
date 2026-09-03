@@ -264,6 +264,104 @@ bool CmdMeshPartShapeFromMesh::isActive()
 
 //--------------------------------------------------------------------------------------
 
+DEF_STD_CMD_A(CmdMeshPartMeshToBody)
+
+CmdMeshPartMeshToBody::CmdMeshPartMeshToBody()
+    : Command("MeshPart_MeshToBody")
+{
+    sAppModule = "MeshPart";
+    sGroup = QT_TR_NOOP("Mesh");
+    sMenuText = QT_TR_NOOP("Mesh to Part Design Body");
+    sToolTipText = QT_TR_NOOP(
+        "Convert selected closed meshes into usable Part Design bodies"
+    );
+    sWhatsThis = "MeshPart_MeshToBody";
+    sStatusTip = sToolTipText;
+    sPixmap = "PartDesign_Body";
+}
+
+void CmdMeshPartMeshToBody::activated(int)
+{
+    App::Document* document = cleanActiveDocument();
+    auto meshes = getSelection().getObjectsOfType<Mesh::Feature>();
+    if (meshes.empty() || meshes.size() > 32 || !allObjectsBelongTo(meshes, document)
+        || !allMeshesNonEmpty(meshes)) {
+        return;
+    }
+    App::DocumentWeakPtrT documentTarget(document);
+    std::vector<App::DocumentObjectWeakPtrT> meshTargets;
+    meshTargets.reserve(meshes.size());
+    for (auto* mesh : meshes) {
+        meshTargets.emplace_back(mesh);
+    }
+
+    QDialog dialog(Gui::getMainWindow());
+    dialog.setWindowTitle(
+        qApp->translate("MeshPart_MeshToBody", "Mesh to Part Design Body")
+    );
+    QFormLayout layout(&dialog);
+    Gui::QuantitySpinBox tolerance(&dialog);
+    tolerance.setUnit(Base::Unit::Length);
+    tolerance.setMinimum(1.0e-6);
+    tolerance.setMaximum(10.0);
+    tolerance.setSingleStep(0.1);
+    tolerance.setValue(0.1);
+    layout.addRow(qApp->translate("MeshPart_MeshToBody", "Tolerance"), &tolerance);
+    QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout.addRow(&buttons);
+    QObject::connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    document = *documentTarget;
+    meshes.clear();
+    meshes.reserve(meshTargets.size());
+    for (const auto& target : meshTargets) {
+        auto* mesh = target.get<Mesh::Feature>();
+        if (!mesh) {
+            return;
+        }
+        meshes.push_back(mesh);
+    }
+    if (meshes.size() > 32 || !allObjectsBelongTo(meshes, document)
+        || !allMeshesNonEmpty(meshes) || !MeshGui::hasCleanNativeMutationBoundary(document)) {
+        return;
+    }
+
+    Base::PyGILStateLocker lock;
+    Py::List sources;
+    for (auto* mesh : meshes) {
+        sources.append(Py::asObject(mesh->getPyObject()));
+    }
+    PyObject* imported = PyImport_ImportModule("VibeCADMeshConversionGui");
+    if (!imported) {
+        throw Py::Exception();
+    }
+    Py::Module module(imported, true);
+    module.callMemberFunction(
+        "start_mesh_conversions",
+        Py::TupleN(
+            sources,
+            Py::Float(tolerance.value().getValue()),
+            Py::Boolean(true),
+            Py::Boolean(true),
+            Py::Boolean(true)
+        )
+    );
+}
+
+bool CmdMeshPartMeshToBody::isActive()
+{
+    App::Document* document = cleanActiveDocument();
+    auto meshes = getSelection().getObjectsOfType<Mesh::Feature>();
+    return !meshes.empty() && meshes.size() <= 32 && allObjectsBelongTo(meshes, document)
+        && allMeshesNonEmpty(meshes);
+}
+
+//--------------------------------------------------------------------------------------
+
 DEF_STD_CMD_A(CmdMeshPartTrimByPlane)
 
 CmdMeshPartTrimByPlane::CmdMeshPartTrimByPlane()
@@ -521,6 +619,7 @@ void CreateMeshPartCommands()
     Gui::CommandManager& rcCmdMgr = Gui::Application::Instance->commandManager();
     rcCmdMgr.addCommand(new CmdMeshPartMesher());
     rcCmdMgr.addCommand(new CmdMeshPartShapeFromMesh());
+    rcCmdMgr.addCommand(new CmdMeshPartMeshToBody());
     rcCmdMgr.addCommand(new CmdMeshPartTrimByPlane());
     rcCmdMgr.addCommand(new CmdMeshPartSection());
     rcCmdMgr.addCommand(new CmdMeshPartCrossSections());

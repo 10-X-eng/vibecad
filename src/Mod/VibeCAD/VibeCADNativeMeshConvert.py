@@ -829,6 +829,127 @@ def commit_mesh_conversion(
     )
 
 
+def promote_committed_mesh_conversion_to_body(
+    document: Any,
+    conversion_draft: NativeMutationDraft,
+    *,
+    publish: bool = True,
+) -> NativeMutationDraft:
+    """Place one verified faceted Solid behind a standard Part Design BaseFeature."""
+
+    if not isinstance(conversion_draft, NativeMutationDraft):
+        raise TypeError("conversion_draft must be a NativeMutationDraft")
+    prepared = conversion_draft.value.get("prepared")
+    conversion = conversion_draft.value.get("result")
+    request = getattr(prepared, "request", None)
+    target = getattr(request, "target", None)
+    if (
+        request is None
+        or target is None
+        or not bool(getattr(request, "make_solid", False))
+        or str(getattr(prepared, "shape_type", "") or "") != "Solid"
+        or int(dict(getattr(prepared, "topology", {}) or {}).get("solids", 0) or 0) != 1
+        or not _live(document, conversion)
+    ):
+        raise NativeMeshError(
+            "A Part Design Body requires exactly one verified solid Mesh conversion.",
+            error_code="NATIVE_MESH_SINGLE_SOLID_REQUIRED",
+        )
+    try:
+        shape = conversion.Shape
+        shape_ready = not shape.isNull() and str(shape.ShapeType) == "Solid"
+    except Exception:  # noqa: BLE001 - FreeCAD proxy access can raise native exceptions.
+        shape_ready = False
+    if not shape_ready:
+        raise NativeMeshError(
+            "The verified Mesh solid is unavailable for Part Design.",
+            error_code="NATIVE_MESH_CONVERSION_ARTIFACT_INVALID",
+        )
+
+    import MeshGui
+    import PartDesign  # noqa: F401 - registers Body and FeatureBase object types
+
+    # The detached conversion initially carries the requested user-facing
+    # label. Give that internal implementation detail its own label before
+    # creating the Body so FreeCAD's unique-label policy cannot suffix the
+    # label of the actual user-facing result.
+    conversion.Label = f"{request.label} Conversion"
+
+    # Provisional timeline identities carry their exact insertion positions.
+    # Retire this earlier implementation detail before creating the Body and
+    # its automatic FeatureBase so no later enrollment proof is shifted.
+    document.classifyProvisionalTimelineInternalObject(conversion)
+    body = document.addObject(
+        "PartDesign::Body",
+        document.getUniqueObjectName(f"{target.source.Name}_body"),
+    )
+    if body is None or str(getattr(body, "TypeId", "")) != "PartDesign::Body":
+        raise NativeMeshError("The Part Design Body could not be created.")
+    body.Label = request.label
+    body.BaseFeature = conversion
+    proxies = tuple(
+        obj
+        for obj in list(getattr(body, "Group", ()) or ())
+        if str(getattr(obj, "TypeId", "")) == "PartDesign::FeatureBase"
+    )
+    if len(proxies) != 1:
+        raise NativeMeshError("The Part Design BaseFeature could not be created.")
+    proxy = proxies[0]
+
+    # The linked conversion and the Body's proxy are implementation details of
+    # the one user-visible Body operation, not separate History steps.
+    document.classifyProvisionalTimelineInternalObject(proxy)
+    conversion_view = getattr(conversion, "ViewObject", None)
+    if conversion_view is not None:
+        conversion_view.Visibility = False
+        if hasattr(conversion_view, "ShowInTree"):
+            conversion_view.ShowInTree = False
+    body_view = getattr(body, "ViewObject", None)
+    if body_view is not None:
+        body_view.Visibility = True
+
+    if publish:
+        MeshGui.publishReplacingOutputs(
+            str(document.Name),
+            [target.source],
+            [body],
+            "ConvertedMeshBodies",
+            "Converted Mesh Bodies",
+            "Convert mesh to Part Design Body",
+        )
+    return NativeMutationDraft(
+        value={
+            "result": body,
+            "conversion": conversion,
+            "proxy": proxy,
+            "prepared": prepared,
+        },
+        recompute_targets=(conversion, proxy, body),
+        created=(
+            *conversion_draft.created,
+            object_identity(proxy),
+            object_identity(body),
+        ),
+        replaced=(object_identity(target.source),),
+    )
+
+
+def commit_mesh_conversion_to_body(
+    document: Any,
+    prepared: Any,
+    *,
+    publish: bool = True,
+) -> NativeMutationDraft:
+    """Publish one worker-verified Mesh solid as a usable Part Design Body."""
+
+    conversion_draft = commit_mesh_conversion(document, prepared, publish=False)
+    return promote_committed_mesh_conversion_to_body(
+        document,
+        conversion_draft,
+        publish=publish,
+    )
+
+
 def load_verified_mesh_conversion_shape(prepared: Any) -> Any:
     """Load one authenticated worker artifact without repeating OCC validation."""
 
@@ -910,5 +1031,125 @@ def verify_committed_mesh_conversion(
         "display": {
             "source_mesh_visible": bool(getattr(target.source, "Visibility", False)),
             "converted_shape_visible": bool(getattr(result, "Visibility", False)),
+        },
+    }
+
+
+def verify_committed_mesh_body(
+    document: Any,
+    draft: NativeMutationDraft,
+    *,
+    history_owner: Any | None = None,
+) -> dict[str, Any]:
+    """Prove the linked conversion, BaseFeature, Body, History, and presentation."""
+
+    prepared = draft.value["prepared"]
+    request = prepared.request
+    target = request.target
+    body = draft.value["result"]
+    conversion = draft.value["conversion"]
+    proxy = draft.value["proxy"]
+    try:
+        source_state = mesh_object_state(target.source)
+        source_exact = (
+            source_state.get("state_sha256") == target.expected_state_sha256
+            and int(source_state.get("geometry_revision", 0) or 0)
+            == target.source_geometry_revision
+        )
+        conversion_shape_ready = (
+            not conversion.Shape.isNull()
+            and str(conversion.Shape.ShapeType) == "Solid"
+        )
+        body_shape_ready = not body.Shape.isNull() and str(body.Shape.ShapeType) == "Solid"
+    except Exception:  # noqa: BLE001 - FreeCAD proxy access can raise native exceptions.
+        source_exact = False
+        conversion_shape_ready = False
+        body_shape_ready = False
+
+    timeline = getattr(document, "VibeCADTimeline", None)
+    operations = tuple(getattr(timeline, "Operations", ()) or ())
+    expected_replacements = (target.source,) if target.source_visible else ()
+    if history_owner is None:
+        history_exact = (
+            _history_is_exact(document, body)
+            and tuple(getattr(body, "VibeCADTimelineReplacedInputs", ()) or ())
+            == expected_replacements
+        )
+    else:
+        owner_sources = tuple(getattr(history_owner, "Sources", ()) or ())
+        owner_outputs = tuple(getattr(history_owner, "Group", ()) or ())
+        owner_replacements = tuple(
+            getattr(history_owner, "VibeCADTimelineReplacedInputs", ()) or ()
+        )
+        history_exact = (
+            _live(document, history_owner)
+            and str(getattr(history_owner, "TypeId", "")) == "Mesh::OutputGroup"
+            and str(getattr(history_owner, "InputMode", "")) == "Replacement"
+            and str(getattr(history_owner, "OperationKind", ""))
+            == "Convert mesh to Part Design Body"
+            and target.source in owner_sources
+            and body in owner_outputs
+            and (target.source in owner_replacements) is target.source_visible
+            and str(getattr(history_owner, "VibeCADTimelineRole", "") or "")
+            == "operation"
+            and operations.count(history_owner) == 1
+            and str(getattr(body, "VibeCADTimelineRole", "") or "") == "resource"
+            and getattr(body, "VibeCADTimelineOwner", None) is history_owner
+        )
+
+    if (
+        not _live(document, target.source)
+        or not source_exact
+        or not _live(document, conversion)
+        or str(getattr(conversion, "TypeId", "")) != "MeshPart::ShapeFromMesh"
+        or getattr(conversion, "Source", None) is not target.source
+        or bool(conversion.UpdateFromSource) is not False
+        or bool(conversion.SewShape) is not True
+        or bool(conversion.MakeSolid) is not True
+        or not math.isclose(float(conversion.Tolerance), request.tolerance_mm)
+        or not conversion_shape_ready
+        or str(getattr(conversion, "VibeCADTimelineRole", "") or "") != "internal"
+        or not _live(document, body)
+        or str(getattr(body, "TypeId", "")) != "PartDesign::Body"
+        or str(getattr(body, "Label", "")) != request.label
+        or getattr(body, "BaseFeature", None) is not conversion
+        or list(getattr(body, "Group", ()) or ()) != [proxy]
+        or getattr(body, "Tip", None) is not proxy
+        or not body_shape_ready
+        or not bool(body.isValid())
+        or not _live(document, proxy)
+        or str(getattr(proxy, "TypeId", "")) != "PartDesign::FeatureBase"
+        or getattr(proxy, "BaseFeature", None) is not conversion
+        or str(getattr(proxy, "VibeCADTimelineRole", "") or "") != "internal"
+        or not history_exact
+        or bool(getattr(target.source, "Visibility", True))
+        or bool(getattr(conversion, "Visibility", True))
+        or not bool(getattr(body, "Visibility", False))
+    ):
+        raise NativeMeshError(
+            "The Mesh-to-Body result failed its exact Part Design postcondition."
+        )
+    return {
+        "created": object_reference(body),
+        "conversion": object_reference(conversion),
+        "base_feature": object_reference(proxy),
+        "source": object_reference(target.source),
+        "shape_type": "Solid",
+        "representation": prepared.representation,
+        "topology": dict(prepared.topology),
+        "settings": {
+            "tolerance_mm": request.tolerance_mm,
+            "sew_adjacent_faces": True,
+            "make_solid": True,
+        },
+        "conversion_details": {
+            "background": True,
+            "cache_hit": prepared.cache_hit,
+            "artifact_sha256": prepared.artifact_sha256,
+        },
+        "display": {
+            "source_mesh_visible": False,
+            "converted_shape_visible": False,
+            "part_design_body_visible": True,
         },
     }
