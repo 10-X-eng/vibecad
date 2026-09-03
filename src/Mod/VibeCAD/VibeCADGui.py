@@ -2228,7 +2228,7 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         return (
             f"Anthropic stream interrupted; retry "
             f"{event.get('next_attempt', '?')}/"
-            f"{event.get('max_attempts', 3)}."
+            f"{event.get('max_attempts', 6)}."
         )
     if name == "anthropic_stream_waiting":
         return f"Anthropic stream opened: waiting for turn {event.get('turn', '?')}."

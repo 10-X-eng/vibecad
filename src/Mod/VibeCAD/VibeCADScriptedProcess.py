@@ -146,14 +146,25 @@ def run_process(
     timeout_seconds: float,
     memory_limit_bytes: int,
     poll_callback: Callable[[], None] | None = None,
+    activity_check: Callable[[], object | None] | None = None,
 ) -> dict[str, Any]:
-    """Run one child process without a console window and enforce hard bounds."""
+    """Run one child process without a console window and enforce safe bounds.
+
+    Existing callers receive the original total wall-time deadline. Callers
+    that provide ``activity_check`` use ``timeout_seconds`` as an inactivity
+    lease instead: every distinct non-None activity token renews the lease.
+    This keeps long, observably progressing CAD work alive without weakening
+    cancellation, memory enforcement, or the legacy process-runner contract.
+    """
     creation_flags = (
         int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if sys.platform == "win32"
         else 0
     )
     started = time.monotonic()
+    last_activity = started
+    activity_token: object | None = None
+    activity_observations = 0
     with tempfile.TemporaryFile(mode="w+b") as stdout_stream, tempfile.TemporaryFile(
         mode="w+b"
     ) as stderr_stream:
@@ -191,7 +202,20 @@ def run_process(
                     terminate_process_tree(process)
                     raise
             now = time.monotonic()
-            if now - started > timeout_seconds:
+            if activity_check is not None:
+                try:
+                    observed_activity = activity_check()
+                except OSError:
+                    observed_activity = None
+                if observed_activity is not None and (
+                    activity_observations == 0 or observed_activity != activity_token
+                ):
+                    activity_token = observed_activity
+                    activity_observations += 1
+                    last_activity = time.monotonic()
+                    now = last_activity
+            timeout_origin = last_activity if activity_check is not None else started
+            if now - timeout_origin > timeout_seconds:
                 timed_out = True
                 break
             if memory_limit_bytes > 0 and now >= next_memory_check:
@@ -209,11 +233,14 @@ def run_process(
             and hasattr(signal, "SIGXCPU")
             and process.returncode == -int(signal.SIGXCPU)
         )
+        timeout_mode = "inactivity" if activity_check is not None else "wall_time"
         termination_reason = (
             "host_cancellation_request"
             if cancelled
             else (
-                "wall_time_limit"
+                "inactivity_timeout"
+                if timed_out and activity_check is not None
+                else "wall_time_limit"
                 if timed_out
                 else (
                     "memory_limit"
@@ -233,7 +260,9 @@ def run_process(
             "cpu_exceeded": cpu_exceeded,
             "cancelled_by": "host" if cancelled else None,
             "limit_reached": (
-                "wall_time_seconds"
+                "inactivity_seconds"
+                if timed_out and activity_check is not None
+                else "wall_time_seconds"
                 if timed_out
                 else (
                     "memory_bytes"
@@ -243,6 +272,9 @@ def run_process(
             ),
             "termination_reason": termination_reason,
             "timeout_seconds": float(timeout_seconds),
+            "timeout_mode": timeout_mode,
+            "activity_observations": activity_observations,
+            "inactivity_seconds": max(0.0, time.monotonic() - last_activity),
             "memory_limit_bytes": int(memory_limit_bytes),
             "observed_memory_bytes": observed_memory,
             "elapsed_seconds": time.monotonic() - started,

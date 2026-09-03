@@ -150,3 +150,48 @@ def test_worker_result_uses_in_memory_progress_when_status_file_is_locked() -> N
     source = Path(worker.__file__).read_text(encoding="utf-8")
     assert 'response["worker_progress"] = worker_progress.snapshot()' in source
     assert '(root / "progress.json").read_text' not in source
+
+
+def test_domain_execution_renews_its_lease_from_worker_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADScriptedProcess as scripted
+    import VibeCADVibeScriptDomainRuntime as runtime
+
+    observed: dict[str, object] = {}
+
+    def run_process(_command, **kwargs):
+        observed.update(kwargs)
+        return {
+            "started": True,
+            "returncode": -1,
+            "cancelled": False,
+            "timed_out": True,
+            "memory_exceeded": False,
+            "cpu_exceeded": False,
+            "timeout_mode": "inactivity",
+        }
+
+    monkeypatch.setattr(scripted, "run_process", run_process)
+    prepared = {
+        "tool_name": "vibescript.assembly.edit_source",
+        "freecadcmd_executable": "FreeCADCmd",
+        "staging": str(tmp_path),
+        "timeout_seconds": 3600.0,
+        "memory_limit_bytes": 1024,
+        "live_outputs_before": {},
+    }
+
+    result = runtime.execute_candidate(prepared, cancellation_check=None)
+
+    activity_check = observed["activity_check"]
+    assert callable(activity_check)
+    assert activity_check() is None
+    (tmp_path / "progress.json").write_text('{"frame":1}', encoding="utf-8")
+    first = activity_check()
+    assert first is not None
+    (tmp_path / "progress.json").write_text('{"frame":22}', encoding="utf-8")
+    assert activity_check() != first
+    assert result["failure_code"] == "DOMAIN_EXECUTION_TIMEOUT"
+    assert "made no observable progress for 3600 seconds" in result["error"]

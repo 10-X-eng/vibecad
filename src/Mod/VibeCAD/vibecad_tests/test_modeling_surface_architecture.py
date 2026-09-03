@@ -7034,6 +7034,9 @@ def test_source_operation_budget_excludes_trusted_domain_api_frames() -> None:
     class TrustedAPI:
         @staticmethod
         def build() -> int:
+            import time
+
+            time.sleep(0.1)
             total = 0
             for value in range(100_000):
                 total += value % 7
@@ -7047,10 +7050,12 @@ def test_source_operation_budget_excludes_trusted_domain_api_frames() -> None:
         api=TrustedAPI(),
         expected_output_names=["Value"],
         max_operations=10,
-        max_seconds=1.0,
+        max_seconds=0.05,
     )
     assert result["Value"] > 0
     assert 1 <= budget["operations"] <= 10
+    assert budget["elapsed_seconds"] > budget["max_seconds"]
+    assert budget["source_elapsed_seconds"] < budget["max_seconds"]
 
     with pytest.raises(RuntimeError, match=r"exceeded its 10 operation budget"):
         _execute_source(

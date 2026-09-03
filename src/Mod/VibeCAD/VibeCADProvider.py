@@ -78,7 +78,7 @@ ANTHROPIC_ADAPTIVE_EFFORT = {
     "high": "high",
     "xhigh": "xhigh",
 }
-ANTHROPIC_STREAM_MAX_ATTEMPTS = 3
+ANTHROPIC_STREAM_MAX_ATTEMPTS = 6
 
 
 VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical engineer for the user's live FreeCAD model.

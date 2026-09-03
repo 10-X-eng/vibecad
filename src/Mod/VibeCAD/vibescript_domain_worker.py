@@ -219,18 +219,26 @@ def _execute_source(
     started = time.monotonic()
     operations = 0
     source_filename = "<vibecad-domain-vibescript>"
+    source_elapsed = 0.0
+    last_trace_at = started
+    source_active = False
 
     def trace(frame: Any, event: str, _arg: Any):
-        nonlocal operations
-        if frame.f_code.co_filename == source_filename and event in {"line", "call"}:
+        nonlocal last_trace_at, operations, source_active, source_elapsed
+        now = time.monotonic()
+        if source_active:
+            source_elapsed += max(0.0, now - last_trace_at)
+        last_trace_at = now
+        source_active = frame.f_code.co_filename == source_filename
+        if source_active and source_elapsed > max_seconds:
+            raise TimeoutError(
+                f"VibeScript exceeded its {max_seconds:g} second source budget."
+            )
+        if source_active and event in {"line", "call"}:
             operations += 1
             if operations > max_operations:
                 raise RuntimeError(
                     f"VibeScript exceeded its {max_operations} operation budget."
-                )
-            if time.monotonic() - started > max_seconds:
-                raise TimeoutError(
-                    f"VibeScript exceeded its {max_seconds:g} second source budget."
                 )
         return trace
 
@@ -267,6 +275,9 @@ def _execute_source(
             setattr(exc, "vibescript_stdout", output.getvalue()[-MAX_STDOUT_CHARS:])
             raise
     finally:
+        now = time.monotonic()
+        if source_active:
+            source_elapsed += max(0.0, now - last_trace_at)
         sys.settrace(previous_trace)
     result = namespace.get("result")
     if not isinstance(result, dict):
@@ -285,6 +296,7 @@ def _execute_source(
             "operations": operations,
             "max_operations": max_operations,
             "elapsed_seconds": time.monotonic() - started,
+            "source_elapsed_seconds": source_elapsed,
             "max_seconds": max_seconds,
         },
     )

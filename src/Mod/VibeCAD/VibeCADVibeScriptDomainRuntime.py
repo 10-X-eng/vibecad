@@ -2764,7 +2764,10 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "max_operations": 200_000,
             "max_seconds": float(captured["timeout_seconds"]),
             "memory_limit_bytes": int(captured["memory_limit_bytes"]),
-            "cpu_limit_seconds": max(1, int(float(captured["timeout_seconds"]))),
+            # Source-authored Python is bounded by its trace operation and
+            # source-time budgets. RLIMIT_CPU covers trusted CAD kernels too,
+            # so applying that same deadline would kill healthy native work.
+            "cpu_limit_seconds": 0,
             "output_limit_bytes": 256 * 1024 * 1024,
             "point_artifacts": worker_point_artifacts,
         }
@@ -2877,6 +2880,22 @@ def _worker_progress(prepared: Mapping[str, Any]) -> dict[str, Any] | None:
     return value
 
 
+def _worker_progress_activity(prepared: Mapping[str, Any]) -> object | None:
+    """Return a cheap token that changes whenever worker progress is published."""
+
+    path = Path(str(prepared["staging"])) / "progress.json"
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return (
+        int(status.st_mtime_ns),
+        int(status.st_ctime_ns),
+        int(status.st_size),
+        int(status.st_ino),
+    )
+
+
 def execute_candidate(
     prepared: Mapping[str, Any],
     *,
@@ -2896,6 +2915,7 @@ def execute_candidate(
         cancellation_check=cancellation_check,
         timeout_seconds=float(prepared["timeout_seconds"]),
         memory_limit_bytes=int(prepared["memory_limit_bytes"]),
+        activity_check=lambda: _worker_progress_activity(prepared),
     )
     progress = _worker_progress(prepared)
     if progress is not None:
@@ -2924,11 +2944,18 @@ def execute_candidate(
             cancelled=True,
         )
     if process.get("timed_out"):
+        timeout_error = (
+            f"VibeScript domain execution made no observable progress for "
+            f"{prepared['timeout_seconds']:g} seconds."
+            if process.get("timeout_mode") == "inactivity"
+            else f"VibeScript domain execution exceeded "
+            f"{prepared['timeout_seconds']:g} seconds."
+        )
         return _failure(
             str(prepared["tool_name"]),
             "DOMAIN_EXECUTION_TIMEOUT",
             "external_process",
-            f"VibeScript domain execution exceeded {prepared['timeout_seconds']:g} seconds.",
+            timeout_error,
             observed={
                 **process,
                 "accepted_live_outputs_preserved": bool(

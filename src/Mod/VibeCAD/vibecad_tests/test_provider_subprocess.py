@@ -219,6 +219,69 @@ def test_anthropic_empty_completion_returns_explicit_error(monkeypatch) -> None:
     assert connection.closed
 
 
+def test_anthropic_stream_recovers_on_the_sixth_attempt(monkeypatch) -> None:
+    class RetryableStreamError(Exception):
+        pass
+
+    class SuccessfulStream(_EmptyAnthropicStream):
+        @staticmethod
+        def get_final_message():
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="Recovered.")],
+                stop_reason="end_turn",
+            )
+
+    attempts: list[int] = []
+
+    def stream(**_request):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) < 6:
+            raise RetryableStreamError("server disconnected")
+        return SuccessfulStream()
+
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(
+            messages=SimpleNamespace(stream=stream)
+        ),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+        APIConnectionError=RetryableStreamError,
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    monkeypatch.setattr(provider.time, "sleep", lambda _seconds: None)
+    connection = _CollectingConnection()
+
+    provider._anthropic_child_main(
+        connection,
+        "Inspect the model.",
+        {"provider_tool_schemas": []},
+        "test-model",
+        "test-key",
+        None,
+        1.0,
+        1,
+        False,
+    )
+
+    retries = [
+        message["event"]
+        for message in connection.messages
+        if message.get("type") == "progress"
+        and message.get("event", {}).get("event") == "anthropic_stream_retrying"
+    ]
+    assert attempts == [1, 2, 3, 4, 5, 6]
+    assert [event["next_attempt"] for event in retries] == [2, 3, 4, 5, 6]
+    assert {event["max_attempts"] for event in retries} == {6}
+    assert any(
+        message.get("type") == "done"
+        and message.get("final_output") == "Recovered."
+        for message in connection.messages
+    )
+    assert not any(message.get("type") == "error" for message in connection.messages)
+
+
 def test_anthropic_child_forwards_the_exact_tool_use_id(monkeypatch) -> None:
     tool_block = SimpleNamespace(
         type="tool_use",
