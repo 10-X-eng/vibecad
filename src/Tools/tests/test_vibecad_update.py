@@ -1106,7 +1106,10 @@ class UpdateServiceTests(unittest.TestCase):
                 0,
                 f"stdout={completed.stdout}\nstderr={completed.stderr}",
             )
-            deadline = time.time() + 5
+            # Cold powershell.exe startup can exceed five seconds on hosted
+            # Windows runners while antivirus scans a newly checked-out tree.
+            # This verifies process survival, not PowerShell startup latency.
+            deadline = time.time() + 30
             while time.time() < deadline and not marker.is_file():
                 time.sleep(0.05)
             self.assertTrue(
