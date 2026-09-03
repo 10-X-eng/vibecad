@@ -240,6 +240,9 @@ bool AssemblyDirectManipulation::finishCandidate(bool commit)
         assemblyView->finishDirectManipulation(commit && moving);
     }
     clearCandidate();
+    if (commit && wasMoving && Gui::Application::Instance) {
+        Gui::Application::Instance->updateActions();
+    }
     return wasMoving;
 }
 

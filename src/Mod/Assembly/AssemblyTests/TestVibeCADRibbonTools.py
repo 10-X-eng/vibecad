@@ -2091,12 +2091,57 @@ class TestVibeCADAssemblyRibbonTools(unittest.TestCase):
         self.assertEqual(self.document.getBookedTransactionID(), 0)
 
         moved_placement = App.Placement(component.Placement)
-        self.document.undo()
+        undo_button = Gui.getMainWindow().findChild(
+            QtGui.QToolButton,
+            "VibeCADRibbonUndo",
+        )
+        self.assertIsNotNone(undo_button)
+        ribbon = Gui.getMainWindow().findChild(QtGui.QWidget, "VibeCADRibbon")
+        self.assertIsNotNone(ribbon)
+        undo_action = next(
+            (
+                action
+                for action in ribbon.actions()
+                if _action_command_id(action) == "Std_Undo"
+            ),
+            None,
+        )
+        self.assertIsNotNone(undo_action)
+        self.assertEqual(
+            undo_action.shortcut().toString(),
+            QtGui.QKeySequence(QtGui.QKeySequence.Undo).toString(),
+        )
+        self.assertTrue(undo_action.isEnabled())
+        undo_action.trigger()
         self._process_events(100)
         self.assertEqual(component.Placement, before_placement)
         self.document.redo()
         self._process_events(100)
         self.assertEqual(component.Placement, moved_placement)
+
+    def test_gui_observer_preserves_assembly_view_provider_python_type(self):
+        class ChangeObserver:
+            def slotChangedObject(self, _view_provider, _property_name):
+                pass
+
+        observer = ChangeObserver()
+        Gui.addDocumentObserver(observer)
+        try:
+            box = self.document.addObject("Part::Box", "ObservedBox")
+            assembly, _components = self._create_assembly_with_components(1)
+        finally:
+            Gui.removeDocumentObserver(observer)
+
+        self.assertEqual(
+            f"{type(box.ViewObject).__module__}.{type(box.ViewObject).__name__}",
+            "PartGui.ViewProviderPartExt",
+        )
+        self.assertEqual(
+            f"{type(assembly.ViewObject).__module__}."
+            f"{type(assembly.ViewObject).__name__}",
+            "AssemblyGui.ViewProviderAssembly",
+        )
+        self.assertTrue(hasattr(assembly.ViewObject, "isInEditMode"))
 
     def test_component_can_be_dragged_directly_from_model_ribbon(self):
         _assembly, components = self._create_assembly_with_components(1)
