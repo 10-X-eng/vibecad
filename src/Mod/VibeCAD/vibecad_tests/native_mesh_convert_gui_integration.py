@@ -6,16 +6,19 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
+import os
+import sys
 import tempfile
 import time
 import traceback
+from pathlib import Path
 
 import FreeCAD as App
 import FreeCADGui as Gui
 import Mesh
 import MeshGui
 import Part
+import PartDesign  # noqa: F401 - registers Body and FeatureBase object types
 from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui
@@ -39,6 +42,12 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+def _write_gate_result(value: str) -> None:
+    result_path = os.environ.get("VIBECAD_NATIVE_MESH_CONVERT_RESULT")
+    if result_path:
+        Path(result_path).write_text(value, encoding="ascii")
 
 
 def _process_events(rounds: int = 16) -> None:
@@ -194,9 +203,12 @@ def _run() -> None:
             for schema in actual_surface.schemas
             if schema["name"] == MESH_TO_SHAPE_CAPABILITY_NAME
         )
-        assert actual_to_shape_schema["parameters"]["properties"]["operation"][
-            "enum"
-        ] == ["shell", "solid"]
+        actual_to_shape_operations = actual_to_shape_schema["parameters"]["properties"][
+            "operation"
+        ]["enum"]
+        assert actual_to_shape_operations == ["shell", "body", "solid"], (
+            actual_to_shape_operations
+        )
         actual_curve_schema = next(
             schema
             for schema in actual_surface.schemas
@@ -237,21 +249,52 @@ def _run() -> None:
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
+        focused_turn = NativeTurnSnapshot.from_provider_surface(actual_surface)
+
+        def new_focused_dispatcher() -> NativeTurnDispatcher:
+            return NativeTurnDispatcher(
+                document=document,
+                state=state,
+                registry=registry,
+                turn=focused_turn,
+                runtimes=build_native_runtime_bindings(
+                    context,
+                    focused_turn.tool_names,
+                ),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
         call_number = 0
 
-        def call(arguments: dict, *, succeeds: bool = True) -> dict:
+        def call(
+            arguments: dict,
+            *,
+            succeeds: bool = True,
+            selected_dispatcher=dispatcher,
+            capability=MESH_CONVERT_CAPABILITY_NAME,
+        ) -> dict:
             nonlocal call_number
             call_number += 1
-            result = dispatcher.call(
-                MESH_CONVERT_CAPABILITY_NAME,
+            result = selected_dispatcher.call(
+                capability,
                 json.dumps(arguments, separators=(",", ":")),
                 f"native-mesh-convert-{call_number}",
             )
             assert result.get("ok") is succeeds, result
             return result
 
-        def call_job(arguments: dict, *, succeeds: bool = True) -> dict:
-            started = call(arguments)
+        def call_job(
+            arguments: dict,
+            *,
+            succeeds: bool = True,
+            selected_dispatcher=dispatcher,
+            capability=MESH_CONVERT_CAPABILITY_NAME,
+        ) -> dict:
+            started = call(
+                arguments,
+                selected_dispatcher=selected_dispatcher,
+                capability=capability,
+            )
             job = started.get("job")
             assert isinstance(job, dict) and job.get("job_id"), started
             deadline = time.monotonic() + 60.0
@@ -361,6 +404,29 @@ def _run() -> None:
         )
         assert open_solid["error_code"] == "NATIVE_MESH_SOLID_REQUIRED"
 
+        body_names_before = {
+            obj.Name for obj in document.Objects if obj.TypeId == "PartDesign::Body"
+        }
+        focused_dispatcher = new_focused_dispatcher()
+        open_body = call_job(
+            {
+                "operation": "body",
+                "source": {
+                    "object_name": face_mesh.Name,
+                    "expected_state_sha256": open_state["state_sha256"],
+                },
+                "result_label": "Rejected Open Mesh Body",
+                "tolerance_mm": 0.1,
+            },
+            succeeds=False,
+            selected_dispatcher=focused_dispatcher,
+            capability=MESH_TO_SHAPE_CAPABILITY_NAME,
+        )
+        assert open_body["error_code"] == "NATIVE_MESH_SOLID_REQUIRED"
+        assert {
+            obj.Name for obj in document.Objects if obj.TypeId == "PartDesign::Body"
+        } == body_names_before
+
         solid_state = mesh_object_state(full_mesh)
         solid = call_job(
             {
@@ -417,6 +483,45 @@ def _run() -> None:
         assert len(curve_object.AnchorFacets) == 3
         assert not curve_object.Shape.isNull() and curve_object.Shape.isValid()
 
+        body_state = mesh_object_state(full_mesh)
+        focused_dispatcher = new_focused_dispatcher()
+        body_result = call_job(
+            {
+                "operation": "body",
+                "source": {
+                    "object_name": full_mesh.Name,
+                    "expected_state_sha256": body_state["state_sha256"],
+                },
+                "result_label": "Imported Mesh Body",
+                "tolerance_mm": 0.1,
+            },
+            selected_dispatcher=focused_dispatcher,
+            capability=MESH_TO_SHAPE_CAPABILITY_NAME,
+        )
+        body = document.getObject(body_result["created"]["object_name"])
+        body_conversion = document.getObject(
+            body_result["conversion"]["object_name"]
+        )
+        body_proxy = document.getObject(body_result["base_feature"]["object_name"])
+        assert body is not None and body.TypeId == "PartDesign::Body"
+        assert body_conversion is not None
+        assert body_conversion.TypeId == "MeshPart::ShapeFromMesh"
+        assert body_proxy is not None and body_proxy.TypeId == "PartDesign::FeatureBase"
+        assert body.BaseFeature is body_conversion
+        assert body.Tip is body_proxy
+        assert body_proxy.BaseFeature is body_conversion
+        assert body.Shape.ShapeType == "Solid"
+        assert len(body.Shape.Solids) == 1
+        assert body.Shape.isValid()
+        assert math.isclose(float(body.Shape.Volume), 3000.0, abs_tol=1.0e-6)
+        assert body.VibeCADTimelineRole == "operation"
+        assert list(body.VibeCADTimelineReplacedInputs) == [full_mesh]
+        assert body_conversion.VibeCADTimelineRole == "internal"
+        assert body_proxy.VibeCADTimelineRole == "internal"
+        assert body.Visibility
+        assert not body_conversion.Visibility
+        assert not full_mesh.Visibility
+
         operations = tuple(document.VibeCADTimeline.Operations)
         assert operations == (
             source,
@@ -426,16 +531,17 @@ def _run() -> None:
             converted_shape,
             converted_solid,
             curve_object,
+            body,
         )
         assert all(obj.VibeCADTimelineRole == "operation" for obj in operations)
-        assert int(document.UndoCount) == 7
+        assert int(document.UndoCount) == 8
         operation_names = tuple(obj.Name for obj in operations)
 
         document.undo()
         assert document.getObject(operation_names[-1]) is None
         document.redo()
-        curve_object = document.getObject(operation_names[-1])
-        assert curve_object is not None and not curve_object.Shape.isNull()
+        body = document.getObject(operation_names[-1])
+        assert body is not None and not body.Shape.isNull()
 
         document.openTransaction("Edit retained Mesh conversion source")
         source.Length = 24.0
@@ -462,6 +568,7 @@ def _run() -> None:
             reopened_shape,
             reopened_solid,
             reopened_curve,
+            reopened_body,
         ) = reopened
         assert reopened_disconnected.Mesh.countComponents() == 2
         assert reopened_full.Source == (reopened_source, [])
@@ -474,6 +581,19 @@ def _run() -> None:
         assert reopened_solid.Shape.ShapeType == "Solid"
         assert len(reopened_solid.Shape.Solids) == 1
         assert reopened_curve.Source is reopened_full
+        reopened_body_conversion = reopened_body.BaseFeature
+        reopened_body_proxy = reopened_body.Tip
+        assert reopened_body_conversion.TypeId == "MeshPart::ShapeFromMesh"
+        assert reopened_body_proxy.TypeId == "PartDesign::FeatureBase"
+        assert reopened_body_proxy.BaseFeature is reopened_body_conversion
+        assert reopened_body.Shape.ShapeType == "Solid"
+        assert len(reopened_body.Shape.Solids) == 1
+        assert reopened_body.Shape.isValid()
+        assert reopened_body.VibeCADTimelineRole == "operation"
+        assert reopened_body_conversion.VibeCADTimelineRole == "internal"
+        assert reopened_body_proxy.VibeCADTimelineRole == "internal"
+        assert not reopened_full.Visibility
+        assert reopened_body.Visibility
         assert tuple(document.VibeCADTimeline.Operations) == reopened
         assert math.isclose(float(reopened_full.Mesh.BoundBox.XLength), 20.0, abs_tol=1.0e-7)
         assert math.isclose(float(reopened_shape.Shape.BoundBox.XLength), 20.0, abs_tol=1.0e-7)
@@ -487,18 +607,22 @@ def _run() -> None:
             f"shells={len(reopened_shape.Shape.Shells)} "
             f"shape_faces={len(reopened_shape.Shape.Faces)} "
             f"solid_volume={reopened_solid.Shape.Volume:g} "
+            f"body_volume={reopened_body.Shape.Volume:g} "
             f"curve_edges={len(reopened_curve.Shape.Edges)} history={len(reopened)}",
+            file=sys.__stdout__,
             flush=True,
         )
         exit_code = 0
     except Exception:
-        traceback.print_exc()
+        traceback.print_exc(file=sys.__stderr__)
     finally:
         if document is not None and document.Name in App.listDocuments():
             App.closeDocument(document.Name)
         if temporary is not None:
             temporary.cleanup()
+        _write_gate_result(str(exit_code))
         application.exit(exit_code)
 
 
+_write_gate_result("scheduled")
 QtCore.QTimer.singleShot(1000, _run)

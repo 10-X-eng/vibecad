@@ -1864,6 +1864,7 @@ def _run():
                 assert {
                     "Mesh_FromPartShape",
                     "MeshPart_ShapeFromMesh",
+                    "MeshPart_MeshToBody",
                     "MeshPart_CurveOnMesh",
                 }.issubset(_group_commands(convert_group))
                 conversion_actions = {
@@ -1879,6 +1880,7 @@ def _run():
                 for command_name in (
                     "Mesh_FromPartShape",
                     "MeshPart_ShapeFromMesh",
+                    "MeshPart_MeshToBody",
                     "MeshPart_CurveOnMesh",
                 ):
                     assert not conversion_actions[command_name].icon().isNull()

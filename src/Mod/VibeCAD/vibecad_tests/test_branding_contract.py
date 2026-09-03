@@ -1262,6 +1262,7 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
     assert '("InspectionGui", "MeshPartGui", "PartGui")' in vibecad_gui_startup
     assert 'convert->setCommand("Mesh Convert")' in mesh_workbench
     assert '<< "MeshPart_ShapeFromMesh"' in mesh_workbench
+    assert '<< "MeshPart_MeshToBody"' in mesh_workbench
     assert '<< "MeshPart_CurveOnMesh"' in mesh_workbench
     assert 'QStringLiteral("VibeCAD_OpenPreferences")' in ribbon
     assert 'QStringLiteral("VibeCAD_CheckForUpdates")' in ribbon
