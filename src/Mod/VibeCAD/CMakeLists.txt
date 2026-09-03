@@ -1222,6 +1222,7 @@ set(VibeCAD_Scripts
     VibeCADUpdateGui.py
     VibeCADVibeScriptDomains.py
     VibeCADVibeScriptDomainRuntime.py
+    VibeCADVibeScriptFileIO.py
     VibeCADVibeScriptPatch.py
     VibeCADVibeScriptDomainPublication.py
     VibeCADVibeScriptCAM.py

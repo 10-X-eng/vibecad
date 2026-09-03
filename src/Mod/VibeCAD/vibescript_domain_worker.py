@@ -17,6 +17,7 @@ from types import MappingProxyType
 from typing import Any
 
 from VibeCADAssemblySolverPolicy import set_joint_connectors_without_auto_solve
+from VibeCADVibeScriptFileIO import atomic_write_text, read_text_shared
 from vibescript_domain_api import DomainValue, create_domain_api
 import vibescript_worker_progress as worker_progress
 
@@ -93,12 +94,10 @@ def _immutable_input(value: Any) -> Any:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    temporary = path.with_name(f"{path.name}.tmp")
-    temporary.write_text(
+    atomic_write_text(
+        path,
         json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
-        encoding="utf-8",
     )
-    temporary.replace(path)
 
 
 def _resource_limits(request: dict[str, Any]) -> None:
@@ -1339,9 +1338,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         elif domain == "techdraw":
             response["techdraw_validation"] = techdraw_validation
         worker_progress.finish()
-        response["worker_progress"] = json.loads(
-            (root / "progress.json").read_text(encoding="utf-8")
-        )
+        response["worker_progress"] = worker_progress.snapshot()
         return response
     finally:
         App.closeDocument(document.Name)
@@ -1353,7 +1350,7 @@ def main() -> int:
     try:
         request_path = Path(os.environ[REQUEST_ENV]).resolve()
         root = request_path.parent
-        request = json.loads(request_path.read_text(encoding="utf-8"))
+        request = json.loads(read_text_shared(request_path))
         if not isinstance(request, dict):
             raise TypeError("Domain worker request must be an object.")
         _resource_limits(request)

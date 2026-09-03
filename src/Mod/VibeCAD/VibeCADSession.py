@@ -5607,6 +5607,7 @@ def make_provider_tool_runner(
             "vibescript.read_placement",
             "vibescript.create_program",
             "vibescript.build_program",
+            "vibescript.apply_patch",
             "vibescript.edit_source",
             "vibescript.set_inputs",
             "vibescript.reconfigure_program",

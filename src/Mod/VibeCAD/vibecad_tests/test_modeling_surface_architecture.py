@@ -1362,6 +1362,151 @@ def test_vibescript_operation_manager_reports_progress_conflicts_and_result() ->
     assert manager.active() is None
 
 
+def test_provider_tool_runner_executes_apply_patch_through_session_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import VibeCADSession as session
+
+    source_id = "a" * 32
+    current_revision = "b" * 64
+    next_revision = "c" * 64
+    program = "Active/assembly/Robot"
+    observed: list[tuple[str, dict[str, object]]] = []
+
+    class Spec:
+        requires_document = False
+
+        @staticmethod
+        def validate_arguments(_arguments: dict[str, object]) -> None:
+            return None
+
+        @staticmethod
+        def supports_edit_mode(_edit_mode: str) -> bool:
+            return True
+
+    tool = type(
+        "Tool",
+        (),
+        {
+            "safety": SafetyLevel.WRITE,
+            "workbench": "AssemblyWorkbench",
+            "spec": Spec(),
+        },
+    )()
+
+    class Registry:
+        @staticmethod
+        def get(_name: str) -> object:
+            return tool
+
+        @staticmethod
+        def call(name: str, **_arguments: object) -> dict[str, object]:
+            raise AssertionError(f"{name} fell through to the native registry")
+
+    class Service:
+        registry = Registry()
+
+        @staticmethod
+        def note_provider_tool_targets(
+            _arguments: dict[str, object], _payload: dict[str, object]
+        ) -> None:
+            return None
+
+    def run_universal(
+        _service: object,
+        _workbench: str,
+        tool_name: str,
+        args: dict[str, object],
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        observed.append((tool_name, dict(args)))
+        return {
+            "ok": True,
+            "tool": tool_name,
+            "source_id": source_id,
+            "program_id": source_id,
+            "program": program,
+            "working_revision": next_revision,
+            "next_write_expected_revision": next_revision,
+            "_vibecad_source_lifecycle_result": True,
+        }
+
+    monkeypatch.setattr(session, "_run_universal_vibescript_tool", run_universal)
+    monkeypatch.setattr(
+        session,
+        "_live_provider_surface_state",
+        lambda _service: {
+            "workbench": "AssemblyWorkbench",
+            "engine": "vibescript",
+            "surface_id": "vibescript-assembly-v2",
+            "runtime_state": {"edit_mode": "none"},
+            "tool_names": [
+                "vibescript.apply_patch",
+                "vibescript.read_operation",
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        session,
+        "_minimal_runtime_state",
+        lambda _service: {"edit_mode": "none"},
+    )
+    monkeypatch.setattr(
+        session,
+        "_capture_editable_sources_for_workbench",
+        lambda _service, _workbench: {},
+    )
+    monkeypatch.setattr(
+        session,
+        "_complete_editable_sources_for_workbench",
+        lambda _captured: {
+            "schema": "vibecad-editable-sources-v1",
+            "domain": "assembly",
+            "workbench": "AssemblyWorkbench",
+            "sources": [],
+        },
+    )
+
+    runner = session.make_provider_tool_runner(
+        Service(),
+        tool_trace=[],
+        progress_callback=None,
+        cancellation_check=None,
+        steering_check=None,
+        question_callback=None,
+        document_thread_dispatch=lambda operation: operation(),
+    )
+    started = runner(
+        "vibescript.apply_patch",
+        json.dumps(
+            {
+                "program": program,
+                "expected_revision": current_revision,
+                "patch": "@@\n-old\n+new",
+            }
+        ),
+    )
+    operation_id = started["operation"]["operation_id"]
+    completed = runner(
+        "vibescript.read_operation",
+        json.dumps({"operation_id": operation_id, "wait_seconds": 2}),
+    )
+
+    assert completed["operation"]["status"] == "succeeded"
+    assert completed["result"]["ok"] is True
+    assert completed["result"]["working_revision"] == next_revision
+    assert observed == [
+        (
+            "vibescript.apply_patch",
+            {
+                "program": program,
+                "expected_revision": current_revision,
+                "patch": "@@\n-old\n+new",
+            },
+        )
+    ]
+
+
 def test_provider_tool_runner_authorizes_a_failed_source_created_in_the_same_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7339,6 +7484,7 @@ def test_worker_staging_contains_only_the_active_domain_bundle(
     )
     expected = {
         "worker.py",
+        "VibeCADVibeScriptFileIO.py",
         "vibescript_domain_api.py",
         "vibescript_worker_progress.py",
         *domain_files,
@@ -7359,6 +7505,7 @@ def test_every_isolated_worker_dependency_is_packaged() -> None:
     module_root = Path(runtime.__file__).resolve().parent
     cmake = (module_root / "CMakeLists.txt").read_text(encoding="utf-8")
     required = {
+        "VibeCADVibeScriptFileIO.py",
         "vibescript_domain_api.py",
         "vibescript_domain_worker.py",
         "vibescript_worker_progress.py",

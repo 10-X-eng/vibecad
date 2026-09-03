@@ -54,6 +54,11 @@ from VibeCADMechanismGeometry import (
 )
 from VibeCADTools import tool_failure
 import VibeCADVibeScriptDomains as contracts
+from VibeCADVibeScriptFileIO import (
+    TELEMETRY_IO_TIMEOUT_SECONDS,
+    atomic_write_text,
+    read_text_shared,
+)
 from vibescript_domain_api import create_domain_api
 
 WORKER_SCHEMA = "vibecad-vibescript-domain-worker-v2"
@@ -319,30 +324,34 @@ def _raise(
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    atomic_write_text(
+        path,
+        json.dumps(
+            dict(payload),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ),
+    )
+
+
+def _read_json(
+    path: Path,
+    label: str,
+    *,
+    retry_timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     try:
-        temporary.write_text(
-            json.dumps(
-                dict(payload),
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ),
-            encoding="utf-8",
+        text = (
+            read_text_shared(path)
+            if retry_timeout_seconds is None
+            else read_text_shared(
+                path,
+                retry_timeout_seconds=retry_timeout_seconds,
+            )
         )
-        temporary.replace(path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _read_json(path: Path, label: str) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(text)
     except (OSError, ValueError) as exc:
         raise ValueError(f"Could not read {label} at {path}: {exc}") from exc
     if not isinstance(value, dict):
@@ -362,6 +371,7 @@ def _stage_worker_bundle(
             f"VibeScript domain {clean_domain!r} has no isolated worker bundle."
         )
     filenames = (
+        "VibeCADVibeScriptFileIO.py",
         "vibescript_domain_api.py",
         "vibescript_worker_progress.py",
         *domain_files,
@@ -2857,7 +2867,11 @@ def _worker_progress(prepared: Mapping[str, Any]) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
-        value = _read_json(path, "domain worker progress")
+        value = _read_json(
+            path,
+            "domain worker progress",
+            retry_timeout_seconds=TELEMETRY_IO_TIMEOUT_SECONDS,
+        )
     except ValueError as exc:
         return {"unavailable": True, "error": str(exc)}
     return value
