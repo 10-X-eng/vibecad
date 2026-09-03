@@ -9,6 +9,11 @@ from pathlib import Path
 import time
 from typing import Any
 
+from VibeCADVibeScriptFileIO import (
+    TELEMETRY_IO_TIMEOUT_SECONDS,
+    atomic_write_text,
+)
+
 
 _SCHEMA = "vibecad-vibescript-worker-progress-v1"
 _MAX_TIMINGS = 512
@@ -22,18 +27,25 @@ _state: dict[str, Any] = {}
 def _write() -> None:
     if _path is None:
         return
+    payload = snapshot()
+    atomic_write_text(
+        _path,
+        json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+        replace_timeout_seconds=TELEMETRY_IO_TIMEOUT_SECONDS,
+        best_effort=True,
+    )
+
+
+def snapshot() -> dict[str, Any]:
+    """Return current progress without depending on the status file."""
+
     payload = dict(_state)
     payload["elapsed_seconds"] = round(time.monotonic() - _started, 6)
     payload["phase_elapsed_seconds"] = round(
         time.monotonic() - _phase_started,
         6,
     )
-    temporary = _path.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    temporary.replace(_path)
+    return payload
 
 
 def configure(path: str | Path, domain: str) -> None:

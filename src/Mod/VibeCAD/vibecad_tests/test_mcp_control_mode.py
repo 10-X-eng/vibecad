@@ -64,6 +64,7 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
 def test_mcp_wire_names_are_concise_pascal_case() -> None:
     assert mcp_tool_wire_name("vibescript.create_program") == "CreateProgram"
     assert mcp_tool_wire_name("vibescript.read_source") == "ReadSource"
+    assert mcp_tool_wire_name("vibescript.apply_patch") == "ApplyPatch"
     assert mcp_tool_wire_name("core.set_view") == "SetView"
     assert mcp_tool_wire_name("conversation.ask_user") == "AskUser"
     assert mcp_tool_wire_name("assembly.fastener") == "AssemblyFastener"

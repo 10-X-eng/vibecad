@@ -1183,6 +1183,139 @@ def test_unchanged_saved_partdesign_source_gets_private_compatibility_runtime(
     runtime.abandon_prepared_candidate(prepared)
 
 
+def test_apply_patch_prepares_the_same_guarded_partdesign_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "result = {'Part': api.box(10, 20, 30)}\n"
+    _directory, revision = _write_v2_program(tmp_path, source)
+    monkeypatch.setattr(runtime, "_freecadcmd", lambda _home: Path("/FreeCADCmd"))
+    capture = _capture(
+        tmp_path,
+        operation="apply_patch",
+        arguments={
+            "program_id": PROGRAM_ID,
+            "expected_revision": revision,
+            "patch": "@@\n-result = {'Part': api.box(10, 20, 30)}\n+result = {'Part': api.box(12, 20, 30)}",
+        },
+    )
+
+    prepared = runtime.prepare_candidate(capture)
+
+    assert prepared["source"] == "result = {'Part': api.box(12, 20, 30)}\n"
+    assert prepared["patch_summary"] == {
+        "hunk_count": 1,
+        "added_lines": 1,
+        "removed_lines": 1,
+        "first_changed_line": 1,
+        "last_changed_line": 1,
+    }
+    assert prepared["worker_request"]["source"] == prepared["source"]
+    assert prepared["base_revision"] == revision
+    assert prepared["revision"] != revision
+    runtime.abandon_prepared_candidate(prepared)
+
+
+def test_apply_patch_failure_does_not_change_the_saved_program(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "result = {'Part': api.box(10, 20, 30)}\n"
+    directory, revision = _write_v2_program(tmp_path, source)
+    before = (directory / "program.json").read_bytes()
+    monkeypatch.setattr(runtime, "_freecadcmd", lambda _home: Path("/FreeCADCmd"))
+    capture = _capture(
+        tmp_path,
+        operation="apply_patch",
+        arguments={
+            "program_id": PROGRAM_ID,
+            "expected_revision": revision,
+            "patch": "@@\n-missing = True\n+missing = False",
+        },
+    )
+
+    with pytest.raises(runtime.DomainRuntimeFailure) as failure:
+        runtime.prepare_candidate(capture)
+
+    assert failure.value.payload["failure_code"] == "PATCH_CONTEXT_NOT_FOUND"
+    assert (directory / "program.json").read_bytes() == before
+    assert not (tmp_path / "vibescript" / "partdesign" / ".staging").exists()
+
+
+def test_apply_patch_rejects_a_stale_revision_before_patch_matching(
+    tmp_path: Path,
+) -> None:
+    source = "result = {'Part': api.box(10, 20, 30)}\n"
+    _directory, revision = _write_v2_program(tmp_path, source)
+    capture = _capture(
+        tmp_path,
+        operation="apply_patch",
+        arguments={
+            "program_id": PROGRAM_ID,
+            "expected_revision": "f" * 64,
+            "patch": "@@\n-result = {'Part': api.box(10, 20, 30)}\n+result = {'Part': api.box(12, 20, 30)}",
+        },
+    )
+
+    with pytest.raises(runtime.DomainRuntimeFailure) as failure:
+        runtime.prepare_candidate(capture)
+
+    assert failure.value.payload["failure_code"] == "STALE_PROGRAM_REVISION"
+    assert failure.value.payload["observed"]["current_revision"] == revision
+
+
+def test_failed_patched_candidate_preserves_the_accepted_contract_and_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "result = {'Part': api.box(10, 20, 30)}\n"
+    directory, revision = _write_v2_program(tmp_path, source)
+    manifest_path = directory / "program.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["accepted_contract"] = {
+        "source": source,
+        "revision": revision,
+    }
+    manifest["live_outputs"] = {
+        "Part": {"object_name": "AcceptedPart", "type": "solid"}
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(runtime, "_freecadcmd", lambda _home: Path("/FreeCADCmd"))
+    prepared = runtime.prepare_candidate(
+        _capture(
+            tmp_path,
+            operation="apply_patch",
+            arguments={
+                "program_id": PROGRAM_ID,
+                "expected_revision": revision,
+                "patch": "@@\n-result = {'Part': api.box(10, 20, 30)}\n+result = {'Part': api.box(12, 20, 30)}",
+            },
+        )
+    )
+
+    runtime.retain_candidate(
+        prepared,
+        status="failed",
+        failure={
+            "failure_code": "DOMAIN_CANDIDATE_FAILED",
+            "failure_stage": "external_process",
+            "error": "synthetic worker failure",
+        },
+    )
+
+    retained = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert retained["working_revision"] == prepared["revision"]
+    assert retained["accepted_revision"] == revision
+    assert retained["accepted_contract"] == {
+        "source": source,
+        "revision": revision,
+    }
+    assert retained["live_outputs"] == {
+        "Part": {"object_name": "AcceptedPart", "type": "solid"}
+    }
+    assert retained["latest_candidate"]["status"] == "failed"
+
+
 def test_saved_loft_subtractive_keyword_is_detected_but_new_source_is_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1358,7 +1491,7 @@ def test_v1_saved_data_migrates_to_a_non_executable_v2_view(tmp_path: Path) -> N
     assert migrated["domain"] == "partdesign"
     assert migrated["artifact_directory"] == str(directory)
     assert migrated["migration_required"] is True
-    assert migrated["migration_action"] == "vibescript.edit_source"
+    assert migrated["migration_action"] == "vibescript.reconfigure_program"
     assert migrated["accepted_revision"] == "saved-v1-revision"
     assert migrated["live_outputs"]["Part"]["object_name"] == "SavedPartResult"
 
@@ -1388,7 +1521,7 @@ def test_v1_source_cannot_edit_set_inputs_or_execute(tmp_path: Path) -> None:
         )
         assert failure.value.payload["retry"]["required_changes"] == [
             {
-                "tool": "vibescript.edit_source",
+                "tool": "vibescript.reconfigure_program",
                 "arguments": {
                     "source_id": PROGRAM_ID,
                     "expected_revision": "saved-v1-revision",

@@ -54,6 +54,11 @@ from VibeCADMechanismGeometry import (
 )
 from VibeCADTools import tool_failure
 import VibeCADVibeScriptDomains as contracts
+from VibeCADVibeScriptFileIO import (
+    TELEMETRY_IO_TIMEOUT_SECONDS,
+    atomic_write_text,
+    read_text_shared,
+)
 from vibescript_domain_api import create_domain_api
 
 WORKER_SCHEMA = "vibecad-vibescript-domain-worker-v2"
@@ -319,30 +324,34 @@ def _raise(
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    atomic_write_text(
+        path,
+        json.dumps(
+            dict(payload),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ),
+    )
+
+
+def _read_json(
+    path: Path,
+    label: str,
+    *,
+    retry_timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     try:
-        temporary.write_text(
-            json.dumps(
-                dict(payload),
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ),
-            encoding="utf-8",
+        text = (
+            read_text_shared(path)
+            if retry_timeout_seconds is None
+            else read_text_shared(
+                path,
+                retry_timeout_seconds=retry_timeout_seconds,
+            )
         )
-        temporary.replace(path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _read_json(path: Path, label: str) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(text)
     except (OSError, ValueError) as exc:
         raise ValueError(f"Could not read {label} at {path}: {exc}") from exc
     if not isinstance(value, dict):
@@ -362,6 +371,7 @@ def _stage_worker_bundle(
             f"VibeScript domain {clean_domain!r} has no isolated worker bundle."
         )
     filenames = (
+        "VibeCADVibeScriptFileIO.py",
         "vibescript_domain_api.py",
         "vibescript_worker_progress.py",
         *domain_files,
@@ -2410,6 +2420,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
     arguments = dict(captured["arguments"])
     project_root = Path(str(captured["project_root"]))
     staging: Path | None = None
+    patch_summary: dict[str, Any] | None = None
     try:
         if operation == "create_program":
             label = str(arguments.get("program_name") or "").strip()
@@ -2487,7 +2498,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                 )
             )
             if manifest.get("migration_required") and not complete_contract_replacement:
-                action = "vibescript.edit_source"
+                action = "vibescript.reconfigure_program"
                 _raise(
                     tool_name,
                     "PROGRAM_RECONFIGURATION_REQUIRED",
@@ -2554,6 +2565,37 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                         "migration_action",
                     ):
                         manifest.pop(key, None)
+            elif operation == "apply_patch":
+                from VibeCADVibeScriptPatch import (
+                    SourcePatchError,
+                    apply_source_patch,
+                )
+
+                try:
+                    patched = apply_source_patch(
+                        previous_source,
+                        arguments.get("patch"),
+                    )
+                except SourcePatchError as exc:
+                    _raise(
+                        tool_name,
+                        exc.code,
+                        "precondition",
+                        str(exc),
+                        requested={
+                            "program_id": program_id,
+                            "expected_revision": base_revision,
+                        },
+                        observed=exc.details,
+                        required_changes=[
+                            {
+                                "tool": "vibescript.read_source",
+                                "arguments": {"source_id": program_id},
+                            }
+                        ],
+                    )
+                source = str(patched["source"])
+                patch_summary = dict(patched["summary"])
             elif operation == "set_inputs":
                 inputs = _merge_patch(dict(inputs or {}), arguments.get("patch"))
             elif operation == "reconfigure_program":
@@ -2722,7 +2764,10 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "max_operations": 200_000,
             "max_seconds": float(captured["timeout_seconds"]),
             "memory_limit_bytes": int(captured["memory_limit_bytes"]),
-            "cpu_limit_seconds": max(1, int(float(captured["timeout_seconds"]))),
+            # Source-authored Python is bounded by its trace operation and
+            # source-time budgets. RLIMIT_CPU covers trusted CAD kernels too,
+            # so applying that same deadline would kill healthy native work.
+            "cpu_limit_seconds": 0,
             "output_limit_bytes": 256 * 1024 * 1024,
             "point_artifacts": worker_point_artifacts,
         }
@@ -2764,6 +2809,8 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "allow_unchanged_revision": bool(captured.get("allow_unchanged_revision")),
             "finalized": False,
         }
+        if patch_summary is not None:
+            prepared["patch_summary"] = patch_summary
         return prepared if reference_requirements else finalize_candidate(prepared, [])
     except DomainRuntimeFailure:
         raise
@@ -2823,10 +2870,30 @@ def _worker_progress(prepared: Mapping[str, Any]) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
-        value = _read_json(path, "domain worker progress")
+        value = _read_json(
+            path,
+            "domain worker progress",
+            retry_timeout_seconds=TELEMETRY_IO_TIMEOUT_SECONDS,
+        )
     except ValueError as exc:
         return {"unavailable": True, "error": str(exc)}
     return value
+
+
+def _worker_progress_activity(prepared: Mapping[str, Any]) -> object | None:
+    """Return a cheap token that changes whenever worker progress is published."""
+
+    path = Path(str(prepared["staging"])) / "progress.json"
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return (
+        int(status.st_mtime_ns),
+        int(status.st_ctime_ns),
+        int(status.st_size),
+        int(status.st_ino),
+    )
 
 
 def execute_candidate(
@@ -2848,6 +2915,7 @@ def execute_candidate(
         cancellation_check=cancellation_check,
         timeout_seconds=float(prepared["timeout_seconds"]),
         memory_limit_bytes=int(prepared["memory_limit_bytes"]),
+        activity_check=lambda: _worker_progress_activity(prepared),
     )
     progress = _worker_progress(prepared)
     if progress is not None:
@@ -2876,11 +2944,18 @@ def execute_candidate(
             cancelled=True,
         )
     if process.get("timed_out"):
+        timeout_error = (
+            f"VibeScript domain execution made no observable progress for "
+            f"{prepared['timeout_seconds']:g} seconds."
+            if process.get("timeout_mode") == "inactivity"
+            else f"VibeScript domain execution exceeded "
+            f"{prepared['timeout_seconds']:g} seconds."
+        )
         return _failure(
             str(prepared["tool_name"]),
             "DOMAIN_EXECUTION_TIMEOUT",
             "external_process",
-            f"VibeScript domain execution exceeded {prepared['timeout_seconds']:g} seconds.",
+            timeout_error,
             observed={
                 **process,
                 "accepted_live_outputs_preserved": bool(
@@ -16825,7 +16900,7 @@ def accept_candidate(
     domain = prepared["pack"].domain
     program_id = str(prepared["program_id"])
     revision = str(prepared["revision"])
-    return {
+    result = {
         "ok": True,
         "program_id": program_id,
         "program_name": str(prepared["program_name"]),
@@ -16844,6 +16919,9 @@ def accept_candidate(
             "next_write_expected_revision": revision,
         },
     }
+    if prepared.get("patch_summary"):
+        result["patch_summary"] = dict(prepared["patch_summary"])
+    return result
 
 
 def describe_api(pack: contracts.VibeScriptWorkbenchPack) -> dict[str, Any]:
@@ -17261,16 +17339,17 @@ class DeclarativeDomainAdapter:
                     "Never invent IDs, revisions, or API calls."
                 ),
                 "mutation_selection": {
-                    "edit_source": (
-                        "Use for code edits. Include changed inputs, input_schema, or "
-                        "expected_outputs in the same call."
+                    "apply_patch": (
+                        "Use for source-code edits. Supply only exact contextual update "
+                        "hunks and omit unchanged source."
                     ),
                     "set_inputs": (
                         "Use only for an RFC 7396 value patch while source, input_schema, "
                         "and expected_outputs stay unchanged."
                     ),
                     "reconfigure_program": (
-                        "Alias: edit_source."
+                        "Use only when replacing source, input_schema, inputs, and "
+                        "expected_outputs together."
                     ),
                 },
                 "revision_rule": (
@@ -17384,12 +17463,14 @@ class DeclarativeDomainAdapter:
                 **({"migration_required": True} if migration_required else {}),
                 "next_write_expected_revision": working_revision,
                 "mutation_selection": {
-                    "source_only": "vibescript.edit_source",
+                    "source_only": "vibescript.apply_patch",
+                    "localized_source": "vibescript.apply_patch",
                     "input_values_only": f"vibescript.{self.pack.domain}.set_inputs",
-                    "contract_or_outputs": "vibescript.edit_source",
+                    "contract_or_outputs": "vibescript.reconfigure_program",
                 },
                 "instruction": (
-                    "Replace the complete program contract with vibescript.edit_source, "
+                    "Replace the complete program contract with "
+                    "vibescript.reconfigure_program, "
                     "including input_schema, inputs, and expected_outputs in the same call. "
                     "The prior accepted live objects remain available until a valid v2 "
                     "candidate is accepted."
@@ -22878,7 +22959,7 @@ class TechDrawDomainAdapter(DeclarativeDomainAdapter):
                     "Create each independent view or orthographic projection group once; use a projection group for related front/top/side views and view for one orientation such as isometric.",
                     "When projected EdgeN/VertexN/FaceN names are not already known, first accept a template + view/projection + page discovery revision without dimensions.",
                     "Inspect the accepted view's dimension_reference_inventory, including the exact projection direction, geometry type, visibility, 2D coordinates, and source mapping.",
-                    "Use edit_source to add dimensions and their expected_outputs atomically, copying exact inventory names; never guess a projected index on complex geometry.",
+                    "Use reconfigure_program to add dimensions and their expected_outputs atomically, copying exact inventory names; never guess a projected index on complex geometry.",
                     "Add bounded annotations, compose every returned non-page value into exactly one page, and keep projection/page conventions identical.",
                     "After acceptance, inspect raw_value/display_text and page membership, then use a screenshot for overlap, clipping, title-block, and human drafting review.",
                 ],

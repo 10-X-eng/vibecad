@@ -51,6 +51,7 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
     assert universal_writes == {
         "vibescript.create_program",
         "vibescript.build_program",
+        "vibescript.apply_patch",
         "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
@@ -71,6 +72,7 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
     contracts: dict[str, str] = {
         "vibescript.create_program": "delegated_domain_strategy",
         "vibescript.build_program": "exact_regeneration",
+        "vibescript.apply_patch": "exact_regeneration",
         "vibescript.edit_source": "exact_regeneration",
         "vibescript.set_inputs": "exact_regeneration",
         "vibescript.reconfigure_program": "exact_regeneration",
@@ -100,7 +102,7 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
         contracts[f"vibescript.{pack.domain}.delete_program"] = "semantic_deletion"
 
     # Ten canonical writes plus four callable compatibility aliases per shipped pack.
-    assert len(registered_writes) == 10 + 4 * len(packs) == 78
+    assert len(registered_writes) == 11 + 4 * len(packs) == 79
     assert set(contracts) == registered_writes
     assert set(contracts.values()) <= {
         *domain_publication._TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN.values(),

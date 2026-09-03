@@ -72,7 +72,10 @@ GEMINI_REASONING_EFFORTS = (
     "high",
 )
 DEFAULT_REASONING_EFFORT = "high"
-DEFAULT_SCRIPTED_TIMEOUT_SECONDS = 300.0
+# This is an inactivity lease for isolated VibeScript workers, not a total
+# build deadline. Advancing worker progress renews it.
+DEFAULT_SCRIPTED_TIMEOUT_SECONDS = 3600.0
+LEGACY_SCRIPTED_TIMEOUT_SECONDS = 300.0
 DEFAULT_SCRIPTED_MEMORY_LIMIT_MB = 6144
 NEW_DOCUMENT_AUTHORING_MODES = ("ask", "native", "vibescript")
 DEFAULT_NEW_DOCUMENT_AUTHORING_MODE = "ask"
@@ -232,6 +235,13 @@ def _positive_float(value: object, default: float) -> float:
     return clean if clean > 0 else default
 
 
+def _scripted_timeout_seconds(value: object) -> float:
+    clean = _positive_float(value, DEFAULT_SCRIPTED_TIMEOUT_SECONDS)
+    if clean == LEGACY_SCRIPTED_TIMEOUT_SECONDS:
+        return DEFAULT_SCRIPTED_TIMEOUT_SECONDS
+    return clean
+
+
 def _positive_int(value: object, default: int) -> int:
     try:
         clean = int(value)  # type: ignore[call-overload]
@@ -274,9 +284,8 @@ def load_settings() -> VibeCADSettings:
         chatgpt_intent_memory_model=pref.GetString("ChatGPTIntentMemoryModel", ""),
         grok_intent_memory_model=pref.GetString("GrokIntentMemoryModel", ""),
         gemini_intent_memory_model=pref.GetString("GeminiIntentMemoryModel", ""),
-        scripted_timeout_seconds=_positive_float(
-            pref.GetFloat("ScriptedTimeoutSeconds", DEFAULT_SCRIPTED_TIMEOUT_SECONDS),
-            DEFAULT_SCRIPTED_TIMEOUT_SECONDS,
+        scripted_timeout_seconds=_scripted_timeout_seconds(
+            pref.GetFloat("ScriptedTimeoutSeconds", DEFAULT_SCRIPTED_TIMEOUT_SECONDS)
         ),
         scripted_memory_limit_mb=_positive_int(
             pref.GetInt("ScriptedMemoryLimitMB", DEFAULT_SCRIPTED_MEMORY_LIMIT_MB),

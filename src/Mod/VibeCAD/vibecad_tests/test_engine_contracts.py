@@ -372,6 +372,29 @@ class TestAuthoringModeDefaults:
         assert not hasattr(settings, "vibescript_enabled")
         assert settings.new_document_authoring_mode == "ask"
 
+    def test_legacy_scripted_timeout_becomes_the_long_progress_lease(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import VibeCADPreferences as prefs
+
+        class LegacyPreferences(_UnsetPreferences):
+            def GetFloat(self, name: str, default: float = 0.0) -> float:
+                return 300.0 if name == "ScriptedTimeoutSeconds" else default
+
+        monkeypatch.setattr(prefs, "preferences", lambda: LegacyPreferences())
+        assert (
+            prefs.load_settings().scripted_timeout_seconds
+            == prefs.DEFAULT_SCRIPTED_TIMEOUT_SECONDS
+            == 3600.0
+        )
+
+        class CustomizedPreferences(_UnsetPreferences):
+            def GetFloat(self, name: str, default: float = 0.0) -> float:
+                return 7200.0 if name == "ScriptedTimeoutSeconds" else default
+
+        monkeypatch.setattr(prefs, "preferences", lambda: CustomizedPreferences())
+        assert prefs.load_settings().scripted_timeout_seconds == 7200.0
+
     def test_removed_vibescript_toggle_is_not_written_or_reset(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

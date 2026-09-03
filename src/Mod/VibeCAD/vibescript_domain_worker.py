@@ -17,6 +17,7 @@ from types import MappingProxyType
 from typing import Any
 
 from VibeCADAssemblySolverPolicy import set_joint_connectors_without_auto_solve
+from VibeCADVibeScriptFileIO import atomic_write_text, read_text_shared
 from vibescript_domain_api import DomainValue, create_domain_api
 import vibescript_worker_progress as worker_progress
 
@@ -93,12 +94,10 @@ def _immutable_input(value: Any) -> Any:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    temporary = path.with_name(f"{path.name}.tmp")
-    temporary.write_text(
+    atomic_write_text(
+        path,
         json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
-        encoding="utf-8",
     )
-    temporary.replace(path)
 
 
 def _resource_limits(request: dict[str, Any]) -> None:
@@ -220,18 +219,26 @@ def _execute_source(
     started = time.monotonic()
     operations = 0
     source_filename = "<vibecad-domain-vibescript>"
+    source_elapsed = 0.0
+    last_trace_at = started
+    source_active = False
 
     def trace(frame: Any, event: str, _arg: Any):
-        nonlocal operations
-        if frame.f_code.co_filename == source_filename and event in {"line", "call"}:
+        nonlocal last_trace_at, operations, source_active, source_elapsed
+        now = time.monotonic()
+        if source_active:
+            source_elapsed += max(0.0, now - last_trace_at)
+        last_trace_at = now
+        source_active = frame.f_code.co_filename == source_filename
+        if source_active and source_elapsed > max_seconds:
+            raise TimeoutError(
+                f"VibeScript exceeded its {max_seconds:g} second source budget."
+            )
+        if source_active and event in {"line", "call"}:
             operations += 1
             if operations > max_operations:
                 raise RuntimeError(
                     f"VibeScript exceeded its {max_operations} operation budget."
-                )
-            if time.monotonic() - started > max_seconds:
-                raise TimeoutError(
-                    f"VibeScript exceeded its {max_seconds:g} second source budget."
                 )
         return trace
 
@@ -268,6 +275,9 @@ def _execute_source(
             setattr(exc, "vibescript_stdout", output.getvalue()[-MAX_STDOUT_CHARS:])
             raise
     finally:
+        now = time.monotonic()
+        if source_active:
+            source_elapsed += max(0.0, now - last_trace_at)
         sys.settrace(previous_trace)
     result = namespace.get("result")
     if not isinstance(result, dict):
@@ -286,6 +296,7 @@ def _execute_source(
             "operations": operations,
             "max_operations": max_operations,
             "elapsed_seconds": time.monotonic() - started,
+            "source_elapsed_seconds": source_elapsed,
             "max_seconds": max_seconds,
         },
     )
@@ -1339,9 +1350,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         elif domain == "techdraw":
             response["techdraw_validation"] = techdraw_validation
         worker_progress.finish()
-        response["worker_progress"] = json.loads(
-            (root / "progress.json").read_text(encoding="utf-8")
-        )
+        response["worker_progress"] = worker_progress.snapshot()
         return response
     finally:
         App.closeDocument(document.Name)
@@ -1353,7 +1362,7 @@ def main() -> int:
     try:
         request_path = Path(os.environ[REQUEST_ENV]).resolve()
         root = request_path.parent
-        request = json.loads(request_path.read_text(encoding="utf-8"))
+        request = json.loads(read_text_shared(request_path))
         if not isinstance(request, dict):
             raise TypeError("Domain worker request must be an object.")
         _resource_limits(request)

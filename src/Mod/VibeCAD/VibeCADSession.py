@@ -105,6 +105,7 @@ VIBESCRIPT_BACKGROUND_SOURCE_TOOLS = frozenset(
         "vibescript.create_part",
         "vibescript.create_program",
         "vibescript.build_program",
+        "vibescript.apply_patch",
         "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
@@ -2537,9 +2538,10 @@ def _run_domain_vibescript_tool(
             },
             "repair_rule": (
                 "Read the source when its text or latest revision is uncertain, then "
-                "repair the smallest exact cause. Use vibescript.edit_source for code and "
-                "include changed inputs, schema, or output declarations in that same call. "
-                "Use vibescript.set_inputs only for a value-only patch."
+                "repair the smallest exact cause with vibescript.apply_patch. Use "
+                "vibescript.reconfigure_program only to replace source, inputs, schema, "
+                "and output declarations together. Use vibescript.set_inputs only for "
+                "a value-only patch."
             ),
         }
 
@@ -2572,6 +2574,8 @@ def _run_domain_vibescript_tool(
                 "model_state": candidate_model_state(prepared),
             }
         )
+        if prepared.get("patch_summary"):
+            payload["patch_summary"] = dict(prepared["patch_summary"])
         return finish(payload)
 
     parsed = parse_domain_tool(tool_name)
@@ -2978,6 +2982,16 @@ def _read_source_payload(
             "source_argument": (
                 "Pass the complete updated source text. Read the complete source first; "
                 "a line-range response cannot be edited by itself."
+            ),
+        },
+        "apply_patch": {
+            "tool": "vibescript.apply_patch",
+            "target_arguments": {
+                "source_id": source_id,
+                "expected_revision": revision,
+            },
+            "patch_argument": (
+                "Pass only Codex-style contextual update hunks for changed regions."
             ),
         },
         "build_program": {
@@ -4269,6 +4283,16 @@ def _run_universal_vibescript_tool(
                     "Pass the complete updated source text returned by this read."
                 ),
             }
+            payload["apply_patch"] = {
+                "tool": "vibescript.apply_patch",
+                "target_arguments": {
+                    "program": str(payload["program"]),
+                    "expected_revision": str(payload.get("current_revision") or ""),
+                },
+                "patch_argument": (
+                    "Pass only Codex-style contextual update hunks for changed regions."
+                ),
+            }
             payload["build_program"] = {
                 "tool": "vibescript.build_program",
                 "arguments": {
@@ -4398,6 +4422,7 @@ def _run_universal_vibescript_tool(
         "vibescript.create_assembly": "create_program",
         "vibescript.create_part": "create_program",
         "vibescript.create_program": "create_program",
+        "vibescript.apply_patch": "apply_patch",
         "vibescript.set_inputs": "set_inputs",
         "vibescript.reconfigure_program": "reconfigure_program",
         "vibescript.delete_program": "delete_program",
@@ -4618,7 +4643,12 @@ def build_domain_vibescript_editor_candidate(
             requested=args,
         )
     pack, operation = parsed
-    if operation not in {"edit_source", "set_inputs", "reconfigure_program"}:
+    if operation not in {
+        "apply_patch",
+        "edit_source",
+        "set_inputs",
+        "reconfigure_program",
+    }:
         return tool_failure(
             tool_name,
             "EDITOR_OPERATION_UNSUPPORTED",
@@ -4923,6 +4953,7 @@ def make_provider_tool_runner(
             "vibescript.create_part",
             "vibescript.create_program",
             "vibescript.build_program",
+            "vibescript.apply_patch",
             "vibescript.edit_source",
             "vibescript.set_inputs",
             "vibescript.reconfigure_program",
@@ -5576,6 +5607,7 @@ def make_provider_tool_runner(
             "vibescript.read_placement",
             "vibescript.create_program",
             "vibescript.build_program",
+            "vibescript.apply_patch",
             "vibescript.edit_source",
             "vibescript.set_inputs",
             "vibescript.reconfigure_program",

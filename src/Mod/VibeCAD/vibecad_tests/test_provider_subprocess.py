@@ -219,6 +219,69 @@ def test_anthropic_empty_completion_returns_explicit_error(monkeypatch) -> None:
     assert connection.closed
 
 
+def test_anthropic_stream_recovers_on_the_sixth_attempt(monkeypatch) -> None:
+    class RetryableStreamError(Exception):
+        pass
+
+    class SuccessfulStream(_EmptyAnthropicStream):
+        @staticmethod
+        def get_final_message():
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="Recovered.")],
+                stop_reason="end_turn",
+            )
+
+    attempts: list[int] = []
+
+    def stream(**_request):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) < 6:
+            raise RetryableStreamError("server disconnected")
+        return SuccessfulStream()
+
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(
+            messages=SimpleNamespace(stream=stream)
+        ),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+        APIConnectionError=RetryableStreamError,
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    monkeypatch.setattr(provider.time, "sleep", lambda _seconds: None)
+    connection = _CollectingConnection()
+
+    provider._anthropic_child_main(
+        connection,
+        "Inspect the model.",
+        {"provider_tool_schemas": []},
+        "test-model",
+        "test-key",
+        None,
+        1.0,
+        1,
+        False,
+    )
+
+    retries = [
+        message["event"]
+        for message in connection.messages
+        if message.get("type") == "progress"
+        and message.get("event", {}).get("event") == "anthropic_stream_retrying"
+    ]
+    assert attempts == [1, 2, 3, 4, 5, 6]
+    assert [event["next_attempt"] for event in retries] == [2, 3, 4, 5, 6]
+    assert {event["max_attempts"] for event in retries} == {6}
+    assert any(
+        message.get("type") == "done"
+        and message.get("final_output") == "Recovered."
+        for message in connection.messages
+    )
+    assert not any(message.get("type") == "error" for message in connection.messages)
+
+
 def test_anthropic_child_forwards_the_exact_tool_use_id(monkeypatch) -> None:
     tool_block = SimpleNamespace(
         type="tool_use",
@@ -1588,7 +1651,8 @@ def test_vibescript_guidance_contains_only_cad_authoring_text() -> None:
     assert "vibescript_authoring_contract_json" in text
     assert "read_operation" in text
     assert "read_source" in text
-    assert "edit_source" in text
+    assert "edit_source" not in text
+    assert "reconfigure_program" in text
     assert "build_program" in text
     assert "set_inputs" in text
     assert "api.name" in text
@@ -1601,10 +1665,12 @@ def test_vibescript_guidance_keeps_lifecycle_rules_concise_across_domains() -> N
     )
     for instruction in (partdesign, assembly):
         assert "failed create without program/revision saved nothing" in instruction
-        assert "read_source before edit_source" in instruction
+        assert "read_source first" in instruction
+        assert "use apply_patch for source" in instruction
+        assert "edit_source" not in instruction
+        assert "reconfigure_program" in instruction
         assert "build_program runs unchanged code" in instruction
         assert "set_inputs" in instruction
-        assert "reconfigure_program" not in instruction
         assert "before writing the first program" not in instruction
         assert "after success" not in instruction
 
@@ -2099,6 +2165,13 @@ def test_source_write_result_is_compact_readable_and_actionable() -> None:
                 }
             },
             "outputs": [{"name": "Mount", "duplicate": True}],
+            "patch_summary": {
+                "hunk_count": 2,
+                "added_lines": 3,
+                "removed_lines": 1,
+                "first_changed_line": 4,
+                "last_changed_line": 18,
+            },
             "model_state": {"status": "accepted", "accepted_is_current": True},
             "_vibecad_source_lifecycle_result": True,
         }
@@ -2108,6 +2181,13 @@ def test_source_write_result_is_compact_readable_and_actionable() -> None:
         "ok": True,
         "program": "Design/partdesign/Motor Mount",
         "revision": "b" * 64,
+        "patch_summary": {
+            "hunk_count": 2,
+            "added_lines": 3,
+            "removed_lines": 1,
+            "first_changed_line": 4,
+            "last_changed_line": 18,
+        },
         "outputs": [
                 {
                     "name": "Mount",
@@ -2298,6 +2378,12 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
     editable_sources = {
         "schema": "vibecad-editable-sources-v1",
         "domain": "part",
+        "tools": {
+            "create_program": "vibescript.create_program",
+            "apply_patch": "vibescript.apply_patch",
+            "edit_source": "vibescript.edit_source",
+            "edit_source_arguments": ["program", "expected_revision", "source"],
+        },
         "sources": [
             {
                 "source_id": "a" * 32,
@@ -2334,6 +2420,10 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
     assert visible["editable_sources"] == {
         "schema": "vibecad-editable-sources-v1",
         "domain": "part",
+        "tools": {
+            "create_program": "vibescript.create_program",
+            "apply_patch": "vibescript.apply_patch",
+        },
         "sources": [
             {
                 "program": "Design/part/Body Source",
@@ -2342,6 +2432,7 @@ def test_vibescript_model_context_includes_only_the_editable_source_index(
         ],
     }
     assert "source_id" not in json.dumps(visible)
+    assert "edit_source" not in json.dumps(visible)
     assert "vibescript_domain" not in visible
 
 
