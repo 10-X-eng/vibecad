@@ -40,9 +40,29 @@ MAX_PROVIDER_COMPLETE_READ_BYTES = 2 * 1024 * 1024
 MAX_PROVIDER_RESULT_TOP_LEVEL_FIELDS = 256
 MAX_PROVIDER_INSTRUCTIONS_BYTES = 8 * 1024
 DEFAULT_ANTHROPIC_MAX_TOKENS = 8192
+DEFAULT_ANTHROPIC_MAX_TURNS = 64
 ANTHROPIC_TURN_COMPACTION_MAX_TOKENS = 4096
 ANTHROPIC_TURN_COMPACTION_MAX_INPUT_BYTES = 32 * 1024
-ANTHROPIC_TURN_COMPACTION_MAX_ATTEMPTS = 2
+ANTHROPIC_TURN_COMPACTION_MAX_ATTEMPTS = 1
+ANTHROPIC_RECOVERY_MAX_TOKENS = 4096
+ANTHROPIC_RECOVERY_FINISH_TOOL = "vibecad_internal_finish_turn"
+ANTHROPIC_RECOVERY_BLOCK_TOOL = "vibecad_internal_block_turn"
+ANTHROPIC_RECOVERY_EXHAUSTED_MESSAGE = (
+    "I could not safely continue because the AI exhausted its bounded recovery "
+    "output without selecting a CAD action or a final outcome. No additional CAD "
+    "action was executed. Please retry the request or lower the reasoning effort."
+)
+ANTHROPIC_RECOVERY_INSTRUCTIONS = """This is VibeCAD's one bounded action-recovery turn.
+
+Produce one safe outcome now: call a CAD tool that makes or verifies concrete
+progress, return a concise final answer if the request is complete, or call the
+blocking tool with the exact blocker and required user input. Do not repeat an
+unchanged tool call, narrate future work, or defer the decision."""
+ANTHROPIC_TURN_LIMIT_MESSAGE = (
+    "I stopped this run at VibeCAD's Anthropic turn safety limit. Completed CAD "
+    "actions remain in the document, but the request did not reach a verified final "
+    "outcome. Please continue with a narrower follow-up request."
+)
 PROVIDER_STREAM_DELTA_FLUSH_SECONDS = 0.075
 ANTHROPIC_THINKING_BUDGETS = {
     "minimal": 1024,
@@ -70,7 +90,7 @@ Use only exposed tools and exact returned state. Never invent names, references,
 
 ANTHROPIC_TURN_COMPACTION_INSTRUCTIONS = """You compact one unfinished VibeCAD agent turn.
 
-Call commit_turn_compaction exactly once. Preserve the current user request,
+Return only the requested structured state. Preserve the current user request,
 explicit requirements and rejected directions, completed CAD actions and their
 observed results, live artifact identities and revisions, the blocking failure,
 and the next concrete action. Be concise and factual. Do not solve the CAD task.
@@ -1923,7 +1943,7 @@ class AnthropicProvider(BaseProvider):
         api_key: str | None = None,
         reasoning_effort: str = "high",
         timeout_seconds: float | None = None,
-        max_turns: int | None = None,
+        max_turns: int | None = DEFAULT_ANTHROPIC_MAX_TURNS,
         base_url: str | None = None,
         web_search_enabled: bool = False,
         compaction_model: str | None = None,
@@ -4964,6 +4984,165 @@ def _anthropic_turn_compaction_tool() -> dict[str, Any]:
     }
 
 
+def _anthropic_recovery_tool_definitions() -> list[dict[str, Any]]:
+    """Return private terminal exits used only by a bounded recovery turn."""
+
+    return [
+        {
+            "name": ANTHROPIC_RECOVERY_FINISH_TOOL,
+            "description": (
+                "Finish the current VibeCAD request with a concise, user-visible "
+                "answer when no additional CAD tool is required."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "answer": {"type": "string", "minLength": 1, "maxLength": 8000}
+                },
+                "required": ["answer"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": ANTHROPIC_RECOVERY_BLOCK_TOOL,
+            "description": (
+                "Stop the current VibeCAD request when it cannot continue safely. "
+                "State the exact blocker and any user input required."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
+                    "required_input": {"type": "string", "maxLength": 2000},
+                },
+                "required": ["reason", "required_input"],
+                "additionalProperties": False,
+            },
+        },
+    ]
+
+
+def _anthropic_recovery_request_tools(
+    cad_tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    recovery_tools = _anthropic_recovery_tool_definitions()
+    existing = {str(tool.get("name") or "") for tool in cad_tools}
+    reserved = {str(tool["name"]) for tool in recovery_tools}
+    collision = sorted(existing & reserved)
+    if collision:
+        raise RuntimeError(
+            "Provider tool surface collides with reserved Anthropic recovery tools: "
+            + ", ".join(collision)
+        )
+    return [*cad_tools, *recovery_tools]
+
+
+def _anthropic_recovery_terminal_output(block: Any) -> str | None:
+    name = str(
+        getattr(block, "name", None) or _object_payload(block).get("name") or ""
+    )
+    value = getattr(block, "input", None)
+    if value is None:
+        value = _object_payload(block).get("input")
+    arguments = value if isinstance(value, dict) else {}
+    if name == ANTHROPIC_RECOVERY_FINISH_TOOL:
+        answer = str(arguments.get("answer") or "").strip()
+        return answer or ANTHROPIC_RECOVERY_EXHAUSTED_MESSAGE
+    if name == ANTHROPIC_RECOVERY_BLOCK_TOOL:
+        reason = str(arguments.get("reason") or "").strip()
+        required_input = str(arguments.get("required_input") or "").strip()
+        if not reason:
+            return ANTHROPIC_RECOVERY_EXHAUSTED_MESSAGE
+        output = f"I cannot safely continue: {reason}"
+        if required_input:
+            output += f" Required next step: {required_input}"
+        return output
+    return None
+
+
+def _anthropic_progress_fingerprint(value: Any) -> str:
+    encoded = json.dumps(
+        _json_safe(value),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _anthropic_progress_state_fingerprint(context: dict[str, Any]) -> str:
+    """Fingerprint durable state without hashing complete geometry or image payloads."""
+
+    state = _anthropic_compaction_resume_state(context)
+    native_state = context.get("native_state")
+    if isinstance(native_state, dict):
+        durable_native_keys = (
+            "document_uid",
+            "structural_revision",
+            "revision",
+            "current_revision",
+            "surface_id",
+            "background_job",
+            "background_jobs",
+            "active_background_jobs",
+        )
+        state["native_progress"] = {
+            key: _bounded_compaction_value(native_state[key])
+            for key in durable_native_keys
+            if native_state.get(key) not in (None, "", [], {})
+        }
+    return _anthropic_progress_fingerprint(state)
+
+
+def _anthropic_validate_turn_compaction_state(value: Any) -> dict[str, Any]:
+    """Enforce constraints stripped from Anthropic's wire-compatible schema."""
+
+    if not isinstance(value, dict):
+        raise RuntimeError("Anthropic turn compaction returned invalid state.")
+    string_limits = {"current_request": 6000, "next_action": 1600}
+    list_limits = {
+        "requirements": (32, 1200),
+        "completed_actions": (32, 1200),
+        "live_artifacts": (32, 1200),
+        "open_issues": (32, 1200),
+    }
+    expected = set(string_limits) | set(list_limits)
+    if set(value) != expected:
+        raise RuntimeError(
+            "Anthropic turn compaction returned unexpected or missing state fields."
+        )
+    for field, max_length in string_limits.items():
+        item = value[field]
+        if not isinstance(item, str):
+            raise RuntimeError(
+                f"Anthropic turn compaction field {field} is not a string."
+            )
+        if len(item) > max_length:
+            raise RuntimeError(
+                f"Anthropic turn compaction field {field} exceeds {max_length} characters."
+            )
+    for field, (max_items, max_length) in list_limits.items():
+        items = value[field]
+        if not isinstance(items, list):
+            raise RuntimeError(
+                f"Anthropic turn compaction field {field} is not a list."
+            )
+        if len(items) > max_items:
+            raise RuntimeError(
+                f"Anthropic turn compaction field {field} exceeds {max_items} items."
+            )
+        if any(not isinstance(item, str) for item in items):
+            raise RuntimeError(
+                f"Anthropic turn compaction field {field} contains a non-string item."
+            )
+        if any(len(item) > max_length for item in items):
+            raise RuntimeError(
+                f"Anthropic turn compaction field {field} contains an item exceeding "
+                f"{max_length} characters."
+            )
+    return _json_safe(value)
+
+
 def _anthropic_compact_turn_in_thread(
     *,
     anthropic_module: Any,
@@ -4976,7 +5155,18 @@ def _anthropic_compact_turn_in_thread(
 ) -> dict[str, Any]:
     """Run a tool-less, bounded compaction request outside the provider loop thread."""
 
-    tool = _anthropic_turn_compaction_tool()
+    original_schema = _anthropic_turn_compaction_tool()["input_schema"]
+    transform_schema = getattr(anthropic_module, "transform_schema", None)
+    if not callable(transform_schema):
+        raise RuntimeError(
+            "The installed Anthropic SDK does not provide structured-output schema "
+            "transformation."
+        )
+    schema = transform_schema(original_schema)
+    if not isinstance(schema, dict):
+        raise RuntimeError(
+            "The Anthropic SDK returned an invalid structured-output schema."
+        )
     request = {
         "model": model,
         "max_tokens": ANTHROPIC_TURN_COMPACTION_MAX_TOKENS,
@@ -4992,8 +5182,12 @@ def _anthropic_compact_turn_in_thread(
                 ),
             }
         ],
-        "tools": [tool],
-        "tool_choice": {"type": "tool", "name": tool["name"]},
+        "output_config": {
+            "format": {
+                "type": "json_schema",
+                "schema": schema,
+            }
+        },
     }
     _capture_outbound_request(
         debug_context,
@@ -5011,28 +5205,27 @@ def _anthropic_compact_turn_in_thread(
             response = anthropic_module.Anthropic(
                 **dict(client_kwargs)
             ).messages.create(**request)
-            calls = [
+            text_blocks = [
                 block
                 for block in list(getattr(response, "content", []) or [])
-                if _anthropic_block_type(block) == "tool_use"
+                if _anthropic_block_type(block) == "text"
             ]
-            if len(calls) != 1:
+            if len(text_blocks) != 1:
                 raise RuntimeError(
                     "Anthropic turn compaction did not return exactly one "
-                    "structured state call."
+                    "structured state response."
                 )
-            call = calls[0]
-            call_name = getattr(call, "name", None) or _object_payload(call).get(
-                "name"
-            )
-            if str(call_name or "") != tool["name"]:
-                raise RuntimeError("Anthropic turn compaction called the wrong tool.")
-            value = getattr(call, "input", None)
-            if value is None:
-                value = _object_payload(call).get("input")
-            if not isinstance(value, dict):
-                raise RuntimeError("Anthropic turn compaction returned invalid state.")
-            result.append(_json_safe(value))
+            block = text_blocks[0]
+            encoded = getattr(block, "text", None)
+            if encoded is None:
+                encoded = _object_payload(block).get("text")
+            try:
+                value = json.loads(str(encoded or ""))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "Anthropic turn compaction returned invalid JSON state."
+                ) from exc
+            result.append(_anthropic_validate_turn_compaction_state(value))
         except BaseException as exc:
             errors.append(exc)
 
@@ -5606,10 +5799,6 @@ def _anthropic_child_main(
         tools_by_name, tool_definitions = build_tool_surface(live_context)
         thinking = _anthropic_thinking_config(reasoning_effort)
         max_tokens = DEFAULT_ANTHROPIC_MAX_TOKENS
-        if thinking is not None:
-            max_tokens += int(
-                ANTHROPIC_THINKING_BUDGETS[str(reasoning_effort).strip().lower()]
-            )
 
         system_blocks = _anthropic_system_blocks(live_context)
         messages: list[dict[str, Any]] = [
@@ -5624,6 +5813,8 @@ def _anthropic_child_main(
         assistant_progress: list[str] = []
         previous_compaction: dict[str, Any] | None = None
         compaction_count = 0
+        recovery_required = False
+        last_tool_observation: tuple[str, str, str] | None = None
 
         client_kwargs: dict[str, Any] = {"max_retries": 2}
         if api_key:
@@ -5657,6 +5848,18 @@ def _anthropic_child_main(
                 **request_kwargs,
                 "system": system_blocks,
             }
+            if recovery_required:
+                sdk_request["max_tokens"] = ANTHROPIC_RECOVERY_MAX_TOKENS
+                sdk_request["tools"] = _anthropic_recovery_request_tools(
+                    list(request_kwargs["tools"])
+                )
+                sdk_request["tool_choice"] = {"type": "auto"}
+                sdk_request["system"] = [
+                    *system_blocks,
+                    {"type": "text", "text": ANTHROPIC_RECOVERY_INSTRUCTIONS},
+                ]
+                if thinking is not None:
+                    sdk_request["output_config"] = {"effort": "low"}
             _capture_outbound_request(
                 live_context,
                 provider="anthropic",
@@ -5675,9 +5878,10 @@ def _anthropic_child_main(
                     "model": model,
                     "message_count": len(messages),
                     "tool_count": len(request_kwargs["tools"]),
-                    "max_tokens": max_tokens,
+                    "max_tokens": sdk_request["max_tokens"],
                     "thinking": request_kwargs.get("thinking"),
-                    "output_config": request_kwargs.get("output_config"),
+                    "output_config": sdk_request.get("output_config"),
+                    "action_recovery": recovery_required,
                 },
             )
             delta_batcher = _ProviderStreamDeltaBatcher(
@@ -5825,11 +6029,24 @@ def _anthropic_child_main(
             if response_text.strip():
                 assistant_progress.append(response_text.strip())
             if response.stop_reason == "max_tokens":
-                if compaction_count >= ANTHROPIC_TURN_COMPACTION_MAX_ATTEMPTS:
-                    raise RuntimeError(
-                        "Anthropic exhausted its output budget after "
-                        f"{compaction_count} compacted continuations."
+                if recovery_required:
+                    conn.send(
+                        {
+                            "type": "done",
+                            "final_output": ANTHROPIC_RECOVERY_EXHAUSTED_MESSAGE,
+                            "raw": {"stalled": True, "reason": "output_budget"},
+                        }
                     )
+                    return
+                if compaction_count >= ANTHROPIC_TURN_COMPACTION_MAX_ATTEMPTS:
+                    conn.send(
+                        {
+                            "type": "done",
+                            "final_output": ANTHROPIC_RECOVERY_EXHAUSTED_MESSAGE,
+                            "raw": {"stalled": True, "reason": "output_budget"},
+                        }
+                    )
+                    return
                 compaction_count += 1
                 packet = _anthropic_turn_compaction_packet(
                     prompt=prompt,
@@ -5873,6 +6090,7 @@ def _anthropic_child_main(
                         ),
                     }
                 ]
+                recovery_required = True
                 _send_child_progress(
                     conn,
                     {
@@ -5910,6 +6128,38 @@ def _anthropic_child_main(
                     }
                 )
                 return
+            recovery_terminal_blocks = [
+                block
+                for block in tool_use_blocks
+                if str(
+                    getattr(block, "name", None)
+                    or _object_payload(block).get("name")
+                    or ""
+                )
+                in {ANTHROPIC_RECOVERY_FINISH_TOOL, ANTHROPIC_RECOVERY_BLOCK_TOOL}
+            ]
+            if recovery_terminal_blocks:
+                if not recovery_required or len(tool_use_blocks) != 1:
+                    conn.send(
+                        {
+                            "type": "done",
+                            "final_output": ANTHROPIC_RECOVERY_EXHAUSTED_MESSAGE,
+                            "raw": {"stalled": True, "reason": "invalid_recovery"},
+                        }
+                    )
+                    return
+                final_output = _anthropic_recovery_terminal_output(
+                    recovery_terminal_blocks[0]
+                )
+                conn.send(
+                    {
+                        "type": "done",
+                        "final_output": final_output
+                        or ANTHROPIC_RECOVERY_EXHAUSTED_MESSAGE,
+                        "raw": None,
+                    }
+                )
+                return
             server_use_ids = {
                 str(getattr(block, "id", "") or _object_payload(block).get("id") or "")
                 for block in content_blocks
@@ -5927,6 +6177,8 @@ def _anthropic_child_main(
             pending_server_tool = bool(server_use_ids - server_result_ids)
             tool_results: list[dict[str, Any]] = []
             visual_repin_blocks: list[dict[str, Any]] = []
+            repeated_unchanged_result = False
+            real_tool_executed = False
             for block in tool_use_blocks:
                 previous_context = live_context
                 tool_name = tools_by_name.get(block.name)
@@ -5937,6 +6189,7 @@ def _anthropic_child_main(
                         "error": f"Unknown VibeCAD tool: {block.name}",
                     }
                 else:
+                    real_tool_executed = True
                     arguments_json = json.dumps(
                         _json_safe(block.input or {}),
                         ensure_ascii=True,
@@ -5982,6 +6235,27 @@ def _anthropic_child_main(
                 )
                 if isinstance(result, dict) and state_after:
                     result["vibecad_state_after"] = state_after
+                if tool_name is not None and isinstance(result, dict):
+                    observation = (
+                        _anthropic_progress_fingerprint(
+                            {
+                                "tool": tool_name,
+                                "arguments": getattr(block, "input", None) or {},
+                            }
+                        ),
+                        _anthropic_progress_state_fingerprint(previous_context),
+                        _anthropic_progress_fingerprint(
+                            _provider_visible_tool_result(result, tool_name=tool_name)
+                        ),
+                    )
+                    if observation == last_tool_observation:
+                        repeated_unchanged_result = True
+                        result["vibecad_progress_guard"] = {
+                            "status": "no_progress",
+                            "reason": "repeated_unchanged_tool_result",
+                            "retry_same_call": False,
+                        }
+                    last_tool_observation = observation
                 if (
                     tool_name == "core.capture_view_screenshot"
                     and not pending_server_tool
@@ -6028,14 +6302,20 @@ def _anthropic_child_main(
                         ),
                     }
                 )
+            if repeated_unchanged_result:
+                recovery_required = True
+            elif real_tool_executed:
+                recovery_required = False
+                compaction_count = 0
             messages.append(
                 {"role": "user", "content": [*tool_results, *visual_repin_blocks]}
             )
             turn += 1
         conn.send(
             {
-                "type": "error",
-                "error": "Anthropic provider turn limit reached.",
+                "type": "done",
+                "final_output": ANTHROPIC_TURN_LIMIT_MESSAGE,
+                "raw": {"stalled": True, "reason": "turn_limit"},
             }
         )
     except BaseException as exc:

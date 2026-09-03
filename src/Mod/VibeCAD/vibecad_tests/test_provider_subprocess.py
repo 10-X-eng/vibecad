@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import sys
 from types import SimpleNamespace
+from typing import Any, Sequence
 
 import pytest
 
@@ -395,10 +396,45 @@ def test_anthropic_turn_compaction_packet_excludes_deterministic_payloads() -> N
 
 def test_anthropic_turn_compaction_runs_on_its_named_worker_thread() -> None:
     calls: list[dict[str, object]] = []
+    transformed_schemas: list[dict[str, object]] = []
+
+    def transform_schema(schema):
+        transformed_schemas.append(schema)
+        transformed = json.loads(json.dumps(schema))
+
+        def strip_unsupported(value):
+            if isinstance(value, dict):
+                for keyword in (
+                    "maxItems",
+                    "minItems",
+                    "maxLength",
+                    "minLength",
+                    "maximum",
+                    "minimum",
+                ):
+                    value.pop(keyword, None)
+                for child in value.values():
+                    strip_unsupported(child)
+            elif isinstance(value, list):
+                for child in value:
+                    strip_unsupported(child)
+
+        strip_unsupported(transformed)
+        return transformed
 
     class _Messages:
         @staticmethod
         def create(**request):
+            encoded_schema = json.dumps(request["output_config"]["format"]["schema"])
+            for unsupported in (
+                "maxItems",
+                "minItems",
+                "maxLength",
+                "minLength",
+                "maximum",
+                "minimum",
+            ):
+                assert f'"{unsupported}"' not in encoded_schema
             calls.append(
                 {
                     "request": request,
@@ -408,23 +444,25 @@ def test_anthropic_turn_compaction_runs_on_its_named_worker_thread() -> None:
             return SimpleNamespace(
                 content=[
                     SimpleNamespace(
-                        type="tool_use",
-                        name="commit_turn_compaction",
-                        input={
-                            "current_request": "Continue.",
-                            "requirements": [],
-                            "completed_actions": [],
-                            "live_artifacts": [],
-                            "open_issues": [],
-                            "next_action": "Continue.",
-                        },
+                        type="text",
+                        text=json.dumps(
+                            {
+                                "current_request": "Continue.",
+                                "requirements": [],
+                                "completed_actions": [],
+                                "live_artifacts": [],
+                                "open_issues": [],
+                                "next_action": "Continue.",
+                            }
+                        ),
                     )
                 ],
-                stop_reason="tool_use",
+                stop_reason="end_turn",
             )
 
     anthropic_module = SimpleNamespace(
-        Anthropic=lambda **_kwargs: SimpleNamespace(messages=_Messages())
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=_Messages()),
+        transform_schema=transform_schema,
     )
     result = provider._anthropic_compact_turn_in_thread(
         anthropic_module=anthropic_module,
@@ -438,20 +476,41 @@ def test_anthropic_turn_compaction_runs_on_its_named_worker_thread() -> None:
 
     assert result["next_action"] == "Continue."
     assert len(calls) == 1
+    assert len(transformed_schemas) == 1
+    assert transformed_schemas[0]["properties"]["requirements"]["maxItems"] == 32
     assert calls[0]["thread"] == "VibeCAD-Anthropic-Turn-Compaction"
     request = calls[0]["request"]
     assert request["model"] == "memory-model"
-    assert request["tool_choice"] == {
-        "type": "tool",
-        "name": "commit_turn_compaction",
+    assert "tools" not in request
+    assert "tool_choice" not in request
+    assert request["output_config"]["format"]["type"] == "json_schema"
+    assert (
+        request["output_config"]["format"]["schema"]["properties"]["requirements"]
+        == {"type": "array", "items": {"type": "string"}}
+    )
+
+
+def test_anthropic_turn_compaction_preserves_local_output_bounds() -> None:
+    state = {
+        "current_request": "Continue.",
+        "requirements": ["requirement"] * 33,
+        "completed_actions": [],
+        "live_artifacts": [],
+        "open_issues": [],
+        "next_action": "Continue.",
     }
+
+    with pytest.raises(RuntimeError, match="requirements exceeds 32 items"):
+        provider._anthropic_validate_turn_compaction_state(state)
 
 
 class _SequenceAnthropicMessages:
-    def __init__(self, responses: list[object]) -> None:
+    def __init__(self, responses: Sequence[object]) -> None:
         self.responses = iter(responses)
+        self.requests: list[dict[str, Any]] = []
 
-    def stream(self, **_kwargs):
+    def stream(self, **kwargs):
+        self.requests.append(kwargs)
         response = next(self.responses)
 
         class _Stream:
@@ -526,7 +585,7 @@ def test_anthropic_thinking_only_max_tokens_compacts_and_continues(
         },
         "interactive-model",
         "test-key",
-        None,
+        "high",
         1.0,
         2,
         False,
@@ -542,6 +601,17 @@ def test_anthropic_thinking_only_max_tokens_compacts_and_continues(
     ]
     assert len(compaction_calls) == 1
     assert compaction_calls[0]["model"] == "memory-model"
+    assert messages.requests[0]["max_tokens"] == provider.DEFAULT_ANTHROPIC_MAX_TOKENS
+    recovery_request = messages.requests[1]
+    assert recovery_request["max_tokens"] == provider.ANTHROPIC_RECOVERY_MAX_TOKENS
+    assert recovery_request["tool_choice"] == {"type": "auto"}
+    assert recovery_request["output_config"] == {"effort": "low"}
+    assert "one bounded action-recovery turn" in json.dumps(
+        recovery_request["system"]
+    )
+    recovery_tool_names = {tool["name"] for tool in recovery_request["tools"]}
+    assert provider.ANTHROPIC_RECOVERY_FINISH_TOOL in recovery_tool_names
+    assert provider.ANTHROPIC_RECOVERY_BLOCK_TOOL in recovery_tool_names
     packet_text = json.dumps(compaction_calls[0]["packet"])
     assert "private reasoning" not in packet_text
     progress_events = [
@@ -557,6 +627,513 @@ def test_anthropic_thinking_only_max_tokens_compacts_and_continues(
         event.get("event") == "anthropic_turn_compaction_completed"
         for event in progress_events
     )
+    assert connection.closed
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input", "expected_output"),
+    (
+        (
+            "vibecad_internal_finish_turn",
+            {"answer": "The requested CAD change is complete."},
+            "The requested CAD change is complete.",
+        ),
+        (
+            "vibecad_internal_block_turn",
+            {
+                "reason": "The selected face no longer exists.",
+                "required_input": "Select the replacement face.",
+            },
+            (
+                "I cannot safely continue: The selected face no longer exists. "
+                "Required next step: Select the replacement face."
+            ),
+        ),
+    ),
+)
+def test_anthropic_budget_recovery_has_structured_terminal_outcomes(
+    monkeypatch,
+    tool_name: str,
+    tool_input: dict[str, str],
+    expected_output: str,
+) -> None:
+    responses = [
+        SimpleNamespace(
+            content=[SimpleNamespace(type="thinking", thinking="unfinished")],
+            stop_reason="max_tokens",
+        ),
+        SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="recovery-terminal",
+                    name=tool_name,
+                    input=tool_input,
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+    ]
+    messages = _SequenceAnthropicMessages(responses)
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=messages),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    monkeypatch.setattr(
+        provider,
+        "_anthropic_compact_turn_in_thread",
+        lambda **_kwargs: {
+            "current_request": "Finish the CAD task.",
+            "requirements": [],
+            "completed_actions": [],
+            "live_artifacts": [],
+            "open_issues": [],
+            "next_action": "Commit an actionable outcome.",
+        },
+    )
+    connection = _CollectingConnection()
+
+    provider._anthropic_child_main(
+        connection,
+        "Finish the CAD task.",
+        {"provider_tool_schemas": []},
+        "test-model",
+        "test-key",
+        "high",
+        1.0,
+        2,
+        False,
+    )
+
+    terminal = [
+        message
+        for message in connection.messages
+        if message.get("type") in {"done", "error"}
+    ]
+    assert terminal == [{"type": "done", "final_output": expected_output, "raw": None}]
+    assert not any(message.get("type") == "tool" for message in connection.messages)
+    assert connection.closed
+
+
+def test_anthropic_second_budget_exhaustion_returns_bounded_stall(monkeypatch) -> None:
+    responses = [
+        SimpleNamespace(
+            content=[SimpleNamespace(type="thinking", thinking="first")],
+            stop_reason="max_tokens",
+        ),
+        SimpleNamespace(
+            content=[SimpleNamespace(type="thinking", thinking="second")],
+            stop_reason="max_tokens",
+        ),
+    ]
+    messages = _SequenceAnthropicMessages(responses)
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=messages),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    compaction_calls: list[dict[str, object]] = []
+
+    def compact(**kwargs):
+        compaction_calls.append(kwargs)
+        return {
+            "current_request": "Modify the model.",
+            "requirements": [],
+            "completed_actions": [],
+            "live_artifacts": [],
+            "open_issues": [],
+            "next_action": "Modify the model.",
+        }
+
+    monkeypatch.setattr(provider, "_anthropic_compact_turn_in_thread", compact)
+    connection = _CollectingConnection()
+
+    provider._anthropic_child_main(
+        connection,
+        "Modify the model.",
+        {"provider_tool_schemas": []},
+        "test-model",
+        "test-key",
+        "high",
+        1.0,
+        3,
+        False,
+    )
+
+    terminal = [
+        message
+        for message in connection.messages
+        if message.get("type") in {"done", "error"}
+    ]
+    assert terminal == [
+        {
+            "type": "done",
+            "final_output": provider.ANTHROPIC_RECOVERY_EXHAUSTED_MESSAGE,
+            "raw": {"stalled": True, "reason": "output_budget"},
+        }
+    ]
+    assert len(compaction_calls) == 1
+    assert len(messages.requests) == 2
+    assert connection.closed
+
+
+def test_anthropic_repeated_unchanged_tool_result_forces_recovery(monkeypatch) -> None:
+    tool_call = lambda call_id: SimpleNamespace(
+        type="tool_use",
+        id=call_id,
+        name="state_read",
+        input={"scope": "selection"},
+    )
+    responses = [
+        SimpleNamespace(content=[tool_call("read-1")], stop_reason="tool_use"),
+        SimpleNamespace(content=[tool_call("read-2")], stop_reason="tool_use"),
+        SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="recovery-finish",
+                    name="vibecad_internal_finish_turn",
+                    input={"answer": "The available state is unchanged."},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+    ]
+    messages = _SequenceAnthropicMessages(responses)
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=messages),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    context = {
+        "workbench": "PartDesignWorkbench",
+        "modeling_surface": {"engine": "native", "surface_id": "partdesign"},
+        "native_state": {"structural_revision": 7},
+        "provider_tool_schemas": [
+            {
+                "name": "state.read",
+                "description": "Read exact state.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"scope": {"type": "string"}},
+                    "required": ["scope"],
+                    "additionalProperties": False,
+                },
+            }
+        ],
+    }
+
+    class _Connection(_CollectingConnection):
+        def recv(self):
+            return {
+                "type": "tool_result",
+                "result": {"ok": True, "result": {"selection": []}},
+                "context": context,
+            }
+
+    connection = _Connection()
+    provider._anthropic_child_main(
+        connection,
+        "Inspect the selection.",
+        context,
+        "test-model",
+        "test-key",
+        None,
+        1.0,
+        4,
+        False,
+    )
+
+    tool_messages = [
+        message for message in connection.messages if message.get("type") == "tool"
+    ]
+    assert len(tool_messages) == 2
+    assert messages.requests[2]["tool_choice"] == {"type": "auto"}
+    repeated_result_message = next(
+        message["content"][0]
+        for message in reversed(messages.requests[2]["messages"])
+        if message.get("role") == "user"
+        and isinstance(message.get("content"), list)
+        and message["content"]
+        and message["content"][0].get("type") == "tool_result"
+    )
+    repeated_result = json.loads(repeated_result_message["content"])
+    assert repeated_result["vibecad_progress_guard"] == {
+        "status": "no_progress",
+        "reason": "repeated_unchanged_tool_result",
+        "retry_same_call": False,
+    }
+    terminal = [
+        message for message in connection.messages if message.get("type") == "done"
+    ]
+    assert terminal[-1]["final_output"] == "The available state is unchanged."
+    assert connection.closed
+
+
+def test_anthropic_budget_recovery_executes_a_real_tool_and_releases_gate(
+    monkeypatch,
+) -> None:
+    responses = [
+        SimpleNamespace(
+            content=[SimpleNamespace(type="thinking", thinking="unfinished")],
+            stop_reason="max_tokens",
+        ),
+        SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="recovery-read",
+                    name="state_read",
+                    input={"scope": "selection"},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="Inspection complete.")],
+            stop_reason="end_turn",
+        ),
+    ]
+    messages = _SequenceAnthropicMessages(responses)
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=messages),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    monkeypatch.setattr(
+        provider,
+        "_anthropic_compact_turn_in_thread",
+        lambda **_kwargs: {
+            "current_request": "Inspect the selection.",
+            "requirements": [],
+            "completed_actions": [],
+            "live_artifacts": [],
+            "open_issues": [],
+            "next_action": "Read the selection.",
+        },
+    )
+    context = {
+        "provider_tool_schemas": [
+            {
+                "name": "state.read",
+                "description": "Read exact state.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"scope": {"type": "string"}},
+                    "required": ["scope"],
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+
+    class _Connection(_CollectingConnection):
+        def recv(self):
+            return {
+                "type": "tool_result",
+                "result": {"ok": True, "result": {"selection": []}},
+                "context": context,
+            }
+
+    connection = _Connection()
+    provider._anthropic_child_main(
+        connection,
+        "Inspect the selection.",
+        context,
+        "test-model",
+        "test-key",
+        "high",
+        1.0,
+        3,
+        False,
+    )
+
+    assert messages.requests[1]["tool_choice"] == {"type": "auto"}
+    assert "tool_choice" not in messages.requests[2]
+    tool_messages = [
+        message for message in connection.messages if message.get("type") == "tool"
+    ]
+    assert [message["tool_name"] for message in tool_messages] == ["state.read"]
+    terminal = [
+        message for message in connection.messages if message.get("type") == "done"
+    ]
+    assert terminal[-1]["final_output"] == "Inspection complete."
+    assert connection.closed
+
+
+def test_anthropic_repeated_tool_is_productive_when_document_revision_changes(
+    monkeypatch,
+) -> None:
+    tool_call = lambda call_id: SimpleNamespace(
+        type="tool_use",
+        id=call_id,
+        name="state_read",
+        input={"scope": "selection"},
+    )
+    responses = [
+        SimpleNamespace(content=[tool_call("read-1")], stop_reason="tool_use"),
+        SimpleNamespace(content=[tool_call("read-2")], stop_reason="tool_use"),
+        SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="Both revisions inspected.")],
+            stop_reason="end_turn",
+        ),
+    ]
+    messages = _SequenceAnthropicMessages(responses)
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=messages),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+
+    def context(revision: int) -> dict[str, object]:
+        return {
+            "workbench": "PartDesignWorkbench",
+            "modeling_surface": {"engine": "native", "surface_id": "partdesign"},
+            "native_state": {"structural_revision": revision},
+            "provider_tool_schemas": [
+                {
+                    "name": "state.read",
+                    "description": "Read exact state.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"scope": {"type": "string"}},
+                        "required": ["scope"],
+                        "additionalProperties": False,
+                    },
+                }
+            ],
+        }
+
+    contexts = iter((context(8), context(9)))
+
+    class _Connection(_CollectingConnection):
+        def recv(self):
+            return {
+                "type": "tool_result",
+                "result": {"ok": True, "result": {"selection": []}},
+                "context": next(contexts),
+            }
+
+    connection = _Connection()
+    provider._anthropic_child_main(
+        connection,
+        "Inspect two changing revisions.",
+        context(7),
+        "test-model",
+        "test-key",
+        None,
+        1.0,
+        3,
+        False,
+    )
+
+    assert "tool_choice" not in messages.requests[2]
+    assert not any(
+        "vibecad_progress_guard" in json.dumps(request["messages"])
+        for request in messages.requests
+    )
+    terminal = [
+        message for message in connection.messages if message.get("type") == "done"
+    ]
+    assert terminal[-1]["final_output"] == "Both revisions inspected."
+    assert connection.closed
+
+
+def test_anthropic_provider_has_a_finite_default_turn_limit() -> None:
+    anthropic = provider.AnthropicProvider()
+
+    assert anthropic.max_turns == provider.DEFAULT_ANTHROPIC_MAX_TURNS
+    assert isinstance(anthropic.max_turns, int)
+    assert anthropic.max_turns > 0
+
+
+def test_anthropic_turn_limit_returns_an_actionable_terminal_result(monkeypatch) -> None:
+    responses = [
+        SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="bounded-read",
+                    name="state_read",
+                    input={"scope": "selection"},
+                )
+            ],
+            stop_reason="tool_use",
+        )
+    ]
+    messages = _SequenceAnthropicMessages(responses)
+    anthropic_module = SimpleNamespace(
+        Anthropic=lambda **_kwargs: SimpleNamespace(messages=messages),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic_module)
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    context = {
+        "provider_tool_schemas": [
+            {
+                "name": "state.read",
+                "description": "Read exact state.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"scope": {"type": "string"}},
+                    "required": ["scope"],
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+
+    class _Connection(_CollectingConnection):
+        def recv(self):
+            return {
+                "type": "tool_result",
+                "result": {"ok": True},
+                "context": context,
+            }
+
+    connection = _Connection()
+    provider._anthropic_child_main(
+        connection,
+        "Inspect the selection.",
+        context,
+        "test-model",
+        "test-key",
+        None,
+        1.0,
+        1,
+        False,
+    )
+
+    terminal = [
+        message
+        for message in connection.messages
+        if message.get("type") in {"done", "error"}
+    ]
+    assert terminal == [
+        {
+            "type": "done",
+            "final_output": provider.ANTHROPIC_TURN_LIMIT_MESSAGE,
+            "raw": {"stalled": True, "reason": "turn_limit"},
+        }
+    ]
     assert connection.closed
 
 
