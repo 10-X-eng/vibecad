@@ -233,22 +233,22 @@ Status values are `DONE`, `IN PROGRESS`, `NOT STARTED`, `BLOCKED`, and
 | P00 | Establish cooperative mutation lease and block conflicting document mutations | DONE | PR #168; native GUI tests 138/138 |
 | P01 | Yield VibeScript publication between output/member apply steps | DONE | PR #168; Python suite 4,380 passed, 9 skipped; large Assembly became interactively usable |
 | P02 | Add publication phase/item progress | DONE | PR #168; direct VibeScript progress callback tests |
-| P03 | Instrument cross-language spans and GUI watchdog | IN PROGRESS | Bounded Python trace recorder and opt-in Qt watchdog added in `4daa8d06`; native instrumentation will reuse the existing Tracy integration |
+| P03 | Instrument cross-language spans and GUI watchdog | IN PROGRESS | Bounded Python trace/watchdog in `4daa8d06`; real GUI-thread apply spans and native Tracy capture proven in `d116a0c9`; remaining required surfaces are still open |
 | P04 | Capture cold/warm baseline for B02, B06, B07, B09, and B24 | NOT STARTED | Trace and benchmark summaries |
 | P05 | Remove Assembly drag/bulk-visibility refresh storm | DONE | Packaged red tests proved duplicate deferred traversal and synchronous per-selection traversal across 153 visibility changes; packaged green test proved direct, standard multi-selection, and folder-toggle paths each converge in exactly one delayed refresh |
-| P06 | Measure BREP assignment, tessellation, and Coin construction independently | NOT STARTED | Native trace identifies per-solid costs |
+| P06 | Measure BREP assignment, tessellation, and Coin construction independently | IN PROGRESS | Synthetic native trace separates tessellation, Coin construction, and full visual update; representative B07 fixture remains |
 | P07 | Pre-tessellate eligible solids in isolated workers and cache render meshes | NOT STARTED | Same visual/correct BREP output; B07 comparison |
 | P08 | Drive ordinary per-object GUI apply cost toward <= 1 ms | NOT STARTED | B07 per-item distribution and longest span |
 | P09 | Add adaptive batching for proven-cheap apply units | NOT STARTED | Higher throughput without heartbeat regression |
 | P10 | Bound publication commit/rollback/final-stabilization phases | NOT STARTED | No unnamed GUI span > 16 ms in B07/B26 |
 | P11 | Coalesce Tree, Timeline, cache, and observer notifications | NOT STARTED | One logical refresh per operation |
 | P12 | Eliminate full-object stable refresh when exact changed identities exist | NOT STARTED | B05/B07 traversal and allocation evidence |
-| P13 | Measure and optimize Tree projection and Feature Timeline rebuild | NOT STARTED | B05 and B07 final-tail evidence |
+| P13 | Measure and optimize Tree projection and Feature Timeline rebuild | IN PROGRESS | Synthetic native trace measures Tree and Timeline paths; B05/B07 scale and optimization remain |
 | P14 | Implement persistent startup worker runtime and bounded queues | NOT STARTED | Startup, reuse, fairness, shutdown, and crash tests |
 | P15 | Implement per-document actor ownership and revision-safe result application | NOT STARTED | B26/B27 stress evidence |
 | P16 | Standardize human/AI progress, cancellation, and diagnostics contract | REVALIDATE | VibeScript direct progress exists; audit every other long operation |
-| P17 | Audit and eliminate synchronous filesystem/network/process waits in UI callbacks | NOT STARTED | Static audit plus runtime trace shows zero occurrences |
-| P18 | Validate and optimize application startup and document restore | NOT STARTED | B01/B02 cold/warm evidence |
+| P17 | Audit and eliminate synchronous filesystem/network/process waits in UI callbacks | IN PROGRESS | Native trace confirms synchronous save/restore exceed the GUI budget; complete static/runtime audit and fixes remain |
+| P18 | Validate and optimize application startup and document restore | IN PROGRESS | Synthetic restore trace captured; packaged 2,000-object B01/B02 cold/warm evidence remains |
 | P19 | Validate and optimize Analyze/FEM/CFD workflows | NOT STARTED | B11-B13 evidence |
 | P20 | Validate and optimize Drawing/TechDraw workflows | NOT STARTED | B14-B16 evidence |
 | P21 | Validate and optimize Assembly edit, solve, motion, and collision workflows | NOT STARTED | B08-B10 evidence |
@@ -396,6 +396,44 @@ the commit under test.
   Result: `VIBECAD_TREE_VISIBILITY_COALESCING_OK`; each of direct property,
   standard multi-selection Hide, and folder Space-toggle produced zero
   synchronous traversals and exactly one stable delayed traversal.
+
+### 2026-09-04 — native and cooperative hot-path tracing
+
+- Base: `99044673`.
+- Commit under test: `d116a0c96cf33ec2610170b24dbf5e02e9d40d48`.
+- Host: Windows 11 Pro for Workstations 10.0.26200; Intel Xeon Gold 5120,
+  14 cores/28 logical processors; 127.7 GiB RAM.
+- Reuse boundary: native spans use the existing `Base/Profiler.h` Tracy
+  integration. Python GUI-apply spans use the existing bounded performance
+  recorder through one optional scheduler hook. Disabled tracing performs no
+  timer or file I/O and adds one null check per cooperative slice.
+- Red tests: cooperative execution initially had no span-factory connection;
+  VibeScript publication initially supplied no stable trace identity. Both
+  focused tests failed before their respective implementation changes.
+- Focused Python command:
+  `python -m pytest test_cooperative_document_execution.py test_performance.py
+  test_vibescript_publication_progress.py test_native_background.py
+  test_native_analyze_solver_execution.py test_native_drawing_view.py
+  test_native_registry.py -q`. Result: 86 passed.
+- Packaged GUI trace probe: four real document-thread apply slices ran on the
+  GUI native thread while the Qt heartbeat delivered 48 samples. Result:
+  `VIBECAD_PERFORMANCE_TRACE_GUI_OK slices=4 heartbeat_samples=48`.
+- Tracy build: full Windows Release build and install completed with the
+  profiler enabled. A clean configure without `TRACY_STATIC` on the command
+  line produced `TRACY_STATIC:BOOL=OFF` and a shared `TracyClient.dll`, proving
+  the parent CMake default now survives Tracy's older `option()` policy.
+- Native trace workload: create and display 24 independent boxes, bulk-toggle
+  visibility, commit and abort transactions, undo/redo, save, close, restore,
+  recompute, and save again. The workload completed and the 231 KiB capture
+  exported all named native zones.
+- Observed maxima in this instrumentation fixture: object creation 8.31 ms;
+  tessellation 11.14 ms; Coin construction 0.16 ms; full visual update
+  11.58 ms; Tree status update 14.26 ms; Timeline rebuild 0.55 ms; save
+  58.62 ms; restore 127.23 ms.
+- Interpretation: this is proof that the instrumentation records real work,
+  not B02/B07 completion. It identifies synchronous save/restore and the Tree
+  path as budget violations or near-violations, and it keeps P03, P06, P13,
+  P17, and P18 open until representative-scale before/after evidence exists.
 
 ## PR discipline
 
