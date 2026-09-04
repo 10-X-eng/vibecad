@@ -29,6 +29,21 @@ export FONTCONFIG_PATH=/etc/fonts
 # Fix: Use X to run on Wayland
 export QT_QPA_PLATFORM=xcb
 
+# The AppImage bundles libdrm_amdgpu from its build environment. On current
+# Arch/Mesa systems that copy can make Qt's GLX probe see no framebuffer
+# configurations. Preload the host-matched library when AMD hardware is
+# present; the loader then reuses it instead of the bundled copy.
+drm_root=${VIBECAD_DRM_ROOT:-/sys/class/drm}
+libdrm_amdgpu=${VIBECAD_LIBDRM_AMDGPU:-/usr/lib/libdrm_amdgpu.so.1}
+for vendor_path in "$drm_root"/card*/device/vendor; do
+    [ -r "$vendor_path" ] || continue
+    if [ "$(cat "$vendor_path")" = "0x1002" ] && [ -r "$libdrm_amdgpu" ]; then
+        LD_PRELOAD="$libdrm_amdgpu${LD_PRELOAD:+:$LD_PRELOAD}"
+        export LD_PRELOAD
+        break
+    fi
+done
+
 # Show packages info if DEBUG env variable is set
 if [ "$DEBUG" = 1 ]; then
     cat ${HERE}/packages.txt
