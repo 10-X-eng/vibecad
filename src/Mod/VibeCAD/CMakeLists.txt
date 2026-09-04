@@ -23,6 +23,8 @@ set(VibeCAD_Scripts
     VibeCADDesignReview.py
     VibeCADDocumentReferences.py
     VibeCADEditState.py
+    VibeCADEngineeringBrief.py
+    VibeCADEngineeringBriefGui.py
     VibeCADFasteners.py
     VibeCADFastenersGui.py
     VibeCADFastenerModel.py
@@ -1285,6 +1287,7 @@ set(VibeCAD_Resources
     vibecad-activity.svg
     vibecad-new-conversation.svg
     vibecad-prompt-starters.svg
+    vibecad-engineering-brief.svg
 )
 
 set(VibeCAD_UpdateTrustFiles)
@@ -1305,6 +1308,8 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/link_override_visibility_gui_integration.py
         vibecad_tests/mcp_gui_integration.py
         vibecad_tests/session_recovery_gui_integration.py
+        vibecad_tests/engineering_brief_gui_integration.py
+        vibecad_tests/test_engineering_brief.py
         vibecad_tests/test_session_recovery.py
     vibecad_tests/native_background_gui_integration.py
     vibecad_tests/native_analyze_context_responsiveness_gui_integration.py
