@@ -379,6 +379,34 @@ try:
             except Exception:
                 pass
 
+    def _setup_performance_watchdog() -> None:
+        try:
+            import os
+
+            trace_setting = str(
+                os.environ.get("VIBECAD_PERFORMANCE_TRACE") or ""
+            ).strip().lower()
+            # Mirror VibeCADPerformance without importing its tracing machinery
+            # during normal startup.
+            if trace_setting not in {"1", "on", "true", "yes"}:
+                return
+
+            import FreeCADGui as Gui
+            import VibeCADPerformanceGui
+
+            VibeCADPerformanceGui.install_event_loop_watchdog(
+                parent=Gui.getMainWindow()
+            )
+        except Exception as exc:
+            try:
+                import FreeCAD as _App
+
+                _App.Console.PrintWarning(
+                    f"VibeCAD UI performance watchdog failed to start: {exc}\n"
+                )
+            except Exception:
+                pass
+
     def _setup_aero_ribbon() -> None:
         try:
             import VibeCADAeroRibbon
@@ -397,6 +425,7 @@ try:
     QtCore.QTimer.singleShot(0, _setup_development_identity)
     QtCore.QTimer.singleShot(0, _setup_always_on_grid)
     QtCore.QTimer.singleShot(0, _setup_agent_control)
+    QtCore.QTimer.singleShot(0, _setup_performance_watchdog)
     QtCore.QTimer.singleShot(0, _setup_aero_ribbon)
 except Exception as exc:
     _warn(f"VibeCAD GUI bootstrap failed: {exc}")

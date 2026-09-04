@@ -1212,6 +1212,8 @@ set(VibeCAD_Scripts
     VibeCADRibbonSurface.py
     VibeCADProject.py
     VibeCADPublicationProgress.py
+    VibeCADPerformance.py
+    VibeCADPerformanceGui.py
     VibeCADSession.py
     VibeCADSessionRecovery.py
     VibeCADScriptedEditor.py

@@ -1284,7 +1284,7 @@ def test_vibecad_migrates_its_obsolete_background_autoload_before_use() -> None:
     assert 'general->RemoveASCII("BackgroundAutoloadModules");' in migration
 
 
-def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> None:
+def test_vibecad_bootstrap_repairs_disabled_lists_and_gates_profiling(monkeypatch) -> None:
     class ParameterGroup:
         def __init__(self, disabled: str) -> None:
             self.disabled = disabled
@@ -1332,8 +1332,31 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
         "scheduled:_setup_development_identity",
         "scheduled:_setup_always_on_grid",
         "scheduled:_setup_agent_control",
+        "scheduled:_setup_performance_watchdog",
         "scheduled:_setup_aero_ribbon",
     ]
+
+    watchdog_installs: list[object] = []
+    monkeypatch.delenv("VIBECAD_PERFORMANCE_TRACE", raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "FreeCADGui",
+        SimpleNamespace(getMainWindow=lambda: "main-window"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADPerformanceGui",
+        SimpleNamespace(
+            install_event_loop_watchdog=lambda **kwargs: watchdog_installs.append(
+                kwargs["parent"]
+            )
+        ),
+    )
+    namespace["_setup_performance_watchdog"]()
+    assert watchdog_installs == []
+    monkeypatch.setenv("VIBECAD_PERFORMANCE_TRACE", "1")
+    namespace["_setup_performance_watchdog"]()
+    assert watchdog_installs == ["main-window"]
 
     preferences.disabled = (
         "MaterialWorkbench,TestWorkbench,NoneWorkbench,CustomWorkbench"
@@ -1522,6 +1545,7 @@ def test_vibecad_bootstrap_isolates_optional_command_registration_failures(
         "scheduled:_setup_development_identity",
         "scheduled:_setup_always_on_grid",
         "scheduled:_setup_agent_control",
+        "scheduled:_setup_performance_watchdog",
         "scheduled:_setup_aero_ribbon",
     ]
     assert any(
