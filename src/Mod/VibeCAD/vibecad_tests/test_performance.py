@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import VibeCADCooperativeExecution as cooperative
 from VibeCADPerformance import EventLoopWatchdog, PerformanceRecorder
 import VibeCADPerformanceGui
 
@@ -269,3 +270,26 @@ def test_gui_watchdog_installation_is_idempotent():
     assert watchdog.ticks == 1
     assert VibeCADPerformanceGui.event_loop_watchdog_summary() == {"sample_count": 1}
     VibeCADPerformanceGui._reset_event_loop_watchdog_for_tests()
+
+
+def test_gui_watchdog_connects_opt_in_document_slice_tracing(monkeypatch):
+    VibeCADPerformanceGui._reset_event_loop_watchdog_for_tests()
+    recorder = PerformanceRecorder(enabled=True)
+    monkeypatch.setattr(
+        VibeCADPerformanceGui,
+        "get_performance_recorder",
+        lambda: recorder,
+    )
+
+    timer = VibeCADPerformanceGui.install_event_loop_watchdog(
+        parent="main-window",
+        timer_factory=_Timer,
+    )
+
+    assert timer is not None
+    span_factory = cooperative._document_thread_span_factory
+    assert span_factory is not None
+    assert span_factory.__self__ is recorder
+    assert span_factory.__func__ is recorder.span.__func__
+    VibeCADPerformanceGui._reset_event_loop_watchdog_for_tests()
+    assert cooperative._document_thread_span_factory is None

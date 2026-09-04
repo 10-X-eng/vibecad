@@ -79,6 +79,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <Base/Console.h>
+#include <Base/Profiler.h>
 #include <Base/Parameter.h>
 #include <Base/Sequencer.h>
 #include <Base/TimeInfo.h>
@@ -1220,6 +1221,8 @@ void ViewProviderPartExt::setupCoinGeometry(
     bool normalsFromUV
 )
 {
+    ZoneNamedN(setupCoinGeometryZone, "Part.ViewProvider.setupCoinGeometry", true);
+
     if (Part::Tools::isShapeEmpty(shape)) {
         coords->point.setNum(0);
         norm->vector.setNum(0);
@@ -1264,13 +1267,18 @@ void ViewProviderPartExt::setupCoinGeometry(
     meshParams.AllowQualityDecrease = Standard_True;
 
     // Clear triangulation and PCurves from geometry which can slow down the process
+    {
+        ZoneNamedN(tessellationZone, "Part.ViewProvider.tessellate", true);
 #if OCC_VERSION_HEX < 0x070600
-    BRepTools::Clean(shape);
+        BRepTools::Clean(shape);
 #else
-    BRepTools::Clean(shape, Standard_True);
+        BRepTools::Clean(shape, Standard_True);
 #endif
 
-    BRepMesh_IncrementalMesh(shape, meshParams);
+        BRepMesh_IncrementalMesh(shape, meshParams);
+    }
+
+    ZoneNamedN(coinGeometryZone, "Part.ViewProvider.buildCoinGeometry", true);
 
     // We must reset the location here because the transformation data
     // are set in the placement property
@@ -1634,6 +1642,8 @@ void ViewProviderPartExt::setupCoinGeometry(
 
 void ViewProviderPartExt::updateVisual()
 {
+    ZoneScopedN("Part.ViewProvider.updateVisual");
+
     auto* object = getObject();
     auto* document = object ? object->getDocument() : nullptr;
     if (isRestoring()

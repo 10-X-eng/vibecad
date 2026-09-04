@@ -179,6 +179,8 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
+    ZoneScopedN("App.Document.undo");
+
     if (isCooperativeMutationActive()) {
         FC_WARN("Cannot undo while a cooperative document mutation is active");
         return false;
@@ -240,6 +242,8 @@ bool Document::undo(const int id)
 
 bool Document::redo(const int id)
 {
+    ZoneScopedN("App.Document.redo");
+
     if (isCooperativeMutationActive()) {
         FC_WARN("Cannot redo while a cooperative document mutation is active");
         return false;
@@ -659,6 +663,8 @@ void Document::commitTransaction()  // NOLINT
 
 bool Document::_commitTransaction(const bool notify)
 {
+    ZoneScopedN("App.Document.commitTransaction");
+
     if (isPerformingTransaction()) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Cannot commit transaction while transacting");
@@ -730,6 +736,8 @@ void Document::abortTransaction() const
 
 void Document::_abortTransaction()
 {
+    ZoneScopedN("App.Document.abortTransaction");
+
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Cannot abort transaction while transacting");
@@ -2232,6 +2240,8 @@ bool Document::save()
 
 bool Document::saveToFile(const char* filename) const
 {
+    ZoneScopedN("App.Document.saveToFile");
+
     signalStartSave(*this, filename);
 
     auto hGrp = GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document");
@@ -2414,6 +2424,8 @@ bool Document::isAnyRestoring()
 // Open the document
 void Document::restore(const char* filename, bool delaySignal, const std::vector<std::string>& objNames)
 {
+    ZoneScopedN("App.Document.restore");
+
     clearUndos();
     d->activeObject = nullptr;
 
@@ -3145,7 +3157,7 @@ void Document::renameObjectIdentifiers(
 
 int Document::recompute(const std::vector<DocumentObject*>& objs, bool force, bool* hasError, int options)
 {
-    ZoneScoped;
+    ZoneScopedN("App.Document.recompute");
 
     if (isCooperativeMutationActive()) {
         FC_WARN("Cannot recompute while a cooperative document mutation is active");
@@ -3877,6 +3889,8 @@ void Document::_addObject(
     const char* viewType
 )
 {
+    ZoneScopedN("App.Document.addObject");
+
     struct AddObjectCriticalScope
     {
         explicit AddObjectCriticalScope(DocumentP& state)
@@ -4102,6 +4116,8 @@ void Document::removeObject(const char* sName)
 }
 void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions options)
 {
+    ZoneScopedN("App.Document.removeObject");
+
     if (!options.testFlag(RemoveObjectOption::MayRemoveWhileRecomputing)
         && testStatus(Document::Recomputing)) {
         FC_ERR("Cannot delete " << pcObject->getFullName() << " while recomputing");

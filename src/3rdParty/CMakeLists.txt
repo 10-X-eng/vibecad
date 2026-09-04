@@ -28,7 +28,6 @@ if (BUILD_TRACY_FRAME_PROFILER)
         message(FATAL_ERROR "The Tracy git directory is not available. Please clone it manually." )
     endif()
 
-    set(TRACY_STATIC OFF)
+    set(TRACY_STATIC OFF CACHE BOOL "Whether to build Tracy as a static library")
     add_subdirectory(tracy)
 endif()
-

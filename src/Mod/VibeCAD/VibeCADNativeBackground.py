@@ -376,6 +376,11 @@ class NativeBackgroundManager:
                         dispatch=dispatch_to_document_thread,
                         cancellation_check=job.cancellation.is_set,
                         progress_callback=report_commit_progress,
+                        trace_attributes={
+                            "operation_id": job.job_id,
+                            "document_uid": job.document_uid,
+                            "capability": job.capability_name,
+                        },
                     )
                 except CooperativeExecutionCancelled as exc:
                     raise NativeBackgroundCancelled() from exc

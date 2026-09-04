@@ -209,6 +209,7 @@ def test_domain_adapter_cooperatively_dispatches_each_publication_step(
 
     dispatches = []
     events = []
+    trace_attributes = None
 
     def publication_steps(*_args, **_kwargs):
         yield {"event": "publication_slice", "completed": 1, "total": 2}
@@ -216,13 +217,24 @@ def test_domain_adapter_cooperatively_dispatches_each_publication_step(
         return {"ok": True, "outputs": ["Model"]}
 
     monkeypatch.setattr(runtime, "iter_publish_candidate", publication_steps)
+    run_document_thread_steps = runtime.run_document_thread_steps
+
+    def run_traced_steps(*args, **kwargs):
+        nonlocal trace_attributes
+        trace_attributes = kwargs.get("trace_attributes")
+        return run_document_thread_steps(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "run_document_thread_steps", run_traced_steps)
     adapter = runtime.DeclarativeDomainAdapter(
         SimpleNamespace(domain="assembly", workbench="Assembly")
     )
 
     result = adapter.publish_cooperatively(
         object(),
-        {},
+        {
+            "attempt_id": "attempt-a",
+            "document_uid": "document-a",
+        },
         {},
         document_thread_dispatch=lambda operation: (dispatches.append(operation), operation())[1],
         cancellation_check=lambda: False,
@@ -232,6 +244,12 @@ def test_domain_adapter_cooperatively_dispatches_each_publication_step(
     assert result == {"ok": True, "outputs": ["Model"]}
     assert len(dispatches) == 3
     assert [event["completed"] for event in events] == [1, 2]
+    assert trace_attributes == {
+        "operation_id": "attempt-a",
+        "document_uid": "document-a",
+        "capability": "vibescript.publish",
+        "domain": "assembly",
+    }
 
 
 def test_large_assembly_publication_dispatches_all_307_members(

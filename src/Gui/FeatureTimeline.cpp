@@ -48,6 +48,7 @@
 #include <App/SuppressibleExtension.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
+#include <Base/Profiler.h>
 
 #include "ActiveObjectList.h"
 #include "Action.h"
@@ -1203,6 +1204,8 @@ void FeatureTimeline::setObservedDocument(Gui::Document* document)
 
 void FeatureTimeline::scheduleRefresh()
 {
+    ZoneScopedN("Gui.FeatureTimeline.scheduleRefresh");
+
     if (refreshTimer && !refreshTimer->isActive()) {
         refreshTimer->start();
     }
@@ -1226,6 +1229,8 @@ bool FeatureTimeline::canChangeHistory() const
 
 void FeatureTimeline::rebuild()
 {
+    ZoneScopedN("Gui.FeatureTimeline.rebuild");
+
     App::Document* document = activeAppDocument();
     if (Gui::Document::projectionRefreshBlocked(document)) {
         // Undo, redo, and transaction rollback recreate objects in dependency

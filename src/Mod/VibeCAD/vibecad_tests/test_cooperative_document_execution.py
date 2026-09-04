@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import pytest
 
+import VibeCADCooperativeExecution as cooperative
 from VibeCADCooperativeExecution import (
     CooperativeExecutionCancelled,
     run_document_thread_steps,
 )
+from VibeCADPerformance import PerformanceRecorder
 
 
 def test_document_steps_return_to_dispatcher_between_every_slice() -> None:
@@ -90,6 +92,48 @@ def test_document_steps_report_any_slice_that_exceeds_its_budget() -> None:
     assert progress[0]["event"] == "document_thread_slice_over_budget"
     assert progress[0]["elapsed_seconds"] == 0.08
     assert progress[1]["completed"] == 1
+
+
+def test_document_steps_emit_opt_in_gui_spans_with_operation_identity(
+    monkeypatch,
+) -> None:
+    recorder = PerformanceRecorder(enabled=True, capacity=10)
+    monkeypatch.setattr(cooperative, "_document_thread_span_factory", recorder.span)
+
+    def steps():
+        yield {"phase": "publication_objects", "completed": 1, "total": 1}
+        return {"ok": True}
+
+    result = run_document_thread_steps(
+        steps(),
+        dispatch=lambda operation: operation(),
+        trace_attributes={
+            "operation_id": "job-1",
+            "document_uid": "document-a",
+            "capability": "vibescript.publish",
+        },
+    )
+
+    assert result == {"ok": True}
+    events = recorder.snapshot()
+    assert [event["name"] for event in events] == [
+        "document.apply_slice",
+        "document.apply_slice",
+    ]
+    assert [event["args"]["slice_index"] for event in events] == [0, 1]
+    assert events[0]["args"] == {
+        "operation_id": "job-1",
+        "document_uid": "document-a",
+        "capability": "vibescript.publish",
+        "slice_index": 0,
+        "phase": "publication_objects",
+        "completed": 1,
+        "total": 1,
+        "gui_thread": True,
+        "outcome": "completed",
+    }
+    assert events[1]["args"]["completed_operation"] is True
+    assert events[1]["args"]["gui_thread"] is True
 
 
 def test_progress_failure_closes_steps_on_the_document_thread() -> None:

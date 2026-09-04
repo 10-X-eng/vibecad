@@ -44,6 +44,7 @@
 #include <string_view>
 
 #include <Base/Console.h>
+#include <Base/Profiler.h>
 #include <Base/Reader.h>
 #include <Base/Sequencer.h>
 #include <Base/Tools.h>
@@ -4370,6 +4371,8 @@ struct UpdateDisabler
 
 void TreeWidget::onUpdateStatus()
 {
+    ZoneScopedN("Gui.Tree.onUpdateStatus");
+
     if (this->state() == DraggingState || App::GetApplication().isRestoring()) {
         _updateStatus();
         return;
@@ -5640,6 +5643,8 @@ void DocumentItem::setLegacyTreeVisible(bool visible)
 
 void DocumentItem::updateBrowserFolderStatus()
 {
+    ZoneScopedN("Gui.Tree.updateBrowserFolderStatus");
+
     if (!modelBrowserActive) {
         return;
     }
@@ -5677,6 +5682,8 @@ void DocumentItem::updateBrowserFolderStatus()
 
 void DocumentItem::rebuildModelBrowser()
 {
+    ZoneScopedN("Gui.Tree.rebuildModelBrowser");
+
     auto* tree = getTree();
     auto* appDocument = document()->getDocument();
     if (!tree || !appDocument) {
@@ -7101,6 +7108,8 @@ void DocumentItem::rebuildModelBrowser()
 
 void DocumentItem::refreshModelBrowser(bool force)
 {
+    ZoneScopedN("Gui.Tree.refreshModelBrowser");
+
     if (!TreeParams::getOrganizeModelByType()) {
         if (modelBrowserActive) {
             clearModelBrowser();

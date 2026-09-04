@@ -17468,6 +17468,12 @@ class DeclarativeDomainAdapter:
             dispatch=document_thread_dispatch,
             cancellation_check=cancellation_check,
             progress_callback=progress_callback,
+            trace_attributes={
+                "operation_id": str(prepared.get("attempt_id") or ""),
+                "document_uid": str(prepared.get("document_uid") or ""),
+                "capability": "vibescript.publish",
+                "domain": self.pack.domain,
+            },
         )
 
     def inspect(

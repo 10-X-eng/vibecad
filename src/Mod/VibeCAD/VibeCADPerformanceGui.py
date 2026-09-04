@@ -38,6 +38,10 @@ def install_event_loop_watchdog(
     if watchdog is None and not recorder.enabled:
         return None
 
+    from VibeCADCooperativeExecution import _set_document_thread_span_factory
+
+    _set_document_thread_span_factory(recorder.span if recorder.enabled else None)
+
     if parent is None:
         import FreeCADGui as Gui
 
@@ -82,3 +86,6 @@ def _reset_event_loop_watchdog_for_tests() -> None:
     stop = getattr(timer, "stop", None)
     if callable(stop):
         stop()
+    from VibeCADCooperativeExecution import _set_document_thread_span_factory
+
+    _set_document_thread_span_factory(None)
