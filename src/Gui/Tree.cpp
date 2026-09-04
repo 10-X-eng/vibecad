@@ -507,7 +507,6 @@ public:
         for (auto* item : items) {
             TreeWidget::setObjectItemVisibility(item, visible);
         }
-        owner->updateBrowserFolderStatus();
     }
 
     void toggleVisibility()
@@ -2445,9 +2444,6 @@ void TreeWidget::keyPressEvent(QKeyEvent* event)
                 appObj->getNameInDocument()
             );
         }
-        for (const auto& entry : DocumentMap) {
-            entry.second->updateBrowserFolderStatus();
-        }
         setFocus();
         event->accept();
         return;
@@ -2558,6 +2554,11 @@ TreeWidget::resolveModelBrowserVisibilityTarget(App::DocumentObject* object)
     return target;
 }
 
+qulonglong TreeWidget::browserFolderStatusUpdateCount() const
+{
+    return browserFolderStatusUpdates;
+}
+
 bool TreeWidget::applyModelBrowserVisibility(
     App::DocumentObject* object,
     int requestedVisibility,
@@ -2617,18 +2618,6 @@ bool TreeWidget::applyModelBrowserVisibility(
     }
     resultingVisibility = viewProvider->isShow();
 
-    // Do not retain item pointers across show()/hide(): those calls can emit
-    // document changes and rebuild a browser. Resolve each document item
-    // afresh solely to update aggregate folder indicators.
-    for (auto* tree : Instances) {
-        if (!tree || !guiDocument) {
-            continue;
-        }
-        const auto documentIt = tree->DocumentMap.find(guiDocument);
-        if (documentIt != tree->DocumentMap.end() && documentIt->second) {
-            documentIt->second->updateBrowserFolderStatus();
-        }
-    }
     return true;
 }
 
@@ -2675,9 +2664,6 @@ void TreeWidget::mousePressEvent(QMouseEvent* event)
                             objectItem,
                             !objectItemVisibility(objectItem)
                         );
-                        if (auto* owner = objectItem->getOwnerDocument()) {
-                            owner->updateBrowserFolderStatus();
-                        }
                     }
                     else {
                         auto* object = objectItem->object()->getObject();
@@ -4494,7 +4480,6 @@ void TreeWidget::onUpdateStatus()
     FC_LOG("update item status");
     for (auto pos = DocumentMap.begin(); pos != DocumentMap.end(); ++pos) {
         pos->second->testStatus();
-        pos->second->updateBrowserFolderStatus();
     }
 
     // Checking for just restored documents
@@ -5657,6 +5642,10 @@ void DocumentItem::updateBrowserFolderStatus()
 {
     if (!modelBrowserActive) {
         return;
+    }
+
+    if (auto* tree = getTree()) {
+        ++tree->browserFolderStatusUpdates;
     }
 
     std::vector<BrowserFolderItem*> folders;
@@ -7748,15 +7737,10 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
     _updateStatus();
 
     if (&prop == &obj->Visibility) {
-        std::set<DocumentItem*> documents;
-        for (const auto& data : itEntry->second) {
-            if (data && data->docItem) {
-                documents.insert(data->docItem);
-            }
-        }
-        for (auto* document : documents) {
-            document->updateBrowserFolderStatus();
-        }
+        // _updateStatus() already coalesces a burst of object notifications and
+        // refreshes each document's folder state once. Traversing every folder
+        // synchronously for every Visibility property produced quadratic work
+        // during Assembly drag setup and other bulk-visibility operations.
         return;
     }
 

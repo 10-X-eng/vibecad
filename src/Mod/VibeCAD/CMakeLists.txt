@@ -1308,6 +1308,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/grid_gui_integration.py
         vibecad_tests/section_view_gui_integration.py
         vibecad_tests/link_override_visibility_gui_integration.py
+        vibecad_tests/tree_visibility_coalescing_gui_integration.py
         vibecad_tests/mcp_gui_integration.py
         vibecad_tests/session_recovery_gui_integration.py
         vibecad_tests/test_session_recovery.py

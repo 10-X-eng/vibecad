@@ -62,6 +62,10 @@ GuiExport bool isTreeViewDragging();
 class TreeWidget: public QTreeWidget, public SelectionObserver
 {
     Q_OBJECT
+    Q_PROPERTY(
+        qulonglong VibeCADBrowserFolderStatusUpdateCount
+            READ browserFolderStatusUpdateCount
+    )
 
 public:
     explicit TreeWidget(const char* name, QWidget* parent = nullptr);
@@ -80,6 +84,8 @@ public:
 
     int itemSpacing() const;
     void setItemSpacing(int);
+
+    qulonglong browserFolderStatusUpdateCount() const;
 
     bool eventFilter(QObject*, QEvent* ev) override;
 
@@ -342,6 +348,7 @@ private:
 
     std::string myName;  // for debugging purpose
     int updateBlocked = 0;
+    qulonglong browserFolderStatusUpdates = 0;
 
     // State tracking for the two-stage "Select All" operation
     bool lastSelectAllParent = false;   // true if last select was group-level, used for double-tap

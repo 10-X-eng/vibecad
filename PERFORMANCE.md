@@ -121,7 +121,11 @@ when necessary to preserve input and rendering latency.
 
 ### Cross-language trace
 
-Add one low-overhead trace format shared by C++ and Python. Each span records:
+Reuse the repository's existing Tracy integration (`Base/Profiler.h` and
+`BUILD_TRACY_FRAME_PROFILER`) for native spans. Use one bounded Python Chrome
+Trace recorder for Python and process-level spans, then correlate the two by
+wall time, process/thread identity, and operation ID. Do not add a second native
+profiler or a parallel batching/dispatch framework. Each span records:
 
 - operation and phase name;
 - document UID and revision, without document contents;
@@ -132,17 +136,18 @@ Add one low-overhead trace format shared by C++ and Python. Each span records:
 - cancellation and outcome;
 - parent operation ID.
 
-Development builds write bounded Chrome Trace Event JSON so Windows Performance
-Analyzer, Perfetto, or Chromium tracing can show C++, Python, process, and GUI
-events on one timeline. Release builds keep only aggregate counters and slow-span
-diagnostics unless detailed tracing is explicitly enabled.
+Detailed tracing is opt-in through `VIBECAD_PERFORMANCE_TRACE`; normal startup
+does not import the Python tracing modules or install a heartbeat timer. An
+instrumented run can export bounded Chrome Trace Event JSON for Perfetto or
+Chromium tracing and capture the native Tracy timeline. Release operation has
+zero periodic tracing work unless detailed tracing is explicitly enabled.
 
 ### GUI watchdog
 
-Add a Qt event-loop watchdog that records heartbeat gaps without calling
+The opt-in Qt event-loop watchdog records heartbeat gaps without calling
 `processEvents()` re-entrantly. Test mode fails the benchmark when the applicable
-threshold is crossed. Diagnostics name the active operation and most recent GUI
-span so a freeze is never reported only as "not responding."
+threshold is crossed. Named operation and span context will be added only at
+measured entry points; there is no always-on activity registry.
 
 ### Required native spans
 
@@ -228,9 +233,9 @@ Status values are `DONE`, `IN PROGRESS`, `NOT STARTED`, `BLOCKED`, and
 | P00 | Establish cooperative mutation lease and block conflicting document mutations | DONE | PR #168; native GUI tests 138/138 |
 | P01 | Yield VibeScript publication between output/member apply steps | DONE | PR #168; Python suite 4,380 passed, 9 skipped; large Assembly became interactively usable |
 | P02 | Add publication phase/item progress | DONE | PR #168; direct VibeScript progress callback tests |
-| P03 | Instrument cross-language spans and GUI watchdog | NOT STARTED | Required before optimization claims |
+| P03 | Instrument cross-language spans and GUI watchdog | IN PROGRESS | Bounded Python trace recorder and opt-in Qt watchdog added in `ac9eec72`; native instrumentation will reuse the existing Tracy integration |
 | P04 | Capture cold/warm baseline for B02, B06, B07, B09, and B24 | NOT STARTED | Trace and benchmark summaries |
-| P05 | Remove Assembly drag/bulk-visibility refresh storm | NOT STARTED | Red test, traversal count of one, B06/B09 pass |
+| P05 | Remove Assembly drag/bulk-visibility refresh storm | DONE | Packaged red tests proved duplicate deferred traversal and synchronous per-selection traversal across 153 visibility changes; packaged green test proved direct, standard multi-selection, and folder-toggle paths each converge in exactly one delayed refresh |
 | P06 | Measure BREP assignment, tessellation, and Coin construction independently | NOT STARTED | Native trace identifies per-solid costs |
 | P07 | Pre-tessellate eligible solids in isolated workers and cache render meshes | NOT STARTED | Same visual/correct BREP output; B07 comparison |
 | P08 | Drive ordinary per-object GUI apply cost toward <= 1 ms | NOT STARTED | B07 per-item distribution and longest span |
@@ -261,7 +266,8 @@ Status values are `DONE`, `IN PROGRESS`, `NOT STARTED`, `BLOCKED`, and
 ### Phase 1: measurement foundation
 
 1. Add failing tests for the GUI watchdog and nested performance spans.
-2. Add C++ RAII and Python context-manager spans with the same trace schema.
+2. Add Python context-manager spans and reuse the existing Tracy RAII macros for
+   native spans; correlate them without adding another profiler.
 3. Instrument the confirmed publication, tessellation, Tree, Timeline, and bulk
    visibility paths.
 4. Capture cold and warm baselines before changing those paths.
@@ -271,12 +277,15 @@ Status values are `DONE`, `IN PROGRESS`, `NOT STARTED`, `BLOCKED`, and
 
 1. Add a failing test proving bulk visibility currently triggers repeated folder
    refreshes.
-2. Add an additive batch/coalescing scope used by Assembly drag and general bulk
-   visibility commands.
-3. Emit one browser refresh, one cache invalidation, and one selection update at
+2. Remove synchronous and duplicate deferred folder traversals; rely on the
+   Tree's existing coalescing status timer for incidental visibility bursts.
+3. For declared bulk operations that span projections, reuse the existing
+   cooperative-mutation scope and its single stable refresh. Do not add another
+   batching abstraction.
+4. Emit one browser refresh, one cache invalidation, and one selection update at
    the end of the logical command.
-4. Verify rollback and single-object behavior remain compatible.
-5. Re-run B05, B06, and B09 and record the before/after result.
+5. Verify rollback and single-object behavior remain compatible.
+6. Re-run B05, B06, and B09 and record the before/after result.
 
 ### Phase 3: rendering and tessellation
 
@@ -362,6 +371,31 @@ the commit under test.
   usable, but measurable freezes remained during final publication and bulk
   visibility. This is foundation evidence, not completion evidence.
 
+### 2026-09-04 — Tree visibility coalescing
+
+- Base: `7289751459ceace471ac771f3a0ec39b972d1949`.
+- Foundation: `4daa8d06`.
+- Red, direct property path: 153 visibility changes produced two delayed
+  browser-folder traversals.
+- Red, standard command path: multi-selection Hide traversed browser folders
+  synchronously before its deferred refresh.
+- Implementation: removed the per-object synchronous traversals and duplicate
+  deferred traversal; all visibility paths reuse the existing Tree status timer.
+  No new batching mechanism was added, and the native implementation has fewer
+  executable lines than before.
+- Focused Python command:
+  `python -m pytest src/Mod/VibeCAD/vibecad_tests/test_performance.py src/Mod/VibeCAD/vibecad_tests/test_branding_contract.py src/Mod/VibeCAD/vibecad_tests/test_aero_ribbon_install.py -q`.
+  Result: 53 passed, 6 skipped.
+- Windows package command from `package/rattler-build`:
+  `pixi install -e default --frozen`. Result: success in 16 minutes; package
+  `vibecad-26.3.1RC6-h3c70cbc_1.conda`.
+- Packaged GUI command: `pixi run --as-is --environment default --executable
+  freecad.exe --user-cfg <isolated>/User.cfg --system-cfg
+  <isolated>/System.cfg ../../src/Mod/VibeCAD/vibecad_tests/tree_visibility_coalescing_gui_integration.py`.
+  Result: `VIBECAD_TREE_VISIBILITY_COALESCING_OK`; each of direct property,
+  standard multi-selection Hide, and folder Space-toggle produced zero
+  synchronous traversals and exactly one stable delayed traversal.
+
 ## PR discipline
 
 This program may require multiple small PRs, but they all track this one plan.
@@ -394,4 +428,3 @@ The performance program is complete only when all of the following are true:
 - The remaining measured latency is attributable only to bounded UI application
   or external operations that are isolated, cancellable where possible, and
   truthfully visible to the user.
-
