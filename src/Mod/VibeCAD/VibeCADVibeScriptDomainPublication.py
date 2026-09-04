@@ -10,16 +10,18 @@ from io import BytesIO
 import json
 import math
 import re
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 import zipfile
 
 from VibeCADDocumentReferences import (
     DocumentReferenceError,
     resolve_reference_target,
 )
+from VibeCADDocumentChangeBatch import flush_document_change_batch
 import VibeCADReferenceContracts as reference_contracts
 import VibeCADScriptedPublication as scripted_publication
 import VibeCADVibeScriptDomains as contracts
+from VibeCADPublicationProgress import PublicationProgress
 
 PROP_DEFINITION = "VibeCADVibeScriptDefinition"
 PROP_OUTPUT_TYPE = "VibeCADVibeScriptOutputType"
@@ -1421,6 +1423,137 @@ def mark_programs_stale_from_source(source: Any, property_name: str) -> list[str
                 _freeze_object(output, "Assembly BOM")
             if not already_stale:
                 marked.append(str(getattr(output, "Name", "") or ""))
+    return sorted(set(marked))
+
+
+def mark_programs_stale_from_sources(
+    changes: Any,
+    *,
+    excluded_programs: frozenset[tuple[str, str, str]] = frozenset(),
+) -> list[str]:
+    """Mark dependents of many source deltas with one scan per document.
+
+    The single-source entry point remains unchanged for existing callers.
+    Cooperative publications use this aggregate path so hundreds of property
+    notifications cannot repeatedly scan every object in the same document.
+    ``excluded_programs`` identifies the publication which produced the
+    notifications; its downstream consumers still become stale, but it cannot
+    invalidate itself while accepting its own revision.
+    """
+
+    excluded = set(excluded_programs)
+    affected: dict[tuple[str, str, str], tuple[Any, Any, str]] = {}
+    for source, property_name in tuple(changes or ()):
+        changed_property = str(property_name or "")
+        if not source_property_affects_vibescript_snapshot(changed_property):
+            continue
+        label_only = changed_property == "Label"
+        for output in list(getattr(source, "InList", []) or []):
+            properties = _properties(output)
+            if not ({PROP_INPUT_OBJECTS, PROP_NESTED_INPUT_OBJECTS} & properties):
+                continue
+            inputs = [
+                *list(getattr(output, PROP_INPUT_OBJECTS, []) or []),
+                *list(getattr(output, PROP_NESTED_INPUT_OBJECTS, []) or []),
+            ]
+            if not any(item is source for item in inputs):
+                continue
+            document = getattr(output, "Document", None)
+            document_uid = str(getattr(document, "Uid", "") or "")
+            program_id = str(getattr(output, contracts.PROP_PROGRAM_ID, "") or "")
+            domain = str(getattr(output, contracts.PROP_PROGRAM_DOMAIN, "") or "")
+            key = (document_uid, program_id, domain)
+            if (
+                document is None
+                or not document_uid
+                or not program_id
+                or not domain
+                or key in excluded
+                or (label_only and domain != "assembly")
+            ):
+                continue
+            affected.setdefault(key, (document, source, changed_property))
+
+    if not affected:
+        return []
+
+    keys_by_document: dict[int, tuple[Any, set[tuple[str, str, str]]]] = {}
+    for key, (document, _source, _property_name) in affected.items():
+        entry = keys_by_document.setdefault(id(document), (document, set()))
+        entry[1].add(key)
+
+    outputs_by_program: dict[tuple[str, str, str], list[Any]] = {
+        key: [] for key in affected
+    }
+    for document, target_keys in keys_by_document.values():
+        document_uid = str(getattr(document, "Uid", "") or "")
+        for output in list(getattr(document, "Objects", []) or []):
+            properties = _properties(output)
+            if not {
+                contracts.PROP_PROGRAM_ID,
+                contracts.PROP_PROGRAM_DOMAIN,
+            } <= properties:
+                continue
+            key = (
+                document_uid,
+                str(getattr(output, contracts.PROP_PROGRAM_ID, "") or ""),
+                str(getattr(output, contracts.PROP_PROGRAM_DOMAIN, "") or ""),
+            )
+            if key in target_keys:
+                outputs_by_program[key].append(output)
+
+    marked: list[str] = []
+    for key, outputs in outputs_by_program.items():
+        _document, source, changed_property = affected[key]
+        domain = key[2]
+        for output in outputs:
+            inspection_feature = (
+                domain == "inspection"
+                and str(getattr(output, "TypeId", "") or "")
+                == "Inspection::Feature"
+            )
+            assembly_bom = (
+                domain == "assembly"
+                and str(getattr(output, "TypeId", "") or "")
+                == "Assembly::BomObject"
+            )
+            already_stale = (
+                str(
+                    getattr(
+                        output,
+                        reference_contracts.PROP_DERIVED_STATE,
+                        "",
+                    )
+                    or ""
+                )
+                == "stale"
+            )
+            if not already_stale:
+                if inspection_feature:
+                    _unfreeze_inspection_feature(output)
+                elif assembly_bom:
+                    _unfreeze_object(output, "Assembly BOM")
+                revision = str(
+                    getattr(output, contracts.PROP_PROGRAM_REVISION, "") or ""
+                )
+                try:
+                    reference_contracts.mark_stale(
+                        output,
+                        revision,
+                        f"Input object {getattr(source, 'Name', '<object>')}."
+                        f"{changed_property} changed after this VibeScript snapshot; "
+                        "regenerate the program.",
+                    )
+                finally:
+                    if inspection_feature:
+                        _freeze_inspection_feature(output)
+                    elif assembly_bom:
+                        _freeze_object(output, "Assembly BOM")
+                marked.append(str(getattr(output, "Name", "") or ""))
+            elif inspection_feature and not _inspection_feature_is_frozen(output):
+                _freeze_inspection_feature(output)
+            elif assembly_bom and not _object_is_frozen(output, "Assembly BOM"):
+                _freeze_object(output, "Assembly BOM")
     return sorted(set(marked))
 
 
@@ -9763,6 +9896,7 @@ def _publish_material_candidate(
         )
         removed = _remove_timeline_deletion(doc, retired_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
+            _flush_publication_observers(prepared)
             doc.commitTransaction()
             transaction_open = False
     except Exception as publication_error:
@@ -11217,6 +11351,7 @@ def _publish_cam_candidate(
             revision=str(prepared["revision"]),
         )
         if hasattr(doc, "commitTransaction") and transaction_open:
+            _flush_publication_observers(prepared)
             doc.commitTransaction()
             transaction_open = False
     except Exception as publication_error:
@@ -12370,6 +12505,7 @@ def _publish_techdraw_candidate(
             _techdraw_publication_checkpoint("before_freeze", output_key, obj)
             _freeze_object(obj, "TechDraw")
         if hasattr(doc, "commitTransaction") and transaction_open:
+            _flush_publication_observers(prepared)
             doc.commitTransaction()
             transaction_open = False
     except Exception as publication_error:
@@ -15863,6 +15999,7 @@ def _publish_partdesign_design_candidate(
             doc.removeObject(target_name)
             removed.append(target_name)
         if hasattr(doc, "commitTransaction") and transaction_open:
+            _flush_publication_observers(prepared)
             doc.commitTransaction()
             transaction_open = False
     except Exception as publication_error:
@@ -16291,6 +16428,7 @@ def _publish_partdesign_legacy_candidate(
             native_history,
         )
         if hasattr(doc, "commitTransaction") and transaction_open:
+            _flush_publication_observers(prepared)
             doc.commitTransaction()
             transaction_open = False
     except Exception as publication_error:
@@ -16402,11 +16540,157 @@ def _publish_partdesign_candidate(
     )
 
 
+def _assert_publication_document_intact(
+    service: Any,
+    prepared: Mapping[str, Any],
+    doc: Any,
+    targets: Any = (),
+) -> None:
+    """Reject a slice if its exact live document targets were replaced."""
+
+    try:
+        active = service._active_document()
+        identity_matches = (
+            active is doc
+            and str(getattr(doc, "Name", "") or "")
+            == str(prepared.get("document_name") or "")
+            and str(getattr(doc, "Uid", "") or "")
+            == str(prepared.get("document_uid") or "")
+        )
+    except (AttributeError, ReferenceError, RuntimeError):
+        identity_matches = False
+    if not identity_matches:
+        raise RuntimeError(
+            "The active document changed between publication slices; the "
+            "candidate was rolled back."
+        )
+    resolve = getattr(doc, "getObject", None)
+    if not callable(resolve):
+        return
+    for target in tuple(targets or ()):
+        try:
+            name = str(getattr(target, "Name", "") or "")
+            attached = not name or resolve(name) is target
+        except (ReferenceError, RuntimeError):
+            attached = False
+        if not attached:
+            raise RuntimeError(
+                "A live document target changed between publication slices; "
+                "the candidate was rolled back."
+            )
+
+
+def _flush_publication_observers(prepared: Mapping[str, Any]) -> None:
+    """Apply deferred dependency work inside the publication transaction."""
+
+    document_uid = str(prepared.get("document_uid") or "").strip()
+    if document_uid:
+        flush_document_change_batch(document_uid)
+
+
+def iter_publish_candidate(
+    service: Any,
+    prepared: dict[str, Any],
+    validated: dict[str, Any],
+    *,
+    progress_callback: Any | None = None,
+) -> Iterator[Any]:
+    """Yield between bounded live-document publication slices."""
+
+    document_uid = str(prepared.get("document_uid") or "").strip()
+    begin_batch = getattr(service, "begin_document_change_batch", None)
+    end_batch = getattr(service, "end_document_change_batch", None)
+    batch_supported = bool(document_uid and callable(begin_batch) and callable(end_batch))
+    active_document = getattr(service, "_active_document", lambda: None)()
+    begin_mutation = getattr(active_document, "beginCooperativeMutation", None)
+    end_mutation = getattr(active_document, "endCooperativeMutation", None)
+    mutation_supported = bool(callable(begin_mutation) and callable(end_mutation))
+    total = len(list(validated.get("outputs") or []))
+    if str(getattr(prepared.get("pack"), "domain", "")) == "assembly":
+        total += len(list(validated.get("assembly_members") or []))
+    progress = PublicationProgress(
+        domain=str(getattr(prepared.get("pack"), "domain", "")),
+        total=total,
+        callback=progress_callback,
+    )
+    origin_program_id = str(prepared.get("program_id") or "")
+    origin_domain = (
+        str(getattr(prepared.get("pack"), "domain", "") or "")
+        if origin_program_id
+        else ""
+    )
+    mutation_started = False
+    batch_started = False
+    try:
+        if mutation_supported:
+            begin_mutation()
+            mutation_started = True
+        if batch_supported:
+            begin_batch(
+                document_uid,
+                origin_program_id=origin_program_id,
+                origin_domain=origin_domain,
+            )
+            batch_started = True
+        succeeded = False
+        try:
+            progress.start()
+            try:
+                result = yield from _iter_publish_candidate_unbatched(
+                    service,
+                    prepared,
+                    validated,
+                    publication_progress=progress,
+                )
+            except Exception:
+                progress.fail()
+                raise
+            else:
+                progress.finish()
+                succeeded = True
+                return result
+        finally:
+            if batch_started:
+                end_batch(document_uid, commit=succeeded)
+    finally:
+        if mutation_started:
+            end_mutation()
+
+
+def _drain_publication_steps(steps: Iterator[Any]) -> dict[str, Any]:
+    while True:
+        try:
+            next(steps)
+        except StopIteration as completed:
+            return completed.value
+
+
 def publish_candidate(
     service: Any,
     prepared: dict[str, Any],
     validated: dict[str, Any],
+    *,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
+    """Preserve the synchronous publication API for existing direct callers."""
+
+    return _drain_publication_steps(
+        iter_publish_candidate(
+            service,
+            prepared,
+            validated,
+            progress_callback=progress_callback,
+        )
+    )
+
+
+def _iter_publish_candidate_unbatched(
+    service: Any,
+    prepared: dict[str, Any],
+    validated: dict[str, Any],
+    *,
+    publication_progress: PublicationProgress,
+) -> Iterator[Any]:
     """Apply detached, validated values without process waits or artifact I/O."""
 
     _surface_still_matches(service, prepared)
@@ -16432,6 +16716,12 @@ def publish_candidate(
             f"VibeScript domain {domain!r} has no semantic History publication "
             "strategy."
         )
+    yield {
+        "progress_percent": 91,
+        "message": f"Validated {prepared['pack'].title} publication target",
+        "phase": "publication_preflight",
+    }
+    _assert_publication_document_intact(service, prepared, doc)
     if domain == "partdesign":
         return _publish_partdesign_candidate(service, prepared, validated, doc)
     if domain == "material":
@@ -16483,6 +16773,12 @@ def publish_candidate(
             "human-created or foreign document objects still reference them",
             retired_uses,
         )
+    yield {
+        "progress_percent": 91,
+        "message": f"Indexed {prepared['pack'].title} publication graph",
+        "phase": "publication_preflight",
+    }
+    _assert_publication_document_intact(service, prepared, doc)
     updated_objects = [
         existing[str(item["name"])]
         for item in validated["outputs"]
@@ -16551,6 +16847,12 @@ def publish_candidate(
         updated_objects,
         internal_objects,
     )
+    yield {
+        "progress_percent": 91,
+        "message": f"Prepared {prepared['pack'].title} rollback state",
+        "phase": "publication_preflight",
+    }
+    _assert_publication_document_intact(service, prepared, doc)
     outputs: dict[str, Any] = {}
     created: list[Any] = []
     removed: list[str] = []
@@ -16705,7 +17007,34 @@ def publish_candidate(
             configure_order.sort(
                 key=lambda item: priority.get(str(item["type"]), 7)
             )
-        for item in configure_order:
+
+        yield {
+            "progress_percent": 92,
+            "message": f"Publishing {prepared['pack'].title} document objects",
+            "phase": "publication_objects",
+        }
+        _assert_publication_document_intact(service, prepared, doc)
+
+        def complete_output_slice(
+            output_index: int,
+            *,
+            output_name: str,
+            output_type: str,
+        ) -> None:
+            publication_progress.checkpoint(
+                output_index + 1,
+                name=output_name,
+                output_type=output_type,
+            )
+
+        for output_index, item in enumerate(configure_order):
+            if output_index:
+                _assert_publication_document_intact(
+                    service,
+                    prepared,
+                    doc,
+                    tuple(outputs.values()),
+                )
             output_name = str(item["name"])
             output_type = str(item["type"])
             adopted_occurrence = False
@@ -16856,6 +17185,11 @@ def publish_candidate(
                         obj,
                         f"{prepared['pack'].title} output {output_name!r}",
                     )
+                yield complete_output_slice(
+                    output_index,
+                    output_name=output_name,
+                    output_type=output_type,
+                )
                 continue
 
             if output_type == "assembly":
@@ -16899,6 +17233,11 @@ def publish_candidate(
                             context="Assembly dependency resource graph",
                         )
                     )
+                yield complete_output_slice(
+                    output_index,
+                    output_name=output_name,
+                    output_type=output_type,
+                )
                 continue
 
             if output_type == "component_link":
@@ -16930,6 +17269,11 @@ def publish_candidate(
                                     f"Assembly grounding operation for {output_name!r}"
                                 ),
                             )
+                    yield complete_output_slice(
+                        output_index,
+                        output_name=output_name,
+                        output_type=output_type,
+                    )
                     continue
 
                 fastener_source = assembly_fastener_sources.get(output_name)
@@ -17068,6 +17412,11 @@ def publish_candidate(
                                 f"{output_name!r}"
                             ),
                         )
+                yield complete_output_slice(
+                    output_index,
+                    output_name=output_name,
+                    output_type=output_type,
+                )
                 continue
 
             _mark_timeline_operation(
@@ -17126,6 +17475,11 @@ def publish_candidate(
                     # checks are standalone History operations. Their native
                     # properties—including intentional suppression changes—
                     # update normally and require no resource reconciliation.
+                    yield complete_output_slice(
+                        output_index,
+                        output_name=output_name,
+                        output_type=output_type,
+                    )
                     continue
                 released = _finalize_timeline_resource_reconciliation(
                     doc,
@@ -17141,6 +17495,17 @@ def publish_candidate(
                         context=f"Assembly output {output_name!r} resource graph",
                     )
                 )
+            yield complete_output_slice(
+                output_index,
+                output_name=output_name,
+                output_type=output_type,
+            )
+        _assert_publication_document_intact(
+            service,
+            prepared,
+            doc,
+            tuple(outputs.values()),
+        )
         if prepared["pack"].domain != "assembly":
             # Configure the complete output graph before publishing any new
             # operation.  Native proxies may update a dependency's
@@ -17175,6 +17540,17 @@ def publish_candidate(
                     "creation order: "
                     + ", ".join(str(obj.Name) for obj in missing_publications)
                 )
+        yield {
+            "progress_percent": 98,
+            "message": f"Finalizing {prepared['pack'].title} History",
+            "phase": "publication_history",
+        }
+        _assert_publication_document_intact(
+            service,
+            prepared,
+            doc,
+            tuple(outputs.values()),
+        )
         if assembly_dependency_anchor is not None and assembly_item is not None:
             # Publish the anchor with the Assembly root in creation order, but
             # install its source links only after every occurrence has finished
@@ -17193,6 +17569,17 @@ def publish_candidate(
                 assembly_dependency_anchor,
                 assembly_adoptions,
             )
+        yield {
+            "progress_percent": 98,
+            "message": f"Reconciling {prepared['pack'].title} presentation",
+            "phase": "publication_reconciliation",
+        }
+        _assert_publication_document_intact(
+            service,
+            prepared,
+            doc,
+            tuple(outputs.values()),
+        )
         if assembly is not None and any(obj is assembly for obj in created):
             _configure_new_assembly_presentation(
                 assembly,
@@ -17217,10 +17604,22 @@ def publish_candidate(
             downstream_uses,
             revision=str(prepared["revision"]),
         )
+        yield {
+            "progress_percent": 99,
+            "message": f"Committing {prepared['pack'].title} publication",
+            "phase": "publication_commit",
+        }
+        _assert_publication_document_intact(
+            service,
+            prepared,
+            doc,
+            tuple(outputs.values()),
+        )
         if prepared["pack"].domain == "robot":
             retired_robot_trajectories = _extract_robot_trajectories(retired)
         removed = _remove_timeline_deletion(doc, retired_deletion)
         if hasattr(doc, "commitTransaction") and transaction_open:
+            _flush_publication_observers(prepared)
             doc.commitTransaction()
             transaction_open = False
     except Exception as publication_error:

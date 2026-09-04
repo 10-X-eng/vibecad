@@ -385,6 +385,22 @@ public:
     /// get all tree root objects (objects that are at the root of the object tree)
     std::vector<App::DocumentObject*> getTreeRootObjects() const;
 
+    /** Return true while a document projection must defer incremental refresh.
+     *
+     * Tree, timeline, and other GUI projections must not repeatedly rebuild a
+     * partially mutated document.  They can accumulate dirty state and refresh
+     * once signalBecameStable() is emitted.
+     */
+    static bool projectionRefreshBlocked(const App::Document* document);
+
+    /** Return true while user-driven History mutations must remain disabled.
+     *
+     * This deliberately includes normal open/edit transactions. Projection
+     * refresh uses the narrower projectionRefreshBlocked() predicate so task
+     * panels keep receiving ordinary incremental Tree updates.
+     */
+    static bool historyMutationBlocked(const App::Document* document);
+
 protected:
     // pointer to the python class
     Gui::DocumentPy* _pcDocPy;

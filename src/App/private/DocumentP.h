@@ -99,6 +99,7 @@ struct DocumentP
     unsigned int UndoMemSize {0};
     unsigned int UndoMaxStackSize {20};
     unsigned int TransactionLock {0};
+    unsigned int cooperativeMutationDepth {0};
     // Id and name that the next transaction will take
     // as soon as there is a change to the document
     int bookedTransaction { 0 }; 

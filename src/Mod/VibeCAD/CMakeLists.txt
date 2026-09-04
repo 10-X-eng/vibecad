@@ -18,9 +18,11 @@ set(VibeCAD_Scripts
     VibeCADCodex.py
     VibeCADCodexResponses.py
     VibeCADComponentCatalog.py
+    VibeCADCooperativeExecution.py
     VibeCADCore.py
     VibeCADDebug.py
     VibeCADDesignReview.py
+    VibeCADDocumentChangeBatch.py
     VibeCADDocumentReferences.py
     VibeCADEditState.py
     VibeCADFasteners.py
@@ -1209,6 +1211,7 @@ set(VibeCAD_Scripts
     VibeCADReferenceSelection.py
     VibeCADRibbonSurface.py
     VibeCADProject.py
+    VibeCADPublicationProgress.py
     VibeCADSession.py
     VibeCADSessionRecovery.py
     VibeCADScriptedEditor.py

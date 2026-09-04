@@ -177,6 +177,72 @@ def test_cancel_while_waiting_for_document_thread_skips_commit() -> None:
     assert commits == []
 
 
+def test_cooperative_commit_returns_to_document_dispatcher_between_slices() -> None:
+    manager = NativeBackgroundManager()
+    dispatches = []
+    committed = []
+
+    def commit_steps(prepared):
+        committed.append(("begin", prepared))
+        yield {"progress_percent": 93, "message": "Adding first result"}
+        committed.append(("middle", prepared))
+        yield {"progress_percent": 97, "message": "Adding second result"}
+        committed.append(("end", prepared))
+        return {"created": 2}
+
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="drawing.create",
+        prepare=lambda _cancelled, _progress: {"detached": True},
+        validate_before_commit=lambda: None,
+        commit=lambda _prepared: pytest.fail("legacy commit must not run"),
+        cooperative_commit=commit_steps,
+        dispatch_to_document_thread=lambda callback: (
+            dispatches.append(callback), callback()
+        )[1],
+    )
+    completed = manager.wait(submitted.job_id, 2.0)
+
+    assert completed.phase == "completed"
+    assert completed.result == {"created": 2}
+    assert len(dispatches) == 3
+    assert [name for name, _prepared in committed] == ["begin", "middle", "end"]
+
+
+def test_cooperative_commit_observes_cancel_after_dispatch_was_queued() -> None:
+    manager = NativeBackgroundManager()
+    dispatcher_entered = threading.Event()
+    allow_dispatch = threading.Event()
+    commits = []
+
+    def dispatch(callback):
+        dispatcher_entered.set()
+        assert allow_dispatch.wait(1.0)
+        return callback()
+
+    def commit_steps(_prepared):
+        commits.append("must not run")
+        yield {"progress_percent": 95, "message": "Committing"}
+        return {"created": 1}
+
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="mesh.convert",
+        prepare=lambda _cancelled, _progress: {"detached": True},
+        validate_before_commit=lambda: None,
+        commit=lambda _prepared: pytest.fail("legacy commit must not run"),
+        cooperative_commit=commit_steps,
+        dispatch_to_document_thread=dispatch,
+    )
+    assert dispatcher_entered.wait(1.0)
+    assert manager.cancel(submitted.job_id) is True
+    allow_dispatch.set()
+    cancelled = manager.wait(submitted.job_id, 2.0)
+
+    assert cancelled.phase == "cancelled"
+    assert commits == []
+
+
 def test_surface_or_document_validation_failure_prevents_commit() -> None:
     class SurfaceChanged(RuntimeError):
         def failure(self):

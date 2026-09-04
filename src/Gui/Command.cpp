@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <ranges>
 #include <sstream>
+#include <string_view>
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
@@ -651,8 +652,16 @@ bool Command::canInvoke()
         return false;
     }
 
+    App::Document* document = getDocument();
+    if (document && document->isCooperativeMutationActive()) {
+        const std::string_view name(getName());
+        if ((eType & AlterDoc) || name == "Std_Undo" || name == "Std_Redo"
+            || name == "Std_Refresh") {
+            return false;
+        }
+    }
+
     if (!(eType & ForEdit)) {
-        App::Document* document = getDocument();
         if ((!Gui::Control().isAllowedAlterDocument(document) && eType & AlterDoc)
             || (!Gui::Control().isAllowedAlterView(document) && eType & Alter3DView)
             || (!Gui::Control().isAllowedAlterSelection(document) && eType & AlterSelection)) {

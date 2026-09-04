@@ -295,6 +295,8 @@ public:
         signalBookedTransactionChanged;
     /// Signal whenever this document's transaction lock count changes.
     App::MainThreadSignal<void(const Document&)> signalTransactionLockChanged;
+    /// Signal when the outermost cooperative document mutation begins or ends.
+    App::MainThreadSignal<void(const Document&, bool)> signalCooperativeMutationChanged;
     /// Signal after document recompute/transaction state has fully unwound and
     /// observers may treat the document as stable again.
     App::MainThreadSignal<void(const Document&)> signalBecameStable;
@@ -1123,6 +1125,17 @@ public:
     void lockTransaction();
     void unlockTransaction();
     bool isTransactionLocked() const;
+
+    /** Mark a resumable document-thread mutation as active.
+     *
+     * Cooperative mutations deliberately return to the GUI event loop between
+     * bounded slices while retaining one logical transaction. The nested
+     * state prevents destructive user actions and lets projections coalesce
+     * their work until the outermost mutation finishes.
+     */
+    void beginCooperativeMutation();
+    void endCooperativeMutation();
+    bool isCooperativeMutationActive() const;
 
     bool transacting() const;
 

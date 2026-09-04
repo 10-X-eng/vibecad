@@ -12,6 +12,11 @@ import threading
 import time
 from typing import Any, Callable, Mapping
 
+from VibeCADCooperativeExecution import (
+    CooperativeExecutionCancelled,
+    run_document_thread_steps,
+)
+
 
 MAX_BACKGROUND_JOBS = 32
 MAX_BACKGROUND_RESULT_BYTES = 32 * 1024
@@ -75,6 +80,7 @@ class _Job:
 ProgressReporter = Callable[[int, str], None]
 PrepareHandler = Callable[[Callable[[], bool], ProgressReporter], Any]
 CommitHandler = Callable[[Any], Mapping[str, Any]]
+CooperativeCommitHandler = Callable[[Any], Any]
 DocumentThreadDispatcher = Callable[[Callable[[], Any]], Any]
 CommitValidator = Callable[[], Any]
 DiagnosticSink = Callable[[str, Exception], str | None]
@@ -178,6 +184,7 @@ class NativeBackgroundManager:
         changes_document: bool = False,
         document_change_resolver: DocumentChangeResolver | None = None,
         resource_scope: str = "document",
+        cooperative_commit: CooperativeCommitHandler | None = None,
     ) -> NativeBackgroundSnapshot:
         uid = str(document_uid or "").strip()
         capability = str(capability_name or "").strip()
@@ -202,6 +209,8 @@ class NativeBackgroundManager:
             raise TypeError("Native background callbacks must be callable")
         if cleanup is not None and not callable(cleanup):
             raise TypeError("Native background cleanup must be callable")
+        if cooperative_commit is not None and not callable(cooperative_commit):
+            raise TypeError("cooperative_commit must be callable or None")
         if type(changes_document) is not bool:
             raise TypeError("changes_document must be a boolean")
         if document_change_resolver is not None and not callable(document_change_resolver):
@@ -271,6 +280,7 @@ class NativeBackgroundManager:
                 clean_finalize_message,
                 cleanup,
                 document_change_resolver,
+                cooperative_commit,
             ),
             name=f"VibeCADNative-{job.job_id[:8]}",
             daemon=True,
@@ -288,6 +298,7 @@ class NativeBackgroundManager:
         finalize_message: str,
         cleanup: CleanupHandler | None,
         document_change_resolver: DocumentChangeResolver | None,
+        cooperative_commit: CooperativeCommitHandler | None,
     ) -> None:
         prepared = None
         try:
@@ -326,7 +337,48 @@ class NativeBackgroundManager:
                 )
                 return commit(prepared)
 
-            result = dispatch_to_document_thread(apply)
+            if cooperative_commit is None:
+                result = dispatch_to_document_thread(apply)
+            else:
+                def commit_steps():
+                    if job.cancellation.is_set():
+                        raise NativeBackgroundCancelled()
+                    validate_before_commit()
+                    if job.cancellation.is_set():
+                        raise NativeBackgroundCancelled()
+                    self._set_progress(
+                        job,
+                        "finalizing" if finalize_message else "committing",
+                        91,
+                        finalize_message or "Committing document change",
+                    )
+                    return (yield from cooperative_commit(prepared))
+
+                def report_commit_progress(event: Mapping[str, Any]) -> None:
+                    raw_percent = event.get("progress_percent", 95)
+                    percent = (
+                        raw_percent
+                        if type(raw_percent) is int and 91 <= raw_percent <= 99
+                        else 95
+                    )
+                    with self._lock:
+                        percent = max(job.progress_percent, percent)
+                    self._set_progress(
+                        job,
+                        "finalizing" if finalize_message else "committing",
+                        percent,
+                        str(event.get("message") or finalize_message or "Committing document change"),
+                    )
+
+                try:
+                    result = run_document_thread_steps(
+                        commit_steps(),
+                        dispatch=dispatch_to_document_thread,
+                        cancellation_check=job.cancellation.is_set,
+                        progress_callback=report_commit_progress,
+                    )
+                except CooperativeExecutionCancelled as exc:
+                    raise NativeBackgroundCancelled() from exc
             if document_change_resolver is not None:
                 resolved_change = document_change_resolver(result)
                 if type(resolved_change) is not bool:

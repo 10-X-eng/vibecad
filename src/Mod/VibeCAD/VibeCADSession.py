@@ -2694,13 +2694,39 @@ def _run_domain_vibescript_tool(
             )
         retain_candidate(prepared, status="validated")
         try:
-            publication = run_phase(
-                "publish",
-                lambda: _on_document_thread(
-                    document_thread_dispatch,
-                    lambda: adapter.publish(service, prepared, validated),
-                ),
-            )
+            publish_cooperatively = getattr(adapter, "publish_cooperatively", None)
+            publish_with_progress = getattr(adapter, "publish_with_progress", None)
+
+            def publish_candidate_synchronously() -> dict[str, Any]:
+                if callable(publish_with_progress):
+                    return publish_with_progress(
+                        service,
+                        prepared,
+                        validated,
+                        progress_callback=progress_callback,
+                    )
+                return adapter.publish(service, prepared, validated)
+
+            if callable(publish_cooperatively) and document_thread_dispatch is not None:
+                publication = run_phase(
+                    "publish",
+                    lambda: publish_cooperatively(
+                        service,
+                        prepared,
+                        validated,
+                        document_thread_dispatch=document_thread_dispatch,
+                        cancellation_check=cancellation_check,
+                        progress_callback=progress_callback,
+                    ),
+                )
+            else:
+                publication = run_phase(
+                    "publish",
+                    lambda: _on_document_thread(
+                        document_thread_dispatch,
+                        publish_candidate_synchronously,
+                    ),
+                )
         except Exception as exc:
             failure = tool_failure(
                 tool_name,

@@ -1417,6 +1417,26 @@ ViewProvider* Document::getViewProviderByName(const char* name) const
     return nullptr;
 }
 
+bool Document::projectionRefreshBlocked(const App::Document* document)
+{
+    return document
+        && (document->isCooperativeMutationActive()
+            || document->isPerformingTransaction()
+            || document->testStatus(App::Document::Recomputing)
+            || App::GetApplication().hasPendingRecomputeRequest(document->getName())
+            || document->testStatus(App::Document::Restoring)
+            || App::GetApplication().isRestoring());
+}
+
+bool Document::historyMutationBlocked(const App::Document* document)
+{
+    return projectionRefreshBlocked(document)
+        || (document
+            && (document->getBookedTransactionID() != App::NullTransaction
+                || document->hasPendingTransaction()
+                || document->isTransactionLocked()));
+}
+
 bool Document::isShow(const char* name)
 {
     ViewProvider* pcProv = getViewProviderByName(name);

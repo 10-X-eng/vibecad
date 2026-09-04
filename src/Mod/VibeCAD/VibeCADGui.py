@@ -26,6 +26,13 @@ import FreeCADGui as Gui
 
 from VibeCADCore import get_service
 from VibeCADDebug import list_provider_request_captures
+from VibeCADDocumentChangeBatch import (
+    document_change_batch_active,
+    document_change_batch_origins,
+    register_document_change_batch_completed,
+    register_document_change_batch_finished,
+    register_document_change_batch_flush,
+)
 from VibeCADEditState import active_edit_object, active_edit_state
 from VibeCADPromptStarters import (
     BUILTIN_PROMPT_STARTERS,
@@ -77,6 +84,8 @@ _session_recovery_persist_lock = threading.RLock()
 _session_recovery_instance_id = uuid.uuid4().hex
 _active_session_recovery: dict[str, str] | None = None
 _assistant_document_refresh_scheduled = False
+_native_authority_selector_refresh_scheduled = False
+_deferred_vibescript_dependency_changes: dict[str, dict[str, Any]] = {}
 _legacy_architecture_warning_documents: set[str] = set()
 _pending_document_render_refreshes: set[str] = set()
 _analyze_context_prewarm_thread: threading.Thread | None = None
@@ -2352,6 +2361,17 @@ def _format_progress_event(event: dict[str, Any]) -> str:
                 message += f" - about {minutes} {unit} remaining"
             return message
         return f"VibeScript {phase.replace('_', ' ')}..."
+    if name == "vibescript_domain_publication_progress":
+        completed = max(0, int(event.get("completed") or 0))
+        total = max(0, int(event.get("total") or 0))
+        phase = str(event.get("phase") or "publishing")
+        if phase == "completed":
+            return f"Published {total} CAD objects."
+        if phase == "failed":
+            return f"VibeScript publication stopped after {completed} of {total} objects."
+        current = str(event.get("current_output") or "").strip()
+        detail = f": {current}" if current else ""
+        return f"Publishing CAD objects {completed} of {total}{detail}"
     if name == "vibescript_domain_deferred_recompute_completed":
         count = int(event.get("target_count", 0) or 0)
         elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
@@ -2405,6 +2425,7 @@ _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
     "vibescript_domain_deferred_recompute_completed",
     "vibescript_domain_phase_completed",
     "vibescript_domain_phase_started",
+    "vibescript_domain_publication_progress",
     "vibescript_domain_worker_progress",
 }
 
@@ -3873,7 +3894,13 @@ def _document_recompute_active(document: Any) -> bool:
 def _document_render_refresh_blocked(document: Any) -> bool:
     """Return whether restored-document presentation work must be deferred."""
 
-    return _document_restore_active(document) or _document_recompute_active(document)
+    if _document_restore_active(document) or _document_recompute_active(document):
+        return True
+    try:
+        document_uid = str(getattr(document, "Uid", "") or "").strip()
+    except (ReferenceError, RuntimeError):
+        return False
+    return bool(document_uid and document_change_batch_active(document_uid))
 
 
 def _live_document_for_storage_key(
@@ -4309,7 +4336,16 @@ def _schedule_assistant_document_refresh() -> None:
 
         def refresh_when_restored() -> None:
             global _assistant_document_refresh_scheduled
-            if _document_restore_active():
+            try:
+                active_document = App.ActiveDocument
+                document_uid = str(
+                    getattr(active_document, "Uid", "") or ""
+                ).strip()
+            except (AttributeError, ReferenceError, RuntimeError):
+                document_uid = ""
+            if _document_restore_active() or (
+                document_uid and document_change_batch_active(document_uid)
+            ):
                 QtCore.QTimer.singleShot(100, refresh_when_restored)
                 return
             _assistant_document_refresh_scheduled = False
@@ -4598,13 +4634,114 @@ def _move_saved_document_conversation(doc: Any, filepath: str) -> None:
             _warn(f"VibeCAD saved-document project relocation failed: {exc}")
 
 
-class _VibeCADDocumentObserver:
-    @staticmethod
-    def _refresh_native_authority_selector() -> None:
+def _queue_zero_delay_callback(callback: Any) -> None:
+    """Queue one callback on Qt without making document observers block."""
+
+    try:
+        from PySide import QtCore
+    except ImportError:
+        callback()
+        return
+
+    QtCore.QTimer.singleShot(0, callback)
+
+
+def _schedule_native_authority_selector_refresh(document_uid: str = "") -> None:
+    """Coalesce document-event storms into one post-transaction UI refresh."""
+
+    uid = str(document_uid or "").strip()
+    if uid and document_change_batch_active(uid):
+        return
+    global _native_authority_selector_refresh_scheduled
+    if _native_authority_selector_refresh_scheduled:
+        return
+    _native_authority_selector_refresh_scheduled = True
+
+    def refresh() -> None:
+        global _native_authority_selector_refresh_scheduled
+        _native_authority_selector_refresh_scheduled = False
         state = get_service().native_document_state()
         authority = state.get("native_authority")
         if isinstance(authority, dict) and authority.get("active"):
             _refresh_authoring_mode_selector()
+
+    _queue_zero_delay_callback(refresh)
+
+
+def _defer_vibescript_dependency_change(
+    document_uid: str,
+    obj: Any,
+    property_name: str,
+) -> None:
+    """Record one semantic source delta without scanning dependents yet."""
+
+    uid = str(document_uid or "").strip()
+    if not uid:
+        return
+    state = _deferred_vibescript_dependency_changes.setdefault(
+        uid,
+        {"changes": {}, "excluded_programs": set()},
+    )
+    name = str(getattr(obj, "Name", "") or "")
+    identity = name or f"@{id(obj)}"
+    state["changes"][(identity, str(property_name or ""))] = (
+        obj,
+        str(property_name or ""),
+    )
+    state["excluded_programs"].update(
+        (uid, program_id, domain)
+        for program_id, domain in document_change_batch_origins(uid)
+    )
+
+
+def _finish_vibescript_dependency_batch(
+    document_uid: str,
+    committed: bool,
+) -> None:
+    """Apply one cache invalidation and one dependency scan after commit."""
+
+    uid = str(document_uid or "").strip()
+    state = _deferred_vibescript_dependency_changes.pop(uid, None)
+    if not state or not committed:
+        return
+    changes = tuple(state["changes"].values())
+    if not changes:
+        return
+    unique_objects = {}
+    for obj, _property_name in changes:
+        name = str(getattr(obj, "Name", "") or "")
+        unique_objects[name or f"@{id(obj)}"] = obj
+    service = get_service()
+    invalidate_many = getattr(
+        service,
+        "invalidate_vibescript_reference_snapshots_many",
+        None,
+    )
+    if callable(invalidate_many):
+        invalidate_many(tuple(unique_objects.values()))
+    else:
+        for obj in unique_objects.values():
+            service.invalidate_vibescript_reference_snapshots(obj)
+    try:
+        from VibeCADVibeScriptDomainPublication import (
+            mark_programs_stale_from_sources,
+        )
+
+        marked = mark_programs_stale_from_sources(
+            changes,
+            excluded_programs=frozenset(state["excluded_programs"]),
+        )
+    except Exception as exc:
+        _warn(f"VibeCAD VibeScript dependency batch failed: {exc}")
+        return
+    if marked:
+        _schedule_assistant_document_refresh()
+
+
+class _VibeCADDocumentObserver:
+    @staticmethod
+    def _refresh_native_authority_selector(document_uid: str = "") -> None:
+        _schedule_native_authority_selector_refresh(document_uid)
 
     def slotCreatedDocument(self, doc) -> None:
         get_service().ensure_native_document_state(
@@ -4636,7 +4773,9 @@ class _VibeCADDocumentObserver:
                 obj,
                 str(property_name or ""),
             )
-            self._refresh_native_authority_selector()
+            self._refresh_native_authority_selector(
+                str(getattr(document, "Uid", "") or "")
+            )
         try:
             from VibeCADVibeScriptDomainPublication import (
                 source_property_affects_vibescript_snapshot,
@@ -4646,6 +4785,14 @@ class _VibeCADDocumentObserver:
                 return
         except Exception as exc:
             _warn(f"VibeCAD VibeScript dependency filter failed: {exc}")
+            return
+        document_uid = str(getattr(document, "Uid", "") or "").strip()
+        if document_uid and document_change_batch_active(document_uid):
+            _defer_vibescript_dependency_change(
+                document_uid,
+                obj,
+                str(property_name or ""),
+            )
             return
         # Reference snapshots are valid only while the source and every native
         # dependency remain unchanged. Invalidate before stale propagation so a
@@ -4670,7 +4817,9 @@ class _VibeCADDocumentObserver:
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
         get_service().note_native_object_created(obj)
-        self._refresh_native_authority_selector()
+        self._refresh_native_authority_selector(
+            str(getattr(document, "Uid", "") or "")
+        )
 
     def slotDeletedObject(self, obj) -> None:
         is_restoring = getattr(App, "isRestoring", None)
@@ -4680,7 +4829,9 @@ class _VibeCADDocumentObserver:
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
         get_service().note_native_object_deleted(obj)
-        self._refresh_native_authority_selector()
+        self._refresh_native_authority_selector(
+            str(getattr(document, "Uid", "") or "")
+        )
 
     def slotStartSaveDocument(self, doc, filepath) -> None:
         try:
@@ -4719,6 +4870,13 @@ class _VibeCADDocumentObserver:
         _document_save_conversations.pop(document_key, None)
         _document_save_references.pop(document_key, None)
         _schedule_assistant_document_refresh()
+
+
+register_document_change_batch_completed(_schedule_native_authority_selector_refresh)
+register_document_change_batch_finished(_finish_vibescript_dependency_batch)
+register_document_change_batch_flush(
+    lambda document_uid: _finish_vibescript_dependency_batch(document_uid, True)
+)
 
 
 def _schedule_sketch_close_continuation(event: dict[str, Any]) -> None:
