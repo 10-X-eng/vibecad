@@ -233,7 +233,7 @@ Status values are `DONE`, `IN PROGRESS`, `NOT STARTED`, `BLOCKED`, and
 | P00 | Establish cooperative mutation lease and block conflicting document mutations | DONE | PR #168; native GUI tests 138/138 |
 | P01 | Yield VibeScript publication between output/member apply steps | DONE | PR #168; Python suite 4,380 passed, 9 skipped; large Assembly became interactively usable |
 | P02 | Add publication phase/item progress | DONE | PR #168; direct VibeScript progress callback tests |
-| P03 | Instrument cross-language spans and GUI watchdog | IN PROGRESS | Bounded Python trace recorder and opt-in Qt watchdog added in `ac9eec72`; native instrumentation will reuse the existing Tracy integration |
+| P03 | Instrument cross-language spans and GUI watchdog | IN PROGRESS | Bounded Python trace recorder and opt-in Qt watchdog added in `4daa8d06`; native instrumentation will reuse the existing Tracy integration |
 | P04 | Capture cold/warm baseline for B02, B06, B07, B09, and B24 | NOT STARTED | Trace and benchmark summaries |
 | P05 | Remove Assembly drag/bulk-visibility refresh storm | DONE | Packaged red tests proved duplicate deferred traversal and synchronous per-selection traversal across 153 visibility changes; packaged green test proved direct, standard multi-selection, and folder-toggle paths each converge in exactly one delayed refresh |
 | P06 | Measure BREP assignment, tessellation, and Coin construction independently | NOT STARTED | Native trace identifies per-solid costs |
@@ -375,6 +375,7 @@ the commit under test.
 
 - Base: `7289751459ceace471ac771f3a0ec39b972d1949`.
 - Foundation: `4daa8d06`.
+- Commit under test: `0a9a3781`.
 - Red, direct property path: 153 visibility changes produced two delayed
   browser-folder traversals.
 - Red, standard command path: multi-selection Hide traversed browser folders
