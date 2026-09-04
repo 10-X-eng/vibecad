@@ -41,6 +41,7 @@ from VibeCADPromptStarters import (
 )
 from VibeCADSession import (
     _format_document_delta,
+    _recent_conversation_payload,
     prewarm_analyze_context,
     prewarm_drawing_context,
     rebuild_intent_memory,
@@ -48,7 +49,6 @@ from VibeCADSession import (
     run_prompt,
     run_sketch_close_continuation,
 )
-
 
 DOCK_NAME = "VibeCADAssistantPanel"
 CONTEXT_DEBUG_DOCK_NAME = "VibeCADContextDebugPanel"
@@ -61,6 +61,7 @@ ICON_STOP = "vibecad-stop.svg"
 ICON_ACTIVITY = "vibecad-activity.svg"
 ICON_NEW_CONVERSATION = "vibecad-new-conversation.svg"
 ICON_PROMPT_STARTERS = "vibecad-prompt-starters.svg"
+ICON_ENGINEERING_BRIEF = "vibecad-engineering-brief.svg"
 
 _commands_registered = False
 _preferences_registered = False
@@ -72,6 +73,7 @@ _gui_document_observer = None
 _context_debug_startup_scheduled = False
 _registered_assistant_widget = None
 _registered_context_debug_widget = None
+_engineering_brief_dialog = None
 _document_save_conversations: dict[str, dict[str, Any]] = {}
 _document_save_references: dict[str, dict[str, Any]] = {}
 _pending_question_request: list[dict[str, Any]] = []
@@ -291,6 +293,11 @@ def _shutdown_internal_assistant() -> None:
     if _application_shutting_down.is_set():
         return
     _persist_session_recovery_before_shutdown()
+    if _engineering_brief_dialog is not None:
+        try:
+            _engineering_brief_dialog.close()
+        except RuntimeError:
+            pass
     _application_shutting_down.set()
     _assistant_run_controller.request_cancel()
     _intent_memory_rebuild_cancel_event.set()
@@ -369,9 +376,9 @@ def _initialize_control_modes() -> None:
             cancel_internal=_cancel_internal_agent_for_mcp,
             question_callback=lambda questions: _request_user_answers(
                 questions,
-                lambda: not get_control_mode_controller().snapshot().get(
-                    "mcp_enabled", False
-                ),
+                lambda: not get_control_mode_controller()
+                .snapshot()
+                .get("mcp_enabled", False),
             ),
             event_callback=handle_event,
         )
@@ -555,10 +562,7 @@ def _authoring_mode_selector_state():
         document is not None
         and (
             bool(getattr(document, "HasPendingTransaction", False))
-            or (
-                callable(booked_transaction)
-                and int(booked_transaction() or 0) != 0
-            )
+            or (callable(booked_transaction) and int(booked_transaction() or 0) != 0)
         )
     )
     recompute_active = bool(
@@ -626,8 +630,7 @@ def _refresh_authoring_mode_selector(dock: Any | None = None) -> None:
                 selector.setCurrentIndex(index)
         if choice_required:
             selectable = any(
-                state.target_enabled(mode)
-                for mode in ("vibescript", "native")
+                state.target_enabled(mode) for mode in ("vibescript", "native")
             )
             selector.setEnabled(selectable)
         else:
@@ -721,10 +724,14 @@ def _select_authoring_mode_from_header(index: int) -> None:
         validated = validate_human_mode_request(state, requested)
         if validated == state.current_mode and not choice_required:
             return
-        if requires_take_manual_control_confirmation(
-            state.current_mode,
-            validated,
-        ) and _active_document_has_vibescript_content() and not _confirm_take_manual_control():
+        if (
+            requires_take_manual_control_confirmation(
+                state.current_mode,
+                validated,
+            )
+            and _active_document_has_vibescript_content()
+            and not _confirm_take_manual_control()
+        ):
             _refresh_authoring_mode_selector(dock)
             return
         _ensure_first_conversation(service)
@@ -1583,9 +1590,7 @@ def _saved_conversation_blocks(conversation: list[dict[str, Any]]) -> list[str]:
         if role == "assistant":
             metadata = entry.get("metadata")
             runtime = (
-                metadata.get("provider_runtime")
-                if isinstance(metadata, dict)
-                else None
+                metadata.get("provider_runtime") if isinstance(metadata, dict) else None
             )
             if isinstance(runtime, dict):
                 tooltip = _provider_runtime_tooltip(runtime)
@@ -1770,8 +1775,7 @@ def _new_conversation_from_panel() -> None:
         _render_assistant_run_state(
             dock,
             text=str(
-                state.get("message")
-                or "Create or open a document to use VibeCAD."
+                state.get("message") or "Create or open a document to use VibeCAD."
             ),
         )
         return
@@ -2289,7 +2293,9 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         count = int(event.get("finding_count", 0) or 0)
         return f"Independent design review: {verdict} | {count} findings."
     if name == "design_review_failed":
-        return f"Independent design review failed: {event.get('error', 'unknown error')}"
+        return (
+            f"Independent design review failed: {event.get('error', 'unknown error')}"
+        )
     if name == "provider_tool_requested":
         arguments = event.get("arguments")
         arg_text = ""
@@ -2503,9 +2509,7 @@ def _require_assistant_document(dock: Any | None = None) -> bool:
         return True
     if dock is None:
         dock = _find_dock()
-    message = str(
-        state.get("message") or "Create or open a document to use VibeCAD."
-    )
+    message = str(state.get("message") or "Create or open a document to use VibeCAD.")
     if dock is not None:
         _render_assistant_run_state(dock, text=message)
     else:
@@ -2519,10 +2523,7 @@ def _require_assistant_turn(dock: Any | None = None) -> bool:
         return True
     if dock is None:
         dock = _find_dock()
-    message = str(
-        state.get("message")
-        or "Choose Native or VibeScript to begin."
-    )
+    message = str(state.get("message") or "Choose Native or VibeScript to begin.")
     if dock is not None:
         _render_assistant_run_state(dock, text=message)
     else:
@@ -2849,6 +2850,10 @@ def _apply_composer_button_presentation(
 
     is_busy = _is_assistant_run_active() if busy is None else bool(busy)
     labels = {
+        "VibeEngineeringBrief": (
+            "Engineering Brief",
+            "Turn a rough request into a reviewable engineering brief",
+        ),
         "VibeAttachView": (
             "Attach View",
             "Attach a screenshot of the current 3D view",
@@ -3015,7 +3020,9 @@ def _populate_prompt_starter_menu(menu: Any, prompt: Any) -> None:
         for starter in category_starters:
             action = category_menu.addAction(starter.name)
             action.setToolTip(
-                "Built-in prompt starter" if starter.builtin else "Custom prompt starter"
+                "Built-in prompt starter"
+                if starter.builtin
+                else "Custom prompt starter"
             )
             action.triggered.connect(
                 lambda _checked=False, text=starter.content: _insert_prompt_starter(
@@ -3031,6 +3038,205 @@ def _populate_prompt_starter_menu(menu: Any, prompt: Any) -> None:
     menu.addSeparator()
     manage_action = menu.addAction("Manage Prompt Starters...")
     manage_action.triggered.connect(_show_prompt_starter_preferences)
+
+
+def _engineering_brief_context(
+    service: Any,
+) -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
+    """Capture only cheap, explicit context on the FreeCAD document thread."""
+
+    _ensure_first_conversation(service)
+    prepared = service.prepare_conversation_history_read()
+    conversation_id = str(prepared.get("conversation_id") or "").strip().lower()
+    if not conversation_id:
+        history = service.conversation_history()
+        conversation_id = str(history.get("conversation_id") or "").strip().lower()
+        prepared = service.prepare_conversation_history_read()
+        if conversation_id and not prepared.get("conversation_id"):
+            prepared = {
+                **prepared,
+                "conversation_id": conversation_id,
+                "cached_conversation": [
+                    dict(item)
+                    for item in history.get("conversation") or []
+                    if isinstance(item, dict)
+                ],
+            }
+    scope = service.project_scope_snapshot()
+    document = scope.get("document")
+    document_info = document if isinstance(document, dict) else {}
+    document_uid = str(
+        prepared.get("document_uid") or document_info.get("uid") or ""
+    ).strip()
+    project_root = str(prepared.get("project_root") or scope.get("root") or "").strip()
+    if not project_root or not document_uid or not conversation_id:
+        raise RuntimeError(
+            "VibeCAD could not resolve the active document conversation for this brief."
+        )
+    try:
+        unit_schema = int(App.Units.getSchema())
+        length_example = str(App.Units.Quantity(1.0, App.Units.Length).UserString)
+    except Exception:
+        unit_schema = int(
+            App.ParamGet("User parameter:BaseApp/Preferences/Units").GetInt(
+                "UserSchema", 0
+            )
+        )
+        length_example = ""
+    identity = {
+        "project_root": project_root,
+        "document_uid": document_uid,
+        "conversation_id": conversation_id,
+    }
+    context = {
+        "workbench": service.active_workbench_name(),
+        "units": {"schema": unit_schema, "length_example": length_example},
+        "document": {
+            **service.provider_turn_document_summary(),
+            "label": str(document_info.get("label") or scope.get("title") or ""),
+            "file_name": str(document_info.get("file_path") or ""),
+        },
+        "selection": service.provider_turn_selection_summary(),
+    }
+    return identity, context, prepared
+
+
+def _engineering_brief_dialog_destroyed(*_args: Any) -> None:
+    global _engineering_brief_dialog
+    _engineering_brief_dialog = None
+
+
+def _open_engineering_brief_from_panel() -> None:
+    """Open or raise the readable Engineering Brief interview window."""
+
+    global _engineering_brief_dialog
+    if _engineering_brief_dialog is not None:
+        try:
+            _engineering_brief_dialog.show()
+            _engineering_brief_dialog.raise_()
+            _engineering_brief_dialog.activateWindow()
+            return
+        except RuntimeError:
+            _engineering_brief_dialog = None
+    dock = _find_dock()
+    if dock is None or not _require_assistant_document(dock):
+        return
+    if not _internal_agent_allowed():
+        _render_assistant_run_state(dock)
+        return
+    if _is_assistant_run_active():
+        _set_status_line(
+            "Wait for the current CAD run to finish before developing a brief.",
+            dock=dock,
+        )
+        return
+
+    from VibeCADEngineeringBrief import (
+        add_active_conversation_context,
+        EngineeringBriefStore,
+        engineering_brief_handoff,
+        new_engineering_brief,
+        run_engineering_brief_turn,
+    )
+    from VibeCADEngineeringBriefGui import EngineeringBriefDialog
+
+    service = get_service()
+    try:
+        _ensure_document_thread_invoker()
+        identity, context, prepared_history = _engineering_brief_context(service)
+        store = EngineeringBriefStore(identity["project_root"])
+        loaded = store.load(
+            document_uid=identity["document_uid"],
+            conversation_id=identity["conversation_id"],
+        )
+    except Exception as exc:
+        _set_status_line(f"Could not open the Engineering Brief: {exc}", dock=dock)
+        return
+    prompt_box = _find_child("QPlainTextEdit", "VibePrompt", dock)
+    composer_request = (
+        str(prompt_box.toPlainText() or "").strip() if prompt_box is not None else ""
+    )
+    loaded_state = loaded.get("state") if loaded.get("recoverable") else None
+    if isinstance(loaded_state, dict) and (
+        not composer_request
+        or composer_request == str(loaded_state.get("original_request") or "").strip()
+    ):
+        initial_state = loaded_state
+    else:
+        initial_state = new_engineering_brief(
+            composer_request,
+            identity=identity,
+            context=context,
+        )
+
+    def run_turn(state: dict[str, Any], **arguments: Any) -> dict[str, Any]:
+        from VibeCADSession import choose_provider
+
+        history = service.complete_conversation_history_read(prepared_history)
+        loaded_conversation_id = str(history.get("conversation_id") or "").lower()
+        if loaded_conversation_id != str(state.get("conversation_id") or "").lower():
+            raise RuntimeError(
+                "The active conversation changed before its context could be loaded. "
+                "Close this brief and reopen it in the conversation you want to use."
+            )
+        state_with_conversation = add_active_conversation_context(
+            state,
+            _recent_conversation_payload(history.get("conversation") or []),
+        )
+        provider = _dispatch_to_document_thread(
+            lambda: choose_provider(
+                service,
+                prefer_online=service.use_online_provider_by_default(),
+            )
+        )
+        return run_engineering_brief_turn(
+            state_with_conversation,
+            provider=provider,
+            **arguments,
+        )
+
+    def start_brief(state: dict[str, Any], readable: str) -> bool:
+        current_identity, _current_context, _current_history = (
+            _engineering_brief_context(service)
+        )
+        if current_identity["document_uid"] != state.get(
+            "document_uid"
+        ) or current_identity["conversation_id"] != state.get("conversation_id"):
+            raise RuntimeError(
+                "The active document or conversation changed. Reopen the brief there "
+                "before starting CAD work."
+            )
+        if _is_assistant_run_active():
+            raise RuntimeError("Wait for the current CAD run to finish.")
+        assistant_state = service.assistant_document_state()
+        if not assistant_state.get("enabled") or not assistant_state.get(
+            "turn_enabled", True
+        ):
+            raise RuntimeError(
+                str(
+                    assistant_state.get("message")
+                    or "Choose Native or VibeScript before starting CAD work."
+                )
+            )
+        handoff = engineering_brief_handoff(state, approved_text=readable)
+        _append_conversation("User", handoff)
+        if prompt_box is not None:
+            _clear_prompt_without_recovery(prompt_box)
+        _execute_assistant_run(dock, service, prompt=handoff)
+        return True
+
+    dialog = EngineeringBriefDialog(
+        initial_state,
+        turn_runner=run_turn,
+        persist_callback=store.write,
+        start_callback=start_brief,
+        parent=Gui.getMainWindow(),
+    )
+    dialog.destroyed.connect(_engineering_brief_dialog_destroyed)
+    _engineering_brief_dialog = dialog
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
 
 
 # ---------------------------------------------------------------------------
@@ -3133,9 +3339,7 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     internal_available = bool(control.get("internal_agent_enabled"))
     document_state = _assistant_document_state()
     document_ready = bool(document_state.get("enabled"))
-    turn_ready = document_ready and bool(
-        document_state.get("turn_enabled", True)
-    )
+    turn_ready = document_ready and bool(document_state.get("turn_enabled", True))
     pending_sketch = _sketch_close_continuation_controller.snapshot()
     dock.setProperty("VibeRunActive", busy)
     dock.setProperty("VibeCancelRequested", cancel_requested)
@@ -3146,6 +3350,7 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     prompt_box = _find_child("QPlainTextEdit", "VibePrompt", dock)
     attach_button = _find_child("QPushButton", "VibeAttachView", dock)
     attach_image_button = _find_child("QPushButton", "VibeAttachImage", dock)
+    engineering_brief_button = _find_child("QPushButton", "VibeEngineeringBrief", dock)
     reference_chips = _find_child("QWidget", "VibeReferenceChips", dock)
     conversation_selector = _find_child("QComboBox", "VibeConversationSelector", dock)
     new_conversation = _find_child("QToolButton", "VibeNewConversation", dock)
@@ -3155,9 +3360,7 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
 
     if send_button is not None:
         send_button.setEnabled(
-            internal_available
-            and turn_ready
-            and not cancel_requested
+            internal_available and turn_ready and not cancel_requested
         )
     if stop_button is not None:
         stop_button.setEnabled(busy and not cancel_requested)
@@ -3165,6 +3368,10 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         attach_button.setEnabled(internal_available and document_ready and not busy)
     if attach_image_button is not None:
         attach_image_button.setEnabled(
+            internal_available and document_ready and not busy
+        )
+    if engineering_brief_button is not None:
+        engineering_brief_button.setEnabled(
             internal_available and document_ready and not busy
         )
     if reference_chips is not None:
@@ -3187,9 +3394,7 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     if prompt_box is not None:
         prompt_box.setEnabled(internal_available and document_ready)
         prompt_box.setReadOnly(
-            not internal_available
-            or cancel_requested
-            or not document_ready
+            not internal_available or cancel_requested or not document_ready
         )
         if not internal_available:
             placeholder = "VibeCAD is controlled by an external MCP client."
@@ -3220,13 +3425,11 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         status_text = text or ""
     elif not document_ready:
         status_text = str(
-            document_state.get("message")
-            or "Create or open a document to use VibeCAD."
+            document_state.get("message") or "Create or open a document to use VibeCAD."
         )
     elif not turn_ready:
         status_text = str(
-            document_state.get("message")
-            or "Choose Native or VibeScript to begin."
+            document_state.get("message") or "Choose Native or VibeScript to begin."
         )
     else:
         if text:
@@ -3439,9 +3642,11 @@ def _execute_assistant_run(
             "Sketch closed. Continuing the CAD work..."
             if continuation_event
             and continuation_event.get("type") == "human_closed_sketch"
-            else "CAD work changed. Continuing the design..."
-            if continuation_event
-            else None
+            else (
+                "CAD work changed. Continuing the design..."
+                if continuation_event
+                else None
+            )
         ),
     )
     _clear_thinking(dock)
@@ -3691,8 +3896,7 @@ def _start_sketch_close_continuation(event: dict[str, Any]) -> None:
         _render_assistant_run_state(
             dock,
             text=str(
-                state.get("message")
-                or "Create or open a document to use VibeCAD."
+                state.get("message") or "Create or open a document to use VibeCAD."
             ),
         )
         return
@@ -3707,9 +3911,7 @@ def _start_native_surface_continuation(event: dict[str, Any]) -> None:
     if not _internal_agent_allowed():
         return
     if _is_assistant_run_active() or _is_intent_memory_rebuild_active():
-        _warn(
-            "VibeCAD ignored a workspace continuation while another run was active."
-        )
+        _warn("VibeCAD ignored a workspace continuation while another run was active.")
         return
     document = getattr(App, "ActiveDocument", None)
     if document is None:
@@ -3767,8 +3969,7 @@ def _start_native_surface_continuation(event: dict[str, Any]) -> None:
         _render_assistant_run_state(
             dock,
             text=str(
-                state.get("message")
-                or "Create or open a document to use VibeCAD."
+                state.get("message") or "Create or open a document to use VibeCAD."
             ),
         )
         return
@@ -3797,8 +3998,7 @@ def _run_prompt_from_panel() -> None:
             _render_assistant_run_state(
                 dock,
                 text=str(
-                    state.get("message")
-                    or "Create or open a document to use VibeCAD."
+                    state.get("message") or "Create or open a document to use VibeCAD."
                 ),
             )
             return
@@ -3920,9 +4120,7 @@ def _live_document_for_storage_key(
         if named_document is not None:
             candidates.append(named_document)
     candidates.extend(
-        document
-        for name, document in live_documents.items()
-        if name != document_name
+        document for name, document in live_documents.items() if name != document_name
     )
     for candidate in candidates:
         try:
@@ -3954,8 +4152,7 @@ def _timeline_resource_owner(document: Any, obj: Any) -> Any | None:
             return None
         property_type = getattr(obj, "getTypeIdOfProperty", None)
         if callable(property_type) and (
-            property_type("VibeCADTimelineOwner")
-            != "App::PropertyLinkHidden"
+            property_type("VibeCADTimelineOwner") != "App::PropertyLinkHidden"
         ):
             return None
         owner = getattr(obj, "VibeCADTimelineOwner", None)
@@ -3975,11 +4172,7 @@ def _timeline_object_is_active(document: Any, obj: Any) -> bool:
 
     try:
         get_object = getattr(document, "getObject", None)
-        timeline = (
-            get_object("VibeCADTimeline")
-            if callable(get_object)
-            else None
-        )
+        timeline = get_object("VibeCADTimeline") if callable(get_object) else None
         if timeline is None:
             return True
 
@@ -4024,18 +4217,13 @@ def _timeline_object_is_active(document: Any, obj: Any) -> bool:
         if operation_index >= position:
             return False
 
-        suppression = list(
-            getattr(timeline, "SuppressionAtEnd", []) or []
-        )
+        suppression = list(getattr(timeline, "SuppressionAtEnd", []) or [])
         for owner in owners:
             try:
                 owner_index = operations.index(owner)
             except ValueError:
                 continue
-            if (
-                owner_index < len(suppression)
-                and bool(suppression[owner_index])
-            ):
+            if owner_index < len(suppression) and bool(suppression[owner_index]):
                 return False
         return True
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
@@ -4100,9 +4288,7 @@ def _recompute_pending_document_geometry(document: Any) -> bool:
         return False
     try:
         gui_document = Gui.getDocument(str(document.Name))
-        was_modified = (
-            bool(gui_document.Modified) if gui_document is not None else None
-        )
+        was_modified = bool(gui_document.Modified) if gui_document is not None else None
     except Exception:
         gui_document = None
         was_modified = None
@@ -4180,9 +4366,7 @@ def _restore_precomputed_projection_slice(
     for obj in list(getattr(document, "Objects", []) or []):
         object_name = str(getattr(obj, "Name", "") or "")
         restore = getattr(obj, "restorePrecomputedState", None)
-        source_state = str(
-            getattr(obj, "PrecomputedProjectionSourceState", "") or ""
-        )
+        source_state = str(getattr(obj, "PrecomputedProjectionSourceState", "") or "")
         if (
             object_name
             and object_name not in attempted
@@ -4489,9 +4673,7 @@ def _schedule_document_render_after_restore(document: Any) -> None:
                     restored_projection_names,
                 )
             )
-            geometry_recomputed_any = (
-                geometry_recomputed_any or projection_restored
-            )
+            geometry_recomputed_any = geometry_recomputed_any or projection_restored
             restore_modified_state(live_document)
             if projections_remaining:
                 QtCore.QTimer.singleShot(0, render_when_stable)
@@ -4597,14 +4779,13 @@ def _move_saved_document_conversation(doc: Any, filepath: str) -> None:
     target_file = str(filepath or "").strip()
     if not current_file or not target_file:
         return
-    if Path(current_file).expanduser().resolve() != Path(
-        target_file
-    ).expanduser().resolve():
+    if (
+        Path(current_file).expanduser().resolve()
+        != Path(target_file).expanduser().resolve()
+    ):
         return
     conversation_store_path = str(snapshot.get("store_path") or "").strip()
-    temporary_project_root = str(
-        snapshot.get("temporary_project_root") or ""
-    ).strip()
+    temporary_project_root = str(snapshot.get("temporary_project_root") or "").strip()
     relocation_succeeded = True
     if conversation_store_path:
         try:
@@ -4744,16 +4925,12 @@ class _VibeCADDocumentObserver:
         _schedule_native_authority_selector_refresh(document_uid)
 
     def slotCreatedDocument(self, doc) -> None:
-        get_service().ensure_native_document_state(
-            str(getattr(doc, "Uid", "") or "")
-        )
+        get_service().ensure_native_document_state(str(getattr(doc, "Uid", "") or ""))
         _schedule_document_render_after_restore(doc)
         _schedule_assistant_document_refresh()
 
     def slotActivateDocument(self, doc) -> None:
-        get_service().ensure_native_document_state(
-            str(getattr(doc, "Uid", "") or "")
-        )
+        get_service().ensure_native_document_state(str(getattr(doc, "Uid", "") or ""))
         pending = _sketch_close_continuation_controller.snapshot()
         active_uid = str(getattr(doc, "Uid", "") or "")
         if pending and pending.get("document_uid") != active_uid:
@@ -4800,7 +4977,9 @@ class _VibeCADDocumentObserver:
         if document is not None:
             get_service().invalidate_vibescript_reference_snapshots(obj)
         try:
-            from VibeCADVibeScriptDomainPublication import mark_programs_stale_from_source
+            from VibeCADVibeScriptDomainPublication import (
+                mark_programs_stale_from_source,
+            )
 
             marked = mark_programs_stale_from_source(obj, str(property_name or ""))
         except Exception as exc:
@@ -4857,9 +5036,7 @@ class _VibeCADDocumentObserver:
             get_service().discard_unsaved_document_project(doc)
         except Exception as exc:
             _warn(f"VibeCAD temporary project cleanup failed: {exc}")
-        get_service().discard_session_modeling_engine(
-            document_uid
-        )
+        get_service().discard_session_modeling_engine(document_uid)
         get_service().close_native_document_state(document_uid)
         get_service().clear_vibescript_reference_snapshots(
             str(getattr(doc, "Uid", "") or "")
@@ -5065,9 +5242,7 @@ def _build_panel_widget():
         "Choose whether VibeCAD authors through source or direct ribbon tools"
     )
     authoring_mode.setEnabled(False)
-    authoring_mode.currentIndexChanged.connect(
-        _select_authoring_mode_from_header
-    )
+    authoring_mode.currentIndexChanged.connect(_select_authoring_mode_from_header)
     conversation_header_layout.addWidget(authoring_mode)
 
     new_conversation = QtWidgets.QToolButton(conversation_header)
@@ -5216,15 +5391,25 @@ def _build_panel_widget():
     prompt_starters.setIconSize(icon_size)
     prompt_starters.setToolTip("Insert an editable prompt starter")
     prompt_starters.setEnabled(False)
-    prompt_starters.setPopupMode(
-        QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup
-    )
+    prompt_starters.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
     prompt_starter_menu = QtWidgets.QMenu(prompt_starters)
     prompt_starter_menu.setObjectName("VibePromptStarterMenu")
     prompt_starter_menu.aboutToShow.connect(
         lambda: _populate_prompt_starter_menu(prompt_starter_menu, prompt)
     )
     prompt_starters.setMenu(prompt_starter_menu)
+
+    engineering_brief_button = QtWidgets.QPushButton(
+        "Engineering Brief", composer_buttons
+    )
+    engineering_brief_button.setObjectName("VibeEngineeringBrief")
+    engineering_brief_button.setIcon(QtGui.QIcon(_icon_path(ICON_ENGINEERING_BRIEF)))
+    engineering_brief_button.setIconSize(icon_size)
+    engineering_brief_button.setToolTip(
+        "Turn a rough request into a reviewable engineering brief"
+    )
+    engineering_brief_button.setEnabled(False)
+    engineering_brief_button.clicked.connect(_open_engineering_brief_from_panel)
 
     send_button = QtWidgets.QPushButton("Send", composer_buttons)
     send_button.setObjectName("VibeSend")
@@ -5244,6 +5429,7 @@ def _build_panel_widget():
     stop_button.clicked.connect(_stop_prompt_from_panel)
 
     buttons_layout.addWidget(prompt_starters)
+    buttons_layout.addWidget(engineering_brief_button)
     buttons_layout.addWidget(attach_button)
     buttons_layout.addWidget(attach_image_button)
     buttons_layout.addStretch(1)
@@ -5567,11 +5753,7 @@ class PublishComponentInterfaceCommand(_BaseCommand):
         if len(selected) != 2:
             return None
         lcs = next(
-            (
-                obj
-                for obj in selected
-                if is_native_coordinate_system(obj)
-            ),
+            (obj for obj in selected if is_native_coordinate_system(obj)),
             None,
         )
         if lcs is None:
@@ -5714,10 +5896,8 @@ def _selected_scripted_model_operation(
         is not operation
         or str(getattr(operation, "TypeId", "") or "")
         != "PartDesign::DesignScriptOperation"
-        or str(getattr(operation, "VibeCADTimelineRole", "") or "")
-        != "operation"
-        or str(getattr(operation, command_property, "") or "")
-        != command_name
+        or str(getattr(operation, "VibeCADTimelineRole", "") or "") != "operation"
+        or str(getattr(operation, command_property, "") or "") != command_name
     ):
         return None
     program_id = str(getattr(operation, "ProgramId", "") or "")
@@ -5733,8 +5913,7 @@ def _selected_scripted_model_operation(
     if root is not None:
         if (
             str(getattr(root, PROP_PROGRAM_ID, "") or "") != program_id
-            or str(getattr(root, PROP_PROGRAM_DOMAIN, "") or "")
-            != "partdesign"
+            or str(getattr(root, PROP_PROGRAM_DOMAIN, "") or "") != "partdesign"
         ):
             return None
     else:
@@ -5743,12 +5922,10 @@ def _selected_scripted_model_operation(
         # immutable ownership tags are sufficient to dispatch the exact
         # lifecycle command; arbitrary History objects still cannot opt in.
         if (
-            str(getattr(operation, "VibeCADScriptedRole", "") or "")
-            != "implementation"
+            str(getattr(operation, "VibeCADScriptedRole", "") or "") != "implementation"
             or str(getattr(operation, "VibeCADScriptedEngine", "") or "")
             != "vibescript:partdesign"
-            or str(getattr(operation, "VibeCADScriptedModelId", "") or "")
-            != program_id
+            or str(getattr(operation, "VibeCADScriptedModelId", "") or "") != program_id
         ):
             return None
     return operation
@@ -5846,9 +6023,7 @@ def ensure_preferences_registered() -> None:
 
     Gui.addIconPath(str(Path(__file__).resolve().parent))
     Gui.addPreferencePage(VibeCADPreferences.VibeCADPreferencesPage, "VibeCAD")
-    Gui.addPreferencePage(
-        VibeCADPreferences.VibeCADMCPPreferencesPage, "VibeCAD"
-    )
+    Gui.addPreferencePage(VibeCADPreferences.VibeCADMCPPreferencesPage, "VibeCAD")
     Gui.addPreferencePage(
         VibeCADPreferences.VibeCADPromptStartersPreferencesPage, "VibeCAD"
     )
@@ -5897,17 +6072,13 @@ def ensure_commands_registered() -> None:
     Gui.addCommand("VibeCAD_OpenPreferences", OpenPreferencesCommand())
     Gui.addCommand("VibeCAD_OpenScriptedModel", OpenScriptedModelCommand())
     Gui.addCommand("VibeCAD_EditScriptedModel", EditScriptedModelCommand())
-    for action in Gui.Command.get(
-        "VibeCAD_EditScriptedModel"
-    ).ensureAction():
+    for action in Gui.Command.get("VibeCAD_EditScriptedModel").ensureAction():
         action.setProperty("VibeCADTimelineOperationEditor", True)
     Gui.addCommand(
         "VibeCAD_DeleteScriptedModel",
         DeleteScriptedModelCommand(),
     )
-    for action in Gui.Command.get(
-        "VibeCAD_DeleteScriptedModel"
-    ).ensureAction():
+    for action in Gui.Command.get("VibeCAD_DeleteScriptedModel").ensureAction():
         action.setProperty("VibeCADTimelineOperationDeleter", True)
     Gui.addCommand("VibeCAD_AuthStatus", AuthStatusCommand())
     try:
