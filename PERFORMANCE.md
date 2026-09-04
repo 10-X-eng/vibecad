@@ -415,9 +415,16 @@ the commit under test.
   test_vibescript_publication_progress.py test_native_background.py
   test_native_analyze_solver_execution.py test_native_drawing_view.py
   test_native_registry.py -q`. Result: 86 passed.
+- Exact committed branch-tip Windows package command from
+  `package/rattler-build`: `pixi install -e default --frozen`. Result: success
+  in 17 minutes; 8,384 files and 489.45 MiB packaged as
+  `vibecad-26.3.1RC6-h3c70cbc_1.conda`. The installed runtime imports both
+  `jsonschema` and YAML through the existing provider-dependency path.
 - Packaged GUI trace probe: four real document-thread apply slices ran on the
-  GUI native thread while the Qt heartbeat delivered 48 samples. Result:
-  `VIBECAD_PERFORMANCE_TRACE_GUI_OK slices=4 heartbeat_samples=48`.
+  GUI native thread while the Qt heartbeat delivered 45 samples. Result:
+  `VIBECAD_PERFORMANCE_TRACE_GUI_OK slices=4 heartbeat_samples=45`, exit code
+  zero. The earlier trace-enabled build of the same code path delivered 48
+  heartbeat samples.
 - Tracy build: full Windows Release build and install completed with the
   profiler enabled. A clean configure without `TRACY_STATIC` on the command
   line produced `TRACY_STATIC:BOOL=OFF` and a shared `TracyClient.dll`, proving
