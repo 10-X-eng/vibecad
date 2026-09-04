@@ -84,6 +84,9 @@ class Document(PropertyContainer):
     Transacting: Final[bool] = False
     """Indicate whether the document is undoing/redoing"""
 
+    CooperativeMutationActive: Final[bool] = False
+    """Indicate whether a resumable document-thread mutation is active."""
+
     OldLabel: Final[str] = ""
     """Contains the old label before change"""
 
@@ -198,6 +201,14 @@ class Document(PropertyContainer):
         """
         Commit an Undo/Redo transaction
         """
+        ...
+
+    def beginCooperativeMutation(self) -> None:
+        """Begin a nested resumable document-thread mutation."""
+        ...
+
+    def endCooperativeMutation(self) -> None:
+        """End a nested resumable document-thread mutation."""
         ...
 
     @overload

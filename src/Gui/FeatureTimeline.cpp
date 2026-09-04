@@ -1211,11 +1211,8 @@ void FeatureTimeline::scheduleRefresh()
 bool FeatureTimeline::canChangeHistory() const
 {
     auto* document = activeAppDocument();
-    if (!document || document->getBookedTransactionID() != App::NullTransaction
-        || document->hasPendingTransaction() || document->isPerformingTransaction()
-        || document->isTransactionLocked() || document->testStatus(App::Document::Recomputing)
-        || App::GetApplication().hasPendingRecomputeRequest(document->getName())
-        || App::GetApplication().isRestoring() || !Gui::Application::Instance) {
+    if (!document || Gui::Document::historyMutationBlocked(document)
+        || !Gui::Application::Instance) {
         return false;
     }
 
@@ -1230,10 +1227,7 @@ bool FeatureTimeline::canChangeHistory() const
 void FeatureTimeline::rebuild()
 {
     App::Document* document = activeAppDocument();
-    if (document
-        && (document->isPerformingTransaction() || document->testStatus(App::Document::Recomputing)
-            || App::GetApplication().hasPendingRecomputeRequest(document->getName())
-            || App::GetApplication().isRestoring())) {
+    if (Gui::Document::projectionRefreshBlocked(document)) {
         // Undo, redo, and transaction rollback recreate objects in dependency
         // order, and recompute may replace generated results. Wait for the
         // corresponding stable/recomputed signal before resolving item names.

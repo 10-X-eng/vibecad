@@ -4248,7 +4248,7 @@ void TreeWidget::slotChangedViewObject(const Gui::ViewProvider& vp, const App::P
     if (!App::GetApplication().isRestoring() && vp.isDerivedFrom<ViewProviderDocumentObject>()) {
         const auto& vpd = static_cast<const ViewProviderDocumentObject&>(vp);
         auto* document = vpd.getObject() ? vpd.getObject()->getDocument() : nullptr;
-        if (document && document->isPerformingTransaction()) {
+        if (Gui::Document::projectionRefreshBlocked(document)) {
             if (auto documentIt = DocumentMap.find(vpd.getDocument());
                 documentIt != DocumentMap.end()) {
                 documentIt->second->modelBrowserDirty = true;
@@ -4266,7 +4266,7 @@ void TreeWidget::slotChangedViewObject(const Gui::ViewProvider& vp, const App::P
 void TreeWidget::slotTouchedObject(const App::DocumentObject& obj)
 {
     auto* document = obj.getDocument();
-    if (document && document->isPerformingTransaction()) {
+    if (Gui::Document::projectionRefreshBlocked(document)) {
         auto* guiDocument = Application::Instance->getDocument(document);
         if (auto documentIt = DocumentMap.find(guiDocument);
             documentIt != DocumentMap.end()) {
@@ -4389,16 +4389,21 @@ void TreeWidget::onUpdateStatus()
         return;
     }
 
+    bool projectionBlocked = false;
     for (auto& v : DocumentMap) {
-        if (v.first->isPerformingTransaction()) {
-            // We have to delay item creation until undo/redo is done, because the
-            // object re-creation while in transaction may break tree view item
-            // update logic. For example, a parent object re-created before its
-            // children, but the parent's link property already contains all the
-            // (detached) children.
-            _updateStatus();
-            return;
+        if (!Gui::Document::projectionRefreshBlocked(v.first->getDocument())) {
+            continue;
         }
+        // A transaction, restore, or recompute exposes a deliberately partial
+        // graph.  Keep collecting object identities, but never poll and rebuild
+        // the entire tree while that graph is changing. signalBecameStable()
+        // schedules one authoritative refresh from the completed document.
+        v.second->modelBrowserDirty = true;
+        v.second->transactionRefreshPending = true;
+        projectionBlocked = true;
+    }
+    if (projectionBlocked) {
+        return;
     }
 
     FC_LOG("begin update status");
@@ -5329,6 +5334,14 @@ DocumentItem::DocumentItem(const Gui::Document* doc, QTreeWidgetItem* parent)
     connectDocumentStable = adoc->signalBecameStable.connect(
         std::bind(&DocumentItem::slotDocumentStable, this, sp::_1)
     );
+    connectRecomputeRequestFinished =
+        App::GetApplication().signalRecomputeRequestFinished.connect(
+            [this, adoc](const std::string& documentName) {
+                if (documentName == adoc->getName()) {
+                    slotDocumentStable(*adoc);
+                }
+            }
+        );
     // NOLINTEND
 
     setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable /*|Qt::ItemIsEditable*/);
@@ -5350,6 +5363,7 @@ DocumentItem::~DocumentItem()
     connectRecomputed.disconnect();
     connectRecomputedObj.disconnect();
     connectDocumentStable.disconnect();
+    connectRecomputeRequestFinished.disconnect();
 }
 
 TreeWidget* DocumentItem::getTree() const
@@ -7672,7 +7686,7 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
     // only partially restored. Mark the document projection dirty and rebuild
     // it from live document objects at signalBecameStable() instead.
     if (auto* document = obj->getDocument();
-        document && document->isPerformingTransaction()) {
+        Gui::Document::projectionRefreshBlocked(document)) {
         if (auto documentIt = DocumentMap.find(view.getDocument());
             documentIt != DocumentMap.end()) {
             documentIt->second->modelBrowserDirty = true;
@@ -8198,6 +8212,9 @@ void DocumentItem::slotDocumentStable(const App::Document& stableDocument)
 {
     if (!transactionRefreshPending
         || document()->getDocument() != &stableDocument) {
+        return;
+    }
+    if (Gui::Document::projectionRefreshBlocked(&stableDocument)) {
         return;
     }
 

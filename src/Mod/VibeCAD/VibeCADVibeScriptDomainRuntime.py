@@ -36,6 +36,7 @@ from VibeCADDocumentReferences import (
     normalize_document_reference,
     resolve_reference_target,
 )
+from VibeCADCooperativeExecution import run_document_thread_steps
 from VibeCADMechanismEngine import (
     MECHANISM_SCENARIO_SCHEMA,
     MECHANISM_SOLVE_REPORT_SCHEMA,
@@ -17428,6 +17429,47 @@ class DeclarativeDomainAdapter:
     ) -> dict[str, Any]:
         return publish_candidate(service, prepared, validated)
 
+    def publish_with_progress(
+        self,
+        service: Any,
+        prepared: dict[str, Any],
+        validated: dict[str, Any],
+        *,
+        progress_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        """Publish with item progress while preserving the legacy entry point."""
+
+        return publish_candidate(
+            service,
+            prepared,
+            validated,
+            progress_callback=progress_callback,
+        )
+
+    def publish_cooperatively(
+        self,
+        service: Any,
+        prepared: dict[str, Any],
+        validated: dict[str, Any],
+        *,
+        document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None,
+        cancellation_check: Callable[[], bool] | None,
+        progress_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        """Publish in bounded document slices while preserving legacy APIs."""
+
+        return run_document_thread_steps(
+            iter_publish_candidate(
+                service,
+                prepared,
+                validated,
+                progress_callback=progress_callback,
+            ),
+            dispatch=document_thread_dispatch,
+            cancellation_check=cancellation_check,
+            progress_callback=progress_callback,
+        )
+
     def inspect(
         self, captured: dict[str, Any], contract: dict[str, Any]
     ) -> dict[str, Any]:
@@ -24262,5 +24304,6 @@ def install_builtin_adapters() -> None:
 # Publication helpers are imported late to keep worker-side imports FreeCADGui-free.
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
     delete_live_program,
+    iter_publish_candidate,
     publish_candidate,
 )

@@ -179,6 +179,10 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
+    if (isCooperativeMutationActive()) {
+        FC_WARN("Cannot undo while a cooperative document mutation is active");
+        return false;
+    }
     if (d->iUndoMode != 0) {
         if (id != 0) {
             const auto it = mUndoMap.find(id);
@@ -236,6 +240,10 @@ bool Document::undo(const int id)
 
 bool Document::redo(const int id)
 {
+    if (isCooperativeMutationActive()) {
+        FC_WARN("Cannot redo while a cooperative document mutation is active");
+        return false;
+    }
     if (d->iUndoMode != 0) {
         if (id != 0) {
             const auto it = mRedoMap.find(id);
@@ -518,6 +526,32 @@ void Document::unlockTransaction()
 bool Document::isTransactionLocked() const
 {
     return d->TransactionLock > 0;
+}
+
+void Document::beginCooperativeMutation()
+{
+    if (++d->cooperativeMutationDepth == 1) {
+        signalCooperativeMutationChanged(*this, true);
+    }
+}
+
+void Document::endCooperativeMutation()
+{
+    if (d->cooperativeMutationDepth == 0) {
+        FC_WARN("Ignoring unmatched cooperative document mutation end");
+        return;
+    }
+    if (--d->cooperativeMutationDepth == 0) {
+        signalCooperativeMutationChanged(*this, false);
+        // Projection observers may have ignored the transaction's earlier
+        // stable signal while this explicit bulk mutation was still active.
+        signalBecameStable(*this);
+    }
+}
+
+bool Document::isCooperativeMutationActive() const
+{
+    return d->cooperativeMutationDepth > 0;
 }
 bool Document::transacting() const
 {
@@ -2705,7 +2739,7 @@ void Document::setClosable(bool c)  // NOLINT
 
 bool Document::isClosable() const
 {
-    return testStatus(Document::Closable);
+    return testStatus(Document::Closable) && !isCooperativeMutationActive();
 }
 
 int Document::countObjects() const
@@ -3112,6 +3146,11 @@ void Document::renameObjectIdentifiers(
 int Document::recompute(const std::vector<DocumentObject*>& objs, bool force, bool* hasError, int options)
 {
     ZoneScoped;
+
+    if (isCooperativeMutationActive()) {
+        FC_WARN("Cannot recompute while a cooperative document mutation is active");
+        return 0;
+    }
 
     // Recompute can execute Python-backed features. Keep the GIL for the full
     // recompute so async recompute still serializes Python execution the same

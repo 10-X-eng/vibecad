@@ -405,6 +405,101 @@ def test_open_scheduler_waits_for_restore_then_makes_document_render_ready(
     assert document.Uid not in gui._pending_document_render_refreshes
 
 
+def test_open_scheduler_defers_render_during_atomic_document_change(
+    monkeypatch,
+) -> None:
+    document = _Document([_Object("PendingFeature", ["Touched"])])
+    _install_gui_document(monkeypatch, document)
+    callbacks: list[tuple[int, object]] = []
+    batch_active = [True]
+
+    class _Timer:
+        @staticmethod
+        def singleShot(delay: int, callback) -> None:
+            callbacks.append((delay, callback))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(QtCore=SimpleNamespace(QTimer=_Timer)),
+    )
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    monkeypatch.setattr(
+        gui.App,
+        "listDocuments",
+        lambda: {document.Name: document},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        gui,
+        "document_change_batch_active",
+        lambda uid: batch_active[0] and uid == document.Uid,
+    )
+    gui._pending_document_render_refreshes.discard(document.Uid)
+
+    gui._schedule_document_render_after_restore(document)
+    callbacks.pop(0)[1]()
+
+    assert document.recompute_calls == 0
+    assert callbacks[0][0] == 100
+
+    batch_active[0] = False
+    callbacks.pop(0)[1]()
+    assert document.recompute_calls == 1
+
+
+def test_assistant_refresh_defers_context_prewarm_during_atomic_document_change(
+    monkeypatch,
+) -> None:
+    document = _Document([])
+    callbacks: list[tuple[int, object]] = []
+    refreshed = []
+    prewarmed = []
+    batch_active = [True]
+
+    class _Timer:
+        @staticmethod
+        def singleShot(delay: int, callback) -> None:
+            callbacks.append((delay, callback))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(QtCore=SimpleNamespace(QTimer=_Timer)),
+    )
+    monkeypatch.setattr(gui.App, "ActiveDocument", document, raising=False)
+    monkeypatch.setattr(gui, "_document_restore_active", lambda *_args: False)
+    monkeypatch.setattr(
+        gui,
+        "document_change_batch_active",
+        lambda uid: batch_active[0] and uid == document.Uid,
+    )
+    monkeypatch.setattr(
+        gui,
+        "_refresh_assistant_for_document_change",
+        lambda: refreshed.append(True),
+    )
+    monkeypatch.setattr(
+        gui,
+        "_schedule_analyze_context_prewarm",
+        lambda: prewarmed.append(True),
+    )
+    gui._assistant_document_refresh_scheduled = False
+
+    gui._schedule_assistant_document_refresh()
+    callbacks.pop(0)[1]()
+
+    assert refreshed == []
+    assert prewarmed == []
+    assert callbacks[0][0] == 100
+
+    batch_active[0] = False
+    callbacks.pop(0)[1]()
+
+    assert refreshed == [True]
+    assert prewarmed == [True]
+
+
 def test_open_scheduler_redraws_restored_partdesign_history(monkeypatch) -> None:
     document = _Document([_Object("CleanFeature", ["Up-to-date"])])
     view = _install_gui_document(monkeypatch, document)

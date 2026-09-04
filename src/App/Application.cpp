@@ -687,11 +687,19 @@ bool Application::closeDocument(const char* name)
 {
     const std::string documentName(name);
 
-    cancelRecomputeRequestsForDocument(documentName);
-
     const auto pos = DocMap.find( name );
     if (pos == DocMap.end()) // no such document
         return false;
+
+    if (pos->second->isCooperativeMutationActive()) {
+        Base::Console().warning(
+            "Cannot close document '%s' while a cooperative mutation is active\n",
+            name
+        );
+        return false;
+    }
+
+    cancelRecomputeRequestsForDocument(documentName);
 
     // Give scoped transaction owners one synchronous boundary at which to
     // roll back and release their own critical lock. The document remains

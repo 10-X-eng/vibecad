@@ -530,6 +530,7 @@ private:
     Connection connectRecomputed;
     Connection connectRecomputedObj;
     Connection connectDocumentStable;
+    Connection connectRecomputeRequestFinished;
 
     friend class TreeWidget;
     friend class DocumentObjectData;

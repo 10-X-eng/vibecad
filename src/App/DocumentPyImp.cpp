@@ -761,6 +761,24 @@ PyObject* DocumentPy::commitTransaction(PyObject* args)
     Py_Return;
 }
 
+PyObject* DocumentPy::beginCooperativeMutation(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    getDocumentPtr()->beginCooperativeMutation();
+    Py_Return;
+}
+
+PyObject* DocumentPy::endCooperativeMutation(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    getDocumentPtr()->endCooperativeMutation();
+    Py_Return;
+}
+
 Py::Boolean DocumentPy::getHasPendingTransaction() const
 {
     return {getDocumentPtr()->hasPendingTransaction()};
@@ -2368,6 +2386,11 @@ Py::Boolean DocumentPy::getRecomputePending() const
 Py::Boolean DocumentPy::getTransacting() const
 {
     return {getDocumentPtr()->isPerformingTransaction()};
+}
+
+Py::Boolean DocumentPy::getCooperativeMutationActive() const
+{
+    return {getDocumentPtr()->isCooperativeMutationActive()};
 }
 
 Py::String DocumentPy::getOldLabel() const
