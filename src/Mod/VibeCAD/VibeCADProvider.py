@@ -5706,6 +5706,7 @@ def _gemini_child_main(
             )
 
             for tool_call in assistant_tool_calls:
+                previous_context = live_context
                 function = tool_call["function"]
                 function_name = str(function["name"])
                 tool_name = tools_by_name.get(function_name)
@@ -5750,6 +5751,7 @@ def _gemini_child_main(
                 state_after = _provider_state_after_tool(
                     live_context,
                     result if isinstance(result, dict) else None,
+                    previous_context=previous_context,
                 )
                 if isinstance(result, dict) and state_after:
                     result["vibecad_state_after"] = state_after
