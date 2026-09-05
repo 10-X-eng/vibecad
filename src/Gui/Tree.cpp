@@ -5555,7 +5555,19 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
     );
     item->populated = true;
     item->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
-    item->testStatus(true);
+    QIcon normalIcon;
+    QIcon disabledIcon;
+    const bool visible = object->Visibility.getValue();
+    for (auto* existingItem : data->items) {
+        if (existingItem == item || existingItem->isBrowserProxy()
+            || TreeWidget::objectItemVisibility(existingItem) != visible) {
+            continue;
+        }
+        QIcon& existingIcon = visible ? normalIcon : disabledIcon;
+        existingIcon = existingItem->icon(0);
+        break;
+    }
+    item->testStatus(true, normalIcon, disabledIcon);
     return item;
 }
 

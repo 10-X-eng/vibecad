@@ -35,6 +35,7 @@
 #include <QStyleOption>
 
 #include <string>
+#include <tuple>
 #include <Inventor/fields/SoSFImage.h>
 
 #include <App/Application.h>
@@ -47,10 +48,13 @@ using namespace Gui;
 
 namespace Gui
 {
+using SvgPixmapCacheKey = std::tuple<QString, int, int, ColorMap>;
+
 class BitmapFactoryInstP
 {
 public:
     QMap<std::string, QPixmap> xpmCache;
+    std::map<SvgPixmapCacheKey, QPixmap> svgCache;
 
     bool useIconTheme;
 };
@@ -319,15 +323,26 @@ QPixmap BitmapFactoryInst::pixmapFromSvg(
     }
 
     if (!iconPath.isEmpty()) {
+        const QSize renderSize = (size * dpr).toSize();
+        SvgPixmapCacheKey cacheKey {
+            iconPath,
+            renderSize.width(),
+            renderSize.height(),
+            colorMapping,
+        };
+        if (const auto cached = d->svgCache.find(cacheKey); cached != d->svgCache.end()) {
+            return cached->second;
+        }
         QFile file(iconPath);
         if (file.open(QFile::ReadOnly | QFile::Text)) {
             QByteArray content = file.readAll();
-            icon = pixmapFromSvg(content, size * dpr, colorMapping);
+            icon = pixmapFromSvg(content, renderSize, colorMapping);
         }
-    }
 
-    if (!icon.isNull()) {
-        icon.setDevicePixelRatio(dpr);
+        if (!icon.isNull()) {
+            icon.setDevicePixelRatio(dpr);
+            d->svgCache.emplace(std::move(cacheKey), icon);
+        }
     }
 
     return icon;

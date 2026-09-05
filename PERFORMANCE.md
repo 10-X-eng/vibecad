@@ -268,6 +268,28 @@ raster-transforming equivalent Timeline icons once per operation. Optimize
 those measured repetitions before changing projection architecture. Remaining
 Qt item construction must then be applied in bounded event-loop batches.
 
+The first measured optimization checkpoint reuses exact rendered icons during
+one projection refresh and caches named SVG rendering by resolved path, device-
+pixel size, and color map. It does not add persistent projection state or alter
+any public API. The same fixture and command produced:
+
+| Measurement | Baseline | Reuse checkpoint | Change |
+|---|---:|---:|---:|
+| Correct publication | passed | passed | unchanged |
+| Longest cooperative apply unit | 93.518 ms | 93.870 ms | +0.4% |
+| GUI heartbeat maximum | 1,863.733 ms | 644.622 ms | -65.4% |
+| Final Tree stable refresh | 963.229 ms | 326.063 ms | -66.1% |
+| Model-browser rebuild | 473.543 ms | 12.956 ms | -97.3% |
+| Browser item creation | 463.308 ms / 321 | 4.273 ms / 321 | -99.1% |
+| Tree status-icon generation | 912.865 ms / 642 | 287.627 ms / 321 | -68.5% |
+| Final Feature Timeline rebuild | 842.690 ms | 261.887 ms | -68.9% |
+| Timeline item construction | 834.236 ms / 312 | 256.264 ms / 312 | -69.3% |
+| Timeline icon transformation | 393.617 ms / 312 | 2.351 ms / 6 | -99.4% |
+
+This is a successful reduction, not completion: the 645 ms final gap still
+fails the 100 ms watchdog. The remaining measured Tree and Timeline widget work
+must be cooperatively batched without moving Qt widgets off the GUI thread.
+
 ## Work plan and ledger
 
 Status values are `DONE`, `IN PROGRESS`, `NOT STARTED`, `BLOCKED`, and
@@ -288,7 +310,7 @@ Status values are `DONE`, `IN PROGRESS`, `NOT STARTED`, `BLOCKED`, and
 | P10 | Bound publication commit/rollback/final-stabilization phases | IN PROGRESS | B07 final Tree + Timeline tail isolated at 1.806 s; optimization and B26 remain |
 | P11 | Coalesce Tree, Timeline, cache, and observer notifications | NOT STARTED | One logical refresh per operation |
 | P12 | Eliminate full-object stable refresh when exact changed identities exist | NOT STARTED | B05/B07 traversal and allocation evidence |
-| P13 | Measure and optimize Tree projection and Feature Timeline rebuild | IN PROGRESS | Representative B07 native trace isolates Tree status-icon generation (912.865 ms) and Timeline icon transformation (393.617 ms); optimization remains |
+| P13 | Measure and optimize Tree projection and Feature Timeline rebuild | IN PROGRESS | B07 exact-icon/SVG reuse cuts the final gap 65.4% (1,863.733 to 644.622 ms), browser item creation 99.1%, and Timeline icon transforms 99.4%; bounded widget batching remains |
 | P14 | Implement persistent startup worker runtime and bounded queues | NOT STARTED | Startup, reuse, fairness, shutdown, and crash tests |
 | P15 | Implement per-document actor ownership and revision-safe result application | NOT STARTED | B26/B27 stress evidence |
 | P16 | Standardize human/AI progress, cancellation, and diagnostics contract | REVALIDATE | VibeScript direct progress exists; audit every other long operation |

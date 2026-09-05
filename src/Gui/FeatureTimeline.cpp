@@ -6,6 +6,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -1305,6 +1306,7 @@ void FeatureTimeline::rebuild()
     std::vector<VisibleSemanticBlock> visibleBlocks;
     visibleBlocks.reserve(operations.size());
     int lastActiveVisible = -1;
+    std::map<std::pair<qint64, unsigned int>, QIcon> iconCache;
     for (std::size_t index = 0; index < operations.size(); ++index) {
         if (!isVisibleTimelineOperation(operations[index], internalTransformations, projection)) {
             continue;
@@ -1433,14 +1435,21 @@ void FeatureTimeline::rebuild()
                     Gui::Application::Instance->getViewProvider(iconObject)
                 )) {
                 const QIcon icon = viewProvider->getIcon();
-                item->setIcon(
-                    timelineObjectIcon(
-                        icon,
-                        object,
-                        afterPosition,
-                        presentationVisible
-                    )
-                );
+                const unsigned int iconState =
+                    (afterPosition ? 1U : 0U)
+                    | (presentationVisible.has_value() ? 2U : 0U)
+                    | (presentationVisible.value_or(false) ? 4U : 0U)
+                    | (object->isError() ? 8U : 0U)
+                    | ((object->isTouched() || object->mustExecute() == 1) ? 16U : 0U);
+                const auto key = std::make_pair(icon.cacheKey(), iconState);
+                auto cached = iconCache.find(key);
+                if (cached == iconCache.end()) {
+                    cached = iconCache.emplace(
+                        key,
+                        timelineObjectIcon(icon, object, afterPosition, presentationVisible)
+                    ).first;
+                }
+                item->setIcon(cached->second);
             }
         }
 
