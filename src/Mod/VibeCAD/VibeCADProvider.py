@@ -1930,6 +1930,46 @@ class GeminiProvider(BaseProvider):
             raise
 
 
+
+# Parent-process cache: provider objects and subprocesses are recreated per turn.
+_ANTHROPIC_CAPABILITY_CACHE: dict[tuple[str, str], tuple[float, int]] = {}
+_ANTHROPIC_CAPABILITY_CACHE_LOCK = threading.Lock()
+_ANTHROPIC_CAPABILITY_CACHE_TTL = 300.0
+_ANTHROPIC_CAPABILITY_CACHE_SIZE = 64
+
+
+def _anthropic_capability_scope(api_key: str | None, base_url: str | None) -> str:
+    # Keep credentials and credential-bearing endpoints out of cache keys/events.
+    identity = [
+        base_url or os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com",
+        api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
+        os.environ.get("ANTHROPIC_AUTH_TOKEN", ""),
+    ]
+    return hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
+
+
+def _anthropic_cached_capabilities(scope: str, models: set[str]) -> dict[str, int]:
+    with _ANTHROPIC_CAPABILITY_CACHE_LOCK:
+        now = time.monotonic()
+        expired = [key for key, (stamp, _) in _ANTHROPIC_CAPABILITY_CACHE.items()
+                   if now - stamp >= _ANTHROPIC_CAPABILITY_CACHE_TTL]
+        for key in expired:
+            del _ANTHROPIC_CAPABILITY_CACHE[key]
+        return {model: _ANTHROPIC_CAPABILITY_CACHE[(scope, model)][1]
+                for model in models if (scope, model) in _ANTHROPIC_CAPABILITY_CACHE}
+
+
+def _anthropic_cache_capability(scope: str, model: str, maximum: Any) -> None:
+    if type(maximum) is not int or maximum <= 0:
+        return
+    with _ANTHROPIC_CAPABILITY_CACHE_LOCK:
+        key = (scope, model)
+        _ANTHROPIC_CAPABILITY_CACHE.pop(key, None)
+        _ANTHROPIC_CAPABILITY_CACHE[key] = (time.monotonic(), maximum)
+        while len(_ANTHROPIC_CAPABILITY_CACHE) > _ANTHROPIC_CAPABILITY_CACHE_SIZE:
+            del _ANTHROPIC_CAPABILITY_CACHE[next(iter(_ANTHROPIC_CAPABILITY_CACHE))]
+
+
 class AnthropicProvider(BaseProvider):
     """Native Anthropic Messages API adapter.
 
@@ -1968,11 +2008,26 @@ class AnthropicProvider(BaseProvider):
         progress_callback: ProgressCallback | None = None,
     ) -> ProviderResult:
         try:
+            scope = _anthropic_capability_scope(self.api_key, self.base_url)
+            models = {self.model, self.compaction_model}
             provider_context = dict(context)
-            provider_context["_vibecad_provider_options"] = {
+            options = dict(context.get("_vibecad_provider_options") or {})
+            options.update({
                 "web_search_enabled": self.web_search_enabled,
                 "compaction_model": self.compaction_model,
-            }
+                "model_capabilities": _anthropic_cached_capabilities(scope, models),
+            })
+            provider_context["_vibecad_provider_options"] = options
+
+            def on_progress(event: dict[str, Any]) -> None:
+                if event.get("event") == "anthropic_model_capability":
+                    if event.get("model") in models:
+                        _anthropic_cache_capability(
+                            scope, event["model"], event.get("max_tokens")
+                        )
+                    return
+                if progress_callback is not None:
+                    progress_callback(event)
             return _run_provider_subprocess(
                 prompt=prompt,
                 context=provider_context,
@@ -1984,7 +2039,7 @@ class AnthropicProvider(BaseProvider):
                 max_turns=self.max_turns,
                 base_url=self.base_url,
                 cancellation_check=cancellation_check,
-                progress_callback=progress_callback,
+                progress_callback=on_progress,
                 child_main=_anthropic_child_main,
                 provider_label="Anthropic provider",
             )
@@ -5872,20 +5927,27 @@ def _anthropic_child_main(
         if timeout_seconds is not None and timeout_seconds > 0:
             client_kwargs["timeout"] = timeout_seconds
         client = anthropic.Anthropic(**client_kwargs)
-        max_tokens = _anthropic_model_max_tokens(
-            client,
-            model,
-            sdk_fallback=DEFAULT_ANTHROPIC_MAX_TOKENS,
-        )
-        compaction_max_tokens = (
-            max_tokens
-            if compaction_model == model
-            else _anthropic_model_max_tokens(
-                client,
-                compaction_model,
-                sdk_fallback=ANTHROPIC_TURN_COMPACTION_MAX_TOKENS,
+        cached = _provider_option_value(live_context, "model_capabilities")
+        capabilities = dict(cached) if isinstance(cached, dict) else {}
+
+        def model_max_tokens(model_id: str, fallback: int) -> int:
+            maximum = capabilities.get(model_id)
+            if type(maximum) is int and maximum > 0:
+                return maximum
+            maximum = _anthropic_model_max_tokens(
+                client, model_id, sdk_fallback=fallback
             )
-        )
+            capabilities[model_id] = maximum
+            # Older SDK fallback values are not model-reported capabilities.
+            if callable(getattr(getattr(client, "models", None), "retrieve", None)):
+                _send_child_progress(conn, {
+                    "event": "anthropic_model_capability",
+                    "model": model_id,
+                    "max_tokens": maximum,
+                })
+            return maximum
+
+        max_tokens = model_max_tokens(model, DEFAULT_ANTHROPIC_MAX_TOKENS)
 
         request_kwargs: dict[str, Any] = {
             "model": model,
@@ -6143,7 +6205,9 @@ def _anthropic_child_main(
                     debug_context=live_context,
                     base_url=base_url,
                     generation=compaction_count,
-                    max_tokens=compaction_max_tokens,
+                    max_tokens=model_max_tokens(
+                        compaction_model, ANTHROPIC_TURN_COMPACTION_MAX_TOKENS
+                    ),
                 )
                 messages = [
                     {
