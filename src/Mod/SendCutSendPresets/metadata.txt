@@ -1,0 +1,6 @@
+[general]
+name=SendCutSend Presets
+version=0.2.0
+description=SendCutSend + custom bend presets for SheetMetal
+icon=resources/icons/SCS_Presets.svg
+license=MIT
