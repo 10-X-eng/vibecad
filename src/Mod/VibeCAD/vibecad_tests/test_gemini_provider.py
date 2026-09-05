@@ -4,10 +4,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+
+import pytest
 
 import VibeCADAuth as auth
 import VibeCADDesignReview as design_review
@@ -497,3 +500,116 @@ def test_gemini_stream_preserves_thought_signatures_and_repairs_tool_arguments(
         "raw": None,
     }
     assert connection.closed
+
+
+@pytest.mark.parametrize("change", ["revision", "surface", "workbench", "native"])
+def test_gemini_only_sends_changed_state_after_tools(monkeypatch, change) -> None:
+    initial = {
+        "workbench": "Model",
+        "modeling_surface": {
+            "engine": "native" if change == "native" else "vibescript",
+            "workbench": "Model",
+            "domain": "partdesign",
+            "surface_id": "surface-1",
+        },
+        "native_state": {"revision": 1, "inventory": "x" * 8192},
+        "provider_tool_schemas": [_state_read_schema()],
+    }
+    changed = copy.deepcopy(initial)
+    if change in {"revision", "native"}:
+        changed["native_state"]["revision"] = 2
+    elif change == "surface":
+        changed["modeling_surface"]["surface_id"] = "surface-2"
+    else:
+        changed["workbench"] = "Assembly"
+        changed["modeling_surface"]["workbench"] = "Assembly"
+
+    updates = [initial, changed, changed, changed]
+    requests = []
+
+    class _Connection(_GeminiConnection):
+        def recv(self):
+            return {
+                "type": "tool_result",
+                "result": {"ok": True, "objects": ["Body"]},
+                "context": copy.deepcopy(updates.pop(0)),
+            }
+
+    def tool_delta(index, call_id):
+        return SimpleNamespace(
+            index=index,
+            id=call_id,
+            type="function",
+            function=SimpleNamespace(
+                name="state_read", arguments='{"target":"Body"}'
+            ),
+            extra_content={"google": {"thought_signature": call_id}},
+        )
+
+    streams = [
+        iter([_chunk(
+            tool_calls=[tool_delta(0, "call-1"), tool_delta(1, "call-2")],
+            finish_reason="tool_calls",
+        )]),
+        iter([_chunk(
+            tool_calls=[tool_delta(0, "call-3"), tool_delta(1, "call-4")],
+            finish_reason="tool_calls",
+        )]),
+        iter([_chunk(content="Inspection complete.", finish_reason="stop")]),
+    ]
+
+    class _OpenAI:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        @staticmethod
+        def _create(**kwargs):
+            requests.append(copy.deepcopy(kwargs))
+            return streams.pop(0)
+
+        @staticmethod
+        def close():
+            pass
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_OpenAI))
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    connection = _Connection()
+    provider._gemini_child_main(
+        connection, "Inspect Body.", copy.deepcopy(initial),
+        "gemini-flash-latest", "gemini-test-key", "high", 10.0, 3, False,
+        provider.DEFAULT_GEMINI_API_BASE,
+    )
+
+    assert connection.messages[-1] == {
+        "type": "done", "final_output": "Inspection complete.", "raw": None
+    }
+    assert len(requests) == 3
+    results = [
+        message for message in requests[-1]["messages"]
+        if message["role"] == "tool"
+    ]
+    assert [result["tool_call_id"] for result in results] == [
+        "call-1", "call-2", "call-3", "call-4"
+    ]
+    for index, result in enumerate(results):
+        expected = {"ok": True, "objects": ["Body"]}
+        if index == 1 and change != "native":
+            expected["vibecad_state_after"] = {
+                "surface": changed["modeling_surface"],
+                "active_domain": changed["native_state"],
+            }
+        assert json.loads(result["content"]) == expected
+
+    assistant_messages = [
+        message for message in requests[-1]["messages"]
+        if message["role"] == "assistant"
+    ]
+    for message in assistant_messages:
+        for call in message["tool_calls"]:
+            assert call["extra_content"] == {
+                "google": {"thought_signature": call["id"]}
+            }
