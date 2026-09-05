@@ -9,6 +9,8 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 import VibeCADAuth as auth
 import VibeCADDesignReview as design_review
 import VibeCADIntentMemoryCompiler as intent_compiler
@@ -497,3 +499,74 @@ def test_gemini_stream_preserves_thought_signatures_and_repairs_tool_arguments(
         "raw": None,
     }
     assert connection.closed
+
+
+def test_gemini_has_finite_default_turn_limit():
+    assert provider.GeminiProvider().max_turns == 64
+    assert provider.GeminiProvider(max_turns=None).max_turns is None
+
+
+@pytest.mark.parametrize("case,expected_calls", [
+    ("same", 3), ("failure", 3), ("unknown", 3),
+    ("alternating", 5), ("revision", 6), ("poll", 6), ("disabled", 6),
+])
+def test_gemini_stalled_calls_are_bounded(monkeypatch, case, expected_calls):
+    requests = []
+    context = {
+        "modeling_surface": {"engine": "native"},
+        "native_state": {"revision": 1},
+        "provider_tool_schemas": [_state_read_schema()],
+        "_vibecad_provider_options": {
+            "gemini_no_progress_limit": 0 if case == "disabled" else 3
+        },
+    }
+    if case == "poll":
+        context["provider_tool_schemas"][0]["name"] = "vibescript.read_operation"
+
+    class Connection(_GeminiConnection):
+        def recv(self):
+            state = json.loads(json.dumps(context))
+            if case == "revision":
+                state["native_state"]["revision"] = len(requests) + 1
+            result = {"ok": case != "failure", "value": "unchanged"}
+            if case == "poll":
+                result = {"ok": True, "operation": {"operation_id": "job-1", "status": "running"}}
+            return {"type": "tool_result", "result": result, "context": state}
+
+    class Client:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def close(self):
+            pass
+
+        def create(self, **kwargs):
+            requests.append(kwargs)
+            if len(requests) > 6:
+                return iter([_chunk(content="Done.", finish_reason="stop")])
+            name = "missing" if case == "unknown" else (
+                "vibescript_read_operation" if case == "poll" else "state_read"
+            )
+            arguments = {"operation_id": "job-1"} if case == "poll" else {
+                "target": "A" if case != "alternating" or len(requests) % 2 else "B"
+            }
+            call = SimpleNamespace(
+                index=0, id=f"call-{len(requests)}", type="function",
+                function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+            )
+            return iter([_chunk(tool_calls=[call], finish_reason="tool_calls")])
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=Client))
+    monkeypatch.setattr(provider, "_validate_provider_wire_surface", lambda _: None)
+    connection = Connection()
+    provider._gemini_child_main(
+        connection, "Inspect.", context, "mock", "fake", None, 1.0, 8, False,
+    )
+    terminal = connection.messages[-1]
+    assert terminal["type"] == "done"
+    if expected_calls < 6:
+        assert len(requests) == expected_calls
+        assert terminal["raw"]["reason"] == "no_progress"
+    else:
+        assert len(requests) == 7
+        assert terminal["final_output"] == "Done."
