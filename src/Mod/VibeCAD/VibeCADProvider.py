@@ -1970,6 +1970,7 @@ class AnthropicProvider(BaseProvider):
         try:
             provider_context = dict(context)
             provider_context["_vibecad_provider_options"] = {
+                **dict(context.get("_vibecad_provider_options") or {}),
                 "web_search_enabled": self.web_search_enabled,
                 "compaction_model": self.compaction_model,
             }
@@ -5460,6 +5461,220 @@ def _gemini_forced_tool_completion(
     return _json_safe(arguments)
 
 
+
+DEFAULT_PROVIDER_HISTORY_BYTES = 512 * 1024
+_PROVIDER_HISTORY_PROTECTED_KEYS = {
+    "source", "code", "api", "api_text", "input_schema", "schema",
+    "operation", "job", "background_jobs", "background_job",
+    "error", "errors", "failure_code", "failure_stage", "cancelled",
+    "next_action", "next_actions", "human_steering", "verification",
+    "vibecad_state_after", "native_state", "modeling_surface",
+    "document", "object", "object_name", "created", "updated", "deleted",
+    "changed", "transaction", "expected_outputs", "affected_outputs",
+}
+
+
+class _ProviderHistoryBudgetExceeded(RuntimeError):
+    def __init__(self, accounting: dict[str, Any]) -> None:
+        super().__init__(
+            "I stopped before sending a request that exceeds the conversation budget. "
+            "Completed CAD work is retained. Continue with a narrower request or a "
+            "scoped source/API read; the provider history budget can also be raised. "
+            "Exact reads, failures, pending jobs and signed tool calls were not truncated."
+        )
+        self.accounting = accounting
+
+
+def _provider_history_has_protected_value(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            name = str(key).lower()
+            if (name in _PROVIDER_HISTORY_PROTECTED_KEYS
+                    or "revision" in name or name.endswith(("_id", "_sha256"))
+                    or (name == "ok" and item is False)
+                    or (name == "status" and item in (
+                        "pending", "queued", "running", "failed", "error", "cancelled"
+                    ))):
+                return True
+            if _provider_history_has_protected_value(item):
+                return True
+    elif isinstance(value, list):
+        return any(_provider_history_has_protected_value(item) for item in value)
+    return False
+
+
+def _provider_history_reference(content: Any, tool_name: str, call_id: str) -> str | None:
+    # Exact source/API responses remain whole, even after newer tool batches.
+    if not tool_name or not isinstance(content, str) or any(
+        name in tool_name.lower() for name in ("source", "api")
+    ):
+        return None
+    try:
+        result = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return None
+    if "vibecad_history_reference" in result:
+        return None
+    # Never reduce an unresolved/error result, including nested operation status.
+    def unresolved(value: Any) -> bool:
+        if isinstance(value, dict):
+            if (value.get("ok") is False or value.get("error") or value.get("errors")
+                    or value.get("failure_code") or value.get("cancelled")
+                    or any(key in value for key in ("source", "code", "api_text", "input_schema"))):
+                return True
+            if value.get("status") in ("pending", "queued", "running", "failed", "error", "cancelled"):
+                return True
+            return any(unresolved(item) for item in value.values())
+        return isinstance(value, list) and any(unresolved(item) for item in value)
+    if unresolved(result):
+        return None
+    summary = dict(result)
+    omitted = []
+    for key, value in result.items():
+        if _provider_history_has_protected_value({key: value}):
+            continue
+        if _provider_json_bytes(value) <= 1024:
+            continue
+        summary[key] = {
+            "_vibecad_value_omitted": True,
+            "reason": "older_tool_history",
+            "json_bytes": _provider_json_bytes(value),
+        }
+        omitted.append(key)
+    if not omitted:
+        return None
+    summary["vibecad_history_reference"] = {
+        "tool_call_id": call_id,
+        "tool": tool_name,
+        "original_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "original_utf8_bytes": len(content.encode("utf-8")),
+        "omitted_fields": omitted,
+        "recovery": (
+            "This is an older observation, not exact data. Use the available read "
+            "tools to inspect the current fact before relying on omitted fields. "
+            "The original call arguments are retained; do not replay a mutation."
+        ),
+    }
+    encoded = json.dumps(summary, ensure_ascii=True, separators=(",", ":"))
+    return encoded if len(encoded.encode("utf-8")) < len(content.encode("utf-8")) else None
+
+
+def _provider_budget_history(
+    request: dict[str, Any], context: dict[str, Any], *,
+    provider: str, state: dict[str, Any], output_reserve_tokens: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Bound serialized input; token figures are estimates, never billed usage.
+
+    Optional context-window accounting uses ceil(serialized JSON bytes / 4).
+    This includes encoded images but is not a provider tokenizer or vision-token
+    guarantee. Exact reads/critical state take priority over automatic reduction.
+    """
+    options = state.setdefault("options", {
+        name: _provider_option_value(context, name)
+        for name in ("history_budget_bytes", "context_window_tokens")
+    })
+    configured = options["history_budget_bytes"]
+    limit = DEFAULT_PROVIDER_HISTORY_BYTES if configured is None else max(0, int(configured))
+    window = options["context_window_tokens"]
+    reserve = max(0, int(output_reserve_tokens))
+    effective_limit = limit
+    if window is not None:
+        context_bytes = max(0, (int(window) - reserve) * 4)
+        effective_limit = min(limit, context_bytes) if limit else context_bytes
+    enabled = bool(limit) or window is not None
+    before = _provider_json_bytes(request)
+    messages = list(request["messages"])
+    old_snapshot = state.get("snapshot")
+    messages = [message for message in messages if message is not old_snapshot]
+    updated = dict(request, messages=messages)
+    reduced = 0
+
+    def refresh_snapshot() -> None:
+        nonlocal messages
+        visible = _model_visible_context(context)
+        visible = {key: value for key, value in visible.items()
+                   if key not in {"view_screenshot", "reference_images"}}
+        if isinstance(context.get("native_state"), dict):
+            visible["native_state"] = _json_safe(context["native_state"])
+        snapshot = {"role": "user", "content": json.dumps({
+            "vibecad_history_live_state": visible,
+            "instruction": "Continue the original user request. Read current exact data for omitted historical fields.",
+        }, ensure_ascii=True, separators=(",", ":"))}
+        state["snapshot"] = snapshot
+        messages.append(snapshot)
+
+    if state.get("active"):
+        refresh_snapshot()
+    target = effective_limit * 3 // 4
+    current_size = _provider_json_bytes(updated)
+    if enabled and current_size > target:
+        # Retain the latest two assistant/tool batches in full. All assistant
+        # content, call IDs/arguments and thought signatures are always retained.
+        assistant_indices = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
+        cutoff = assistant_indices[-2] if len(assistant_indices) >= 2 else 0
+        calls: dict[str, str] = {}
+        for message in messages:
+            for call in message.get("tool_calls", []):
+                calls[str(call["id"])] = str(call["function"]["name"])
+            content = message.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if block.get("type") == "tool_use":
+                        calls[str(block["id"])] = str(block["name"])
+        for index in range(cutoff):
+            if current_size <= target:
+                break
+            message = messages[index]
+            if provider == "gemini" and message.get("role") == "tool":
+                call_id = str(message.get("tool_call_id", ""))
+                reference = _provider_history_reference(
+                    message.get("content"), calls.get(call_id, ""), call_id
+                )
+                if reference is not None:
+                    messages[index] = dict(message, content=reference)
+                    reduced += 1
+            elif provider == "anthropic" and message.get("role") == "user":
+                content = message.get("content")
+                if not isinstance(content, list):
+                    continue
+                blocks = list(content)
+                for block_index, block in enumerate(content):
+                    if block.get("type") != "tool_result" or block.get("is_error"):
+                        continue
+                    call_id = str(block.get("tool_use_id", ""))
+                    reference = _provider_history_reference(
+                        block.get("content"), calls.get(call_id, ""), call_id
+                    )
+                    if reference is not None:
+                        blocks[block_index] = dict(block, content=reference)
+                        reduced += 1
+                messages[index] = dict(message, content=blocks)
+            current_size += _provider_json_bytes(messages[index]) - _provider_json_bytes(message)
+        if reduced and not state.get("active"):
+            state["active"] = True
+            refresh_snapshot()
+
+    after = _provider_json_bytes(updated)
+    accounting = {
+        "event": "provider_history_budget",
+        "provider": provider,
+        "before_json_bytes": before,
+        "request_json_bytes": after,
+        "history_limit_bytes": effective_limit if enabled else None,
+        "compacted_results": reduced,
+        "estimator": "ceil(serialized_json_bytes/4); images included as encoded bytes",
+        "estimated_input_tokens": (after + 3) // 4,
+        "output_reserve_tokens": reserve,
+        "estimated_total_tokens": (after + 3) // 4 + reserve,
+        "context_window_tokens": window,
+    }
+    if enabled and after > effective_limit:
+        raise _ProviderHistoryBudgetExceeded(accounting)
+    return updated, accounting
+
+
 def _gemini_child_main(
     conn,
     prompt: str,
@@ -5540,6 +5755,9 @@ def _gemini_child_main(
             client_kwargs["timeout"] = timeout_seconds
         client = openai.OpenAI(**client_kwargs)
 
+        history_state: dict[str, Any] = {}
+        reserve_option = _provider_option_value(context, "output_reserve_tokens")
+        output_reserve = 8192 if reserve_option is None else max(0, int(reserve_option))
         turn = 1
         while max_turns is None or max_turns <= 0 or turn <= max_turns:
             sdk_request: dict[str, Any] = {
@@ -5551,6 +5769,12 @@ def _gemini_child_main(
                 sdk_request["tools"] = tool_definitions
             if reasoning_effort:
                 sdk_request["reasoning_effort"] = reasoning_effort
+            sdk_request, history_accounting = _provider_budget_history(
+                sdk_request, live_context, provider="gemini", state=history_state,
+                output_reserve_tokens=output_reserve,
+            )
+            messages = sdk_request["messages"]
+            _send_child_progress(conn, dict(history_accounting, turn=turn))
             _capture_outbound_request(
                 live_context,
                 provider="gemini",
@@ -5579,9 +5803,16 @@ def _gemini_child_main(
                 turn=turn,
             )
             chunk_count = 0
+            token_usage: dict[str, Any] = {}
             finish_reason = ""
             for chunk in stream:
                 chunk_count += 1
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                        value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+                        if type(value) is int and value >= 0:
+                            token_usage[name] = value
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
@@ -5652,6 +5883,7 @@ def _gemini_child_main(
                 conn,
                 {
                     "event": "gemini_stream_completed",
+                    **({"token_usage": token_usage} if token_usage else {}),
                     "turn": turn,
                     "chunk_count": chunk_count,
                     "finish_reason": finish_reason,
@@ -5773,6 +6005,9 @@ def _gemini_child_main(
                 "error": "Google Gemini provider turn limit reached.",
             }
         )
+    except _ProviderHistoryBudgetExceeded as exc:
+        conn.send({"type": "done", "final_output": str(exc),
+                   "raw": {"stalled": True, "reason": "input_budget", **exc.accounting}})
     except BaseException as exc:
         _send_child_error(conn, "Google Gemini provider", exc)
     finally:
@@ -5900,7 +6135,10 @@ def _anthropic_child_main(
                 "effort": _anthropic_adaptive_effort(reasoning_effort)
             }
 
+        history_state: dict[str, Any] = {}
+
         def _stream_response(turn: int, attempt: int) -> Any:
+            nonlocal messages
             # The SDK rejects non-streaming requests that could exceed ten
             # minutes (large max_tokens plus thinking budgets), so always
             # stream and accumulate the final message.
@@ -5922,6 +6160,12 @@ def _anthropic_child_main(
                 ]
                 if thinking is not None:
                     sdk_request["output_config"] = {"effort": "low"}
+            sdk_request, history_accounting = _provider_budget_history(
+                sdk_request, live_context, provider="anthropic", state=history_state,
+                output_reserve_tokens=sdk_request["max_tokens"],
+            )
+            messages = sdk_request["messages"]
+            _send_child_progress(conn, dict(history_accounting, turn=turn, attempt=attempt))
             _capture_outbound_request(
                 live_context,
                 provider="anthropic",
@@ -6381,6 +6625,9 @@ def _anthropic_child_main(
                 "raw": {"stalled": True, "reason": "turn_limit"},
             }
         )
+    except _ProviderHistoryBudgetExceeded as exc:
+        conn.send({"type": "done", "final_output": str(exc),
+                   "raw": {"stalled": True, "reason": "input_budget", **exc.accounting}})
     except BaseException as exc:
         _send_child_error(conn, "Anthropic provider", exc)
     finally:
