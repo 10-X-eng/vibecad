@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import VibeCADCooperativeExecution as cooperative
 from VibeCADPerformance import EventLoopWatchdog, PerformanceRecorder
 import VibeCADPerformanceGui
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 
 
 class _Clock:
@@ -293,3 +297,29 @@ def test_gui_watchdog_connects_opt_in_document_slice_tracing(monkeypatch):
     assert span_factory.__func__ is recorder.span.__func__
     VibeCADPerformanceGui._reset_event_loop_watchdog_for_tests()
     assert cooperative._document_thread_span_factory is None
+
+
+def test_native_projection_trace_separates_measured_hot_paths():
+    sources = {
+        "src/Gui/ModelTreeBrowser.cpp": {
+            'ZoneScopedN("Gui.ModelTreeBrowserProjection.build")',
+        },
+        "src/Gui/Tree.cpp": {
+            'ZoneScopedN("Gui.Tree.createNewItem")',
+            'ZoneScopedN("Gui.Tree.updateChildren")',
+            'ZoneScopedN("Gui.Tree.createBrowserObjectItem")',
+            'ZoneScopedN("Gui.Tree.generateIcon")',
+            'ZoneScopedN("Gui.Tree.getVisibilityIcon")',
+            'ZoneScopedN("Gui.Tree.rebuildModelBrowser.items")',
+            'ZoneScopedN("Gui.Tree.testStatus")',
+        },
+        "src/Gui/FeatureTimeline.cpp": {
+            'ZoneScopedN("Gui.FeatureTimeline.icon")',
+            'ZoneScopedN("Gui.FeatureTimeline.rebuild.items")',
+        },
+    }
+
+    for relative_path, expected_spans in sources.items():
+        source = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+        missing = {span for span in expected_spans if span not in source}
+        assert not missing, f"{relative_path} lacks trace spans: {sorted(missing)}"

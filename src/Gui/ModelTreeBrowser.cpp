@@ -21,6 +21,7 @@
 #include <App/OriginGroupExtension.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
+#include <Base/Profiler.h>
 
 
 using namespace Gui;
@@ -160,6 +161,8 @@ App::DocumentObject* exactVibeScriptProgramFor(
 
 ModelTreeBrowserProjection::ModelTreeBrowserProjection(App::Document* document)
 {
+    ZoneScopedN("Gui.ModelTreeBrowserProjection.build");
+
     if (!document) {
         return;
     }

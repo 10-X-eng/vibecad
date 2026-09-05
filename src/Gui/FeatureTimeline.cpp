@@ -111,6 +111,8 @@ QIcon timelineObjectIcon(
     std::optional<bool> presentationVisible
 )
 {
+    ZoneScopedN("Gui.FeatureTimeline.icon");
+
     QPixmap pixmap = base.pixmap(QSize(22, 22), disabled ? QIcon::Disabled : QIcon::Normal);
     if (disabled || (presentationVisible.has_value() && !*presentationVisible)) {
         pixmap = desaturatePixmap(pixmap);
@@ -1390,6 +1392,8 @@ void FeatureTimeline::rebuild()
         if (!markerAdded && static_cast<int>(index) >= position) {
             addCurrentStateMarker();
         }
+
+        ZoneScopedN("Gui.FeatureTimeline.rebuild.items");
 
         const bool isCurrent = static_cast<int>(index) == lastActiveVisible;
         const bool afterPosition = !controller->isOperationActive(object);

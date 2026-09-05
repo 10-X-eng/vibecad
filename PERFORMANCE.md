@@ -223,6 +223,51 @@ set for representative large documents.
 | B26 | Cancel/close/undo stress | every long-running class | integrity, no deadlock, bounded response |
 | B27 | Multi-document load | three active documents/jobs | fairness, memory, document isolation |
 
+## Recorded representative baselines
+
+### B07: 307-member VibeScript Assembly publication
+
+Recorded 2026-09-04 on Windows 11 Pro for Workstations build 26200, using an
+Intel Xeon Gold 5120 (14 cores/28 logical processors) and 127.7 GiB RAM. The
+instrumented binaries were built from `da2e1b39` plus the trace-only changes in
+this branch through the normal Rattler CMake recipe. The deterministic fixture
+publishes 307 component links, one Assembly, and one solver-diagnostics output.
+
+Command:
+
+```powershell
+build/run_vibescript_publication_307_native_trace.ps1
+```
+
+The local runner and trace artifact remain ignored; no machine paths or fixture
+outputs are committed.
+
+| Measurement | Baseline |
+|---|---:|
+| Correct publication | 307 members; 322 document objects; passed |
+| Wall / operation lifecycle | 21.360 s / 19.516 s |
+| Worker / publication | 7.422 s / 11.063 s |
+| GUI apply units | 317 |
+| Longest cooperative apply unit | 93.518 ms |
+| GUI heartbeat p99 / maximum | 65.112 ms / 1,863.733 ms |
+| Heartbeat failures over 100 ms | 3 |
+| Final Tree stable refresh | 963.229 ms |
+| Model-browser rebuild inside Tree refresh | 473.543 ms |
+| Browser item creation | 463.308 ms across 321 items |
+| Tree status-icon generation | 912.865 ms across 642 generated icons |
+| Final Feature Timeline rebuild | 842.690 ms |
+| Timeline item construction | 834.236 ms across 312 items |
+| Timeline icon transformation | 393.617 ms across 312 icons |
+| Semantic browser projection | 4.7 ms maximum |
+
+This trace proves that the 1.864-second final heartbeat gap is not semantic
+classification or BREP tessellation. It is the sequential stable Tree and
+Feature Timeline refresh. The largest repeated costs are generating the same
+object-status icon separately for the legacy and semantic Tree items, and
+raster-transforming equivalent Timeline icons once per operation. Optimize
+those measured repetitions before changing projection architecture. Remaining
+Qt item construction must then be applied in bounded event-loop batches.
+
 ## Work plan and ledger
 
 Status values are `DONE`, `IN PROGRESS`, `NOT STARTED`, `BLOCKED`, and
@@ -234,16 +279,16 @@ Status values are `DONE`, `IN PROGRESS`, `NOT STARTED`, `BLOCKED`, and
 | P01 | Yield VibeScript publication between output/member apply steps | DONE | PR #168; Python suite 4,380 passed, 9 skipped; large Assembly became interactively usable |
 | P02 | Add publication phase/item progress | DONE | PR #168; direct VibeScript progress callback tests |
 | P03 | Instrument cross-language spans and GUI watchdog | IN PROGRESS | Bounded Python trace/watchdog in `4daa8d06`; real GUI-thread apply spans and native Tracy capture proven in `d116a0c9`; remaining required surfaces are still open |
-| P04 | Capture cold/warm baseline for B02, B06, B07, B09, and B24 | NOT STARTED | Trace and benchmark summaries |
+| P04 | Capture cold/warm baseline for B02, B06, B07, B09, and B24 | IN PROGRESS | Representative B07 Windows baseline recorded above; cold/warm B02, B06, B09, and B24 remain |
 | P05 | Remove Assembly drag/bulk-visibility refresh storm | DONE | Packaged red tests proved duplicate deferred traversal and synchronous per-selection traversal across 153 visibility changes; packaged green test proved direct, standard multi-selection, and folder-toggle paths each converge in exactly one delayed refresh |
 | P06 | Measure BREP assignment, tessellation, and Coin construction independently | IN PROGRESS | Synthetic native trace separates tessellation, Coin construction, and full visual update; representative B07 fixture remains |
 | P07 | Pre-tessellate eligible solids in isolated workers and cache render meshes | NOT STARTED | Same visual/correct BREP output; B07 comparison |
-| P08 | Drive ordinary per-object GUI apply cost toward <= 1 ms | NOT STARTED | B07 per-item distribution and longest span |
+| P08 | Drive ordinary per-object GUI apply cost toward <= 1 ms | IN PROGRESS | B07: 317 units, 93.518 ms maximum; per-member publication and projection-item work remain |
 | P09 | Add adaptive batching for proven-cheap apply units | NOT STARTED | Higher throughput without heartbeat regression |
-| P10 | Bound publication commit/rollback/final-stabilization phases | NOT STARTED | No unnamed GUI span > 16 ms in B07/B26 |
+| P10 | Bound publication commit/rollback/final-stabilization phases | IN PROGRESS | B07 final Tree + Timeline tail isolated at 1.806 s; optimization and B26 remain |
 | P11 | Coalesce Tree, Timeline, cache, and observer notifications | NOT STARTED | One logical refresh per operation |
 | P12 | Eliminate full-object stable refresh when exact changed identities exist | NOT STARTED | B05/B07 traversal and allocation evidence |
-| P13 | Measure and optimize Tree projection and Feature Timeline rebuild | IN PROGRESS | Synthetic native trace measures Tree and Timeline paths; B05/B07 scale and optimization remain |
+| P13 | Measure and optimize Tree projection and Feature Timeline rebuild | IN PROGRESS | Representative B07 native trace isolates Tree status-icon generation (912.865 ms) and Timeline icon transformation (393.617 ms); optimization remains |
 | P14 | Implement persistent startup worker runtime and bounded queues | NOT STARTED | Startup, reuse, fairness, shutdown, and crash tests |
 | P15 | Implement per-document actor ownership and revision-safe result application | NOT STARTED | B26/B27 stress evidence |
 | P16 | Standardize human/AI progress, cancellation, and diagnostics contract | REVALIDATE | VibeScript direct progress exists; audit every other long operation |

@@ -5451,6 +5451,8 @@ bool DocumentItem::createNewItem(
     DocumentObjectDataPtr data
 )
 {
+    ZoneScopedN("Gui.Tree.createNewItem");
+
     if (!obj.getObject() || !obj.getObject()->isAttachedToDocument()
         || obj.getObject()->testStatus(App::PartialObject)) {
         return false;
@@ -5524,6 +5526,8 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
     bool browserDefaultHidden
 )
 {
+    ZoneScopedN("Gui.Tree.createBrowserObjectItem");
+
     if (!object || !parent) {
         return nullptr;
     }
@@ -5811,6 +5815,8 @@ void DocumentItem::rebuildModelBrowser()
                             QTreeWidgetItem* parent,
                             DocumentObjectItem* logicalParent
                         ) -> DocumentObjectItem* {
+        ZoneScopedN("Gui.Tree.rebuildModelBrowser.items");
+
         if (!entryAvailable(entry)) {
             return nullptr;
         }
@@ -7836,6 +7842,8 @@ void TreeWidget::updateChildren(
     bool force
 )
 {
+    ZoneScopedN("Gui.Tree.updateChildren");
+
     bool childrenChanged = false;
     std::vector<App::DocumentObject*> children;
     bool removeChildrenFromRoot = true;
@@ -9270,6 +9278,8 @@ void DocumentObjectItem::setIconOverlays(int currentStatus, QPixmap& overlays) c
 
 void DocumentObjectItem::generateIcon(int currentStatus, QIcon::Mode mode, QIcon& icon)
 {
+    ZoneScopedN("Gui.Tree.generateIcon");
+
     QPixmap px;
     if (currentStatus & Status::Error) {
         static QPixmap pxError;
@@ -9323,6 +9333,8 @@ void DocumentObjectItem::generateIcon(int currentStatus, QIcon::Mode mode, QIcon
 
 QIcon DocumentObjectItem::getVisibilityIcon(int currentStatus, QIcon& original_icon)
 {
+    ZoneScopedN("Gui.Tree.getVisibilityIcon");
+
     static QPixmap pxVisible, pxInvisible;
     if (pxVisible.isNull()) {
         pxVisible = BitmapFactory().pixmap("TreeItemVisible");
@@ -9363,6 +9375,8 @@ QIcon DocumentObjectItem::getVisibilityIcon(int currentStatus, QIcon& original_i
 
 void DocumentObjectItem::testStatus(bool resetStatus, QIcon& icon1, QIcon& icon2)
 {
+    ZoneScopedN("Gui.Tree.testStatus");
+
     // guard against calling this during destruction when tree widget may be nullptr
     if (!treeWidget()) {
         return;
