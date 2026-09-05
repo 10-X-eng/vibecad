@@ -1887,9 +1887,11 @@ class GeminiProvider(BaseProvider):
         api_key: str | None = None,
         reasoning_effort: str = "high",
         timeout_seconds: float | None = None,
-        max_turns: int | None = None,
+        max_turns: int | None = 64,
         base_url: str | None = None,
+        no_progress_limit: int = 3,
     ) -> None:
+        self.no_progress_limit = max(0, int(no_progress_limit))
         self.model = model
         self.api_key = api_key
         self.reasoning_effort = reasoning_effort
@@ -1906,6 +1908,10 @@ class GeminiProvider(BaseProvider):
         progress_callback: ProgressCallback | None = None,
     ) -> ProviderResult:
         try:
+            context = dict(context)
+            options = dict(context.get("_vibecad_provider_options") or {})
+            options["gemini_no_progress_limit"] = self.no_progress_limit
+            context["_vibecad_provider_options"] = options
             return _run_provider_subprocess(
                 prompt=prompt,
                 context=context,
@@ -5460,6 +5466,27 @@ def _gemini_forced_tool_completion(
     return _json_safe(arguments)
 
 
+def _gemini_pending_poll(tool_name: str, result: Any) -> bool:
+    """Allow explicit reads of a still-running operation within the turn ceiling."""
+    if not isinstance(result, dict) or result.get("ok") is False:
+        return False
+    if not (
+        tool_name.endswith((".read_operation", ".read_job"))
+        or tool_name.endswith(".inspect")
+        or tool_name == "manufacture.read_setup"
+    ):
+        return False
+    for key in ("operation", "job"):
+        job = result.get(key)
+        if (
+            isinstance(job, dict)
+            and (job.get("operation_id") or job.get("job_id") or job.get("id"))
+            and job.get("status") in {"queued", "pending", "running"}
+        ):
+            return True
+    return False
+
+
 def _gemini_child_main(
     conn,
     prompt: str,
@@ -5540,6 +5567,11 @@ def _gemini_child_main(
             client_kwargs["timeout"] = timeout_seconds
         client = openai.OpenAI(**client_kwargs)
 
+        no_progress_limit = _provider_option_value(
+            live_context, "gemini_no_progress_limit"
+        )
+        no_progress_limit = 3 if no_progress_limit is None else max(0, int(no_progress_limit))
+        unchanged_calls: dict[str, int] = {}
         turn = 1
         while max_turns is None or max_turns <= 0 or turn <= max_turns:
             sdk_request: dict[str, Any] = {
@@ -5706,6 +5738,7 @@ def _gemini_child_main(
             )
 
             for tool_call in assistant_tool_calls:
+                before_state = _anthropic_progress_state_fingerprint(live_context)
                 function = tool_call["function"]
                 function_name = str(function["name"])
                 tool_name = tools_by_name.get(function_name)
@@ -5758,6 +5791,33 @@ def _gemini_child_main(
                     if isinstance(result, dict)
                     else result
                 )
+                after_state = _anthropic_progress_state_fingerprint(live_context)
+                if before_state != after_state:
+                    unchanged_calls.clear()
+                elif no_progress_limit and not _gemini_pending_poll(
+                    tool_name or function_name, result
+                ):
+                    try:
+                        arguments = json.loads(str(function["arguments"]))
+                    except (TypeError, ValueError):
+                        arguments = str(function["arguments"])
+                    fingerprint = _anthropic_progress_fingerprint(
+                        [function_name, arguments, after_state, visible_result]
+                    )
+                    if fingerprint not in unchanged_calls and len(unchanged_calls) >= 128:
+                        unchanged_calls.pop(next(iter(unchanged_calls)))
+                    unchanged_calls[fingerprint] = unchanged_calls.get(fingerprint, 0) + 1
+                    if unchanged_calls[fingerprint] >= no_progress_limit:
+                        conn.send({
+                            "type": "done",
+                            "final_output": (
+                                f"I stopped after repeated unchanged results from {tool_name or function_name}. "
+                                "The work already completed is retained. Inspect the current CAD state "
+                                "and resolve the tool's blocker or revise the request before continuing."
+                            ),
+                            "raw": {"stalled": True, "reason": "no_progress"},
+                        })
+                        return
                 messages.append(
                     {
                         "role": "tool",
@@ -5769,8 +5829,12 @@ def _gemini_child_main(
             turn += 1
         conn.send(
             {
-                "type": "error",
-                "error": "Google Gemini provider turn limit reached.",
+                "type": "done",
+                "final_output": (
+                    "I reached the Gemini turn limit. Completed work is retained; "
+                    "inspect the current result or running job before continuing."
+                ),
+                "raw": {"stalled": True, "reason": "turn_limit"},
             }
         )
     except BaseException as exc:
