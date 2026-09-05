@@ -110,6 +110,37 @@ active workbench's exact source-backed API. Native exposes only the complete
 tool families belonging to the human-selected VibeCAD ribbon. A provider can
 never select or switch a workbench, ribbon, or authoring mode for itself.
 
+
+### Anthropic and Gemini conversation budgets
+
+Long tool loops use a 512 KiB serialized request budget. Above 75% of that budget,
+older bulky successful observations can become explicit references to data that
+must be read again when needed. The latest two tool batches, original user
+instructions, tool arguments/signatures, exact source/API reads, failures,
+pending jobs and critical state are retained. A current state snapshot accompanies
+reduced history. If the remaining request cannot fit, VibeCAD stops before
+generation and explains how to continue; completed CAD work remains available.
+
+Integrators can pass these options in the provider run context (these are Python
+integration settings, not GUI preferences):
+
+```python
+context["_vibecad_provider_options"] = {
+    "history_budget_bytes": 512 * 1024,  # 0 disables the byte limit
+    # "context_window_tokens": 200_000,  # optional, set for the selected model
+    # "output_reserve_tokens": 8192,    # Gemini estimate; not an API output cap
+}
+```
+
+The optional context-window check reserves Anthropic's requested maximum output
+or Gemini's configured reserve, then estimates input from serialized JSON bytes
+divided by four. Tools, system text and encoded images count toward the byte
+budget. This estimate is not a tokenizer or a guarantee for image-token charges.
+A configured context-window check remains enabled even with a zero byte limit.
+Large exact reads may require a narrower read or a larger budget. History
+management adds no summarization API call. Diagnostic events separate estimated
+input from provider-reported usage when available.
+
 ### Save a Key in the OS Keyring
 
 1. Select the provider first. Keys are stored separately for OpenAI, Anthropic, and Gemini.
