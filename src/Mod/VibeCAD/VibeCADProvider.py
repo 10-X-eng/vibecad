@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from email.utils import mktime_tz, parsedate_tz
 import hashlib
 import json
 import multiprocessing
@@ -4732,6 +4733,43 @@ def _is_retryable_anthropic_stream_error(
     return any(token in text for token in retry_tokens)
 
 
+def _is_retryable_anthropic_request_error(
+    exc: BaseException, anthropic_module: Any
+) -> bool:
+    status_error = getattr(anthropic_module, "APIStatusError", ())
+    if isinstance(exc, status_error):
+        directive = exc.response.headers.get("x-should-retry")
+        if directive in {"true", "false"}:
+            return directive == "true"
+        return exc.status_code in {408, 409, 429} or exc.status_code >= 500
+    return _is_retryable_anthropic_stream_error(exc, anthropic_module)
+
+
+def _anthropic_request_retry_delay(exc: BaseException, attempt: int) -> float:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return min(2.0, 0.25 * attempt)
+
+    headers = response.headers
+    delay = None
+    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
+        try:
+            delay = float(headers[name]) * scale
+            break
+        except (KeyError, TypeError, ValueError):
+            continue
+    if delay is None and headers.get("retry-after"):
+        try:
+            parsed = parsedate_tz(headers["retry-after"])
+            if parsed is not None:
+                delay = mktime_tz(parsed) - time.time()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if delay is not None and 0 < delay <= 60:
+        return delay
+    return min(8.0, 0.5 * 2 ** min(attempt - 1, 4))
+
+
 def _bounded_compaction_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
@@ -5887,6 +5925,10 @@ def _anthropic_child_main(
             )
         )
 
+        # Stream retries belong to the outer loop, including failures after
+        # headers. Keep metadata and separate compaction SDK retries intact.
+        client.max_retries = 0
+
         request_kwargs: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
@@ -5900,7 +5942,11 @@ def _anthropic_child_main(
                 "effort": _anthropic_adaptive_effort(reasoning_effort)
             }
 
+        response_content_observed = False
+
         def _stream_response(turn: int, attempt: int) -> Any:
+            nonlocal response_content_observed
+            response_content_observed = False
             # The SDK rejects non-streaming requests that could exceed ten
             # minutes (large max_tokens plus thinking budgets), so always
             # stream and accumulate the final message.
@@ -5969,6 +6015,8 @@ def _anthropic_child_main(
                     event_count += 1
                     summary = _anthropic_stream_event_summary(stream_event)
                     stream_event_type = summary.get("stream_event_type")
+                    if stream_event_type in {"content_block_start", "content_block_delta"}:
+                        response_content_observed = True
                     delta_type = summary.get("delta_type")
                     text_delta = summary.get("text_delta")
                     if text_delta:
@@ -6044,15 +6092,22 @@ def _anthropic_child_main(
                 return stream.get_final_message()
 
         def _stream_response_with_retries(turn: int) -> Any:
+            status_failures = 0
             for attempt in range(1, ANTHROPIC_STREAM_MAX_ATTEMPTS + 1):
                 try:
                     return _stream_response(turn, attempt)
                 except anthropic.BadRequestError:
                     raise
                 except Exception as exc:
+                    is_status_error = isinstance(
+                        exc, getattr(anthropic, "APIStatusError", ())
+                    )
+                    if is_status_error:
+                        status_failures += 1
                     if (
                         attempt >= ANTHROPIC_STREAM_MAX_ATTEMPTS
-                        or not _is_retryable_anthropic_stream_error(exc, anthropic)
+                        or status_failures >= client_kwargs["max_retries"] + 1
+                        or not _is_retryable_anthropic_request_error(exc, anthropic)
                     ):
                         raise
                     _send_child_progress(
@@ -6062,11 +6117,17 @@ def _anthropic_child_main(
                             "turn": turn,
                             "attempt": attempt,
                             "next_attempt": attempt + 1,
+                            "transport_attempt_count": attempt,
+                            "response_content_observed": response_content_observed,
                             "max_attempts": ANTHROPIC_STREAM_MAX_ATTEMPTS,
                             "error": _short_provider_error(exc),
                         },
                     )
-                    time.sleep(min(2.0, 0.25 * attempt))
+                    time.sleep(
+                        _anthropic_request_retry_delay(
+                            exc, status_failures if is_status_error else attempt
+                        )
+                    )
             raise RuntimeError("Anthropic stream retry loop exited unexpectedly.")
 
         turn = 1
