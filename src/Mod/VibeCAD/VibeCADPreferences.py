@@ -371,6 +371,7 @@ def reset_settings() -> None:
     pref = preferences()
     pref.RemString("NewDocumentAuthoringMode")
     pref.RemBool("MCPEnabled")
+    pref.RemString("MCPToolServers")
     pref.RemBool("UseOnlineProvider")
     pref.RemString("Model")
     pref.RemString("DotenvPath")
@@ -1742,12 +1743,519 @@ class VibeCADMCPPreferencesPage:
         )
         layout.addRow("", self.copy_mcp_configuration)
 
+        self._build_tool_server_editor(layout)
+
         self._mcp_status_timer = QtCore.QTimer(self.form)
         self._mcp_status_timer.setInterval(500)
         self._mcp_status_timer.timeout.connect(self._refresh_mcp_status)
+        self._mcp_status_timer.timeout.connect(self._poll_tool_server_test)
         self._mcp_status_timer.start()
 
         self._refresh_mcp_status()
+
+    # -- External MCP tool servers (VibeCAD is the MCP client) -------------------
+
+    def _build_tool_server_editor(self, page_layout) -> None:
+        from PySide import QtCore, QtWidgets
+
+        self._tool_server_drafts: list[dict] = []
+        self._tool_server_loading = False
+        self._tool_server_test_thread = None
+        self._tool_server_test_result: dict | None = None
+
+        group = QtWidgets.QGroupBox("External MCP tool servers", self.form)
+        group.setObjectName("VibeCADPrefMCPToolServers")
+        group.setToolTip(
+            "MCP servers whose tools the built-in VibeCAD agent may call, for "
+            "example cua-driver for desktop automation or a browser for finding "
+            "and downloading models. Independent of External MCP control above."
+        )
+        group_layout = QtWidgets.QVBoxLayout(group)
+
+        intro = QtWidgets.QLabel(
+            "Tools from these servers are offered to the built-in agent beside its "
+            "CAD tools under mcp_<server> names. Values such as ${TOKEN} in "
+            "environment variables and headers are read from the process "
+            "environment when the server starts.",
+            group,
+        )
+        intro.setWordWrap(True)
+        group_layout.addWidget(intro)
+
+        self.tool_server_list = QtWidgets.QTreeWidget(group)
+        self.tool_server_list.setObjectName("VibeCADPrefMCPToolServerList")
+        self.tool_server_list.setHeaderLabels(["Name", "Transport", "Launch", "Enabled"])
+        self.tool_server_list.setRootIsDecorated(False)
+        self.tool_server_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.SingleSelection
+        )
+        self.tool_server_list.currentItemChanged.connect(self._tool_server_selected)
+        group_layout.addWidget(self.tool_server_list)
+
+        buttons = QtWidgets.QHBoxLayout()
+        self.add_tool_server = QtWidgets.QPushButton("Add", group)
+        self.add_tool_server.setObjectName("VibeCADPrefMCPToolServerAdd")
+        self.add_tool_server.clicked.connect(self._add_blank_tool_server)
+        buttons.addWidget(self.add_tool_server)
+        self.remove_tool_server = QtWidgets.QPushButton("Remove", group)
+        self.remove_tool_server.setObjectName("VibeCADPrefMCPToolServerRemove")
+        self.remove_tool_server.clicked.connect(self._remove_tool_server)
+        buttons.addWidget(self.remove_tool_server)
+        self.test_tool_server = QtWidgets.QPushButton("Test connection", group)
+        self.test_tool_server.setObjectName("VibeCADPrefMCPToolServerTest")
+        self.test_tool_server.clicked.connect(self._test_tool_server)
+        buttons.addWidget(self.test_tool_server)
+        buttons.addStretch(1)
+        group_layout.addLayout(buttons)
+
+        presets = QtWidgets.QHBoxLayout()
+        self.add_cua_driver_server = QtWidgets.QPushButton("Add cua-driver", group)
+        self.add_cua_driver_server.setObjectName("VibeCADPrefMCPToolServerAddCuaDriver")
+        self.add_cua_driver_server.setToolTip(
+            "Register the Cua Driver desktop automation server (cua-driver mcp)."
+        )
+        self.add_cua_driver_server.clicked.connect(self._add_cua_driver_server)
+        presets.addWidget(self.add_cua_driver_server)
+        self.add_browser_server = QtWidgets.QPushButton("Add browser (Playwright)", group)
+        self.add_browser_server.setObjectName("VibeCADPrefMCPToolServerAddBrowser")
+        self.add_browser_server.setToolTip(
+            "Register the Playwright MCP browser through npx for searching model "
+            "libraries such as GrabCAD and downloading files."
+        )
+        self.add_browser_server.clicked.connect(self._add_browser_server)
+        presets.addWidget(self.add_browser_server)
+        self.add_folder_server = QtWidgets.QPushButton("Add project folder...", group)
+        self.add_folder_server.setObjectName("VibeCADPrefMCPToolServerAddFolder")
+        self.add_folder_server.setToolTip(
+            "Register the reference filesystem MCP server for one project folder "
+            "so the agent can read datasheets, downloads, and reference models."
+        )
+        self.add_folder_server.clicked.connect(self._add_project_folder_server)
+        presets.addWidget(self.add_folder_server)
+        presets.addStretch(1)
+        group_layout.addLayout(presets)
+
+        editor = QtWidgets.QFormLayout()
+        self.tool_server_name = QtWidgets.QLineEdit(group)
+        self.tool_server_name.setObjectName("VibeCADPrefMCPToolServerName")
+        editor.addRow("Name", self.tool_server_name)
+        self.tool_server_transport = QtWidgets.QComboBox(group)
+        self.tool_server_transport.setObjectName("VibeCADPrefMCPToolServerTransport")
+        self.tool_server_transport.addItem("stdio (local command)", "stdio")
+        self.tool_server_transport.addItem("http (Streamable HTTP URL)", "http")
+        editor.addRow("Transport", self.tool_server_transport)
+        command_row = QtWidgets.QHBoxLayout()
+        self.tool_server_command = QtWidgets.QLineEdit(group)
+        self.tool_server_command.setObjectName("VibeCADPrefMCPToolServerCommand")
+        self.tool_server_command.setPlaceholderText("cua-driver")
+        command_row.addWidget(self.tool_server_command)
+        self.browse_tool_server_command = QtWidgets.QPushButton("Browse", group)
+        self.browse_tool_server_command.clicked.connect(self._browse_tool_server_command)
+        command_row.addWidget(self.browse_tool_server_command)
+        editor.addRow("Command", command_row)
+        self.tool_server_args = QtWidgets.QLineEdit(group)
+        self.tool_server_args.setObjectName("VibeCADPrefMCPToolServerArgs")
+        self.tool_server_args.setPlaceholderText("mcp")
+        editor.addRow("Arguments", self.tool_server_args)
+        self.tool_server_url = QtWidgets.QLineEdit(group)
+        self.tool_server_url.setObjectName("VibeCADPrefMCPToolServerUrl")
+        self.tool_server_url.setPlaceholderText("https://host/mcp")
+        editor.addRow("URL", self.tool_server_url)
+        self.tool_server_env = QtWidgets.QPlainTextEdit(group)
+        self.tool_server_env.setObjectName("VibeCADPrefMCPToolServerEnv")
+        self.tool_server_env.setPlaceholderText("NAME=value, one per line")
+        self.tool_server_env.setMaximumHeight(64)
+        editor.addRow("Environment", self.tool_server_env)
+        self.tool_server_headers = QtWidgets.QPlainTextEdit(group)
+        self.tool_server_headers.setObjectName("VibeCADPrefMCPToolServerHeaders")
+        self.tool_server_headers.setPlaceholderText("Authorization=Bearer ${TOKEN}")
+        self.tool_server_headers.setMaximumHeight(64)
+        editor.addRow("HTTP headers", self.tool_server_headers)
+        self.tool_server_cwd = QtWidgets.QLineEdit(group)
+        self.tool_server_cwd.setObjectName("VibeCADPrefMCPToolServerCwd")
+        editor.addRow("Working directory", self.tool_server_cwd)
+        self.tool_server_tools = QtWidgets.QLineEdit(group)
+        self.tool_server_tools.setObjectName("VibeCADPrefMCPToolServerTools")
+        self.tool_server_tools.setPlaceholderText("Optional comma-separated tool allowlist")
+        editor.addRow("Tools", self.tool_server_tools)
+        self.tool_server_timeout = QtWidgets.QDoubleSpinBox(group)
+        self.tool_server_timeout.setObjectName("VibeCADPrefMCPToolServerTimeout")
+        self.tool_server_timeout.setRange(1.0, 3600.0)
+        self.tool_server_timeout.setDecimals(0)
+        self.tool_server_timeout.setSuffix(" s")
+        editor.addRow("Tool timeout", self.tool_server_timeout)
+        self.tool_server_enabled = QtWidgets.QCheckBox(group)
+        self.tool_server_enabled.setObjectName("VibeCADPrefMCPToolServerEnabled")
+        editor.addRow("Enabled", self.tool_server_enabled)
+        group_layout.addLayout(editor)
+
+        self.tool_server_status = QtWidgets.QLabel(group)
+        self.tool_server_status.setObjectName("VibeCADPrefMCPToolServerStatus")
+        self.tool_server_status.setWordWrap(True)
+        self.tool_server_status.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        group_layout.addWidget(self.tool_server_status)
+
+        for signal in (
+            self.tool_server_name.textChanged,
+            self.tool_server_command.textChanged,
+            self.tool_server_args.textChanged,
+            self.tool_server_url.textChanged,
+            self.tool_server_cwd.textChanged,
+            self.tool_server_tools.textChanged,
+            self.tool_server_env.textChanged,
+            self.tool_server_headers.textChanged,
+        ):
+            signal.connect(self._tool_server_editor_changed)
+        self.tool_server_transport.currentIndexChanged.connect(
+            self._tool_server_editor_changed
+        )
+        self.tool_server_timeout.valueChanged.connect(self._tool_server_editor_changed)
+        self.tool_server_enabled.toggled.connect(self._tool_server_editor_changed)
+
+        page_layout.addRow(group)
+        self._show_tool_server(None)
+
+    def _selected_tool_server_index(self) -> int | None:
+        item = self.tool_server_list.currentItem()
+        if item is None:
+            return None
+        index = self.tool_server_list.indexOfTopLevelItem(item)
+        return index if 0 <= index < len(self._tool_server_drafts) else None
+
+    @staticmethod
+    def _tool_server_launch_text(draft: dict) -> str:
+        from VibeCADMCPToolServers import join_command_arguments
+
+        if str(draft.get("transport") or "stdio") == "http":
+            return str(draft.get("url") or "")
+        return " ".join(
+            part
+            for part in (
+                str(draft.get("command") or ""),
+                join_command_arguments(list(draft.get("args") or [])),
+            )
+            if part
+        )
+
+    def _refresh_tool_server_list(self, selected: int | None = None) -> None:
+        from PySide import QtWidgets
+
+        self._tool_server_loading = True
+        try:
+            self.tool_server_list.clear()
+            for draft in self._tool_server_drafts:
+                item = QtWidgets.QTreeWidgetItem(
+                    [
+                        str(draft.get("name") or ""),
+                        str(draft.get("transport") or "stdio"),
+                        self._tool_server_launch_text(draft),
+                        "yes" if draft.get("enabled", True) else "no",
+                    ]
+                )
+                self.tool_server_list.addTopLevelItem(item)
+            if selected is not None and 0 <= selected < len(self._tool_server_drafts):
+                self.tool_server_list.setCurrentItem(
+                    self.tool_server_list.topLevelItem(selected)
+                )
+        finally:
+            self._tool_server_loading = False
+        self._show_tool_server(self._selected_tool_server_index())
+
+    def _tool_server_selected(self, _current=None, _previous=None) -> None:
+        if self._tool_server_loading:
+            return
+        self._show_tool_server(self._selected_tool_server_index())
+
+    def _show_tool_server(self, index: int | None) -> None:
+        from VibeCADMCPToolServers import (
+            DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+            format_key_value_lines,
+            join_command_arguments,
+        )
+
+        draft = (
+            self._tool_server_drafts[index]
+            if index is not None and 0 <= index < len(self._tool_server_drafts)
+            else None
+        )
+        self._tool_server_loading = True
+        try:
+            enabled = draft is not None
+            for widget in (
+                self.tool_server_name,
+                self.tool_server_transport,
+                self.tool_server_command,
+                self.browse_tool_server_command,
+                self.tool_server_args,
+                self.tool_server_url,
+                self.tool_server_env,
+                self.tool_server_headers,
+                self.tool_server_cwd,
+                self.tool_server_tools,
+                self.tool_server_timeout,
+                self.tool_server_enabled,
+                self.remove_tool_server,
+                self.test_tool_server,
+            ):
+                widget.setEnabled(enabled)
+            values = draft or {}
+            self.tool_server_name.setText(str(values.get("name") or ""))
+            transport_index = self.tool_server_transport.findData(
+                str(values.get("transport") or "stdio")
+            )
+            self.tool_server_transport.setCurrentIndex(max(0, transport_index))
+            self.tool_server_command.setText(str(values.get("command") or ""))
+            self.tool_server_args.setText(
+                join_command_arguments(list(values.get("args") or []))
+            )
+            self.tool_server_url.setText(str(values.get("url") or ""))
+            self.tool_server_env.setPlainText(
+                format_key_value_lines(dict(values.get("env") or {}))
+            )
+            self.tool_server_headers.setPlainText(
+                format_key_value_lines(dict(values.get("headers") or {}))
+            )
+            self.tool_server_cwd.setText(str(values.get("cwd") or ""))
+            self.tool_server_tools.setText(", ".join(values.get("tools") or []))
+            try:
+                timeout = float(values.get("timeout_seconds") or DEFAULT_MCP_TOOL_TIMEOUT_SECONDS)
+            except (TypeError, ValueError):
+                timeout = DEFAULT_MCP_TOOL_TIMEOUT_SECONDS
+            self.tool_server_timeout.setValue(timeout)
+            self.tool_server_enabled.setChecked(bool(values.get("enabled", True)))
+        finally:
+            self._tool_server_loading = False
+        if draft is None:
+            self.tool_server_status.setText(
+                "No server selected."
+                if self._tool_server_drafts
+                else "No external MCP tool servers registered."
+            )
+        else:
+            self._validate_tool_server_draft(draft)
+
+    def _tool_server_draft_from_editor(self) -> dict:
+        from VibeCADMCPToolServers import (
+            parse_key_value_lines,
+            split_command_arguments,
+        )
+
+        return {
+            "name": self.tool_server_name.text().strip(),
+            "transport": str(self.tool_server_transport.currentData() or "stdio"),
+            "command": self.tool_server_command.text().strip(),
+            "args": list(split_command_arguments(self.tool_server_args.text())),
+            "url": self.tool_server_url.text().strip(),
+            "env": parse_key_value_lines(self.tool_server_env.toPlainText()),
+            "headers": parse_key_value_lines(self.tool_server_headers.toPlainText()),
+            "cwd": self.tool_server_cwd.text().strip(),
+            "tools": [
+                name.strip()
+                for name in self.tool_server_tools.text().split(",")
+                if name.strip()
+            ],
+            "timeout_seconds": float(self.tool_server_timeout.value()),
+            "enabled": bool(self.tool_server_enabled.isChecked()),
+        }
+
+    def _validate_tool_server_draft(self, draft: dict):
+        from VibeCADMCPToolServers import MCPToolServer, MCPToolServerConfigError
+
+        try:
+            server = MCPToolServer.from_dict(draft)
+        except MCPToolServerConfigError as exc:
+            self.tool_server_status.setText(f"Not saved until fixed: {exc}")
+            return None
+        duplicates = [
+            other
+            for index, other in enumerate(self._tool_server_drafts)
+            if str(other.get("name") or "").strip().casefold() == server.key
+        ]
+        if len(duplicates) > 1:
+            self.tool_server_status.setText(
+                f"Not saved until fixed: another server is already named {server.name!r}."
+            )
+            return None
+        self.tool_server_status.setText(
+            f"{server.name}: tools appear to the agent as {server.namespace}.<tool>."
+        )
+        return server
+
+    def _tool_server_editor_changed(self, *_args) -> None:
+        if self._tool_server_loading:
+            return
+        index = self._selected_tool_server_index()
+        if index is None:
+            return
+        try:
+            draft = self._tool_server_draft_from_editor()
+        except ValueError as exc:
+            self.tool_server_status.setText(f"Not saved until fixed: {exc}")
+            return
+        self._tool_server_drafts[index] = draft
+        item = self.tool_server_list.topLevelItem(index)
+        if item is not None:
+            item.setText(0, str(draft.get("name") or ""))
+            item.setText(1, str(draft.get("transport") or "stdio"))
+            item.setText(2, self._tool_server_launch_text(draft))
+            item.setText(3, "yes" if draft.get("enabled", True) else "no")
+        self._validate_tool_server_draft(draft)
+
+    def _add_tool_server_draft(self, draft: dict) -> None:
+        key = str(draft.get("name") or "").strip().casefold()
+        for index, existing in enumerate(self._tool_server_drafts):
+            if str(existing.get("name") or "").strip().casefold() == key:
+                self._tool_server_drafts[index] = dict(draft)
+                self._refresh_tool_server_list(index)
+                return
+        self._tool_server_drafts.append(dict(draft))
+        self._refresh_tool_server_list(len(self._tool_server_drafts) - 1)
+
+    def _add_blank_tool_server(self) -> None:
+        from VibeCADMCPToolServers import DEFAULT_MCP_TOOL_TIMEOUT_SECONDS
+
+        taken = {
+            str(draft.get("name") or "").strip().casefold()
+            for draft in self._tool_server_drafts
+        }
+        number = 1
+        while f"server-{number}" in taken:
+            number += 1
+        self._add_tool_server_draft(
+            {
+                "name": f"server-{number}",
+                "transport": "stdio",
+                "command": "",
+                "args": [],
+                "env": {},
+                "headers": {},
+                "cwd": "",
+                "url": "",
+                "tools": [],
+                "timeout_seconds": DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+                "enabled": True,
+            }
+        )
+        self.tool_server_command.setFocus()
+
+    def _add_cua_driver_server(self) -> None:
+        from VibeCADMCPToolServers import cua_driver_server
+
+        self._add_tool_server_draft(cua_driver_server().to_dict())
+
+    def _add_browser_server(self) -> None:
+        from VibeCADMCPToolServers import playwright_browser_server
+
+        self._add_tool_server_draft(playwright_browser_server().to_dict())
+
+    def _add_project_folder_server(self) -> None:
+        from PySide import QtWidgets
+        from VibeCADMCPToolServers import filesystem_server
+
+        directory = QtWidgets.QFileDialog.getExistingDirectory(
+            self.form, "Select the project folder to expose to the agent"
+        )
+        if not directory:
+            return
+        self._add_tool_server_draft(filesystem_server(directory).to_dict())
+
+    def _remove_tool_server(self) -> None:
+        index = self._selected_tool_server_index()
+        if index is None:
+            return
+        del self._tool_server_drafts[index]
+        self._refresh_tool_server_list(min(index, len(self._tool_server_drafts) - 1))
+
+    def _browse_tool_server_command(self) -> None:
+        from PySide import QtWidgets
+
+        selected, _filter = QtWidgets.QFileDialog.getOpenFileName(
+            self.form, "Select the MCP server executable"
+        )
+        if selected:
+            self.tool_server_command.setText(selected)
+
+    def _test_tool_server(self) -> None:
+        import threading
+
+        index = self._selected_tool_server_index()
+        if index is None or self._tool_server_test_thread is not None:
+            return
+        server = self._validate_tool_server_draft(self._tool_server_drafts[index])
+        if server is None:
+            return
+        self.tool_server_status.setText(f"Connecting to {server.name}...")
+        self.test_tool_server.setEnabled(False)
+
+        def worker() -> None:
+            from VibeCADMCPToolServers import get_mcp_tool_server_manager
+
+            try:
+                result = get_mcp_tool_server_manager().test_server(server)
+            except Exception as exc:  # noqa: BLE001 - shown to the human
+                result = {"name": server.name, "ok": False, "error": str(exc)}
+            self._tool_server_test_result = result
+
+        self._tool_server_test_result = None
+        self._tool_server_test_thread = threading.Thread(
+            target=worker, name="VibeCAD-MCP-tool-server-test", daemon=True
+        )
+        self._tool_server_test_thread.start()
+
+    def _poll_tool_server_test(self) -> None:
+        thread = self._tool_server_test_thread
+        if thread is None or thread.is_alive():
+            return
+        self._tool_server_test_thread = None
+        result = self._tool_server_test_result or {}
+        self._tool_server_test_result = None
+        self.test_tool_server.setEnabled(self._selected_tool_server_index() is not None)
+        if result.get("ok"):
+            names = list(result.get("tool_names") or [])
+            shown = ", ".join(names[:8]) + (" ..." if len(names) > 8 else "")
+            self.tool_server_status.setText(
+                f"{result.get('name')}: connected, {result.get('tool_count', 0)} tools"
+                + (f" ({shown})" if shown else "")
+            )
+        else:
+            self.tool_server_status.setText(
+                f"{result.get('name') or 'Server'}: connection failed: "
+                f"{result.get('error') or 'unknown error'}"
+            )
+
+    def _save_tool_servers(self) -> None:
+        from VibeCADMCPToolServers import (
+            MCPToolServer,
+            MCPToolServerConfigError,
+            get_mcp_tool_server_manager,
+            load_mcp_tool_servers,
+            save_mcp_tool_servers,
+        )
+
+        servers = []
+        seen: set[str] = set()
+        for draft in self._tool_server_drafts:
+            try:
+                server = MCPToolServer.from_dict(draft)
+            except MCPToolServerConfigError as exc:
+                App.Console.PrintWarning(
+                    f"VibeCAD skipped an invalid MCP tool server registration: {exc}\n"
+                )
+                continue
+            if server.key in seen:
+                App.Console.PrintWarning(
+                    f"VibeCAD skipped duplicate MCP tool server {server.name!r}.\n"
+                )
+                continue
+            seen.add(server.key)
+            servers.append(server)
+        previous = {server.key: server for server in load_mcp_tool_servers()}
+        save_mcp_tool_servers(servers)
+        removed = set(previous) - seen
+        if removed:
+            manager = get_mcp_tool_server_manager()
+            for key in removed:
+                manager.close_server(previous[key].name)
 
     def _refresh_mcp_status(self) -> None:
         try:
@@ -1789,6 +2297,12 @@ class VibeCADMCPPreferencesPage:
     def saveSettings(self) -> None:
         set_mcp_enabled(self.mcp_enabled.isChecked())
         try:
+            self._save_tool_servers()
+        except Exception as exc:
+            App.Console.PrintWarning(
+                f"VibeCAD MCP tool server preference update failed: {exc}\n"
+            )
+        try:
             import VibeCADGui
 
             VibeCADGui.apply_mcp_preferences()
@@ -1798,6 +2312,18 @@ class VibeCADMCPPreferencesPage:
 
     def loadSettings(self) -> None:
         self.mcp_enabled.setChecked(load_settings().mcp_enabled)
+        try:
+            from VibeCADMCPToolServers import load_mcp_tool_servers
+
+            self._tool_server_drafts = [
+                server.to_dict() for server in load_mcp_tool_servers()
+            ]
+        except Exception as exc:
+            App.Console.PrintWarning(
+                f"VibeCAD could not load MCP tool server registrations: {exc}\n"
+            )
+            self._tool_server_drafts = []
+        self._refresh_tool_server_list(0 if self._tool_server_drafts else None)
         self._refresh_mcp_status()
 
 

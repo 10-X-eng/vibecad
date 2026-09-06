@@ -39,6 +39,9 @@ MAX_PROVIDER_TOOL_RESULT_BYTES = 40 * 1024
 MAX_PROVIDER_COMPLETE_READ_BYTES = 2 * 1024 * 1024
 MAX_PROVIDER_RESULT_TOP_LEVEL_FIELDS = 256
 MAX_PROVIDER_INSTRUCTIONS_BYTES = 8 * 1024
+# Registered external MCP tool schemas travel beside, never inside, the frozen
+# VibeCAD CAD surface (see VibeCADMCPToolServers).
+EXTERNAL_TOOL_SCHEMAS_CONTEXT_KEY = "external_tool_schemas"
 DEFAULT_ANTHROPIC_MAX_TOKENS = 8192
 DEFAULT_ANTHROPIC_MAX_TURNS = 64
 ANTHROPIC_TURN_COMPACTION_MAX_TOKENS = 4096
@@ -185,6 +188,23 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
     )
 
 
+def _external_tool_schemas(context: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return the registered external MCP tool schemas declared for this turn."""
+
+    schemas = context.get(EXTERNAL_TOOL_SCHEMAS_CONTEXT_KEY)
+    if not isinstance(schemas, list):
+        return []
+    return [dict(schema) for schema in schemas if isinstance(schema, dict)]
+
+
+def _external_tools_instruction(context: dict[str, Any]) -> str:
+    if not _external_tool_schemas(context):
+        return ""
+    from VibeCADMCPToolServers import external_tools_instruction
+
+    return external_tools_instruction(context)
+
+
 def _system_instruction_sections(context: dict[str, Any]) -> list[str]:
     """Ordered system-instruction sections shared by every wire format."""
     sections = [VIBECAD_SYSTEM_INSTRUCTIONS]
@@ -192,6 +212,9 @@ def _system_instruction_sections(context: dict[str, Any]) -> list[str]:
         instruction = _vibescript_authoring_instruction(context)
         if instruction:
             sections.append(instruction)
+    external = _external_tools_instruction(context)
+    if external:
+        sections.append(external)
     return sections
 
 
@@ -487,6 +510,72 @@ def _codex_dynamic_tool_surface(
                 "type": "namespace",
                 "name": namespace_name,
                 "description": f"VibeCAD {domain or 'CAD'} operations available now.",
+                "tools": [],
+            },
+        )
+        namespace["tools"].append(function)
+    if namespaced:
+        dynamic_tools = [namespaces[name] for name in sorted(namespaces)]
+    return dynamic_tools, names
+
+
+def _codex_external_dynamic_tools(
+    context: dict[str, Any],
+    *,
+    namespaced: bool = True,
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], str]]:
+    """Declare registered external MCP tools as additional Codex namespaces.
+
+    The frozen VibeCAD surface built by ``_codex_dynamic_tool_surface`` is not
+    touched; these tools are appended beside it and routed by name.
+    """
+
+    dynamic_tools: list[dict[str, Any]] = []
+    namespaces: dict[str, dict[str, Any]] = {}
+    names: dict[tuple[str, str], str] = {}
+    for schema in _external_tool_schemas(context):
+        tool_name = str(schema.get("name") or "").strip()
+        domain, _, operation = tool_name.partition(".")
+        if not domain.startswith("mcp_") or not operation:
+            raise ProviderUnavailable(
+                f"Invalid external MCP tool name {tool_name!r}; expected mcp_<server>.<tool>."
+            )
+        try:
+            namespace_name = _provider_function_name(domain)
+            function_name = _provider_function_name(operation)
+            input_schema = _provider_tool_parameters(schema)
+        except ValueError as exc:
+            raise ProviderUnavailable(
+                f"Invalid schema for external MCP tool {tool_name!r}: {exc}"
+            ) from exc
+        flat_name = (
+            "" if namespaced else _codex_flat_function_name(namespace_name, function_name)
+        )
+        key = (namespace_name, function_name) if namespaced else ("", flat_name)
+        if key in names:
+            raise ProviderUnavailable(
+                f"Duplicate external MCP tool name: {tool_name}"
+            )
+        names[key] = tool_name
+        function = {
+            "type": "function",
+            "name": function_name if namespaced else flat_name,
+            "description": str(schema.get("description") or ""),
+            "deferLoading": False,
+            "inputSchema": input_schema,
+        }
+        if not namespaced:
+            dynamic_tools.append(function)
+            continue
+        namespace = namespaces.setdefault(
+            namespace_name,
+            {
+                "type": "namespace",
+                "name": namespace_name,
+                "description": (
+                    "External MCP tools from the user's registered "
+                    f"{domain[len('mcp_'):]} server."
+                ),
                 "tools": [],
             },
         )
@@ -1142,6 +1231,18 @@ class CodexProvider(BaseProvider):
             raise ProviderUnavailable(
                 "Codex mode has no declared VibeCAD tools for the current workbench."
             )
+        external_tools, external_name_map = _codex_external_dynamic_tools(
+            live_context,
+            namespaced=namespaced_tools,
+        )
+        for external_key in external_name_map:
+            if external_key in dynamic_name_map:
+                raise ProviderUnavailable(
+                    "External MCP tool name collides with a VibeCAD tool: "
+                    + ".".join(part for part in external_key if part)
+                )
+        dynamic_tools.extend(external_tools)
+        dynamic_name_map.update(external_name_map)
         skill_call_key = (
             ("skills", "read")
             if namespaced_tools
@@ -1607,6 +1708,13 @@ class CodexProvider(BaseProvider):
                 developer_instructions += (
                     " Read selected skill instructions and referenced resources "
                     "only through skills.read."
+                )
+            if external_name_map:
+                developer_instructions += (
+                    " The user registered external MCP tool servers; their tools "
+                    "are declared under the mcp_* namespaces and remain permitted "
+                    "even when they control a desktop, browser, or filesystem. Use "
+                    "them as the base instructions describe."
                 )
             thread_request: dict[str, Any] = {
                 "cwd": str(codex_workspace()),
@@ -2828,6 +2936,49 @@ def _provider_tool_parameters(schema: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(parameters.get("properties"), dict):
         raise ValueError(f"Provider tool {schema.get('name')!r} has no properties.")
     return _json_safe(parameters)
+
+
+def _definition_function_name(definition: Mapping[str, Any]) -> str:
+    function = definition.get("function")
+    if isinstance(function, Mapping):
+        return str(function.get("name") or "")
+    return str(definition.get("name") or "")
+
+
+def _provider_tool_surface_definitions(
+    context: dict[str, Any],
+    definition_builder: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    validate: bool = True,
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Declare the frozen CAD surface plus any registered external MCP tools.
+
+    Returns the wire-name to VibeCAD tool-name map and the ordered provider
+    definitions. External tools always follow the CAD tools so the cached CAD
+    prefix stays stable for providers that hash the tool list.
+    """
+
+    if validate:
+        _validate_provider_wire_surface(context)
+    by_name: dict[str, str] = {}
+    definitions: list[dict[str, Any]] = []
+    schemas = [
+        *list(context.get("provider_tool_schemas") or []),
+        *_external_tool_schemas(context),
+    ]
+    for index, schema in enumerate(schemas):
+        if not isinstance(schema, dict):
+            raise ValueError(f"Provider tool schema {index} must be an object.")
+        tool_name = str(schema.get("name") or "").strip()
+        if not tool_name:
+            raise ValueError(f"Provider tool schema {index} is missing name.")
+        definition = definition_builder(schema)
+        function_name = _definition_function_name(definition)
+        if function_name in by_name:
+            raise ValueError(f"Duplicate provider function name: {function_name}")
+        by_name[function_name] = tool_name
+        definitions.append(definition)
+    return by_name, definitions
 
 
 def _anthropic_tool_definition(schema: dict[str, Any]) -> dict[str, Any]:
@@ -5495,26 +5646,9 @@ def _gemini_child_main(
         def build_tool_surface(
             surface_context: dict[str, Any],
         ) -> tuple[dict[str, str], list[dict[str, Any]]]:
-            _validate_provider_wire_surface(surface_context)
-            by_name: dict[str, str] = {}
-            definitions: list[dict[str, Any]] = []
-            for index, schema in enumerate(
-                surface_context.get("provider_tool_schemas") or []
-            ):
-                if not isinstance(schema, dict):
-                    raise ValueError(f"Provider tool schema {index} must be an object.")
-                tool_name = str(schema.get("name") or "").strip()
-                if not tool_name:
-                    raise ValueError(f"Provider tool schema {index} is missing name.")
-                definition = _gemini_tool_definition(schema)
-                function_name = str(definition["function"]["name"])
-                if function_name in by_name:
-                    raise ValueError(
-                        f"Duplicate provider function name: {function_name}"
-                    )
-                by_name[function_name] = tool_name
-                definitions.append(definition)
-            return by_name, definitions
+            return _provider_tool_surface_definitions(
+                surface_context, _gemini_tool_definition
+            )
 
         tools_by_name, tool_definitions = build_tool_surface(live_context)
         messages: list[dict[str, Any]] = [
@@ -5824,26 +5958,9 @@ def _anthropic_child_main(
         def build_tool_surface(
             surface_context: dict[str, Any],
         ) -> tuple[dict[str, str], list[dict[str, Any]]]:
-            _validate_provider_wire_surface(surface_context)
-            by_name: dict[str, str] = {}
-            definitions: list[dict[str, Any]] = []
-            for index, schema in enumerate(
-                surface_context.get("provider_tool_schemas") or []
-            ):
-                if not isinstance(schema, dict):
-                    raise ValueError(f"Provider tool schema {index} must be an object.")
-                tool_name = str(schema.get("name") or "").strip()
-                if not tool_name:
-                    raise ValueError(f"Provider tool schema {index} is missing name.")
-                definition = _anthropic_tool_definition(schema)
-                function_name = str(definition["name"])
-                if function_name in by_name:
-                    raise ValueError(
-                        f"Duplicate provider function name: {function_name}"
-                    )
-                by_name[function_name] = tool_name
-                definitions.append(definition)
-            return by_name, definitions
+            return _provider_tool_surface_definitions(
+                surface_context, _anthropic_tool_definition
+            )
 
         tools_by_name, tool_definitions = build_tool_surface(live_context)
         thinking = _anthropic_thinking_config(reasoning_effort)

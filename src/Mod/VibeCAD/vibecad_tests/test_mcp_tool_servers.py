@@ -119,8 +119,9 @@ def _frozen_cad_context() -> dict[str, Any]:
 
 
 @pytest.fixture
-def manager():
-    instance = MCPToolServerManager()
+def manager(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIBECAD_HOME", str(tmp_path))
+    instance = MCPToolServerManager(runtime_directory=tmp_path / "mcp-tool-servers")
     try:
         yield instance
     finally:
@@ -263,7 +264,8 @@ def test_cua_driver_preset_registers_the_documented_launch_command() -> None:
     assert loaded == server
 
     parameters = stdio_server_parameters(loaded)
-    assert parameters.command == "cua-driver"
+    # An installed binary resolves to its absolute path; otherwise the name stays.
+    assert Path(parameters.command).name.lower().startswith("cua-driver")
     assert parameters.args == ["mcp"]
 
     # The agent addresses cua-driver tools through one stable namespace.
@@ -745,3 +747,98 @@ def test_session_turn_exposes_registered_mcp_tools_to_the_provider(monkeypatch) 
     assert inner_calls == ["core.read_state"]
     assert [trace["tool_name"] for trace in response.tool_trace] == ["mcp_fake.echo"]
     assert any(event["event"] == "context_build_completed" and event.get("external_tool_count") == 1 for event in events)
+
+
+# --------------------------------------------------------------------------
+# Presets, editor helpers, Preferences page, and GUI events
+# --------------------------------------------------------------------------
+
+
+def test_browser_folder_and_fetch_presets_launch_the_reference_servers() -> None:
+    from VibeCADMCPToolServers import (
+        fetch_server,
+        filesystem_server,
+        playwright_browser_server,
+    )
+
+    browser = playwright_browser_server(headless=True, downloads_directory="/tmp/dl")
+    assert browser.command == "npx"
+    assert browser.args == ("-y", "@playwright/mcp@latest", "--headless", "--output-dir", "/tmp/dl")
+    assert browser.namespace == "mcp_playwright"
+
+    folder = filesystem_server("/home/me/project")
+    assert folder.args == ("-y", "@modelcontextprotocol/server-filesystem", "/home/me/project")
+    assert folder.namespace == "mcp_project_files"
+    with pytest.raises(MCPToolServerConfigError):
+        filesystem_server("")
+
+    fetch = fetch_server()
+    assert (fetch.command, fetch.args) == ("uvx", ("mcp-server-fetch",))
+
+
+def test_editor_helpers_round_trip_arguments_and_key_values() -> None:
+    from VibeCADMCPToolServers import (
+        format_key_value_lines,
+        join_command_arguments,
+        parse_key_value_lines,
+        split_command_arguments,
+    )
+
+    arguments = ("mcp", "--output-dir", "/tmp/my downloads")
+    assert split_command_arguments(join_command_arguments(arguments)) == arguments
+    assert split_command_arguments("") == ()
+
+    mapping = {"DISPLAY": ":0", "TOKEN": "${CUA_TOKEN}"}
+    assert parse_key_value_lines(format_key_value_lines(mapping)) == mapping
+    assert parse_key_value_lines("# comment\n\nA = 1\n") == {"A": "1"}
+    with pytest.raises(MCPToolServerConfigError):
+        parse_key_value_lines("no equals sign")
+
+
+def test_mcp_preferences_page_edits_and_tests_registered_tool_servers() -> None:
+    root = Path(__file__).resolve().parents[4]
+    preferences = (root / "src/Mod/VibeCAD/VibeCADPreferences.py").read_text(encoding="utf-8")
+    mcp_page = preferences.split("class VibeCADMCPPreferencesPage:", 1)[1].split(
+        "class VibeCADPromptStartersPreferencesPage:", 1
+    )[0]
+    for object_name in (
+        "VibeCADPrefMCPToolServers",
+        "VibeCADPrefMCPToolServerList",
+        "VibeCADPrefMCPToolServerAdd",
+        "VibeCADPrefMCPToolServerRemove",
+        "VibeCADPrefMCPToolServerTest",
+        "VibeCADPrefMCPToolServerAddCuaDriver",
+        "VibeCADPrefMCPToolServerAddBrowser",
+        "VibeCADPrefMCPToolServerAddFolder",
+        "VibeCADPrefMCPToolServerCommand",
+        "VibeCADPrefMCPToolServerStatus",
+    ):
+        assert f'setObjectName("{object_name}")' in mcp_page
+    assert "cua_driver_server()" in mcp_page
+    assert "playwright_browser_server()" in mcp_page
+    assert "filesystem_server(directory)" in mcp_page
+    assert "save_mcp_tool_servers(servers)" in mcp_page
+    assert "load_mcp_tool_servers()" in mcp_page
+    assert 'pref.RemString("MCPToolServers")' in preferences
+
+    gui = (root / "src/Mod/VibeCAD/VibeCADGui.py").read_text(encoding="utf-8")
+    assert "shutdown_mcp_tool_servers()" in gui
+
+
+def test_gui_renders_external_tool_server_progress_events() -> None:
+    import VibeCADGui
+
+    ready = VibeCADGui._format_progress_event(
+        {"event": "external_tool_server_ready", "name": "cua-driver", "tool_count": 12}
+    )
+    assert "cua-driver" in ready and "12" in ready
+    failed = VibeCADGui._format_progress_event(
+        {"event": "external_tool_server_failed", "name": "cua-driver", "error": "exit 3"}
+    )
+    assert "cua-driver" in failed and "exit 3" in failed
+    assert VibeCADGui._progress_event_should_append_thinking(
+        {"event": "external_tool_server_failed"}
+    )
+    assert VibeCADGui._progress_event_should_update_status(
+        {"event": "external_tool_server_ready"}
+    )

@@ -5941,6 +5941,21 @@ def _run_session_turn(
         cancellation_check=cancellation_check,
         progress_callback=progress_callback,
     )
+    from VibeCADMCPToolServers import (
+        EXTERNAL_TOOL_SCHEMAS_CONTEXT_KEY,
+        attach_external_tool_schemas,
+        wrap_tool_runner_with_external_tools,
+    )
+
+    try:
+        # Registered external MCP tools are declared beside the frozen CAD
+        # surface; a broken server never blocks the CAD turn.
+        attach_external_tool_schemas(context, progress_callback=progress_callback)
+    except Exception as exc:  # noqa: BLE001 - external servers are best effort
+        _emit(
+            progress_callback,
+            {"event": "external_tool_servers_failed", "error": str(exc)},
+        )
     if turn_conversation_id:
         context["_vibecad_codex_session"] = {
             "conversation_id": turn_conversation_id,
@@ -5962,6 +5977,9 @@ def _run_session_turn(
             "event": "context_build_completed",
             "workbench": context.get("workbench"),
             "provider_tool_count": len(context.get("provider_tool_schemas") or []),
+            "external_tool_count": len(
+                context.get(EXTERNAL_TOOL_SCHEMAS_CONTEXT_KEY) or []
+            ),
             "input_budget": input_budget,
         },
     )
@@ -6016,6 +6034,13 @@ def _run_session_turn(
             if isinstance(context.get("editable_sources"), Mapping)
             else None
         ),
+    )
+    tool_runner = wrap_tool_runner_with_external_tools(
+        tool_runner,
+        context,
+        tool_trace=tool_trace,
+        progress_callback=progress_callback,
+        cancellation_check=cancellation_check,
     )
     _emit(
         progress_callback,

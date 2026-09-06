@@ -360,6 +360,12 @@ clicking menus. That loopback CLI / HTTP channel is documented in
 [docs/vibecad-agent-control.md](docs/vibecad-agent-control.md). It does not
 disable the in-app Assistant and it is not MCP.
 
+The in-app Assistant can also call tools from MCP servers you register, such as
+[Cua Driver](https://cua.ai/cua-driver) for desktop automation, a Playwright
+browser for finding and downloading models, or a project folder of datasheets.
+Registration, presets, and the download-and-import flow are documented in
+[docs/vibecad-mcp-tool-servers.md](docs/vibecad-mcp-tool-servers.md).
+
 Release packaging details are documented in [docs/vibecad-release-packaging.md](docs/vibecad-release-packaging.md).
 
 The single-workbench Part and Part Design model, compatibility boundary, and
