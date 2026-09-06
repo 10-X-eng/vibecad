@@ -171,19 +171,23 @@ void DlgSettingsGeneral::saveUnitSystemSettings()
     // Set the actual format value
     UnitsApi::setDenominator(FracInch);
 
+    const int selectedSchema = ui->comboBox_UnitSystem->currentIndex();
+
     // Set and save the Unit System
     if (ui->checkBox_projectUnitSystemIgnore->isChecked()) {
-        // currently selected View System (unit system)
-        int viewSystemIndex = ui->comboBox_UnitSystem->currentIndex();
-        UnitsApi::setSchema(viewSystemIndex);
+        // Use the preference for the current view without changing the
+        // document's own unit system.
+        UnitsApi::setSchema(selectedSchema);
     }
-    else if (App::Document* doc = App::GetApplication().getActiveDocument()) {
-        UnitsApi::setSchema(doc->UnitSystem.getValue());
+    else if (App::GetApplication().getActiveDocument()) {
+        // A preference change with a project open must also update that
+        // project's unit system. Otherwise the old project schema is restored
+        // immediately and the model appears to break when units are changed.
+        getMainWindow()->setUserSchema(selectedSchema);
     }
     else {
         // if there is no existing document then the unit must still be set
-        int viewSystemIndex = ui->comboBox_UnitSystem->currentIndex();
-        UnitsApi::setSchema(viewSystemIndex);
+        UnitsApi::setSchema(selectedSchema);
     }
 
     ui->SubstituteDecimal->onSave();
