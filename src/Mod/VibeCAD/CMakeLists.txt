@@ -52,6 +52,7 @@ set(VibeCAD_Scripts
     VibeCADMCP.py
     VibeCADMCPStdio.py
     VibeCADMCPToolNames.py
+    VibeCADMCPToolServers.py
     VibeCADModelingSurface.py
     VibeCADNativeActionManifest.py
     VibeCADNativeArguments.py

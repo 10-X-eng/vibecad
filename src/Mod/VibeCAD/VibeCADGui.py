@@ -302,6 +302,12 @@ def _shutdown_internal_assistant() -> None:
         shutdown_managed_codex_sessions()
     except Exception as exc:
         _warn(f"VibeCAD Codex shutdown failed: {exc}")
+    try:
+        from VibeCADMCPToolServers import shutdown_mcp_tool_servers
+
+        shutdown_mcp_tool_servers()
+    except Exception as exc:
+        _warn(f"VibeCAD MCP tool server shutdown failed: {exc}")
 
     current = threading.current_thread()
     for worker in (
@@ -2389,10 +2395,25 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         tool = str(event.get("tool_name") or "CAD tool")
         elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
         return f"Applied {tool} in {elapsed:.2f}s."
+    if name == "external_tool_server_ready":
+        count = int(event.get("tool_count", 0) or 0)
+        return (
+            f"External MCP server {event.get('name') or 'server'} is ready "
+            f"with {count} tools."
+        )
+    if name == "external_tool_server_failed":
+        return (
+            f"External MCP server {event.get('name') or 'server'} is unavailable: "
+            f"{event.get('error') or 'unknown error'}"
+        )
+    if name == "external_tool_servers_failed":
+        return f"External MCP servers were skipped: {event.get('error') or 'unknown error'}"
     return name.replace("_", " ")
 
 
 _PROGRESS_THINKING_EVENTS = {
+    "external_tool_server_failed",
+    "external_tool_servers_failed",
     "provider_tool_requested",
     "provider_web_search_started",
     "provider_web_search_completed",
@@ -2406,6 +2427,7 @@ _PROGRESS_THINKING_EVENTS = {
 }
 
 _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
+    "external_tool_server_ready",
     "analyze_context_cache_hit",
     "analyze_context_progress",
     "analyze_context_ready",
