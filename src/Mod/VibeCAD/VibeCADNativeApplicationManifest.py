@@ -120,6 +120,7 @@ ASSISTANT_CHROME_IDS = frozenset(
         "VibeAttachImage",
         "VibePromptStarters",
         "VibePromptStarterMenu",
+        "VibeEngineeringBrief",
         "VibeSend",
         "VibeStop",
     }

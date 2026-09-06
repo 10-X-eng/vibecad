@@ -29,7 +29,6 @@ from VibeCADModelingSurface import (
 from VibeCADProviderDrawingResult import provider_visible_drawing_readiness
 from VibeCADVibeScriptDomains import get_vibescript_pack
 
-
 MAX_PROVIDER_IMAGE_BYTES = 2_000_000
 CODEX_INLINE_IMAGE_MAX_BYTES = MAX_PROVIDER_IMAGE_BYTES
 CODEX_LOCAL_IMAGE_MAX_BYTES = 20 * 1024 * 1024
@@ -188,6 +187,9 @@ def _vibescript_authoring_instruction(context: dict[str, Any]) -> str:
 def _system_instruction_sections(context: dict[str, Any]) -> list[str]:
     """Ordered system-instruction sections shared by every wire format."""
     sections = [VIBECAD_SYSTEM_INSTRUCTIONS]
+    task_instructions = context.get("_vibecad_task_instructions")
+    if isinstance(task_instructions, str) and task_instructions.strip():
+        sections.append(task_instructions.strip())
     if _vibescript_surface_active(context):
         instruction = _vibescript_authoring_instruction(context)
         if instruction:
@@ -456,19 +458,11 @@ def _codex_dynamic_tool_surface(
             if namespaced
             else _codex_flat_function_name(namespace_name, function_name)
         )
-        key = (
-            (namespace_name, function_name)
-            if namespaced
-            else ("", flat_name)
-        )
+        key = (namespace_name, function_name) if namespaced else ("", flat_name)
         if key in names:
             raise ProviderUnavailable(
                 "Duplicate Codex dynamic tool name: "
-                + (
-                    f"{namespace_name}.{function_name}"
-                    if namespaced
-                    else flat_name
-                )
+                + (f"{namespace_name}.{function_name}" if namespaced else flat_name)
             )
         names[key] = tool_name
         function = {
@@ -499,9 +493,7 @@ def _codex_dynamic_tool_surface(
 def _codex_skill_read_tool(*, namespaced: bool = True) -> dict[str, Any]:
     function = {
         "type": "function",
-        "name": (
-            "read" if namespaced else _codex_flat_function_name("skills", "read")
-        ),
+        "name": ("read" if namespaced else _codex_flat_function_name("skills", "read")),
         "description": (
             "Read one enabled skill's SKILL.md or a referenced UTF-8 "
             "resource contained in that skill directory."
@@ -546,9 +538,7 @@ def _codex_turn_input(prompt: str, context: dict[str, Any]) -> list[dict[str, An
     local_references = _codex_local_reference_image_input(visible)
     if local_references is not None:
         items.extend(local_references)
-        image_blocks = [
-            block for block in image_blocks if not block[0].startswith("R")
-        ]
+        image_blocks = [block for block in image_blocks if not block[0].startswith("R")]
     for label, mime_type, data in image_blocks:
         items.append({"type": "text", "text": label})
         items.append(
@@ -695,9 +685,7 @@ def provider_input_budget(
     prompt_text = str(prompt or "")
     values = _provider_prompt_section_values(prompt_text)
     sections: dict[str, int] = {
-        "system_instructions": len(
-            _provider_instructions(context).encode("utf-8")
-        ),
+        "system_instructions": len(_provider_instructions(context).encode("utf-8")),
         "provider_tool_schemas": len(
             json.dumps(
                 _json_safe(list(context.get("provider_tool_schemas") or [])),
@@ -1078,6 +1066,7 @@ class CodexProvider(BaseProvider):
         from VibeCADOllama import codex_context_limits, inspect_model
 
         live_context = dict(context)
+        tooless_task = live_context.get("_vibecad_toolless_task") is True
         ollama_model: dict[str, Any] = {}
         model_context_window: int | None = None
         model_auto_compact_token_limit: int | None = None
@@ -1094,13 +1083,11 @@ class CodexProvider(BaseProvider):
                         f"model: {ollama_model.get('error') or 'unknown error'}"
                     )
                 capabilities = set(ollama_model.get("capabilities") or [])
-                if capabilities and "tools" not in capabilities:
+                if capabilities and "tools" not in capabilities and not tooless_task:
                     raise ProviderUnavailable(
                         f"Ollama model {self.model!r} does not advertise tool calling."
                     )
-                runtime_context = int(
-                    ollama_model.get("runtime_context_length") or 0
-                )
+                runtime_context = int(ollama_model.get("runtime_context_length") or 0)
                 if runtime_context <= 0:
                     raise ProviderUnavailable(
                         "Ollama loaded the selected model but did not report its "
@@ -1125,23 +1112,25 @@ class CodexProvider(BaseProvider):
                         "provider": "Ollama via Codex",
                         "model": self.model,
                         "context_window": model_context_window,
-                        "auto_compact_token_limit": (
-                            model_auto_compact_token_limit
-                        ),
+                        "auto_compact_token_limit": (model_auto_compact_token_limit),
                     },
                 )
         namespaced_tools = _codex_uses_namespaced_tools(
             auth_mode=self.auth_mode,
             base_url=self.base_url,
         )
-        dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(
-            live_context,
-            namespaced=namespaced_tools,
-        )
-        if not dynamic_tools:
-            raise ProviderUnavailable(
-                "Codex mode has no declared VibeCAD tools for the current workbench."
+        if tooless_task:
+            dynamic_tools: list[dict[str, Any]] = []
+            dynamic_name_map: dict[tuple[str, str], str] = {}
+        else:
+            dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(
+                live_context,
+                namespaced=namespaced_tools,
             )
+            if not dynamic_tools:
+                raise ProviderUnavailable(
+                    "Codex mode has no declared VibeCAD tools for the current workbench."
+                )
         skill_call_key = (
             ("skills", "read")
             if namespaced_tools
@@ -1349,9 +1338,7 @@ class CodexProvider(BaseProvider):
             arguments_json = json.dumps(
                 _json_safe(arguments), ensure_ascii=True, separators=(",", ":")
             )
-            provider_call_id = str(
-                params.get("callId") or params.get("call_id") or ""
-            )
+            provider_call_id = str(params.get("callId") or params.get("call_id") or "")
             _emit_provider_progress(
                 progress_callback,
                 {
@@ -1421,9 +1408,7 @@ class CodexProvider(BaseProvider):
                     sdk_call="codex-app-server.turn/steer",
                     turn=1,
                     request=steer_request,
-                    base_url=(
-                        self.base_url if self.auth_mode == "api_key" else None
-                    ),
+                    base_url=(self.base_url if self.auth_mode == "api_key" else None),
                 )
                 try:
                     client.request("turn/steer", steer_request, timeout=30.0)
@@ -1494,9 +1479,7 @@ class CodexProvider(BaseProvider):
                 "web_search_enabled": self.web_search_enabled,
                 "skills_enabled": self.skills_enabled,
                 "model_context_window": model_context_window,
-                "model_auto_compact_token_limit": (
-                    model_auto_compact_token_limit
-                ),
+                "model_auto_compact_token_limit": (model_auto_compact_token_limit),
                 "api_key_sha256": (
                     hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()
                     if self.api_key
@@ -1517,9 +1500,7 @@ class CodexProvider(BaseProvider):
                     session_identity.get("conversation_path") or ""
                 ),
                 "engine": str(thread_declaration.get("engine") or ""),
-                "schema_sha256": str(
-                    thread_declaration.get("schema_sha256") or ""
-                ),
+                "schema_sha256": str(thread_declaration.get("schema_sha256") or ""),
             }
             thread_key = hashlib.sha256(
                 json.dumps(
@@ -1578,7 +1559,7 @@ class CodexProvider(BaseProvider):
                     )
                 update_cached_account(account)
 
-            if self.skills_enabled:
+            if self.skills_enabled and not tooless_task:
                 skill_catalog = load_codex_skill_catalog(
                     client,
                     cwd=codex_workspace(),
@@ -1597,13 +1578,21 @@ class CodexProvider(BaseProvider):
                 "browser automation",
                 "computer-control",
             ]
-            if not self.web_search_enabled:
+            task_web_search_enabled = self.web_search_enabled and not tooless_task
+            if not task_web_search_enabled:
                 forbidden_capabilities.append("web")
-            developer_instructions = (
-                "Operate only through the supplied VibeCAD tools. Do not "
-                f"use {', '.join(forbidden_capabilities)} tools."
-            )
-            if self.skills_enabled and skill_catalog:
+            if tooless_task:
+                developer_instructions = (
+                    "Complete this non-mutating text-only VibeCAD task directly. "
+                    "Do not call tools. Do not use "
+                    f"{', '.join(forbidden_capabilities)} tools."
+                )
+            else:
+                developer_instructions = (
+                    "Operate only through the supplied VibeCAD tools. Do not "
+                    f"use {', '.join(forbidden_capabilities)} tools."
+                )
+            if self.skills_enabled and skill_catalog and not tooless_task:
                 developer_instructions += (
                     " Read selected skill instructions and referenced resources "
                     "only through skills.read."
@@ -1619,17 +1608,13 @@ class CodexProvider(BaseProvider):
                 "environments": [],
                 "dynamicTools": dynamic_tools,
                 "config": vibecad_thread_config(
-                    web_search_enabled=self.web_search_enabled,
-                    skills_enabled=self.skills_enabled,
+                    web_search_enabled=task_web_search_enabled,
+                    skills_enabled=self.skills_enabled and not tooless_task,
                     openai_base_url=(
-                        (codex_base_url or "")
-                        if self.auth_mode == "api_key"
-                        else None
+                        (codex_base_url or "") if self.auth_mode == "api_key" else None
                     ),
                     model_context_window=model_context_window,
-                    model_auto_compact_token_limit=(
-                        model_auto_compact_token_limit
-                    ),
+                    model_auto_compact_token_limit=(model_auto_compact_token_limit),
                 ),
                 "serviceName": "vibecad",
             }
@@ -1645,9 +1630,7 @@ class CodexProvider(BaseProvider):
                     sdk_call="codex-app-server.thread/resume",
                     turn=1,
                     request=resume_request,
-                    base_url=(
-                        self.base_url if self.auth_mode == "api_key" else None
-                    ),
+                    base_url=(self.base_url if self.auth_mode == "api_key" else None),
                 )
                 thread_result = client.request(
                     "thread/resume",
@@ -1661,9 +1644,7 @@ class CodexProvider(BaseProvider):
                     sdk_call="codex-app-server.thread/start",
                     turn=1,
                     request=thread_request,
-                    base_url=(
-                        self.base_url if self.auth_mode == "api_key" else None
-                    ),
+                    base_url=(self.base_url if self.auth_mode == "api_key" else None),
                 )
                 thread_result = client.request(
                     "thread/start", thread_request, timeout=30.0
@@ -1674,9 +1655,7 @@ class CodexProvider(BaseProvider):
             if not isinstance(thread, dict) or not thread.get("id"):
                 raise ProviderUnavailable("Codex app-server created no VibeCAD thread.")
             thread_id = str(thread["id"])
-            resumed_thread = bool(
-                managed_lease is not None and managed_lease.thread_id
-            )
+            resumed_thread = bool(managed_lease is not None and managed_lease.thread_id)
             if managed_lease is not None:
                 managed_lease.remember_thread(thread_id)
 
@@ -1751,10 +1730,7 @@ class CodexProvider(BaseProvider):
 
             transition_interrupt_sent = False
             while not turn_completed.wait(0.05):
-                if (
-                    transition_response_sent.is_set()
-                    and not transition_interrupt_sent
-                ):
+                if transition_response_sent.is_set() and not transition_interrupt_sent:
                     transition_interrupt_sent = True
                     client.request(
                         "turn/interrupt",
@@ -1846,9 +1822,7 @@ class CodexProvider(BaseProvider):
                         {
                             "ollama": {
                                 "model": self.model,
-                                "server_version": ollama_model.get(
-                                    "server_version"
-                                ),
+                                "server_version": ollama_model.get("server_version"),
                                 "context_window": model_context_window,
                                 "auto_compact_token_limit": (
                                     model_auto_compact_token_limit
@@ -1969,10 +1943,19 @@ class AnthropicProvider(BaseProvider):
     ) -> ProviderResult:
         try:
             provider_context = dict(context)
-            provider_context["_vibecad_provider_options"] = {
-                "web_search_enabled": self.web_search_enabled,
-                "compaction_model": self.compaction_model,
-            }
+            provider_options = dict(
+                provider_context.get("_vibecad_provider_options") or {}
+            )
+            provider_options.update(
+                {
+                    "web_search_enabled": (
+                        self.web_search_enabled
+                        and provider_context.get("_vibecad_toolless_task") is not True
+                    ),
+                    "compaction_model": self.compaction_model,
+                }
+            )
+            provider_context["_vibecad_provider_options"] = provider_options
             return _run_provider_subprocess(
                 prompt=prompt,
                 context=provider_context,
@@ -2809,8 +2792,7 @@ def _provider_tool_parameters(schema: dict[str, Any]) -> dict[str, Any]:
                 for branch in branches
             ]
             if all(
-                isinstance(operation, str) and operation
-                for operation in operations
+                isinstance(operation, str) and operation for operation in operations
             ):
                 parameters = {
                     "type": "object",
@@ -3020,10 +3002,7 @@ def _provider_compact_native_mutation_value(
                         or not str(key).endswith("_state_sha256")
                     )
                 )
-                or (
-                    not expose_state_hashes
-                    and not str(key).endswith("sha256")
-                )
+                or (not expose_state_hashes and not str(key).endswith("sha256"))
             )
         }
         if expose_state_hashes:
@@ -3031,9 +3010,7 @@ def _provider_compact_native_mutation_value(
                 digest = value.get(key)
                 if isinstance(digest, str) and len(digest) == 64:
                     visible[f"expected_{key}"] = digest
-            state_sha256 = value.get("state_sha256") or value.get(
-                "view_state_sha256"
-            )
+            state_sha256 = value.get("state_sha256") or value.get("view_state_sha256")
             if (
                 value.get("object_name")
                 and "expected_state_sha256" not in visible
@@ -3085,9 +3062,7 @@ def _provider_visible_tool_result(
     visible = dict(result)
     visible.pop("_vibecad_image_attachment", None)
     native_result = bool(visible.pop("_vibecad_native_result", False))
-    source_lifecycle = bool(
-        visible.pop("_vibecad_source_lifecycle_result", False)
-    )
+    source_lifecycle = bool(visible.pop("_vibecad_source_lifecycle_result", False))
     source_read = bool(visible.pop("_vibecad_source_read_result", False))
     geometry_request = visible.pop("_vibecad_geometry_read_request", None)
     complete_read = bool(
@@ -3118,9 +3093,11 @@ def _provider_visible_tool_result(
             visible_job = dict(job)
             visible_job["result"] = _provider_visible_native_mutation_result(
                 nested_result,
-                capability=str(nested_receipt.get("capability") or "")
-                if isinstance(nested_receipt, dict)
-                else "",
+                capability=(
+                    str(nested_receipt.get("capability") or "")
+                    if isinstance(nested_receipt, dict)
+                    else ""
+                ),
             )
             visible["job"] = visible_job
     visible = _provider_hide_internal_program_ids(visible)
@@ -3135,9 +3112,7 @@ def _provider_visible_tool_result(
         # this, one collision summary is repeated through candidate outputs,
         # publication metadata, and live outputs until useful data crosses the
         # provider byte boundary.
-        visible["result"] = _provider_visible_source_lifecycle_result(
-            visible["result"]
-        )
+        visible["result"] = _provider_visible_source_lifecycle_result(visible["result"])
     elif source_read:
         visible = _provider_visible_source_read_result(visible)
     elif isinstance(geometry_request, dict):
@@ -3418,9 +3393,7 @@ def _provider_compact_failure_details(value: Any) -> dict[str, Any]:
         "correction",
     )
     result = {
-        key: value[key]
-        for key in fields
-        if value.get(key) not in (None, "", [], {})
+        key: value[key] for key in fields if value.get(key) not in (None, "", [], {})
     }
     issues = value.get("issues")
     if isinstance(issues, list) and issues:
@@ -3580,11 +3553,7 @@ def _provider_visible_source_lifecycle_result(
         if observed:
             compact["observed"] = observed
 
-    source_available = bool(
-        program
-        and revision
-        and not result.get("source_deleted")
-    )
+    source_available = bool(program and revision and not result.get("source_deleted"))
     if source_available and result.get("ok") is not True:
         actions: list[dict[str, Any]] = [
             {
@@ -3784,7 +3753,10 @@ def _provider_visible_geometry_read_result(
     if matrix and list(matrix) != identity:
         compact["placement"] = placement
     shape_revision = result.get("shape_revision")
-    if isinstance(shape_revision, dict) and shape_revision.get("shape_hash") is not None:
+    if (
+        isinstance(shape_revision, dict)
+        and shape_revision.get("shape_hash") is not None
+    ):
         compact["selection_revision"] = {
             "shape_hash": shape_revision["shape_hash"],
             "rule": "Read geometry again after this object's topology changes.",
@@ -4264,9 +4236,7 @@ def _anthropic_user_content(
     # prefix can be reused across requests. They remain in the logical input;
     # prompt caching only avoids reprocessing identical bytes.
     reference_blocks = [block for block in blocks if block[0].startswith("R")]
-    observation_blocks = [
-        block for block in blocks if not block[0].startswith("R")
-    ]
+    observation_blocks = [block for block in blocks if not block[0].startswith("R")]
     content: list[dict[str, Any]] = []
     for label_text, mime_type, image_data in reference_blocks:
         content.append({"type": "text", "text": label_text})
@@ -4629,9 +4599,7 @@ def _anthropic_response_summary(response: Any) -> dict[str, Any]:
     else:
         model_dump = getattr(raw_usage, "model_dump", None)
         dumped = (
-            model_dump(mode="json", exclude_none=True)
-            if callable(model_dump)
-            else {}
+            model_dump(mode="json", exclude_none=True) if callable(model_dump) else {}
         )
         usage_payload = dumped if isinstance(dumped, dict) else {}
     token_usage = {
@@ -4880,9 +4848,7 @@ def _anthropic_compaction_tool_event(
             "characters": len(source),
         }
     if "input_schema" in safe_arguments:
-        argument_summary["input_schema"] = {
-            "omitted": "readable_input_schema"
-        }
+        argument_summary["input_schema"] = {"omitted": "readable_input_schema"}
 
     def project_result(value: Any, depth: int = 0) -> dict[str, Any]:
         if not isinstance(value, dict) or depth >= 3:
@@ -4925,9 +4891,7 @@ def _anthropic_turn_compaction_packet(
         "cad_tool_events": list(tool_events[-24:]),
     }
     if previous_compaction:
-        packet["previous_compaction"] = _bounded_compaction_value(
-            previous_compaction
-        )
+        packet["previous_compaction"] = _bounded_compaction_value(previous_compaction)
 
     def packet_bytes() -> int:
         return len(
@@ -5049,9 +5013,7 @@ def _anthropic_recovery_request_tools(
 
 
 def _anthropic_recovery_terminal_output(block: Any) -> str | None:
-    name = str(
-        getattr(block, "name", None) or _object_payload(block).get("name") or ""
-    )
+    name = str(getattr(block, "name", None) or _object_payload(block).get("name") or "")
     value = getattr(block, "input", None)
     if value is None:
         value = _object_payload(block).get("input")
@@ -5445,7 +5407,9 @@ def _gemini_forced_tool_completion(
         )
     function = getattr(calls[0], "function", None)
     if str(getattr(function, "name", None) or "") != function_name:
-        raise RuntimeError(f"Google Gemini {operation_label} called the wrong function.")
+        raise RuntimeError(
+            f"Google Gemini {operation_label} called the wrong function."
+        )
     arguments_json = str(getattr(function, "arguments", None) or "")
     try:
         arguments = json.loads(arguments_json)
@@ -5627,9 +5591,7 @@ def _gemini_child_main(
                             accumulated["name"] += function_name
                         else:
                             accumulated["name"] = function_name
-                    arguments_delta = str(
-                        getattr(function, "arguments", None) or ""
-                    )
+                    arguments_delta = str(getattr(function, "arguments", None) or "")
                     if arguments_delta:
                         if (
                             str(accumulated["arguments"]).strip() == "{}"
@@ -5817,9 +5779,12 @@ def _anthropic_child_main(
     try:
         live_context = dict(context)
         web_search_enabled = _provider_option(live_context, "web_search_enabled")
-        compaction_model = str(
-            _provider_option_value(live_context, "compaction_model") or model
-        ).strip() or model
+        compaction_model = (
+            str(
+                _provider_option_value(live_context, "compaction_model") or model
+            ).strip()
+            or model
+        )
 
         def build_tool_surface(
             surface_context: dict[str, Any],
@@ -5892,8 +5857,10 @@ def _anthropic_child_main(
             "max_tokens": max_tokens,
             "cache_control": {"type": "ephemeral"},
             "system": system_blocks,
-            "tools": _anthropic_request_tools(tool_definitions, web_search_enabled),
         }
+        request_tools = _anthropic_request_tools(tool_definitions, web_search_enabled)
+        if request_tools:
+            request_kwargs["tools"] = request_tools
         if thinking is not None:
             request_kwargs["thinking"] = thinking
             request_kwargs["output_config"] = {
@@ -5913,7 +5880,7 @@ def _anthropic_child_main(
             if recovery_required:
                 sdk_request["max_tokens"] = max_tokens
                 sdk_request["tools"] = _anthropic_recovery_request_tools(
-                    list(request_kwargs["tools"])
+                    list(request_kwargs.get("tools") or [])
                 )
                 sdk_request["tool_choice"] = {"type": "auto"}
                 sdk_request["system"] = [
@@ -5939,7 +5906,7 @@ def _anthropic_child_main(
                     "attempt": attempt,
                     "model": model,
                     "message_count": len(messages),
-                    "tool_count": len(request_kwargs["tools"]),
+                    "tool_count": len(sdk_request.get("tools") or []),
                     "max_tokens": sdk_request["max_tokens"],
                     "thinking": request_kwargs.get("thinking"),
                     "output_config": sdk_request.get("output_config"),
@@ -6288,9 +6255,13 @@ def _anthropic_child_main(
                 if isinstance(updated_context, dict):
                     live_context = updated_context
                     tools_by_name, tool_definitions = build_tool_surface(live_context)
-                    request_kwargs["tools"] = _anthropic_request_tools(
+                    refreshed_tools = _anthropic_request_tools(
                         tool_definitions, web_search_enabled
                     )
+                    if refreshed_tools:
+                        request_kwargs["tools"] = refreshed_tools
+                    else:
+                        request_kwargs.pop("tools", None)
                 state_after = _provider_state_after_tool(
                     live_context,
                     result if isinstance(result, dict) else None,
