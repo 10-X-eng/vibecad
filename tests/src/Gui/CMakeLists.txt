@@ -25,6 +25,11 @@ add_executable(Gui_tests_run
 setup_qt_test(DockLayoutState)
 setup_qt_test(MacroTaskAcceptance)
 setup_qt_test(QuantitySpinBox)
+setup_qt_test(UnitSettings)
+
+target_sources(UnitSettings_Tests_run PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/Gui/PreferencePages/DlgSettingsGeneral.cpp
+)
 
 target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main
