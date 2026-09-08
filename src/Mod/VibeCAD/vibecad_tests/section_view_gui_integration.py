@@ -76,6 +76,23 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         return actions[0]
 
     @staticmethod
+    def _named_scene_nodes(view, name):
+        scene = view.getSceneGraph()
+        children = tuple(scene.getChildren()) if scene is not None else ()
+        found = []
+        for node in children:
+            getter = getattr(node, "getName", None)
+            if not callable(getter):
+                continue
+            try:
+                node_name = str(getter())
+            except Exception:
+                continue
+            if node_name == name:
+                found.append(node)
+        return tuple(found)
+
+    @staticmethod
     def _scene_clip_nodes(view):
         scene = view.getSceneGraph()
         children = tuple(scene.getChildren()) if scene is not None else ()
@@ -87,10 +104,15 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
 
     @staticmethod
     def _section_dialog():
+        main = Gui.getMainWindow()
+        if main is not None:
+            found = main.findChild(QtWidgets.QWidget, "VibeCADSectionViewDialog")
+            if found is not None:
+                return found
         application = QtGui.QApplication.instance()
         if application is None:
             return None
-        for widget in application.topLevelWidgets():
+        for widget in application.allWidgets():
             if widget.objectName() == "VibeCADSectionViewDialog":
                 return widget
         return None
@@ -118,19 +140,45 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
             any(type(node).__name__ == "SoClipPlaneManip" for node in clip_nodes),
             "Section View must not use the Coin clip manipulator.",
         )
+        self.assertTrue(
+            self._wait_until(lambda: self._named_scene_nodes(view, "VibeCADSectionCapOverlay")),
+            "Section View did not add hatched solid cap faces.",
+        )
+        cap_nodes = self._named_scene_nodes(view, "VibeCADSectionCapOverlay")
+        self.assertTrue(cap_nodes)
+        cap_children = tuple(cap_nodes[0].getChildren()) if hasattr(cap_nodes[0], "getChildren") else ()
+        child_types = {type(child).__name__ for child in cap_children}
+        self.assertIn("SoIndexedFaceSet", child_types)
+        self.assertIn("SoIndexedLineSet", child_types)
+        self.assertTrue(
+            self._wait_until(
+                lambda: self._named_scene_nodes(view, "VibeCADSectionDragger")
+            ),
+            "Section View did not add a datum-origin drag gizmo.",
+        )
         dialog = self._section_dialog()
         self.assertIsNotNone(dialog)
         self.assertTrue(dialog.isVisible())
-        self.assertIsNotNone(dialog.findChild(QtWidgets.QRadioButton, "planeFront"))
-        self.assertIsNotNone(dialog.findChild(QtWidgets.QRadioButton, "planeTop"))
-        self.assertIsNotNone(dialog.findChild(QtWidgets.QRadioButton, "planeRight"))
+        dock = Gui.getMainWindow().findChild(
+            QtWidgets.QDockWidget, "VibeCADSectionViewDock"
+        )
+        self.assertIsNotNone(dock)
+        self.assertTrue(dock.isVisible())
+        self.assertEqual(int(Gui.getMainWindow().dockWidgetArea(dock)), int(QtCore.Qt.RightDockWidgetArea))
+        self.assertIsNotNone(dialog.findChild(QtWidgets.QLabel, "sectionPlaneLabel"))
         self.assertIsNotNone(dialog.findChild(QtWidgets.QDoubleSpinBox, "sectionOffset"))
         self.assertIsNotNone(dialog.findChild(QtWidgets.QPushButton, "sectionFlip"))
+        self.assertIsNone(dialog.findChild(QtWidgets.QRadioButton, "planeFront"))
+        self.assertIsNone(dialog.findChild(QtWidgets.QDoubleSpinBox, "sectionPitch"))
 
-        top = dialog.findChild(QtWidgets.QRadioButton, "planeTop")
-        top.setChecked(True)
+        VibeCADSectionView.configure_section_view(plane="top")
+        import VibeCADSectionViewGui
+
+        VibeCADSectionViewGui.refresh_section_view_dialog()
         self._process_events()
         self.assertEqual(VibeCADSectionView.current_section_view_settings().plane, "top")
+        label = dialog.findChild(QtWidgets.QLabel, "sectionPlaneLabel")
+        self.assertIn("Top", label.text())
         self.assertTrue(view.hasClippingPlane())
 
         Gui.runCommand(command_name, 0)
