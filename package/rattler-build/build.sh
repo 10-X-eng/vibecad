@@ -11,7 +11,8 @@ if [[ -n "${CCACHE_DIR:-}" ]] && command -v ccache >/dev/null 2>&1; then
 fi
 
 VIBECAD_BUILD_PLATFORM="${VIBECAD_TARGET_PLATFORM:-${HOST:-}}"
-CMAKE_PRESET="$(bash scripts/select_cmake_preset.sh "${VIBECAD_BUILD_PLATFORM}")"
+# Rattler executes this script from the source root.
+CMAKE_PRESET="$(bash package/rattler-build/scripts/select_cmake_preset.sh "${VIBECAD_BUILD_PLATFORM}")"
 
 if [[ ${CMAKE_PRESET} == conda-linux-release ]]; then
 

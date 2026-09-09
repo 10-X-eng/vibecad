@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -18,6 +19,33 @@ PRESET_SELECTOR = (
 
 
 class TestMacOSBuildToolchain(unittest.TestCase):
+    def test_build_setup_from_rattler_source_directory(self) -> None:
+        # Rattler runs the recipe script from the copied source root, not
+        # from the recipe directory. Execute setup before platform side effects
+        # (driver installation, dependency patching, and compilation).
+        setup = BUILD_SCRIPT.read_text(encoding="utf-8").split(
+            "\nif [[ ${CMAKE_PRESET}", maxsplit=1
+        )[0]
+        for platform, preset in (
+            ("osx-arm64", "conda-macos-release"),
+            ("osx-64", "conda-macos-release"),
+            ("linux-64", "conda-linux-release"),
+        ):
+            with self.subTest(platform=platform):
+                env = os.environ.copy()
+                env.pop("HOST", None)
+                env["CCACHE_DIR"] = ""
+                env["VIBECAD_TARGET_PLATFORM"] = platform
+                result = subprocess.run(
+                    ["bash", "-e", "-c", setup + '\nprintf "%s" "$CMAKE_PRESET"'],
+                    cwd=REPO_ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, preset)
+
     def test_macos_uses_libcxx_with_standard_cxx20_stop_token(self) -> None:
         recipe = RECIPE.read_text(encoding="utf-8")
 
