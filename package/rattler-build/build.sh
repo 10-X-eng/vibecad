@@ -10,8 +10,10 @@ if [[ -n "${CCACHE_DIR:-}" ]] && command -v ccache >/dev/null 2>&1; then
     ccache -z >/dev/null 2>&1 || true
 fi
 
-if [[ ${HOST} =~ .*linux.*  ]]; then
-    CMAKE_PRESET=conda-linux-release
+VIBECAD_BUILD_PLATFORM="${VIBECAD_TARGET_PLATFORM:-${HOST:-}}"
+CMAKE_PRESET="$(bash scripts/select_cmake_preset.sh "${VIBECAD_BUILD_PLATFORM}")"
+
+if [[ ${CMAKE_PRESET} == conda-linux-release ]]; then
 
     # The Linux conda preset builds with Clang, but conda compiler activation
     # can still provide GCC-only flags.
@@ -22,9 +24,7 @@ if [[ ${HOST} =~ .*linux.*  ]]; then
     done
 fi
 
-if [[ ${HOST} =~ .*darwin.* ]]; then
-    CMAKE_PRESET=conda-macos-release
-
+if [[ ${CMAKE_PRESET} == conda-macos-release ]]; then
     # add hacks for osx here!
     echo "adding hacks for osx"
 
