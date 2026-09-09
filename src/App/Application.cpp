@@ -3840,12 +3840,21 @@ void Application::drainRecomputeDocument(
         _recomputeGeneration.erase(current);
     }
 
-    if (Document* document = getDocument(documentName.c_str());
-        document && document->isCooperativeMutationActive()) {
-        document->endCooperativeMutation();
+    std::string documentUid;
+    if (Document* document = getDocument(documentName.c_str()); document) {
+        documentUid = document->Uid.getValueStr();
+        if (document->isCooperativeMutationActive()) {
+            document->endCooperativeMutation();
+        }
     }
 
-    auto notifyFinished = [this, documentName]() {
+    auto notifyFinished = [this, documentName, documentUid]() {
+        Document* document = getDocument(documentName.c_str());
+        if (documentUid.empty()
+            || !document
+            || document->Uid.getValueStr() != documentUid) {
+            return;
+        }
         signalRecomputeRequestFinished(documentName);
     };
     if (App::MainThreadSignalConfig::hasHooks()

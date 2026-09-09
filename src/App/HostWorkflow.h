@@ -118,6 +118,8 @@ public:
      * finished runs once on the owner after the frame is destroyed and the
      * future is ready (success or failure); it must not throw. Dispatch must
      * enqueue, never invoke inline, including the initial coordinator step.
+     * If dispatchOwner throws, the future is completed with that error and
+     * finished still runs once; the coordinator is not resumed on the caller.
      */
     std::future<Result> runAsync(
         HostRuntime& runtime,
@@ -142,6 +144,22 @@ public:
                   dispatchOwner(std::move(dispatchOwner)), finished(std::move(finished)),
                   cancellation(std::move(cancellation))
             {}
+
+            void completeFromDispatchFailure(std::exception_ptr error)
+            {
+                // HostRuntime swallows completion exceptions to keep the lane
+                // alive. Complete this future here so callers cannot hang, and
+                // do not resume the coordinator on the failing thread.
+                try {
+                    workflow.reset();
+                    completion.set_exception(std::move(error));
+                }
+                catch (...) {
+                }
+                if (auto notify = std::move(finished)) {
+                    notify();
+                }
+            }
 
             void resume(std::exception_ptr failure = {})
             {
@@ -178,14 +196,26 @@ public:
                             std::exception_ptr failure;
                             try { result.get(); }
                             catch (...) { failure = std::current_exception(); }
-                            self->dispatchOwner([self, failure] { self->resume(failure); });
+                            try {
+                                self->dispatchOwner(
+                                    [self, failure] { self->resume(failure); });
+                            }
+                            catch (...) {
+                                self->completeFromDispatchFailure(
+                                    std::current_exception());
+                            }
                         });
                 }
                 catch (...) {
                     // Let the coroutine run its own cleanup/recovery at the
                     // failed yield, on a later owner dispatch (no recursion).
                     auto failure = std::current_exception();
-                    dispatchOwner([self, failure] { self->resume(failure); });
+                    try {
+                        dispatchOwner([self, failure] { self->resume(failure); });
+                    }
+                    catch (...) {
+                        completeFromDispatchFailure(std::current_exception());
+                    }
                 }
             }
         };
@@ -193,7 +223,12 @@ public:
                                               std::move(dispatchOwner), std::move(finished),
                                               std::move(cancellation));
         auto result = driver->completion.get_future();
-        driver->dispatchOwner([driver] { driver->resume(); });
+        try {
+            driver->dispatchOwner([driver] { driver->resume(); });
+        }
+        catch (...) {
+            driver->completeFromDispatchFailure(std::current_exception());
+        }
         return result;
     }
 
