@@ -13,7 +13,7 @@ calculix = "*"
 ccache = "*"
 cmake = "*"
 coin3d = "*"
-compilers = ">=1.10,<1.11"
+compilers = ">=1.10,<3"
 conda-devenv = "*"
 debugpy = "*"
 defusedxml = "*"
@@ -146,10 +146,14 @@ xorg-xproto = "*"
 
 ## macOS Dependencies (Intel)
 [target.osx-64.dependencies]
+compilers = ">=2,<3"
+libcxx = ">=21,<22"
 sed = "*"
 
 ## macOS Dependencies (Apple Silicon)
 [target.osx-arm64.dependencies]
+compilers = ">=2,<3"
+libcxx = ">=21,<22"
 sed = "*"
 
 [target.win-64.dependencies]
