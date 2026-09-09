@@ -40,6 +40,7 @@
 # include <boost/date_time/posix_time/posix_time.hpp>
 # include <boost/scope_exit.hpp>
 # include <chrono>
+# include <atomic>
 # include <optional>
 # include <memory>
 # include <utility>
@@ -126,6 +127,8 @@
 #include "FeaturePython.h"
 #include "GeoFeature.h"
 #include "GeoFeatureGroupExtension.h"
+#include "HostRuntime.h"
+#include "HostWorkflow.h"
 #include "ImagePlane.h"
 #include "InventorObject.h"
 #include "Link.h"
@@ -210,11 +213,26 @@ namespace fs = std::filesystem;
 namespace
 {
 
-RecomputeRequest takeNextRecomputeRequest(std::deque<RecomputeRequest>& requests)
+std::atomic<App::MainThreadSignalConfig::IsMainThreadFn>& mainThreadCheckHook()
 {
-    RecomputeRequest request = std::move(requests.front());
-    requests.pop_front();
-    return request;
+    static std::atomic<App::MainThreadSignalConfig::IsMainThreadFn> hook {nullptr};
+    return hook;
+}
+
+std::atomic<App::MainThreadSignalConfig::InvokeFn>& mainThreadInvokeHook()
+{
+    static std::atomic<App::MainThreadSignalConfig::InvokeFn> hook {nullptr};
+    return hook;
+}
+
+auto findRecomputeRequest(
+    std::deque<RecomputeRequest>& requests,
+    const std::string& documentName
+)
+{
+    return std::ranges::find_if(requests, [&documentName](const RecomputeRequest& request) {
+        return request.documentName == documentName;
+    });
 }
 
 bool requestTargetsDocument(const RecomputeRequest& request, const std::string& documentName)
@@ -254,17 +272,52 @@ void reportRecomputeException(const Base::Exception& exception)
     exception.reportException();
 }
 
-RecomputeResult processRecomputeRequest(RecomputeRequest& request)
+RecomputeResult processRecomputeRequest(RecomputeRequest& request, std::stop_token stopToken)
 {
     RecomputeResult result;
 
     try {
-        if (Document* document = request.resolveDocument()) {
-            document->recompute({}, request.force, nullptr, request.options);
+        if (stopToken.stop_requested()) {
+            result.success = false;
+            result.failure = RecomputeFailure::Cancelled;
+            return result;
+        }
+        Document* document = request.resolveDocument();
+        if (!document) {
+            throw Base::RuntimeError("The queued recompute document is no longer available");
         }
 
-        if (DocumentObject* documentObject = request.resolveDocumentObject()) {
-            documentObject->recomputeFeature(request.recursive);
+        if (request.documentObjectName.empty()) {
+            document->recomputeCancellable(
+                {},
+                request.force,
+                nullptr,
+                request.options,
+                stopToken
+            );
+        }
+        else {
+            DocumentObject* documentObject = request.resolveDocumentObject();
+            if (!documentObject) {
+                throw Base::RuntimeError("The queued recompute object is no longer available");
+            }
+            if (request.recursive) {
+                document->recomputeCancellable(
+                    {documentObject},
+                    true,
+                    nullptr,
+                    request.options,
+                    stopToken
+                );
+            }
+            else if (!stopToken.stop_requested()) {
+                document->recomputeFeature(documentObject, false);
+            }
+        }
+
+        if (stopToken.stop_requested()) {
+            result.success = false;
+            result.failure = RecomputeFailure::Cancelled;
         }
     }
     catch (Base::BadGraphError& exception) {
@@ -278,11 +331,56 @@ RecomputeResult processRecomputeRequest(RecomputeRequest& request)
         result.failure = RecomputeFailure::Exception;
         result.success = false;
     }
+    catch (const std::exception& exception) {
+        Base::RuntimeError wrapped(exception.what());
+        reportRecomputeException(wrapped);
+        result.exception = std::make_unique<Base::RuntimeError>(exception.what());
+        result.failure = RecomputeFailure::Exception;
+        result.success = false;
+    }
+    catch (...) {
+        Base::RuntimeError wrapped("Unknown exception while recomputing document");
+        reportRecomputeException(wrapped);
+        result.exception = std::make_unique<Base::RuntimeError>(wrapped.what());
+        result.failure = RecomputeFailure::Exception;
+        result.success = false;
+    }
 
     return result;
 }
 
 }  // namespace
+
+void App::MainThreadSignalConfig::setHooks(IsMainThreadFn isMainThread, InvokeFn invoke)
+{
+    // The predicate is the publication flag: readers cannot observe it until
+    // the matching invoker has already been stored.
+    mainThreadInvokeHook().store(invoke, std::memory_order_release);
+    mainThreadCheckHook().store(isMainThread, std::memory_order_release);
+}
+
+bool App::MainThreadSignalConfig::isMainThread()
+{
+    const auto hook = mainThreadCheckHook().load(std::memory_order_acquire);
+    return hook ? hook() : true;
+}
+
+bool App::MainThreadSignalConfig::hasHooks()
+{
+    return mainThreadCheckHook().load(std::memory_order_acquire)
+        && mainThreadInvokeHook().load(std::memory_order_acquire);
+}
+
+void App::MainThreadSignalConfig::invoke(std::function<void()>&& fn, bool blocking)
+{
+    const auto hook = mainThreadInvokeHook().load(std::memory_order_acquire);
+    if (hook) {
+        hook(std::move(fn), blocking);
+    }
+    else {
+        fn();
+    }
+}
 
 //==========================================================================
 // Application
@@ -415,21 +513,42 @@ Application::Application(std::map<std::string,std::string> &mConfig)
     mpcPramManager["System parameter"] = _pcSysParamMngr;
     mpcPramManager["User parameter"] = _pcUserParamMngr;
 
-    _stopRecomputeThread = false;
-    _recomputeThread = std::thread(&Application::recomputeWorker, this);
+    const bool isolationChild = getenvUTF8("VIBECAD_ISOLATION_CHILD") == "1";
+    _hostRuntime = std::make_unique<HostRuntime>(0, isolationChild);
 
     setupPythonTypes();
+
+    // A synchronous caller may already be restoring when an asynchronous
+    // request arrives. Start the queued request at its terminal event, never
+    // from a timer or a nested event loop.
+    signalFinishOpenDocument.connect([this] {
+        if (!_documentOpens.empty() && !_documentOpenActive) {
+            MainThreadSignalConfig::invoke([this] { startNextDocumentOpen(); }, false);
+        }
+    });
 }
 
 Application::~Application()
 {
-    // Signal the recompute worker thread to stop and join it.
-    _stopRecomputeThread = true;
-    _recomputeRequestAvailable.notify_all();
-
-    if (_recomputeThread.joinable()) {
-        _recomputeThread.join();
+    {
+        std::lock_guard<std::mutex> lock(_recomputeMutex);
+        for (auto& [name, cancellation] : _recomputeCancellation) {
+            (void)name;
+            cancellation.request_stop();
+        }
+        _recomputeRequests.clear();
     }
+    _hostRuntime->shutdown();
+}
+
+HostRuntime& Application::hostRuntime()
+{
+    return *_hostRuntime;
+}
+
+const HostRuntime& Application::hostRuntime() const
+{
+    return *_hostRuntime;
 }
 
 void Application::setupPythonTypes()
@@ -654,6 +773,9 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     doc->signalRecomputedObject.connect(std::bind(&Application::slotRecomputedObject, this, sp::_1));
     doc->signalRecomputed.connect(std::bind(&Application::slotRecomputed, this, sp::_1));
     doc->signalBeforeRecompute.connect(std::bind(&Application::slotBeforeRecompute, this, sp::_1));
+    doc->signalCooperativeMutationChanged.connect([this](const Document& document, bool active) {
+        signalCooperativeMutationChanged(document, active);
+    });
     doc->signalOpenTransaction.connect(std::bind(&Application::slotOpenTransaction, this, sp::_1, sp::_2));
     doc->signalCommitTransaction.connect(std::bind(&Application::slotCommitTransaction, this, sp::_1));
     doc->signalAbortTransaction.connect(std::bind(&Application::slotAbortTransaction, this, sp::_1));
@@ -691,20 +813,41 @@ bool Application::closeDocument(const char* name)
     if (pos == DocMap.end()) // no such document
         return false;
 
-    if (pos->second->isCooperativeMutationActive()) {
-        Base::Console().warning(
-            "Cannot close document '%s' while a cooperative mutation is active\n",
+    if (!_closingDocuments.insert(documentName).second) {
+        return false;
+    }
+    BOOST_SCOPE_EXIT_ALL(&) {
+        _closingDocuments.erase(documentName);
+    };
+
+    if (!cancelRecomputeRequestsForDocument(documentName)) {
+        Base::Console().message(
+            "Cancelling background work before closing document '%s'\n",
             name
         );
         return false;
     }
 
-    cancelRecomputeRequestsForDocument(documentName);
+    if (pos->second->isCooperativeMutationActive()
+        || pos->second->isPresentationUpdateActive()) {
+        Base::Console().warning(
+            "Cannot close document '%s' while a document update is active\n",
+            name
+        );
+        return false;
+    }
 
     // Give scoped transaction owners one synchronous boundary at which to
     // roll back and release their own critical lock. The document remains
     // registered and fully live while observers run.
     signalBeforeCloseDocument(*pos->second);
+
+    // Observers may start asynchronous cleanup. Do not invalidate that work
+    // merely because the document was idle before the notification.
+    if (pos->second->isCooperativeMutationActive()
+        || pos->second->isPresentationUpdateActive()) {
+        return false;
+    }
 
     // A transaction lock marks a synchronous critical section whose property
     // and view-provider callbacks still hold pointers into this document.
@@ -754,10 +897,25 @@ bool Application::closeDocument(const char* name)
 
 void Application::closeAllDocuments()
 {
+    if (_isClosingAll) {
+        return;
+    }
     Base::FlagToggler<bool> flag(_isClosingAll);
-    std::map<std::string,Document*>::iterator pos;
-    while((pos = DocMap.begin()) != DocMap.end())
-        closeDocument(pos->first.c_str());
+    std::vector<std::pair<std::string, std::string>> targets;
+    targets.reserve(DocMap.size());
+    for (const auto& [name, document] : DocMap) {
+        targets.emplace_back(name, document->Uid.getValueStr());
+    }
+    // Attempt each original document once. Retrying a refused close here
+    // prevents the owner event loop from adopting the worker's final result.
+    // Close observers may also delete/replace another target, so names alone
+    // cannot identify the documents this invocation was asked to close.
+    for (const auto& [name, uid] : targets) {
+        if (auto* document = getDocument(name.c_str());
+            document && document->Uid.getValueStr() == uid) {
+            closeDocument(name.c_str());
+        }
+    }
 }
 
 Document* Application::getDocument(const char *Name) const
@@ -829,6 +987,13 @@ std::string Application::getUniqueDocumentName(const char* Name, bool tempDoc) c
 
 int Application::addPendingDocument(const char *FileName, const char *objName, bool allowPartial)
 {
+    if (!MainThreadSignalConfig::isMainThread()) {
+        int result = 0;
+        MainThreadSignalConfig::invoke([&] {
+            result = addPendingDocument(FileName, objName, allowPartial);
+        }, true);
+        return result;
+    }
     if(!_isRestoring)
         return 0;
     if(allowPartial && _allowPartial)
@@ -921,18 +1086,54 @@ bool Application::tryQueueRecomputeRequest(RecomputeRequest req)
 
 bool Application::tryQueueRecomputeRequests(std::vector<RecomputeRequest> requests)
 {
-    const bool hasRequests = !requests.empty();
+    if (!std::ranges::all_of(requests, [this](const RecomputeRequest& request) {
+            return !request.documentName.empty() && request.resolveDocument()
+                && canRecomputeRequestOnWorker(request);
+        })) {
+        return false;
+    }
+
+    std::map<std::string, std::size_t> documentsToSchedule;
+    std::map<std::string, Document*> documentsToLease;
     {
         std::lock_guard<std::mutex> lock(_recomputeMutex);
         if (!std::ranges::all_of(requests, [this](const RecomputeRequest& request) {
-                return canRecomputeRequestOnWorker(request);
+                Document* document = request.resolveDocument();
+                return !request.documentName.empty() && document
+                    && (!(document->isCooperativeMutationActive()
+                          || document->isPresentationUpdateActive())
+                        || _recomputeDocumentsScheduled.contains(request.documentName));
             })) {
             return false;
         }
+        if (std::ranges::any_of(requests, [this](const RecomputeRequest& request) {
+                const auto cancellation = _recomputeCancellation.find(request.documentName);
+                return cancellation != _recomputeCancellation.end()
+                    && cancellation->second.stop_requested();
+            })) {
+            return false;
+        }
+        for (const auto& request : requests) {
+            if (_recomputeDocumentsScheduled.insert(request.documentName).second) {
+                _recomputeCancellation.insert_or_assign(request.documentName, std::stop_source {});
+                const auto generation = ++_nextRecomputeGeneration;
+                _recomputeGeneration.insert_or_assign(request.documentName, generation);
+                documentsToSchedule.emplace(request.documentName, generation);
+                documentsToLease.emplace(request.documentName, request.resolveDocument());
+            }
+        }
         std::ranges::move(requests, std::back_inserter(_recomputeRequests));
     }
-    if (hasRequests) {
-        notifyRecomputeWorker();
+
+    for (const auto& lease : documentsToLease) {
+        Document* document = lease.second;
+        if (!document) {
+            continue;
+        }
+        document->beginCooperativeMutation();
+    }
+    for (const auto& [documentName, generation] : documentsToSchedule) {
+        scheduleRecomputeDocument(documentName, generation);
     }
     return true;
 }
@@ -944,7 +1145,7 @@ bool Application::hasPendingRecomputeRequest(const std::string& documentName)
     }
 
     std::lock_guard<std::mutex> lock(_recomputeMutex);
-    if (_recomputeDocumentsInProgress.contains(documentName)) {
+    if (_recomputeDocumentsScheduled.contains(documentName)) {
         return true;
     }
     return std::ranges::any_of(_recomputeRequests, [&documentName](const RecomputeRequest& request) {
@@ -954,53 +1155,45 @@ bool Application::hasPendingRecomputeRequest(const std::string& documentName)
 
 void Application::queueRecomputeRequest(RecomputeRequest req)
 {
-    if (!canRecomputeRequestOnWorker(req)) {
-        RecomputeResult result;
-
-        // Requests that are not worker-safe stay on the caller thread unless a
-        // GUI main-thread hop is required. In App-only/headless mode there are
-        // no GUI hooks, so processing inline preserves the "stay off the
-        // worker" guarantee without inventing a synthetic main thread.
-        if (App::MainThreadSignalConfig::hasHooks()
-            && !App::MainThreadSignalConfig::isMainThread()) {
-            App::MainThreadSignalConfig::invoke(
-                [&req, &result]() { result = processRecomputeRequest(req); },
-                /*blocking=*/true
-            );
-        }
-        else {
-            result = processRecomputeRequest(req);
-        }
-
-        if (req.callback) {
-            req.callback(req, result);
-        }
-        return;
+    if (!tryQueueRecomputeRequest(std::move(req))) {
+        throw Base::RuntimeError(
+            "Cannot queue recompute: the target is unavailable, busy, or explicitly rejects "
+            "worker execution"
+        );
     }
-
-    {
-        std::lock_guard<std::mutex> lock(_recomputeMutex);
-        _recomputeRequests.push_back(std::move(req));
-    }
-    notifyRecomputeWorker();
 }
 
-void Application::cancelRecomputeRequestsForDocument(const std::string& documentName)
+bool Application::cancelRecomputeRequestsForDocument(const std::string& documentName)
 {
     if (documentName.empty()) {
-        return;
+        return true;
     }
 
-    std::unique_lock<std::mutex> lock(_recomputeMutex);
-    _recomputeStateChanged.wait(lock, [this, &documentName] {
-        return !_recomputeDocumentsInProgress.contains(documentName);
-    });
-
-    // Cancellation runs on document-close boundaries, so a linear scan keeps
-    // the queue simple without affecting the steady-state worker path.
-    std::erase_if(_recomputeRequests, [&documentName](const RecomputeRequest& request) {
-        return requestTargetsDocument(request, documentName);
-    });
+    bool mayClose = false;
+    bool releaseLease = false;
+    {
+        std::lock_guard<std::mutex> lock(_recomputeMutex);
+        std::erase_if(_recomputeRequests, [&documentName](const RecomputeRequest& request) {
+            return requestTargetsDocument(request, documentName);
+        });
+        if (auto cancellation = _recomputeCancellation.find(documentName);
+            cancellation != _recomputeCancellation.end()) {
+            cancellation->second.request_stop();
+        }
+        mayClose = !_recomputeDocumentsInProgress.contains(documentName);
+        if (mayClose) {
+            releaseLease = _recomputeDocumentsScheduled.erase(documentName) != 0;
+            _recomputeCancellation.erase(documentName);
+            _recomputeGeneration.erase(documentName);
+        }
+    }
+    if (releaseLease) {
+        if (Document* document = getDocument(documentName.c_str());
+            document && document->isCooperativeMutationActive()) {
+            document->endCooperativeMutation();
+        }
+    }
+    return mayClose;
 }
 
 struct DocTiming {
@@ -1014,9 +1207,9 @@ struct DocTiming {
 
 class DocOpenGuard {
 public:
-    bool &flag;
+    std::atomic<bool> &flag;
     fastsignals::signal<void ()> &signal;
-    DocOpenGuard(bool &f, fastsignals::signal<void ()> &s)
+    DocOpenGuard(std::atomic<bool> &f, fastsignals::signal<void ()> &s)
         :flag(f),signal(s)
     {
         flag = true;
@@ -1086,14 +1279,137 @@ std::vector<Document*> Application::openDocuments(const std::vector<std::string>
                                                   std::vector<std::string> *errs,
                                                   DocumentInitFlags initFlags)
 {
-    std::vector<Document*> res(filenames.size(), nullptr);
+    if (_documentOpenActive) {
+        throw Base::RuntimeError("A queued document restore is active; queue the next open request");
+    }
+    return openDocumentsWorkflow(filenames, paths, labels, errs, initFlags).runSynchronously();
+}
+
+struct Application::PendingDocumentOpen
+{
+    OpenDocumentsRequest request;
+    OpenDocumentsResult result;
+    std::future<std::vector<Document*>> work;
+};
+
+void Application::openDocumentsAsync(OpenDocumentsRequest request)
+{
+    if (!MainThreadSignalConfig::hasHooks() || !MainThreadSignalConfig::isMainThread()) {
+        throw Base::RuntimeError("Asynchronous document open requires the application owner dispatcher");
+    }
+    if (!request.callback) {
+        throw Base::RuntimeError("Asynchronous document open requires a completion callback");
+    }
+    auto task = std::make_shared<PendingDocumentOpen>();
+    task->request = std::move(request);
+    _documentOpens.push_back(std::move(task));
+    startNextDocumentOpen();
+}
+
+bool Application::hasPendingDocumentOpens() const
+{
+    // Used by the GUI shutdown gate, on the same owner as queue submission.
+    return _documentOpenActive || !_documentOpens.empty();
+}
+
+void Application::cancelPendingDocumentOpens()
+{
+    if (!MainThreadSignalConfig::isMainThread()) {
+        throw Base::RuntimeError("Document-open cancellation requires the application owner");
+    }
+    for (const auto& task : _documentOpens) {
+        task->request.cancellation.request_stop();
+    }
+}
+
+void Application::startNextDocumentOpen()
+{
+    if (_documentOpenActive || _isRestoring || _documentOpens.empty()) {
+        return;
+    }
+    const auto task = _documentOpens.front();
+    _documentOpenActive = true;
+    auto& request = task->request;
+    try {
+        if (request.prepare) {
+            request.prepare(request);
+        }
+        task->work = openDocumentsWorkflow(
+            request.filenames,
+            request.paths.empty() ? nullptr : &request.paths,
+            request.labels.empty() ? nullptr : &request.labels,
+            &task->result.errors, request.initFlags, &request.inputFlags
+        ).runAsync(hostRuntime(), [](std::function<void()> resume) {
+            MainThreadSignalConfig::invoke(std::move(resume), false);
+        }, [this, task] { finishDocumentOpen(task); }, request.cancellation.get_token());
+    }
+    catch (...) {
+        task->result.failure = std::current_exception();
+        finishDocumentOpen(task);
+    }
+}
+
+void Application::finishDocumentOpen(const std::shared_ptr<PendingDocumentOpen>& task)
+{
+    // HostWorkflow delivers this event only after making its future ready and
+    // destroying the coordinator frame on the owner. get() cannot wait here.
+    if (task->work.valid()) {
+        try {
+            task->result.documents = task->work.get();
+        }
+        catch (...) {
+            task->result.failure = std::current_exception();
+        }
+    }
+    _documentOpens.pop_front();
+    try {
+        task->request.callback(std::move(task->result));
+    }
+    catch (const std::exception& error) {
+        Base::Console().error("Document-open completion callback failed: %s\n", error.what());
+    }
+    catch (...) {
+        Base::Console().error("Document-open completion callback failed with an unknown exception\n");
+    }
+    _documentOpenActive = false;
+    startNextDocumentOpen();
+    if (!hasPendingDocumentOpens()) {
+        signalDocumentOpenQueueIdle();
+    }
+}
+
+HostWorkflow<std::vector<Document*>> Application::openDocumentsWorkflow(
+    const std::vector<std::string>& filenames,
+    const std::vector<std::string>* paths,
+    const std::vector<std::string>* labels,
+    std::vector<std::string>* errs,
+    DocumentInitFlags initFlags, const std::vector<DocumentInitFlags>* inputFlags)
+{
+    // An earlier input can become closable while a later input restores.
+    // Resolve names on the owner at completion instead of retaining pointers
+    // to documents across worker phases.
+    std::vector<std::pair<DocumentT, std::string>> res(filenames.size());
     if (filenames.empty())
-        return res;
+        co_return std::vector<Document*> {};
 
     if (errs)
         errs->resize(filenames.size());
 
     DocOpenGuard guard(_isRestoring, signalFinishOpenDocument);
+    std::vector<std::pair<DocumentT, std::string>> incompleteDocuments;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        // Worker phases have unwound before this owner-side scope exits. Drop
+        // only incomplete restores owned by this request, never accepted files
+        // or a different document that subsequently reused an internal name.
+        for (const auto& reference : incompleteDocuments) {
+            auto* doc = reference.first.getDocument();
+            if (doc && doc->Uid.getValueStr() == reference.second
+                && doc->testStatus(Document::Restoring)) {
+                doc->abandonRestore();
+                closeDocument(doc->getName());
+            }
+        }
+    };
     _pendingDocs.clear();
     _pendingDocsReopen.clear();
     _pendingDocMap.clear();
@@ -1148,16 +1464,36 @@ std::vector<Document*> Application::openDocuments(const std::vector<std::string>
                         label = (*labels)[count].c_str();
                 }
 
-                auto doc = openDocumentPrivate(path, name.c_str(), label, isMainDoc, initFlags, std::move(objNames));
+                auto opening = openDocumentWorkflow(
+                    path, name.c_str(), label, isMainDoc,
+                    isMainDoc && inputFlags && count < inputFlags->size()
+                        ? (*inputFlags)[count] : initFlags,
+                    std::move(objNames)
+                );
+                while (opening.advance()) {
+                    try {
+                        co_yield opening.step();
+                    }
+                    catch (...) {
+                        opening.failStep(std::current_exception());
+                    }
+                }
+                auto doc = opening.takeResult();
                 timing.d1 += std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - startTime);
                 if (doc) {
                     timings[doc].d1 += timing.d1;
-                    newDocs.emplace(doc);
+                    if (doc->testStatus(Document::Restoring)) {
+                        newDocs.emplace(doc);
+                        incompleteDocuments.emplace_back(DocumentT(doc), doc->Uid.getValueStr());
+                    }
                 }
 
-                if (isMainDoc)
-                    res[count] = doc;
+                if (isMainDoc && doc)
+                    res[count] = {DocumentT(doc), doc->Uid.getValueStr()};
                 _objCount = -1;
+            }
+            catch (const Base::AbortException&) {
+                throw;
             }
             catch (const Base::Exception &e) {
                 e.reportException();
@@ -1196,8 +1532,10 @@ std::vector<Document*> Application::openDocuments(const std::vector<std::string>
                 _pendingDocsReopen.clear();
                 for(const auto &file : _pendingDocs) {
                     auto doc = getDocumentByPath(file.c_str());
-                    if(doc)
-                        closeDocument(doc->getName());
+                    if (doc && !closeDocument(doc->getName())) {
+                        throw Base::RuntimeError(
+                            "Cannot reload a dependency while its document update is active: " + file);
+                    }
                 }
             }
         }
@@ -1241,7 +1579,16 @@ std::vector<Document*> Application::openDocuments(const std::vector<std::string>
             std::chrono::high_resolution_clock::time_point startTime = std::chrono::high_resolution_clock::now();
 
             // Finalize document restoring with the correct order
-            if(doc->afterRestore(true)) {
+            bool restored = false;
+            doc->beginPresentationUpdate();
+            BOOST_SCOPE_EXIT_ALL(doc) {
+                doc->endPresentationUpdate();
+            };
+            co_yield HostWorkflow<std::vector<Document*>>::Step {
+                HostRuntime::Lane::Document,
+                [doc, &restored](std::stop_token) { restored = doc->afterRestore(true); }
+            };
+            if(restored) {
                 openedDocs.emplace_back(doc);
                 it = docs.erase(it);
             } else {
@@ -1260,14 +1607,24 @@ std::vector<Document*> Application::openDocuments(const std::vector<std::string>
             seq.next();
         }
         // Close the document for reloading
-        for(const auto doc : docs)
-            closeDocument(doc->getName());
+        for (const auto doc : docs) {
+            if (!closeDocument(doc->getName())) {
+                throw Base::RuntimeError(
+                    "Cannot reload a dependency while its document update is active: "
+                    + doc->FileName.getStrValue());
+            }
+        }
 
     }while(!_pendingDocs.empty());
 
     // Set the active document using the first successfully restored main
     // document (i.e. documents explicitly asked for by caller).
-    for (auto doc : res) {
+    const auto resolveResult = [](const auto& reference) {
+        auto* doc = reference.first.getDocument();
+        return doc && doc->Uid.getValueStr() == reference.second ? doc : nullptr;
+    };
+    for (const auto& reference : res) {
+        auto* doc = resolveResult(reference);
         if (doc) {
             setActiveDocument(doc);
             break;
@@ -1283,7 +1640,12 @@ std::vector<Document*> Application::openDocuments(const std::vector<std::string>
     _isRestoring = false;
 
     signalFinishOpenDocument();
-    return res;
+    std::vector<Document*> result;
+    result.reserve(res.size());
+    for (const auto& reference : res) {
+        result.push_back(resolveResult(reference));
+    }
+    co_return result;
 }
 
 Document* Application::openDocumentPrivate(const char * FileName,
@@ -1291,9 +1653,22 @@ Document* Application::openDocumentPrivate(const char * FileName,
         bool isMainDoc, DocumentInitFlags initFlags,
         std::vector<std::string> &&objNames)
 {
+    return openDocumentWorkflow(FileName, propFileName, label, isMainDoc, initFlags,
+                                std::move(objNames)).runSynchronously();
+}
+
+HostWorkflow<Document*> Application::openDocumentWorkflow(const char* FileName,
+        const char* propFileName, const char* label,
+        bool isMainDoc, DocumentInitFlags initFlags,
+        std::vector<std::string> objNames)
+{
     Base::FileInfo File(FileName);
 
-    if (!File.exists()) {
+    bool exists = false;
+    co_yield HostWorkflow<Document*>::Step {
+        HostRuntime::Lane::Io, [&File, &exists](std::stop_token) { exists = File.exists(); }
+    };
+    if (!exists) {
         std::stringstream str;
         str << "File '" << FileName << "' does not exist!";
         throw Base::FileSystemError(str.str());
@@ -1310,7 +1685,9 @@ Document* Application::openDocumentPrivate(const char * FileName,
 
             if(isMainDoc) {
                 // Main document must be open fully, so close and reopen
-                closeDocument(doc->getName());
+                if (!closeDocument(doc->getName())) {
+                    throw Base::RuntimeError("Cannot reload a partial document while its update is active");
+                }
                 doc = nullptr;
             } else if(_allowPartial) {
                 bool reopen = false;
@@ -1332,21 +1709,21 @@ Document* Application::openDocumentPrivate(const char * FileName,
                     }
                 }
                 if(!reopen)
-                    return nullptr;
+                    co_return nullptr;
             }
 
             if(doc) {
                 _pendingDocsReopen.emplace_back(FileName);
-                return nullptr;
+                co_return nullptr;
             }
         }
 
         if (!isMainDoc) {
-            return nullptr;
+            co_return nullptr;
         }
 
         if (doc) {
-            return doc;
+            co_return doc;
         }
     }
 
@@ -1365,17 +1742,36 @@ Document* Application::openDocumentPrivate(const char * FileName,
 
     initFlags.createView &= isMainDoc;
     Document* newDoc = newDocument(name.c_str(), label, initFlags);
-    newDoc->FileName.setValue(propFileName==FileName?File.filePath():propFileName);
 
     try {
+        // Protect the document before publishing its path or yielding to a
+        // queued worker. restore() acquires its own presentation scope and
+        // transfers that scope through afterRestore(); this outer scope only
+        // bridges the scheduling gap and unwinds before error cleanup closes it.
+        newDoc->beginPresentationUpdate();
+        BOOST_SCOPE_EXIT_ALL(newDoc) {
+            newDoc->endPresentationUpdate();
+        };
+        newDoc->FileName.setValue(propFileName==FileName?File.filePath():propFileName);
+
         // read the document
-        newDoc->restore(File.filePath().c_str(),true,objNames);
+        co_yield HostWorkflow<Document*>::Step {
+            HostRuntime::Lane::Document,
+            [newDoc, &File, &objNames](std::stop_token) {
+                newDoc->restore(File.filePath().c_str(), true, objNames);
+            }
+        };
         if(!DocFileMap.empty())
             DocFileMap[Base::FileInfo(newDoc->FileName.getValue()).filePath()] = newDoc;
-        return newDoc;
+        co_return newDoc;
     }
     // if the project file itself is corrupt then
     // close the document
+    catch (const Base::AbortException&) {
+        newDoc->abandonRestore();
+        closeDocument(newDoc->getName());
+        throw;
+    }
     catch (const Base::FileException&) {
         closeDocument(newDoc->getName());
         throw;
@@ -2234,6 +2630,15 @@ void initExceptions()
 
 void Application::init(int argc, char ** argv)
 {
+#ifdef FC_OS_WIN32
+    // The packaged pthread OpenBLAS backend must not allocate one 128 MiB
+    // scratch buffer per machine CPU before any numerical job exists. Native
+    // compute uses HostRuntime's outer pool; isolated jobs set their BLAS team
+    // from their exclusive CPU lease. Respect explicit administrator settings.
+    if (qEnvironmentVariableIsEmpty("OPENBLAS_NUM_THREADS")) {
+        qputenv("OPENBLAS_NUM_THREADS", "1");
+    }
+#endif
     try {
         Base::SystemHandler::installNewHandler();
         Base::SystemHandler::installSegfaultHandler();
@@ -3289,59 +3694,166 @@ void Application::runApplication()
     }
 }
 
-void Application::notifyRecomputeWorker()
+void Application::scheduleRecomputeDocument(
+    const std::string& documentName,
+    std::size_t generation
+)
 {
-    _recomputeRequestAvailable.notify_one();
+    try {
+        auto scheduled = _hostRuntime->submit(
+            HostRuntime::Lane::Document,
+            [this, documentName, generation](std::stop_token runtimeStop) {
+                drainRecomputeDocument(documentName, generation, runtimeStop);
+            }
+        );
+        (void)scheduled;
+    }
+    catch (...) {
+        bool releaseLease = false;
+        {
+            std::lock_guard<std::mutex> lock(_recomputeMutex);
+            if (const auto current = _recomputeGeneration.find(documentName);
+                current != _recomputeGeneration.end() && current->second == generation) {
+                _recomputeDocumentsScheduled.erase(documentName);
+                _recomputeCancellation.erase(documentName);
+                _recomputeGeneration.erase(current);
+                std::erase_if(_recomputeRequests, [&documentName](const RecomputeRequest& request) {
+                    return requestTargetsDocument(request, documentName);
+                });
+                releaseLease = true;
+            }
+        }
+        if (releaseLease) {
+            if (Document* document = getDocument(documentName.c_str());
+                document && document->isCooperativeMutationActive()) {
+                document->endCooperativeMutation();
+            }
+        }
+        throw;
+    }
 }
 
-void Application::recomputeWorker()
+void Application::drainRecomputeDocument(
+    const std::string& documentName,
+    std::size_t generation,
+    std::stop_token runtimeStop
+)
 {
-    while (!_stopRecomputeThread) {
-        std::unique_lock<std::mutex> lock(_recomputeMutex);
-        // Wait until either stop is signaled or there is at least one pending request.
-        _recomputeRequestAvailable.wait(lock, [this] {
-            return _stopRecomputeThread || !_recomputeRequests.empty();
-        });
-        if (_stopRecomputeThread) {
-            break;
-        }
-
-        // Process all pending recompute requests.
-        while (!_recomputeRequests.empty()) {
-            RecomputeRequest request = takeNextRecomputeRequest(_recomputeRequests);
-            if (!request.documentName.empty()) {
-                _recomputeDocumentsInProgress.insert(request.documentName);
+    bool ownsGeneration = true;
+    bool finalized = false;
+    try {
+        while (true) {
+            RecomputeRequest request;
+            std::stop_source documentCancellation;
+            {
+                std::lock_guard<std::mutex> lock(_recomputeMutex);
+                const auto current = _recomputeGeneration.find(documentName);
+                if (current == _recomputeGeneration.end() || current->second != generation) {
+                    ownsGeneration = false;
+                    break;
+                }
+                const auto next = findRecomputeRequest(_recomputeRequests, documentName);
+                if (runtimeStop.stop_requested() || next == _recomputeRequests.end()) {
+                    if (runtimeStop.stop_requested()) {
+                        std::erase_if(
+                            _recomputeRequests,
+                            [&documentName](const RecomputeRequest& queued) {
+                                return requestTargetsDocument(queued, documentName);
+                            }
+                        );
+                    }
+                    _recomputeDocumentsInProgress.erase(documentName);
+                    _recomputeDocumentsScheduled.erase(documentName);
+                    _recomputeCancellation.erase(documentName);
+                    _recomputeGeneration.erase(current);
+                    finalized = true;
+                    break;
+                }
+                request = std::move(*next);
+                _recomputeRequests.erase(next);
+                _recomputeDocumentsInProgress.insert(documentName);
+                documentCancellation = _recomputeCancellation.at(documentName);
             }
 
-            // Unlock while processing to allow other threads to add new requests.
-            lock.unlock();
-
-            RecomputeResult result = processRecomputeRequest(request);
-
+            const auto documentStop = documentCancellation.get_token();
+            std::stop_callback runtimeCancellation(runtimeStop, [documentCancellation]() mutable {
+                documentCancellation.request_stop();
+            });
+            RecomputeResult result = processRecomputeRequest(request, documentStop);
             if (request.callback) {
-                request.callback(request, result);
+                try {
+                    request.callback(request, result);
+                }
+                catch (const std::exception& exception) {
+                    Base::Console().error(
+                        "Async recompute callback failed for '%s': %s\n",
+                        documentName.c_str(),
+                        exception.what()
+                    );
+                }
+                catch (...) {
+                    Base::Console().error(
+                        "Async recompute callback failed for '%s' with an unknown exception\n",
+                        documentName.c_str()
+                    );
+                }
             }
 
-            lock.lock();
-            if (!request.documentName.empty()) {
-                _recomputeDocumentsInProgress.erase(request.documentName);
-                _recomputeStateChanged.notify_all();
-
-                const std::string completedDocumentName = request.documentName;
-                lock.unlock();
-                auto notifyFinished = [this, completedDocumentName]() {
-                    signalRecomputeRequestFinished(completedDocumentName);
-                };
-                if (App::MainThreadSignalConfig::hasHooks()
-                    && !App::MainThreadSignalConfig::isMainThread()) {
-                    App::MainThreadSignalConfig::invoke(std::move(notifyFinished), false);
-                }
-                else {
-                    notifyFinished();
-                }
-                lock.lock();
+            if (documentStop.stop_requested()) {
+                std::lock_guard<std::mutex> lock(_recomputeMutex);
+                std::erase_if(_recomputeRequests, [&documentName](const RecomputeRequest& queued) {
+                    return requestTargetsDocument(queued, documentName);
+                });
             }
         }
+    }
+    catch (const std::exception& exception) {
+        Base::Console().error(
+            "Async recompute drain failed for '%s': %s\n",
+            documentName.c_str(),
+            exception.what()
+        );
+    }
+    catch (...) {
+        Base::Console().error(
+            "Async recompute drain failed for '%s' with an unknown exception\n",
+            documentName.c_str()
+        );
+    }
+
+    if (!ownsGeneration) {
+        return;
+    }
+
+    if (!finalized) {
+        std::lock_guard<std::mutex> lock(_recomputeMutex);
+        const auto current = _recomputeGeneration.find(documentName);
+        if (current == _recomputeGeneration.end() || current->second != generation) {
+            return;
+        }
+        std::erase_if(_recomputeRequests, [&documentName](const RecomputeRequest& queued) {
+            return requestTargetsDocument(queued, documentName);
+        });
+        _recomputeDocumentsInProgress.erase(documentName);
+        _recomputeDocumentsScheduled.erase(documentName);
+        _recomputeCancellation.erase(documentName);
+        _recomputeGeneration.erase(current);
+    }
+
+    if (Document* document = getDocument(documentName.c_str());
+        document && document->isCooperativeMutationActive()) {
+        document->endCooperativeMutation();
+    }
+
+    auto notifyFinished = [this, documentName]() {
+        signalRecomputeRequestFinished(documentName);
+    };
+    if (App::MainThreadSignalConfig::hasHooks()
+        && !App::MainThreadSignalConfig::isMainThread()) {
+        App::MainThreadSignalConfig::invoke(std::move(notifyFinished), false);
+    }
+    else {
+        notifyFinished();
     }
 }
 

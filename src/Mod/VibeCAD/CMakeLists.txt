@@ -31,6 +31,9 @@ set(VibeCAD_Scripts
     VibeCADFastenerAttachment.py
     VibeCADFastenerAssembly.py
     VibeCADGrid.py
+    VibeCADHostIsolation.py
+    VibeCADIsolationWorker.py
+    VibeCADNumericalRuntime.py
     VibeCADSectionView.py
     VibeCADSectionViewGui.py
     VibeCADGrokAuth.py

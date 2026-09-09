@@ -4,11 +4,17 @@
 #include <gmock/gmock.h>
 
 #include <string_view>
+#include <atomic>
 #include <unordered_map>
+#include <future>
+#include <thread>
+#include <chrono>
+#include <boost/scope_exit.hpp>
 
 #include "App/Application.h"
 #include "App/Document.h"
 #include "App/DocumentTimeline.h"
+#include "App/HostRuntime.h"
 #include "App/Link.h"
 #include "App/PropertyLinks.h"
 #include "App/PropertyStandard.h"
@@ -58,6 +64,22 @@ private:
 
 PROPERTY_SOURCE(App::TimelineSuppressibleTestObject, App::DocumentObject)
 
+class TimelineDependencyCountingTestObject: public DocumentObject
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(App::TimelineDependencyCountingTestObject);
+
+public:
+    mutable size_t dependencyChecks {0};
+
+    bool isTimelineStructuralChild(const DocumentObject* object) const override
+    {
+        ++dependencyChecks;
+        return DocumentObject::isTimelineStructuralChild(object);
+    }
+};
+
+PROPERTY_SOURCE(App::TimelineDependencyCountingTestObject, App::DocumentObject)
+
 class RepeatedRestoreLabelTestObject: public DocumentObject
 {
     PROPERTY_HEADER_WITH_OVERRIDE(App::RepeatedRestoreLabelTestObject);
@@ -73,6 +95,45 @@ protected:
 };
 
 PROPERTY_SOURCE(App::RepeatedRestoreLabelTestObject, App::DocumentObject)
+
+class NativeRestoreFailureTestObject: public DocumentObject
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(App::NativeRestoreFailureTestObject);
+
+protected:
+    void onDocumentRestored() override
+    {
+        // Exercise native extension failures, not the Python proxy wrapper's
+        // separate exception handler. No Python thread state is held here.
+        throw 42;
+    }
+};
+
+PROPERTY_SOURCE(App::NativeRestoreFailureTestObject, App::DocumentObject)
+
+class RestoreAbortProperty: public PropertyString
+{
+public:
+    void afterRestore() override
+    {
+        throw Base::AbortException();
+    }
+};
+
+class PropertyRestoreCancellationTestObject: public DocumentObject
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(App::PropertyRestoreCancellationTestObject);
+
+public:
+    PropertyRestoreCancellationTestObject()
+    {
+        ADD_PROPERTY(CancelAtRestore, (""));
+    }
+
+    RestoreAbortProperty CancelAtRestore;
+};
+
+PROPERTY_SOURCE(App::PropertyRestoreCancellationTestObject, App::DocumentObject)
 
 }  // namespace App
 
@@ -94,7 +155,10 @@ protected:
         tests::initApplication();
         App::TimelineThrowingSetupTestObject::init();
         App::TimelineSuppressibleTestObject::init();
+        App::TimelineDependencyCountingTestObject::init();
         App::RepeatedRestoreLabelTestObject::init();
+        App::NativeRestoreFailureTestObject::init();
+        App::PropertyRestoreCancellationTestObject::init();
     }
 
     void SetUp() override
@@ -117,6 +181,112 @@ private:
     std::string _docName;
     App::Document* _doc {};
 };
+
+TEST_F(DocumentTest, closeAllReturnsWhenAWorkerStillOwnsADocument)
+{
+    auto& application = App::GetApplication();
+    const std::string busyName = doc()->getName();
+    auto* other = application.newDocument("ClosableAlongsideBusyDocument");
+    const std::string otherName = other->getName();
+    doc()->beginPresentationUpdate();
+
+    // This is the production owner-thread entry point. A refused close must
+    // return to the event loop, not retry until the worker's GUI adoption runs.
+    application.closeAllDocuments();
+    EXPECT_EQ(application.getDocument(busyName.c_str()), doc());
+    EXPECT_EQ(application.getDocument(otherName.c_str()), nullptr);
+    EXPECT_FALSE(application.isClosingAll());
+
+    doc()->endPresentationUpdate();
+    application.closeAllDocuments();
+    EXPECT_EQ(application.getDocument(busyName.c_str()), nullptr);
+}
+
+TEST_F(DocumentTest, closeObserversCannotRecursivelyDeleteTheSameDocument)
+{
+    auto& application = App::GetApplication();
+    const std::string name = doc()->getName();
+    int beforeCloseCalls = 0;
+    fastsignals::scoped_connection connection = application.signalBeforeCloseDocument.connect(
+        [&](const App::Document& closing) {
+            if (closing.getName() != name) {
+                return;
+            }
+            ++beforeCloseCalls;
+            EXPECT_FALSE(application.closeDocument(name.c_str()));
+            application.closeAllDocuments();
+        });
+    EXPECT_TRUE(application.closeDocument(name.c_str()));
+    EXPECT_EQ(beforeCloseCalls, 1);
+    EXPECT_EQ(application.getDocument(name.c_str()), nullptr);
+}
+
+TEST_F(DocumentTest, closeRechecksWorkAcquiredByBeforeCloseObservers)
+{
+    auto& application = App::GetApplication();
+    const std::string name = doc()->getName();
+    fastsignals::scoped_connection connection = application.signalBeforeCloseDocument.connect(
+        [&](const App::Document& closing) {
+            if (closing.getName() == name) {
+                closing.beginPresentationUpdate();
+            }
+        });
+    EXPECT_FALSE(application.closeDocument(name.c_str()));
+    ASSERT_EQ(application.getDocument(name.c_str()), doc());
+    connection.disconnect();
+    doc()->endPresentationUpdate();
+    EXPECT_TRUE(application.closeDocument(name.c_str()));
+}
+
+TEST_F(DocumentTest, closeAllDoesNotCloseANewDocumentReusingAnOldName)
+{
+    auto& application = App::GetApplication();
+    // Map order makes the first document's callback replace the later target.
+    auto* first = application.newDocument("A_CloseSnapshot");
+    auto* later = application.newDocument("Z_CloseSnapshot");
+    const std::string firstName = first->getName();
+    const std::string laterName = later->getName();
+    App::Document* replacement = nullptr;
+    fastsignals::scoped_connection connection = application.signalBeforeCloseDocument.connect(
+        [&](const App::Document& closing) {
+            if (closing.getName() == firstName) {
+                EXPECT_TRUE(application.closeDocument(laterName.c_str()));
+                replacement = application.newDocument(laterName.c_str());
+            }
+        });
+    application.closeAllDocuments();
+    ASSERT_NE(replacement, nullptr);
+    EXPECT_EQ(application.getDocument(laterName.c_str()), replacement);
+    connection.disconnect();
+    EXPECT_TRUE(application.closeDocument(laterName.c_str()));
+}
+
+TEST_F(DocumentTest, presentationCompletionMayCloseItsDocument)
+{
+    auto& application = App::GetApplication();
+    for (const bool throwAfterClose : {false, true}) {
+        auto* document = application.newDocument("CloseAtPresentationCompletion");
+        const std::string name = document->getName();
+        document->beginPresentationUpdate();
+        fastsignals::scoped_connection connection =
+            document->signalPresentationUpdateChanged.connect(
+                [&](const App::Document&, bool active) {
+                    if (!active) {
+                        EXPECT_TRUE(application.closeDocument(name.c_str()));
+                        if (throwAfterClose) {
+                            throw std::runtime_error("completion observer failed after close");
+                        }
+                    }
+                });
+        if (throwAfterClose) {
+            EXPECT_THROW(document->endPresentationUpdate(), std::runtime_error);
+        }
+        else {
+            EXPECT_NO_THROW(document->endPresentationUpdate());
+        }
+        EXPECT_EQ(application.getDocument(name.c_str()), nullptr);
+    }
+}
 
 namespace
 {
@@ -234,6 +404,44 @@ void expectTimelineTestState(const App::DocumentTimeline* timeline, const Timeli
 }  // namespace
 
 
+TEST_F(DocumentTest, objectGenerationInvalidatesCapturedStructureAndValues)
+{
+    auto generation = doc()->getObjectChangeGeneration();
+    auto* object = doc()->addObject("App::FeaturePython", "SnapshotSource");
+    EXPECT_GT(doc()->getObjectChangeGeneration(), generation);
+    generation = doc()->getObjectChangeGeneration();
+    object->Label.setValue("Changed source");
+    EXPECT_GT(doc()->getObjectChangeGeneration(), generation);
+    generation = doc()->getObjectChangeGeneration();
+    EXPECT_EQ(doc()->getObject("SnapshotSource"), object);
+    EXPECT_EQ(doc()->getObjectChangeGeneration(), generation);
+
+    object->addDynamicProperty("App::PropertyString", "SnapshotMetadata");
+    EXPECT_GT(doc()->getObjectChangeGeneration(), generation);
+    generation = doc()->getObjectChangeGeneration();
+    ASSERT_TRUE(object->removeDynamicProperty("SnapshotMetadata"));
+    EXPECT_GT(doc()->getObjectChangeGeneration(), generation);
+    generation = doc()->getObjectChangeGeneration();
+    doc()->removeObject("SnapshotSource");
+    EXPECT_GT(doc()->getObjectChangeGeneration(), generation);
+}
+
+TEST_F(DocumentTest, removalGenerationIgnoresAdditionsAndValuesButTracksRemovalAndClear)
+{
+    const auto initial = doc()->getObjectRemovalGeneration();
+    auto* object = doc()->addObject("App::FeaturePython", "IdentitySource");
+    object->Label.setValue("Updated label");
+    doc()->addObject("App::FeaturePython", "OtherSource");
+    EXPECT_EQ(doc()->getObjectRemovalGeneration(), initial);
+    doc()->removeObject("IdentitySource");
+    const auto removed = doc()->getObjectRemovalGeneration();
+    EXPECT_GT(removed, initial);
+    doc()->addObject("App::FeaturePython", "IdentitySource");
+    EXPECT_EQ(doc()->getObjectRemovalGeneration(), removed);
+    doc()->clearDocument();
+    EXPECT_GT(doc()->getObjectRemovalGeneration(), removed);
+}
+
 TEST_F(DocumentTest, addStringHasherIndicatesUnwrittenWhenNew)
 {
     // Arrange
@@ -245,6 +453,263 @@ TEST_F(DocumentTest, addStringHasherIndicatesUnwrittenWhenNew)
     // Assert
     EXPECT_TRUE(addResult.first);
     EXPECT_THAT(addResult.second, Ne(-1));
+}
+
+TEST_F(DocumentTest, restoreKeepsPresentationSuppressedUntilFinalState)
+{
+    auto* feature = doc()->addObject(
+        "App::FeaturePython",
+        "RestorePresentationFeature",
+        true,
+        "Gui::ViewProviderDocumentObject"
+    );
+    ASSERT_NE(feature, nullptr);
+    Base::FileInfo saved = timelineTestFile("restore-presentation-epoch");
+    ASSERT_TRUE(doc()->saveCopy(saved.filePath().c_str()));
+
+    bool startObserved = false;
+    bool finishObserved = false;
+    bool queuedRestoreProtected = false;
+    fastsignals::scoped_connection propertyConnection;
+    fastsignals::scoped_connection createdConnection =
+        App::GetApplication().signalNewDocument.connect([&](const App::Document& created, bool) {
+            auto* createdDocument = App::GetApplication().getDocument(created.getName());
+            propertyConnection = createdDocument->signalChanged.connect(
+                [&](const App::Document& changing, const App::Property& property) {
+                    if (&property != &changing.FileName || changing.FileName.getStrValue().empty()) {
+                        return;
+                    }
+                    queuedRestoreProtected = changing.isPresentationUpdateActive();
+                    EXPECT_TRUE(queuedRestoreProtected);
+                    if (queuedRestoreProtected) {
+                        EXPECT_FALSE(App::GetApplication().closeDocument(changing.getName()));
+                    }
+                });
+        });
+    fastsignals::scoped_connection startConnection =
+        App::GetApplication().signalStartRestoreDocument.connect([&](const App::Document& restoring) {
+            startObserved = true;
+            EXPECT_TRUE(restoring.isPresentationUpdateActive());
+        });
+    fastsignals::scoped_connection finishConnection =
+        App::GetApplication().signalFinishRestoreDocument.connect([&](const App::Document& restoring) {
+            finishObserved = true;
+            EXPECT_TRUE(restoring.isPresentationUpdateActive());
+        });
+
+    auto* reopened = App::GetApplication().openDocument(saved.filePath().c_str());
+    ASSERT_NE(reopened, nullptr);
+    EXPECT_TRUE(queuedRestoreProtected);
+    EXPECT_TRUE(startObserved);
+    EXPECT_TRUE(finishObserved);
+    EXPECT_FALSE(reopened->isPresentationUpdateActive());
+
+    const std::string reopenedName = reopened->getName();
+    EXPECT_TRUE(App::GetApplication().closeDocument(reopenedName.c_str()));
+    saved.deleteFile();
+}
+
+TEST_F(DocumentTest, overlappingRestoresKeepGlobalActivityUntilBothFinish)
+{
+    auto& application = App::GetApplication();
+    std::atomic<int> idleNotifications {0};
+    fastsignals::scoped_connection restoreIdle = application.signalRestoreActivityIdle.connect([&] {
+        EXPECT_FALSE(App::Document::isAnyRestoring());
+        ++idleNotifications;
+    });
+    App::HostRuntime runtime(8);  // two document workers even on single-core CI
+    Base::FileInfo saved = timelineTestFile("overlapping-restore");
+    ASSERT_TRUE(doc()->saveCopy(saved.filePath().c_str()));
+    auto* first = application.newDocument("restore_first", nullptr, {false, true});
+    auto* second = application.newDocument("restore_second", nullptr, {false, true});
+    std::promise<void> firstReached, secondReached, releaseFirst, releaseSecond;
+    auto firstReady = firstReached.get_future();
+    auto secondReady = secondReached.get_future();
+    auto firstGate = releaseFirst.get_future();
+    auto secondGate = releaseSecond.get_future();
+    std::future<void> firstWork, secondWork;
+    bool firstReleased = false, secondReleased = false;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (!firstReleased) { releaseFirst.set_value(); }
+        if (!secondReleased) { releaseSecond.set_value(); }
+        if (firstWork.valid()) { firstWork.wait(); }
+        if (secondWork.valid()) { secondWork.wait(); }
+        for (auto* restored : {first, second}) {
+            if (restored->isPresentationUpdateActive()) {
+                restored->afterRestore(false);
+            }
+            application.closeDocument(restored->getName());
+        }
+        saved.deleteFile();
+    };
+    fastsignals::scoped_connection firstPause = first->signalRestoreDocument.connect(
+        [&](Base::XMLReader&) { firstReached.set_value(); firstGate.wait(); }
+    );
+    fastsignals::scoped_connection secondPause = second->signalRestoreDocument.connect(
+        [&](Base::XMLReader&) { secondReached.set_value(); secondGate.wait(); }
+    );
+    firstWork = runtime.submit(
+        App::HostRuntime::Lane::Document,
+        [&](std::stop_token) { first->restore(saved.filePath().c_str(), true, {}); }
+    );
+    ASSERT_EQ(firstReady.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    secondWork = runtime.submit(
+        App::HostRuntime::Lane::Document,
+        [&](std::stop_token) { second->restore(saved.filePath().c_str(), true, {}); }
+    );
+    ASSERT_EQ(secondReady.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    releaseFirst.set_value();
+    firstReleased = true;
+    firstWork.get();
+    EXPECT_TRUE(App::Document::isAnyRestoring());
+    EXPECT_EQ(idleNotifications.load(), 0);
+    releaseSecond.set_value();
+    secondReleased = true;
+    secondWork.get();
+    EXPECT_FALSE(App::Document::isAnyRestoring());
+    EXPECT_EQ(idleNotifications.load(), 1);
+}
+
+TEST_F(DocumentTest, partialReloadDoesNotDuplicateADocumentThatCannotClose)
+{
+    auto& application = App::GetApplication();
+    Base::FileInfo saved = timelineTestFile("blocked-partial-reload");
+    ASSERT_TRUE(doc()->saveCopy(saved.filePath().c_str()));
+    doc()->FileName.setValue(saved.filePath());
+    doc()->setStatus(App::Document::PartialDoc, true);
+    doc()->beginPresentationUpdate();
+    BOOST_SCOPE_EXIT_ALL(&) {
+        doc()->endPresentationUpdate();
+        doc()->setStatus(App::Document::PartialDoc, false);
+        saved.deleteFile();
+    };
+    const auto originalCount = application.getDocuments().size();
+    EXPECT_THROW(application.openDocument(saved.filePath().c_str()), Base::RuntimeError);
+    EXPECT_EQ(application.getDocuments().size(), originalCount);
+    EXPECT_EQ(application.getDocumentByPath(saved.filePath().c_str()), doc());
+}
+
+TEST_F(DocumentTest, dependencyReloadStopsWhenTheExistingDocumentCannotClose)
+{
+    auto& application = App::GetApplication();
+    Base::FileInfo dependency = timelineTestFile("blocked-dependency-reload");
+    Base::FileInfo mainFile = timelineTestFile("dependency-reload-owner");
+    ASSERT_TRUE(doc()->saveCopy(dependency.filePath().c_str()));
+    ASSERT_TRUE(doc()->saveCopy(mainFile.filePath().c_str()));
+    doc()->FileName.setValue(dependency.filePath());
+    doc()->setStatus(App::Document::PartialDoc, true);
+    doc()->lockTransaction();
+    BOOST_SCOPE_EXIT_ALL(&) {
+        doc()->unlockTransaction();
+        doc()->setStatus(App::Document::PartialDoc, false);
+        dependency.deleteFile();
+        mainFile.deleteFile();
+    };
+    const auto originalCount = application.getDocuments().size();
+    unsigned closeAttempts = 0;
+    fastsignals::scoped_connection closing = application.signalBeforeCloseDocument.connect(
+        [&](const App::Document& closingDocument) {
+            if (&closingDocument == doc() && ++closeAttempts > 1) {
+                // Bound the failing implementation without a timeout or a
+                // stranded worker: a second attempt is already the regression.
+                throw Base::RuntimeError("Dependency reload retried a refused close");
+            }
+        });
+    fastsignals::scoped_connection restoring = application.signalStartRestoreDocument.connect(
+        [&](const App::Document& restoringDocument) {
+            if (restoringDocument.FileName.getStrValue() == mainFile.filePath()) {
+                EXPECT_EQ(application.addPendingDocument(
+                    dependency.filePath().c_str(), "MissingDependencyObject", false), 1);
+            }
+        });
+
+    EXPECT_THROW(application.openDocument(mainFile.filePath().c_str()), Base::RuntimeError);
+    EXPECT_EQ(closeAttempts, 1);
+    EXPECT_EQ(application.getDocuments().size(), originalCount);
+    EXPECT_EQ(application.getDocumentByPath(dependency.filePath().c_str()), doc());
+    EXPECT_FALSE(application.isRestoring());
+}
+
+TEST_F(DocumentTest, propertyRestoreCancellationClosesOnlyTheIncompleteDocument)
+{
+    auto& application = App::GetApplication();
+    ASSERT_NE(doc()->addObject("App::PropertyRestoreCancellationTestObject", "CancelRestore"), nullptr);
+    Base::FileInfo saved = timelineTestFile("property-restore-cancellation");
+    ASSERT_TRUE(doc()->saveCopy(saved.filePath().c_str()));
+    const auto originalCount = application.getDocuments().size();
+    BOOST_SCOPE_EXIT_ALL(&) {
+        saved.deleteFile();
+    };
+
+    EXPECT_THROW(application.openDocument(saved.filePath().c_str()), Base::AbortException);
+    EXPECT_EQ(application.getDocuments().size(), originalCount);
+    EXPECT_NE(doc()->getObject("CancelRestore"), nullptr);
+    EXPECT_FALSE(App::Document::isAnyRestoring());
+}
+
+TEST_F(DocumentTest, workerRestoreReportsNativeFailureWithoutPythonThreadState)
+{
+    auto& application = App::GetApplication();
+    ASSERT_NE(doc()->addObject("App::NativeRestoreFailureTestObject", "BrokenRestore"), nullptr);
+    Base::FileInfo saved = timelineTestFile("native-restore-failure");
+    ASSERT_TRUE(doc()->saveCopy(saved.filePath().c_str()));
+    auto* restored = application.newDocument("native_restore_failure", nullptr, {false, true});
+    std::future<void> work;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (work.valid()) { work.wait(); }
+        application.closeDocument(restored->getName());
+        saved.deleteFile();
+    };
+    work = application.hostRuntime().submit(App::HostRuntime::Lane::Document,
+        [&](std::stop_token) {
+            EXPECT_FALSE(PyGILState_Check());
+            restored->restore(saved.filePath().c_str(), false, {});
+        });
+    // This is a native worker-path test, not a GUI responsiveness measurement.
+    work.get();
+    auto* failed = restored->getObject("BrokenRestore");
+    ASSERT_NE(failed, nullptr);
+    EXPECT_STREQ(restored->getErrorDescription(failed), "Unknown exception on restore");
+    EXPECT_FALSE(restored->isPresentationUpdateActive());
+}
+
+TEST_F(DocumentTest, parallelDocumentRelabelDoesNotDiscardAnotherDocumentsUndo)
+{
+    auto& application = App::GetApplication();
+    auto* other = application.newDocument("relabel_independent");
+    auto* feature = other->addObject("App::FeaturePython", "Before");
+    other->setUndoMode(1);
+    std::promise<void> reached, release;
+    auto ready = reached.get_future();
+    auto gate = release.get_future();
+    std::future<void> work;
+    bool released = false;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (!released) { release.set_value(); }
+        if (work.valid()) { work.wait(); }
+        application.closeDocument(other->getName());
+    };
+    fastsignals::scoped_connection pause = application.signalRelabelDocument.connect(
+        [&](const App::Document& changed) {
+            if (&changed == doc()) {
+                reached.set_value();
+                gate.wait();
+            }
+        }
+    );
+    other->openTransaction("Independent change");
+    work = application.hostRuntime().submit(App::HostRuntime::Lane::Document,
+        [&](std::stop_token) { doc()->Label.setValue("Renaming concurrently"); }
+    );
+    ASSERT_EQ(ready.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    feature->Label.setValue("After");
+    other->commitTransaction();
+    release.set_value();
+    released = true;
+    work.get();
+    ASSERT_EQ(other->getAvailableUndos(), 1);
+    other->undo();
+    EXPECT_STREQ(feature->Label.getValue(), "Before");
 }
 
 TEST_F(DocumentTest, addStringHasherIndicatesAlreadyWritten)
@@ -638,6 +1103,44 @@ TEST_F(DocumentTest, importedTimelineAdoptionValidatesAndOrdersProvisionalSemant
     EXPECT_TRUE(owner->testStatus(App::Property::Hidden));
 }
 
+TEST_F(DocumentTest, concurrentLinkedSubobjectResolutionPreservesTarget)
+{
+    auto* container = doc()->addObject("App::FeaturePython", "LinkedContainer");
+    auto* source = doc()->addObject("App::FeaturePython", "LongNamedLinkedSourceFeature");
+    auto* children = static_cast<App::PropertyLinkList*>(
+        container->addDynamicProperty("App::PropertyLinkList", "Children"));
+    children->setValues({source});
+    auto* link = dynamic_cast<App::Link*>(doc()->addObject("App::Link", "Occurrence"));
+    ASSERT_NE(link, nullptr);
+    const std::string subname = std::string(source->getNameInDocument()) + ".";
+    link->LinkedObject.setValue(container, subname.c_str());
+    // Warm ordinary dependency caches: this regression isolates concurrent
+    // reads of an unchanged link, not concurrent document mutation.
+    ASSERT_EQ(link->getLinkedObject(false), source);
+    auto* extension = link->getExtensionByType<App::LinkBaseExtension>();
+    std::atomic_bool start {false};
+    std::vector<std::future<size_t>> readers;
+    for (size_t worker = 0; worker < 4; ++worker) {
+        readers.push_back(std::async(std::launch::async, [&, worker] {
+            while (!start.load()) { std::this_thread::yield(); }
+            size_t failures = 0;
+            for (size_t i = 0; i < 20000; ++i) {
+                if (worker == 0) {
+                    // Display reads the public sub-element cache while the
+                    // recompute worker resolves the same linked source.
+                    extension->getSubElements();
+                }
+                else if (link->getLinkedObject(false) != source) {
+                    ++failures;
+                }
+            }
+            return failures;
+        }));
+    }
+    start.store(true);
+    for (auto& reader : readers) { EXPECT_EQ(reader.get(), 0); }
+}
+
 TEST_F(DocumentTest, timelineMetadataOnLinksIsOccurrenceLocalAndSurvivesReopen)
 {
     auto* timeline = App::DocumentTimeline::ensure(doc());
@@ -997,6 +1500,79 @@ TEST_F(DocumentTest, resourceFirstTimelinePublicationPreservesProvisionalEnrollm
     EXPECT_TRUE(App::DocumentTimeline::hasTimelineOperationRole(operation));
 }
 
+TEST_F(DocumentTest, semanticPublicationDoesNotRetraverseEveryTrackedDependencyChain)
+{
+    doc()->setUndoMode(1);
+    doc()->openTransaction("Create tracked dependency chain");
+    std::vector<App::TimelineDependencyCountingTestObject*> chain;
+    for (size_t index = 0; index < 50; ++index) {
+        auto* object = doc()->addObject<App::TimelineDependencyCountingTestObject>(
+            "Chain", true, "Gui::ViewProviderDocumentObject");
+        if (!chain.empty()) {
+            static_cast<App::PropertyLink*>(object->addDynamicProperty(
+                "App::PropertyLink", "Input"))->setValue(chain.back());
+        }
+        chain.push_back(object);
+    }
+    doc()->commitTransaction();
+    doc()->openTransaction("Publish one dependent operation");
+    auto* operation = addTimelineTestFeature(doc(), "DependentOperation");
+    static_cast<App::PropertyLink*>(operation->addDynamicProperty(
+        "App::PropertyLink", "Input"))->setValue(chain.back());
+    for (auto* object : chain) { object->dependencyChecks = 0; }
+
+    doc()->publishProvisionalTimelineOperationBlock(operation, {});
+
+    size_t checks = 0;
+    for (const auto* object : chain) { checks += object->dependencyChecks; }
+    // Every tracked operation is validated independently. Following its whole
+    // ancestry again for every descendant is quadratic, not extra validation.
+    EXPECT_LE(checks, chain.size() * 6);
+    doc()->abortTransaction();
+}
+
+TEST_F(DocumentTest, semanticPublicationStillChecksUntrackedDependencyBridges)
+{
+    doc()->setUndoMode(1);
+    doc()->openTransaction("Create ordered roots");
+    auto* earlier = addTimelineTestFeature(doc(), "Earlier");
+    auto* later = addTimelineTestFeature(doc(), "Later");
+    auto* bridge = doc()->addObject("App::DocumentObject", "UntrackedBridge");
+    static_cast<App::PropertyLink*>(bridge->addDynamicProperty(
+        "App::PropertyLink", "Input"))->setValue(later);
+    doc()->commitTransaction();
+    doc()->openTransaction("Reject hidden forward dependency");
+    static_cast<App::PropertyLink*>(earlier->addDynamicProperty(
+        "App::PropertyLink", "Input"))->setValue(bridge);
+    auto* operation = addTimelineTestFeature(doc(), "NewOperation");
+    EXPECT_THROW(doc()->publishProvisionalTimelineOperationBlock(operation, {}), Base::RuntimeError);
+    doc()->abortTransaction();
+}
+
+TEST_F(DocumentTest, semanticPublicationMembershipIsFreshAfterOwnershipChanges)
+{
+    doc()->setUndoMode(1);
+    doc()->openTransaction("Publish exact resource ownership");
+    auto* resource = addTimelineTestFeature(doc(), "Resource");
+    auto* first = addTimelineTestFeature(doc(), "FirstOperation");
+    doc()->publishProvisionalTimelineOperationBlock(first, {resource});
+    auto* timeline = App::DocumentTimeline::get(doc());
+    ASSERT_TRUE(timeline->isSemanticallyPublishedByCurrentTransaction(first));
+
+    auto* second = addTimelineTestFeature(doc(), "SecondOperation");
+    auto* owner = dynamic_cast<App::PropertyLinkHidden*>(
+        resource->getPropertyByName(App::DocumentTimeline::OwnerPropertyName));
+    ASSERT_NE(owner, nullptr);
+    owner->setValue(second);
+    // Pruning must observe ownership as it is now, not reuse the previous
+    // publication's census. This malformed block cannot be published.
+    EXPECT_THROW(doc()->publishProvisionalTimelineOperationBlock(second, {}), Base::RuntimeError);
+    owner->setValue(first);
+    // Restoring metadata cannot resurrect the discarded exact publication proof.
+    EXPECT_FALSE(timeline->isSemanticallyPublishedByCurrentTransaction(first));
+    doc()->abortTransaction();
+}
+
 TEST_F(DocumentTest, copiedObjectsRetainExactCreationProofForSemanticPublication)
 {
     doc()->setUndoMode(1);
@@ -1009,7 +1585,9 @@ TEST_F(DocumentTest, copiedObjectsRetainExactCreationProofForSemanticPublication
     const auto baseline = captureTimelineTestState(timeline);
 
     doc()->openTransaction("Publish copied semantic block");
-    const auto copied = doc()->copyObject({source}, false, false);
+    // Publication below owns adoption; the ordinary three-argument API
+    // already adopts copies into the timeline.
+    const auto copied = doc()->copyObject({source}, false, false, false);
     ASSERT_EQ(copied.size(), 1);
     auto* resource = copied.front();
     ASSERT_NE(resource, nullptr);
@@ -1043,7 +1621,7 @@ TEST_F(DocumentTest, adoptedCopyProofRebasesTheNextCreationGeneration)
     const auto baseline = captureTimelineTestState(timeline);
 
     doc()->openTransaction("Adopt copy then publish");
-    const auto copied = doc()->copyObject({source}, false, false);
+    const auto copied = doc()->copyObject({source}, false, false, false);
     ASSERT_EQ(copied.size(), 1);
     auto* adopted = copied.front();
     ASSERT_NE(adopted, nullptr);
@@ -1234,6 +1812,83 @@ TEST_F(DocumentTest, lockedDynamicPropertyCreationAbortsUndoesAndRedoesExactly)
     EXPECT_TRUE(restored->testStatus(App::Property::LockDynamic));
     EXPECT_FALSE(object->removeDynamicProperty("LockedMetadata"));
     EXPECT_EQ(object->getPropertyByName("LockedMetadata"), restored);
+}
+
+TEST_F(DocumentTest, linkMembershipIndexTracksEditsAndConcurrentReaders)
+{
+    auto* owner = addTimelineTestFeature(doc(), "IndexedLinkOwner");
+    auto* links = static_cast<App::PropertyLinkList*>(
+        owner->addDynamicProperty("App::PropertyLinkList", "Members"));
+    std::vector<App::DocumentObject*> members;
+    for (int index = 0; index < 50; ++index) {
+        members.push_back(addTimelineTestFeature(doc(), "Member"));
+    }
+    links->setValues(members);
+    for (int index = 0; index < 50; ++index) {
+        EXPECT_EQ(links->findObject(members[index]), index);
+    }
+    EXPECT_EQ(links->findObject(nullptr), -1);
+    EXPECT_EQ(links->findObject(owner), -1);
+
+    // Both notification phases may query membership. Neither may observe an
+    // index of the opposite property value, including a reentrant lazy lookup.
+    bool before = false;
+    bool after = false;
+    fastsignals::scoped_connection beforeChange = doc()->signalBeforeChangeObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == owner && &property == links) {
+                before = true;
+                EXPECT_EQ(links->findObject(members.front()), 0);
+            }
+        });
+    fastsignals::scoped_connection afterChange = doc()->signalChangedObject.connect(
+        [&](const App::DocumentObject& object, const App::Property& property) {
+            if (&object == owner && &property == links) {
+                after = true;
+                EXPECT_EQ(links->findObject(members.front()), -1);
+                EXPECT_EQ(links->findObject(members.back()), 0);
+            }
+        });
+    links->set1Value(0, members.back());
+    EXPECT_TRUE(before);
+    EXPECT_TRUE(after);
+    beforeChange.disconnect();
+    afterChange.disconnect();
+    links->setValues(members);
+
+    // Readers use the same persistent CPU executor as geometry preparation.
+    std::vector<std::future<bool>> readers;
+    for (int worker = 0; worker < 8; ++worker) {
+        readers.push_back(App::GetApplication().hostRuntime().submit(
+            App::HostRuntime::Lane::Compute, [links, members](std::stop_token) {
+                for (int repetition = 0; repetition < 100; ++repetition) {
+                    for (int index = 0; index < 50; ++index) {
+                        if (links->findObject(members[index]) != index) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }));
+    }
+    for (auto& reader : readers) {
+        EXPECT_TRUE(reader.get());
+    }
+    links->setValues({members.back(), members.front(), members.back()});
+    EXPECT_EQ(links->findObject(members.back()), 0); // First occurrence, not last.
+    links->setSize(1);
+    EXPECT_EQ(links->findObject(members.front()), -1);
+    links->setSize(3, members.front());
+    EXPECT_EQ(links->findObject(members.front()), 1);
+    std::unique_ptr<App::Property> copy(links->Copy());
+    EXPECT_EQ(static_cast<App::PropertyLinkList*>(copy.get())->findObject(members.front()), 1);
+    links->setValues({});
+    EXPECT_EQ(links->findObject(members.back()), -1);
+    links->Paste(*copy);
+    EXPECT_EQ(links->findObject(members.back()), 0);
+    links->setSize(1024, links->getValues()[0]);
+    EXPECT_EQ(links->getValues().back(), members.back());
+    EXPECT_EQ(links->findObject(members.back()), 0);
 }
 
 TEST_F(DocumentTest, frozenNewObjectRestoresLinksAcrossUndoAndRedo)
@@ -1978,6 +2633,40 @@ TEST_F(DocumentTest, atomicPublicationTracksFirstExcludedContainerAndNestedResou
     doc()->abortTransaction();
 }
 
+TEST_F(DocumentTest, visibilityDependenciesFollowOwnershipChangesDuringApplying)
+{
+    auto* timeline = App::DocumentTimeline::ensure(doc());
+    auto* resource = addTimelineTestFeature(doc(), "VisibilityResource");
+    auto* firstOwner = addTimelineTestFeature(doc(), "VisibilityOwnerA");
+    auto* secondOwner = addTimelineTestFeature(doc(), "VisibilityOwnerB");
+    timeline->beginApplying();
+    markTimelineTestOperation(firstOwner);
+    markTimelineTestOperation(secondOwner);
+    auto [role, ownerLink] = markTimelineTestResource(resource, firstOwner);
+    (void)role;
+    timeline->Operations.setValues({resource, firstOwner, secondOwner});
+    timeline->Position.setValue(3);
+    timeline->endApplying();
+    timeline->captureVisibility();
+
+    firstOwner->Visibility.setValue(false);
+    EXPECT_FALSE(resource->Visibility.getValue());
+    firstOwner->Visibility.setValue(true);
+    EXPECT_TRUE(resource->Visibility.getValue());
+
+    // Applying suppresses baseline capture but must not suppress invalidation
+    // of ownership metadata changed by a publication or transaction replay.
+    timeline->beginApplying();
+    ownerLink->setValue(secondOwner);
+    timeline->endApplying();
+    secondOwner->Visibility.setValue(false);
+    EXPECT_FALSE(resource->Visibility.getValue());
+    secondOwner->Visibility.setValue(true);
+    EXPECT_TRUE(resource->Visibility.getValue());
+    firstOwner->Visibility.setValue(false);
+    EXPECT_TRUE(resource->Visibility.getValue());
+}
+
 TEST_F(DocumentTest, atomicPublicationSupportsSequentialPendingBlocksAndBaselineRefresh)
 {
     auto* timeline = App::DocumentTimeline::ensure(doc());
@@ -2009,6 +2698,24 @@ TEST_F(DocumentTest, atomicPublicationSupportsSequentialPendingBlocksAndBaseline
     firstOperation->Visibility.setValue(false);
     timeline->captureVisibility();
     ASSERT_FALSE(timeline->VisibilityAtEnd.getValues().test(2));
+    EXPECT_FALSE(firstParent->Visibility.getValue());
+    EXPECT_FALSE(firstLeaf->Visibility.getValue());
+    EXPECT_TRUE(secondResource->Visibility.getValue());
+
+    // Repeated owner visibility changes must retain the resource's accepted
+    // visibility, including a resource nested under another resource.
+    firstOperation->Visibility.setValue(true);
+    EXPECT_TRUE(firstParent->Visibility.getValue());
+    EXPECT_TRUE(firstLeaf->Visibility.getValue());
+    firstParent->Visibility.setValue(false);
+    EXPECT_FALSE(firstLeaf->Visibility.getValue());
+    firstOperation->Visibility.setValue(false);
+    firstOperation->Visibility.setValue(true);
+    EXPECT_FALSE(firstParent->Visibility.getValue());
+    EXPECT_FALSE(firstLeaf->Visibility.getValue());
+    firstParent->Visibility.setValue(true);
+    EXPECT_TRUE(firstLeaf->Visibility.getValue());
+    firstOperation->Visibility.setValue(false);
 
     auto* thirdResource = addTimelineTestFeature(doc(), "ThirdGenerationResource");
     auto* thirdOperation = addTimelineTestFeature(doc(), "ThirdGenerationOperation");
@@ -3098,6 +3805,58 @@ TEST_F(DocumentTest, resourceReconciliationRejectsLaterRetirementRemovedByOwnerC
     EXPECT_NE(doc()->getObject("HostileRetirementFirst"), nullptr);
     EXPECT_NE(doc()->getObject("HostileRetirementLater"), nullptr);
     expectTimelineTestState(timeline, baseline);
+}
+
+TEST_F(DocumentTest, dependencyRebaseBatchesSharedDownstreamClosure)
+{
+    doc()->setUndoMode(1);
+    auto* timeline = App::DocumentTimeline::ensure(doc());
+    doc()->openTransaction("Create shared dependency graph");
+    auto* first = addTimelineTestFeature(doc(), "FirstJoint");
+    markTimelineTestOperation(first);
+    timeline->finalizeProvisionalOperationBlock(first, {first});
+    auto* second = addTimelineTestFeature(doc(), "SecondJoint");
+    markTimelineTestOperation(second);
+    timeline->finalizeProvisionalOperationBlock(second, {second});
+    auto* consumer = addTimelineTestFeature(doc(), "SharedSimulation");
+    markTimelineTestOperation(consumer);
+    auto* inputs = static_cast<App::PropertyLinkList*>(
+        consumer->addDynamicProperty("App::PropertyLinkList", "Inputs"));
+    inputs->setValues({first, second});
+    timeline->finalizeProvisionalOperationBlock(consumer, {consumer});
+    auto* unrelated = addTimelineTestFeature(doc(), "Unrelated");
+    markTimelineTestOperation(unrelated);
+    timeline->finalizeProvisionalOperationBlock(unrelated, {unrelated});
+    auto* source = addTimelineTestFeature(doc(), "NewTravelComponent");
+    markTimelineTestOperation(source);
+    timeline->finalizeProvisionalOperationBlock(source, {source});
+    doc()->commitTransaction();
+
+    doc()->openTransaction("Rebase both changed joints once");
+    for (auto* joint : {first, second}) {
+        auto* input = static_cast<App::PropertyLink*>(
+            joint->addDynamicProperty("App::PropertyLink", "NewInput"));
+        input->setValue(source);
+    }
+    EXPECT_TRUE(timeline->reorderOperationDependentClosuresAfter({first, second}, source));
+    EXPECT_THAT(timeline->Operations.getValues(),
+                ::testing::ElementsAre(unrelated, source, first, second, consumer));
+    EXPECT_FALSE(timeline->reorderOperationDependentClosuresAfter({first, second}, source));
+    EXPECT_THROW(timeline->reorderOperationDependentClosuresAfter({first, first}, source),
+                 Base::ValueError);
+    EXPECT_THROW(timeline->reorderOperationDependentClosuresAfter({source}, consumer),
+                 Base::RuntimeError);
+    auto* motion = addTimelineTestFeature(doc(), "NewMotionAfterRebase");
+    markTimelineTestOperation(motion);
+    auto* motionInput = static_cast<App::PropertyLink*>(
+        motion->addDynamicProperty("App::PropertyLink", "Joint"));
+    motionInput->setValue(first);
+    EXPECT_NO_THROW(timeline->finalizeProvisionalOperationBlock(motion, {motion}));
+    doc()->abortTransaction();
+    EXPECT_THAT(timeline->Operations.getValues(),
+                ::testing::ElementsAre(first, second, consumer, unrelated, source));
+    EXPECT_EQ(first->getPropertyByName("NewInput"), nullptr);
+    EXPECT_EQ(doc()->getObject("NewMotionAfterRebase"), nullptr);
 }
 
 TEST_F(DocumentTest, dependencyRebaseMovesCompleteDownstreamClosureAndPersists)

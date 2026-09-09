@@ -23,6 +23,8 @@
  ***************************************************************************/
 
 
+#include <chrono>
+#include <cstdlib>
 #include <sstream>
 #include <Bnd_Box.hxx>
 #include <BRep_Builder.hxx>
@@ -95,9 +97,30 @@ PROPERTY_SOURCE(Part::Feature, App::GeoFeature)
 
 Feature::Feature()
 {
+    const bool traceConstruction = std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr;
+    const auto traceStart = std::chrono::steady_clock::now();
     ADD_PROPERTY(Shape, (TopoDS_Shape()));
+    const auto shapeReady = std::chrono::steady_clock::now();
     auto mat = Materials::MaterialManager::defaultMaterial();
+    const auto materialReady = std::chrono::steady_clock::now();
     ADD_PROPERTY(ShapeMaterial, (*mat));
+    const auto propertyReady = std::chrono::steady_clock::now();
+    if (traceConstruction) {
+        const auto elapsed = [](auto begin, auto end) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+        };
+        const auto total = elapsed(traceStart, propertyReady);
+        if (total >= 20) {
+            Base::Console().message(
+                "VIBECAD_RESTORE_DETAIL part_feature_ctor shape_ms=%lld "
+                "default_material_ms=%lld material_property_ms=%lld total_ms=%lld\n",
+                static_cast<long long>(elapsed(traceStart, shapeReady)),
+                static_cast<long long>(elapsed(shapeReady, materialReady)),
+                static_cast<long long>(elapsed(materialReady, propertyReady)),
+                static_cast<long long>(total)
+            );
+        }
+    }
 }
 
 Feature::~Feature() = default;

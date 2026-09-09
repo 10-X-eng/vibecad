@@ -3,7 +3,10 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <QWidget>
 #include <fastsignals/signal.h>
@@ -73,8 +76,12 @@ private Q_SLOTS:
     void onTimelineItemDoubleClicked(QListWidgetItem* item);
     void onTimelineContextMenu(const QPoint& position);
     void rebuild();
+    void processRefresh();
 
 private:
+    struct RebuildState;
+    struct PresentationRefreshState;
+
     enum ItemRole
     {
         ObjectNameRole = Qt::UserRole,
@@ -103,6 +110,19 @@ private:
 
     void setObservedDocument(Gui::Document* document);
     void scheduleRefresh();
+    void scheduleObjectRefresh(const App::DocumentObject& object);
+    void scheduleObjectRefresh(long objectId);
+    void scheduleControlRefresh();
+    void scheduleStableRefresh(App::Document& document);
+    void startRefreshTimer();
+    void refreshPresentation();
+    void updateTimelineItemPresentation(
+        QListWidgetItem* item,
+        App::DocumentObject* object,
+        App::DocumentObject* owner
+    );
+    void acquirePresentationUpdate(App::Document& document);
+    void releasePresentationUpdate();
     void syncSelectionFromGui();
     bool canChangeHistory() const;
     void activateOwningBody(App::DocumentObject* object);
@@ -127,6 +147,14 @@ private:
     std::string observedDocumentName;
     App::Document* observedAppDocument {};
     std::uint64_t observedDocumentGeneration {0};
+    std::uint64_t requestedRefreshGeneration {0};
+    std::unique_ptr<RebuildState> rebuildState;
+    std::unique_ptr<PresentationRefreshState> presentationRefreshState;
+    std::unordered_set<long> pendingPresentationObjects;
+    std::unordered_map<long, std::unordered_set<QListWidgetItem*>> itemsByObject;
+    App::Document* presentationUpdateDocument {};
+    bool fullRefreshPending {false};
+    bool controlRefreshPending {false};
     bool rebuildingTimeline {false};
     bool syncingSelection {false};
 
@@ -135,6 +163,9 @@ private:
     fastsignals::scoped_connection renamedDocumentConnection;
     fastsignals::scoped_connection bookedTransactionConnection;
     fastsignals::scoped_connection recomputeRequestFinishedConnection;
+    fastsignals::scoped_connection finishRestoreDocumentConnection;
+    fastsignals::scoped_connection restoreActivityIdleConnection;
+    fastsignals::scoped_connection finishOpenDocumentConnection;
     fastsignals::scoped_connection stableDocumentConnection;
     fastsignals::scoped_connection changedObjectConnection;
     fastsignals::scoped_connection touchedObjectConnection;

@@ -548,6 +548,8 @@ SET(Part_SRCS
     AppPartPy.cpp
     BRepMesh.cpp
     BRepMesh.h
+    RenderMesh.cpp
+    RenderMesh.h
     BRepOffsetAPI_MakeOffsetFix.cpp
     BRepOffsetAPI_MakeOffsetFix.h
     BSplineCurveBiArcs.cpp

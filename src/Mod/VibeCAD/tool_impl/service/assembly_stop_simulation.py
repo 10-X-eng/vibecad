@@ -93,7 +93,12 @@ def run(service: Any) -> dict[str, Any]:
         }
         dialog.reject()
         Gui.updateGui()
-        if Gui.Control.activeTaskDialog() is dialog:
+        current = Gui.Control.activeTaskDialog()
+        if current is not None and any(
+            widget is previous
+            for widget in current.getDialogContent()
+            for previous in content
+        ):
             return {
                 "ok": False,
                 "failure_code": "SIMULATION_PLAYBACK_REMAINED_OPEN",

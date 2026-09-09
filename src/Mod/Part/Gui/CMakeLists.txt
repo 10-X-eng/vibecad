@@ -147,6 +147,8 @@ SET(PartGui_SRCS
     PreCompiled.h
     PreviewUpdateScheduler.cpp
     PreviewUpdateScheduler.h
+    RenderMeshController.cpp
+    RenderMeshController.h
     PropertyEnumAttacherItem.cpp
     PropertyEnumAttacherItem.h
     SoFCShapeObject.cpp

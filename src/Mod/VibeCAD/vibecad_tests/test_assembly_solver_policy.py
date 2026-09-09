@@ -1,11 +1,48 @@
 from __future__ import annotations
 
 import sys
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from VibeCADAssemblySolverPolicy import set_joint_connectors_without_auto_solve
+
+
+@pytest.mark.parametrize("prop", ["Offset1", "Offset2", "Distance", "Angle", "Reference1"])
+@pytest.mark.parametrize("transacting", [False, True])
+def test_joint_replay_does_not_launch_interactive_work(prop, transacting):
+    """Execute the production callback; transaction replay owns restored values."""
+    source = Path(__file__).resolve().parents[2] / "Assembly" / "JointObject.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    joint_class = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                       and node.name == "Joint")
+    callback = next(node for node in joint_class.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "onChanged")
+    calls = []
+    namespace = {
+        "App": SimpleNamespace(isRestoring=lambda: False),
+        "_jointInteractionUsable": lambda joint: True,
+        "JointUsingPreSolve": [],
+        "solveIfAllowed": lambda assembly: calls.append("solve"),
+    }
+    exec(compile(ast.Module(body=[callback], type_ignores=[]), str(source), "exec"), namespace)
+    joint = SimpleNamespace(
+        Document=SimpleNamespace(Transacting=transacting),
+        Reference1=(object(), [""]), Reference2=(object(), [""]),
+        JointType=prop if prop in {"Distance", "Angle"} else "Fixed",
+        Angle=0.0, recompute=lambda: calls.append("recompute"),
+    )
+    proxy = SimpleNamespace(
+        getAssembly=lambda joint: SimpleNamespace(Type="Assembly"),
+        updateJCSPlacements=lambda joint: calls.append("connectors"),
+    )
+    namespace["onChanged"](proxy, joint, prop)
+    if transacting:
+        assert calls == []
+    else:
+        assert calls
 
 
 class _Preferences:

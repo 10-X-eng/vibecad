@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <mutex>
 
 #include <QDir>
 #include <QFileInfo>
@@ -943,6 +944,19 @@ PropertyLinkList::~PropertyLinkList()
 
 void PropertyLinkList::setSize(int newSize)
 {
+    resizeValues(newSize, nullptr);
+}
+
+void PropertyLinkList::setSize(int newSize, const_reference def)
+{
+    resizeValues(newSize, def);
+}
+
+void PropertyLinkList::resizeValues(int newSize, DocumentObject* fill)
+{
+    if (newSize < 0) {
+        throw Base::ValueError("PropertyLinkList: negative size");
+    }
     for (int i = newSize; i < (int)_lValueList.size(); ++i) {
         auto obj = _lValueList[i];
         if (!obj || !obj->isAttachedToDocument()) {
@@ -955,16 +969,11 @@ void PropertyLinkList::setSize(int newSize)
             obj->_removeBackLinkProp(getName(), static_cast<DocumentObject*>(getContainer()));
         }
     }
-    _lValueList.resize(newSize);
-}
-
-void PropertyLinkList::setSize(int newSize, const_reference def)
-{
-    auto oldSize = getSize();
-    setSize(newSize);
-    for (auto i = oldSize; i < newSize; ++i) {
-        _lValueList[i] = def;
-    }
+    std::unique_lock lock(_objectIndexMutex);
+    // Fill under the same lock as resizing: a concurrent membership query must
+    // not see temporary null slots, and fill may alias the previous storage.
+    _lValueList.resize(newSize, fill);
+    _objectIndexValid = false;
 }
 
 void PropertyLinkList::set1Value(int idx, DocumentObject* const& value)
@@ -981,6 +990,10 @@ void PropertyLinkList::set1Value(int idx, DocumentObject* const& value)
         throw Base::ValueError("invalid document object");
     }
 
+    const int size = getSize();
+    if (idx < -1 || idx > size) {
+        throw Base::RuntimeError("index out of bound");
+    }
     _nameMap.clear();
 
     if (getContainer() && getContainer()->isDerivedFrom<App::DocumentObject>()) {
@@ -999,7 +1012,19 @@ void PropertyLinkList::set1Value(int idx, DocumentObject* const& value)
         }
     }
 
-    inherited::set1Value(idx, value);
+    atomic_change change(*this);
+    if (idx == -1 || idx == size) {
+        idx = size;
+        setSize(size + 1, value);
+    }
+    else {
+        std::unique_lock lock(_objectIndexMutex);
+        _lValueList[idx] = value;
+        _objectIndexValid = false;
+    }
+    _touchList.insert(idx);
+    // Never hold the lookup lock across property observers or GUI handoffs.
+    change.tryInvoke();
 }
 
 void PropertyLinkList::setValues(const std::vector<DocumentObject*>& value)
@@ -1041,7 +1066,15 @@ void PropertyLinkList::setValues(const std::vector<DocumentObject*>& value)
         }
     }
 
-    inherited::setValues(value);
+    atomic_change change(*this);
+    {
+        std::unique_lock lock(_objectIndexMutex);
+        // The outer atomic change owns notifications; the nested setter only
+        // updates storage here and cannot notify while this lock is held.
+        inherited::setValues(value);
+        _objectIndexValid = false;
+    }
+    change.tryInvoke();
 }
 
 PyObject* PropertyLinkList::getPyObject()
@@ -1192,6 +1225,30 @@ unsigned int PropertyLinkList::getMemSize() const
     return static_cast<unsigned int>(_lValueList.size() * sizeof(App::DocumentObject*));
 }
 
+
+int PropertyLinkList::findObject(const DocumentObject* object) const
+{
+    const auto lookup = [&] {
+        const auto found = _objectIndex.find(object);
+        return found == _objectIndex.end() ? -1 : found->second;
+    };
+    {
+        std::shared_lock lock(_objectIndexMutex);
+        if (_objectIndexValid) {
+            return lookup();
+        }
+    }
+    std::unique_lock lock(_objectIndexMutex);
+    if (!_objectIndexValid) {
+        _objectIndex.clear();
+        _objectIndex.reserve(_lValueList.size());
+        for (int index = 0; index < static_cast<int>(_lValueList.size()); ++index) {
+            _objectIndex.emplace(_lValueList[index], index);
+        }
+        _objectIndexValid = true;
+    }
+    return lookup();
+}
 
 DocumentObject* PropertyLinkList::find(const char* name, int* pindex) const
 {
@@ -3759,6 +3816,12 @@ void PropertyLinkBase::breakLinks(App::DocumentObject* link,
 {
     std::vector<Property*> props;
     for (auto obj : objs) {
+        // getLinks() enumerates attached targets only. Preserve the general
+        // detached-target contract, and always clear the removed owner's links.
+        if (link && link->isAttachedToDocument() && obj != link
+            && !obj->hasPropertyLinkTo(link)) {
+            continue;
+        }
         props.clear();
         obj->getPropertyList(props);
         for (auto prop : props) {

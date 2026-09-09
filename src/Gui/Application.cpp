@@ -52,8 +52,11 @@
 #include <cstring>
 #include <list>
 #include <ranges>
+#include <optional>
+#include <boost/scope_exit.hpp>
 
 #include <App/Document.h>
+#include <App/DocumentObserver.h>
 #include <App/DocumentObjectPy.h>
 #include <App/MainThreadSignal.h>
 #include <Base/Console.h>
@@ -84,6 +87,7 @@
 #include "EditorView.h"
 #include "ExpressionBindingPy.h"
 #include "FileDialog.h"
+#include "FrameBudget.h"
 #include "GuiApplication.h"
 #include "GuiInitScript.h"
 #include "GuiTestScript.h"
@@ -348,6 +352,11 @@ struct ApplicationP
     /// List of all registered views
     std::list<Gui::BaseView*> passive;
     bool isClosing {false};
+    bool closeAfterDocumentOpen {false};
+    bool closePreparationPending {false};
+    bool documentCloseWakeQueued {false};
+    fastsignals::scoped_connection documentOpenIdleConnection;
+    std::vector<fastsignals::scoped_connection> documentOpenCompletionConnections;
     bool startingUp {true};
     /// Handles all commands
     CommandManager commandManager;
@@ -490,27 +499,6 @@ struct PyMethodDef FreeCADGui_methods[] = {
     {nullptr, nullptr, 0, nullptr} /* sentinel */
 };
 
-class MainThreadInvoker final: public QObject
-{
-public:
-    static MainThreadInvoker* instance()
-    {
-        static MainThreadInvoker* inst = [] {
-            auto* obj = new MainThreadInvoker();
-            // Ensure the object lives on the GUI thread
-            if (qApp && qApp->thread() && QThread::currentThread() != qApp->thread()) {
-                obj->moveToThread(qApp->thread());
-            }
-            return obj;
-        }();
-        return inst;
-    }
-
-private:
-    MainThreadInvoker() = default;
-    ~MainThreadInvoker() override = default;
-};
-
 // Hook: are we currently on the GUI (main) thread?
 bool qtIsMainThread()
 {
@@ -525,11 +513,16 @@ void qtInvokeOnMain(std::function<void()>&& fn, bool blocking)
         return;
     }
 
-    QMetaObject::invokeMethod(
-        MainThreadInvoker::instance(),
-        [f = std::move(fn)]() mutable { f(); },
-        blocking ? Qt::BlockingQueuedConnection : Qt::QueuedConnection
-    );
+    if (blocking) {
+        if (!dispatchToGuiFrameAndWait(std::move(fn))) {
+            throw Base::RuntimeError("Failed to queue synchronous GUI-owned work");
+        }
+        return;
+    }
+
+    if (!dispatchToGuiFrame(std::move(fn))) {
+        throw Base::RuntimeError("Failed to queue asynchronous GUI-owned work");
+    }
 }
 
 }  // namespace Gui
@@ -618,6 +611,7 @@ Application::Application(bool GUIenabled)
 {
     // App::GetApplication().Attach(this);
     if (GUIenabled) {
+        initializeGuiFrameDispatcher();
         App::MainThreadSignalConfig::setHooks(&qtIsMainThread, &qtInvokeOnMain);
 
         // NOLINTBEGIN
@@ -838,6 +832,10 @@ Application::Application(bool GUIenabled)
     _pcWorkbenchDictionary = PyDict_New();
 
     if (GUIenabled) {
+        d->documentOpenIdleConnection =
+            App::GetApplication().signalDocumentOpenQueueIdle.connect([this] {
+                resumeCloseAfterDocumentOpen();
+            });
         createStandardOperations();
         MacroCommand::load();
     }
@@ -879,6 +877,142 @@ Application::~Application()
 // creating std commands
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+
+void Application::openFileFromGui(const char* filename, const char* module)
+{
+    const Base::FileInfo file(filename);
+    if (module && (file.hasExtension("FCStd") || file.hasExtension("FCBak"))) {
+        openNativeDocumentAsync(filename);
+        return;
+    }
+    // Foreign-format importers retain their existing module contract. They
+    // are not substitutes for a failed or unavailable native restore.
+    const bool previous = testStatus(UserInitiatedOpenDocument);
+    setStatus(UserInitiatedOpenDocument, true);
+    BOOST_SCOPE_EXIT_ALL(this, previous) {
+        setStatus(UserInitiatedOpenDocument, previous);
+    };
+    open(filename, module);
+    setStatus(UserInitiatedOpenDocument, previous);
+    auto* document = App::GetApplication().getActiveDocument();
+    checkPartialRestore(document);
+    checkRestoreError(document);
+}
+
+std::stop_source Application::openNativeDocumentAsync(
+    const char* filename, bool userInitiated,
+    std::function<void(App::OpenDocumentsResult)> completed)
+{
+    requireMainThread("Gui::Application::openNativeDocumentAsync");
+    if (Base::Tools::isNullOrEmpty(filename)) {
+        throw Base::ValueError("A native document filename is required");
+    }
+    const std::string path = Base::FileInfo(filename).filePath();
+    // An empty optional means preparation never ran. Restore the previous
+    // notification policy even when admission, parsing, or finalization fails.
+    auto previousPolicy = std::make_shared<std::optional<bool>>();
+    App::OpenDocumentsRequest request;
+    request.filenames = {path};
+    request.prepare = [this, path, userInitiated, previousPolicy](App::OpenDocumentsRequest& pending) {
+        *previousPolicy = testStatus(UserInitiatedOpenDocument);
+        setStatus(UserInitiatedOpenDocument, userInitiated);
+
+        auto& app = App::GetApplication();
+        auto* active = app.getActiveDocument();
+        auto* gui = getDocument(active);
+        if (active && active->countObjects() == 0 && gui && !gui->isModified()
+            && active->isAutoCreated()) {
+            Command::doCommand(Command::App, "App.closeDocument('%s')", active->getName());
+        }
+
+        // Reopening a fully loaded file also resolves its partially loaded
+        // dependencies, as the synchronous reopen API does. Keep those inputs
+        // viewless; only the explicitly opened file should gain a canvas.
+        pending.inputFlags = {{.createView = true}};
+        auto* existing = app.getDocumentByPath(path.c_str());
+        if (existing && !existing->testStatus(App::Document::PartialDoc)
+            && !existing->testStatus(App::Document::PartialRestore)) {
+            for (auto* dependency : existing->getDependentDocuments(true)) {
+                if (dependency != existing
+                    && (dependency->testStatus(App::Document::PartialDoc)
+                        || dependency->testStatus(App::Document::PartialRestore))) {
+                    pending.filenames.emplace_back(dependency->FileName.getValue());
+                    pending.inputFlags.push_back({.createView = false});
+                }
+            }
+        }
+
+        auto escaped = Base::Tools::escapedUnicodeFromUtf8(path.c_str());
+        escaped = Base::Tools::escapeEncodeFilename(escaped);
+        macroManager()->addLine(MacroManager::App,
+            fmt::format("FreeCAD.openDocument('{}')", escaped).c_str());
+    };
+    request.callback = [this, path, previousPolicy, completed = std::move(completed)](
+                           App::OpenDocumentsResult result) mutable {
+        if (previousPolicy->has_value()) {
+            setStatus(UserInitiatedOpenDocument, previousPolicy->value());
+        }
+        std::vector<std::pair<App::DocumentT, std::string>> identities(result.documents.size());
+        for (std::size_t index = 0; index < result.documents.size(); ++index) {
+            if (auto* document = result.documents[index]) {
+                identities[index] = {App::DocumentT(document), document->Uid.getValueStr()};
+            }
+        }
+        const auto resolve = [&](std::size_t index) -> App::Document* {
+            auto* document = identities[index].first.getDocument();
+            return document && document->Uid.getValueStr() == identities[index].second
+                ? document : nullptr;
+        };
+        try {
+            if (result.failure) {
+                std::rethrow_exception(result.failure);
+            }
+            if (!result.documents.empty() && result.documents.front()) {
+                auto* document = result.documents.front();
+                auto* gui = getDocument(document);
+                if (gui) {
+                    setActiveDocument(gui);
+                    if (!gui->setActiveView()) {
+                        gui->setActiveView(nullptr, View3DInventor::getClassTypeId());
+                    }
+                }
+                const auto name = QString::fromUtf8(path.c_str());
+                getMainWindow()->appendRecentFile(name);
+                FileDialog::setWorkingDirectory(name);
+                checkForRecomputes(true);
+                checkPartialRestore(resolve(0));
+                checkRestoreError(resolve(0));
+            }
+        }
+        catch (const Base::AbortException&) {
+            result.failure = std::current_exception();
+            Base::Console().message("Document open cancelled: %s\n", path.c_str());
+        }
+        catch (const Base::Exception& error) {
+            result.failure = std::current_exception();
+            error.reportException();
+        }
+        catch (const std::exception& error) {
+            result.failure = std::current_exception();
+            Base::Console().error("Document open failed: %s\n", error.what());
+        }
+        catch (...) {
+            result.failure = std::current_exception();
+            Base::Console().error("Document open failed with an unknown exception\n");
+        }
+        // Completion dialogs can run events that close documents. Do not
+        // hand their former pointers to an embedding caller afterwards.
+        for (std::size_t index = 0; index < result.documents.size(); ++index) {
+            result.documents[index] = resolve(index);
+        }
+        if (completed) {
+            completed(std::move(result));
+        }
+    };
+    auto cancellation = request.cancellation;
+    App::GetApplication().openDocumentsAsync(std::move(request));
+    return cancellation;
+}
 
 void Application::open(const char* FileName, const char* Module)
 {
@@ -1199,6 +1333,7 @@ void Application::slotNewDocument(const App::Document& Doc, bool isMainDoc)
 
 void Application::slotDeleteDocument(const App::Document& Doc)
 {
+    PerformanceScope closeTiming("Gui::Application delete-document notification");
     // Capture dependencies and their CURRENT view state before the document is destroyed.
     struct Candidate
     {
@@ -1328,6 +1463,11 @@ void Application::slotShowHidden(const App::Document& Doc)
 
 void Application::checkForRecomputes()
 {
+    checkForRecomputes(false);
+}
+
+void Application::checkForRecomputes(bool queue)
+{
     std::vector<App::Document*> docs;
     for (auto doc : App::GetApplication().getDocuments()) {
         if (doc->testStatus(App::Document::RecomputeOnRestore)) {
@@ -1362,6 +1502,20 @@ void Application::checkForRecomputes()
     }
     bool hasError = false;
     for (auto doc : App::Document::getDependentDocuments(docs, true)) {
+        if (queue) {
+            auto request = App::RecomputeRequest::fromDocument(*doc);
+            request.callback = [](App::RecomputeRequest&, App::RecomputeResult& result) {
+                if (!result.success) {
+                    QMetaObject::invokeMethod(getMainWindow(), [] {
+                        QMessageBox::critical(getMainWindow(), QObject::tr("Recompute error"),
+                            QObject::tr("Failed to recompute a restored document.\n"
+                                        "Check the report view for more details."));
+                    }, Qt::QueuedConnection);
+                }
+            };
+            App::GetApplication().queueRecomputeRequest(request);
+            continue;
+        }
         try {
             doc->recompute({}, false, &hasError);
         }
@@ -1896,19 +2050,90 @@ void Application::updateActions(bool delay)
     getMainWindow()->updateActions(delay);
 }
 
+void Application::resumeCloseAfterDocumentOpen()
+{
+    auto& application = App::GetApplication();
+    if (!d->closeAfterDocumentOpen || application.hasPendingDocumentOpens()) {
+        return;
+    }
+    d->documentOpenCompletionConnections.clear();
+    const auto changed = [this](const App::Document&, bool active) {
+        if (!active && !d->documentCloseWakeQueued) {
+            // Never reconnect a document signal while it is being emitted.
+            // Presentation waiters cannot release until the emitter returns;
+            // rebuilding these subscriptions inline can repeatedly invoke the
+            // newly connected slot and prevent that release forever.
+            d->documentCloseWakeQueued = true;
+            if (!dispatchToGuiFrame(getMainWindow(), [this] {
+                    d->documentCloseWakeQueued = false;
+                    resumeCloseAfterDocumentOpen();
+                })) {
+                d->documentCloseWakeQueued = false;
+            }
+        }
+    };
+    for (auto* document : application.getDocuments()) {
+        if (document->isCooperativeMutationActive() || document->isPresentationUpdateActive()) {
+            d->documentOpenCompletionConnections.emplace_back(
+                document->signalCooperativeMutationChanged.connect(changed));
+            d->documentOpenCompletionConnections.emplace_back(
+                document->signalPresentationUpdateChanged.connect(changed));
+        }
+    }
+    if (!d->documentOpenCompletionConnections.empty()) {
+        getMainWindow()->statusBar()->showMessage(
+            QObject::tr("Waiting for document work to finish before closing..."));
+        return;
+    }
+    d->closeAfterDocumentOpen = false;
+    auto* window = getMainWindow();
+    QMetaObject::invokeMethod(window, [window] { window->close(); }, Qt::QueuedConnection);
+}
+
 void Application::tryClose(QCloseEvent* e)
 {
-    e->setAccepted(getMainWindow()->closeAllDocuments(false));
-    if (!e->isAccepted()) {
+    // Keep the owner dispatcher alive until the native restore coordinator has
+    // delivered its final event, including the interval before its first
+    // document exists. Destroying it earlier strands worker-to-GUI handoffs.
+    if (App::GetApplication().hasPendingDocumentOpens()) {
+        d->closeAfterDocumentOpen = true;
+        App::GetApplication().cancelPendingDocumentOpens();
+        getMainWindow()->statusBar()->showMessage(
+            QObject::tr("Cancelling document restore before closing...")
+        );
+        e->ignore();
+        return;
+    }
+    if (d->closeAfterDocumentOpen) {
+        resumeCloseAfterDocumentOpen();
+        e->ignore();
+        return;
+    }
+    if (d->closePreparationPending) {
+        e->ignore();
         return;
     }
 
     // ask all passive views if closable
+    e->accept();
     for (std::list<Gui::BaseView*>::iterator It = d->passive.begin(); It != d->passive.end(); ++It) {
         e->setAccepted((*It)->canClose());
         if (!e->isAccepted()) {
             return;
         }
+    }
+
+    if (!App::GetApplication().getDocuments().empty()) {
+        e->ignore();
+        d->closePreparationPending = true;
+        getMainWindow()->closeAllDocumentsAsync([this](bool closed) {
+            d->closePreparationPending = false;
+            if (closed) {
+                auto* window = getMainWindow();
+                QMetaObject::invokeMethod(window, [window] { window->close(); }, Qt::QueuedConnection);
+            }
+        });
+        return;
     }
 
     if (e->isAccepted()) {
@@ -1924,7 +2149,14 @@ void Application::tryClose(QCloseEvent* e)
             itp = d->passive.begin();
         }
 
-        App::GetApplication().closeAllDocuments();
+        // Passive close callbacks can create documents. They were not part of
+        // the approved close request and must not be discarded during exit.
+        if (!App::GetApplication().getDocuments().empty()) {
+            // A close observer may have acquired asynchronous finalization
+            // after canClose() succeeded. Keep the GUI dispatcher alive.
+            d->isClosing = false;
+            e->ignore();
+        }
     }
 }
 

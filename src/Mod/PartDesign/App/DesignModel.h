@@ -355,6 +355,14 @@ public:
     static std::vector<Body*> finalizeScriptOperation(DesignOperationEdit& edit);
 
     /**
+     * Adopt an already computed script result into its state/publication graph.
+     * Copies the accepted output state without evaluating dependency branches.
+     * The caller owns the transaction and schedules downstream recompute after
+     * publication. Existing finalization APIs retain their recompute behavior.
+     */
+    static std::vector<Body*> adoptScriptOperation(DesignOperationEdit& edit);
+
+    /**
      * Remove one complete Design operation and reconcile every Body output.
      *
      * Operation-created Bodies are removed only when nothing outside the
@@ -413,11 +421,13 @@ public:
 private:
     static std::vector<Body*> finalizeOperationImpl(
         DesignOperationEdit& edit,
-        bool affectedBodiesOnly
+        bool affectedBodiesOnly,
+        bool adoptAcceptedState = false
     );
 
     static void finalizeNewOperation(DesignOperationEdit& edit, std::vector<Body*>& targets);
-    static void finalizeExistingOperation(DesignOperationEdit& edit, std::vector<Body*>& targets);
+    static void finalizeExistingOperation(
+        DesignOperationEdit& edit, std::vector<Body*>& targets, bool adoptAcceptedState = false);
 };
 
 }  // namespace PartDesign

@@ -13,6 +13,7 @@
  ***************************************************************************/
 
 #include "DocumentTimeline.h"
+#include "SemanticDependencyOrder.h"
 
 #include <algorithm>
 #include <cstring>
@@ -200,7 +201,8 @@ bool stableTopologicallyOrderSemanticBlocks(
     std::vector<DocumentObject*>& operations,
     std::vector<bool>& visibility,
     std::vector<bool>& suppression,
-    const long position
+    const long position,
+    const std::unordered_set<DocumentObject*>* retiredResources = nullptr
 )
 {
     if (!document || operations.size() != visibility.size()
@@ -238,73 +240,42 @@ bool stableTopologicallyOrderSemanticBlocks(
         blocks[existing->second].push_back(index);
     }
 
-    std::vector<std::vector<std::size_t>> consumers(roots.size());
-    std::vector<std::size_t> indegree(roots.size(), 0);
-    std::unordered_set<std::string> edges;
-    edges.reserve(operations.size());
-    for (std::size_t consumerIndex = 0; consumerIndex < roots.size(); ++consumerIndex) {
-        for (const auto operationIndex : blocks[consumerIndex]) {
-            const auto* operation = operations[operationIndex];
-            std::vector<const DocumentObject*> pending {operation};
-            std::unordered_set<const DocumentObject*> visited {operation};
-            while (!pending.empty()) {
-                const auto* current = pending.back();
-                pending.pop_back();
-                for (const auto* dependency : current->getOutList()) {
-                    if (!dependency || !document->containsObject(dependency)
-                        || dependency->getDocument() != document
-                        || isStructuralTimelineLink(current, dependency)
-                        || !visited.insert(dependency).second) {
-                        continue;
-                    }
-                    const auto* dependencyRoot = semanticOperationRoot(dependency, document);
-                    if (!dependencyRoot) {
-                        throw Base::RuntimeError(
-                            "Semantic History dependency ordering found a malformed dependency"
-                        );
-                    }
-                    const auto dependencyPosition = rootIndices.find(dependencyRoot);
-                    if (dependencyRoot != roots[consumerIndex]
-                        && dependencyPosition != rootIndices.end()) {
-                        const std::string edge = std::to_string(dependencyPosition->second) + ":"
-                            + std::to_string(consumerIndex);
-                        if (edges.insert(edge).second) {
-                            consumers[dependencyPosition->second].push_back(consumerIndex);
-                            ++indegree[consumerIndex];
-                        }
-                    }
-                    pending.push_back(dependency);
-                }
-            }
+    // Read each reachable object's native dependencies once. The ordering
+    // kernel below consumes only detached indices, not document pointers.
+    detail::SemanticDependencyGraph graph;
+    graph.members = blocks;
+    std::vector<const DocumentObject*> nodes(operations.begin(), operations.end());
+    std::unordered_map<const DocumentObject*, std::size_t> nodeIndices;
+    nodeIndices.reserve(nodes.size());
+    for (std::size_t index = 0; index < nodes.size(); ++index)
+        nodeIndices.emplace(nodes[index], index);
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        const auto* current = nodes[index];
+        const auto* root = semanticOperationRoot(current, document);
+        if (!root)
+            throw Base::RuntimeError("Semantic History dependency ordering found a malformed dependency");
+        const auto rootIndex = rootIndices.find(root);
+        graph.block.push_back(rootIndex == rootIndices.end()
+            ? detail::SemanticDependencyGraph::untracked : rootIndex->second);
+        std::vector<std::size_t> inputs;
+        for (const auto* dependency : current->getOutList()) {
+            if (!dependency || !document->containsObject(dependency)
+                || dependency->getDocument() != document
+                || isStructuralTimelineLink(current, dependency)) continue;
+            if (retiredResources && retiredResources->contains(const_cast<DocumentObject*>(dependency)))
+                throw Base::RuntimeError("A surviving final dependency still targets a retired resource");
+            const auto [entry, inserted] = nodeIndices.emplace(dependency, nodes.size());
+            if (inserted) nodes.push_back(dependency);
+            inputs.push_back(entry->second);
         }
+        graph.dependencies.push_back(std::move(inputs));
     }
-
     std::vector<std::size_t> orderedRoots;
-    std::vector<bool> emitted(roots.size(), false);
-    orderedRoots.reserve(roots.size());
-    while (orderedRoots.size() != roots.size()) {
-        std::size_t next = roots.size();
-        for (std::size_t index = 0; index < roots.size(); ++index) {
-            if (!emitted[index] && indegree[index] == 0) {
-                next = index;
-                break;
-            }
-        }
-        if (next == roots.size()) {
-            throw Base::RuntimeError(
-                "Semantic History dependency ordering detected a cycle"
-            );
-        }
-        emitted[next] = true;
-        orderedRoots.push_back(next);
-        for (const auto consumer : consumers[next]) {
-            if (indegree[consumer] == 0) {
-                throw Base::RuntimeError(
-                    "Semantic History dependency ordering has inconsistent edges"
-                );
-            }
-            --indegree[consumer];
-        }
+    try {
+        orderedRoots = detail::stableSemanticDependencyOrder(graph).order;
+    }
+    catch (const std::runtime_error& error) {
+        throw Base::RuntimeError(std::string("Semantic History dependency ordering ") + error.what());
     }
 
     bool changed = false;
@@ -435,11 +406,31 @@ bool bitAt(const boost::dynamic_bitset<>& values, std::size_t index, bool fallba
     return index < values.size() ? values.test(index) : fallback;
 }
 
+int visibilityOperationIndex(
+    const std::vector<DocumentObject*>& operations,
+    const DocumentObject* object
+)
+{
+    const auto found = std::find(operations.begin(), operations.end(), object);
+    return found == operations.end() ? -1 : static_cast<int>(found - operations.begin());
+}
+
+int visibilityOperationIndex(const PropertyLinkList& operations, const DocumentObject* object)
+{
+    int index = -1;
+    const char* name = object->getNameInDocument();
+    return name && operations.findUsingMap(name, &index) == object ? index : -1;
+}
+
+template<typename Operations>
 bool ownersPresentedAtEnd(
     const DocumentObject* object,
-    const std::vector<DocumentObject*>& operations,
+    const Operations& operations,
     const boost::dynamic_bitset<>& visibility,
-    const boost::dynamic_bitset<>& suppression
+    const boost::dynamic_bitset<>& suppression,
+    const DocumentObject* changedOperation = nullptr,
+    bool changedVisibility = false,
+    bool changedSuppression = false
 )
 {
     if (!hasValidTimelineOwnerChain(object)) {
@@ -448,14 +439,19 @@ bool ownersPresentedAtEnd(
 
     for (const auto* owner = DocumentTimeline::timelineOwner(object); owner;
          owner = DocumentTimeline::timelineOwner(owner)) {
-        const auto found = std::find(operations.begin(), operations.end(), owner);
-        if (found == operations.end()) {
+        if (owner == changedOperation) {
+            if (!changedVisibility || changedSuppression) {
+                return false;
+            }
+            continue;
+        }
+        const auto index = visibilityOperationIndex(operations, owner);
+        if (index < 0) {
             if (!owner->Visibility.getValue() || operationSuppressed(owner)) {
                 return false;
             }
             continue;
         }
-        const auto index = static_cast<std::size_t>(std::distance(operations.begin(), found));
         if (!bitAt(visibility, index, owner->Visibility.getValue())
             || bitAt(suppression, index, operationSuppressed(owner))) {
             return false;
@@ -1319,8 +1315,18 @@ void DocumentTimeline::pruneProvisionalTransactionCreations()
 
 void DocumentTimeline::pruneProvisionalPublications()
 {
-    std::erase_if(_provisionalPublications, [this](const ProvisionalPublication& publication) {
-        return !publicationMatchesLiveState(publication, nullptr);
+    if (_provisionalPublications.empty()) {
+        return;
+    }
+    const auto counts = detail::countSemanticMembers(
+        Operations.getValues(), [document = getDocument()](const DocumentObject* object) {
+            return semanticOperationRoot(object, document);
+        });
+    // These checks only read live native state and emit no callbacks. Sharing
+    // this census within this call preserves exact validation without scanning
+    // the entire history once for every previously published block.
+    std::erase_if(_provisionalPublications, [this, &counts](const ProvisionalPublication& publication) {
+        return !publicationMatchesLiveState(publication, nullptr, &counts);
     });
 }
 
@@ -1638,7 +1644,8 @@ bool DocumentTimeline::isProvisionallyEnrolledByCurrentTransaction(
 
 bool DocumentTimeline::publicationMatchesLiveState(
     const ProvisionalPublication& publication,
-    const std::vector<DocumentObject*>* expectedBlock
+    const std::vector<DocumentObject*>* expectedBlock,
+    const std::unordered_map<const DocumentObject*, std::size_t>* memberCounts
 ) const noexcept
 {
     try {
@@ -1742,17 +1749,18 @@ bool DocumentTimeline::publicationMatchesLiveState(
             return false;
         }
 
-        std::size_t semanticMemberCount = 0;
-        for (auto* candidate : operations) {
-            if (semanticOperationRoot(candidate, document) != operation) {
-                continue;
-            }
-            ++semanticMemberCount;
-            if (!indices.contains(candidate)) {
-                return false;
-            }
+        std::unordered_map<const DocumentObject*, std::size_t> localCounts;
+        if (!memberCounts) {
+            localCounts = detail::countSemanticMembers(operations, [document](const DocumentObject* object) {
+                return semanticOperationRoot(object, document);
+            });
+            memberCounts = &localCounts;
         }
-        return semanticMemberCount == block.size();
+        // Each distinct declared member already resolves through its validated
+        // owner chain to this operation. Equality therefore also proves that
+        // no additional enrolled member was omitted from the declared block.
+        const auto count = memberCounts->find(operation);
+        return count != memberCounts->end() && count->second == block.size();
     }
     catch (...) {
         return false;
@@ -3195,7 +3203,13 @@ void DocumentTimeline::publishProvisionalOperationBlock(
                         + "' is later at history position " + std::to_string(dependencyOrder->second)
                     );
                 }
-                pending.push_back(dependency);
+                // Every final operation is validated by this outer loop. Once
+                // its own history order is checked above, its dependencies are
+                // checked there, rather than re-walking the entire ancestry for
+                // every descendant. Untracked bridge objects still need walking.
+                if (!finalIndices.contains(const_cast<DocumentObject*>(dependency))) {
+                    pending.push_back(dependency);
+                }
             }
         }
     }
@@ -4426,9 +4440,17 @@ bool DocumentTimeline::reorderOperationDependentClosureAfter(
     DocumentObject* target
 )
 {
+    return reorderOperationDependentClosuresAfter({operation}, target);
+}
+
+bool DocumentTimeline::reorderOperationDependentClosuresAfter(
+    const std::vector<DocumentObject*>& requestedOperations,
+    DocumentObject* target
+)
+{
     auto* document = getDocument();
     const auto operations = Operations.getValues();
-    if (!document || !operation || !target || operation == target || operations.empty()) {
+    if (!document || requestedOperations.empty() || !target || operations.empty()) {
         throw Base::ValueError(
             "Timeline dependency rebase requires one operation and one "
             "distinct target"
@@ -4452,17 +4474,24 @@ bool DocumentTimeline::reorderOperationDependentClosureAfter(
         }
     }
 
-    auto* operationRoot = const_cast<DocumentObject*>(semanticOperationRoot(operation, document));
     auto* targetRoot = const_cast<DocumentObject*>(semanticOperationRoot(target, document));
-    if (!operationRoot || !targetRoot || operationRoot == targetRoot
-        || !blocks.contains(operationRoot) || !blocks.contains(targetRoot)) {
+    if (!targetRoot || !blocks.contains(targetRoot)) {
         throw Base::ValueError(
             "Timeline dependency rebase inputs must identify two distinct "
             "tracked semantic operations"
         );
     }
 
-    std::unordered_set<const DocumentObject*> movingRoots {operationRoot};
+    std::unordered_set<const DocumentObject*> movingRoots;
+    for (const auto* operation : requestedOperations) {
+        const auto* root = semanticOperationRoot(operation, document);
+        if (!root || root == targetRoot || !blocks.contains(root)
+            || !movingRoots.insert(root).second) {
+            throw Base::ValueError(
+                "Timeline dependency rebase inputs must identify distinct tracked operations"
+            );
+        }
+    }
     const auto blockDependsOnMovingRoot = [&](const DocumentObject* candidateRoot) {
         std::vector<const DocumentObject*> pending;
         std::unordered_set<const DocumentObject*> visited;
@@ -8204,7 +8233,8 @@ void DocumentTimeline::finalizeProvisionalOperationResourceReconciliation(
         finalOperations,
         finalVisibilityValues,
         finalSuppressionValues,
-        finalPosition
+        finalPosition,
+        &retiredLiveSet
     );
 
     struct FinalBlock
@@ -8293,47 +8323,10 @@ void DocumentTimeline::finalizeProvisionalOperationResourceReconciliation(
             }
         }
 
-        std::vector<const DocumentObject*> pending {candidate};
-        std::unordered_set<const DocumentObject*> visited {candidate};
-        while (!pending.empty()) {
-            const auto* current = pending.back();
-            pending.pop_back();
-            for (const auto* dependency : current->getOutList()) {
-                if (!dependency || !document->containsObject(dependency)
-                    || dependency->getDocument() != document
-                    || isStructuralTimelineLink(current, dependency)
-                    || !visited.insert(dependency).second) {
-                    continue;
-                }
-                if (retiredLiveSet.contains(const_cast<DocumentObject*>(dependency))) {
-                    throw Base::RuntimeError(
-                        "A surviving final dependency still targets a "
-                        "retired resource"
-                    );
-                }
-                const auto* dependencyRoot = semanticOperationRoot(dependency, document);
-                if (!dependencyRoot) {
-                    throw Base::RuntimeError(
-                        "The final resource graph contains a malformed "
-                        "dependency"
-                    );
-                }
-                const auto dependencyOrder = rootOrder.find(dependencyRoot);
-                if (dependencyRoot != candidateRoot && dependencyOrder != rootOrder.end()
-                    && dependencyOrder->second > candidateOrder->second) {
-                    throw Base::RuntimeError(
-                        std::string("Final History consumer '")
-                        + candidate->getNameInDocument() + "' (semantic root '"
-                        + candidateRoot->getNameInDocument() + "', index "
-                        + std::to_string(candidateOrder->second) + ") precedes dependency '"
-                        + dependency->getNameInDocument() + "' (semantic root '"
-                        + dependencyRoot->getNameInDocument() + "', index "
-                        + std::to_string(dependencyOrder->second) + ")"
-                    );
-                }
-                pending.push_back(dependency);
-            }
-        }
+        // The value graph used to order the blocks has already visited every
+        // reachable dependency, rejected retired/malformed targets, and proved
+        // this order. No document mutation occurs between that capture and here.
+        // Rewalking each operation's transitive closure adds no new evidence.
     }
 
     std::unordered_set<const DocumentObject*> finalSet(finalOperations.begin(), finalOperations.end());
@@ -8705,8 +8698,137 @@ void DocumentTimeline::finalizeProvisionalOperationResourceReconciliation(
     _stagedResourceReconciliations.clear();
 }
 
+void DocumentTimeline::invalidateVisibilityResources() noexcept
+{
+    _visibilityResourcesValid = false;
+}
+
+void DocumentTimeline::indexVisibilityResources()
+{
+    if (_visibilityResourcesValid) {
+        return;
+    }
+    _visibilityResources.clear();
+    const auto& operations = Operations.getValues();
+    auto* document = getDocument();
+    for (std::size_t index = 0; index < operations.size(); ++index) {
+        auto* resource = operations[index];
+        if (!resource || !document || !document->containsObject(resource)
+            || !hasTimelineResourceRole(resource)) {
+            continue;
+        }
+        std::unordered_set<const DocumentObject*> visited;
+        for (auto* owner = timelineOwner(resource); owner; owner = timelineOwner(owner)) {
+            if (!document->containsObject(owner) || !visited.insert(owner).second) {
+                break;
+            }
+            _visibilityResources[owner->getID()].push_back(index);
+        }
+    }
+    _visibilityResourcesValid = true;
+}
+
+void DocumentTimeline::captureVisibility(DocumentObject* changedOperation)
+{
+    if (!changedOperation || isApplying()) {
+        return;
+    }
+
+    const auto& operations = Operations.getValues();
+    if (Position.getValue() != static_cast<long>(operations.size())) {
+        return;
+    }
+    int operationPosition = -1;
+    const char* operationName = changedOperation->getNameInDocument();
+    if (!operationName || Operations.findUsingMap(operationName, &operationPosition) != changedOperation) {
+        return;
+    }
+
+    auto* document = getDocument();
+    if (!document || changedOperation->getDocument() != document
+        || !document->containsObject(changedOperation)) {
+        return;
+    }
+    if (VisibilityAtEnd.getSize() != static_cast<int>(operations.size())
+        || SuppressionAtEnd.getSize() != static_cast<int>(operations.size())) {
+        // A malformed persisted parallel array requires one authoritative
+        // normalization. Normal steady-state visibility changes never enter
+        // this path.
+        captureVisibility();
+        return;
+    }
+
+    const auto& visibility = VisibilityAtEnd.getValues();
+    const auto& suppression = SuppressionAtEnd.getValues();
+    const auto index = static_cast<std::size_t>(operationPosition);
+    bool acceptedVisibility = changedOperation->Visibility.getValue();
+    const bool acceptedSuppression = operationSuppressed(changedOperation);
+    if (hasTimelineResourceRole(changedOperation)
+        && !ownersPresentedAtEnd(changedOperation, Operations, visibility, suppression)) {
+        acceptedVisibility = visibility.test(index);
+    }
+
+    struct ResourceVisibilityTarget
+    {
+        TimelineObjectIdentity object;
+        bool visible {false};
+    };
+    std::vector<ResourceVisibilityTarget> resourceTargets;
+    indexVisibilityResources();
+    std::vector<std::size_t> affected;
+    if (const auto found = _visibilityResources.find(changedOperation->getID());
+        found != _visibilityResources.end()) {
+        affected = found->second;
+    }
+    if (hasTimelineResourceRole(changedOperation)) {
+        affected.push_back(index);
+        std::sort(affected.begin(), affected.end());
+        affected.erase(std::unique(affected.begin(), affected.end()), affected.end());
+    }
+    for (const auto operationIndex : affected) {
+        auto* operation = operations[operationIndex];
+        if (!operation || !document->containsObject(operation)
+            || !hasTimelineResourceRole(operation)) {
+            continue;
+        }
+        resourceTargets.push_back(
+            {
+                {
+                    .objectId = operation->getID(),
+                    .objectName = operation->getNameInDocument(),
+                },
+                (operationIndex == index ? acceptedVisibility : bitAt(visibility, operationIndex, false))
+                    && ownersPresentedAtEnd(
+                        operation, Operations, visibility, suppression,
+                        changedOperation, acceptedVisibility, acceptedSuppression
+                    ),
+            }
+        );
+    }
+
+    ApplyingScope applying(*this);
+    if (acceptedVisibility != VisibilityAtEnd.getValues().test(index)) {
+        VisibilityAtEnd.set1Value(static_cast<int>(index), acceptedVisibility);
+    }
+    if (acceptedSuppression != SuppressionAtEnd.getValues().test(index)) {
+        SuppressionAtEnd.set1Value(static_cast<int>(index), acceptedSuppression);
+    }
+    for (const auto& target : resourceTargets) {
+        auto* operation = resolveExactTimelineIdentity(
+            document,
+            target.object.objectId,
+            target.object.objectName
+        );
+        if (operation && hasTimelineResourceRole(operation)
+            && operation->Visibility.getValue() != target.visible) {
+            operation->Visibility.setValue(target.visible);
+        }
+    }
+}
+
 void DocumentTimeline::captureVisibility()
 {
+    invalidateVisibilityResources();
     if (isApplying()) {
         return;
     }
@@ -8754,7 +8876,7 @@ void DocumentTimeline::captureVisibility()
         if (!isLiveOperation(operation) || !hasTimelineResourceRole(operation)) {
             continue;
         }
-        if (!ownersPresentedAtEnd(operation, operations, previousVisibility, previousSuppression)) {
+        if (!ownersPresentedAtEnd(operation, Operations, previousVisibility, previousSuppression)) {
             visibility.set(index, bitAt(previousVisibility, index, operation->Visibility.getValue()));
         }
     }
@@ -8771,7 +8893,7 @@ void DocumentTimeline::captureVisibility()
             continue;
         }
         const bool shouldShow = bitAt(visibility, index, false)
-            && ownersPresentedAtEnd(operation, operations, visibility, suppression);
+            && ownersPresentedAtEnd(operation, Operations, visibility, suppression);
         resourceVisibilityTargets.push_back(
             ResourceVisibilityTarget {
                 .object = {
@@ -8822,6 +8944,9 @@ void DocumentTimeline::setApplying(bool applying) noexcept
 
 void DocumentTimeline::onBeforeChange(const Property* property)
 {
+    if (property == &Operations) {
+        invalidateVisibilityResources();
+    }
     const auto* document = getDocument();
     if (property == &Operations && !isApplying()
         && (!document || !document->isPerformingTransaction())) {
@@ -8836,6 +8961,9 @@ void DocumentTimeline::onBeforeChange(const Property* property)
 
 void DocumentTimeline::onChanged(const Property* property)
 {
+    if (property == &Operations) {
+        invalidateVisibilityResources();
+    }
     auto* document = getDocument();
     if (!isApplying() && document && document->isPerformingTransaction()) {
         // Undo/redo replays the controller and its operations in transaction
@@ -9140,7 +9268,7 @@ void DocumentTimeline::reconcileEndStatePresentation()
                 operation->getNameInDocument(),
             },
             visibility.test(index)
-                && ownersPresentedAtEnd(operation, operations, visibility, suppression),
+                && ownersPresentedAtEnd(operation, Operations, visibility, suppression),
             suppression.test(index),
         });
     }
@@ -9171,6 +9299,7 @@ void DocumentTimeline::reconcileEndStatePresentation()
 
 void DocumentTimeline::onUndoRedoFinished()
 {
+    invalidateVisibilityResources();
     normalizeStoredState(false);
     reconcileEndStatePresentation();
     DocumentObject::onUndoRedoFinished();

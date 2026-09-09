@@ -25,10 +25,11 @@ from typing import Any
 
 ASSEMBLY_HIERARCHY_SCHEMA = "vibecad-assembly-source-hierarchy-v1"
 MAX_HIERARCHY_DEPTH = 16
-MAX_HIERARCHY_NODES = 512
-MAX_HIERARCHY_OCCURRENCES = 2048
-MAX_HIERARCHY_JOINTS = 1024
-MAX_HIERARCHY_SHAPES = 256
+# Zero means no fixed count ceiling; these keys remain in saved contracts.
+MAX_HIERARCHY_NODES = 0
+MAX_HIERARCHY_OCCURRENCES = 0
+MAX_HIERARCHY_JOINTS = 0
+MAX_HIERARCHY_SHAPES = 0
 MAX_BOM_PROPERTIES_PER_NODE = 64
 MAX_BOM_PROPERTY_TEXT = 4096
 MAX_CONTEXT_OCCURRENCES = 256
@@ -498,11 +499,6 @@ def capture_assembly_hierarchy(
                 f"Assembly hierarchy exceeds depth {MAX_HIERARCHY_DEPTH} at "
                 f"{identity[1]!r}. Split the source into shallower modules."
             )
-        if len(nodes) >= MAX_HIERARCHY_NODES:
-            raise AssemblyHierarchyError(
-                f"Assembly hierarchy exceeds {MAX_HIERARCHY_NODES} unique source nodes. "
-                "Split the source into reusable module programs."
-            )
         node_id = f"n{len(nodes):04d}"
         kind = _node_kind(obj)
         node: dict[str, Any] = {
@@ -531,11 +527,6 @@ def capture_assembly_hierarchy(
                 detached = _shape_copy(obj, node_name=identity[1])
                 if detached is not None:
                     shape_count += 1
-                    if shape_count > MAX_HIERARCHY_SHAPES:
-                        raise AssemblyHierarchyError(
-                            f"Assembly hierarchy exceeds {MAX_HIERARCHY_SHAPES} unique "
-                            "shape artifacts. Reuse linked source objects or split the module."
-                        )
                     detached_shapes[node_id] = detached
                     node["has_shape_artifact"] = True
             if kind in {"assembly", "part"}:
@@ -545,11 +536,6 @@ def capture_assembly_hierarchy(
                         continue
                     occurrence_index = occurrence_count
                     occurrence_count += 1
-                    if occurrence_count > MAX_HIERARCHY_OCCURRENCES:
-                        raise AssemblyHierarchyError(
-                            f"Assembly hierarchy exceeds {MAX_HIERARCHY_OCCURRENCES} "
-                            "occurrences. Split the source into reusable module programs."
-                        )
                     name = str(getattr(child, "Name", "") or "")
                     if not name or "/" in name or name in seen_names:
                         raise AssemblyHierarchyError(
@@ -770,11 +756,6 @@ def capture_assembly_hierarchy(
         joints = []
         for joint in _joint_objects(assembly):
             total_joints += 1
-            if total_joints > MAX_HIERARCHY_JOINTS:
-                raise AssemblyHierarchyError(
-                    f"Assembly hierarchy exceeds {MAX_HIERARCHY_JOINTS} native joints. "
-                    "Split the source into reusable modules."
-                )
             record = _joint_record(joint)
             for index in (1, 2):
                 target, subelements = _reference_value(joint, f"Reference{index}")
@@ -817,13 +798,6 @@ def capture_assembly_hierarchy(
                     "depth": depth + 1,
                 }
             )
-            if len(flattened) > MAX_HIERARCHY_OCCURRENCES:
-                raise AssemblyHierarchyError(
-                    "Assembly source reuse expands to more than "
-                    f"{MAX_HIERARCHY_OCCURRENCES} stable occurrence paths. Split the "
-                    "design into smaller modules before using detailed BOMs or internal "
-                    "connector paths."
-                )
             if str(source["kind"]) in {"assembly", "part"}:
                 flatten(str(source["node_id"]), path, depth + 1)
             visiting.remove(key)
@@ -858,17 +832,15 @@ def capture_assembly_hierarchy(
 def hierarchy_context(hierarchy: Mapping[str, Any]) -> dict[str, Any]:
     """Return a bounded provider view with exact copy-ready occurrence paths."""
 
-    paths = [dict(item) for item in list(hierarchy.get("occurrence_paths") or [])]
-    nodes = [dict(item) for item in list(hierarchy.get("nodes") or [])]
+    paths = list(hierarchy.get("occurrence_paths") or [])
+    nodes = list(hierarchy.get("nodes") or [])
+    first_paths: dict[str, str] = {}
+    for item in paths:
+        first_paths.setdefault(str(item.get("source_node_id") or ""), str(item["path"]))
     joints = []
     grounded = []
     for node in nodes:
-        assembly_prefixes = [
-            str(item["path"])
-            for item in paths
-            if str(item.get("source_node_id") or "") == str(node.get("node_id") or "")
-        ]
-        prefix = assembly_prefixes[0] if assembly_prefixes else ""
+        prefix = first_paths.get(str(node.get("node_id") or ""), "")
         for path in list(node.get("grounded_occurrence_paths") or []):
             grounded.append("/".join(item for item in (prefix, str(path)) if item))
         for item in list(node.get("joints") or []):
@@ -901,7 +873,7 @@ def hierarchy_context(hierarchy: Mapping[str, Any]) -> dict[str, Any]:
         "available": True,
         "counts": dict(hierarchy.get("counts") or {}),
         "limits": dict(hierarchy.get("limits") or {}),
-        "occurrence_paths": paths[:MAX_CONTEXT_OCCURRENCES],
+        "occurrence_paths": [dict(item) for item in paths[:MAX_CONTEXT_OCCURRENCES]],
         "occurrence_paths_truncated": len(paths) > MAX_CONTEXT_OCCURRENCES,
         "occurrence_paths_omitted": max(0, len(paths) - MAX_CONTEXT_OCCURRENCES),
         "joints": joints[:MAX_CONTEXT_JOINTS],

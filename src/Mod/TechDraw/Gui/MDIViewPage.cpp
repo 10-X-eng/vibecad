@@ -230,15 +230,15 @@ bool MDIViewPage::onMsg(const char* pMsg)
         return true;
     }
     else if (strcmp("Save", pMsg) == 0) {
-        doc->save();
+        doc->saveAsync();
         return true;
     }
     else if (strcmp("SaveAs", pMsg) == 0) {
-        doc->saveAs();
+        doc->saveAsAsync();
         return true;
     }
     else if (strcmp("SaveCopy", pMsg) == 0) {
-        doc->saveCopy();
+        doc->saveCopyAsync();
         return true;
     }
     else if (strcmp("Undo", pMsg) == 0) {

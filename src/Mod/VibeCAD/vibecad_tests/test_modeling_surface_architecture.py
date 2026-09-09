@@ -3329,7 +3329,7 @@ def test_provider_component_inventory_uses_model_facing_joint_names() -> None:
     ] == ["gears", "revolute"]
 
 
-def test_provider_omits_cross_domain_sources_when_active_domain_is_empty() -> None:
+def test_provider_indexes_cross_domain_sources_when_active_domain_is_empty() -> None:
     import VibeCADSession as session
 
     visible = session._provider_editable_sources_payload(
@@ -3350,11 +3350,10 @@ def test_provider_omits_cross_domain_sources_when_active_domain_is_empty() -> No
         }
     )
 
-    assert visible == {
-        "schema": "vibecad-editable-sources-v1",
-        "domain": "assembly",
-        "source_count": 0,
-    }
+    assert visible["domain"] == "assembly"
+    assert visible["source_count"] == 0
+    assert visible["program_index"]["program_count"] == 1
+    assert visible["program_index"]["programs"][0]["program"] == "Robot/partdesign/Components"
 
 
 def test_component_inventory_removes_generated_carrier_names() -> None:
@@ -5136,8 +5135,8 @@ def test_assembly_api_rejects_ambiguous_graphs_and_wrong_joint_parameters() -> N
     assert scoped_simulation.properties["motion_names"] == ("HingeDrive",)
     with pytest.raises(ValueError, match=r"api\.simulation.*greater than"):
         api.simulation(mechanism, [drive], start_time_s=1, end_time_s=1)
-    with pytest.raises(ValueError, match=r"api\.simulation.*10000 native frames"):
-        api.simulation(mechanism, [drive], end_time_s=100, time_step_s=0.001)
+    long_simulation = api.simulation(mechanism, [drive], end_time_s=100, time_step_s=0.001)
+    assert long_simulation.properties["estimated_frame_limit"] == 100_002
     with pytest.raises(ValueError, match=r"api\.exploded_view.*1 through 4096"):
         api.exploded_view(mechanism, [])
     with pytest.raises(ValueError, match=r"api\.exploded_view.*exactly one"):
@@ -5572,34 +5571,29 @@ def test_assembly_bom_planner_keeps_model_paths_exact_and_actionable() -> None:
         in unavailable_hierarchy.value.details["correction"]
     )
 
-    with pytest.raises(AssemblyBOMError) as oversized:
-        plan_assembly_bom(
-            [
-                {
-                    "output_name": f"Component{index:03d}",
-                    "reference": {
-                        "document_uid": "source-document",
-                        "object_name": f"Source{index:03d}",
-                        "source_kind": "shape",
-                        "label": "X" * 4096,
-                        "document_file_name": "large-module.FCStd",
-                        "bom_properties": [],
-                    },
-                }
-                for index in range(100)
-            ],
-            columns=[columns[1]],
-            detail_subassemblies=False,
-            detail_parts=False,
-            only_parts=False,
-            row_overrides=[],
-        )
-    assert oversized.value.details["stage"] == "bom_budget"
-    assert (
-        oversized.value.details["observed_contract_bytes"]
-        > (oversized.value.details["maximum_contract_bytes"])
+    large = plan_assembly_bom(
+        [
+            {
+                "output_name": f"Component{index:03d}",
+                "reference": {
+                    "document_uid": "source-document",
+                    "object_name": f"Source{index:03d}",
+                    "source_kind": "shape",
+                    "label": "X" * 4096,
+                    "document_file_name": "large-module.FCStd",
+                    "bom_properties": [],
+                },
+            }
+            for index in range(100)
+        ],
+        columns=[columns[1]],
+        detail_subassemblies=False,
+        detail_parts=False,
+        only_parts=False,
+        row_overrides=[],
     )
-    assert "split the design" in oversized.value.details["correction"]
+    assert large["row_count"] == 100
+    assert large["limits"]["contract_bytes"] == 0
 
 
 def test_assembly_occurrence_global_placement_failure_is_never_silently_local() -> None:
@@ -6454,6 +6448,9 @@ def test_generic_publication_accepts_non_assembly_and_cleans_failed_creations(
         def getObject(self, name):
             return self.objects.get(str(name))
 
+        def findObjects(self, *, Property):
+            return [obj for obj in self.objects.values() if Property in obj.PropertiesList]
+
         def removeObject(self, name):
             self.removed.append(str(name))
             self.objects.pop(str(name), None)
@@ -7082,6 +7079,29 @@ def test_source_operation_budget_excludes_trusted_domain_api_frames() -> None:
             max_operations=10,
             max_seconds=1.0,
         )
+
+
+def test_source_without_operation_ceiling_can_exceed_old_budget() -> None:
+    from vibescript_domain_worker import _execute_source
+
+    result, _stdout, budget = _execute_source(
+        source=(
+            "value = 0\n"
+            "for item in range(110_000):\n"
+            "    value += item\n"
+            "result = {'Value': value}\n"
+        ),
+        document_name="LargeSourceFixture",
+        document_objects=[],
+        inputs={},
+        api=object(),
+        expected_output_names=["Value"],
+        max_operations=0,
+        max_seconds=30.0,
+    )
+    assert result == {"Value": 110_000 * 109_999 // 2}
+    assert budget["operations"] > 200_000
+    assert budget["max_operations"] == 0
 
 
 def test_domain_context_merges_live_identity_without_losing_persisted_facts(

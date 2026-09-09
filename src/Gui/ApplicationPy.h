@@ -89,6 +89,7 @@ public:
     static PyObject* sActiveView               (PyObject *self,PyObject *args);
     static PyObject* sActivateView             (PyObject *self,PyObject *args);
     static PyObject* sGetDocument              (PyObject *self,PyObject *args);
+    static PyObject* sRunOnMainThread          (PyObject *self,PyObject *args);
     static PyObject* sEditDocument             (PyObject *self,PyObject *args);
 
     static PyObject* sDoCommand                (PyObject *self,PyObject *args);

@@ -30,6 +30,7 @@
 
 
 #include <App/Application.h>
+#include <Base/Exception.h>
 #include <Base/Reader.h>
 #include <Base/Writer.h>
 #ifdef _MSC_VER
@@ -39,6 +40,7 @@
 
 #include "Thumbnail.h"
 #include "BitmapFactory.h"
+#include "FrameBudget.h"
 #include "View3DInventorViewer.h"
 
 
@@ -88,13 +90,15 @@ void Thumbnail::SaveDocFile(Base::Writer& writer) const
 {
     QImage img;
     bool created = false;
+    const auto onOwner = [](std::function<void()> capture) {
+        if (!dispatchToGuiFrameAndWait(std::move(capture))) {
+            throw Base::RuntimeError("Unable to capture document thumbnail");
+        }
+    };
 
     // 1. Try to create the thumbnail from the viewer
-    if (this->viewer) {
-        if (this->viewer->thread() != QThread::currentThread()) {
-            qWarning("Cannot create a thumbnail from non-GUI thread");
-        }
-        else {
+    onOwner([&] {
+        if (this->viewer) {
             QColor invalid;
             this->viewer->imageFromFramebuffer(
                 this->size,
@@ -106,9 +110,10 @@ void Thumbnail::SaveDocFile(Base::Writer& writer) const
             );
             created = !img.isNull();
         }
-    }
+    });
 
-    // 2. If creation failed (e.g. no viewer or background thread), try to restore from the existing file
+    // 2. If creation failed (e.g. no viewer), restore from the existing file.
+    // Archive access stays on the save caller, never in the owner capture.
     if (!created) {
         QString filename = this->uri.toLocalFile();
         Base::FileInfo fi(filename.toUtf8().constData());
@@ -146,28 +151,34 @@ void Thumbnail::SaveDocFile(Base::Writer& writer) const
 
     // Get app icon and resize to half size to insert in topbottom position over the current view
     // snapshot
-    QPixmap appIcon = Gui::BitmapFactory().pixmap(App::Application::Config()["AppIcon"].c_str());
-    QPixmap px = appIcon;
-    if (!img.isNull()) {
-        // Create a small "Fc" Application icon in the bottom right of the thumbnail
-        if (App::GetApplication()
-                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                ->GetBool("AddThumbnailLogo", false)) {
-            // only scale app icon if an offscreen image could be created
-            appIcon = appIcon.scaled(
-                this->size / 4,
-                this->size / 4,
-                Qt::KeepAspectRatio,
-                Qt::SmoothTransformation
-            );
-            px = BitmapFactory().merge(QPixmap::fromImage(img), appIcon, BitmapFactoryInst::BottomRight);
+    QImage thumbnail;
+    onOwner([&] {
+        QPixmap appIcon = Gui::BitmapFactory().pixmap(App::Application::Config()["AppIcon"].c_str());
+        QPixmap px = appIcon;
+        if (!img.isNull()) {
+            // Create a small "Fc" Application icon in the bottom right of the thumbnail
+            if (App::GetApplication()
+                    .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
+                    ->GetBool("AddThumbnailLogo", false)) {
+                // only scale app icon if an offscreen image could be created
+                appIcon = appIcon.scaled(
+                    this->size / 4,
+                    this->size / 4,
+                    Qt::KeepAspectRatio,
+                    Qt::SmoothTransformation
+                );
+                px = BitmapFactory()
+                         .merge(QPixmap::fromImage(img), appIcon, BitmapFactoryInst::BottomRight);
+            }
+            else {
+                px = QPixmap::fromImage(img);
+            }
         }
-        else {
-            px = QPixmap::fromImage(img);
-        }
-    }
 
-    if (!px.isNull()) {
+        thumbnail = px.toImage();
+    });
+
+    if (!thumbnail.isNull()) {
         // according to specification add some meta-information to the image
         qint64 mt = QDateTime::currentDateTimeUtc().toSecsSinceEpoch();
         QString mtime = QStringLiteral("%1").arg(mt);
@@ -179,7 +190,7 @@ void Thumbnail::SaveDocFile(Base::Writer& writer) const
         QByteArray ba;
         QBuffer buffer(&ba);
         buffer.open(QIODevice::WriteOnly);
-        px.save(&buffer, "PNG");
+        thumbnail.save(&buffer, "PNG");
         writer.Stream().write(ba.constData(), ba.length());
     }
 }
