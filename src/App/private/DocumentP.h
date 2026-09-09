@@ -28,7 +28,10 @@
 #pragma warning(disable : 4834)
 #endif
 
+#include <atomic>
+#include <condition_variable>
 #include <map>
+#include <mutex>
 #include <string>
 #include <memory>
 #include <vector>
@@ -74,6 +77,8 @@ struct DocumentP
 {
     // Array to preserve the creation order of created objects
     std::vector<DocumentObject*> objectArray;
+    // Exact membership without dereferencing possibly retired candidate pointers.
+    std::unordered_set<const DocumentObject*> objectAddresses;
     std::unordered_set<App::DocumentObject*> touchedObjs;
     std::unordered_map<std::string, DocumentObject*> objectMap;
     Base::UniqueNameManager objectNameManager;
@@ -82,6 +87,9 @@ struct DocumentP
     std::unordered_map<std::string, bool> partialLoadObjects;
     std::vector<DocumentObjectT> pendingRemove;
     long lastObjectId {};
+    std::atomic_uint64_t objectChangeGeneration {0};
+    std::atomic_uint64_t objectStructureGeneration {0};
+    std::atomic_uint64_t objectRemovalGeneration {0};
     DocumentObject* activeObject {nullptr};
     Transaction* activeUndoTransaction {nullptr};
     // pointer to the python class
@@ -99,7 +107,17 @@ struct DocumentP
     unsigned int UndoMemSize {0};
     unsigned int UndoMaxStackSize {20};
     unsigned int TransactionLock {0};
-    unsigned int cooperativeMutationDepth {0};
+    std::atomic_uint cooperativeMutationDepth {0};
+    // Non-null only while the archive writer consumes live document properties.
+    std::atomic<const void*> archiveWriter {nullptr};
+    std::atomic_uint presentationUpdateDepth {0};
+    unsigned int restorePresentationDepth {0};
+    unsigned int presentationWaiterCount {0};
+    mutable std::mutex presentationUpdateMutex;
+    // A final presentation observer may close the document. Notification must
+    // retain its own lifetime after that callback, independently of DocumentP.
+    std::shared_ptr<std::condition_variable> presentationUpdateChanged {
+        std::make_shared<std::condition_variable>()};
     // Id and name that the next transaction will take
     // as soon as there is a change to the document
     int bookedTransaction { 0 }; 
@@ -108,6 +126,8 @@ struct DocumentP
     mutable HasherMap hashers;
     std::multimap<const App::DocumentObject*, std::unique_ptr<App::DocumentObjectExecReturn>>
         _RecomputeLog;
+    mutable std::recursive_mutex recomputeLogMutex;
+    mutable std::recursive_mutex propertyChangeMutex;
     std::uint64_t recomputeDiagnosticGeneration {0};
     std::vector<RecomputeDiagnostic> recomputeDiagnostics;
     ExportInfo exportInfo;
@@ -118,6 +138,7 @@ struct DocumentP
 
     void beginRecomputeDiagnostics()
     {
+        std::lock_guard lock(recomputeLogMutex);
         ++recomputeDiagnosticGeneration;
         recomputeDiagnostics.clear();
     }
@@ -129,6 +150,7 @@ struct DocumentP
                                 std::string_view property = {},
                                 std::string_view subelement = {})
     {
+        std::lock_guard lock(recomputeLogMutex);
         RecomputeDiagnostic diagnostic;
         diagnostic.generation = recomputeDiagnosticGeneration;
         diagnostic.severity = "error";
@@ -150,6 +172,7 @@ struct DocumentP
                          std::string_view property = {},
                          std::string_view subelement = {})
     {
+        std::lock_guard lock(recomputeLogMutex);
         addRecomputeLog(
             new DocumentObjectExecReturn(why, obj),
             code,
@@ -166,6 +189,7 @@ struct DocumentP
                          std::string_view property = {},
                          std::string_view subelement = {})
     {
+        std::lock_guard lock(recomputeLogMutex);
         addRecomputeLog(
             new DocumentObjectExecReturn(why, obj),
             code,
@@ -181,6 +205,7 @@ struct DocumentP
                          std::string_view property = {},
                          std::string_view subelement = {})
     {
+        std::lock_guard lock(recomputeLogMutex);
         if (!returnCode->Which) {
             delete returnCode;
             return;
@@ -200,6 +225,7 @@ struct DocumentP
 
     void clearRecomputeLog(const App::DocumentObject* obj = nullptr)
     {
+        std::lock_guard lock(recomputeLogMutex);
         if (!obj) {
             _RecomputeLog.clear();
         }
@@ -210,8 +236,11 @@ struct DocumentP
 
     void clearDocument()
     {
+        objectRemovalGeneration.fetch_add(1, std::memory_order_release);
+        objectChangeGeneration.fetch_add(1, std::memory_order_release);
         objectLabelManager.clear();
         objectArray.clear();
+        objectAddresses.clear();
         for (auto& v : objectMap) {
             v.second->setStatus(ObjectStatus::Destroy, true);
             delete (v.second);
@@ -220,15 +249,30 @@ struct DocumentP
         objectMap.clear();
         objectNameManager.clear();
         objectIdMap.clear();
+        objectChangeGeneration.fetch_add(1, std::memory_order_release);
+        objectRemovalGeneration.fetch_add(1, std::memory_order_release);
     }
 
     const char* findRecomputeLog(const App::DocumentObject* obj)
     {
+        std::lock_guard lock(recomputeLogMutex);
         auto range = _RecomputeLog.equal_range(obj);
         if (range.first == range.second) {
             return nullptr;
         }
         return (--range.second)->second->Why.c_str();
+    }
+
+    [[nodiscard]] bool hasRecomputeLog() const
+    {
+        std::lock_guard lock(recomputeLogMutex);
+        return !_RecomputeLog.empty();
+    }
+
+    [[nodiscard]] std::uint64_t getRecomputeDiagnosticGeneration() const
+    {
+        std::lock_guard lock(recomputeLogMutex);
+        return recomputeDiagnosticGeneration;
     }
 
     static void findAllPathsAt(const std::vector<Node>& all_nodes,

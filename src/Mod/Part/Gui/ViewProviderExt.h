@@ -25,9 +25,14 @@
 #pragma once
 
 #include "SoFCShapeObject.h"
+#include "RenderMeshController.h"
 
 
+#include <cstdint>
 #include <map>
+#include <memory>
+#include <string>
+#include <utility>
 
 #include <App/PropertyUnits.h>
 #include <Gui/ViewProviderGeometryObject.h>
@@ -57,6 +62,11 @@ class SoNormal;
 class SoNormalBinding;
 class SoMaterialBinding;
 class SoIndexedLineSet;
+
+namespace Part
+{
+struct RenderMesh;
+}
 
 namespace PartGui
 {
@@ -240,6 +250,24 @@ protected:
     bool faceHighlightActive = false;
 
 private:
+    friend struct DeferredVisual;
+    void applyShapeAppearance();
+    void applyEdgeAppearance();
+    void applyPointAppearance();
+    using AppearanceStamp = std::pair<std::uint64_t, std::uint64_t>;
+    AppearanceStamp shapeAppearanceStamp {};
+    AppearanceStamp edgeAppearanceStamp {};
+    AppearanceStamp pointAppearanceStamp {};
+    int appearanceFaceCount {-1};
+    void startVisualBuild(TopoDS_Shape shape, std::uint64_t generation);
+    void finishVisualBuild(
+        std::uint64_t instanceId,
+        std::uint64_t generation,
+        TopoDS_Shape shape,
+        std::shared_ptr<const Part::RenderMesh> mesh,
+        std::string error
+    );
+    void bindRenderMesh(std::shared_ptr<const Part::RenderMesh> mesh);
     Gui::ViewProviderFaceTexture texture;
     // settings stuff
     int forceUpdateCount;
@@ -255,6 +283,15 @@ private:
 
     // shape that was last rendered so if it does not change we don't re-render it without need
     TopoDS_Shape lastRenderedShape;
+    std::uint64_t visualInstanceId {0};
+    std::uint64_t visualRequestGeneration {0};
+    bool visualBuildInFlight {false};
+    RenderMeshController visualMeshController;
+    bool deferredVisualRestorePending {false};
+    // Coin borrows the prepared arrays through setValuesPointer(). Keep the
+    // exact immutable artifact alive until every field is rebound or this
+    // provider is destroyed.
+    std::shared_ptr<const Part::RenderMesh> installedRenderMesh;
 };
 
 }  // namespace PartGui

@@ -24,7 +24,9 @@
 
 #include <list>
 #include <map>
+#include <set>
 #include <string>
+#include <functional>
 #include <fastsignals/signal.h>
 #include <QString>
 
@@ -58,6 +60,7 @@ class ViewProvider;
 class ViewProviderDocumentObject;
 class Application;
 class DocumentPy;
+class ModelTreeBrowserCache;
 class TransactionViewProvider;
 namespace TaskView
 {
@@ -94,6 +97,8 @@ protected:
     void slotRelabelObject(const App::DocumentObject&);
     void slotTransactionAppend(const App::DocumentObject&, App::Transaction*);
     void slotTransactionRemove(const App::DocumentObject&, App::Transaction*);
+    void slotCooperativeMutationChanged(const App::Document&, bool active);
+    void slotPresentationUpdateChanged(const App::Document&, bool active);
     void slotActivatedObject(const App::DocumentObject&);
     void slotStartRestoreDocument(const App::Document&);
     void slotFinishRestoreDocument(const App::Document&);
@@ -170,8 +175,16 @@ public:
     bool saveAs();
     /// Save a copy of the document under a new file name
     bool saveCopy();
+    /// Queue interactive persistence. Returns false if no request was admitted.
+    /// An admitted request calls finished once on the GUI owner, after lease
+    /// release. Existing synchronous save APIs remain available to scripts.
+    using SaveCallback = std::function<void(bool)>;
+    bool saveAsync(SaveCallback finished = {});
+    bool saveAsAsync(SaveCallback finished = {});
+    bool saveCopyAsync(SaveCallback finished = {});
     /// Save all open document
     static void saveAll();
+    static void saveAllAsync();
     /// This method is used to save properties or very small amounts of data to an XML document.
     void Save(Base::Writer& writer) const override;
     /// This method is used to restore properties from an XML document.
@@ -193,6 +206,8 @@ public:
     /// Observer message from the App doc
     void setModified(bool);
     bool isModified() const;
+    /// Clear the dirty flag only if no edit followed the last archive capture.
+    void clearModifiedAfterSave();
 
     /// getter-setter for workbench name
     void setWorkbench(const std::string& name);
@@ -372,6 +387,13 @@ public:
 
     /// handles the application close event
     bool canClose(bool checkModify = true, bool checkLink = false);
+    /// Prepare the exact documents for closing without waiting for Save on Qt.
+    /// The callback runs on Qt after save and presentation, without closing them.
+    static void prepareCloseAsync(const std::vector<Document*>& documents,
+                                  SaveCallback finished, bool checkLinks = false);
+    /// Prepare and close only these exact document instances, never replacements.
+    static void closeDocumentsAsync(const std::vector<Document*>& documents,
+                                    SaveCallback finished = {});
     bool isLastView();
 
     /// called by Application before being deleted
@@ -392,6 +414,7 @@ public:
      * once signalBecameStable() is emitted.
      */
     static bool projectionRefreshBlocked(const App::Document* document);
+    ModelTreeBrowserCache& modelBrowserProjectionCache();
 
     /** Return true while user-driven History mutations must remain disabled.
      *
@@ -406,6 +429,11 @@ protected:
     Gui::DocumentPy* _pcDocPy;
 
 private:
+    class ClosePreparation;
+    bool saveImpl(bool asynchronous, SaveCallback finished = {}, bool versionApproved = false);
+    bool saveAsImpl(bool asynchronous, SaveCallback finished = {});
+    bool saveCopyImpl(bool asynchronous, SaveCallback finished = {});
+    static void saveAllImpl(bool asynchronous);
     bool trySetEdit(Gui::ViewProvider* p, int ModNum, const char* subname);
     /**
      * Transfer one exact application transaction to the active edit session.
@@ -420,6 +448,25 @@ private:
     void retryPendingEditTransaction();
     void completePendingEditTransaction(int transactionId, bool commit);
     void resetIfEditing();
+    void queueDeferredNewViewProvider(
+        const App::DocumentObject& object,
+        bool updateView,
+        bool recordRedo
+    );
+    void scheduleDeferredViewProviderWork();
+    void drainDeferredViewProviderWork();
+    bool hasDeferredViewProviderWork() const;
+    void finishNewViewProvider(
+        long objectId,
+        bool updateView,
+        bool recordRedo
+    );
+    void finishDeferredViewUpdate(
+        long objectId,
+        const std::set<std::string>& propertyNames,
+        bool refreshAll
+    );
+    void synchronizePresentationView(MDIView& view);
     // handles the scene graph nodes to correctly group child and parents
     void handleChildren3D(ViewProvider* viewProvider, bool deleting = false);
 
@@ -428,7 +475,8 @@ private:
     /// Ask for user interaction if saving has failed
     bool askIfSavingFailed(const QString&);
     /// Warn if saving a document from an older FreeCAD version (returns false if user cancels)
-    bool warnIfOlderVersion();
+    bool warnIfOlderVersion(bool asynchronous = false, SaveCallback finished = {},
+                           bool* queuedSaveAs = nullptr);
 
     struct DocumentP* d;
     static int _iDocCount;
@@ -445,6 +493,7 @@ private:
     //@}
 
     friend class TransactionViewProvider;
+    friend class MDIView;
     friend class TaskView::TaskDialog;
 };
 

@@ -27,7 +27,6 @@ _EXPORTS = (
 )
 _OUTPUT_TYPES = ("curve", "surface", "brep", "mesh", "fit_metrics")
 _GEOMETRY_TYPES = frozenset(_OUTPUT_TYPES[:-1])
-_MAX_DEFINITION_BYTES = 1_000_000
 _MAX_POINTS = 2_000_000
 _MAX_FACETS = 5_000_000
 _MAX_BREP_FACETS = 100_000
@@ -225,12 +224,6 @@ def _encoded(value: Any) -> bytes:
             stage="definition_contract",
             exception_type=type(exc).__name__,
         ) from exc
-    if len(result) > _MAX_DEFINITION_BYTES:
-        raise _fail(
-            f"A Reverse Engineering definition exceeds {_MAX_DEFINITION_BYTES} JSON bytes.",
-            stage="definition_contract",
-            json_bytes=len(result),
-        )
     return result
 
 

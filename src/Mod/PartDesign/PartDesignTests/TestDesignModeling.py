@@ -4099,6 +4099,46 @@ class TestDesignModeling(unittest.TestCase):
         PartDesign.validateDesign(operation)
         self._assert_dependency_graph_acyclic(self.document)
 
+    def test_vibescript_adoption_under_publication_lease_preserves_body_identity(self):
+        program = self.document.addObject("App::Part", "ScriptProgram")
+        unrelated = self.document.addObject("PartDesign::Body", "Unrelated")
+        unrelated.touch()
+        identities = None
+        operation = None
+        self.document.beginCooperativeMutation()
+        try:
+            for count, height in ((50, 3), (50, 4), (49, 5), (51, 6)):
+                keys = [f"Part{index}" for index in range(count)]
+                self.document.openTransaction("Adopt validated outputs")
+                if operation is None:
+                    operation = self.document.addObject(
+                        "PartDesign::DesignScriptOperation", "ScriptOperation"
+                    )
+                edit = PartDesign.beginDesignOperationEdit(operation)
+                PartDesign.setDesignScriptOutputs(
+                    edit, program.Name, "program-batch", f"revision-{height}",
+                    keys, keys, [Part.makeBox(i + 1, 2, height) for i in range(count)],
+                    [None] * count,
+                )
+                bodies = PartDesign.adoptDesignScriptOperationEdit(edit)
+                self.assertEqual(len(bodies), count)
+                current = [body.Name for body in bodies]
+                if identities is not None:
+                    retained = min(len(current), len(identities))
+                    self.assertEqual(current[:retained], identities[:retained])
+                identities = current
+                for index, body in enumerate(bodies):
+                    self.assertTrue(body.isValid())
+                    self.assertAlmostEqual(body.Shape.Volume, (index + 1) * 2 * height)
+                    self.assertIs(body.Tip.CurrentState.Operation, operation)
+                self.assertIn("Touched", unrelated.State)
+                PartDesign.validateDesign(operation)
+                self.document.commitTransaction()
+        finally:
+            self.document.abortTransaction()
+            self.document.endCooperativeMutation()
+        self._assert_dependency_graph_acyclic(self.document)
+
     def test_vibescript_program_is_one_global_multi_body_operation(self):
         program = self.document.addObject("App::Part", "ScriptProgram")
         program.Label = "Parametric enclosure"

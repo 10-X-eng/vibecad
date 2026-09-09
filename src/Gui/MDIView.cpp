@@ -27,6 +27,7 @@
 #include <QEvent>
 #include <QCloseEvent>
 #include <QMdiSubWindow>
+#include <QPointer>
 #include <QPrintDialog>
 #include <QPrintPreviewDialog>
 #include <QPrinter>
@@ -71,6 +72,7 @@ MDIView::MDIView(Gui::Document* pcDocument, QWidget* parent, Qt::WindowFlags wfl
         );
         assert(connectDelObject.connected());
         // NOLINTEND
+        pcDocument->synchronizePresentationView(*this);
     }
 }
 
@@ -107,6 +109,10 @@ MDIView::~MDIView()
 
 void MDIView::deleteSelf()
 {
+    // This is terminal destruction (document teardown or view replacement),
+    // not a new user close request. Do not queue preparation against a document
+    // that the caller is already destroying and detach a still-open window.
+    closePrepared = true;
     // When using QMdiArea make sure to remove the QMdiSubWindow
     // this view is associated with.
     //
@@ -216,6 +222,7 @@ bool MDIView::onHasMsg(const char* pMsg) const
 
 bool MDIView::canClose()
 {
+    if (closePrepared) { return true; }
     if (getAppDocument() && getAppDocument()->testStatus(App::Document::TempDoc)) {
         return true;
     }
@@ -230,6 +237,23 @@ bool MDIView::canClose()
 
 void MDIView::closeEvent(QCloseEvent* e)
 {
+    if (!closePrepared && !bIsPassive && getGuiDocument() && getGuiDocument()->isLastView()
+        && !getAppDocument()->testStatus(App::Document::TempDoc)) {
+        e->ignore();
+        if (!closePreparationPending) {
+            closePreparationPending = true;
+            QPointer<MDIView> guard(this);
+            Document::prepareCloseAsync({getGuiDocument()}, [guard](bool ready) {
+                if (!guard) { return; }
+                guard->closePreparationPending = false;
+                if (!ready) { return; }
+                guard->closePrepared = true;
+                guard->close();
+                if (guard) { guard->closePrepared = false; }
+            }, true);
+        }
+        return;
+    }
     if (canClose()) {
         e->accept();
         Application::Instance->viewClosed(this);

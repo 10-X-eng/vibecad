@@ -83,6 +83,12 @@ set(FreeCADApp_LIBS
     fmt::fmt
 )
 
+if(WIN32)
+    list(APPEND FreeCADApp_LIBS psapi)
+elseif(APPLE)
+    list(APPEND FreeCADApp_LIBS proc)
+endif()
+
 if(BUILD_TRACY_FRAME_PROFILER)
     list(APPEND FreeCADApp_LIBS TracyClient)
 endif()
@@ -209,6 +215,7 @@ SET(Document_HPP_SRCS
     BackupPolicy.h
     Document.h
     DocumentTimeline.h
+    SemanticDependencyOrder.h
     RecoverySnapshot.h
     DepEdge.h
     DocumentObject.h
@@ -310,6 +317,7 @@ SET(FreeCADApp_CPP_SRCS
     TranslationQtBridge.cpp
     ElementMap.cpp
     Enumeration.cpp
+    HostRuntime.cpp
     IndexedName.cpp
     MappedElement.cpp
     MappedName.cpp
@@ -341,6 +349,9 @@ SET(FreeCADApp_HPP_SRCS
     ComplexGeoData.h
     ElementMap.h
     Enumeration.h
+    HostRuntime.h
+    private/CpuBudget.h
+    HostWorkflow.h
     IndexedName.h
     MappedName.h
     MappedElement.h

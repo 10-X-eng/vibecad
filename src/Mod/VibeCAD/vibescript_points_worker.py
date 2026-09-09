@@ -22,7 +22,6 @@ VALIDATION_SCHEMA = "vibecad-vibescript-points-validation-v1"
 ATTRIBUTE_SCHEMA = "vibecad-vibescript-point-attributes-f32le-v1"
 _EXPORTS = ("point_cloud",)
 _OUTPUT_TYPES = ("points",)
-_MAX_DEFINITION_BYTES = 1_000_000
 _MAX_POINTS = 2_000_000
 _MAX_DEDUPLICATE_POINTS = 500_000
 _MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
@@ -620,12 +619,6 @@ def _encoded(value: Any) -> bytes:
             stage="definition_contract",
             exception_type=type(exc).__name__,
         ) from exc
-    if len(result) > _MAX_DEFINITION_BYTES:
-        raise _fail(
-            f"A Points definition exceeds {_MAX_DEFINITION_BYTES} JSON bytes.",
-            stage="definition_contract",
-            json_bytes=len(result),
-        )
     return result
 
 

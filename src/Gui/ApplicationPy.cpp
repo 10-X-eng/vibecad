@@ -58,6 +58,7 @@
 #include "DownloadManager.h"
 #include "EditorView.h"
 #include "FileHandler.h"
+#include "FrameBudget.h"
 #include "Macro.h"
 #include "MainWindow.h"
 #include "MainWindowPy.h"
@@ -81,6 +82,43 @@ using namespace Gui;
 
 namespace
 {
+// Python errors belong to a thread state. All Python-owned presentation
+// handoffs use this transport so exception types and tracebacks survive the
+// worker/owner boundary, and no GUI callback waits for the worker's GIL.
+PyObject* runPythonOnMainThread(const std::function<PyObject*()>& call)
+{
+    PyObject* result = nullptr;
+    PyObject* errorType = nullptr;
+    PyObject* errorValue = nullptr;
+    PyObject* errorTrace = nullptr;
+    try {
+        if (!dispatchToGuiFrameAndWait([&] {
+                Base::PyGILStateLocker python;
+                result = call();
+                if (!result) {
+                    PyErr_Fetch(&errorType, &errorValue, &errorTrace);
+                }
+            })) {
+            PyErr_SetString(PyExc_RuntimeError, "The GUI presentation dispatcher is unavailable");
+        }
+    }
+    catch (const std::exception& error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+    }
+    catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "GUI presentation dispatch failed");
+    }
+    // dispatchToGuiFrameAndWait has reacquired the caller's GIL here.
+    if (errorType) {
+        PyErr_Restore(errorType, errorValue, errorTrace);
+    }
+    if (PyErr_Occurred()) {
+        Py_XDECREF(result);
+        return nullptr;
+    }
+    return result;
+}
+
 bool requirePythonMainThread(const char* api) noexcept
 {
     try {
@@ -560,6 +598,15 @@ PyMethodDef ApplicationPy::Methods[] = {
      "Get a document.\n"
      "\n"
      "doc : str, App.Document\n    `App.Document` name or `App.Document` object."},
+    {"runOnMainThread",
+     (PyCFunction)ApplicationPy::sRunOnMainThread,
+     METH_VARARGS,
+     "runOnMainThread(callable, *args) -> object\n"
+     "\n"
+     "Run a small presentation update on the GUI owner using the shared frame dispatcher.\n"
+     "Worker callers release the GIL while waiting. Return values and Python exceptions\n"
+     "are delivered to the caller. Geometry, document computation and I/O belong on workers;\n"
+     "this call cannot interrupt an expensive callback."},
     {"doCommand",
      (PyCFunction)ApplicationPy::sDoCommand,
      METH_VARARGS,
@@ -912,6 +959,22 @@ PyObject* Gui::ApplicationPy::sSetActiveDocument(PyObject* /*self*/, PyObject* a
     }
 
     Py_Return;
+}
+
+PyObject* ApplicationPy::sRunOnMainThread(PyObject* /*self*/, PyObject* args)
+{
+    if (PyTuple_Size(args) == 0 || !PyCallable_Check(PyTuple_GetItem(args, 0))) {
+        PyErr_SetString(PyExc_TypeError, "runOnMainThread requires a callable followed by its arguments");
+        return nullptr;
+    }
+    PyObject* callable = PyTuple_GetItem(args, 0);
+    PyObject* arguments = PyTuple_GetSlice(args, 1, PyTuple_Size(args));
+    if (!arguments) {
+        return nullptr;
+    }
+    PyObject* result = runPythonOnMainThread([&] { return PyObject_CallObject(callable, arguments); });
+    Py_DECREF(arguments);
+    return result;
 }
 
 PyObject* ApplicationPy::sGetDocument(PyObject* /*self*/, PyObject* args)
@@ -1714,10 +1777,6 @@ PyObject* ApplicationPy::sAddCommand(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    if (!requirePythonMainThread("FreeCADGui.addCommand")) {
-        return nullptr;
-    }
-
     // get the call stack to find the Python module name
     //
     std::string module;
@@ -1767,12 +1826,14 @@ PyObject* ApplicationPy::sAddCommand(PyObject* /*self*/, PyObject* args)
     catch (Py::Exception& e) {
         e.clear();
     }
-    try {
-        Base::PyGILStateLocker lock;
-
-        Py::Object cmd(pcCmdObj);
-        if (cmd.hasAttr("GetCommands")) {
-            Command* cmd = new PythonGroupCommand(pName, pcCmdObj);
+    // Preserve caller-module discovery on the importing worker. Only command
+    // construction and registry notification belong to the GUI owner.
+    return runPythonOnMainThread([&]() -> PyObject* {
+        try {
+            Py::Object object(pcCmdObj);
+            Command* cmd = object.hasAttr("GetCommands")
+                ? static_cast<Command*>(new PythonGroupCommand(pName, pcCmdObj))
+                : static_cast<Command*>(new PythonCommand(pName, pcCmdObj, pSource));
             if (!module.empty()) {
                 cmd->setAppModuleName(module.c_str());
             }
@@ -1781,30 +1842,19 @@ PyObject* ApplicationPy::sAddCommand(PyObject* /*self*/, PyObject* args)
             }
             Application::Instance->commandManager().addCommand(cmd);
         }
-        else {
-            Command* cmd = new PythonCommand(pName, pcCmdObj, pSource);
-            if (!module.empty()) {
-                cmd->setAppModuleName(module.c_str());
-            }
-            if (!group.empty()) {
-                cmd->setGroupName(group.c_str());
-            }
-            Application::Instance->commandManager().addCommand(cmd);
+        catch (const Base::Exception& e) {
+            e.setPyException();
+            return nullptr;
         }
-    }
-    catch (const Base::Exception& e) {
-        e.setPyException();
-        return nullptr;
-    }
-    catch (...) {
-        PyErr_SetString(
-            Base::PyExc_FC_GeneralError,
-            "Unknown C++ exception raised in ApplicationPy::sAddCommand()"
-        );
-        return nullptr;
-    }
-
-    Py_Return;
+        catch (...) {
+            PyErr_SetString(
+                Base::PyExc_FC_GeneralError,
+                "Unknown C++ exception raised in ApplicationPy::sAddCommand()"
+            );
+            return nullptr;
+        }
+        Py_Return;
+    });
 }
 
 PyObject* ApplicationPy::sRunCommand(PyObject* /*self*/, PyObject* args)

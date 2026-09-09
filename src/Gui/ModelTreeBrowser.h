@@ -3,12 +3,22 @@
 #pragma once
 
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
+#include <memory>
+#include <string>
+#include <cstdint>
+#include <functional>
+#include <stop_token>
+#include <FCGlobal.h>
+
+class QObject;
 
 namespace App
 {
 class Document;
 class DocumentObject;
+class HostRuntime;
 }
 
 namespace Gui
@@ -23,7 +33,7 @@ namespace Gui
  * This projection derives a stable browser role and ownership context without
  * creating, moving, or modifying any document objects.
  */
-class ModelTreeBrowserProjection
+class GuiExport ModelTreeBrowserProjection
 {
 public:
     enum class Role
@@ -113,18 +123,62 @@ public:
 
     explicit ModelTreeBrowserProjection(App::Document* document);
 
+    /** Capture on the document owner, one metadata record or relation per call.
+     * Finish may run on
+     * a compute worker: it only consumes captured values and opaque identity
+     * tokens, never live document properties. The caller must reject results
+     * if its document generation changes during capture or before adoption.
+     */
+    class GuiExport Preparation
+    {
+    public:
+        explicit Preparation(App::Document* document);
+        ~Preparation();
+        Preparation(Preparation&&) noexcept;
+        Preparation& operator=(Preparation&&) noexcept;
+        bool captureNext();
+        bool isCurrent() const;
+        std::vector<App::Document*> sourceDocuments() const;
+        ModelTreeBrowserProjection finish(
+            App::HostRuntime* runtime = nullptr, std::stop_token cancellation = {}) &&;
+
+    private:
+        struct Data;
+        std::unique_ptr<Data> data;
+    };
+
     const std::vector<Entry>& entries() const
     {
         return _entries;
     }
 
     const Entry* find(const App::DocumentObject* object) const;
+    /// Owner-thread check before reusing or adopting captured identities.
+    bool isCurrent() const;
+    std::vector<App::Document*> sourceDocuments() const;
+
+    const std::vector<App::DocumentObject*>& timelineOperations() const { return _operations; }
+    const std::unordered_map<const App::DocumentObject*, const App::DocumentObject*>&
+    timelineRoots() const { return _timelineRoots; }
+    const std::unordered_set<App::DocumentObject*>& internalTransformations() const
+    {
+        return _internalTransformations;
+    }
 
     static bool isBody(const App::DocumentObject* object);
     static bool isComponent(const App::DocumentObject* object);
     static bool isVibeScriptProgram(const App::DocumentObject* object);
 
 private:
+    struct SourceRevision
+    {
+        std::string name;
+        std::string uid;
+        std::uint64_t generation {};
+        bool isCurrent() const;
+        App::Document* resolve() const;
+    };
+    ModelTreeBrowserProjection() = default;
     struct Ownership
     {
         App::DocumentObject* component {};
@@ -136,19 +190,47 @@ private:
 
     // History edits reorder the persisted document timeline independently of
     // creation order. Preserve that chronology inside every ownership folder.
-    void orderOperationsByTimeline(const App::Document* document);
+    void orderOperationsByTimeline(const std::vector<App::DocumentObject*>& operations);
 
     // PartDesign move up/down edits the Body's Group order, so Group order --
     // not creation order -- is the feature history the browser must present.
-    void orderFeaturesByBodyHistory();
+    void orderFeaturesByBodyHistory(
+        const std::unordered_map<const App::DocumentObject*,
+                                 std::vector<App::DocumentObject*>>& histories);
     static Role classify(
         const App::DocumentObject* object,
         const Ownership& ownership,
-        bool publishedOutput
+        bool publishedOutput,
+        bool inspectOrigin = true
     );
 
     std::vector<Entry> _entries;
     std::unordered_map<const App::DocumentObject*, std::size_t> _index;
+    std::vector<App::DocumentObject*> _operations;
+    std::unordered_map<const App::DocumentObject*, const App::DocumentObject*> _timelineRoots;
+    std::unordered_set<App::DocumentObject*> _internalTransformations;
+    std::vector<SourceRevision> _sourceRevisions;
+};
+
+/** One GUI-document-owned preparation/cache shared by Tree and History.
+ * Requests are asynchronous and coalesced per receiver. A cached result is
+ * reused only while every captured source revision remains current.
+ */
+class GuiExport ModelTreeBrowserCache
+{
+public:
+    using Result = std::shared_ptr<const ModelTreeBrowserProjection>;
+    using Completion = std::function<void(Result, std::string)>;
+    explicit ModelTreeBrowserCache(App::Document* document);
+    ~ModelTreeBrowserCache();
+    void request(QObject* receiver, Completion completion);
+    /// Coalesced schema and referenced-document changes. Local value changes
+    /// use each consumer's property-specific handlers; destruction disconnects it.
+    void observeInvalidation(QObject* receiver, std::function<void()> invalidated);
+
+private:
+    struct Data;
+    std::unique_ptr<Data> data;
 };
 
 }  // namespace Gui

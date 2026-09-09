@@ -76,7 +76,8 @@ void validateParsedDocumentObjects(
     }
 }
 
-PyObject* reorderTimelineOperationBlocks(Document* document, PyObject* args, const bool insertBefore)
+PyObject* reorderTimelineOperationBlocks(
+    Document* document, PyObject* args, const bool insertBefore, const bool dependentClosures = false)
 {
     PyObject* pyOperations = nullptr;
     PyObject* pyTarget = nullptr;
@@ -126,8 +127,9 @@ PyObject* reorderTimelineOperationBlocks(Document* document, PyObject* args, con
             throw Py::RuntimeError("This document has no native operation timeline");
         }
         return Py::new_reference_to(Py::Boolean(
-            insertBefore ? timeline->reorderOperationBlocksBefore(operations, target)
-                         : timeline->reorderOperationBlocksAfter(operations, target)
+            dependentClosures ? timeline->reorderOperationDependentClosuresAfter(operations, target)
+                : insertBefore ? timeline->reorderOperationBlocksBefore(operations, target)
+                               : timeline->reorderOperationBlocksAfter(operations, target)
         ));
     }
     PY_CATCH;
@@ -779,6 +781,28 @@ PyObject* DocumentPy::endCooperativeMutation(PyObject* args)
     Py_Return;
 }
 
+PyObject* DocumentPy::waitForPresentationReady(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    auto* document = getDocumentPtr();
+    if (MainThreadSignalConfig::hasHooks() && MainThreadSignalConfig::isMainThread()
+        && (document->isCooperativeMutationActive()
+            || document->isPresentationUpdateActive())) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            "waitForPresentationReady() cannot block the GUI thread"
+        );
+        return nullptr;
+    }
+    {
+        Base::PyGILStateRelease release;
+        document->waitForPresentationReady();
+    }
+    Py_Return;
+}
+
 Py::Boolean DocumentPy::getHasPendingTransaction() const
 {
     return {getDocumentPtr()->hasPendingTransaction()};
@@ -959,40 +983,29 @@ PyObject* DocumentPy::recomputeAsync(PyObject* args)
         }
 
         Application& application = GetApplication();
-        std::vector<std::string> unsafeObjects;
-        for (const auto& request : requests) {
-            if (!application.canRecomputeRequestOnWorker(request)) {
-                unsafeObjects.push_back(
-                    request.documentObjectName.empty() ? std::string("<document>")
-                                                       : request.documentObjectName
-                );
-            }
-        }
-        if (!unsafeObjects.empty()) {
-            std::ostringstream message;
-            message << "Asynchronous recompute rejected thread-affine target";
-            if (unsafeObjects.size() != 1) {
-                message << 's';
-            }
-            message << ": ";
-            for (std::size_t index = 0; index < unsafeObjects.size(); ++index) {
-                if (index != 0) {
-                    message << ", ";
-                }
-                message << unsafeObjects[index];
-            }
-            throw Base::RuntimeError(message.str());
-        }
-
         const auto requestCount = requests.size();
         if (!application.tryQueueRecomputeRequests(std::move(requests))) {
-            throw Base::RuntimeError(
-                "Asynchronous recompute targets became worker-unsafe before they were queued"
-            );
+            throw Base::RuntimeError("Asynchronous recompute targets are no longer available");
         }
         return Py::new_reference_to(Py::Long(requestCount));
     }
     PY_CATCH;
+}
+
+PyObject* DocumentPy::getObjectStructureGeneration(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    return PyLong_FromUnsignedLongLong(getDocumentPtr()->getObjectStructureGeneration());
+}
+
+PyObject* DocumentPy::getObjectRemovalGeneration(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    return PyLong_FromUnsignedLongLong(getDocumentPtr()->getObjectRemovalGeneration());
 }
 
 PyObject* DocumentPy::getRecomputeDiagnostics(PyObject* args)
@@ -1111,9 +1124,11 @@ PyObject* DocumentPy::getObjectsByLabel(PyObject* args)
 
 PyObject* DocumentPy::findObjects(PyObject* args, PyObject* kwds)
 {
-    const char *sType = "App::DocumentObject", *sName = nullptr, *sLabel = nullptr;
-    static const std::array<const char*, 4> kwlist {"Type", "Name", "Label", nullptr};
-    if (!Base::Wrapped_ParseTupleAndKeywords(args, kwds, "|sss", kwlist, &sType, &sName, &sLabel)) {
+    const char *sType = "App::DocumentObject", *sName = nullptr, *sLabel = nullptr,
+               *sProperty = nullptr;
+    static const std::array<const char*, 5> kwlist {"Type", "Name", "Label", "Property", nullptr};
+    if (!Base::Wrapped_ParseTupleAndKeywords(
+            args, kwds, "|ssss", kwlist, &sType, &sName, &sLabel, &sProperty)) {
         return nullptr;
     }
 
@@ -1128,7 +1143,7 @@ PyObject* DocumentPy::findObjects(PyObject* args, PyObject* kwds)
     std::vector<DocumentObject*> res;
 
     try {
-        res = getDocumentPtr()->findObjects(type, sName, sLabel);
+        res = getDocumentPtr()->findObjects(type, sName, sLabel, sProperty);
     }
     catch (const boost::regex_error& e) {
         PyErr_SetString(PyExc_RuntimeError, e.what());
@@ -1476,6 +1491,11 @@ PyObject* DocumentPy::reorderTimelineOperationBlocksAfter(PyObject* args)
 PyObject* DocumentPy::reorderTimelineOperationBlocksBefore(PyObject* args)
 {
     return reorderTimelineOperationBlocks(getDocumentPtr(), args, true);
+}
+
+PyObject* DocumentPy::reorderTimelineOperationDependentClosuresAfter(PyObject* args)
+{
+    return reorderTimelineOperationBlocks(getDocumentPtr(), args, false, true);
 }
 
 PyObject* DocumentPy::reorderTimelineOperationDependentClosureAfter(PyObject* args)
@@ -2391,6 +2411,11 @@ Py::Boolean DocumentPy::getTransacting() const
 Py::Boolean DocumentPy::getCooperativeMutationActive() const
 {
     return {getDocumentPtr()->isCooperativeMutationActive()};
+}
+
+Py::Boolean DocumentPy::getPresentationUpdateActive() const
+{
+    return {getDocumentPtr()->isPresentationUpdateActive()};
 }
 
 Py::String DocumentPy::getOldLabel() const

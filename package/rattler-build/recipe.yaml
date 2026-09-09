@@ -10,7 +10,7 @@ source:
   use_gitignore: true
 
 build:
-  number: 1
+  number: 2
   script:
     env:
       # rattler-build runs the build in a sandbox that does not inherit shell
@@ -154,6 +154,13 @@ requirements:
 
   run:
     - blas * openblas*
+    - if: win
+      then:
+        # pthread builds honor OPENBLAS_NUM_THREADS independently of other
+        # OpenMP users. Paired with job-scoped CPU/RAM scratch admission.
+        - libopenblas ==0.3.30 pthreads_*
+        - psutil
+        - threadpoolctl >=3.6,<4
     - blinker
     - calculix
     - casadi ==3.7.2

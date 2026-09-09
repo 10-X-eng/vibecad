@@ -67,6 +67,8 @@ private:
     /** @name for internal use only */
     //@{
     void setValue(int step);
+    void serviceGuiEvents();
+    static void progressPulse(void* context);
     /** Throws an exception to stop the pending operation. */
     void abort();
     //@}

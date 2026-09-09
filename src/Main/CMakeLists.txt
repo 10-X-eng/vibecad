@@ -165,6 +165,14 @@ endif()
 SET_BIN_DIR(FreeCADMainPy FreeCAD)
 SET_PYTHON_PREFIX_SUFFIX(FreeCADMainPy)
 
+if(MSVC)
+    # The executable and Python module share a basename, but must not write
+    # the same linker PDB when the two targets build in parallel.
+    set_target_properties(FreeCADMainPy PROPERTIES
+        PDB_NAME "FreeCADMainPy"
+        PDB_NAME_DEBUG "FreeCADMainPy_d")
+endif()
+
 if(WIN32)
     INSTALL(TARGETS FreeCADMainPy
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

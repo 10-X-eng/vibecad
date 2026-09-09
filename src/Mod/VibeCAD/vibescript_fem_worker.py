@@ -116,11 +116,7 @@ _REFERENCE_OPTIONAL_FIELDS = frozenset(
         "reference_contract_sha256",
     }
 )
-_MAX_DEFINITION_BYTES = 1_000_000
 _MAX_NATIVE_READBACK_BYTES = 256 * 1024 * 1024
-_MAX_REFERENCES = 128
-_MAX_NODES = 100_000
-_MAX_ELEMENTS = 500_000
 _MAX_RESULT_VALUES = 10_000_000
 _SUBELEMENT = re.compile(r"(Solid|Face|Edge|Vertex)([1-9][0-9]*)\Z")
 _REFERENCES: Mapping[tuple[str, str], Mapping[str, Any]] = MappingProxyType({})
@@ -273,7 +269,7 @@ def _sha256_file(path: Path, *, stage: str = "reference_resolution") -> str:
 def _encoded(
     value: Any,
     *,
-    limit: int = _MAX_DEFINITION_BYTES,
+    limit: int | None = None,
     label: str = "definition",
 ) -> bytes:
     try:
@@ -290,7 +286,7 @@ def _encoded(
             stage="definition_contract",
             exception_type=type(exc).__name__,
         ) from exc
-    if len(payload) > limit:
+    if limit is not None and len(payload) > limit:
         raise _fail(
             f"A FEM {label} exceeds {limit} JSON bytes.",
             stage="definition_contract",
@@ -592,11 +588,6 @@ def configure_fem_references(
 ) -> None:
     """Authenticate and import exact detached BREP inputs for FEM."""
 
-    if len(document_references) > _MAX_REFERENCES:
-        raise _fail(
-            f"FEM accepts at most {_MAX_REFERENCES} document references.",
-            stage="reference_resolution",
-        )
     import Part
 
     references: dict[tuple[str, str], Mapping[str, Any]] = {}
@@ -845,10 +836,9 @@ def _resolve_selection(
 
 def _mesh_topology(fem_mesh: Any) -> dict[str, Any]:
     nodes_mapping = dict(fem_mesh.Nodes)
-    if not 1 <= len(nodes_mapping) <= _MAX_NODES:
+    if not nodes_mapping:
         raise _fail(
-            f"Native FEM mesh contains {len(nodes_mapping)} nodes; the limit is "
-            f"1-{_MAX_NODES}.",
+            "Native FEM mesh contains no nodes.",
             stage="native_mesh_readback",
         )
     nodes = [
@@ -875,9 +865,9 @@ def _mesh_topology(fem_mesh: Any) -> dict[str, Any]:
             records.append([element_id, *connectivity])
         elements[name] = records
         total += len(records)
-    if not 1 <= total <= _MAX_ELEMENTS:
+    if not total:
         raise _fail(
-            f"Native FEM mesh contains {total} elements; the limit is 1-{_MAX_ELEMENTS}.",
+            "Native FEM mesh contains no elements.",
             stage="native_mesh_readback",
         )
     mins = [min(node[axis] for node in nodes) for axis in (1, 2, 3)]

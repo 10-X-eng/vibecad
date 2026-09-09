@@ -37,12 +37,12 @@
 #include <memory>
 #include <string>
 #include <optional>
+#include <atomic>
+#include <exception>
 
 #include <functional>
-#include <thread>
 #include <mutex>
-#include <condition_variable>
-#include <atomic>
+#include <stop_token>
 
 #include <Base/Exception.h>
 
@@ -70,6 +70,8 @@ class ApplicationObserver;
 class Property;
 class AutoTransaction;
 class ExtensionContainer;
+class HostRuntime;
+template<typename Result> class HostWorkflow;
 
 /// Options for acquiring links.
 enum GetLinkOption {
@@ -96,6 +98,30 @@ struct DocumentInitFlags {
     bool temporary {false}; ///< Whether the document should be a temporary one.
 };
 
+/// Delivered on the application owner after all requested restore phases finish.
+struct OpenDocumentsResult
+{
+    std::vector<Document*> documents;
+    std::vector<std::string> errors;
+    std::exception_ptr failure;
+};
+
+/// Owns input strings through queued archive reads and linked-document restore.
+struct OpenDocumentsRequest
+{
+    std::vector<std::string> filenames;
+    std::vector<std::string> paths;
+    std::vector<std::string> labels;
+    DocumentInitFlags initFlags;
+    // Optional per-input overrides; linked documents still do not create views.
+    std::vector<DocumentInitFlags> inputFlags;
+    // Owner-side preparation runs when this request reaches the queue head,
+    // so selections and partial-document dependencies cannot go stale in queue.
+    std::function<void(OpenDocumentsRequest&)> prepare;
+    std::stop_source cancellation;
+    std::function<void(OpenDocumentsResult)> callback;
+};
+
 /**
  * @brief Failure category for async recompute processing.
  */
@@ -103,6 +129,7 @@ enum class RecomputeFailure
 {
     None,
     DependencyCycle,
+    Cancelled,
     Exception
 };
 
@@ -245,6 +272,14 @@ public:
                                          std::vector<std::string>* errs = nullptr,
                                          DocumentInitFlags initFlags = DocumentInitFlags {});
 
+    /// Queue native restore without waiting on the caller. Requires the GUI
+    /// owner dispatcher; callback is delivered there, including on failure.
+    /// Requests are ordered because linked-file discovery shares application
+    /// state. Existing synchronous APIs retain their explicit synchronous contract.
+    void openDocumentsAsync(OpenDocumentsRequest request);
+    bool hasPendingDocumentOpens() const;
+    void cancelPendingDocumentOpens();
+
     /// Get the active document.
     App::Document* getActiveDocument() const;
 
@@ -308,7 +343,8 @@ public:
     /// Set the active document.
     void setActiveDocument(const char* Name);
 
-    /// Close all documents (without saving)
+    /// Attempt to close each current document once (without saving or waiting).
+    /// Documents with active work remain open; callbacks may create new ones.
     void closeAllDocuments();
 
     /**
@@ -396,9 +432,8 @@ public:
     bool isFineGrainedRecomputeEnabled();
     bool canRecomputeRequestOnWorker(const RecomputeRequest& req) const;
 
-    // Queue a recompute only when it can execute on the worker. Unlike
-    // queueRecomputeRequest(), this never falls back to the caller or GUI
-    // thread. This is the safe entry point for asynchronous integrations.
+    // Queue recompute work on the authoritative runtime. The call is atomic
+    // for a batch and never executes work on the caller or GUI thread.
     bool tryQueueRecomputeRequest(RecomputeRequest req);
     bool tryQueueRecomputeRequests(std::vector<RecomputeRequest> requests);
 
@@ -407,6 +442,10 @@ public:
 
     // Adds a recompute request to the processing queue.
     void queueRecomputeRequest(RecomputeRequest req);
+
+    /// The process-lifetime worker pool created eagerly during application startup.
+    HostRuntime& hostRuntime();
+    const HostRuntime& hostRuntime() const;
 
     // NOLINTBEGIN
     // clang-format off
@@ -434,6 +473,9 @@ public:
     fastsignals::signal<void (const Document&)> signalStartRestoreDocument;
     /// Signal after the document has restored.
     fastsignals::signal<void (const Document&)> signalFinishRestoreDocument;
+    /// Owner-dispatched wake-up after the last active restore scope exits.
+    /// Consumers recheck their document and enclosing open/mutation state.
+    fastsignals::signal<void ()> signalRestoreActivityIdle;
     /**
      * Signal after one complete object-import batch has restored all links.
      *
@@ -502,6 +544,8 @@ public:
     fastsignals::signal<void ()> signalStartOpenDocument;
     /// Signal after opening document(s) has finished.
     fastsignals::signal<void ()> signalFinishOpenDocument;
+    /// All queued native opens have delivered their terminal owner callbacks.
+    fastsignals::signal<void ()> signalDocumentOpenQueueIdle;
     /// @}
 
 
@@ -540,6 +584,8 @@ public:
     fastsignals::signal<void (const App::DocumentObject&)> signalObjectRecomputed;
     /// Signal after an asynchronous recompute request has completely left the worker queue.
     fastsignals::signal<void(const std::string&)> signalRecomputeRequestFinished;
+    /// Outermost native mutation boundary, forwarded on the document notification owner.
+    fastsignals::signal<void(const App::Document&, bool)> signalCooperativeMutationChanged;
     /// Signal on an opened transaction.
     fastsignals::signal<void (const App::Document&, std::string)> signalOpenTransaction;
     /// Signal on a committed transaction.
@@ -1044,6 +1090,20 @@ private:
     App::Document* openDocumentPrivate(const char * FileName, const char *propFileName,
             const char *label, bool isMainDoc, DocumentInitFlags initFlags, std::vector<std::string> &&objNames);
 
+    HostWorkflow<Document*> openDocumentWorkflow(const char* filename, const char* propertyFilename,
+            const char* label, bool mainDocument, DocumentInitFlags flags,
+            std::vector<std::string> objectNames);
+    HostWorkflow<std::vector<Document*>> openDocumentsWorkflow(
+            const std::vector<std::string>& filenames, const std::vector<std::string>* paths,
+            const std::vector<std::string>* labels, std::vector<std::string>* errors,
+            DocumentInitFlags flags, const std::vector<DocumentInitFlags>* inputFlags = nullptr);
+
+    struct PendingDocumentOpen;
+    std::deque<std::shared_ptr<PendingDocumentOpen>> _documentOpens;
+    std::atomic<bool> _documentOpenActive {false};
+    void startNextDocumentOpen();
+    void finishDocumentOpen(const std::shared_ptr<PendingDocumentOpen>& task);
+
     void setActiveDocumentNoSignal(App::Document* pDoc);
 
     static Base::Reference<ParameterManager> _pcSysParamMngr;
@@ -1109,29 +1169,35 @@ private:
     // missing object
     std::map<std::string,std::set<std::string> > _docReloadAttempts;
 
-    // Worker thread for processing pending recompute requests
-    std::thread _recomputeThread;
-    // Protects the queued/in-progress recompute state below
+    // The process-lifetime worker pool, created eagerly during startup.
+    std::unique_ptr<HostRuntime> _hostRuntime;
+
+    // Protects the queued/in-progress recompute state below. Recompute drains
+    // run on HostRuntime's persistent document-orchestration lane; there is no
+    // private recompute thread.
     std::mutex _recomputeMutex;
     std::deque<RecomputeRequest> _recomputeRequests;
+    std::set<std::string> _recomputeDocumentsScheduled;
     std::set<std::string> _recomputeDocumentsInProgress;
-    std::condition_variable _recomputeRequestAvailable;
-    std::condition_variable _recomputeStateChanged;
-    // Separate from the mutex-protected queue state so shutdown can request a
-    // worker stop and wake waiters without first taking _recomputeMutex.
-    std::atomic<bool> _stopRecomputeThread{false};
+    std::map<std::string, std::stop_source> _recomputeCancellation;
+    std::map<std::string, std::size_t> _recomputeGeneration;
+    std::size_t _nextRecomputeGeneration {0};
 
-    // Worker thread function that processes _recomputeRequests
-    void recomputeWorker();
-    // Helper to notify the worker thread when new requests are available
-    void notifyRecomputeWorker();
-    // Drop queued requests for a document and wait for any active recompute of
-    // that document to finish before closing it
-    void cancelRecomputeRequestsForDocument(const std::string& documentName);
+    void scheduleRecomputeDocument(const std::string& documentName, std::size_t generation);
+    void drainRecomputeDocument(
+        const std::string& documentName,
+        std::size_t generation,
+        std::stop_token runtimeStop
+    );
+    // Drop queued requests and request cancellation without blocking the caller.
+    // Returns true when the document has no executing recompute and may be closed.
+    bool cancelRecomputeRequestsForDocument(const std::string& documentName);
 
-    bool _isRestoring{false};
+    std::atomic<bool> _isRestoring{false};
     bool _allowPartial{false};
     bool _isClosingAll{false};
+    // Owner-thread close callbacks may re-enter document closure.
+    std::set<std::string> _closingDocuments;
 
     // for estimate max link depth
     int _objCount{-1};

@@ -42,6 +42,9 @@
 #include "ModelManager.h"
 #include "ModelUuids.h"
 
+#include <chrono>
+#include <cstdlib>
+
 #include <Base/Tools.h>
 
 
@@ -80,15 +83,21 @@ MaterialManager::~MaterialManager()
 
 MaterialManager& MaterialManager::getManager()
 {
-    if (!_manager) {
-        initManagers();
-    }
+    // Always enter the initialization lock. The old unlocked fast-path raced
+    // with process-lifetime workers performing eager catalog discovery.
+    initManagers();
     return *_manager;
 }
 
 void MaterialManager::initManagers()
 {
     QMutexLocker locker(&_mutex);
+
+    if (_manager && _localManager) {
+        return;
+    }
+
+    const auto started = std::chrono::steady_clock::now();
 
     if (!_manager) {
         // Can't use smart pointers for this since the constructor is private
@@ -103,6 +112,16 @@ void MaterialManager::initManagers()
         _externalManager = std::make_unique<MaterialManagerExternal>();
     }
 #endif
+
+    if (std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started
+        ).count();
+        Base::Console().message(
+            "VIBECAD_RESTORE_DETAIL material_catalog_init elapsed_ms=%lld\n",
+            static_cast<long long>(elapsed)
+        );
+    }
 }
 
 void MaterialManager::OnChange(ParameterGrp::SubjectType& rCaller, ParameterGrp::MessageType Reason)
@@ -117,6 +136,8 @@ void MaterialManager::OnChange(ParameterGrp::SubjectType& rCaller, ParameterGrp:
 
 void MaterialManager::cleanup()
 {
+    QMutexLocker locker(&_mutex);
+
     if (_localManager) {
         _localManager->cleanup();
     }
@@ -129,6 +150,8 @@ void MaterialManager::cleanup()
 
 void MaterialManager::refresh()
 {
+    initManagers();
+    QMutexLocker locker(&_mutex);
     _localManager->refresh();
 }
 

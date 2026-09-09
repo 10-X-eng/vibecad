@@ -29,11 +29,14 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
+#include <QScopedValueRollback>
+#include <QScopeGuard>
 #include <QThread>
 #include <QTimer>
 #include <QToolTip>
@@ -41,6 +44,7 @@
 
 #include <charconv>
 #include <memory>
+#include <span>
 #include <string_view>
 
 #include <Base/Console.h>
@@ -65,6 +69,7 @@
 #include "BitmapFactory.h"
 #include "Command.h"
 #include "Document.h"
+#include "FrameBudget.h"
 #include "ExactTransaction.h"
 #include "ExpressionCompleter.h"
 #include "Macro.h"
@@ -471,7 +476,7 @@ public:
         setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         setText(0, std::move(label));
         setExpanded(false);
-        updateStatus();
+        applyStatus(0, 0, false);
     }
 
     DocumentItem* getOwnerDocument() const
@@ -527,15 +532,11 @@ public:
 
     void updateStatus()
     {
-        std::vector<DocumentObjectItem*> items;
-        collectObjectItems(this, items);
+        owner->updateBrowserFolderStatus();
+    }
 
-        int visibleCount = 0;
-        for (const auto* item : items) {
-            visibleCount += TreeWidget::objectItemVisibility(item) ? 1 : 0;
-        }
-
-        const int total = static_cast<int>(items.size());
+    void applyStatus(int visibleCount, int total, bool hasTreeChild)
+    {
         const bool anyVisible = visibleCount > 0;
         const bool allVisible = total > 0 && visibleCount == total;
 
@@ -597,13 +598,6 @@ public:
                 : TreeWidget::tr("%1 of %2 items visible").arg(visibleCount).arg(total)
         );
 
-        bool hasTreeChild = false;
-        for (int index = 0; index < childCount(); ++index) {
-            if (!child(index)->isHidden()) {
-                hasTreeChild = true;
-                break;
-            }
-        }
         setHidden(!hasTreeChild && !owner->showHidden());
     }
 
@@ -643,6 +637,29 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+
+struct DocumentItem::BrowserFolderStatus
+{
+    struct Visit
+    {
+        QTreeWidgetItem* item;
+        int nextChild {};
+        int visible {};
+        int total {};
+        bool hasTreeChild {};
+    };
+    App::Document* document;
+    std::uint64_t generation;
+    std::vector<Visit> stack;
+
+    BrowserFolderStatus(DocumentItem* owner, std::uint64_t generation)
+        : document(owner->document()->getDocument()), generation(generation)
+    {
+        stack.push_back({owner});
+        document->beginPresentationUpdate();
+    }
+    ~BrowserFolderStatus() { document->endPresentationUpdate(); }
+};
 
 class DocumentItem::ExpandInfo: public std::unordered_map<std::string, DocumentItem::ExpandInfoPtr>
 {
@@ -1039,7 +1056,7 @@ TreeWidget::TreeWidget(const char* name, QWidget* parent)
     this->preselectTimer->setSingleShot(true);
 
     this->statusTimer = new QTimer(this);
-    this->statusTimer->setSingleShot(false);
+    this->statusTimer->setSingleShot(true);
 
     this->selectTimer = new QTimer(this);
     this->selectTimer->setSingleShot(true);
@@ -1049,6 +1066,27 @@ TreeWidget::TreeWidget(const char* name, QWidget* parent)
     connect(this, &QTreeWidget::itemCollapsed, this, &TreeWidget::onItemCollapsed);
     connect(this, &QTreeWidget::itemExpanded, this, &TreeWidget::onItemExpanded);
     connect(this, &QTreeWidget::itemSelectionChanged, this, &TreeWidget::onItemSelectionChanged);
+    connect(selectionModel(), &QItemSelectionModel::selectionChanged, this,
+        [this](const QItemSelection& selected, const QItemSelection& deselected) {
+            const auto record = [this](const QItemSelection& ranges, bool value) {
+                for (const auto& range : ranges) {
+                    if (range.left() > 0) { continue; }
+                    for (int row = range.top(); row <= range.bottom(); ++row) {
+                        auto* item = itemFromIndex(model()->index(row, 0, range.parent()));
+                        if (item && item->type() == ObjectType) {
+                            auto* object = static_cast<DocumentObjectItem*>(item);
+                            // Removing selected rows emits selectionChanged after
+                            // deletion has detached their document ownership.
+                            if (auto* owner = object->getOwnerDocument()) {
+                                owner->recordBrowserSelection(object, value);
+                            }
+                        }
+                    }
+                }
+            };
+            record(deselected, false);
+            record(selected, true);
+        });
     connect(this, &QTreeWidget::itemChanged, this, &TreeWidget::onItemChanged);
     connect(this->preselectTimer, &QTimer::timeout, this, &TreeWidget::onPreSelectTimer);
     connect(this->selectTimer, &QTimer::timeout, this, &TreeWidget::onSelectTimer);
@@ -1083,6 +1121,13 @@ TreeWidget::~TreeWidget()
     Instances.erase(this);
     if (_LastSelectedTreeWidget == this) {
         _LastSelectedTreeWidget = nullptr;
+    }
+    // QTreeWidget destroys its rows only after our maps have been destroyed.
+    // Retire document rows through the normal path while their owner maps and
+    // cross-document item table are still alive. This also nulls child owners
+    // before Qt emits selection/removal notifications.
+    while (!DocumentMap.empty()) {
+        slotDeleteDocument(*DocumentMap.begin()->first);
     }
 }
 
@@ -1495,10 +1540,23 @@ void TreeWidget::_updateStatus(bool delay)
         return;
     }
 
+    if (statusUpdateExecuting) {
+        onUpdateStatus();
+        return;
+    }
+
     if (!delay) {
-        if (!ChangedObjects.empty() || !NewObjects.empty()) {
+        if (statusUpdatePhase != StatusUpdatePhase::Idle
+            || !ChangedObjects.empty() || !NewObjects.empty()) {
             onUpdateStatus();
         }
+        return;
+    }
+    if (statusUpdatePhase != StatusUpdatePhase::Idle) {
+        onUpdateStatus();
+        return;
+    }
+    if (statusUpdateScheduled || statusTimer->isActive()) {
         return;
     }
     int timeout = TreeParams::getStatusTimeout();
@@ -1506,6 +1564,22 @@ void TreeWidget::_updateStatus(bool delay)
         timeout = 1;
     }
     statusTimer->start(timeout);
+}
+
+void TreeWidget::resetStatusUpdate()
+{
+    statusUpdatePhase = StatusUpdatePhase::Idle;
+    statusUpdateDocuments.clear();
+    statusUpdateObjects.clear();
+    statusUpdateErrors.clear();
+    statusUpdateDocumentIndex = 0;
+    statusUpdateObjectIndex = 0;
+    statusUpdateErrorIndex = 0;
+    statusUpdateFirstErrorItem = nullptr;
+    statusUpdateElapsed.invalidate();
+    statusUpdateProjectedObjectCount = 0;
+    statusUpdateAllObjects = false;
+    statusTimer->stop();
 }
 
 void TreeWidget::contextMenuEvent(QContextMenuEvent* e)
@@ -4247,19 +4321,20 @@ void TreeWidget::slotChangedViewObject(const Gui::ViewProvider& vp, const App::P
 {
     if (!App::GetApplication().isRestoring() && vp.isDerivedFrom<ViewProviderDocumentObject>()) {
         const auto& vpd = static_cast<const ViewProviderDocumentObject&>(vp);
+        if (&prop != &vpd.ShowInTree) {
+            return;
+        }
         auto* document = vpd.getObject() ? vpd.getObject()->getDocument() : nullptr;
         if (Gui::Document::projectionRefreshBlocked(document)) {
             if (auto documentIt = DocumentMap.find(vpd.getDocument());
                 documentIt != DocumentMap.end()) {
-                documentIt->second->modelBrowserDirty = true;
                 documentIt->second->transactionRefreshPending = true;
+                documentIt->second->deferStatusChange(vpd.getObject()->getID());
             }
             return;
         }
-        if (&prop == &vpd.ShowInTree) {
-            ChangedObjects.emplace(vpd.getObject(), 0);
-            _updateStatus();
-        }
+        ChangedObjects.emplace(vpd.getObject(), 0);
+        _updateStatus();
     }
 }
 
@@ -4270,8 +4345,8 @@ void TreeWidget::slotTouchedObject(const App::DocumentObject& obj)
         auto* guiDocument = Application::Instance->getDocument(document);
         if (auto documentIt = DocumentMap.find(guiDocument);
             documentIt != DocumentMap.end()) {
-            documentIt->second->modelBrowserDirty = true;
             documentIt->second->transactionRefreshPending = true;
+            documentIt->second->deferStatusChange(obj.getID());
         }
         return;
     }
@@ -4384,7 +4459,29 @@ struct UpdateDisabler
 
 void TreeWidget::onUpdateStatus()
 {
-    if (this->state() == DraggingState || App::GetApplication().isRestoring()) {
+    statusTimer->stop();
+    if (statusUpdateScheduled) {
+        return;
+    }
+    statusUpdateScheduled = true;
+    if (!dispatchToGuiFrame(this, [this] {
+            statusUpdateScheduled = false;
+            processUpdateStatus();
+        })) {
+        statusUpdateScheduled = false;
+        FC_ERR("Cannot schedule Tree projection update");
+    }
+}
+
+void TreeWidget::processUpdateStatus()
+{
+    if (statusUpdateExecuting) {
+        onUpdateStatus();
+        return;
+    }
+    QScopedValueRollback updateGuard(statusUpdateExecuting, true);
+
+    if (this->state() == DraggingState) {
         _updateStatus();
         return;
     }
@@ -4398,11 +4495,11 @@ void TreeWidget::onUpdateStatus()
         // graph.  Keep collecting object identities, but never poll and rebuild
         // the entire tree while that graph is changing. signalBecameStable()
         // schedules one authoritative refresh from the completed document.
-        v.second->modelBrowserDirty = true;
         v.second->transactionRefreshPending = true;
         projectionBlocked = true;
     }
     if (projectionBlocked) {
+        resetStatusUpdate();
         return;
     }
 
@@ -4410,59 +4507,106 @@ void TreeWidget::onUpdateStatus()
 
     UpdateDisabler disabler(*this, updateBlocked);
 
-    std::vector<App::DocumentObject*> errors;
+    FrameBudget budget;
 
-    // Use a local copy in case of nested calls
-    auto localNewObjects = NewObjects;
-    NewObjects.clear();
+    auto scheduleNextSlice = [this]() {
+        onUpdateStatus();
+    };
 
-    // Checking for new objects
-    for (auto& v : localNewObjects) {
-        auto doc = App::GetApplication().getDocument(v.first.c_str());
-        if (!doc) {
+    auto documentItemForName = [this](const std::string& documentName) -> DocumentItem* {
+        auto* document = App::GetApplication().getDocument(documentName.c_str());
+        auto* guiDocument = document && Application::Instance
+            ? Application::Instance->getDocument(document)
+            : nullptr;
+        return guiDocument ? getDocumentItem(guiDocument) : nullptr;
+    };
+
+    if (statusUpdatePhase == StatusUpdatePhase::Idle) {
+        statusUpdatePhase = StatusUpdatePhase::Objects;
+        statusUpdateElapsed.start();
+        statusUpdateProjectedObjectCount = 0;
+        statusUpdateAllObjects = NewObjects.empty() && ChangedObjects.empty();
+        statusUpdateDocuments.clear();
+        statusUpdateObjects.clear();
+        statusUpdateErrors.clear();
+        statusUpdateDocumentIndex = 0;
+        statusUpdateObjectIndex = 0;
+        statusUpdateErrorIndex = 0;
+        statusUpdateFirstErrorItem = nullptr;
+    }
+
+    // A user callback may enqueue another object change between slices. Fold
+    // it into the same authoritative projection before final document-level
+    // work instead of completing and immediately rebuilding a second time.
+    if (statusUpdatePhase != StatusUpdatePhase::Objects
+        && (!NewObjects.empty() || !ChangedObjects.empty())) {
+        statusUpdatePhase = StatusUpdatePhase::Objects;
+    }
+
+    while (statusUpdatePhase == StatusUpdatePhase::Objects && !NewObjects.empty()) {
+        auto documentEntry = NewObjects.begin();
+        if (documentEntry->second.empty()) {
+            NewObjects.erase(documentEntry);
             continue;
         }
-        auto gdoc = Application::Instance->getDocument(doc);
-        if (!gdoc) {
-            continue;
+
+        const std::string documentName = documentEntry->first;
+        const long objectId = documentEntry->second.back();
+        documentEntry->second.pop_back();
+        if (documentEntry->second.empty()) {
+            NewObjects.erase(documentEntry);
         }
-        auto docItem = getDocumentItem(gdoc);
-        if (!docItem) {
-            continue;
+
+        auto* document = App::GetApplication().getDocument(documentName.c_str());
+        auto* guiDocument = document && Application::Instance
+            ? Application::Instance->getDocument(document)
+            : nullptr;
+        auto* documentItem = guiDocument ? getDocumentItem(guiDocument) : nullptr;
+        auto* object = document ? document->getObjectByID(objectId) : nullptr;
+        if (object && documentItem) {
+            statusUpdateObjects.push_back({documentName, objectId});
+            if (object->isError()) {
+                statusUpdateErrors.push_back({documentName, objectId});
+            }
+            if (!documentItem->ObjectMap.contains(object)) {
+                auto* provider = freecad_cast<ViewProviderDocumentObject*>(
+                    guiDocument->getViewProvider(object)
+                );
+                if (provider) {
+                    documentItem->createNewItem(*provider);
+                }
+            }
         }
-        for (auto id : v.second) {
-            auto obj = doc->getObjectByID(id);
-            if (!obj) {
-                continue;
-            }
-            if (obj->isError()) {
-                errors.push_back(obj);
-            }
-            if (docItem->ObjectMap.contains(obj)) {
-                continue;
-            }
-            auto vpd = freecad_cast<ViewProviderDocumentObject*>(gdoc->getViewProvider(obj));
-            if (vpd) {
-                docItem->createNewItem(*vpd);
-            }
+
+        if (budget.exhausted()) {
+            scheduleNextSlice();
+            return;
         }
     }
 
-    // Use a local copy in case of nested calls
-    auto localChangedObjects = ChangedObjects;
-    ChangedObjects.clear();
+    // Update one live object identity at a time. Erasing it before callbacks
+    // means a nested notification is retained as fresh work for the next slice.
+    while (statusUpdatePhase == StatusUpdatePhase::Objects && !ChangedObjects.empty()) {
+        const auto changedEntry = ChangedObjects.begin();
+        auto* obj = changedEntry->first;
+        const auto changedStatus = changedEntry->second;
+        ChangedObjects.erase(changedEntry);
 
-    // Update children of changed objects
-    for (auto& v : localChangedObjects) {
-        auto obj = v.first;
+        if (obj && obj->isAttachedToDocument() && obj->getDocument()) {
+            statusUpdateObjects.push_back(
+                {obj->getDocument()->getName(), obj->getID()}
+            );
+        }
 
         auto iter = ObjectTable.find(obj);
         if (iter == ObjectTable.end()) {
             continue;
         }
 
-        if (v.second.test(CS_Error) && obj->isError()) {
-            errors.push_back(obj);
+        if (changedStatus.test(CS_Error) && obj->isError()) {
+            statusUpdateErrors.push_back(
+                {obj->getDocument()->getName(), obj->getID()}
+            );
         }
 
         if (!iter->second.empty()) {
@@ -4484,29 +4628,150 @@ void TreeWidget::onUpdateStatus()
             }
         }
 
-        updateChildren(iter->first, iter->second, v.second.test(CS_Output), false);
+        updateChildren(iter->first, iter->second, changedStatus.test(CS_Output), false);
+
+        if (budget.exhausted()) {
+            scheduleNextSlice();
+            return;
+        }
     }
 
-    for (const auto& documentEntry : DocumentMap) {
-        documentEntry.second->refreshModelBrowser();
+    if (statusUpdatePhase == StatusUpdatePhase::Objects) {
+        statusUpdateDocuments.clear();
+        statusUpdateDocuments.reserve(DocumentMap.size());
+        for (const auto& [guiDocument, documentItem] : DocumentMap) {
+            if (guiDocument && documentItem && guiDocument->getDocument()) {
+                statusUpdateDocuments.emplace_back(guiDocument->getDocument()->getName());
+            }
+        }
+        statusUpdateDocumentIndex = 0;
+        statusUpdatePhase = StatusUpdatePhase::Browsers;
+    }
+
+    while (statusUpdatePhase == StatusUpdatePhase::Browsers
+           && statusUpdateDocumentIndex < statusUpdateDocuments.size()) {
+        if (auto* documentItem = documentItemForName(
+                statusUpdateDocuments[statusUpdateDocumentIndex]
+            )) {
+            if (documentItem->modelBrowserDirty) {
+                documentItem->refreshModelBrowser();
+                if (documentItem->modelBrowserPreparationPending) {
+                    return; // The shared cache completion resumes this phase.
+                }
+                if (documentItem->modelBrowserRefreshPending()) {
+                    scheduleNextSlice();
+                    return;
+                }
+            }
+        }
+        ++statusUpdateDocumentIndex;
+        if (budget.exhausted()) {
+            scheduleNextSlice();
+            return;
+        }
+    }
+    if (statusUpdatePhase == StatusUpdatePhase::Browsers) {
+        if (statusUpdateAllObjects) {
+            statusUpdateObjects.clear();
+            for (const auto& documentName : statusUpdateDocuments) {
+                auto* documentItem = documentItemForName(documentName);
+                if (!documentItem) {
+                    continue;
+                }
+                statusUpdateObjects.reserve(
+                    statusUpdateObjects.size() + documentItem->ObjectMap.size()
+                );
+                for (const auto& [object, data] : documentItem->ObjectMap) {
+                    if (object && data && object->isAttachedToDocument()) {
+                        statusUpdateObjects.push_back({documentName, object->getID()});
+                    }
+                }
+            }
+        }
+        statusUpdateProjectedObjectCount = statusUpdateObjects.size();
+        statusUpdateObjectIndex = 0;
+        statusUpdateDocumentIndex = 0;
+        statusUpdatePhase = StatusUpdatePhase::ObjectStatus;
+    }
+
+    while (statusUpdatePhase == StatusUpdatePhase::ObjectStatus
+           && statusUpdateObjectIndex < statusUpdateObjects.size()) {
+        const auto identity = statusUpdateObjects[statusUpdateObjectIndex++];
+        auto* document = App::GetApplication().getDocument(identity.documentName.c_str());
+        auto* object = document ? document->getObjectByID(identity.objectId) : nullptr;
+        auto* documentItem = documentItemForName(identity.documentName);
+        if (object && documentItem) {
+            const auto data = documentItem->ObjectMap.find(object);
+            if (data != documentItem->ObjectMap.end() && data->second) {
+                data->second->testStatus();
+            }
+        }
+        if (budget.exhausted()) {
+            scheduleNextSlice();
+            return;
+        }
+    }
+    if (statusUpdatePhase == StatusUpdatePhase::ObjectStatus) {
+        statusUpdateObjects.clear();
+        statusUpdateObjectIndex = 0;
+        statusUpdatePhase = StatusUpdatePhase::DocumentStatus;
     }
 
     FC_LOG("update item status");
-    for (auto pos = DocumentMap.begin(); pos != DocumentMap.end(); ++pos) {
-        pos->second->testStatus();
-        pos->second->updateBrowserFolderStatus();
+    while (statusUpdatePhase == StatusUpdatePhase::DocumentStatus
+           && statusUpdateDocumentIndex < statusUpdateDocuments.size()) {
+        if (auto* documentItem = documentItemForName(
+                statusUpdateDocuments[statusUpdateDocumentIndex]
+            )) {
+            documentItem->setBaseIcon(
+                0,
+                documentItem->document()->getDocument()->testStatus(App::Document::PartialDoc)
+                    ? *documentPartialPixmap
+                    : *documentPixmap
+            );
+            documentItem->updateBrowserFolderStatus();
+        }
+        ++statusUpdateDocumentIndex;
+        if (budget.exhausted()) {
+            scheduleNextSlice();
+            return;
+        }
+    }
+    if (statusUpdatePhase == StatusUpdatePhase::DocumentStatus) {
+        statusUpdateDocumentIndex = 0;
+        statusUpdatePhase = StatusUpdatePhase::RestoredObjects;
     }
 
-    // Checking for just restored documents
-    for (auto& v : DocumentMap) {
-        auto docItem = v.second;
-
-        for (auto obj : docItem->PopulateObjects) {
-            docItem->populateObject(obj);
+    // Checking for just restored documents. Child population can recursively
+    // create many tree items, so resume after every bounded unit of work.
+    while (statusUpdatePhase == StatusUpdatePhase::RestoredObjects
+           && statusUpdateDocumentIndex < statusUpdateDocuments.size()) {
+        auto* docItem = documentItemForName(
+            statusUpdateDocuments[statusUpdateDocumentIndex]
+        );
+        if (!docItem) {
+            ++statusUpdateDocumentIndex;
+            continue;
         }
-        docItem->PopulateObjects.clear();
 
-        auto doc = v.first->getDocument();
+        auto* doc = docItem->document()->getDocument();
+        if (!doc) {
+            ++statusUpdateDocumentIndex;
+            continue;
+        }
+
+        if (!docItem->PopulateObjects.empty()) {
+            auto* obj = docItem->PopulateObjects.back();
+            docItem->PopulateObjects.pop_back();
+            if (obj && obj->isAttachedToDocument() && obj->getDocument() == doc) {
+                docItem->populateObject(obj);
+            }
+            if (budget.exhausted()) {
+                scheduleNextSlice();
+                return;
+            }
+            continue;
+        }
 
         if (!docItem->connectChgObject.connected()) {
             // NOLINTBEGIN
@@ -4547,22 +4812,58 @@ void TreeWidget::onUpdateStatus()
             }
         }
         docItem->_ExpandInfo.reset();
+        ++statusUpdateDocumentIndex;
+
+        if (budget.exhausted()) {
+            scheduleNextSlice();
+            return;
+        }
+    }
+    if (statusUpdatePhase == StatusUpdatePhase::RestoredObjects) {
+        statusUpdateDocumentIndex = 0;
+        statusUpdatePhase = StatusUpdatePhase::Selection;
     }
 
-    if (Selection().hasSelection() && !selectTimer->isActive() && !this->isSelectionBlocked()) {
+    if (statusUpdatePhase == StatusUpdatePhase::Selection
+        && Selection().hasSelection() && !selectTimer->isActive()
+        && !this->isSelectionBlocked()) {
         this->blockSelection(true);
         currentDocItem = nullptr;
-        for (auto& v : DocumentMap) {
-            v.second->setSelected(false);
-            v.second->selectItems();
+        while (statusUpdateDocumentIndex < statusUpdateDocuments.size()) {
+            if (auto* documentItem = documentItemForName(
+                    statusUpdateDocuments[statusUpdateDocumentIndex]
+                )) {
+                documentItem->setSelected(false);
+                documentItem->selectItems();
+            }
+            ++statusUpdateDocumentIndex;
+            if (budget.exhausted()) {
+                this->blockSelection(false);
+                scheduleNextSlice();
+                return;
+            }
         }
         this->blockSelection(false);
     }
 
-    auto activeDocItem = getDocumentItem(Application::Instance->activeDocument());
+    if (statusUpdatePhase == StatusUpdatePhase::Selection) {
+        statusUpdateDocumentIndex = 0;
+        statusUpdatePhase = StatusUpdatePhase::Errors;
+    }
 
-    QTreeWidgetItem* errItem = nullptr;
-    for (auto obj : errors) {
+    auto* activeDocItem = Application::Instance
+        ? getDocumentItem(Application::Instance->activeDocument())
+        : nullptr;
+
+    while (statusUpdatePhase == StatusUpdatePhase::Errors
+           && statusUpdateErrorIndex < statusUpdateErrors.size()) {
+        const auto identity = statusUpdateErrors[statusUpdateErrorIndex++];
+        auto* document = App::GetApplication().getDocument(identity.documentName.c_str());
+        auto* obj = document ? document->getObjectByID(identity.objectId) : nullptr;
+        if (!obj) {
+            continue;
+        }
+
         DocumentObjectDataPtr data;
         if (activeDocItem) {
             auto it = activeDocItem->ObjectMap.find(obj);
@@ -4571,7 +4872,10 @@ void TreeWidget::onUpdateStatus()
             }
         }
         if (!data) {
-            auto docItem = getDocumentItem(Application::Instance->getDocument(obj->getDocument()));
+            auto* guiDocument = Application::Instance
+                ? Application::Instance->getDocument(obj->getDocument())
+                : nullptr;
+            auto* docItem = guiDocument ? getDocumentItem(guiDocument) : nullptr;
             if (docItem) {
                 auto it = docItem->ObjectMap.find(obj);
                 if (it != docItem->ObjectMap.end()) {
@@ -4594,21 +4898,53 @@ void TreeWidget::onUpdateStatus()
             if (item) {
                 data->docItem->showItem(item, false, true);
             }
-            if (!errItem) {
-                errItem = item;
+            if (!statusUpdateFirstErrorItem) {
+                statusUpdateFirstErrorItem = item;
             }
         }
+
+        if (budget.exhausted()) {
+            scheduleNextSlice();
+            return;
+        }
     }
-    if (errItem) {
-        scrollToItem(errItem);
+    if (statusUpdatePhase == StatusUpdatePhase::Errors) {
+        if (statusUpdateFirstErrorItem) {
+            scrollToItem(statusUpdateFirstErrorItem);
+        }
+        statusUpdatePhase = StatusUpdatePhase::Geometry;
     }
 
-    updateGeometries();
-    statusTimer->stop();
+    if (statusUpdatePhase == StatusUpdatePhase::Geometry) {
+        updateGeometries();
+    }
+
+    const qint64 projectionElapsed = statusUpdateElapsed.isValid()
+        ? statusUpdateElapsed.elapsed()
+        : 0;
+    const std::size_t projectedObjectCount = statusUpdateProjectedObjectCount;
+    const bool projectedAllObjects = statusUpdateAllObjects;
+    resetStatusUpdate();
     if (!ChangedObjects.empty() || !NewObjects.empty()) {
         // Property callbacks can enqueue another tree update while this pass is running.  Do not
         // discard the timer they started: process the newly queued changes in a subsequent pass.
         _updateStatus();
+    }
+    else {
+        for (const auto& [guiDocument, documentItem] : DocumentMap) {
+            if (guiDocument && documentItem) {
+                documentItem->releasePresentationUpdate();
+            }
+        }
+    }
+
+    if (qEnvironmentVariableIsSet("VIBECAD_RESTORE_DETAIL_TRACE")) {
+        Base::Console().message(
+            "VIBECAD_PROJECTION tree total_ms=%lld objects=%zu full=%d\n",
+            static_cast<long long>(projectionElapsed),
+            projectedObjectCount,
+            projectedAllObjects ? 1 : 0
+        );
     }
 
     FC_LOG("done update status");
@@ -4688,9 +5024,13 @@ void TreeWidget::onPreSelectTimer()
 
 void TreeWidget::onItemCollapsed(QTreeWidgetItem* item)
 {
+    if (item && item->type() == BrowserFolderType) {
+        static_cast<BrowserFolderItem*>(item)->getOwnerDocument()->recordBrowserExpansion(item, false);
+    }
     // object item collapsed
     if (item && item->type() == TreeWidget::ObjectType) {
         auto* objectItem = static_cast<DocumentObjectItem*>(item);
+        objectItem->getOwnerDocument()->recordBrowserExpansion(item, false);
         if (!objectItem->isBrowserProxy()) {
             objectItem->setExpandedStatus(false);
         }
@@ -4699,9 +5039,13 @@ void TreeWidget::onItemCollapsed(QTreeWidgetItem* item)
 
 void TreeWidget::onItemExpanded(QTreeWidgetItem* item)
 {
+    if (item && item->type() == BrowserFolderType) {
+        static_cast<BrowserFolderItem*>(item)->getOwnerDocument()->recordBrowserExpansion(item, true);
+    }
     // object item expanded
     if (item && item->type() == TreeWidget::ObjectType) {
         auto objItem = static_cast<DocumentObjectItem*>(item);
+        objItem->getOwnerDocument()->recordBrowserExpansion(item, true);
         if (!objItem->isBrowserProxy()) {
             objItem->setExpandedStatus(true);
             objItem->getOwnerDocument()->populateItem(objItem, false, false);
@@ -5334,6 +5678,17 @@ DocumentItem::DocumentItem(const Gui::Document* doc, QTreeWidgetItem* parent)
     connectDocumentStable = adoc->signalBecameStable.connect(
         std::bind(&DocumentItem::slotDocumentStable, this, sp::_1)
     );
+    connectFinishRestoreDocument =
+        App::GetApplication().signalFinishRestoreDocument.connect(
+            [this, adoc](const App::Document& restored) {
+                if (&restored == adoc) {
+                    // This signal precedes the outer restore scope's idle
+                    // transition. The idle connections below also wake a pass
+                    // that ran early and still observed the document as busy.
+                    getTree()->_updateStatus();
+                }
+            }
+        );
     connectRecomputeRequestFinished =
         App::GetApplication().signalRecomputeRequestFinished.connect(
             [this, adoc](const std::string& documentName) {
@@ -5342,6 +5697,12 @@ DocumentItem::DocumentItem(const Gui::Document* doc, QTreeWidgetItem* parent)
                 }
             }
         );
+    const auto restoreIdle = [this, adoc] {
+        slotDocumentStable(*adoc);
+        if (modelBrowserDirty) { getTree()->_updateStatus(); }
+    };
+    connectRestoreActivityIdle = App::GetApplication().signalRestoreActivityIdle.connect(restoreIdle);
+    connectFinishOpenDocument = App::GetApplication().signalFinishOpenDocument.connect(restoreIdle);
     // NOLINTEND
 
     setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable /*|Qt::ItemIsEditable*/);
@@ -5363,7 +5724,15 @@ DocumentItem::~DocumentItem()
     connectRecomputed.disconnect();
     connectRecomputedObj.disconnect();
     connectDocumentStable.disconnect();
+    connectFinishRestoreDocument.disconnect();
+    connectRestoreActivityIdle.disconnect();
+    connectFinishOpenDocument.disconnect();
     connectRecomputeRequestFinished.disconnect();
+    modelBrowserBuild.reset();
+    modelBrowserDetachedItems.clear();
+    stagedModelBrowserRoot.reset();
+    browserFolderStatus.reset();
+    releasePresentationUpdate();
 }
 
 TreeWidget* DocumentItem::getTree() const
@@ -5451,7 +5820,10 @@ void DocumentItem::slotNewObject(const Gui::ViewProviderDocumentObject& obj)
         FC_ERR("view provider not attached");
         return;
     }
-    modelBrowserDirty = true;
+    markModelBrowserDirty();
+    if (Gui::Document::projectionRefreshBlocked(pDocument->getDocument())) {
+        transactionRefreshPending = true;
+    }
     getTree()->NewObjects[pDocument->getDocument()->getName()].push_back(obj.getObject()->getID());
     getTree()->_updateStatus();
 }
@@ -5518,7 +5890,7 @@ bool DocumentItem::createNewItem(
     if (TreeParams::getOrganizeModelByType()) {
         item->setHidden(true);
     }
-    modelBrowserDirty = true;
+    markModelBrowserDirty();
 
     populateItem(item);
     return true;
@@ -5561,9 +5933,21 @@ DocumentObjectItem* DocumentItem::createBrowserObjectItem(
     item->setHidden(
         !showHidden() && (browserDefaultHidden || !data->viewObject->showInTree())
     );
+    if (modelBrowserBuildExecuting) {
+        modelBrowserStagedStates[item].hidden =
+            !showHidden() && (browserDefaultHidden || !data->viewObject->showInTree());
+    }
     item->populated = true;
     item->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator);
-    item->testStatus(true);
+    // The legacy item already carries the current provider status. Copy its
+    // presentation while this replacement tree is detached; the shared
+    // ObjectStatus phase refreshes every item in bounded slices after the
+    // hierarchy is installed. Recomputing icons here made the unsliced staging
+    // pass scale with the complete document a second time.
+    if (data->rootItem) {
+        item->setIcon(0, data->rootItem->icon(0));
+        item->setFont(0, data->rootItem->font(0));
+    }
     return item;
 }
 
@@ -5592,7 +5976,7 @@ DocumentObjectItem* DocumentItem::findBrowserItem(App::DocumentObject* object) c
     }
     DocumentObjectItem* hidden = nullptr;
     for (auto* item : dataIt->second->items) {
-        if (!item->isBrowserProxy()) {
+        if (!item->isBrowserProxy() || item->treeWidget() != getTree()) {
             continue;
         }
         if (!item->isHidden()) {
@@ -5605,51 +5989,89 @@ DocumentObjectItem* DocumentItem::findBrowserItem(App::DocumentObject* object) c
 
 bool DocumentItem::isPresentationItem(const DocumentObjectItem* item) const
 {
-    return item && item->isBrowserProxy() == modelBrowserActive;
+    return item && item->treeWidget() == getTree()
+        && item->isBrowserProxy() == modelBrowserActive;
 }
 
 void DocumentItem::clearModelBrowser()
 {
+    // Synchronous compatibility entry point. Interactive replacement advances
+    // the same removal cursor once per frame via clearModelBrowserStep().
+    while (!clearModelBrowserStep()) {}
+}
+
+bool DocumentItem::clearModelBrowserStep()
+{
     auto* tree = getTree();
     if (!tree) {
-        return;
+        return true;
     }
-
-    if (tree->editingItem && tree->editingItem->isBrowserProxy()
-        && tree->editingItem->getOwnerDocument() == this) {
-        tree->editingItem = nullptr;
-    }
-
-    const bool selectionLock = tree->blockSelection(true);
-    QSignalBlocker signalBlocker(tree);
-    for (int index = childCount() - 1; index >= 0; --index) {
-        auto* childItem = child(index);
-        const bool isBrowserRoot = childItem->type() == TreeWidget::BrowserFolderType
-            || (childItem->type() == TreeWidget::ObjectType
-                && static_cast<DocumentObjectItem*>(childItem)->isBrowserProxy());
-        if (isBrowserRoot) {
-            delete childItem;
+    if (!modelBrowserClearing) {
+        browserFolderStatus.reset();
+        browserFolderStatusDirty = false;
+        if (tree->editingItem && tree->editingItem->isBrowserProxy()
+            && tree->editingItem->getOwnerDocument() == this) {
+            tree->editingItem = nullptr;
         }
+        modelBrowserRemovalRoot = childCount() - 1;
+        modelBrowserRemovalCursor = QPersistentModelIndex();
+        modelBrowserClearing = true;
     }
-    tree->blockSelection(selectionLock);
-    modelBrowserActive = false;
+    QScopedValueRollback applying(modelBrowserApplyingState, true);
+    const bool selectionLock = tree->blockSelection(true);
+    const auto restoreSelection = qScopeGuard([&] { tree->blockSelection(selectionLock); });
+    QSignalBlocker signalBlocker(tree);
+    FrameBudget budget;
+    do {
+        if (modelBrowserRemovalCursor.isValid()) {
+            auto* item = tree->itemFromIndex(modelBrowserRemovalCursor);
+            if (item->childCount()) {
+                modelBrowserRemovalCursor = tree->indexFromItem(item->child(item->childCount() - 1));
+            }
+            else {
+                auto* parent = item->parent();
+                modelBrowserRemovalCursor = parent == this ? QModelIndex() : tree->indexFromItem(parent);
+                delete item;
+                if (!modelBrowserClearing) { return false; }
+            }
+        }
+        else if (modelBrowserRemovalRoot >= 0) {
+            modelBrowserRemovalRoot = std::min(modelBrowserRemovalRoot, childCount() - 1);
+            if (modelBrowserRemovalRoot < 0) { continue; }
+            auto* item = child(modelBrowserRemovalRoot--);
+            if (item->type() == TreeWidget::BrowserFolderType
+                || (item->type() == TreeWidget::ObjectType
+                    && static_cast<DocumentObjectItem*>(item)->isBrowserProxy())) {
+                modelBrowserRemovalCursor = tree->indexFromItem(item);
+            }
+        }
+        else {
+            modelBrowserClearing = false;
+            modelBrowserActive = false;
+            return true;
+        }
+    } while (!budget.exhausted());
+    return false;
 }
 
 void DocumentItem::setLegacyTreeVisible(bool visible)
 {
     for (const auto& entry : ObjectMap) {
         for (auto* item : entry.second->items) {
-            if (item->isBrowserProxy()) {
-                continue;
-            }
-            item->setHidden(!visible || (!showHidden() && !item->object()->showInTree()));
-            if (!visible) {
-                item->selected = 0;
-                item->mySubs.clear();
-                item->setSelected(false);
-                item->setCheckState(false);
-            }
+            setLegacyItemVisible(item, visible);
         }
+    }
+}
+
+void DocumentItem::setLegacyItemVisible(DocumentObjectItem* item, bool visible)
+{
+    if (item->isBrowserProxy()) { return; }
+    item->setHidden(!visible || (!showHidden() && !item->object()->showInTree()));
+    if (!visible) {
+        item->selected = 0;
+        item->mySubs.clear();
+        item->setSelected(false);
+        item->setCheckState(false);
     }
 }
 
@@ -5659,30 +6081,190 @@ void DocumentItem::updateBrowserFolderStatus()
         return;
     }
 
-    std::vector<BrowserFolderItem*> folders;
-    std::function<void(QTreeWidgetItem*)> collect = [&](QTreeWidgetItem* parent) {
-        for (int index = 0; index < parent->childCount(); ++index) {
-            auto* childItem = parent->child(index);
-            if (childItem->type() == TreeWidget::BrowserFolderType) {
-                auto* folder = static_cast<BrowserFolderItem*>(childItem);
-                if (folder->getOwnerDocument() == this) {
-                    folders.push_back(folder);
-                    collect(folder);
-                }
+    browserFolderStatusDirty = true;
+    scheduleBrowserFolderStatus();
+}
+
+void DocumentItem::scheduleBrowserFolderStatus()
+{
+    auto* tree = getTree();
+    if (!tree || browserFolderStatusScheduled) {
+        return;
+    }
+    browserFolderStatusScheduled = true;
+    auto* guiDocument = document();
+    auto* identity = this;
+    dispatchToGuiFrame(tree, [tree, guiDocument, identity] {
+        const auto found = tree->DocumentMap.find(guiDocument);
+        if (found != tree->DocumentMap.end() && found->second == identity) {
+            try {
+                found->second->processBrowserFolderStatus();
             }
-            else if (
-                childItem->type() == TreeWidget::ObjectType
-                && static_cast<DocumentObjectItem*>(childItem)->isBrowserProxy()
-            ) {
-                collect(childItem);
+            catch (const std::exception& error) {
+                found->second->browserFolderStatus.reset();
+                Base::Console().error("Browser folder status failed: %s\n", error.what());
+            }
+            catch (...) {
+                found->second->browserFolderStatus.reset();
+                Base::Console().error("Browser folder status failed\n");
             }
         }
-    };
-    collect(this);
+    });
+}
 
-    // Inner folders determine whether their parents have visible children.
-    for (auto it = folders.rbegin(); it != folders.rend(); ++it) {
-        (*it)->updateStatus();
+void DocumentItem::processBrowserFolderStatus()
+{
+    browserFolderStatusScheduled = false;
+    if (!modelBrowserActive || modelBrowserDirty
+        || Gui::Document::projectionRefreshBlocked(document()->getDocument())) {
+        browserFolderStatus.reset();
+        return; // Hierarchy adoption / document-stable notifications resume it.
+    }
+    if (!browserFolderStatus || browserFolderStatus->generation != modelBrowserGeneration) {
+        browserFolderStatus = std::make_unique<BrowserFolderStatus>(this, modelBrowserGeneration);
+        browserFolderStatusDirty = false;
+    }
+    FrameBudget budget;
+    QSignalBlocker signalBlocker(getTree());
+    auto& stack = browserFolderStatus->stack;
+    do {
+        auto& visit = stack.back();
+        if (visit.nextChild < visit.item->childCount()) {
+            auto* child = visit.item->child(visit.nextChild++);
+            const bool folder = child->type() == TreeWidget::BrowserFolderType
+                && static_cast<BrowserFolderItem*>(child)->getOwnerDocument() == this;
+            const bool object = child->type() == TreeWidget::ObjectType
+                && static_cast<DocumentObjectItem*>(child)->isBrowserProxy();
+            if (folder || object) {
+                stack.push_back({child});
+            }
+            else {
+                visit.hasTreeChild |= !child->isHidden();
+            }
+        }
+        else {
+            auto completed = visit;
+            stack.pop_back();
+            const bool folder = completed.item->type() == TreeWidget::BrowserFolderType;
+            if (folder) {
+                static_cast<BrowserFolderItem*>(completed.item)->applyStatus(
+                    completed.visible, completed.total, completed.hasTreeChild);
+            }
+            if (!stack.empty() && !completed.item->isHidden()) {
+                auto& parent = stack.back();
+                parent.hasTreeChild = true;
+                if (folder) {
+                    parent.total += completed.total;
+                    parent.visible += completed.visible;
+                }
+                else if (completed.item->type() == TreeWidget::ObjectType) {
+                    auto* item = static_cast<DocumentObjectItem*>(completed.item);
+                    if (item->object() && item->object()->canToggleVisibility()) {
+                        ++parent.total;
+                        parent.visible += TreeWidget::objectItemVisibility(item) ? 1 : 0;
+                    }
+                }
+            }
+        }
+    } while (!stack.empty() && !budget.exhausted());
+    if (!stack.empty()) {
+        scheduleBrowserFolderStatus();
+        return;
+    }
+    // Each Qt item is read once; folder aggregates propagate bottom-up and
+    // stop at object boundaries. There is no per-folder subtree rescan.
+    if (browserFolderStatusDirty) {
+        browserFolderStatusDirty = false;
+        stack.push_back({this});
+        scheduleBrowserFolderStatus();
+    }
+    else {
+        browserFolderStatus.reset();
+    }
+}
+
+void DocumentItem::recordBrowserExpansion(QTreeWidgetItem* item, bool expanded)
+{
+    if (modelBrowserApplyingState || !modelBrowserDirty || !TreeParams::getOrganizeModelByType()) {
+        return;
+    }
+    if (item->type() == TreeWidget::BrowserFolderType) {
+        const auto* folder = static_cast<BrowserFolderItem*>(item);
+        modelBrowserFolderOverrides[folder->key().toStdString()] = expanded;
+    }
+    else if (item->type() == TreeWidget::ObjectType) {
+        auto* object = static_cast<DocumentObjectItem*>(item);
+        if (isPresentationItem(object) && object->object()) {
+            modelBrowserObjectOverrides[object->object()->getObject()->getID()].expanded = expanded;
+        }
+    }
+}
+
+void DocumentItem::recordBrowserSelection(DocumentObjectItem* item, bool selected)
+{
+    if (!modelBrowserApplyingState && modelBrowserDirty && TreeParams::getOrganizeModelByType()
+        && isPresentationItem(item) && item->object()) {
+        modelBrowserObjectOverrides[item->object()->getObject()->getID()].selected = selected;
+    }
+}
+
+void DocumentItem::applyModelBrowserState()
+{
+    auto* tree = getTree();
+    QScopedValueRollback applying(modelBrowserApplyingState, true);
+    QSignalBlocker signals(tree);
+    FrameBudget budget;
+    while (!modelBrowserStagedStates.empty()) {
+        auto entry = modelBrowserStagedStates.extract(modelBrowserStagedStates.begin());
+        auto* item = entry.key();
+        auto state = entry.mapped();
+        if (item->type() == TreeWidget::BrowserFolderType) {
+            const auto key = static_cast<BrowserFolderItem*>(item)->key().toStdString();
+            if (const auto found = modelBrowserFolderOverrides.find(key);
+                found != modelBrowserFolderOverrides.end()) {
+                state.expanded = found->second;
+            }
+        }
+        else if (item->type() == TreeWidget::ObjectType) {
+            auto* objectItem = static_cast<DocumentObjectItem*>(item);
+            const auto id = objectItem->object()->getObject()->getID();
+            if (const auto found = modelBrowserObjectOverrides.find(id);
+                found != modelBrowserObjectOverrides.end()) {
+                state.expanded = found->second.expanded.value_or(state.expanded);
+                state.selected = found->second.selected.value_or(state.selected);
+            }
+            objectItem->selected = state.selected ? 1 : 0;
+            objectItem->setCheckState(state.selected);
+            if (!modelBrowserStatePending) { return; }
+        }
+        item->setExpanded(state.expanded);
+        if (!modelBrowserStatePending) { return; }
+        item->setSelected(state.selected);
+        if (!modelBrowserStatePending) { return; }
+        if (item->parent() != this) { item->setHidden(state.hidden); }
+        if (budget.exhausted()) { return; }
+    }
+    // Roots stay hidden until all descendants have their real Qt view state.
+    // Detached items cannot retain setHidden()/setExpanded() in Qt.
+    while (modelBrowserRevealIndex < modelBrowserRootsToReveal.size()) {
+        const auto [root, hidden] = modelBrowserRootsToReveal[modelBrowserRevealIndex++];
+        root->setHidden(hidden);
+        if (budget.exhausted()) { return; }
+    }
+    modelBrowserRootsToReveal.clear();
+    modelBrowserObjectOverrides.clear();
+    modelBrowserFolderOverrides.clear();
+    modelBrowserStatePending = false;
+    modelBrowserDirty = false;
+    stagedModelBrowserGeneration = 0;
+    updateBrowserFolderStatus();
+    if (Application::Instance->isInEdit(document())) {
+        ViewProviderDocumentObject* parentView = nullptr;
+        std::string subname;
+        auto* editingView = document()->getInEdit(&parentView, &subname);
+        auto* objectView = parentView ? parentView
+            : freecad_cast<ViewProviderDocumentObject*>(editingView);
+        if (objectView) { tree->editingItem = findBrowserItem(objectView->getObject()); }
     }
 }
 
@@ -5694,6 +6276,186 @@ void DocumentItem::rebuildModelBrowser()
         return;
     }
 
+    QElapsedTimer phaseElapsed;
+    std::string traceDocument;
+    const char* phase = modelBrowserStatePending ? "state"
+        : stagedModelBrowserRoot ? (modelBrowserAttaching ? "attach" : "remove")
+        : "prepare";
+    if (qEnvironmentVariableIsSet("VIBECAD_RESTORE_DETAIL_TRACE")) {
+        traceDocument = appDocument->getName();
+        phaseElapsed.start();
+    }
+    const auto tracePhase = qScopeGuard([&] {
+        if (phaseElapsed.isValid()) {
+            Base::Console().message(
+                "VIBECAD_PROJECTION tree_slice document=%s phase=%s elapsed_us=%lld\n",
+                traceDocument.c_str(), phase,
+                static_cast<long long>(phaseElapsed.nsecsElapsed() / 1000));
+        }
+    });
+
+    if (modelBrowserStatePending) {
+        if (stagedModelBrowserGeneration == modelBrowserGeneration
+            && preparedModelBrowserProjection && preparedModelBrowserProjection->isCurrent()) {
+            applyModelBrowserState();
+            return;
+        }
+        markModelBrowserDirty();
+    }
+
+    if (preparedModelBrowserProjection && !preparedModelBrowserProjection->isCurrent()) {
+        markModelBrowserDirty();
+    }
+    if (!preparedModelBrowserProjection) {
+        if (!modelBrowserPreparationPending) {
+            modelBrowserPreparationPending = true;
+            auto* guiDocument = document();
+            const auto generation = modelBrowserGeneration;
+            auto* identity = this;
+            auto& cache = guiDocument->modelBrowserProjectionCache();
+            cache.observeInvalidation(tree, [tree, guiDocument, identity] {
+                const auto found = tree->DocumentMap.find(guiDocument);
+                if (found != tree->DocumentMap.end() && found->second == identity) {
+                    found->second->markModelBrowserDirty();
+                    tree->_updateStatus();
+                }
+            });
+            cache.request(tree,
+                [tree, guiDocument, generation, identity](auto result, std::string failure) {
+                    const auto found = tree->DocumentMap.find(guiDocument);
+                    if (found == tree->DocumentMap.end() || found->second != identity
+                        || found->second->modelBrowserGeneration != generation) {
+                        return;
+                    }
+                    auto* item = found->second;
+                    item->modelBrowserPreparationPending = false;
+                    if (!result) {
+                        item->modelBrowserDirty = false;
+                        Base::Console().error("Model browser preparation failed: %s\n", failure.c_str());
+                    }
+                    else {
+                        item->preparedModelBrowserProjection = std::move(result);
+                    }
+                    tree->_updateStatus();
+                });
+        }
+        return;
+    }
+
+    if (stagedModelBrowserRoot) {
+        if (stagedModelBrowserGeneration != modelBrowserGeneration) {
+            stagedModelBrowserRoot.reset();
+            modelBrowserDetachedItems.clear();
+            modelBrowserStagedStates.clear();
+            stagedModelBrowserGeneration = 0;
+        }
+        else {
+            QScopedValueRollback applying(modelBrowserApplyingState, true);
+            const bool selectionLock = tree->blockSelection(true);
+            const auto restoreSelection = qScopeGuard([&] { tree->blockSelection(selectionLock); });
+            QSignalBlocker signalBlocker(tree);
+            if (!modelBrowserAttaching) {
+                if (!clearModelBrowserStep()) { return; }
+                if (!stagedModelBrowserRoot
+                    || stagedModelBrowserGeneration != modelBrowserGeneration) { return; }
+                modelBrowserRootsToReveal.clear();
+                modelBrowserRevealIndex = 0;
+                modelBrowserAttaching = true;
+                return;
+            }
+            FrameBudget budget;
+            while (!modelBrowserDetachedItems.empty()) {
+                auto entry = std::move(modelBrowserDetachedItems.back());
+                modelBrowserDetachedItems.pop_back();
+                const bool root = entry.parent == stagedModelBrowserRoot.get();
+                auto* parent = root ? this : entry.parent;
+                auto* item = entry.item.get();
+                // Qt owns the child as soon as it is inserted, including while
+                // model observers run. Never retain a second owning pointer.
+                parent->addChild(entry.item.release());
+                if (!modelBrowserAttaching) { return; }
+                if (root) {
+                    modelBrowserRootsToReveal.emplace_back(item, modelBrowserStagedStates.at(item).hidden);
+                    item->setHidden(true);
+                    if (!modelBrowserAttaching) { return; }
+                }
+                if (budget.exhausted()) { return; }
+            }
+            stagedModelBrowserRoot.reset();
+
+            modelBrowserActive = true;
+            modelBrowserAttaching = false;
+            modelBrowserStatePending = true;
+            return;
+        }
+    }
+
+    if (!modelBrowserBuild) {
+        modelBrowserBuildGeneration = modelBrowserGeneration;
+        modelBrowserBuild.emplace(buildModelBrowser());
+        modelBrowserBuildSteps = 0;
+        modelBrowserBuildMaxStepNs = 0;
+        if (qEnvironmentVariableIsSet("VIBECAD_RESTORE_DETAIL_TRACE")) {
+            modelBrowserBuildElapsed.start();
+        }
+        else {
+            modelBrowserBuildElapsed.invalidate();
+        }
+    }
+    FrameBudget budget;
+    QScopedValueRollback executing(modelBrowserBuildExecuting, true);
+    try {
+        do {
+            QElapsedTimer step;
+            if (modelBrowserBuildElapsed.isValid()) { step.start(); }
+            const bool pending = modelBrowserBuild->advance();
+            if (step.isValid()) {
+                ++modelBrowserBuildSteps;
+                modelBrowserBuildMaxStepNs = std::max(modelBrowserBuildMaxStepNs, step.nsecsElapsed());
+            }
+            if (modelBrowserBuildGeneration != modelBrowserGeneration
+                || !preparedModelBrowserProjection
+                || !preparedModelBrowserProjection->isCurrent()) {
+                modelBrowserBuild.reset();
+                modelBrowserDetachedItems.clear();
+                modelBrowserStagedStates.clear();
+                return;
+            }
+            if (!pending) {
+                stagedModelBrowserRoot = modelBrowserBuild->takeResult();
+                stagedModelBrowserGeneration = modelBrowserBuildGeneration;
+                modelBrowserBuild.reset();
+                if (modelBrowserBuildElapsed.isValid()) {
+                    Base::Console().message(
+                        "VIBECAD_PROJECTION tree_build document=%s total_ms=%lld steps=%zu max_step_us=%lld\n",
+                        appDocument->getName(),
+                        static_cast<long long>(modelBrowserBuildElapsed.elapsed()),
+                        modelBrowserBuildSteps,
+                        static_cast<long long>(modelBrowserBuildMaxStepNs / 1000));
+                }
+                return;
+            }
+        } while (!budget.exhausted());
+    }
+    catch (const std::exception& error) {
+        modelBrowserBuild.reset();
+        modelBrowserDetachedItems.clear();
+        modelBrowserStagedStates.clear();
+        modelBrowserDirty = false;
+        Base::Console().error("Model browser construction failed: %s\n", error.what());
+    }
+    catch (...) {
+        modelBrowserBuild.reset();
+        modelBrowserDetachedItems.clear();
+        modelBrowserStagedStates.clear();
+        modelBrowserDirty = false;
+        Base::Console().error("Model browser construction failed\n");
+    }
+}
+
+FrameSequence<std::unique_ptr<QTreeWidgetItem>> DocumentItem::buildModelBrowser()
+{
+    auto* appDocument = document()->getDocument();
     using Projection = ModelTreeBrowserProjection;
     using Entry = Projection::Entry;
     using Role = Projection::Role;
@@ -5702,25 +6464,30 @@ void DocumentItem::rebuildModelBrowser()
     std::set<std::string> expandedFolders;
     std::set<const App::DocumentObject*> selectedObjects;
 
-    std::function<void(QTreeWidgetItem*)> captureState = [&](QTreeWidgetItem* parent) {
+    std::function<FrameSequence<>(QTreeWidgetItem*)> captureState = [&](QTreeWidgetItem* parent) -> FrameSequence<> {
+        co_await std::suspend_always {};
         for (int index = 0; index < parent->childCount(); ++index) {
+            co_await std::suspend_always {};
             auto* childItem = parent->child(index);
             if (childItem->type() == TreeWidget::BrowserFolderType) {
                 auto* folder = static_cast<BrowserFolderItem*>(childItem);
+                modelBrowserFolderOverrides.try_emplace(folder->key().toStdString(), folder->isExpanded());
                 if (folder->isExpanded()) {
                     expandedFolders.insert(folder->key().toStdString());
                 }
-                captureState(folder);
+                co_await captureState(folder);
             }
             else if (childItem->type() == TreeWidget::ObjectType) {
                 auto* objectItem = static_cast<DocumentObjectItem*>(childItem);
-                if (!objectItem->isBrowserProxy()) {
+                if (!isPresentationItem(objectItem)) {
                     continue;
                 }
                 const auto* object = objectItem->object()
                     ? objectItem->object()->getObject()
                     : nullptr;
                 if (object) {
+                    modelBrowserObjectOverrides.try_emplace(
+                        object->getID(), BrowserItemOverride {objectItem->isExpanded(), objectItem->isSelected()});
                     if (objectItem->isExpanded()) {
                         expandedObjects.insert(object);
                     }
@@ -5728,19 +6495,23 @@ void DocumentItem::rebuildModelBrowser()
                         selectedObjects.insert(object);
                     }
                 }
-                captureState(objectItem);
+                co_await captureState(objectItem);
             }
         }
     };
-    captureState(this);
+    co_await captureState(this);
     const bool firstBuild = !modelBrowserActive;
 
-    const bool selectionLock = tree->blockSelection(true);
-    QSignalBlocker signalBlocker(tree);
-    clearModelBrowser();
-    setLegacyTreeVisible(false);
+    // Construct off-view, then detach leaves cooperatively before handoff.
+    // Qt receives childless items in parent-first order; transferring populated
+    // roots would recursively install the entire hierarchy in one GUI call.
+    auto stagedRoot = std::make_unique<QTreeWidgetItem>();
+    auto presentationParent = [this, &stagedRoot](QTreeWidgetItem* parent) {
+        return parent == this ? stagedRoot.get() : parent;
+    };
 
-    Projection projection(appDocument);
+    const auto projectionOwner = preparedModelBrowserProjection;
+    const auto& projection = *projectionOwner;
     const auto& entries = projection.entries();
     std::unordered_map<App::DocumentObject*, DocumentObjectItem*> proxies;
     std::set<App::DocumentObject*> rendered;
@@ -5800,13 +6571,13 @@ void DocumentItem::rebuildModelBrowser()
         const QString key = QString::fromStdString(context + "/folder:" + id);
         auto* folder = new BrowserFolderItem(
             this,
-            parent,
+            presentationParent(parent),
             logicalParent,
             key,
             label,
             QByteArray(icon)
         );
-        folder->setExpanded(expandedFolders.contains(key.toStdString()));
+        modelBrowserStagedStates[folder].expanded = expandedFolders.contains(key.toStdString());
         return folder;
     };
 
@@ -5814,22 +6585,23 @@ void DocumentItem::rebuildModelBrowser()
                             const Entry& entry,
                             QTreeWidgetItem* parent,
                             DocumentObjectItem* logicalParent
-                        ) -> DocumentObjectItem* {
+                        ) -> FrameSequence<DocumentObjectItem*> {
+                            co_await std::suspend_always {};
         if (!entryAvailable(entry)) {
-            return nullptr;
+            co_return nullptr;
         }
         if (const auto existing = proxies.find(entry.object); existing != proxies.end()) {
-            return existing->second;
+            co_return existing->second;
         }
 
         auto* item = createBrowserObjectItem(
             entry.object,
-            parent,
+            presentationParent(parent),
             logicalParent,
             entry.publishedImplementation
         );
         if (!item) {
-            return nullptr;
+            co_return nullptr;
         }
         item->setText(0, modelBrowserPresentationLabel(entry));
         try {
@@ -5838,7 +6610,9 @@ void DocumentItem::rebuildModelBrowser()
             const auto details = detailProvider
                 ? detailProvider->getTreeViewDetails()
                 : std::vector<TreeViewDetail> {};
+            co_await std::suspend_always {}; // Revalidate after a provider callback.
             for (const auto& detail : details) {
+                co_await std::suspend_always {};
                 if (detail.key.empty() || detail.label.empty()) {
                     continue;
                 }
@@ -5878,12 +6652,12 @@ void DocumentItem::rebuildModelBrowser()
         const bool wasExpanded = expandedObjects.contains(entry.object);
         const bool persistedExpanded = entry.object->testStatus(App::Expand);
         const bool defaultExpanded = firstBuild && entry.role == Role::Component;
-        item->setExpanded(wasExpanded || persistedExpanded || defaultExpanded);
+        modelBrowserStagedStates[item].expanded = wasExpanded || persistedExpanded || defaultExpanded;
         const bool selected = selectedObjects.contains(entry.object);
         item->selected = selected ? 1 : 0;
-        item->setSelected(selected);
+        modelBrowserStagedStates[item].selected = selected;
         item->setCheckState(selected);
-        return item;
+        co_return item;
     };
 
     // One indexing pass over the projection replaces the former per-category
@@ -5965,6 +6739,7 @@ void DocumentItem::rebuildModelBrowser()
     };
 
     for (const auto& entry : entries) {
+        co_await std::suspend_always {};
         if (entry.role == Role::Origin || entry.role == Role::OriginFeature) {
             entriesByLogicalParentRole[{entry.logicalParent, entry.role}].push_back(&entry);
         }
@@ -5994,6 +6769,7 @@ void DocumentItem::rebuildModelBrowser()
                 continue;
             }
             for (auto* child : viewProvider->claimChildren()) {
+                co_await std::suspend_always {};
                 const Entry* childEntry = projection.find(child);
                 if (childEntry && isDrawingObject(childEntry->object)) {
                     drawingChildren[entry.object].push_back(childEntry);
@@ -6028,6 +6804,7 @@ void DocumentItem::rebuildModelBrowser()
         return static_cast<App::DocumentObject*>(nullptr);
     };
     for (const auto& entry : entries) {
+        co_await std::suspend_always {};
         if (isAnalysis(entry.object)
             || (isFemObject(entry.object) && !analysisOwner(entry))) {
             analyzeEntriesByComponent[entry.component].push_back(&entry);
@@ -6038,7 +6815,10 @@ void DocumentItem::rebuildModelBrowser()
         const auto* group = object
             ? object->getExtensionByType<App::GroupExtension>(true, false)
             : nullptr;
-        return group ? group->getObjects() : std::vector<App::DocumentObject*> {};
+        // The owner checks the source epoch before each resumed step. Borrow
+        // the ordered list instead of copying it every time a category reads it.
+        return group ? std::span<App::DocumentObject* const>(group->Group.getValues())
+                     : std::span<App::DocumentObject* const> {};
     };
 
     // Consume every object that belongs exclusively to a CAM setup before
@@ -6047,22 +6827,26 @@ void DocumentItem::rebuildModelBrowser()
     // selected cutter, not document design geometry. ViewProvider ownership is
     // authoritative for that tool-only subtree.
     std::set<App::DocumentObject*> manufactureOwnedObjects;
-    std::function<void(App::DocumentObject*)> consumeClaimedChildren;
-    consumeClaimedChildren = [&](App::DocumentObject* object) {
+    std::function<FrameSequence<>(App::DocumentObject*)> consumeClaimedChildren;
+    consumeClaimedChildren = [&](App::DocumentObject* object) -> FrameSequence<> {
+        co_await std::suspend_always {};
         if (!object || !manufactureOwnedObjects.insert(object).second) {
-            return;
+            co_return;
         }
         auto* viewProvider = getViewProvider(object);
         if (!viewProvider) {
-            return;
+            co_return;
         }
         for (auto* child : viewProvider->claimChildren()) {
-            consumeClaimedChildren(child);
+            co_await std::suspend_always {};
+            co_await consumeClaimedChildren(child);
         }
     };
     for (const auto& [component, setupEntries] : manufactureSetupsByComponent) {
+        co_await std::suspend_always {};
         (void)component;
         for (const auto* setupEntry : setupEntries) {
+            co_await std::suspend_always {};
             auto* setup = setupEntry->object;
             manufactureOwnedObjects.insert(setup);
             auto* operations = linkedObject(setup, "Operations");
@@ -6071,22 +6855,27 @@ void DocumentItem::rebuildModelBrowser()
             auto* setupSheet = linkedObject(setup, "SetupSheet");
             auto* tools = linkedObject(setup, "Tools");
             for (auto* owned : {operations, model, stock, setupSheet, tools}) {
+                co_await std::suspend_always {};
                 if (owned) {
                     manufactureOwnedObjects.insert(owned);
                 }
             }
             for (auto* operation : groupMembers(operations)) {
+                co_await std::suspend_always {};
                 manufactureOwnedObjects.insert(operation);
             }
             for (auto* modelResource : groupMembers(model)) {
+                co_await std::suspend_always {};
                 manufactureOwnedObjects.insert(modelResource);
             }
             for (auto* controller : groupMembers(tools)) {
-                consumeClaimedChildren(controller);
+                co_await std::suspend_always {};
+                co_await consumeClaimedChildren(controller);
             }
             const auto results = manufactureSimulationResultsBySetup.find(setup);
             if (results != manufactureSimulationResultsBySetup.end()) {
                 for (const auto* result : results->second) {
+                    co_await std::suspend_always {};
                     manufactureOwnedObjects.insert(result->object);
                 }
             }
@@ -6101,39 +6890,44 @@ void DocumentItem::rebuildModelBrowser()
 
     // Residual predicates preserve exactly the conjuncts the former scans
     // applied beyond the bucket key itself.
-    auto filterBucket = [&](const EntryBucket* bucket, auto&& residual) {
+    auto filterBucket = [&](const EntryBucket* bucket, auto&& residual) -> FrameSequence<EntryBucket> {
+        co_await std::suspend_always {};
         EntryBucket result;
         if (!bucket) {
-            return result;
+            co_return result;
         }
         for (const auto* entry : *bucket) {
+            co_await std::suspend_always {};
             if (entryAvailable(*entry) && !rendered.contains(entry->object)
                 && residual(*entry)) {
                 result.push_back(entry);
             }
         }
-        return result;
+        co_return result;
     };
-    auto takeBucket = [&](const EntryBucket* bucket) {
-        return filterBucket(bucket, [](const Entry&) {
+    auto takeBucket = [&](const EntryBucket* bucket) -> FrameSequence<EntryBucket> {
+        co_await std::suspend_always {};
+        co_return co_await filterBucket(bucket, [](const Entry&) {
             return true;
         });
     };
-    auto originEntriesFor = [&](const App::DocumentObject* context) {
-        return takeBucket(
+    auto originEntriesFor = [&](const App::DocumentObject* context) -> FrameSequence<EntryBucket> {
+        co_await std::suspend_always {};
+        co_return co_await takeBucket(
             findBucket(entriesByLogicalParentRole, RoleContextKey {context, Role::Origin})
         );
     };
-    auto componentRoleEntries = [&](const App::DocumentObject* component, Role role) {
-        return takeBucket(findBucket(entriesByComponentRole, RoleContextKey {component, role}));
+    auto componentRoleEntries = [&](const App::DocumentObject* component, Role role) -> FrameSequence<EntryBucket> {
+        co_await std::suspend_always {};
+        co_return co_await takeBucket(findBucket(entriesByComponentRole, RoleContextKey {component, role}));
     };
 
-    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderOrigin;
-    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderBody;
-    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderComponent;
-    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderGroup;
-    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderAnalyzeObject;
-    std::function<void(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderDrawingObject;
+    std::function<FrameSequence<>(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderOrigin;
+    std::function<FrameSequence<>(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderBody;
+    std::function<FrameSequence<>(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderComponent;
+    std::function<FrameSequence<>(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderGroup;
+    std::function<FrameSequence<>(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderAnalyzeObject;
+    std::function<FrameSequence<>(const Entry&, QTreeWidgetItem*, DocumentObjectItem*)> renderDrawingObject;
 
     // FreeCAD resolves duplicate default labels by appending a zero-padded
     // numeric suffix of at least three digits ("Origin001", "X-axis002"; see
@@ -6201,10 +6995,11 @@ void DocumentItem::rebuildModelBrowser()
 
     renderOrigin = [&](const Entry& originEntry,
                        QTreeWidgetItem* parent,
-                       DocumentObjectItem* logicalParent) {
-        auto* originItem = renderObject(originEntry, parent, logicalParent);
+                       DocumentObjectItem* logicalParent) -> FrameSequence<> {
+                           co_await std::suspend_always {};
+        auto* originItem = co_await renderObject(originEntry, parent, logicalParent);
         if (!originItem) {
-            return;
+            co_return;
         }
         // Internal Origin names are document-unique (Origin, Origin001, ...),
         // but each is the local Origin of its own component or Body.  Show
@@ -6218,12 +7013,13 @@ void DocumentItem::rebuildModelBrowser()
         if (!originBase.isEmpty()) {
             originItem->setText(0, TreeWidget::tr("Origin"));
         }
-        const auto features = takeBucket(findBucket(
+        const auto features = co_await takeBucket(findBucket(
             entriesByLogicalParentRole,
             RoleContextKey {originEntry.object, Role::OriginFeature}
         ));
         for (const auto* feature : features) {
-            auto* featureItem = renderObject(*feature, originItem, originItem);
+            co_await std::suspend_always {};
+            auto* featureItem = co_await renderObject(*feature, originItem, originItem);
             if (featureItem) {
                 featureItem->setText(
                     0,
@@ -6245,9 +7041,10 @@ void DocumentItem::rebuildModelBrowser()
                               const QString& label,
                               const char* icon,
                               const std::vector<const Entry*>& categoryEntries
-                          ) {
+                          ) -> FrameSequence<BrowserFolderItem*> {
+                              co_await std::suspend_always {};
         if (categoryEntries.empty()) {
-            return static_cast<BrowserFolderItem*>(nullptr);
+            co_return static_cast<BrowserFolderItem*>(nullptr);
         }
         auto* folder = makeFolder(
             parent,
@@ -6258,24 +7055,26 @@ void DocumentItem::rebuildModelBrowser()
             icon
         );
         for (const auto* entry : categoryEntries) {
+            co_await std::suspend_always {};
             // A type category can intentionally present an object outside its
             // plain organizational Group. If that Group has not been rendered
             // yet, retain the component as the selection-path parent rather
             // than incorrectly treating the object as document-root.
             auto* logicalParent = logicalItem(entry->logicalParent, contextItem);
-            renderObject(*entry, folder, logicalParent);
+            co_await renderObject(*entry, folder, logicalParent);
         }
-        return folder;
+        co_return folder;
     };
 
     renderGroup = [&](const Entry& groupEntry,
                       QTreeWidgetItem* parent,
-                      DocumentObjectItem* logicalParent) {
-        auto* groupItem = renderObject(groupEntry, parent, logicalParent);
+                      DocumentObjectItem* logicalParent) -> FrameSequence<> {
+                          co_await std::suspend_always {};
+        auto* groupItem = co_await renderObject(groupEntry, parent, logicalParent);
         if (!groupItem) {
-            return;
+            co_return;
         }
-        const auto children = takeBucket(
+        const auto children = co_await takeBucket(
             findBucket(entriesByGroup, groupEntry.object)
         );
         const bool assemblyStructureGroup = groupEntry.object
@@ -6285,13 +7084,14 @@ void DocumentItem::rebuildModelBrowser()
                         == std::string_view("Assembly::AssemblyObject")));
         const bool meshesGroup = isMeshesGroup(groupEntry.object);
         for (const auto* child : children) {
+            co_await std::suspend_always {};
             if (child->role == Role::Group) {
-                renderGroup(*child, groupItem, groupItem);
+                co_await renderGroup(*child, groupItem, groupItem);
                 continue;
             }
             if (meshesGroup && child->role != Role::Internal
                 && !child->publishedImplementation && !child->bodyRepresentation) {
-                renderObject(*child, groupItem, groupItem);
+                co_await renderObject(*child, groupItem, groupItem);
                 continue;
             }
             // Bodies, Sketches, Parameters, References, and loose Geometry are
@@ -6301,7 +7101,7 @@ void DocumentItem::rebuildModelBrowser()
             if ((child->role == Role::Other
                  || (assemblyStructureGroup && child->role == Role::AssemblyOperation))
                 && !child->publishedImplementation && !child->bodyRepresentation) {
-                renderObject(*child, groupItem, groupItem);
+                co_await renderObject(*child, groupItem, groupItem);
             }
         }
         groupItem->setChildIndicatorPolicy(
@@ -6312,20 +7112,22 @@ void DocumentItem::rebuildModelBrowser()
 
     renderBody = [&](const Entry& bodyEntry,
                      QTreeWidgetItem* parent,
-                     DocumentObjectItem* logicalParent) {
-        auto* bodyItem = renderObject(bodyEntry, parent, logicalParent);
+                     DocumentObjectItem* logicalParent) -> FrameSequence<> {
+                         co_await std::suspend_always {};
+        auto* bodyItem = co_await renderObject(bodyEntry, parent, logicalParent);
         if (!bodyItem) {
-            return;
+            co_return;
         }
 
         // A Body is an independently usable modeling object, so expose its
         // user-facing feature chain here as well as in chronological History.
         // Resource/internal state never enters operationEntriesByBody.
-        const auto operations = takeBucket(
+        const auto operations = co_await takeBucket(
             findBucket(operationEntriesByBody, bodyEntry.object)
         );
         for (const auto* operation : operations) {
-            renderObject(*operation, bodyItem, bodyItem);
+            co_await std::suspend_always {};
+            co_await renderObject(*operation, bodyItem, bodyItem);
         }
         bodyItem->setChildIndicatorPolicy(
             bodyItem->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
@@ -6335,13 +7137,14 @@ void DocumentItem::rebuildModelBrowser()
 
     renderAnalyzeObject = [&](const Entry& entry,
                               QTreeWidgetItem* parent,
-                              DocumentObjectItem* logicalParent) {
+                              DocumentObjectItem* logicalParent) -> FrameSequence<> {
+                                  co_await std::suspend_always {};
         if (entry.publishedImplementation || entry.bodyRepresentation) {
-            return;
+            co_return;
         }
-        auto* item = renderObject(entry, parent, logicalParent);
+        auto* item = co_await renderObject(entry, parent, logicalParent);
         if (!item) {
-            return;
+            co_return;
         }
 
         // FemAnalysis is the document's authoritative study container. Show
@@ -6349,9 +7152,10 @@ void DocumentItem::rebuildModelBrowser()
         // materials, meshes, constraints, and solvers that are deliberately
         // hidden from the generic model categories. Recurse through any plain
         // organizational groups nested inside a study as well.
-        const auto members = takeBucket(findBucket(entriesByGroup, entry.object));
+        const auto members = co_await takeBucket(findBucket(entriesByGroup, entry.object));
         for (const auto* member : members) {
-            renderAnalyzeObject(*member, item, item);
+            co_await std::suspend_always {};
+            co_await renderAnalyzeObject(*member, item, item);
         }
         item->setChildIndicatorPolicy(
             item->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
@@ -6361,13 +7165,14 @@ void DocumentItem::rebuildModelBrowser()
 
     auto renderAnalyze = [&](QTreeWidgetItem* parent,
                              DocumentObjectItem* contextItem,
-                             App::DocumentObject* contextObject) {
-        const auto entries = takeBucket(findBucket(
+                             App::DocumentObject* contextObject) -> FrameSequence<> {
+                                 co_await std::suspend_always {};
+        const auto entries = co_await takeBucket(findBucket(
             analyzeEntriesByComponent,
             static_cast<const App::DocumentObject*>(contextObject)
         ));
         if (entries.empty()) {
-            return;
+            co_return;
         }
         auto* folder = makeFolder(
             parent,
@@ -6378,7 +7183,8 @@ void DocumentItem::rebuildModelBrowser()
             "FemWorkbench"
         );
         for (const auto* entry : entries) {
-            renderAnalyzeObject(
+            co_await std::suspend_always {};
+            co_await renderAnalyzeObject(
                 *entry,
                 folder,
                 logicalItem(entry->logicalParent, contextItem)
@@ -6388,22 +7194,24 @@ void DocumentItem::rebuildModelBrowser()
 
     renderDrawingObject = [&](const Entry& entry,
                               QTreeWidgetItem* parent,
-                              DocumentObjectItem* logicalParent) {
+                              DocumentObjectItem* logicalParent) -> FrameSequence<> {
+                                  co_await std::suspend_always {};
         if (entry.publishedImplementation || entry.bodyRepresentation) {
-            return;
+            co_return;
         }
-        auto* item = renderObject(entry, parent, logicalParent);
+        auto* item = co_await renderObject(entry, parent, logicalParent);
         if (!item) {
-            return;
+            co_return;
         }
 
         // TechDraw's ViewProviders are the authoritative presentation owners:
         // Page claims its template, views, and annotations; a projected view
         // claims its dimensions and dependent drawing objects. Follow that
         // graph recursively instead of flattening timeline operations.
-        const auto children = takeBucket(findBucket(drawingChildren, entry.object));
+        const auto children = co_await takeBucket(findBucket(drawingChildren, entry.object));
         for (const auto* child : children) {
-            renderDrawingObject(*child, item, item);
+            co_await std::suspend_always {};
+            co_await renderDrawingObject(*child, item, item);
         }
         item->setChildIndicatorPolicy(
             item->childCount() > 0 ? QTreeWidgetItem::ShowIndicator
@@ -6413,13 +7221,14 @@ void DocumentItem::rebuildModelBrowser()
 
     auto renderDrawings = [&](QTreeWidgetItem* parent,
                               DocumentObjectItem* contextItem,
-                              App::DocumentObject* contextObject) {
-        const auto pages = takeBucket(findBucket(
+                              App::DocumentObject* contextObject) -> FrameSequence<> {
+                                  co_await std::suspend_always {};
+        const auto pages = co_await takeBucket(findBucket(
             drawingPagesByComponent,
             static_cast<const App::DocumentObject*>(contextObject)
         ));
         if (pages.empty()) {
-            return;
+            co_return;
         }
         auto* folder = makeFolder(
             parent,
@@ -6430,7 +7239,8 @@ void DocumentItem::rebuildModelBrowser()
             "preferences-techdraw"
         );
         for (const auto* page : pages) {
-            renderDrawingObject(
+            co_await std::suspend_always {};
+            co_await renderDrawingObject(
                 *page,
                 folder,
                 logicalItem(page->logicalParent, contextItem)
@@ -6440,24 +7250,27 @@ void DocumentItem::rebuildModelBrowser()
 
     auto renderManufacture = [&](QTreeWidgetItem* parent,
                                  DocumentObjectItem* contextItem,
-                                 App::DocumentObject* contextObject) {
+                                 App::DocumentObject* contextObject) -> FrameSequence<> {
+                                     co_await std::suspend_always {};
         const auto setupBucket = findBucket(
             manufactureSetupsByComponent,
             static_cast<const App::DocumentObject*>(contextObject)
         );
         if (!setupBucket) {
-            return;
+            co_return;
         }
 
         auto renderLinkedObject = [&](App::DocumentObject* object,
                                       QTreeWidgetItem* visualParent,
-                                      DocumentObjectItem* logicalParent) {
+                                      DocumentObjectItem* logicalParent) -> FrameSequence<DocumentObjectItem*> {
+                                          co_await std::suspend_always {};
             const Entry* entry = projection.find(object);
-            return entry ? renderObject(*entry, visualParent, logicalParent) : nullptr;
+            co_return entry ? co_await renderObject(*entry, visualParent, logicalParent) : nullptr;
         };
 
         for (const auto* setupEntry : *setupBucket) {
-            auto* setupItem = renderObject(
+            co_await std::suspend_always {};
+            auto* setupItem = co_await renderObject(
                 *setupEntry,
                 parent,
                 logicalItem(setupEntry->logicalParent, contextItem)
@@ -6467,7 +7280,7 @@ void DocumentItem::rebuildModelBrowser()
             }
 
             auto* setup = setupEntry->object;
-            renderLinkedObject(linkedObject(setup, "Stock"), setupItem, setupItem);
+            co_await renderLinkedObject(linkedObject(setup, "Stock"), setupItem, setupItem);
 
             auto* toolsFolder = makeFolder(
                 setupItem,
@@ -6478,7 +7291,8 @@ void DocumentItem::rebuildModelBrowser()
                 "CAM_ToolController"
             );
             for (auto* controller : groupMembers(linkedObject(setup, "Tools"))) {
-                auto* controllerItem = renderLinkedObject(controller, toolsFolder, setupItem);
+                co_await std::suspend_always {};
+                auto* controllerItem = co_await renderLinkedObject(controller, toolsFolder, setupItem);
                 if (!controllerItem) {
                     continue;
                 }
@@ -6508,7 +7322,8 @@ void DocumentItem::rebuildModelBrowser()
                 "CAM_Toolpath"
             );
             for (auto* operation : groupMembers(linkedObject(setup, "Operations"))) {
-                renderLinkedObject(operation, operationsFolder, setupItem);
+                co_await std::suspend_always {};
+                co_await renderLinkedObject(operation, operationsFolder, setupItem);
             }
 
             const auto resultBucket = findBucket(
@@ -6525,8 +7340,9 @@ void DocumentItem::rebuildModelBrowser()
                     "CAM_Simulator"
                 );
                 for (std::size_t index = 0; index < resultBucket->size(); ++index) {
+                    co_await std::suspend_always {};
                     const auto* result = (*resultBucket)[index];
-                    auto* resultItem = renderObject(
+                    auto* resultItem = co_await renderObject(
                         *result,
                         resultsFolder,
                         logicalItem(result->logicalParent, contextItem)
@@ -6552,7 +7368,7 @@ void DocumentItem::rebuildModelBrowser()
                 }
             }
 
-            renderLinkedObject(
+            co_await renderLinkedObject(
                 linkedObject(setup, "SetupSheet"),
                 setupItem,
                 setupItem
@@ -6570,23 +7386,27 @@ void DocumentItem::rebuildModelBrowser()
                                 App::DocumentObject* contextObject,
                                 const EntryBucket& bodyEntries,
                                 const EntryBucket& referenceEntries
-                            ) {
+                            ) -> FrameSequence<> {
+                                co_await std::suspend_always {};
         struct OriginReference
         {
             const Entry* entry {};
             App::DocumentObject* owner {};
         };
         std::vector<OriginReference> origins;
-        for (const auto* origin : originEntriesFor(contextObject)) {
+        for (const auto* origin : co_await originEntriesFor(contextObject)) {
+            co_await std::suspend_always {};
             origins.push_back({origin, contextObject});
         }
         for (const auto* body : bodyEntries) {
-            for (const auto* origin : originEntriesFor(body->object)) {
+            co_await std::suspend_always {};
+            for (const auto* origin : co_await originEntriesFor(body->object)) {
+                co_await std::suspend_always {};
                 origins.push_back({origin, body->object});
             }
         }
 
-        const auto visibleReferences = filterBucket(
+        const auto visibleReferences = co_await filterBucket(
             &referenceEntries,
             [](const Entry& entry) {
                 return !entry.publishedImplementation
@@ -6594,7 +7414,7 @@ void DocumentItem::rebuildModelBrowser()
             }
         );
         if (origins.empty() && visibleReferences.empty()) {
-            return;
+            co_return;
         }
 
         auto* folder = makeFolder(
@@ -6606,8 +7426,9 @@ void DocumentItem::rebuildModelBrowser()
             "PartDesign_SubShapeBinder"
         );
         for (const auto& origin : origins) {
+            co_await std::suspend_always {};
             auto* logicalParent = logicalItem(origin.entry->logicalParent, contextItem);
-            renderOrigin(*origin.entry, folder, logicalParent);
+            co_await renderOrigin(*origin.entry, folder, logicalParent);
             const auto item = proxies.find(origin.entry->object);
             if (item == proxies.end() || !item->second
                 || origin.owner == contextObject) {
@@ -6629,7 +7450,8 @@ void DocumentItem::rebuildModelBrowser()
             );
         }
         for (const auto* reference : visibleReferences) {
-            renderObject(
+            co_await std::suspend_always {};
+            co_await renderObject(
                 *reference,
                 folder,
                 logicalItem(reference->logicalParent, contextItem)
@@ -6639,22 +7461,24 @@ void DocumentItem::rebuildModelBrowser()
 
     renderComponent = [&](const Entry& componentEntry,
                           QTreeWidgetItem* parent,
-                          DocumentObjectItem* logicalParent) {
-        auto* componentItem = renderObject(componentEntry, parent, logicalParent);
+                          DocumentObjectItem* logicalParent) -> FrameSequence<> {
+                              co_await std::suspend_always {};
+        auto* componentItem = co_await renderObject(componentEntry, parent, logicalParent);
         if (!componentItem) {
-            return;
+            co_return;
         }
         const bool vibeScriptProgram =
             Projection::isVibeScriptProgram(componentEntry.object);
 
-        const auto nestedComponents = componentRoleEntries(componentEntry.object, Role::Component);
+        const auto nestedComponents = co_await componentRoleEntries(componentEntry.object, Role::Component);
         for (const auto* nested : nestedComponents) {
-            renderComponent(*nested, componentItem, componentItem);
+            co_await std::suspend_always {};
+            co_await renderComponent(*nested, componentItem, componentItem);
         }
 
         const auto assemblyOccurrences
-            = componentRoleEntries(componentEntry.object, Role::AssemblyOccurrence);
-        renderCategory(
+            = co_await componentRoleEntries(componentEntry.object, Role::AssemblyOccurrence);
+        co_await renderCategory(
             componentItem,
             componentItem,
             componentEntry.object,
@@ -6664,8 +7488,8 @@ void DocumentItem::rebuildModelBrowser()
             assemblyOccurrences
         );
 
-        const auto assemblyMotions = componentRoleEntries(componentEntry.object, Role::AssemblyMotion);
-        renderCategory(
+        const auto assemblyMotions = co_await componentRoleEntries(componentEntry.object, Role::AssemblyMotion);
+        co_await renderCategory(
             componentItem,
             componentItem,
             componentEntry.object,
@@ -6676,8 +7500,8 @@ void DocumentItem::rebuildModelBrowser()
         );
 
         const auto parameters =
-            componentRoleEntries(componentEntry.object, Role::Parameter);
-        renderCategory(
+            co_await componentRoleEntries(componentEntry.object, Role::Parameter);
+        co_await renderCategory(
             componentItem,
             componentItem,
             componentEntry.object,
@@ -6687,7 +7511,7 @@ void DocumentItem::rebuildModelBrowser()
             parameters
         );
 
-        const auto bodies = componentRoleEntries(componentEntry.object, Role::Body);
+        const auto bodies = co_await componentRoleEntries(componentEntry.object, Role::Body);
         if (!bodies.empty()) {
             auto* folder = makeFolder(
                 componentItem,
@@ -6698,15 +7522,17 @@ void DocumentItem::rebuildModelBrowser()
                 "PartDesign_Body"
             );
             for (const auto* body : bodies) {
-                renderBody(*body, folder, componentItem);
+                co_await std::suspend_always {};
+                co_await renderBody(*body, folder, componentItem);
             }
             if (firstBuild && vibeScriptProgram) {
-                folder->setExpanded(true);
+                modelBrowserStagedStates[folder].expanded = true;
             }
         }
 
-        const auto renderComponentHistory = [&]() {
-            const auto operations = filterBucket(
+        const auto renderComponentHistory = [&]() -> FrameSequence<> {
+            co_await std::suspend_always {};
+            const auto operations = co_await filterBucket(
                 findBucket(
                     entriesByComponentRole,
                     RoleContextKey {componentEntry.object, Role::History}
@@ -6715,7 +7541,7 @@ void DocumentItem::rebuildModelBrowser()
                     return !entry.body && !isMeshesGroup(entry.group);
                 }
             );
-            renderCategory(
+            co_await renderCategory(
                 componentItem,
                 componentItem,
                 componentEntry.object,
@@ -6726,8 +7552,9 @@ void DocumentItem::rebuildModelBrowser()
             );
         };
 
-        const auto renderComponentOutputs = [&]() {
-            const auto vibeCADOutputs = filterBucket(
+        const auto renderComponentOutputs = [&]() -> FrameSequence<> {
+            co_await std::suspend_always {};
+            const auto vibeCADOutputs = co_await filterBucket(
                 findBucket(
                     entriesByComponentRole,
                     RoleContextKey {componentEntry.object, Role::VibeCADOutput}
@@ -6740,7 +7567,7 @@ void DocumentItem::rebuildModelBrowser()
                     return vibeScriptProgram || !entry.bodyRepresentation;
                 }
             );
-            renderCategory(
+            co_await renderCategory(
                 componentItem,
                 componentItem,
                 componentEntry.object,
@@ -6756,12 +7583,12 @@ void DocumentItem::rebuildModelBrowser()
         // their source-level Design History, and stable published interfaces.
         // Generic components retain the established category ordering below.
         if (vibeScriptProgram) {
-            renderComponentHistory();
-            renderComponentOutputs();
+            co_await renderComponentHistory();
+            co_await renderComponentOutputs();
         }
 
-        const auto sketches = componentRoleEntries(componentEntry.object, Role::Sketch);
-        renderCategory(
+        const auto sketches = co_await componentRoleEntries(componentEntry.object, Role::Sketch);
+        co_await renderCategory(
             componentItem,
             componentItem,
             componentEntry.object,
@@ -6771,9 +7598,9 @@ void DocumentItem::rebuildModelBrowser()
             sketches
         );
 
-        renderManufacture(componentItem, componentItem, componentEntry.object);
+        co_await renderManufacture(componentItem, componentItem, componentEntry.object);
 
-        const auto meshGroups = filterBucket(
+        const auto meshGroups = co_await filterBucket(
             findBucket(
                 entriesByComponentRole,
                 RoleContextKey {componentEntry.object, Role::Group}
@@ -6783,19 +7610,20 @@ void DocumentItem::rebuildModelBrowser()
             }
         );
         for (const auto* group : meshGroups) {
-            renderGroup(*group, componentItem, componentItem);
+            co_await std::suspend_always {};
+            co_await renderGroup(*group, componentItem, componentItem);
         }
 
-        renderAnalyze(componentItem, componentItem, componentEntry.object);
-        renderDrawings(componentItem, componentItem, componentEntry.object);
+        co_await renderAnalyze(componentItem, componentItem, componentEntry.object);
+        co_await renderDrawings(componentItem, componentItem, componentEntry.object);
 
         if (!vibeScriptProgram) {
-            renderComponentHistory();
-            renderComponentOutputs();
+            co_await renderComponentHistory();
+            co_await renderComponentOutputs();
         }
 
-        const auto references = componentRoleEntries(componentEntry.object, Role::Reference);
-        renderReferences(
+        const auto references = co_await componentRoleEntries(componentEntry.object, Role::Reference);
+        co_await renderReferences(
             componentItem,
             componentItem,
             componentEntry.object,
@@ -6806,7 +7634,7 @@ void DocumentItem::rebuildModelBrowser()
         // Geometry is a compatibility escape hatch only for genuine loose
         // user/legacy objects. Body history and scripted publication internals
         // are deliberately represented elsewhere and must never appear here.
-        const auto looseGeometry = filterBucket(
+        const auto looseGeometry = co_await filterBucket(
             findBucket(
                 entriesByComponentRole,
                 RoleContextKey {componentEntry.object, Role::Geometry}
@@ -6816,7 +7644,7 @@ void DocumentItem::rebuildModelBrowser()
                     && !entry.bodyRepresentation;
             }
         );
-        renderCategory(
+        co_await renderCategory(
             componentItem,
             componentItem,
             componentEntry.object,
@@ -6826,7 +7654,7 @@ void DocumentItem::rebuildModelBrowser()
             looseGeometry
         );
 
-        const auto groups = filterBucket(
+        const auto groups = co_await filterBucket(
             findBucket(
                 entriesByComponentRole,
                 RoleContextKey {componentEntry.object, Role::Group}
@@ -6848,16 +7676,18 @@ void DocumentItem::rebuildModelBrowser()
                 "folder"
             );
             for (const auto* group : groups) {
-                renderGroup(*group, folder, componentItem);
+                co_await std::suspend_always {};
+                co_await renderGroup(*group, folder, componentItem);
             }
         }
         else if (assemblyComponent) {
             for (const auto* group : groups) {
-                renderGroup(*group, componentItem, componentItem);
+                co_await std::suspend_always {};
+                co_await renderGroup(*group, componentItem, componentItem);
             }
         }
 
-        const auto other = filterBucket(
+        const auto other = co_await filterBucket(
             findBucket(
                 entriesByComponentRole,
                 RoleContextKey {componentEntry.object, Role::Other}
@@ -6868,7 +7698,7 @@ void DocumentItem::rebuildModelBrowser()
                     && !entry.bodyRepresentation;
             }
         );
-        renderCategory(
+        co_await renderCategory(
             componentItem,
             componentItem,
             componentEntry.object,
@@ -6886,16 +7716,17 @@ void DocumentItem::rebuildModelBrowser()
 
     // Components are the primary browser roots, matching component-oriented CAD
     // systems.  Type folders below handle document-level loose objects and Bodies.
-    const auto topComponents = filterBucket(&componentEntries, [](const Entry& entry) {
+    const auto topComponents = co_await filterBucket(&componentEntries, [](const Entry& entry) {
         return !entry.logicalParent
             || !Projection::isComponent(entry.logicalParent);
     });
     for (const auto* component : topComponents) {
-        renderComponent(*component, this, nullptr);
+        co_await std::suspend_always {};
+        co_await renderComponent(*component, this, nullptr);
     }
 
-    const auto rootParameters = componentRoleEntries(nullptr, Role::Parameter);
-    renderCategory(
+    const auto rootParameters = co_await componentRoleEntries(nullptr, Role::Parameter);
+    co_await renderCategory(
         this,
         nullptr,
         nullptr,
@@ -6905,7 +7736,7 @@ void DocumentItem::rebuildModelBrowser()
         rootParameters
     );
 
-    const auto rootBodies = componentRoleEntries(nullptr, Role::Body);
+    const auto rootBodies = co_await componentRoleEntries(nullptr, Role::Body);
     if (!rootBodies.empty()) {
         auto* folder = makeFolder(
             this,
@@ -6916,12 +7747,13 @@ void DocumentItem::rebuildModelBrowser()
             "PartDesign_Body"
         );
         for (const auto* body : rootBodies) {
-            renderBody(*body, folder, nullptr);
+            co_await std::suspend_always {};
+            co_await renderBody(*body, folder, nullptr);
         }
     }
 
-    const auto rootSketches = componentRoleEntries(nullptr, Role::Sketch);
-    renderCategory(
+    const auto rootSketches = co_await componentRoleEntries(nullptr, Role::Sketch);
+    co_await renderCategory(
         this,
         nullptr,
         nullptr,
@@ -6931,28 +7763,29 @@ void DocumentItem::rebuildModelBrowser()
         rootSketches
     );
 
-    renderManufacture(this, nullptr, nullptr);
+    co_await renderManufacture(this, nullptr, nullptr);
 
-    const auto rootMeshGroups = filterBucket(
+    const auto rootMeshGroups = co_await filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Group}),
         [&](const Entry& entry) {
             return !entry.group && isMeshesGroup(entry.object);
         }
     );
     for (const auto* group : rootMeshGroups) {
-        renderGroup(*group, this, nullptr);
+        co_await std::suspend_always {};
+        co_await renderGroup(*group, this, nullptr);
     }
 
-    renderAnalyze(this, nullptr, nullptr);
-    renderDrawings(this, nullptr, nullptr);
+    co_await renderAnalyze(this, nullptr, nullptr);
+    co_await renderDrawings(this, nullptr, nullptr);
 
-    const auto rootOperations = filterBucket(
+    const auto rootOperations = co_await filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::History}),
         [&](const Entry& entry) {
             return !entry.body && !isMeshesGroup(entry.group);
         }
     );
-    renderCategory(
+    co_await renderCategory(
         this,
         nullptr,
         nullptr,
@@ -6963,8 +7796,8 @@ void DocumentItem::rebuildModelBrowser()
     );
 
     const auto rootOccurrences =
-        componentRoleEntries(nullptr, Role::AssemblyOccurrence);
-    renderCategory(
+        co_await componentRoleEntries(nullptr, Role::AssemblyOccurrence);
+    co_await renderCategory(
         this,
         nullptr,
         nullptr,
@@ -6974,7 +7807,7 @@ void DocumentItem::rebuildModelBrowser()
         rootOccurrences
     );
 
-    const auto rootVibeCADOutputs = filterBucket(
+    const auto rootVibeCADOutputs = co_await filterBucket(
         findBucket(
             entriesByComponentRole,
             RoleContextKey {nullptr, Role::VibeCADOutput}
@@ -6983,7 +7816,7 @@ void DocumentItem::rebuildModelBrowser()
             return !entry.bodyRepresentation;
         }
     );
-    renderCategory(
+    co_await renderCategory(
         this,
         nullptr,
         nullptr,
@@ -6993,8 +7826,8 @@ void DocumentItem::rebuildModelBrowser()
         rootVibeCADOutputs
     );
 
-    const auto rootReferences = componentRoleEntries(nullptr, Role::Reference);
-    renderReferences(
+    const auto rootReferences = co_await componentRoleEntries(nullptr, Role::Reference);
+    co_await renderReferences(
         this,
         nullptr,
         nullptr,
@@ -7002,14 +7835,14 @@ void DocumentItem::rebuildModelBrowser()
         rootReferences
     );
 
-    const auto rootLooseGeometry = filterBucket(
+    const auto rootLooseGeometry = co_await filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Geometry}),
         [](const Entry& entry) {
             return !entry.body && !entry.publishedImplementation
                 && !entry.bodyRepresentation;
         }
     );
-    renderCategory(
+    co_await renderCategory(
         this,
         nullptr,
         nullptr,
@@ -7019,7 +7852,7 @@ void DocumentItem::rebuildModelBrowser()
         rootLooseGeometry
     );
 
-    const auto rootGroups = filterBucket(
+    const auto rootGroups = co_await filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Group}),
         [&](const Entry& entry) {
             return !entry.group && !isMeshesGroup(entry.object);
@@ -7035,11 +7868,12 @@ void DocumentItem::rebuildModelBrowser()
             "folder"
         );
         for (const auto* group : rootGroups) {
-            renderGroup(*group, folder, nullptr);
+            co_await std::suspend_always {};
+            co_await renderGroup(*group, folder, nullptr);
         }
     }
 
-    const auto rootOther = filterBucket(
+    const auto rootOther = co_await filterBucket(
         findBucket(entriesByComponentRole, RoleContextKey {nullptr, Role::Other}),
         [](const Entry& entry) {
             return !entry.body && !entry.group
@@ -7047,7 +7881,7 @@ void DocumentItem::rebuildModelBrowser()
                 && !entry.bodyRepresentation;
         }
     );
-    auto* rootOtherFolder = renderCategory(
+    auto* rootOtherFolder = co_await renderCategory(
         this,
         nullptr,
         nullptr,
@@ -7062,6 +7896,7 @@ void DocumentItem::rebuildModelBrowser()
     // publications and implementation objects are omitted here.
     EntryBucket unrendered;
     for (const auto& entry : entries) {
+        co_await std::suspend_always {};
         if (!entryAvailable(entry) || rendered.contains(entry.object)) {
             continue;
         }
@@ -7084,7 +7919,8 @@ void DocumentItem::rebuildModelBrowser()
                   "folder"
               );
         for (const auto* entry : unrendered) {
-            renderObject(
+            co_await std::suspend_always {};
+            co_await renderObject(
                 *entry,
                 folder,
                 logicalItem(entry->logicalParent, nullptr)
@@ -7092,22 +7928,63 @@ void DocumentItem::rebuildModelBrowser()
         }
     }
 
-    modelBrowserActive = true;
-    modelBrowserDirty = false;
-    updateBrowserFolderStatus();
-
-    if (Application::Instance->isInEdit(document())) {
-        ViewProviderDocumentObject* parentView = nullptr;
-        std::string subname;
-        auto* editingView = document()->getInEdit(&parentView, &subname);
-        auto* objectView = parentView ? parentView
-                                      : freecad_cast<ViewProviderDocumentObject*>(editingView);
-        if (objectView) {
-            tree->editingItem = findBrowserItem(objectView->getObject());
+    if (firstBuild) {
+        for (const auto& entry : ObjectMap) {
+            for (auto* item : entry.second->items) {
+                co_await std::suspend_always {};
+                QScopedValueRollback applying(modelBrowserApplyingState, true);
+                QSignalBlocker signals(getTree());
+                const bool selectionLock = getTree()->blockSelection(true);
+                const auto restoreSelection = qScopeGuard([&] { getTree()->blockSelection(selectionLock); });
+                setLegacyItemVisible(item, false);
+            }
         }
     }
+    auto* cursor = stagedRoot.get();
+    while (cursor != stagedRoot.get() || stagedRoot->childCount()) {
+        co_await std::suspend_always {};
+        if (cursor->childCount()) {
+            cursor = cursor->child(cursor->childCount() - 1);
+        }
+        else {
+            auto* parent = cursor->parent();
+            // Allocate the ownership record before detaching so allocation
+            // failure cannot leak an item from the staged hierarchy.
+            modelBrowserDetachedItems.push_back({nullptr, parent});
+            modelBrowserDetachedItems.back().item.reset(parent->takeChild(parent->childCount() - 1));
+            cursor = parent;
+        }
+    }
+    co_return std::move(stagedRoot);
+}
 
-    tree->blockSelection(selectionLock);
+void DocumentItem::markModelBrowserDirty()
+{
+    if (!modelBrowserBuildExecuting) {
+        modelBrowserBuild.reset();
+    }
+    modelBrowserDetachedItems.clear();
+    modelBrowserRemovalCursor = QPersistentModelIndex();
+    modelBrowserClearing = false;
+    modelBrowserAttaching = false;
+    modelBrowserStagedStates.clear();
+    modelBrowserRootsToReveal.clear();
+    modelBrowserRevealIndex = 0;
+    modelBrowserStatePending = false;
+    browserFolderStatus.reset();
+    browserFolderStatusDirty = true;
+    modelBrowserPreparationPending = false;
+    preparedModelBrowserProjection.reset();
+    modelBrowserDirty = true;
+    ++modelBrowserGeneration;
+    stagedModelBrowserGeneration = 0;
+    stagedModelBrowserRoot.reset();
+}
+
+bool DocumentItem::modelBrowserRefreshPending() const
+{
+    return TreeParams::getOrganizeModelByType()
+        && modelBrowserDirty && !modelBrowserPreparationPending;
 }
 
 void DocumentItem::refreshModelBrowser(bool force)
@@ -7117,16 +7994,18 @@ void DocumentItem::refreshModelBrowser(bool force)
             clearModelBrowser();
         }
         setLegacyTreeVisible(true);
-        modelBrowserDirty = true;
+        markModelBrowserDirty();
         return;
     }
 
-    setLegacyTreeVisible(false);
     if (force) {
-        modelBrowserDirty = true;
+        markModelBrowserDirty();
     }
     if (modelBrowserDirty) {
         rebuildModelBrowser();
+        if (modelBrowserRefreshPending()) {
+            getTree()->_updateStatus();
+        }
     }
     else {
         updateBrowserFolderStatus();
@@ -7149,7 +8028,17 @@ void TreeWidget::refreshModelBrowsers()
 
 void TreeWidget::slotDeleteDocument(const Gui::Document& Doc)
 {
+    // A document close can arrive between cooperative projection slices. Drop
+    // every retained presentation identity before any tree item is destroyed;
+    // remaining live documents will enqueue their own authoritative refresh.
+    resetStatusUpdate();
     NewObjects.erase(Doc.getDocument()->getName());
+    // Restore cancellation can close a document before its queued providers
+    // have acquired Tree rows. Those objects are not in ObjectMap yet, but
+    // their changes must be discarded before the document releases them.
+    for (auto* object : Doc.getDocument()->getObjects()) {
+        ChangedObjects.erase(object);
+    }
     auto it = DocumentMap.find(&Doc);
     if (it != DocumentMap.end()) {
         UpdateDisabler disabler(*this, updateBlocked);
@@ -7172,6 +8061,9 @@ void TreeWidget::slotDeleteDocument(const Gui::Document& Doc)
         delete docItem;
         DocumentMap.erase(it);
     }
+    if (!ChangedObjects.empty() || !NewObjects.empty()) {
+        _updateStatus();
+    }
 }
 
 void TreeWidget::slotDeleteObject(const Gui::ViewProviderDocumentObject& view)
@@ -7182,6 +8074,7 @@ void TreeWidget::slotDeleteObject(const Gui::ViewProviderDocumentObject& view)
 void TreeWidget::_slotDeleteObject(const Gui::ViewProviderDocumentObject& view, DocumentItem* deletingDoc)
 {
     auto obj = view.getObject();
+    ChangedObjects.erase(obj);
     auto itEntry = ObjectTable.find(obj);
     if (itEntry == ObjectTable.end()) {
         return;
@@ -7205,7 +8098,7 @@ void TreeWidget::_slotDeleteObject(const Gui::ViewProviderDocumentObject& view, 
         if (docItem == deletingDoc) {
             continue;
         }
-        docItem->modelBrowserDirty = true;
+        docItem->markModelBrowserDirty();
 
         auto doc = docItem->document()->getDocument();
         auto& items = data->items;
@@ -7677,6 +8570,7 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
     if (!obj || !obj->isAttachedToDocument()) {
         return;
     }
+    const char* propertyName = prop.getName();
 
     // Undo, Cancel, and Redo restore linked properties as an atomic document
     // operation. In particular, PropertyLinkList::Paste can remove a newly
@@ -7689,8 +8583,8 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
         Gui::Document::projectionRefreshBlocked(document)) {
         if (auto documentIt = DocumentMap.find(view.getDocument());
             documentIt != DocumentMap.end()) {
-            documentIt->second->modelBrowserDirty = true;
             documentIt->second->transactionRefreshPending = true;
+            documentIt->second->deferPropertyChange(obj->getID(), propertyName);
         }
         return;
     }
@@ -7700,9 +8594,19 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
         return;
     }
 
-    const char* propertyName = prop.getName();
     const std::string_view changedProperty =
         propertyName ? std::string_view(propertyName) : std::string_view();
+    // Transient simulation placements deliberately suppress object touch state.
+    // They still reach the ViewProvider synchronously, but cannot change the
+    // tree hierarchy or status. Avoid scheduling a whole-tree status pass for
+    // every moving component in every playback frame.
+    const bool transientPlacement =
+        &prop == obj->getPlacementProperty()
+        || changedProperty == "Placement"
+        || changedProperty == "LinkPlacement";
+    if (obj->testStatus(App::ObjectStatus::NoTouch) && transientPlacement) {
+        return;
+    }
     const bool changesBrowserProjection =
         changedProperty == "Group" || changedProperty == "Origin"
         || changedProperty.find("LinkedObject") != std::string_view::npos
@@ -7720,7 +8624,7 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
     std::set<App::DocumentObject*> directGroupMembers;
     for (const auto& data : itEntry->second) {
         if (changesBrowserProjection) {
-            data->docItem->modelBrowserDirty = true;
+            data->docItem->markModelBrowserDirty();
         }
         if (!changesDirectChildGroup) {
             continue;
@@ -7748,15 +8652,9 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
     _updateStatus();
 
     if (&prop == &obj->Visibility) {
-        std::set<DocumentItem*> documents;
-        for (const auto& data : itEntry->second) {
-            if (data && data->docItem) {
-                documents.insert(data->docItem);
-            }
-        }
-        for (auto* document : documents) {
-            document->updateBrowserFolderStatus();
-        }
+        // The scheduled document-status phase refreshes folder aggregates once
+        // after the complete notification burst. Traversing every browser
+        // folder for every object makes bulk visibility O(objects * tree).
         return;
     }
 
@@ -8198,6 +9096,18 @@ void DocumentItem::slotRecomputedObject(const App::DocumentObject& obj)
 void DocumentItem::slotRecomputed(const App::Document&, const std::vector<App::DocumentObject*>& objs)
 {
     auto tree = getTree();
+    auto* appDocument = document()->getDocument();
+    if (Gui::Document::projectionRefreshBlocked(appDocument)) {
+        for (auto* obj : objs) {
+            if (obj) {
+                deferStatusChange(obj->getID());
+            }
+        }
+        if (!objs.empty()) {
+            transactionRefreshPending = true;
+        }
+        return;
+    }
     for (auto obj : objs) {
         if (!obj->isValid()) {
             tree->ChangedObjects[obj].set(TreeWidget::CS_Error);
@@ -8219,21 +9129,68 @@ void DocumentItem::slotDocumentStable(const App::Document& stableDocument)
     }
 
     transactionRefreshPending = false;
-    modelBrowserDirty = true;
-
-    // Re-establish the incremental child cache only from identities that are
-    // live after the complete transaction outcome. This gives the legacy tree
-    // and the VibeCAD type projection the same post-transaction model without
-    // carrying pointers across rollback.
     auto* tree = getTree();
-    for (const auto& [object, data] : ObjectMap) {
-        if (object && data && object->isAttachedToDocument()
-            && object->getDocument() == &stableDocument
-            && tree->ObjectTable.contains(object)) {
+    auto deferred = std::move(deferredProjectionChanges);
+    deferredProjectionChanges.clear();
+    for (const auto& [objectId, change] : deferred) {
+        auto* object = stableDocument.getObjectByID(objectId);
+        if (!object || !object->isAttachedToDocument()
+            || object->getDocument() != &stableDocument) {
+            continue;
+        }
+        bool replayedProperty = false;
+        if (auto* provider = getViewProvider(object)) {
+            for (const auto& propertyName : change.properties) {
+                auto* property = object->getPropertyByName(propertyName.c_str());
+                if (!property) {
+                    continue;
+                }
+                tree->slotChangeObject(*provider, *property);
+                replayedProperty = true;
+            }
+        }
+        if (change.status || !replayedProperty) {
             tree->ChangedObjects.emplace(object, 0);
         }
     }
-    tree->_updateStatus();
+    acquirePresentationUpdate(const_cast<App::Document&>(stableDocument));
+    tree->onUpdateStatus();
+}
+
+void DocumentItem::deferPropertyChange(long objectId, const char* propertyName)
+{
+    auto& change = deferredProjectionChanges[objectId];
+    if (propertyName && *propertyName) {
+        change.properties.emplace(propertyName);
+    }
+    else {
+        change.status = true;
+    }
+}
+
+void DocumentItem::deferStatusChange(long objectId)
+{
+    deferredProjectionChanges[objectId].status = true;
+}
+
+void DocumentItem::acquirePresentationUpdate(App::Document& document)
+{
+    if (presentationUpdateDocument == &document) {
+        return;
+    }
+    releasePresentationUpdate();
+    document.beginPresentationUpdate();
+    presentationUpdateDocument = &document;
+}
+
+void DocumentItem::releasePresentationUpdate()
+{
+    if (!presentationUpdateDocument) {
+        return;
+    }
+    auto* document = presentationUpdateDocument;
+    presentationUpdateDocument = nullptr;
+    document->endPresentationUpdate();
 }
 
 Gui::Document* DocumentItem::document() const

@@ -2,6 +2,7 @@
 
 #include "ConsoleQtBridge.h"
 
+#include <QAbstractEventDispatcher>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QMetaObject>
@@ -91,12 +92,13 @@ public:
             return;
         }
 
-        // Best-effort: avoid blocking from background threads (can deadlock during shutdown).
-        QMetaObject::invokeMethod(
-            app,
-            []() { QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents); },
-            Qt::QueuedConnection
-        );
+        // Queued console delivery already wakes Qt. Explicitly wake the owner
+        // dispatcher as well, but never enter a nested GUI event loop from a
+        // worker-requested refresh: doing so can drain an unbounded amount of
+        // unrelated projection and paint work inside one MetaCall.
+        if (auto* dispatcher = QAbstractEventDispatcher::instance(app->thread())) {
+            dispatcher->wakeUp();
+        }
     }
 };
 

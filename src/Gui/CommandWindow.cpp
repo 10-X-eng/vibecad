@@ -148,7 +148,7 @@ StdCmdCloseAllWindows::StdCmdCloseAllWindows()
 void StdCmdCloseAllWindows::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    getMainWindow()->closeAllDocuments();
+    getMainWindow()->closeAllDocumentsAsync();
 }
 
 bool StdCmdCloseAllWindows::isActive()
