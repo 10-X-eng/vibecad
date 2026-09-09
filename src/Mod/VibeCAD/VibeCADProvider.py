@@ -5974,9 +5974,17 @@ def _anthropic_child_main(
             maximum = capabilities.get(model_id)
             if type(maximum) is int and maximum > 0:
                 return maximum
-            maximum = _anthropic_model_max_tokens(
-                client, model_id, sdk_fallback=fallback
-            )
+            # Deferred metadata runs between generations on this child-owned
+            # client. Restore its SDK retry allowance only for the lookup;
+            # streamed generations retain the outer-loop-only retry policy.
+            stream_retries = getattr(client, "max_retries", client_kwargs["max_retries"])
+            try:
+                client.max_retries = client_kwargs["max_retries"]
+                maximum = _anthropic_model_max_tokens(
+                    client, model_id, sdk_fallback=fallback
+                )
+            finally:
+                client.max_retries = stream_retries
             capabilities[model_id] = maximum
             # Older SDK fallback values are not model-reported capabilities.
             if callable(getattr(getattr(client, "models", None), "retrieve", None)):
