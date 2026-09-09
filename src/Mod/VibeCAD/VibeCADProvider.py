@@ -1888,7 +1888,7 @@ class GeminiProvider(BaseProvider):
         api_key: str | None = None,
         reasoning_effort: str = "high",
         timeout_seconds: float | None = None,
-        max_turns: int | None = 64,
+        max_turns: int | None = None,
         base_url: str | None = None,
         no_progress_limit: int = 3,
     ) -> None:

@@ -502,14 +502,15 @@ def test_gemini_stream_preserves_thought_signatures_and_repairs_tool_arguments(
     assert connection.closed
 
 
-def test_gemini_has_finite_default_turn_limit():
-    assert provider.GeminiProvider().max_turns == 64
+def test_gemini_preserves_autonomous_default_with_explicit_turn_limit():
+    assert provider.GeminiProvider().max_turns is None
+    assert provider.GeminiProvider(max_turns=64).max_turns == 64
     assert provider.GeminiProvider(max_turns=None).max_turns is None
 
 
 @pytest.mark.parametrize("case,expected_calls", [
     ("same", 3), ("failure", 3), ("unknown", 3),
-    ("alternating", 5), ("revision", 6), ("poll", 6), ("disabled", 6),
+    ("alternating", 5), ("revision", 70), ("poll", 70), ("disabled", 6),
 ])
 def test_gemini_stalled_calls_are_bounded(monkeypatch, case, expected_calls):
     requests = []
@@ -543,7 +544,7 @@ def test_gemini_stalled_calls_are_bounded(monkeypatch, case, expected_calls):
 
         def create(self, **kwargs):
             requests.append(kwargs)
-            if len(requests) > 6:
+            if len(requests) > (70 if case in {"revision", "poll"} else 6):
                 return iter([_chunk(content="Done.", finish_reason="stop")])
             name = "missing" if case == "unknown" else (
                 "vibescript_read_operation" if case == "poll" else "state_read"
@@ -561,7 +562,8 @@ def test_gemini_stalled_calls_are_bounded(monkeypatch, case, expected_calls):
     monkeypatch.setattr(provider, "_validate_provider_wire_surface", lambda _: None)
     connection = Connection()
     provider._gemini_child_main(
-        connection, "Inspect.", context, "mock", "fake", None, 1.0, 8, False,
+        connection, "Inspect.", context, "mock", "fake", None, 1.0,
+        provider.GeminiProvider().max_turns, False,
     )
     terminal = connection.messages[-1]
     assert terminal["type"] == "done"
@@ -569,7 +571,7 @@ def test_gemini_stalled_calls_are_bounded(monkeypatch, case, expected_calls):
         assert len(requests) == expected_calls
         assert terminal["raw"]["reason"] == "no_progress"
     else:
-        assert len(requests) == 7
+        assert len(requests) == expected_calls + 1
         assert terminal["final_output"] == "Done."
 
 @pytest.mark.parametrize("change", ["revision", "surface", "workbench", "native"])
