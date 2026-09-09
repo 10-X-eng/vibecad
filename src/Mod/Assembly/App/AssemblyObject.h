@@ -24,6 +24,11 @@
 
 #pragma once
 
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 #include <boost/signals2.hpp>
 
 #include <Mod/Assembly/AssemblyGlobal.h>
@@ -31,6 +36,7 @@
 #include <App/FeaturePython.h>
 #include <App/Part.h>
 #include <App/PropertyLinks.h>
+#include <Base/Placement.h>
 
 #include <OndselSolver/enum.h>
 
@@ -89,11 +95,33 @@ public:
     App::DocumentObjectExecReturn* execute() override;
     short mustExecute() const override;
     void onChanged(const App::Property* prop) override;
+    void onSettingDocument() override;
+    void unsetupObject() override;
     /* Solve the assembly. It will update first the joints, solve, update placements of the parts
     and redraw the joints Args : enableRedo : This store initial positions to enable undo while
     being in an active transaction (joint creation).*/
     int solve(bool enableRedo = false);
     int generateSimulation(App::DocumentObject* sim);
+    /// Snapshot on the document owner, solve detached data on HostRuntime.
+    std::uint64_t startSimulation(App::DocumentObject* sim);
+    std::uint64_t startSimulationPlayback(App::DocumentObject* sim);
+    /// Nonblocking owner-thread adoption; false means the worker is not ready.
+    bool finishSimulation(std::uint64_t request = 0);
+    /// Invalidate pending work without waiting or retaining the live document.
+    void cancelSimulation(std::uint64_t request = 0);
+    /// Prepare a frame on HostRuntime; newer requests supersede older requests.
+    std::uint64_t requestSimulationFrame(size_t index);
+    /// Read one cached pose without scheduling work or changing the document.
+    std::vector<std::pair<std::string, Base::Placement>>
+    getSimulationFrame(size_t index) const;
+    /// Adopt only a ready, still-current frame; never wait on a worker.
+    bool finishSimulationFrame(std::uint64_t request);
+    /// Consume a ready frame without changing document properties.
+    std::optional<std::vector<std::pair<std::string, Base::Placement>>>
+    takeSimulationFrame(std::uint64_t request);
+    void cancelSimulationFrame(std::uint64_t request = 0);
+    /// Scope exact component placement presentation; returns the previous state.
+    bool setSimulationPresentation(bool active);
     int updateForFrame(size_t index);
     size_t numberOfFrames();
     void preDrag(std::vector<App::DocumentObject*> dragParts);
@@ -282,7 +310,31 @@ public:
     fastsignals::signal<void()> signalSolverUpdate;
 
 private:
+    struct SimulationJob;
+    std::unique_ptr<SimulationJob> simulationJob;
+    std::unique_ptr<SimulationJob> simulationPlayback;
+    bool simulationReusePending = false;
+    struct SimulationFrameJob;
+    std::unique_ptr<SimulationFrameJob> simulationFrameJob;
+    std::uint64_t simulationFrameRequest = 0;
+    std::uint64_t simulationRequest = 0;
+    int prepareSimulation(App::DocumentObject* sim);
+    std::uint64_t startSimulationJob(App::DocumentObject* sim, bool allowPlaybackCache);
+    bool applySimulationFrame(const std::vector<Base::Placement>& placements);
     void captureTimelineState() noexcept;
+    void emitSolverUpdate();
+    void requestSolveStatusUpdate();
+    void refreshSolveStatus(bool initializeSolver);
+    void invalidateConnectivityCache() noexcept;
+    void rebuildConnectivityCache();
+    void slotConnectivityPropertyChanged(
+        const App::DocumentObject& object,
+        const App::Property& property
+    );
+    std::unordered_set<App::DocumentObject*> collectConnectedParts(
+        const std::unordered_set<App::DocumentObject*>& roots,
+        const std::vector<App::DocumentObject*>& joints
+    );
 
     std::shared_ptr<MbD::ASMTAssembly> mbdAssembly;
 
@@ -294,6 +346,18 @@ private:
     std::vector<std::pair<App::DocumentObject*, Base::Placement>> previousPositions;
     long lastTimelinePosition {-1};
     std::vector<App::DocumentObject*> lastTimelineOperations;
+
+    std::unordered_set<App::DocumentObject*> connectedPartsCache;
+    std::unordered_set<App::DocumentObject*> groundedPartsCache;
+    bool connectivityCacheValid {false};
+    fastsignals::scoped_connection connectivityNewObjectConnection;
+    fastsignals::scoped_connection connectivityDeletedObjectConnection;
+    fastsignals::scoped_connection connectivityChangedObjectConnection;
+    fastsignals::scoped_connection connectivityTouchedObjectConnection;
+    fastsignals::scoped_connection connectivityRecomputedObjectConnection;
+    fastsignals::scoped_connection connectivityPropertyStatusConnection;
+    fastsignals::scoped_connection solveStatusStableConnection;
+    bool solveStatusUpdatePending {false};
 
     bool bundleFixed;
 

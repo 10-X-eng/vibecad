@@ -49,6 +49,8 @@ public:
      * \param filename
      */
     static void openFile(const QString& filename);
+    /// Interactive variant: native documents restore asynchronously.
+    static void openFileFromGui(const QString& filename);
     /*!
      * \brief verifyAndOpenFile
      * Verifies the existence of the file and opens it.
@@ -56,6 +58,7 @@ public:
      * \param filename
      */
     static void verifyAndOpenFile(const QString& filename);
+    static void verifyAndOpenFileFromGui(const QString& filename);
     /*!
      * \brief importFile
      * Imports the files into the given document.

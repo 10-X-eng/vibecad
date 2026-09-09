@@ -11,6 +11,32 @@ import pytest
 from VibeCADPublicationProgress import PublicationProgress
 
 
+@pytest.mark.parametrize("kind,data", [
+    ("joint", {"connectors": [{"component_output": "new_input"}]}),
+    ("motion", {"joint_output": "new_input"}),
+    ("simulation", {"motion_outputs": ["new_input"]}),
+])
+def test_assembly_rebases_changed_dependencies_once_per_configuration_phase(kind, data):
+    from VibeCADVibeScriptDomainPublication import _rebase_assembly_configuration_dependencies
+
+    first, second, dependency = (SimpleNamespace(Name=name) for name in ("First", "Second", "NewInput"))
+    calls = []
+    timeline = SimpleNamespace(Operations=[first, second, dependency])
+    document = SimpleNamespace(
+        getObject=lambda name: timeline if name == "VibeCADTimeline" else None,
+        reorderTimelineOperationDependentClosuresAfter=lambda objects, target: calls.append((objects, target)),
+    )
+    items = [dict(name=name, type=kind, assembly_data=data) for name in ("first", "second", "new_output")]
+    existing = {"first": first, "second": second}
+    outputs = {"new_input": dependency}
+    _rebase_assembly_configuration_dependencies(document, kind, items, existing, outputs)
+    assert calls == [([first, second], dependency)]
+    calls.clear()
+    timeline.Operations = [dependency, first, second]
+    _rebase_assembly_configuration_dependencies(document, kind, items, existing, outputs)
+    assert calls == []
+
+
 def test_publication_progress_reports_items_and_bounds_ui_yields() -> None:
     events = []
     yields = []
@@ -161,6 +187,60 @@ def test_publication_holds_document_cooperative_mutation_for_its_full_lifetime(
     ]
 
 
+def test_cooperative_publication_waits_for_native_presentation_before_completion(
+    monkeypatch,
+) -> None:
+    import VibeCADVibeScriptDomainRuntime as runtime
+
+    calls = []
+    events = []
+
+    class Document:
+        Name = "Document"
+        Uid = "document-a"
+
+        @staticmethod
+        def waitForPresentationReady():
+            calls.append("presentation-ready")
+
+    class Service:
+        @staticmethod
+        def _active_document():
+            return Document()
+
+    def publication_steps(*_args, **kwargs):
+        assert kwargs["complete_progress"] is False
+        calls.append("publication")
+        yield {"event": "publication_slice"}
+        return {"ok": True}
+
+    monkeypatch.setattr(runtime, "iter_publish_candidate", publication_steps)
+    adapter = runtime.DeclarativeDomainAdapter(
+        SimpleNamespace(domain="assembly", workbench="Assembly")
+    )
+
+    result = adapter.publish_cooperatively(
+        Service(),
+        {"document_name": "Document", "document_uid": "document-a"},
+        {},
+        document_thread_dispatch=lambda operation: operation(),
+        cancellation_check=lambda: False,
+        progress_callback=events.append,
+    )
+
+    assert result == {"ok": True}
+    assert calls == ["publication", "presentation-ready"]
+    assert events[-1] == {
+        "event": "vibescript_domain_publication_progress",
+        "domain": "assembly",
+        "phase": "completed",
+        "completed": 0,
+        "total": 0,
+        "current_output": "",
+        "output_type": "",
+    }
+
+
 def test_publication_releases_cooperative_mutation_when_batch_setup_fails() -> None:
     from VibeCADVibeScriptDomainPublication import publish_candidate
 
@@ -231,7 +311,11 @@ def test_domain_adapter_cooperatively_dispatches_each_publication_step(
 
     assert result == {"ok": True, "outputs": ["Model"]}
     assert len(dispatches) == 3
-    assert [event["completed"] for event in events] == [1, 2]
+    assert [
+        event["completed"]
+        for event in events
+        if event.get("event") == "publication_slice"
+    ] == [1, 2]
 
 
 def test_large_assembly_publication_dispatches_all_307_members(
@@ -335,6 +419,46 @@ def test_large_assembly_publication_dispatches_all_307_members(
     assert publication_events[-1]["phase"] == "completed"
     assert publication_events[-1]["completed"] == 309
     assert all(event["total"] == 309 for event in publication_events)
+
+
+def test_publication_target_cache_checks_new_targets_and_invalidates_on_removal() -> None:
+    from VibeCADVibeScriptDomainPublication import _assert_publication_document_intact
+
+    objects = {}
+    lookups = []
+    epoch = [0]
+    document = SimpleNamespace(
+        Name="AssemblyDocument", Uid="document-a",
+        getObjectRemovalGeneration=lambda: epoch[0],
+        getObject=lambda name: (lookups.append(name), objects.get(name))[1],
+    )
+    service = SimpleNamespace(_active_document=lambda: document)
+    prepared = {"document_name": document.Name, "document_uid": document.Uid}
+    cache = {}
+    targets = []
+    for index in range(50):
+        obj = SimpleNamespace(Name=f"Member{index}")
+        objects[obj.Name] = obj
+        targets.append(obj)
+        _assert_publication_document_intact(service, prepared, document, targets, cache=cache)
+    assert len(lookups) == 50  # Each exact target crosses the native boundary once.
+
+    # Replacing an entry in the caller's target list must still validate it,
+    # even if its length and the document's removal generation are unchanged.
+    forged = SimpleNamespace(Name=targets[-1].Name)
+    with pytest.raises(RuntimeError, match="changed between publication slices"):
+        _assert_publication_document_intact(
+            service, prepared, document, [forged], cache=cache)
+
+    original = targets[0]
+    objects[original.Name] = SimpleNamespace(Name=original.Name)
+    epoch[0] += 1
+    with pytest.raises(RuntimeError, match="changed between publication slices"):
+        _assert_publication_document_intact(service, prepared, document, targets, cache=cache)
+
+    objects[original.Name] = original
+    _assert_publication_document_intact(service, prepared, document, targets, cache=cache)
+    assert len(lookups) == 102
 
 
 def test_publication_slice_validation_rejects_replaced_targets() -> None:

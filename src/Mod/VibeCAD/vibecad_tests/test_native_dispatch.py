@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import Future
 
 import pytest
 
@@ -59,7 +60,10 @@ def _dispatcher(handler, **overrides):
     name = definition.name
     registry = NativeCapabilityRegistry()
     registry.register_definition(definition)
-    registry.register_implementation(NativeCapabilityImplementation(name, handler))
+    implementation_options = {}
+    if 'async_handler' in overrides:
+        implementation_options['async_handler'] = overrides['async_handler']
+    registry.register_implementation(NativeCapabilityImplementation(name, handler, **implementation_options))
     operations = overrides.get(
         "operations",
         tuple(variant.operation for variant in definition.variants),
@@ -109,6 +113,45 @@ def _dispatcher(handler, **overrides):
 
 def _arguments(value: int) -> str:
     return json.dumps({"operation": "read", "value": value})
+
+
+def test_async_dispatch_preserves_contract_and_validates_only_after_completion():
+    completion = Future()
+    calls = []
+    dispatcher, _state, _debug = _dispatcher(
+        lambda call: calls.append('synchronous') or {'value': 1},
+        async_handler=lambda call: calls.append('asynchronous') or completion,
+    )
+    response = dispatcher.call_async('test.execute', _arguments(2), 'async-1',
+                                     document_dispatch=lambda work: work())
+    assert isinstance(response, Future) and not response.done()
+    assert calls == ['asynchronous']
+    pending = dispatcher.call_async('test.execute', _arguments(2), 'async-1',
+                                    document_dispatch=lambda work: work())
+    assert pending['error_code'] == 'NATIVE_CALL_IN_PROGRESS'
+    completion.set_result({'value': 2})
+    assert response.result() == {'ok': True, 'value': 2}
+    assert dispatcher.call('test.execute', _arguments(2), 'async-1') == response.result()
+    assert dispatcher.call('test.execute', _arguments(1), 'sync-1')['value'] == 1
+
+
+def test_async_dispatch_rejects_a_read_side_effect_after_completion():
+    completion = Future()
+    dispatcher, state, _debug = _dispatcher(lambda call: {}, async_handler=lambda call: completion)
+    response = dispatcher.call_async('test.execute', _arguments(2), 'async-1',
+                                     document_dispatch=lambda work: work())
+    state.note_structural_change(_Document.Uid)
+    completion.set_result({'value': 2})
+    assert response.result()['ok'] is False
+
+
+def test_async_dispatch_cancellation_reaches_pending_handler():
+    completion = Future()
+    dispatcher, _state, _debug = _dispatcher(lambda call: {}, async_handler=lambda call: completion)
+    response = dispatcher.call_async('test.execute', _arguments(2), 'async-1',
+                                     document_dispatch=lambda work: work())
+    assert response.cancel()
+    assert completion.cancelled()
 
 
 def _mutation_definition() -> NativeCapabilityDefinition:

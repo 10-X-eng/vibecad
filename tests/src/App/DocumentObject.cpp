@@ -2,6 +2,7 @@
 
 #include "gtest/gtest.h"
 #include <gmock/gmock.h>
+#include <chrono>
 
 #include <src/App/InitApplication.h>
 
@@ -10,11 +11,42 @@
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/GeoFeatureGroupExtension.h>
+#include <App/PropertyLinks.h>
 #include <Base/Interpreter.h>
 
 using namespace App;
 
 // NOLINTBEGIN(readability-magic-numbers,cppcoreguidelines-avoid-magic-numbers)
+
+namespace App
+{
+class CleanupCountingLink: public PropertyLink
+{
+public:
+    size_t cleanupCalls {0};
+    void breakLink(DocumentObject* object, bool clear) override
+    {
+        ++cleanupCalls;
+        PropertyLink::breakLink(object, clear);
+    }
+};
+
+class LinkCleanupTestObject: public DocumentObject
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(App::LinkCleanupTestObject);
+
+public:
+    LinkCleanupTestObject()
+    {
+        ADD_PROPERTY(Link, (nullptr));
+        ADD_PROPERTY(HiddenLink, (nullptr));
+        HiddenLink.setScope(LinkScope::Hidden);
+    }
+    CleanupCountingLink Link;
+    CleanupCountingLink HiddenLink;
+};
+PROPERTY_SOURCE(App::LinkCleanupTestObject, App::DocumentObject)
+}
 
 class DocumentObjectTest: public ::testing::Test
 {
@@ -22,6 +54,7 @@ protected:
     static void SetUpTestSuite()
     {
         tests::initApplication();
+        App::LinkCleanupTestObject::init();
     }
 
     void SetUp() override
@@ -175,6 +208,119 @@ TEST_F(DocumentObjectTest, timelineStructuralChildrenDistinguishContainmentFromD
     EXPECT_TRUE(group->isTimelineStructuralChild(child));
     EXPECT_FALSE(group->isTimelineStructuralChild(dependency));
     EXPECT_FALSE(child->isTimelineStructuralChild(group));
+}
+
+TEST_F(DocumentObjectTest, linkCleanupSkipsObjectsWithoutTheDeletedTarget)
+{
+    auto* anchor = _doc->addObject<App::DocumentObject>("Anchor");
+    std::vector<App::LinkCleanupTestObject*> owners;
+    std::vector<std::string> targets;
+    for (size_t index = 0; index < 50; ++index) {
+        auto* target = _doc->addObject<App::DocumentObject>("Target");
+        targets.emplace_back(target->getNameInDocument());
+        auto* owner = _doc->addObject<App::LinkCleanupTestObject>("Owner");
+        owner->Link.setValue(anchor);
+        owner->HiddenLink.setValue(target);
+        owners.push_back(owner);
+    }
+    for (const auto& target : targets) {
+        _doc->removeObject(target.c_str());
+    }
+    size_t calls = 0;
+    for (const auto* owner : owners) {
+        EXPECT_EQ(owner->Link.getValue(), anchor);
+        EXPECT_EQ(owner->HiddenLink.getValue(), nullptr);
+        calls += owner->Link.cleanupCalls + owner->HiddenLink.cleanupCalls;
+    }
+    // Each deletion affects one owner, not all 50 owners' properties. This is
+    // an operation-count assertion, independent of host speed or a time budget.
+    EXPECT_LE(calls, owners.size() * 2);
+}
+
+TEST_F(DocumentObjectTest, linkCleanupTracksHiddenEditsUndoAndDynamicProperties)
+{
+    _doc->setUndoMode(1);
+    auto* first = _doc->addObject<App::DocumentObject>("First");
+    auto* second = _doc->addObject<App::DocumentObject>("Second");
+    auto* unrelated = _doc->addObject<App::DocumentObject>("Unrelated");
+    auto* owner = _doc->addObject<App::LinkCleanupTestObject>("Owner");
+    owner->HiddenLink.setValue(first);
+    // Populate cleanup queries without modifying the links.
+    PropertyLinkBase::breakLinks(unrelated, _doc->getObjects(), false);
+    _doc->openTransaction("Change hidden input");
+    owner->HiddenLink.setValue(second);
+    PropertyLinkBase::breakLinks(unrelated, _doc->getObjects(), false);
+    _doc->abortTransaction();
+    ASSERT_EQ(owner->HiddenLink.getValue(), first);
+    _doc->removeObject(first->getNameInDocument());
+    EXPECT_EQ(owner->HiddenLink.getValue(), nullptr);
+
+    auto* dynamic = static_cast<PropertyLink*>(owner->addDynamicProperty(
+        "App::PropertyLinkHidden", "LateLink"));
+    dynamic->setValue(second);
+    _doc->removeObject(second->getNameInDocument());
+    EXPECT_EQ(dynamic->getValue(), nullptr);
+    dynamic->setValue(unrelated);
+    auto* probe = _doc->addObject<App::DocumentObject>("Probe");
+    PropertyLinkBase::breakLinks(probe, _doc->getObjects(), false);
+    ASSERT_TRUE(owner->removeDynamicProperty("LateLink"));
+    owner->Link.cleanupCalls = owner->HiddenLink.cleanupCalls = 0;
+    _doc->removeObject(unrelated->getNameInDocument());
+    EXPECT_EQ(owner->Link.cleanupCalls + owner->HiddenLink.cleanupCalls, 0);
+
+    auto* last = _doc->addObject<App::DocumentObject>("Last");
+    owner->Link.setValue(last);
+    owner->HiddenLink.setValue(last);
+    // Removing an owner must clear its outgoing references even without a
+    // self-link. Exercise the same clear=true contract as document deletion.
+    PropertyLinkBase::breakLinks(owner, _doc->getObjects(), true);
+    EXPECT_EQ(owner->Link.getValue(), nullptr);
+    EXPECT_EQ(owner->HiddenLink.getValue(), nullptr);
+}
+
+TEST_F(DocumentObjectTest, membershipLookupDoesNotScanCreationOrder)
+{
+    auto* first = _doc->addObject<App::DocumentObject>("First");
+    App::DocumentObject* last = first;
+    for (size_t index = 1; index < 5000; ++index) {
+        last = _doc->addObject<App::DocumentObject>("Member");
+    }
+    const auto measure = [&](const App::DocumentObject* object) {
+        std::array<std::chrono::nanoseconds::rep, 3> samples;
+        for (auto& sample : samples) {
+            const auto start = std::chrono::steady_clock::now();
+            size_t found = 0;
+            for (size_t index = 0; index < 20000; ++index) {
+                found += _doc->containsObject(object);
+            }
+            sample = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start).count();
+            EXPECT_EQ(found, 20000);
+        }
+        std::ranges::sort(samples);
+        return samples[1];
+    };
+    const auto firstCost = measure(first);
+    const auto lastCost = measure(last);
+    RecordProperty("first_lookup_ns", std::to_string(firstCost));
+    RecordProperty("last_lookup_ns", std::to_string(lastCost));
+    // Relative scaling, not an execution deadline: the last object must not
+    // require traversing all 5,000 predecessors for every identity check.
+    EXPECT_LE(lastCost, firstCost * 16);
+    EXPECT_FALSE(_doc->containsObject(nullptr));
+    EXPECT_FALSE(_doc->containsObject(reinterpret_cast<App::DocumentObject*>(1)));
+
+    _doc->setUndoMode(1);
+    _doc->openTransaction("Remove indexed member");
+    _doc->removeObject("First");
+    _doc->commitTransaction();
+    EXPECT_FALSE(_doc->containsObject(first));
+    _doc->undo();
+    EXPECT_TRUE(_doc->containsObject(_doc->getObject("First")));
+    _doc->redo();
+    EXPECT_FALSE(_doc->containsObject(first));
+    _doc->clearDocument();
+    EXPECT_FALSE(_doc->containsObject(last));
 }
 
 // NOLINTEND(readability-magic-numbers, cppcoreguidelines-avoid-magic-numbers)

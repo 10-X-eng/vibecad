@@ -676,6 +676,7 @@ def test_anthropic_thinking_only_max_tokens_compacts_and_continues(
     assert len(compaction_calls) == 1
     assert compaction_calls[0]["model"] == "memory-model"
     assert compaction_calls[0]["max_tokens"] == 128_000
+    assert compaction_calls[0]["client_kwargs"]["max_retries"] == 2
     assert model_requests == ["interactive-model", "memory-model"]
     assert messages.requests[0]["max_tokens"] == 128_000
     recovery_request = messages.requests[1]
@@ -2806,3 +2807,51 @@ def test_anthropic_non_capability_values_are_not_reported_for_cache(monkeypatch,
     assert not any(m.get("event", {}).get("event") == "anthropic_model_capability"
                    for m in conn.messages if m.get("type") == "progress")
     assert conn.messages[-1]["type"] == ("done" if kind == "older_sdk" else "error")
+
+
+@pytest.mark.parametrize("stop", ["cancel", "deadline"])
+def test_retry_wait_is_terminated_by_parent_stop(monkeypatch, stop) -> None:
+    now = [0.0]
+
+    class RetryWaitProcess(_ExitedProcess):
+        terminated = False
+
+        def is_alive(self):
+            return not self.terminated
+
+        def terminate(self):
+            self.terminated = True
+
+    class RetryWaitPipe(_DelayedPipeMessage):
+        notified = False
+
+        def poll(self, timeout):
+            assert not self.notified, "Parent continued waiting after stop"
+            return True
+
+        def recv(self):
+            self.notified = True
+            now[0] = 2.0
+            return {
+                "type": "progress",
+                "event": {"event": "anthropic_stream_retrying", "attempt": 1},
+            }
+
+    context = _FakeMultiprocessingContext()
+    context.process = RetryWaitProcess()
+    context.parent_conn = RetryWaitPipe()
+    monkeypatch.setattr(
+        provider, "_provider_multiprocessing_context", lambda **kwargs: context
+    )
+    monkeypatch.setattr(provider.time, "monotonic", lambda: now[0])
+    error = provider.ProviderUnavailable if stop == "cancel" else TimeoutError
+    with pytest.raises(error):
+        provider._run_provider_subprocess(
+            prompt="Inspect", context={}, tool_runner=None, model="test-model",
+            api_key=None, reasoning_effort=None,
+            timeout_seconds=1.0 if stop == "deadline" else None,
+            cancellation_check=lambda: stop == "cancel" and context.parent_conn.notified,
+            child_main=_unused_child, clear_inherited_modules=False,
+        )
+    assert context.process.terminated
+    assert context.parent_conn.closed

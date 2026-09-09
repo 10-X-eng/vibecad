@@ -38,9 +38,12 @@
 
 #include <App/GeoFeature.h>
 #include <App/PropertyGeo.h>
+#include <App/HostRuntime.h>
+#include <Base/CancellationScope.h>
 
 #include "Application.h"
 #include "Document.h"
+#include "FrameBudget.h"
 #include "Inventor/SoFCBoundingBox.h"
 #include "SoFCSelection.h"
 #include "View3DInventorViewer.h"
@@ -55,8 +58,18 @@ PROPERTY_SOURCE(Gui::ViewProviderGeometryObject, Gui::ViewProviderDragger)
 
 const App::PropertyIntegerConstraint::Constraints intPercent = {0, 100, 5};
 
+struct ViewProviderGeometryObject::BoundingBoxRequest
+{
+    ViewProviderGeometryObject* owner;
+    std::uint64_t generation {0};
+    bool queued {false};
+    bool active {false};
+    std::stop_source cancellation;
+};
+
 ViewProviderGeometryObject::ViewProviderGeometryObject()
 {
+    boundingBoxRequest = std::make_shared<BoundingBoxRequest>(this);
     App::Material mat = App::Material::getDefaultAppearance();
 
     long initialTransparency = Base::toPercent(mat.transparency);
@@ -109,6 +122,11 @@ ViewProviderGeometryObject::ViewProviderGeometryObject()
 
 ViewProviderGeometryObject::~ViewProviderGeometryObject()
 {
+    // Workers retain only a property snapshot. Late completions must not use
+    // a destroyed provider, even if another provider reuses its address.
+    boundingBoxRequest->owner = nullptr;
+    boundingBoxRequest->cancellation.request_stop();
+    boundingBoxRequest.reset();
     pcShapeMaterial->unref();
     pcBoundingBox->unref();
     pcBoundColor->unref();
@@ -164,25 +182,136 @@ void ViewProviderGeometryObject::onChanged(const App::Property* prop)
 
 void ViewProviderGeometryObject::attach(App::DocumentObject* pcObj)
 {
+    ++boundingBoxRequest->generation;
+    boundingBoxDirty = true;
+    boundingBoxPropertyName.clear();
     ViewProviderDragger::attach(pcObj);
+}
+
+void ViewProviderGeometryObject::updateBoundingBox(const App::PropertyComplexGeoData* geometry)
+{
+    // These bounds serve only the optional bounding-box overlay. In particular,
+    // shaded display and selection do not consume them. Do not traverse a BREP
+    // on every property notification for an overlay that is not being shown.
+    boundingBoxDirty = true;
+    ++boundingBoxRequest->generation;
+    boundingBoxRequest->cancellation.request_stop();
+    if (geometry) {
+        const char* name = geometry->getName();
+        boundingBoxPropertyName = name ? name : "";
+    }
+    if (!geometry || !pcBoundSwitch || pcBoundSwitch->whichChild.getValue() < 0) {
+        return;
+    }
+    scheduleBoundingBox();
+}
+
+void ViewProviderGeometryObject::scheduleBoundingBox()
+{
+    auto& request = *boundingBoxRequest;
+    if (request.queued || request.active || !boundingBoxDirty
+        || !pcBoundSwitch || pcBoundSwitch->whichChild.getValue() < 0) {
+        return;
+    }
+    request.queued = true;
+    if (!dispatchToGuiFrame([weak = std::weak_ptr(boundingBoxRequest)] {
+            if (auto request = weak.lock(); request && request->owner) {
+                request->queued = false;
+                request->owner->prepareBoundingBox();
+            }
+        })) {
+        request.queued = false;
+    }
+}
+
+void ViewProviderGeometryObject::prepareBoundingBox()
+{
+    if (!boundingBoxDirty || !pcBoundSwitch || pcBoundSwitch->whichChild.getValue() < 0) {
+        return;
+    }
+    const App::PropertyComplexGeoData* geometry = nullptr;
+    if (auto object = getObject(); object && !boundingBoxPropertyName.empty()) {
+        geometry = dynamic_cast<const App::PropertyComplexGeoData*>(
+            object->getPropertyByName(boundingBoxPropertyName.c_str()));
+    }
+    else if (auto object = getObject<App::GeoFeature>()) {
+        geometry = object->getPropertyOfGeometry();
+    }
+    if (!geometry) { return; }
+
+    const auto generation = boundingBoxRequest->generation;
+    const auto weak = std::weak_ptr(boundingBoxRequest);
+    try {
+        // Property copies preserve the geometry's transform and detach the
+        // worker lifetime from document/property deletion. Never give a worker
+        // a live document property or a Coin node.
+        const bool trace = qEnvironmentVariableIsSet("VIBECAD_RESTORE_DETAIL_TRACE");
+        QElapsedTimer capture;
+        if (trace) { capture.start(); }
+        std::unique_ptr<App::Property> snapshot(geometry->Copy());
+        if (trace) {
+            Base::Console().message("VIBECAD_PROJECTION bounds_capture elapsed_us=%lld\n",
+                                    static_cast<long long>(capture.nsecsElapsed() / 1000));
+        }
+        boundingBoxRequest->cancellation = std::stop_source {};
+        const auto cancelled = boundingBoxRequest->cancellation.get_token();
+        boundingBoxRequest->active = true;
+        App::GetApplication().hostRuntime().submitWithCompletion(
+            App::HostRuntime::Lane::Compute,
+            [snapshot = std::move(snapshot), cancelled](std::stop_token stop) {
+                Base::CancellationScope cancellation(stop);
+                Base::CancellationScope replacement(cancelled);
+                Base::CancellationScope::check();
+                auto box = dynamic_cast<const App::PropertyComplexGeoData&>(*snapshot).getBoundingBox();
+                Base::CancellationScope::check();
+                return box;
+            },
+            [weak, generation](std::future<Base::BoundBox3d> result) {
+                Base::BoundBox3d box;
+                std::exception_ptr failure;
+                try { box = result.get(); }
+                catch (...) { failure = std::current_exception(); }
+                dispatchToGuiFrame([weak, generation, box, failure] {
+                    auto request = weak.lock();
+                    if (!request || !request->owner) { return; }
+                    auto& owner = *request->owner;
+                    request->active = false;
+                    if (request->generation != generation) {
+                        owner.scheduleBoundingBox();
+                        return;
+                    }
+                    if (failure) {
+                        try { std::rethrow_exception(failure); }
+                        catch (const Base::Exception& error) {
+                            Base::Console().error("Bounding-box preparation failed: %s\n", error.what());
+                        }
+                        catch (const std::exception& error) {
+                            Base::Console().error("Bounding-box preparation failed: %s\n", error.what());
+                        }
+                        catch (...) { Base::Console().error("Bounding-box preparation failed\n"); }
+                        return;
+                    }
+                    owner.pcBoundingBox->minBounds.setValue(box.MinX, box.MinY, box.MinZ);
+                    owner.pcBoundingBox->maxBounds.setValue(box.MaxX, box.MaxY, box.MaxZ);
+                    owner.boundingBoxDirty = false;
+                });
+            });
+    }
+    catch (const std::exception& error) {
+        boundingBoxRequest->active = false;
+        Base::Console().error("Cannot prepare bounding box: %s\n", error.what());
+    }
 }
 
 void ViewProviderGeometryObject::updateData(const App::Property* prop)
 {
     if (prop->isDerivedFrom<App::PropertyComplexGeoData>()) {
-        Base::BoundBox3d box = static_cast<const App::PropertyComplexGeoData*>(prop)->getBoundingBox();
-        pcBoundingBox->minBounds.setValue(box.MinX, box.MinY, box.MinZ);
-        pcBoundingBox->maxBounds.setValue(box.MaxX, box.MaxY, box.MaxZ);
+        updateBoundingBox(static_cast<const App::PropertyComplexGeoData*>(prop));
     }
     else if (prop->isDerivedFrom<App::PropertyPlacement>()) {
         auto geometry = getObject<App::GeoFeature>();
         if (geometry && prop == &geometry->Placement) {
-            const App::PropertyComplexGeoData* data = geometry->getPropertyOfGeometry();
-            if (data) {
-                Base::BoundBox3d box = data->getBoundingBox();
-                pcBoundingBox->minBounds.setValue(box.MinX, box.MinY, box.MinZ);
-                pcBoundingBox->maxBounds.setValue(box.MaxX, box.MaxY, box.MaxZ);
-            }
+            updateBoundingBox(geometry->getPropertyOfGeometry());
         }
     }
     else if (std::string(prop->getName()) == "ShapeMaterial") {
@@ -326,6 +455,9 @@ void ViewProviderGeometryObject::showBoundingBox(bool show)
     if (pcBoundSwitch) {
         // Respect object visibility: never show bounding box on a hidden object
         pcBoundSwitch->whichChild = (show && isShow()) ? 0 : -1;
+        // Showing the same overlay does not invalidate an in-flight result.
+        // Resolve its property identity only when the queued capture runs.
+        scheduleBoundingBox();
     }
 }
 

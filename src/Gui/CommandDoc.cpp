@@ -153,13 +153,7 @@ void StdCmdOpen::activated(int iMsg)
             continue;
         }
 
-        getGuiApplication()->setStatus(Gui::Application::UserInitiatedOpenDocument, true);
-        getGuiApplication()->open(file.toUtf8(), "FreeCAD");
-        getGuiApplication()->setStatus(Gui::Application::UserInitiatedOpenDocument, false);
-
-        App::Document* doc = App::GetApplication().getActiveDocument();
-        getGuiApplication()->checkPartialRestore(doc);
-        getGuiApplication()->checkRestoreError(doc);
+        getGuiApplication()->openFileFromGui(file.toUtf8(), "FreeCAD");
     }
 
     fileList.erase(
@@ -189,17 +183,7 @@ void StdCmdOpen::activated(int iMsg)
     else {
         for (SelectModule::Dict::iterator it = dict.begin(); it != dict.end(); ++it) {
 
-            // Set flag indicating that this load/restore has been initiated by the user (not by a macro)
-            getGuiApplication()->setStatus(Gui::Application::UserInitiatedOpenDocument, true);
-
-            getGuiApplication()->open(it.key().toUtf8(), it.value().toLatin1());
-
-            getGuiApplication()->setStatus(Gui::Application::UserInitiatedOpenDocument, false);
-
-            App::Document* doc = App::GetApplication().getActiveDocument();
-
-            getGuiApplication()->checkPartialRestore(doc);
-            getGuiApplication()->checkRestoreError(doc);
+            getGuiApplication()->openFileFromGui(it.key().toUtf8(), it.value().toLatin1());
         }
     }
 }
@@ -899,7 +883,7 @@ StdCmdSaveAll::StdCmdSaveAll()
 void StdCmdSaveAll::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    Gui::Document::saveAll();
+    Gui::Document::saveAllAsync();
 }
 
 bool StdCmdSaveAll::isActive()
@@ -2616,21 +2600,6 @@ void handleDocumentRecomputeResult(const std::string& documentName, App::Recompu
     App::GetApplication().queueRecomputeRequest(newRequest);
 }
 
-void refreshDocumentSynchronously(App::Document& document)
-{
-    try {
-        document.recompute({}, true, nullptr, App::Document::DepNoCycle);
-    }
-    catch (Base::BadGraphError&) {
-        if (shouldProceedAfterDependencyCycle()) {
-            document.recompute({}, true);
-        }
-    }
-    catch (Base::Exception& exception) {
-        exception.reportException();
-    }
-}
-
 }  // namespace
 
 void StdCmdRefresh::activated([[maybe_unused]] int iMsg)
@@ -2645,12 +2614,6 @@ void StdCmdRefresh::activated([[maybe_unused]] int iMsg)
     App::RecomputeRequest request
         = App::RecomputeRequest::fromDocument(*doc, true, App::Document::DepNoCycle);
 
-    if (!App::GetApplication().isAsyncRecomputeEnabled()
-        || !App::GetApplication().canRecomputeRequestOnWorker(request)) {
-        refreshDocumentSynchronously(*doc);
-        return;
-    }
-
     request.callback = [](App::RecomputeRequest& request, App::RecomputeResult& result) {
         // Handle the result in the UI thread.
         QMetaObject::invokeMethod(
@@ -2662,6 +2625,8 @@ void StdCmdRefresh::activated([[maybe_unused]] int iMsg)
         );
     };
 
+    // The worker must never race the GUI command's transaction teardown.
+    trans.close();
     App::GetApplication().queueRecomputeRequest(request);
 }
 

@@ -61,10 +61,26 @@ void ModuleIO::openFile(const QString& filename)
     }
 }
 
+void ModuleIO::openFileFromGui(const QString& filename)
+{
+    const auto handlers = SelectModule::importHandler(filename);
+    if (!handlers.isEmpty()) {
+        const auto selected = handlers.cbegin();
+        Application::Instance->openFileFromGui(selected.key().toUtf8(), selected.value().toLatin1());
+    }
+}
+
 void ModuleIO::verifyAndOpenFile(const QString& filename)
 {
     if (verifyFile(filename)) {
         openFile(filename);
+    }
+}
+
+void ModuleIO::verifyAndOpenFileFromGui(const QString& filename)
+{
+    if (verifyFile(filename)) {
+        openFileFromGui(filename);
     }
 }
 

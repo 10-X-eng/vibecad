@@ -793,12 +793,17 @@ class NativeCapabilityImplementation:
         repr=False,
         compare=False,
     )
+    # Optional host-only asynchronous entry point. Provider schemas and the
+    # existing synchronous handler contract are unchanged.
+    async_handler: Callable[[Any], Any] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not _CAPABILITY_NAME.fullmatch(self.name) or not callable(self.handler):
             raise NativeCapabilityRegistryError(
                 "A Native implementation needs a valid name and callable handler."
             )
+        if self.async_handler is not None and not callable(self.async_handler):
+            raise NativeCapabilityRegistryError("A Native asynchronous handler must be callable.")
 
 
 class NativeCapabilityRegistry:

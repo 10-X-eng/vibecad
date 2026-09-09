@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from concurrent.futures import Future
 
 import pytest
 
@@ -55,7 +56,86 @@ def _context(
         active_document=lambda: document,
         active_surface_id=lambda: surface,
         edit_or_task_active=lambda: task_active,
+        document_thread_dispatch=lambda operation: operation(),
     )
+
+
+def test_async_runtime_preserves_pending_observation_until_completion(monkeypatch):
+    context = _context()
+    pending = Future()
+    monkeypatch.setattr(runtime_module, 'open_native_assembly_playback_async',
+                        lambda *args: pending, raising=False)
+    observed = []
+    monkeypatch.setattr(context.state, 'cancel_mutation', lambda ticket: observed.append(ticket))
+    ticket = context.state.begin_call(context.document_uid, 'assembly.playback')
+    runtime = NativeAssemblyPlaybackRuntime(context)
+    result = runtime.control_async(
+        {'operation': 'show', 'simulation': {'object_name': 'Simulation'}}, ticket=ticket
+    )
+    assert result is pending and observed == []
+    pending.set_result({'operation': 'show'})
+    assert observed == [ticket]
+
+
+def test_pending_playback_dispatch_failure_does_not_leave_a_waiter_running():
+    pending = Future()
+    def disconnected(operation):
+        raise RuntimeError('document owner closed')
+    context = SimpleNamespace(document_thread_dispatch=disconnected)
+    result = playback_module._playback_completion(context, pending, lambda value: value)
+    pending.set_result({'frame': 3})
+    with pytest.raises(RuntimeError, match='document owner closed'):
+        result.result(timeout=0)
+
+
+def test_cancel_after_player_ready_closes_only_the_unaccepted_launch():
+    callbacks = []
+    pending = Future()
+    result = playback_module._playback_completion(
+        SimpleNamespace(document_thread_dispatch=callbacks.append), pending,
+        lambda value: pytest.fail('Cancelled launch must not be registered'),
+        cancel_completed=lambda: callbacks.append('closed owned player'),
+    )
+    pending.set_result(object())
+    result.cancel()
+    assert len(callbacks) == 2
+    callbacks[0]()
+    callbacks[1]()
+    assert callbacks[-1] == 'closed owned player' and result.cancelled()
+
+
+def test_native_launch_accepts_fresh_wrappers_for_the_same_task(monkeypatch):
+    context = _context()
+    assembly, simulation = SimpleNamespace(numberOfFrames=lambda: 22), object()
+    form = SimpleNamespace(frameSlider=SimpleNamespace(value=lambda: 3),
+                           destroyed=SimpleNamespace(connect=lambda callback: None))
+    panel = SimpleNamespace(form=form, playback_only=True, assembly=assembly,
+                            simFeaturePy=simulation, document_was_modified=False,
+                            _ownsLiveTaskContext=lambda: True)
+    state = SimpleNamespace(solver_state=None, components=(), grounded_joints=(),
+                            regular_joints=(), simulation_records=())
+    calls = []
+    monkeypatch.setattr(playback_module, '_validate_open', lambda *args: (state, assembly, simulation, 3, 2.2))
+    monkeypatch.setattr(playback_module, '_document_graph', lambda doc: ())
+    monkeypatch.setattr(playback_module, '_active_camera', lambda doc: '')
+    monkeypatch.setattr(playback_module, '_gui_modified', lambda doc: False)
+    monkeypatch.setattr(playback_module, '_transaction_open', lambda doc: False)
+    monkeypatch.setattr(playback_module, 'read_current_selection', lambda doc: ())
+    monkeypatch.setattr(playback_module, 'capture_assembly_simulation_state', lambda obj: state)
+    monkeypatch.setattr(playback_module, 'read_active_assembly', lambda doc: assembly)
+    monkeypatch.setattr(playback_module, 'same_assembly', lambda a, b: a is b)
+    monkeypatch.setattr(playback_module, '_status', lambda session, operation: {'ok': True})
+    monkeypatch.setattr(playback_module, '_active_task_dialog', lambda: SimpleNamespace(
+        getDialogContent=lambda: [form], reject=lambda: calls.append('reject')))
+    pending = Future()
+    result = playback_module.open_native_assembly_playback_async(
+        context, SimpleNamespace(mode='hold'), opener=lambda *args: pending)
+    try:
+        pending.set_result(panel)
+        assert result.result() == {'ok': True}
+        assert calls == []
+    finally:
+        playback_module._SESSIONS.pop(context.document_uid, None)
 
 
 def test_schema_exactly_maps_the_complete_player_lifecycle() -> None:

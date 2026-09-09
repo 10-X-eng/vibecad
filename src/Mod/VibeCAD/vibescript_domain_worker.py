@@ -25,7 +25,6 @@ REQUEST_ENV = "VIBECAD_VIBESCRIPT_DOMAIN_REQUEST"
 RESULT_ENV = "VIBECAD_VIBESCRIPT_DOMAIN_RESULT"
 SCHEMA = "vibecad-vibescript-domain-worker-v2"
 MAX_STDOUT_CHARS = 16_000
-MAX_DEFINITION_BYTES = 1_000_000
 MAX_PART_OUTPUT_SUBELEMENT_DETAILS = 256
 PART_OUTPUT_SUBELEMENT_DETAIL_BUDGET = 2_048
 
@@ -236,7 +235,9 @@ def _execute_source(
             )
         if source_active and event in {"line", "call"}:
             operations += 1
-            if operations > max_operations:
+            # Zero disables the count ceiling; explicit positive limits remain
+            # supported for callers that deliberately request bounded execution.
+            if max_operations > 0 and operations > max_operations:
                 raise RuntimeError(
                     f"VibeScript exceeded its {max_operations} operation budget."
                 )
@@ -465,17 +466,13 @@ def _payload(value: Any, *, serialized: bool = False) -> dict[str, Any]:
         payload = dict(value)
     else:
         raise TypeError("Every result value must come from the active domain api.")
-    encoded = json.dumps(
+    json.dumps(
         payload,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
-    ).encode("utf-8")
-    if len(encoded) > MAX_DEFINITION_BYTES:
-        raise ValueError(
-            f"One VibeScript output definition exceeds {MAX_DEFINITION_BYTES} bytes."
-        )
+    )
     return payload
 
 
@@ -1092,7 +1089,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             inputs=inputs,
             api=api,
             expected_output_names=expected_names,
-            max_operations=int(request.get("max_operations") or 200_000),
+            max_operations=int(request.get("max_operations") or 0),
             max_seconds=float(request.get("max_seconds") or 300.0),
         )
         (root / "source-stdout.txt").write_text(

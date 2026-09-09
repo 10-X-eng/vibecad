@@ -96,8 +96,6 @@ _POINTS_BY_GEOMETRY = {
 }
 _EXTERNAL_ENTITIES = frozenset({"x_axis", "y_axis", "origin"})
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
-_MAX_GEOMETRY = 4096
-_MAX_CONSTRAINTS = 16384
 
 
 def _error(operation: str, parameter: str, reason: str, value: Any = None) -> ValueError:
@@ -1353,17 +1351,17 @@ class SketcherDomainAPI:
         invariants; the worker rejects a candidate that does not meet them.
         """
 
-        if not isinstance(geometry, (list, tuple)) or not 1 <= len(geometry) <= _MAX_GEOMETRY:
+        if not isinstance(geometry, (list, tuple)) or not geometry:
             raise _error(
                 "sketch",
                 "geometry",
-                f"must contain 1-{_MAX_GEOMETRY} geometry values",
+                "must contain at least one geometry value",
             )
-        if not isinstance(constraints, (list, tuple)) or len(constraints) > _MAX_CONSTRAINTS:
+        if not isinstance(constraints, (list, tuple)):
             raise _error(
                 "sketch",
                 "constraints",
-                f"must contain at most {_MAX_CONSTRAINTS} constraint values",
+                "must be a sequence of constraint values",
             )
         clean_geometry = [
             _geometry("sketch", f"geometry[{index}]", item)

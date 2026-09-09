@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import Any, Mapping
+from concurrent.futures import Future
 
 from VibeCADNativeArguments import strict_variant_arguments
 from VibeCADNativeAssemblyPlayback import (
@@ -12,7 +13,9 @@ from VibeCADNativeAssemblyPlayback import (
     AssemblyPlaybackOpenSpec,
     NativeAssemblyPlaybackError,
     control_native_assembly_playback,
+    control_native_assembly_playback_async,
     open_native_assembly_playback,
+    open_native_assembly_playback_async,
 )
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeState import NativeCallTicket
@@ -44,6 +47,13 @@ class NativeAssemblyPlaybackRuntime:
         *,
         ticket: NativeCallTicket,
     ) -> dict[str, Any]:
+        return self._control(arguments, ticket=ticket, asynchronous=False)
+
+    def control_async(self, arguments: Mapping[str, Any], *, ticket: NativeCallTicket):
+        """Return a completion handle for long-running presentation operations."""
+        return self._control(arguments, ticket=ticket, asynchronous=True)
+
+    def _control(self, arguments, *, ticket, asynchronous):
         normalized = dict(arguments)
         if normalized.get("operation") == "show":
             normalized.setdefault("time_seconds", None)
@@ -69,9 +79,14 @@ class NativeAssemblyPlaybackRuntime:
         if authorization.duplicate:
             return dict(authorization.prior_verified_result or {})
         self._context.state.begin_mutation_observation(ticket)
+        deferred = False
         try:
             if operation == "show":
-                result = open_native_assembly_playback(
+                open_player = (
+                    open_native_assembly_playback_async if asynchronous
+                    else open_native_assembly_playback
+                )
+                result = open_player(
                     self._context,
                     AssemblyPlaybackOpenSpec(
                         simulation_ref=_object_ref(
@@ -84,7 +99,11 @@ class NativeAssemblyPlaybackRuntime:
                     ),
                 )
             else:
-                result = control_native_assembly_playback(
+                control_player = (
+                    control_native_assembly_playback_async if asynchronous
+                    else control_native_assembly_playback
+                )
+                result = control_player(
                     self._context,
                     operation,
                     AssemblyPlaybackControlSpec(
@@ -97,6 +116,14 @@ class NativeAssemblyPlaybackRuntime:
                         ),
                     ),
                 )
+            if isinstance(result, Future):
+                result.add_done_callback(
+                    lambda _done: self._context.document_thread_dispatch(
+                        lambda: self._context.state.cancel_mutation(ticket)
+                    )
+                )
+                deferred = True
             return result
         finally:
-            self._context.state.cancel_mutation(ticket)
+            if not deferred:
+                self._context.state.cancel_mutation(ticket)

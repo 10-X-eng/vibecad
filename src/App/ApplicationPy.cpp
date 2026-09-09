@@ -26,6 +26,7 @@
 #include <FCConfig.h>
 
 #include <array>
+#include <chrono>
 
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -41,6 +42,7 @@
 #include "DocumentObserverPython.h"
 #include "DocumentObjectPy.h"
 #include "DocumentTimeline.h"
+#include "HostRuntime.h"
 #include "RecoverySnapshot.h"
 
 
@@ -287,6 +289,22 @@ PyMethodDef ApplicationPy::Methods[] = {
      "There is an active sequencer during document restore and recomputation. User may\n"
      "abort the operation by pressing the ESC key. Once detected, this function will\n"
      "trigger a Base.FreeCADAbort exception."},
+    {"configureHostIsolationRuntime",
+     (PyCFunction)ApplicationPy::sConfigureHostIsolationRuntime,
+     METH_VARARGS,
+     "configureHostIsolationRuntime(executable, module_root, workers=0) -> dict\n\n"
+     "Start the application-owned persistent isolation worker processes."},
+    {"executeHostIsolationRequest",
+     (PyCFunction)ApplicationPy::sExecuteHostIsolationRequest,
+     METH_VARARGS,
+     "executeHostIsolationRequest(request, cancellation_check=None, "
+     "memory_limit_bytes=0, cpu_slots=1) -> dict\n\n"
+     "Execute one protocol-safe request on the persistent isolation pool."},
+    {"hostRuntimeStatus",
+     (PyCFunction)ApplicationPy::sHostRuntimeStatus,
+     METH_VARARGS,
+     "hostRuntimeStatus() -> dict\n\n"
+     "Return authoritative worker counts for the application runtime."},
     {nullptr, nullptr, 0, nullptr} /* Sentinel */
 };
 // NOLINTEND
@@ -1367,5 +1385,186 @@ PyObject* ApplicationPy::sCheckAbort(PyObject* /*self*/, PyObject* args)
         Py_Return;
     }
     PY_CATCH
+}
+
+PyObject* ApplicationPy::sConfigureHostIsolationRuntime(
+    PyObject* /*self*/,
+    PyObject* args
+)
+{
+    const char* executable = nullptr;
+    const char* moduleRoot = nullptr;
+    unsigned long long requestedWorkers = 0;
+    if (!PyArg_ParseTuple(
+            args,
+            "ss|K",
+            &executable,
+            &moduleRoot,
+            &requestedWorkers
+        )) {
+        return nullptr;
+    }
+
+    PY_TRY
+    {
+        HostRuntime::IsolationConfiguration configuration;
+        configuration.executable = executable;
+        configuration.arguments = {
+            "--safe-mode",
+            "-c",
+            "import os,sys;"
+            "sys.path.insert(0,os.environ['VIBECAD_ISOLATION_MODULE_ROOT']);"
+            "import VibeCADIsolationWorker as _worker;"
+            "raise SystemExit(_worker.main())",
+        };
+        configuration.workingDirectory = moduleRoot;
+        configuration.environment = {
+            {"VIBECAD_ISOLATION_CHILD", "1"},
+            {"VIBECAD_ISOLATION_MODULE_ROOT", moduleRoot},
+            {"PYTHONHASHSEED", "0"},
+            {"PYTHONNOUSERSITE", "1"},
+            {"PYTHONUNBUFFERED", "1"},
+        };
+        configuration.workerCount = static_cast<std::size_t>(requestedWorkers);
+        auto& runtime = GetApplication().hostRuntime();
+        runtime.startIsolationWorkers(std::move(configuration));
+
+        Py::Dict status;
+        status.setItem("workers", Py::Long(runtime.isolationWorkerCount()));
+        status.setItem("ready", Py::Long(runtime.readyIsolationWorkerCount()));
+        return Py::new_reference_to(status);
+    }
+    PY_CATCH;
+}
+
+PyObject* ApplicationPy::sExecuteHostIsolationRequest(
+    PyObject* /*self*/,
+    PyObject* args
+)
+{
+    const char* request = nullptr;
+    PyObject* cancellationCheck = Py_None;
+    unsigned long long memoryLimitBytes = 0;
+    unsigned long long cpuSlots = 1;
+    if (!PyArg_ParseTuple(
+            args,
+            "s|OKK",
+            &request,
+            &cancellationCheck,
+            &memoryLimitBytes,
+            &cpuSlots
+        )) {
+        return nullptr;
+    }
+    if (cancellationCheck != Py_None && !PyCallable_Check(cancellationCheck)) {
+        PyErr_SetString(
+            PyExc_TypeError,
+            "cancellation_check must be callable or None"
+        );
+        return nullptr;
+    }
+
+    PY_TRY
+    {
+        using namespace std::chrono_literals;
+        auto& runtime = GetApplication().hostRuntime();
+        auto submission = runtime.submitIsolation(
+            request,
+            static_cast<std::size_t>(memoryLimitBytes),
+            static_cast<std::size_t>(cpuSlots)
+        );
+        bool cancellationSent = false;
+
+        if (cancellationCheck == Py_None) {
+            Base::PyGILStateRelease release;
+            submission.completion.wait();
+        }
+        else {
+            while (submission.completion.wait_for(0ms) != std::future_status::ready) {
+                std::future_status state;
+                {
+                    Base::PyGILStateRelease release;
+                    state = submission.completion.wait_for(50ms);
+                }
+                if (state == std::future_status::ready || cancellationSent) {
+                    continue;
+                }
+                PyObject* requested = PyObject_CallNoArgs(cancellationCheck);
+                if (!requested) {
+                    (void)runtime.cancelIsolation(submission.id);
+                    Base::PyGILStateRelease release;
+                    submission.completion.wait();
+                    return nullptr;
+                }
+                const int shouldCancel = PyObject_IsTrue(requested);
+                Py_DECREF(requested);
+                if (shouldCancel < 0) {
+                    (void)runtime.cancelIsolation(submission.id);
+                    Base::PyGILStateRelease release;
+                    submission.completion.wait();
+                    return nullptr;
+                }
+                if (shouldCancel != 0) {
+                    cancellationSent = runtime.cancelIsolation(submission.id);
+                }
+            }
+        }
+
+        const auto result = submission.completion.get();
+        const char* status = result.status == HostRuntime::IsolationStatus::Completed
+            ? "completed"
+            : result.status == HostRuntime::IsolationStatus::Cancelled ? "cancelled"
+                                                                       : "failed";
+        Py::Dict response;
+        response.setItem("job_id", Py::Long(submission.id));
+        response.setItem("status", Py::String(status));
+        response.setItem("response", Py::String(result.response));
+        response.setItem("diagnostic", Py::String(result.diagnostic));
+        response.setItem("output_tail", Py::String(result.outputTail));
+        response.setItem("memory_exceeded", Py::Boolean(result.memoryExceeded));
+        response.setItem(
+            "observed_memory_bytes",
+            Py::Long(result.observedMemoryBytes)
+        );
+        return Py::new_reference_to(response);
+    }
+    PY_CATCH;
+}
+
+PyObject* ApplicationPy::sHostRuntimeStatus(PyObject* /*self*/, PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        auto& runtime = GetApplication().hostRuntime();
+        Py::Dict status;
+        status.setItem("logical_processors", Py::Long(runtime.logicalProcessorCount()));
+        status.setItem("compute_workers", Py::Long(runtime.workerCount()));
+        status.setItem(
+            "io_workers",
+            Py::Long(runtime.workerCount(HostRuntime::Lane::Io))
+        );
+        status.setItem(
+            "document_workers",
+            Py::Long(runtime.workerCount(HostRuntime::Lane::Document))
+        );
+        status.setItem("isolation_workers", Py::Long(runtime.isolationWorkerCount()));
+        status.setItem(
+            "isolation_ready",
+            Py::Long(runtime.readyIsolationWorkerCount())
+        );
+        status.setItem(
+            "isolation_queued",
+            Py::Long(runtime.queuedIsolationTaskCount())
+        );
+        status.setItem(
+            "isolation_active",
+            Py::Long(runtime.activeIsolationTaskCount())
+        );
+        return Py::new_reference_to(status);
+    }
+    PY_CATCH;
 }
 // NOLINTEND(cppcoreguidelines-pro-type-*)

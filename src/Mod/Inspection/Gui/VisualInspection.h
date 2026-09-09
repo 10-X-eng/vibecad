@@ -52,6 +52,8 @@ public:
     void accept() override;
 
     static std::vector<App::DocumentObject*> candidateObjects(App::Document* document);
+    static std::vector<App::DocumentObject*> candidateObjects(
+        App::Document* document, std::size_t maximum);
 
 protected Q_SLOTS:
     void onActivateItem(QTreeWidgetItem*);
