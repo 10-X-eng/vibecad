@@ -132,38 +132,18 @@ QPixmap desaturatePixmap(const QPixmap& source)
     return QPixmap::fromImage(image);
 }
 
-QPixmap accentPixmap(const QPixmap& source)
-{
-    QImage image = source.toImage().convertToFormat(QImage::Format_ARGB32);
-    const QColor accent = QApplication::palette().color(QPalette::Active, QPalette::Link);
-    for (int y = 0; y < image.height(); ++y) {
-        auto* pixels = reinterpret_cast<QRgb*>(image.scanLine(y));
-        for (int x = 0; x < image.width(); ++x) {
-            const int alpha = qAlpha(pixels[x]);
-            if (alpha) {
-                pixels[x] = qRgba(accent.red(), accent.green(), accent.blue(), alpha);
-            }
-        }
-    }
-    return QPixmap::fromImage(image);
-}
-
 QIcon timelineObjectIcon(
     const QIcon& base,
     const App::DocumentObject* object,
-    bool disabled,
-    std::optional<bool> presentationVisible
+    bool afterCurrentState
 )
 {
-    QPixmap pixmap = base.pixmap(QSize(22, 22), disabled ? QIcon::Disabled : QIcon::Normal);
-    if (disabled || (presentationVisible.has_value() && !*presentationVisible)) {
+    // Keep the same Normal artwork the ribbon shows. Grey the icon only when
+    // the current document state has been rolled back before this operation,
+    // so the feature is no longer visible in the 3D view.
+    QPixmap pixmap = base.pixmap(QSize(22, 22), QIcon::Normal);
+    if (afterCurrentState) {
         pixmap = desaturatePixmap(pixmap);
-    }
-    else {
-        // Most shipped CAD icons are monochrome. Tint active, visible history
-        // explicitly so gray has one reliable meaning instead of depending on
-        // the source artwork's original saturation.
-        pixmap = accentPixmap(pixmap);
     }
     const char* overlayName = nullptr;
     if (object && object->isError()) {
@@ -1548,8 +1528,7 @@ void FeatureTimeline::updateTimelineItemPresentation(
                 timelineObjectIcon(
                     viewProvider->getIcon(),
                     object,
-                    afterPosition,
-                    presentationVisible
+                    afterPosition
                 )
             );
         }
