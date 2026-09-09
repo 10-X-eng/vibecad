@@ -640,8 +640,12 @@ class Joint:
             joint.addExtension("App::SuppressibleExtensionPython")
 
         if App.GuiUp:
-            if not joint.ViewObject.hasExtension("Gui::ViewProviderSuppressibleExtensionPython"):
-                joint.ViewObject.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
+            def restore_view_extension():
+                view = joint.ViewObject
+                if not view.hasExtension("Gui::ViewProviderSuppressibleExtensionPython"):
+                    view.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
+
+            Gui.runOnMainThread(restore_view_extension)
 
         if hasattr(joint, "Activated"):
             activated = joint.Activated
@@ -778,7 +782,22 @@ class Joint:
         return None
 
     def getAssembly(self, joint):
-        return UtilsAssembly.findOwningPartOrAssembly(joint)
+        document = joint.Document
+        if not UtilsAssembly._document_is_open(document):
+            return None
+        key = (str(document.Uid), joint.ID, document.getObjectStructureGeneration())
+        cached = getattr(self, "_owner_cache", None)
+        if cached is not None and cached[0] == key:
+            name, identity = cached[1:]
+            if name is None:
+                return None
+            owner = document.getObject(name)
+            if owner is not None and owner.ID == identity:
+                return owner
+        owner = UtilsAssembly.findOwningPartOrAssembly(joint)
+        # Retain identities, not document/owner wrappers that could outlive close.
+        self._owner_cache = (key, owner.Name, owner.ID) if owner is not None else (key, None, None)
+        return owner
 
     def setJointType(self, joint, newType):
         oldType = joint.JointType
@@ -789,8 +808,17 @@ class Joint:
         """Do something when a property has changed"""
         # App.Console.PrintMessage("Change property: " + str(prop) + "\n")
 
-        # during loading the onchanged may be triggered before full init.
-        if App.isRestoring():
+        # Metadata and playback placements have no action in this handler.
+        # Reject them before resolving History state or an owning assembly.
+        if prop not in {"JointType", "Reference1", "Reference2", "Offset1", "Offset2",
+                        "Distance", "Angle"}:
+            return
+
+        # Loading and transaction replay restore the complete saved state.
+        # Reacting to each intermediate joint value can launch a whole assembly
+        # solve during abort/undo/redo, and overwrite values being restored.
+        # Transacting means replay, not an open interactive command transaction.
+        if App.isRestoring() or joint.Document.Transacting:
             return
         if not _jointInteractionUsable(joint):
             return
@@ -810,6 +838,9 @@ class Joint:
 
         if prop == "Reference1" or prop == "Reference2":
             joint.recompute()
+
+        if prop in {"JointType", "Reference1", "Reference2"}:
+            return
 
         if (
             not hasattr(joint, "Reference1")
@@ -864,7 +895,13 @@ class Joint:
         ):
             raise Exception(errStr + "Reference2")
 
-        self.updateJCSPlacements(joint)
+        # Recompute is model work and may execute on a document worker.
+        # ViewObject and Coin remain owned by Qt; placement notifications
+        # update their presentation after this model-only callback completes.
+        self.updateJCSPlacements(joint, redraw=False)
+
+    def supportsAsyncRecompute(self, _joint):
+        return True
 
     def setJointConnectors(self, joint, refs):
         # current selection is a vector of strings like "Assembly.Assembly1.Assembly2.Body.Pad.Edge16" including both what selection return as obj_name and obj_sub
@@ -916,14 +953,15 @@ class Joint:
                 assembly.undoSolve()
             self.undoPreSolve(joint)
 
-    def updateJCSPlacements(self, joint):
+    def updateJCSPlacements(self, joint, *, redraw=True):
         if not joint.Detach1:
             joint.Placement1 = self.findPlacement(joint, joint.Reference1, 0)
 
         if not joint.Detach2:
             joint.Placement2 = self.findPlacement(joint, joint.Reference2, 1)
 
-        self.redrawJointPlacements(joint)
+        if redraw:
+            self.redrawJointPlacements(joint)
 
     def redrawJointPlacements(self, joint):
         if joint.ViewObject:
@@ -1165,6 +1203,11 @@ class ViewProviderJoint:
 
     def updateData(self, joint, prop):
         """If a property of the handled feature has changed we have the chance to handle this here"""
+        if prop not in {"Placement1", "Placement2"}:
+            return
+        view = joint.ViewObject
+        if view is None or not view.Visibility:
+            return
         if prop == "Placement1" and hasattr(joint, "Reference1"):
             self.redrawJointPlacement(self.switch_JCS1, joint.Placement1, joint.Reference1)
 
@@ -1172,6 +1215,8 @@ class ViewProviderJoint:
             self.redrawJointPlacement(self.switch_JCS2, joint.Placement2, joint.Reference2)
 
     def redrawJointPlacements(self, joint):
+        if joint.ViewObject is None or not joint.ViewObject.Visibility:
+            return
         if not hasattr(joint, "Reference1") or not hasattr(joint, "Reference2"):
             return
 
@@ -1220,6 +1265,8 @@ class ViewProviderJoint:
 
     def onChanged(self, vp, prop):
         """Here we can do something when a single property got changed"""
+        if prop == "Visibility" and vp.Visibility:
+            self.redrawJointPlacements(vp.Object)
         # App.Console.PrintMessage("Change property: " + str(prop) + "\n")
         if prop == "color_X_axis" or prop == "color_Y_axis" or prop == "color_Z_axis":
             self.switch_JCS1.onChanged(vp, prop)
@@ -1409,6 +1456,9 @@ class GroundedJoint:
         # App.Console.PrintMessage("Recompute Python Box feature\n")
         pass
 
+    def supportsAsyncRecompute(self, _joint):
+        return True
+
 
 class ViewProviderGroundedJoint:
     def __init__(self, obj):
@@ -1575,6 +1625,10 @@ def _ensureViewProvider(joint, provider_type):
     if not App.GuiUp:
         return None
 
+    return Gui.runOnMainThread(_ensureViewProviderOnGui, joint, provider_type)
+
+
+def _ensureViewProviderOnGui(joint, provider_type):
     view = getattr(joint, "ViewObject", None)
     if view is None:
         return None

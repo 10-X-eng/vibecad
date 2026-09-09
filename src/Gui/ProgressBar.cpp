@@ -21,8 +21,13 @@
  ***************************************************************************/
 
 
+#include <algorithm>
+#include <atomic>
+#include <mutex>
+
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QKeyEvent>
 #include <QMessageBox>
 #include <QMetaObject>
@@ -33,9 +38,11 @@
 
 
 #include "ProgressBar.h"
+#include "FrameBudget.h"
 #include "MainWindow.h"
 #include "ProgressDialog.h"
 #include "WaitCursor.h"
+
 
 
 using namespace Gui;
@@ -49,14 +56,16 @@ struct SequencerBarPrivate
     WaitCursor* waitCursor;
     QElapsedTimer measureTime;
     QElapsedTimer progressTime;
-    QElapsedTimer checkAbortTime;
+    QElapsedTimer eventServiceTime;
     QString text;
-    bool guiThread;
+    std::mutex presentationMutex;
+    std::atomic_bool guiThread {true};
 };
 
 struct ProgressBarPrivate
 {
     QTimer* delayShowTimer;
+    QTimer* statusTimer;
     int minimumDuration;
     int observeEventFilter;
     bool userEnabled {true};
@@ -104,11 +113,12 @@ SequencerBar::SequencerBar()
     d = new SequencerBarPrivate;
     d->bar = nullptr;
     d->waitCursor = nullptr;
-    d->guiThread = true;
+    setProgressPulseHandler(&SequencerBar::progressPulse, this);
 }
 
 SequencerBar::~SequencerBar()
 {
+    setProgressPulseHandler(nullptr, nullptr);
     delete d;
 }
 
@@ -116,8 +126,17 @@ void SequencerBar::pause()
 {
     QThread* currentThread = QThread::currentThread();
     QThread* thr = d->bar->thread();  // this is the main thread
-    d->bar->leaveControlEvents(d->guiThread);
+    const bool guiThread = d->guiThread.load(std::memory_order_acquire);
     if (thr != currentThread) {
+        QMetaObject::invokeMethod(
+            d->bar,
+            [bar = d->bar, guiThread] { bar->leaveControlEvents(guiThread); },
+            Qt::QueuedConnection
+        );
+        return;
+    }
+    d->bar->leaveControlEvents(guiThread);
+    if (!guiThread) {
         return;
     }
 
@@ -130,42 +149,54 @@ void SequencerBar::resume()
 {
     QThread* currentThread = QThread::currentThread();
     QThread* thr = d->bar->thread();  // this is the main thread
-    if (thr == currentThread) {
-        QApplication::restoreOverrideCursor();
-        d->waitCursor->setWaitCursor();
+    const bool guiThread = d->guiThread.load(std::memory_order_acquire);
+    if (thr != currentThread) {
+        QMetaObject::invokeMethod(
+            d->bar,
+            [bar = d->bar, guiThread] { bar->enterControlEvents(guiThread); },
+            Qt::QueuedConnection
+        );
+        return;
+    }
+    if (!guiThread) {
+        d->bar->enterControlEvents(false);
+        return;
     }
 
+    QApplication::restoreOverrideCursor();
+    d->waitCursor->setWaitCursor();
+
     // must be called as last to get control before WaitCursor
-    d->bar->enterControlEvents(d->guiThread);  // grab again
+    d->bar->enterControlEvents(guiThread);  // grab again
 }
 
 void SequencerBar::startStep()
 {
     QThread* currentThread = QThread::currentThread();
     QThread* thr = d->bar->thread();  // this is the main thread
+    d->progressTime.start();
+    d->eventServiceTime.start();
+    {
+        std::lock_guard lock(d->presentationMutex);
+        d->measureTime.start();
+    }
     if (thr != currentThread) {
-        d->guiThread = false;
+        d->guiThread.store(false, std::memory_order_release);
         QMetaObject::invokeMethod(
             d->bar,
-            "setRangeEx",
-            Qt::QueuedConnection,
-            Q_ARG(int, 0),
-            Q_ARG(int, (int)nTotalSteps)
+            [bar = d->bar, totalSteps = nTotalSteps] {
+                bar->setRangeEx(0, static_cast<int>(totalSteps));
+                bar->aboutToShow();
+                bar->enterControlEvents(false);
+            },
+            Qt::QueuedConnection
         );
-        d->progressTime.start();
-        d->checkAbortTime.start();
-        d->measureTime.start();
-        QMetaObject::invokeMethod(d->bar, "aboutToShow", Qt::QueuedConnection);
-        d->bar->enterControlEvents(d->guiThread);
     }
     else {
-        d->guiThread = true;
+        d->guiThread.store(true, std::memory_order_release);
         d->bar->setRangeEx(0, (int)nTotalSteps);
-        d->progressTime.start();
-        d->checkAbortTime.start();
-        d->measureTime.start();
         d->waitCursor = new Gui::WaitCursor;
-        d->bar->enterControlEvents(d->guiThread);
+        d->bar->enterControlEvents(true);
         d->bar->aboutToShow();
     }
 }
@@ -180,12 +211,8 @@ void SequencerBar::checkAbort()
     if (d->bar->thread() != QThread::currentThread()) {
         return;
     }
+    serviceGuiEvents();
     if (!wasCanceled()) {
-        if (d->checkAbortTime.elapsed() < 500) {
-            return;
-        }
-        d->checkAbortTime.restart();
-        qApp->processEvents();
         return;
     }
     // restore cursor
@@ -201,6 +228,35 @@ void SequencerBar::checkAbort()
     else {
         rejectCancel();
     }
+}
+
+void SequencerBar::serviceGuiEvents()
+{
+    if (!d->bar || d->bar->thread() != QThread::currentThread()) {
+        return;
+    }
+    if (!d->eventServiceTime.isValid()) {
+        d->eventServiceTime.start();
+        return;
+    }
+    if (d->eventServiceTime.elapsed() < FrameBudget::Milliseconds) {
+        return;
+    }
+
+    d->eventServiceTime.restart();
+    // The owning operation is still exposing a partial document state. Paint,
+    // timers, and progress may advance, but no user command may re-enter the
+    // document until the operation reaches its stable boundary.
+    qApp->processEvents(
+        QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers,
+        1
+    );
+}
+
+void SequencerBar::progressPulse(void* context)
+{
+    auto* sequencer = static_cast<SequencerBar*>(context);
+    sequencer->serviceGuiEvents();
 }
 
 void SequencerBar::nextStep(bool canAbort)
@@ -265,14 +321,12 @@ void SequencerBar::setValue(int step)
             if (thr != currentThread) {
                 QMetaObject::invokeMethod(
                     d->bar,
-                    "setValueEx",
-                    Qt::/*Blocking*/ QueuedConnection,
-                    Q_ARG(int, d->bar->value() + 1)
+                    [bar = d->bar] { bar->setValueEx(bar->value() + 1); },
+                    Qt::QueuedConnection
                 );
             }
             else {
                 d->bar->setValueEx(d->bar->value() + 1);
-                qApp->processEvents();
             }
         }
     }
@@ -284,13 +338,14 @@ void SequencerBar::setValue(int step)
             if (thr != currentThread) {
                 QMetaObject::invokeMethod(
                     d->bar,
-                    "setValueEx",
-                    Qt::/*Blocking*/ QueuedConnection,
-                    Q_ARG(int, step)
+                    [this, bar = d->bar, step] {
+                        bar->setValueEx(step);
+                        if (bar->isVisible()) {
+                            showRemainingTime();
+                        }
+                    },
+                    Qt::QueuedConnection
                 );
-                if (d->bar->isVisible()) {
-                    showRemainingTime();
-                }
             }
             else {
                 d->bar->setValueEx(step);
@@ -298,7 +353,6 @@ void SequencerBar::setValue(int step)
                     showRemainingTime();
                 }
                 d->bar->resetObserveEventFilter();
-                qApp->processEvents();
             }
         }
     }
@@ -309,34 +363,45 @@ void SequencerBar::showRemainingTime()
     QThread* currentThread = QThread::currentThread();
     QThread* thr = d->bar->thread();  // this is the main thread
 
-    int elapsed = d->measureTime.elapsed();
-    int progress = d->bar->value();
+    qint64 elapsed;
+    QString txt;
+    {
+        std::lock_guard lock(d->presentationMutex);
+        elapsed = d->measureTime.elapsed();
+        txt = d->text;
+    }
+    int progress = std::max(0, d->bar->value());
     int totalSteps = d->bar->maximum() - d->bar->minimum();
+    const auto duration = [](qint64 seconds) {
+        return QStringLiteral("%1:%2:%3")
+            .arg(seconds / 3600, 2, 10, QLatin1Char('0'))
+            .arg((seconds / 60) % 60, 2, 10, QLatin1Char('0'))
+            .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    };
+    QString status = txt;
+    if (totalSteps > 0) {
+        status += QStringLiteral(" — %1 / %2").arg(progress).arg(totalSteps);
+    }
+    status += QStringLiteral(" — ")
+        + Gui::ProgressBar::tr("Elapsed: %1").arg(duration(elapsed / 1000));
 
-    QString txt = d->text;
     // More than 5 percent complete or more than 5 secs have elapsed.
-    if (progress * 20 > totalSteps || elapsed > 5000) {
-        int rest = (int)((double)totalSteps / progress * elapsed) - elapsed;
+    if (progress > 0 && totalSteps > progress
+        && (progress * 20LL > totalSteps || elapsed > 5000)) {
+        qint64 rest = static_cast<qint64>((double)totalSteps / progress * elapsed) - elapsed;
 
         // more than 1 secs have elapsed and at least 100 ms are remaining
         if (elapsed > 1000 && rest > 100) {
-            QTime time(0, 0, 0);
-            time = time.addSecs(rest / 1000);
-            QString remain = Gui::ProgressBar::tr("Remaining: %1").arg(time.toString());
-            QString status = QStringLiteral("%1\t[%2]").arg(txt, remain);
-
-            if (thr != currentThread) {
-                QMetaObject::invokeMethod(
-                    getMainWindow(),
-                    "showMessage",
-                    Qt::/*Blocking*/ QueuedConnection,
-                    Q_ARG(QString, status)
-                );
-            }
-            else {
-                getMainWindow()->showMessage(status);
-            }
+            status += QStringLiteral(" — ")
+                + Gui::ProgressBar::tr("Estimated remaining: %1").arg(duration(rest / 1000));
         }
+    }
+    if (thr != currentThread) {
+        QMetaObject::invokeMethod(getMainWindow(), "showMessage", Qt::QueuedConnection,
+                                  Q_ARG(QString, status));
+    }
+    else {
+        getMainWindow()->showMessage(status);
     }
 }
 
@@ -345,22 +410,18 @@ void SequencerBar::resetData()
     QThread* currentThread = QThread::currentThread();
     QThread* thr = d->bar->thread();  // this is the main thread
     if (thr != currentThread) {
-        QMetaObject::invokeMethod(d->bar, "resetEx", Qt::QueuedConnection);
-        QMetaObject::invokeMethod(d->bar, "aboutToHide", Qt::QueuedConnection);
+        auto* mainWindow = getMainWindow();
         QMetaObject::invokeMethod(
-            getMainWindow(),
-            "showMessage",
-            Qt::/*Blocking*/ QueuedConnection,
-            Q_ARG(QString, QString())
+            d->bar,
+            [bar = d->bar, mainWindow] {
+                bar->resetEx();
+                bar->aboutToHide();
+                mainWindow->showMessage(QString());
+                mainWindow->setPaneText(1, QString());
+                bar->leaveControlEvents(false);
+            },
+            Qt::QueuedConnection
         );
-        QMetaObject::invokeMethod(
-            getMainWindow(),
-            "setPaneText",
-            Qt::/*Blocking*/ QueuedConnection,
-            Q_ARG(int, 1),
-            Q_ARG(QString, QString())
-        );
-        d->bar->leaveControlEvents(d->guiThread);
     }
     else {
         d->bar->resetEx();
@@ -370,7 +431,7 @@ void SequencerBar::resetData()
         d->bar->aboutToHide();
         delete d->waitCursor;
         d->waitCursor = nullptr;
-        d->bar->leaveControlEvents(d->guiThread);
+        d->bar->leaveControlEvents(d->guiThread.load(std::memory_order_acquire));
         getMainWindow()->setPaneText(1, QString());
         getMainWindow()->showMessage(QString());
     }
@@ -392,23 +453,27 @@ void SequencerBar::setText(const char* pszTxt)
     QThread* thr = d->bar->thread();  // this is the main thread
 
     // print message to the statusbar
-    d->text = pszTxt ? QString::fromUtf8(pszTxt) : QLatin1String("");
+    const QString text = pszTxt ? QString::fromUtf8(pszTxt) : QLatin1String("");
+    {
+        std::lock_guard lock(d->presentationMutex);
+        d->text = text;
+    }
     if (thr != currentThread) {
         QMetaObject::invokeMethod(
             getMainWindow(),
             "showMessage",
             Qt::/*Blocking*/ QueuedConnection,
-            Q_ARG(QString, d->text)
+            Q_ARG(QString, text)
         );
     }
     else {
-        getMainWindow()->showMessage(d->text);
+        getMainWindow()->showMessage(text);
     }
 }
 
 bool SequencerBar::isBlocking() const
 {
-    return d->guiThread;
+    return d->guiThread.load(std::memory_order_acquire);
 }
 
 QProgressBar* SequencerBar::getProgressBar(QWidget* parent)
@@ -436,6 +501,13 @@ ProgressBar::ProgressBar(SequencerBar* s, QWidget* parent)
     d->delayShowTimer = new QTimer(this);
     d->delayShowTimer->setSingleShot(true);
     connect(d->delayShowTimer, &QTimer::timeout, this, &ProgressBar::delayedShow);
+    d->statusTimer = new QTimer(this);
+    d->statusTimer->setInterval(1000);
+    connect(d->statusTimer, &QTimer::timeout, this, [this] {
+        if (sequencer->isRunning()) {
+            sequencer->showRemainingTime();
+        }
+    });
     d->observeEventFilter = 0;
     // Visibility is owned by MainWindow's status-bar registry, which sets
     // userEnabled from the persisted value after registration.
@@ -528,6 +600,7 @@ void ProgressBar::setMinimumDuration(int ms)
 
 void ProgressBar::aboutToShow()
 {
+    d->statusTimer->start();
     // delay showing the bar
     d->delayShowTimer->start(d->minimumDuration);
 #ifdef QT_WINEXTRAS_LIB
@@ -545,6 +618,7 @@ void ProgressBar::delayedShow()
 
 void ProgressBar::aboutToHide()
 {
+    d->statusTimer->stop();
     hide();
 #ifdef QT_WINEXTRAS_LIB
     setupTaskBarProgress();
@@ -627,6 +701,17 @@ void ProgressBar::setupTaskBarProgress()
 bool ProgressBar::eventFilter(QObject* o, QEvent* e)
 {
     if (sequencer->isRunning() && e) {
+        if (!sequencer->isBlocking()) {
+            if (e->type() == QEvent::KeyPress) {
+                auto* keyEvent = static_cast<QKeyEvent*>(e);
+                if (keyEvent->key() == Qt::Key_Escape) {
+                    sequencer->tryToCancel();
+                    return true;
+                }
+            }
+            return QProgressBar::eventFilter(o, e);
+        }
+
         QThread* currentThread = QThread::currentThread();
         QThread* thr = this->thread();  // this is the main thread
         if (thr != currentThread) {

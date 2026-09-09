@@ -55,7 +55,6 @@ _REFERENCE_OPTIONAL_FIELDS = frozenset(
     }
 )
 _FACE = re.compile(r"Face([1-9][0-9]*)\Z")
-_MAX_DEFINITION_BYTES = 4 * 1024 * 1024
 _MAX_NATIVE_READBACK_BYTES = 256 * 1024 * 1024
 _MAX_REFERENCES = 128
 _MAX_COMMANDS = 2_000_000
@@ -204,7 +203,7 @@ def _fail(message: str, *, stage: str, **details: Any) -> CAMCandidateError:
 def _encoded(
     value: Any,
     *,
-    limit: int = _MAX_DEFINITION_BYTES,
+    limit: int | None = None,
     label: str = "definition",
 ) -> bytes:
     try:
@@ -221,7 +220,7 @@ def _encoded(
             stage="definition_contract",
             exception_type=type(exc).__name__,
         ) from exc
-    if len(payload) > limit:
+    if limit is not None and len(payload) > limit:
         raise _fail(
             f"A CAM {label} exceeds {limit} JSON bytes.",
             stage="definition_contract",

@@ -31,6 +31,7 @@
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
+#include <shared_mutex>
 
 #include "Property.h"
 
@@ -857,11 +858,21 @@ public:
     DocumentObject* findUsingMap(const std::string&, int* pindex = nullptr) const;
     DocumentObject* find(const char* sub, int* pindex = nullptr) const;
 
+    /// Exact first-occurrence membership, independent of labels or object names.
+    /// Concurrent lookups are supported; property mutation remains document-owned.
+    int findObject(const DocumentObject* object) const;
+
 protected:
     DocumentObject* getPyValue(PyObject* item) const override;
 
 protected:
     mutable std::map<std::string, int> _nameMap;
+
+private:
+    void resizeValues(int newSize, DocumentObject* fill);
+    mutable std::shared_mutex _objectIndexMutex;
+    mutable std::unordered_map<const DocumentObject*, int> _objectIndex;
+    mutable bool _objectIndexValid {false};
 };
 
 /** The general Link Property with Child scope

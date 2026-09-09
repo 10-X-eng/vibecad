@@ -32,6 +32,7 @@
 #endif
 
 #include <sstream>
+#include <stdexcept>
 #include <QAbstractSpinBox>
 #include <QByteArray>
 #include <QComboBox>
@@ -41,6 +42,8 @@
 #include <QFileOpenEvent>
 #include <QSessionManager>
 #include <QTimer>
+#include <QScopeGuard>
+#include <QThread>
 
 
 #include <QLocalServer>
@@ -55,6 +58,7 @@
 #include "Application.h"
 #include "MainWindow.h"
 #include "SpaceballEvent.h"
+#include "FrameBudget.h"
 
 
 using namespace Gui;
@@ -72,9 +76,38 @@ GUIApplication::GUIApplication(int& argc, char** argv)
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
     setFallbackSessionManagementEnabled(false);
 #endif
+    traceClock.start();
+    traceEvents = qEnvironmentVariableIsSet("VIBECAD_RESTORE_DETAIL_TRACE");
 }
 
 GUIApplication::~GUIApplication() = default;
+
+QVariantMap GUIApplication::takePerformanceEvents()
+{
+    if (QThread::currentThread() != thread()) {
+        throw std::logic_error("GUI event timings must be drained on the GUI owner");
+    }
+    QVariantMap result {{"enabled", traceEvents}, {"events", eventTimings},
+                        {"clock_ms", traceClock.nsecsElapsed() / 1000000.0},
+                        {"dropped", QVariant::fromValue(droppedEventTimings)}};
+    eventTimings.clear();
+    droppedEventTimings = 0;
+    return result;
+}
+
+void GUIApplication::recordPerformancePhase(const QString& name, qint64 elapsedNanoseconds)
+{
+    if (!traceEvents || elapsedNanoseconds < FrameBudget::Milliseconds * 1000000) { return; }
+    if (QThread::currentThread() != thread()) {
+        throw std::logic_error("GUI phase timings must be recorded on the GUI owner");
+    }
+    if (eventTimings.size() >= 4096) { ++droppedEventTimings; return; }
+    eventTimings.append(QVariantMap {
+        {"start_ms", (traceClock.nsecsElapsed() - elapsedNanoseconds) / 1000000.0},
+        {"elapsed_ms", elapsedNanoseconds / 1000000.0}, {"phase", name},
+        {"event_type", -1}, {"receiver_class", "native_phase"},
+        {"receiver_name", name}, {"depth", eventTraceDepth}});
+}
 
 bool GUIApplication::notify(QObject* receiver, QEvent* event)
 {
@@ -85,6 +118,27 @@ bool GUIApplication::notify(QObject* receiver, QEvent* event)
         );
         return false;
     }
+
+    const bool tracing = traceEvents && QThread::currentThread() == thread();
+    const qint64 started = tracing ? traceClock.nsecsElapsed() : 0;
+    // The receiver and event can be destroyed by notify. Capture identity first.
+    const QByteArray receiverClass = tracing ? QByteArray(receiver->metaObject()->className()) : QByteArray();
+    const QString receiverName = tracing ? receiver->objectName() : QString();
+    const int eventType = tracing ? int(event->type()) : 0;
+    const int depth = tracing ? ++eventTraceDepth : 0;
+    const auto recordTiming = qScopeGuard([&] {
+        if (!tracing) { return; }
+        --eventTraceDepth;
+        const qint64 elapsed = traceClock.nsecsElapsed() - started;
+        if (elapsed < FrameBudget::Milliseconds * 1000000) { return; }
+        // Bound diagnostic memory if no consumer is attached. This limits
+        // retained trace records, never event execution; loss is reported.
+        if (eventTimings.size() >= 4096) { ++droppedEventTimings; return; }
+        eventTimings.append(QVariantMap {
+            {"start_ms", started / 1000000.0}, {"elapsed_ms", elapsed / 1000000.0},
+            {"event_type", eventType}, {"receiver_class", QString::fromLatin1(receiverClass)},
+            {"receiver_name", receiverName}, {"depth", depth}});
+    });
 
     // https://github.com/FreeCAD/FreeCAD/issues/16905
     std::string exceptionWarning =
@@ -201,7 +255,7 @@ bool GUIApplication::event(QEvent* ev)
         QFileInfo fi(file);
         if (fi.suffix().toLower() == QLatin1String("fcstd")) {
             QByteArray fn = file.toUtf8();
-            Application::Instance->open(fn, "FreeCAD");
+            Application::Instance->openFileFromGui(fn, "FreeCAD");
             return true;
         }
     }

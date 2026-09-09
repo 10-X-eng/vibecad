@@ -30,6 +30,7 @@
 #include <sstream>
 #include <vector>
 #include <memory>
+#include <functional>
 
 #include <zipios++/zipoutputstream.h>
 
@@ -97,6 +98,15 @@ public:
     //@{
     /// add a write request of a persistent object
     std::string addFile(const char* Name, const Base::Persistence* Object);
+    /** Capture owner-affine persistence without writing the destination there.
+     * The dispatcher must complete the callback (or propagate its exception)
+     * before returning. The writer remains exclusively owned by its caller;
+     * no other task may use it during capture. Files registered by the callback
+     * inherit the dispatcher, including recursively registered binary files.
+     * Destination I/O and compression occur only after dispatch returns.
+     */
+    using CaptureDispatcher = std::function<void(std::function<void()>)>;
+    void captureOnOwner(const CaptureDispatcher& dispatch, const std::function<void()>& capture);
     /// process the requested file storing
     virtual void writeFiles() = 0;
     /// Set mode
@@ -184,7 +194,9 @@ protected:
     {
         std::string FileName;
         const Base::Persistence* Object;
+        CaptureDispatcher captureDispatcher;
     };
+    void writeFile(const FileEntry& entry);
     std::vector<FileEntry> FileList;
     UniqueFileNameManager FileNameManager;
     std::vector<std::string> Errors;
@@ -204,6 +216,7 @@ public:
     Writer& operator=(Writer&&) = delete;
 
 private:
+    CaptureDispatcher fileCaptureDispatcher;
     std::unique_ptr<std::ostream> CharStream;
     CharStreamFormat charStreamFormat;
 };

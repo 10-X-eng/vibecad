@@ -23,9 +23,18 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
 #include <unordered_map>
+#include <vector>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QPersistentModelIndex>
 #include <QStyledItemDelegate>
 #include <QTreeWidget>
 
@@ -34,6 +43,7 @@
 #include <Base/Parameter.h>
 #include <Base/Persistence.h>
 #include <Gui/DockWindow.h>
+#include <Gui/FrameSequence.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/TreeItemMode.h>
 
@@ -43,6 +53,7 @@ namespace Gui
 {
 
 class TreeParams;
+class ModelTreeBrowserProjection;
 class ViewProviderDocumentObject;
 class DocumentObjectItem;
 class DocumentObjectData;
@@ -218,6 +229,8 @@ protected:
 
 private:
     void _updateStatus(bool delay = true);
+    void processUpdateStatus();
+    void resetStatusUpdate();
 
     // Helpers for the two-stage "Select All" feature
     void selectGroupItems(const QTreeWidgetItem* group, bool recursive);
@@ -291,6 +304,25 @@ private:
     void addDependentToSelection(App::Document* doc, App::DocumentObject* docObject);
     static TreeWidget* getTreeForSelection();
 
+    struct PendingObjectIdentity
+    {
+        std::string documentName;
+        long objectId {};
+    };
+
+    enum class StatusUpdatePhase
+    {
+        Idle,
+        Objects,
+        Browsers,
+        ObjectStatus,
+        DocumentStatus,
+        RestoredObjects,
+        Selection,
+        Errors,
+        Geometry,
+    };
+
 private:
     QAction* createGroupAction;
     QAction* relabelObjectAction;
@@ -337,6 +369,20 @@ private:
     std::unordered_map<App::DocumentObject*, std::bitset<32>> ChangedObjects;
 
     std::unordered_map<std::string, std::vector<long>> NewObjects;
+
+    StatusUpdatePhase statusUpdatePhase {StatusUpdatePhase::Idle};
+    std::vector<std::string> statusUpdateDocuments;
+    std::vector<PendingObjectIdentity> statusUpdateObjects;
+    std::vector<PendingObjectIdentity> statusUpdateErrors;
+    std::size_t statusUpdateDocumentIndex {0};
+    std::size_t statusUpdateObjectIndex {0};
+    std::size_t statusUpdateErrorIndex {0};
+    QTreeWidgetItem* statusUpdateFirstErrorItem {};
+    QElapsedTimer statusUpdateElapsed;
+    std::size_t statusUpdateProjectedObjectCount {0};
+    bool statusUpdateAllObjects {false};
+    bool statusUpdateScheduled {false};
+    bool statusUpdateExecuting {false};
 
     static std::set<TreeWidget*> Instances;
 
@@ -445,6 +491,8 @@ protected:
     void slotRecomputed(const App::Document& doc, const std::vector<App::DocumentObject*>& objs);
     void slotRecomputedObject(const App::DocumentObject&);
     void slotDocumentStable(const App::Document& stableDocument);
+    void acquirePresentationUpdate(App::Document& document);
+    void releasePresentationUpdate();
 
     bool updateObject(const Gui::ViewProviderDocumentObject&, const App::Property& prop);
 
@@ -481,9 +529,19 @@ protected:
     void setReadOnlyIconInfo(int column, QIcon& overlayedIcon);
     void refreshModelBrowser(bool force = false);
     void rebuildModelBrowser();
+    FrameSequence<std::unique_ptr<QTreeWidgetItem>> buildModelBrowser();
+    void markModelBrowserDirty();
+    bool modelBrowserRefreshPending() const;
     void clearModelBrowser();
+    bool clearModelBrowserStep();
     void setLegacyTreeVisible(bool visible);
+    void setLegacyItemVisible(DocumentObjectItem* item, bool visible);
     void updateBrowserFolderStatus();
+    void scheduleBrowserFolderStatus();
+    void processBrowserFolderStatus();
+    void recordBrowserExpansion(QTreeWidgetItem* item, bool expanded);
+    void recordBrowserSelection(DocumentObjectItem* item, bool selected);
+    void applyModelBrowserState();
     DocumentObjectItem* createBrowserObjectItem(
         App::DocumentObject* object,
         QTreeWidgetItem* parent,
@@ -505,6 +563,14 @@ protected:
     bool isPresentationItem(const DocumentObjectItem* item) const;
 
 private:
+    struct DeferredProjectionChange
+    {
+        std::set<std::string> properties;
+        bool status {false};
+    };
+
+    void deferPropertyChange(long objectId, const char* propertyName);
+    void deferStatusChange(long objectId);
     const char* treeName;  // for debugging purpose
     Gui::Document* pDocument;
     std::unordered_map<App::DocumentObject*, DocumentObjectDataPtr> ObjectMap;
@@ -513,6 +579,53 @@ private:
     bool modelBrowserDirty {true};
     bool modelBrowserActive {false};
     bool transactionRefreshPending {false};
+    std::map<long, DeferredProjectionChange> deferredProjectionChanges;
+    App::Document* presentationUpdateDocument {};
+    std::uint64_t modelBrowserGeneration {1};
+    std::uint64_t stagedModelBrowserGeneration {0};
+    std::unique_ptr<QTreeWidgetItem> stagedModelBrowserRoot;
+    struct DetachedBrowserItem
+    {
+        std::unique_ptr<QTreeWidgetItem> item;
+        QTreeWidgetItem* parent {};
+    };
+    // Reverse postorder: each item has no children, and its parent is attached
+    // before the item is released to Qt. No subtree-sized Qt insertion occurs.
+    std::vector<DetachedBrowserItem> modelBrowserDetachedItems;
+    QPersistentModelIndex modelBrowserRemovalCursor;
+    int modelBrowserRemovalRoot {-1};
+    bool modelBrowserClearing {false};
+    bool modelBrowserAttaching {false};
+    std::optional<FrameSequence<std::unique_ptr<QTreeWidgetItem>>> modelBrowserBuild;
+    std::uint64_t modelBrowserBuildGeneration {};
+    bool modelBrowserBuildExecuting {false};
+    QElapsedTimer modelBrowserBuildElapsed;
+    std::size_t modelBrowserBuildSteps {};
+    qint64 modelBrowserBuildMaxStepNs {};
+    struct BrowserItemState
+    {
+        bool expanded {};
+        bool selected {};
+        bool hidden {};
+    };
+    struct BrowserItemOverride
+    {
+        std::optional<bool> expanded;
+        std::optional<bool> selected;
+    };
+    std::unordered_map<QTreeWidgetItem*, BrowserItemState> modelBrowserStagedStates;
+    std::unordered_map<long, BrowserItemOverride> modelBrowserObjectOverrides;
+    std::unordered_map<std::string, bool> modelBrowserFolderOverrides;
+    std::vector<std::pair<QTreeWidgetItem*, bool>> modelBrowserRootsToReveal;
+    std::size_t modelBrowserRevealIndex {};
+    bool modelBrowserStatePending {false};
+    bool modelBrowserApplyingState {false};
+    std::shared_ptr<const ModelTreeBrowserProjection> preparedModelBrowserProjection;
+    bool modelBrowserPreparationPending {false};
+    struct BrowserFolderStatus;
+    std::unique_ptr<BrowserFolderStatus> browserFolderStatus;
+    bool browserFolderStatusScheduled {false};
+    bool browserFolderStatusDirty {false};
 
     ExpandInfoPtr _ExpandInfo;
     void restoreItemExpansion(const ExpandInfoPtr&, DocumentObjectItem*);
@@ -530,6 +643,9 @@ private:
     Connection connectRecomputed;
     Connection connectRecomputedObj;
     Connection connectDocumentStable;
+    Connection connectFinishRestoreDocument;
+    Connection connectRestoreActivityIdle;
+    Connection connectFinishOpenDocument;
     Connection connectRecomputeRequestFinished;
 
     friend class TreeWidget;

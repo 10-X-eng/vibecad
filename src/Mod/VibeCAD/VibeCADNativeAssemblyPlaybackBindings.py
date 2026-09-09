@@ -17,13 +17,22 @@ ASSEMBLY_PLAYBACK_CAPABILITY_NAME = "assembly.playback"
 
 
 def _playback(call: Any) -> Mapping[str, Any]:
+    return _invoke_playback(call, asynchronous=False)
+
+
+def _playback_async(call: Any):
+    return _invoke_playback(call, asynchronous=True)
+
+
+def _invoke_playback(call: Any, *, asynchronous):
     runtime = getattr(call, "runtime", None)
     arguments = getattr(call, "arguments", None)
     if not isinstance(runtime, NativeAssemblyPlaybackRuntime):
         raise TypeError("An Assembly playback call requires its exact runtime.")
     if not isinstance(arguments, Mapping):
         raise TypeError("An Assembly playback call requires argument data.")
-    return runtime.control(arguments, ticket=getattr(call, "ticket", None))
+    handler = runtime.control_async if asynchronous else runtime.control
+    return handler(arguments, ticket=getattr(call, "ticket", None))
 
 
 def register_assembly_playback_capability_implementation(
@@ -35,6 +44,7 @@ def register_assembly_playback_capability_implementation(
         NativeCapabilityImplementation(
             ASSEMBLY_PLAYBACK_CAPABILITY_NAME,
             _playback,
+            async_handler=_playback_async,
         )
     )
 
