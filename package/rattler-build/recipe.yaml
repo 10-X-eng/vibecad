@@ -23,6 +23,9 @@ build:
       # Hash compiler *content* rather than mtime so cached objects survive the
       # fresh conda extraction on each CI run (where compiler mtimes change).
       CCACHE_COMPILERCHECK: ${{ env.get("CCACHE_COMPILERCHECK", default="content") }}
+      # Compiler activation does not consistently define HOST. Forward the
+      # rattler target explicitly so build.sh always selects the right preset.
+      VIBECAD_TARGET_PLATFORM: ${{ target_platform }}
 
 requirements:
   build:
