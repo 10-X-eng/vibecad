@@ -69,6 +69,8 @@ def _reset_section_settings() -> None:
     section._dragger_node = None
     section._dragger_busy = False
     section._triad_parts = None
+    section._bounds_view = None
+    section._section_bounds = None
     yield
     section.reset_section_view_settings()
     section._overlay_node = None
@@ -76,6 +78,8 @@ def _reset_section_settings() -> None:
     section._dragger_node = None
     section._dragger_busy = False
     section._triad_parts = None
+    section._bounds_view = None
+    section._section_bounds = None
 
 
 def test_bounds_center_combines_valid_shape_boxes() -> None:
@@ -160,8 +164,8 @@ def test_set_section_view_uses_a_clean_clip_without_a_coin_manipulator(
     placement = object()
     monkeypatch.setattr(
         section,
-        "section_view_placement",
-        lambda document=None, settings=None: placement,
+        "_placement_from_bounds",
+        lambda settings, bounds: placement,
     )
 
     assert section.set_section_view(True, view=view) == {"section_view": True}
@@ -182,11 +186,11 @@ def test_configure_section_view_reapplies_a_live_cut(monkeypatch) -> None:
     view = _View(clipped=False)
     seen: list[object] = []
 
-    def fake_placement(document=None, settings=None):
+    def fake_placement(settings, bounds):
         seen.append(settings)
         return object()
 
-    monkeypatch.setattr(section, "section_view_placement", fake_placement)
+    monkeypatch.setattr(section, "_placement_from_bounds", fake_placement)
     section.set_section_view(True, view=view)
     section.configure_section_view(plane="top", offset=8.0, flipped=True, view=view)
 
@@ -683,7 +687,7 @@ def test_preview_clip_does_not_rebuild_scene_overlay(monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(section, "_update_clip_plane", lambda *_a, **_k: True)
     monkeypatch.setattr(section, "is_section_view_active", lambda view=None: True)
-    monkeypatch.setattr(section, "section_view_placement", lambda *_a, **_k: object())
+    monkeypatch.setattr(section, "_placement_from_bounds", lambda *_a, **_k: object())
     monkeypatch.setattr(
         section, "_sync_overlay", lambda *_a, **_k: calls.append("overlay")
     )
@@ -914,7 +918,7 @@ def test_look_direction_is_read_from_getViewDirection() -> None:
 def test_toggle_starts_on_the_active_view_plane(monkeypatch) -> None:
     front_view = _View(look=(0.0, -1.0, 0.0))
     monkeypatch.setattr(
-        section, "section_view_placement", lambda document=None, settings=None: object()
+        section, "_placement_from_bounds", lambda settings, bounds: object()
     )
     section.toggle_section_view(view=front_view, show_ui=False)
     assert section.current_section_view_settings().plane == "front"
@@ -985,8 +989,32 @@ def test_new_section_view_releases_previous_scene_first(monkeypatch):
     calls = []
     monkeypatch.setattr(section, "_dragger_view", previous)
     monkeypatch.setattr(section, "set_section_view", lambda value, **kw: calls.append((value, kw["view"])))
-    monkeypatch.setattr(section, "section_view_placement", lambda *_: object())
+    monkeypatch.setattr(section, "_placement_from_bounds", lambda *_: object())
     monkeypatch.setattr(section, "_sync_overlay", lambda *_a, **_kw: calls.append("overlay"))
     monkeypatch.setattr(section, "_sync_dragger", lambda *_a, **_kw: calls.append("dragger"))
     section._apply_clip(current, None, section.SectionViewSettings())
     assert calls == [(False, previous), "overlay", "dragger"]
+
+
+def test_drag_preview_reuses_bounds_instead_of_rescanning_document(monkeypatch):
+    view = _View(clipped=True)
+    bounds = section.ModelBounds(0, 10, 0, 20, 0, 30)
+    monkeypatch.setattr(section, "_bounds_view", view, raising=False)
+    monkeypatch.setattr(section, "_section_bounds", bounds, raising=False)
+    monkeypatch.setattr(section, "_placement_from_bounds", lambda settings, cached: cached, raising=False)
+    monkeypatch.setattr(section, "model_bounds", lambda *_: pytest.fail("Preview rescanned document shapes"))
+    monkeypatch.setattr(section, "_update_clip_plane", lambda v, placement: placement is bounds)
+    section._apply_clip(view, None, section.SectionViewSettings(), preview=True)
+
+
+def test_full_section_update_refreshes_cached_bounds_once(monkeypatch):
+    view = _View(clipped=True)
+    bounds = section.ModelBounds(0, 10, 0, 20, 0, 30)
+    calls = []
+    monkeypatch.setattr(section, "model_bounds", lambda *_: calls.append("bounds") or bounds)
+    monkeypatch.setattr(section, "_placement_from_bounds", lambda *_: object(), raising=False)
+    monkeypatch.setattr(section, "_update_clip_plane", lambda *_: True)
+    monkeypatch.setattr(section, "_sync_overlay", lambda *_a, **_k: calls.append(section._bounds_for_view(view, None)))
+    monkeypatch.setattr(section, "_sync_dragger", lambda *_a, **_k: calls.append(section._bounds_for_view(view, None)))
+    section._apply_clip(view, None, section.SectionViewSettings())
+    assert calls == ["bounds", bounds, bounds]

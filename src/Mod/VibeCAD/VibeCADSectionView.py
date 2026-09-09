@@ -133,6 +133,8 @@ _dragger_node: Any | None = None
 _dragger_view: Any | None = None
 _dragger_document: Any | None = None
 _section_document_observer: Any | None = None
+_bounds_view: Any | None = None
+_section_bounds: ModelBounds | None = None
 _dragger_busy = False
 _drag_start_settings: SectionViewSettings | None = None
 _drag_start_origin: tuple[float, float, float] | None = None
@@ -1392,10 +1394,20 @@ def section_view_placement(
         raise RuntimeError("FreeCAD is unavailable.")
     active = settings if settings is not None else _settings
     bounds = model_bounds(_document_objects(document))
+    return _placement_from_bounds(active, bounds)
+
+
+def _placement_from_bounds(settings: SectionViewSettings, bounds: ModelBounds | None) -> Any:
     center = bounds.center if bounds is not None else (0.0, 0.0, 0.0)
-    origin, normal = clip_plane_from_settings(active, center)
+    origin, normal = clip_plane_from_settings(settings, center)
     rotation = App.Rotation(App.Vector(0.0, 0.0, -1.0), App.Vector(*normal))
     return App.Placement(App.Vector(*origin), rotation)
+
+
+def _bounds_for_view(view: Any, document: Any | None) -> ModelBounds | None:
+    if view is not None and view == _bounds_view:
+        return _section_bounds
+    return model_bounds(_document_objects(document))
 
 
 def is_section_view_active(view: Any | None = None) -> bool:
@@ -1564,7 +1576,7 @@ def _observe_section_document(view: Any, document: Any | None) -> None:
 
 def _remove_dragger(view: Any) -> None:
     global _dragger_node, _dragger_busy, _drag_start_settings
-    global _dragger_view, _dragger_document
+    global _dragger_view, _dragger_document, _bounds_view, _section_bounds
     global _drag_start_origin, _drag_start_axes, _drag_start_rot_counts, _triad_parts
     scene = _scene_from_view(view)
     _stop_dragger_poll()
@@ -1572,6 +1584,8 @@ def _remove_dragger(view: Any) -> None:
     _dragger_node = None
     _dragger_view = None
     _dragger_document = None
+    _bounds_view = None
+    _section_bounds = None
     _dragger_busy = False
     _drag_start_settings = None
     _drag_start_origin = None
@@ -1615,7 +1629,7 @@ def _sync_overlay(
     if scene is None:
         return
     objects = _document_objects(document)
-    bounds = model_bounds(objects)
+    bounds = _bounds_for_view(view, document)
     center = bounds.center if bounds is not None else (0.0, 0.0, 0.0)
     origin, normal = clip_plane_from_settings(settings, center)
     if settings.show_plane:
@@ -2011,7 +2025,11 @@ def _set_dragger_pose(
 
 
 def _dragger_center(document: Any | None) -> tuple[float, float, float]:
-    bounds = model_bounds(_document_objects(document))
+    bounds = (
+        _bounds_for_view(_dragger_view, document)
+        if document is None or document is _dragger_document
+        else model_bounds(_document_objects(document))
+    )
     if bounds is None:
         return (0.0, 0.0, 0.0)
     return bounds.center
@@ -2305,7 +2323,7 @@ def _autoscale_dragger(view: Any, origin: tuple[float, float, float]) -> None:
         return
     scale = world_scale_for_ndc(view, origin, _DRAGGER_NDC_SIZE)
     if scale is None or scale <= 0.0:
-        bounds = model_bounds(_document_objects(None))
+        bounds = _bounds_for_view(view, None)
         if bounds is None:
             scale = 20.0
         else:
@@ -2563,7 +2581,7 @@ def _sync_dragger(
     scene = _scene_from_view(view)
     if scene is None:
         return
-    bounds = model_bounds(_document_objects(document))
+    bounds = _bounds_for_view(view, document)
     center = bounds.center if bounds is not None else (0.0, 0.0, 0.0)
     origin, _normal = clip_plane_from_settings(settings, center)
     axes = section_cs_axes(
@@ -2642,11 +2660,15 @@ def _apply_clip(
     preview: bool = False,
     sync_dragger: bool = True,
 ) -> None:
+    global _bounds_view, _section_bounds
     if _dragger_view is not None and view != _dragger_view:
         # The section editor owns one scene. Transfer it before attaching new
         # nodes, rather than leaving the previous view with dangling wrappers.
         set_section_view(False, view=_dragger_view, document=_dragger_document)
-    placement = section_view_placement(document, settings)
+    if not preview or view != _bounds_view:
+        _section_bounds = model_bounds(_document_objects(document))
+        _bounds_view = view
+    placement = _placement_from_bounds(settings, _section_bounds)
     if is_section_view_active(view):
         if not _update_clip_plane(view, placement):
             view.toggleClippingPlane(toggle=0)
