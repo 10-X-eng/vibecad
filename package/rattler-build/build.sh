@@ -39,7 +39,9 @@ if [[ ${CMAKE_PRESET} == conda-macos-release ]]; then
     CMAKE_PLATFORM_FLAGS+=(-DFREECAD_USE_3DCONNEXION:BOOL=ON)
     CMAKE_PLATFORM_FLAGS+=(-D3DCONNEXIONCLIENT_FRAMEWORK:FILEPATH="/Library/Frameworks/3DconnexionClient.framework")
 
-    CXXFLAGS="${CXXFLAGS} -D_LIBCPP_DISABLE_AVAILABILITY"
+    # We bundle conda's libc++, whose symbols are newer than the system libc++.
+    # Export explicitly: newer compiler environments may not export CXXFLAGS.
+    export CXXFLAGS="${CXXFLAGS:-} -D_LIBCPP_DISABLE_AVAILABILITY"
 
     # Use MACOS_DEPLOYMENT_TARGET from environment, default to 11.0 for backwards compat.
     # Note that CI sets this per target: 10.13 (Intel), 11.0 (ARM legacy), 15.0 (ARM modern)
