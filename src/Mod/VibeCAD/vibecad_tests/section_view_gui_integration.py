@@ -24,6 +24,7 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         box.Length = 40.0
         box.Width = 20.0
         box.Height = 10.0
+        self.assertTrue(self._wait_until(self.document.isClosable))
         self.document.recompute()
         view = Gui.ActiveDocument.ActiveView
         if VibeCADSectionView.is_section_view_active(view):
@@ -46,6 +47,7 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
             VibeCADSectionView.set_section_view(False, view=view, document=self.document)
         self._process_events()
         if "VibeCADSectionViewCommand" in App.listDocuments():
+            self.assertTrue(self._wait_until(self.document.isClosable))
             App.closeDocument("VibeCADSectionViewCommand")
         self._process_events()
 
@@ -58,6 +60,7 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         loop = QtCore.QEventLoop()
         QtCore.QTimer.singleShot(wait_ms, loop.quit)
         loop.exec()
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
 
     def _wait_until(self, predicate, timeout_ms=5000):
         timer = QtCore.QElapsedTimer()
@@ -164,7 +167,9 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         )
         self.assertIsNotNone(dock)
         self.assertTrue(dock.isVisible())
-        self.assertEqual(int(Gui.getMainWindow().dockWidgetArea(dock)), int(QtCore.Qt.RightDockWidgetArea))
+        self.assertEqual(
+            Gui.getMainWindow().dockWidgetArea(dock), QtCore.Qt.RightDockWidgetArea
+        )
         self.assertIsNotNone(dialog.findChild(QtWidgets.QLabel, "sectionPlaneLabel"))
         self.assertIsNotNone(dialog.findChild(QtWidgets.QDoubleSpinBox, "sectionOffset"))
         self.assertIsNotNone(dialog.findChild(QtWidgets.QPushButton, "sectionFlip"))
@@ -194,3 +199,18 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
             self._wait_until(lambda: self._section_dialog() is None),
             "Section View did not close its editor dialog.",
         )
+
+    def test_close_with_section_enabled_releases_poll_and_scene(self):
+        view = Gui.ActiveDocument.ActiveView
+        VibeCADSectionView.set_section_view(True, view=view, document=self.document)
+        self.assertIsNotNone(VibeCADSectionView._poll_timer)
+        self.assertIsNotNone(VibeCADSectionView._dragger_node)
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        App.closeDocument(self.document.Name)
+        self._process_events()
+        self.assertIsNone(VibeCADSectionView._poll_timer)
+        self.assertIsNone(VibeCADSectionView._dragger_node)
+        self.assertIsNone(VibeCADSectionView._overlay_node)
+        self.assertIsNone(VibeCADSectionView._cap_node)
+        self.assertIsNone(VibeCADSectionView._dragger_document)
+        VibeCADSectionView._poll_dragger()

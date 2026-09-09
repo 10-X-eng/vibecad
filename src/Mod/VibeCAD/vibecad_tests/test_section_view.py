@@ -944,3 +944,49 @@ def test_look_direction_reads_indexable_vectors() -> None:
     assert section.initial_section_settings(
         section._view_look_direction(view)
     ).plane == "right"
+
+
+def test_closing_section_document_releases_scene_before_view_destruction(monkeypatch):
+    owner = object()
+    other = object()
+    view = _View(clipped=True)
+    calls = []
+    monkeypatch.setattr(section, "_dragger_view", view, raising=False)
+    monkeypatch.setattr(section, "_dragger_document", owner, raising=False)
+    monkeypatch.setattr(section, "_stop_selection_snap", lambda: calls.append("selection"))
+    monkeypatch.setattr(section, "_close_ui", lambda: calls.append("dialog"))
+    monkeypatch.setattr(section, "_remove_overlay", lambda v: calls.append(("overlay", v)))
+    monkeypatch.setattr(section, "_remove_dragger", lambda v: calls.append(("dragger", v)))
+    observer = section._SectionViewDocumentObserver()
+    observer.slotDeletedDocument(SimpleNamespace(Document=other))
+    assert calls == []
+    observer.slotDeletedDocument(SimpleNamespace(Document=owner))
+    assert calls == ["selection", ("dragger", view), ("overlay", view), "dialog"]
+    assert section._dragger_view is None
+    assert section._dragger_document is None
+
+
+def test_section_poll_pauses_when_another_document_is_active(monkeypatch):
+    owner = object()
+    calls = []
+    monkeypatch.setattr(section, "_dragger_document", owner)
+    monkeypatch.setattr(section, "_dragger_node", object())
+    monkeypatch.setattr(section, "_stop_dragger_poll", lambda: calls.append("stop"))
+    monkeypatch.setattr(section, "_start_dragger_poll", lambda: calls.append("start"))
+    observer = section._SectionViewDocumentObserver()
+    observer.slotActivateDocument(SimpleNamespace(Document=object()))
+    observer.slotActivateDocument(SimpleNamespace(Document=owner))
+    assert calls == ["stop", "start"]
+
+
+def test_new_section_view_releases_previous_scene_first(monkeypatch):
+    previous = _View(clipped=True)
+    current = _View()
+    calls = []
+    monkeypatch.setattr(section, "_dragger_view", previous)
+    monkeypatch.setattr(section, "set_section_view", lambda value, **kw: calls.append((value, kw["view"])))
+    monkeypatch.setattr(section, "section_view_placement", lambda *_: object())
+    monkeypatch.setattr(section, "_sync_overlay", lambda *_a, **_kw: calls.append("overlay"))
+    monkeypatch.setattr(section, "_sync_dragger", lambda *_a, **_kw: calls.append("dragger"))
+    section._apply_clip(current, None, section.SectionViewSettings())
+    assert calls == [(False, previous), "overlay", "dragger"]

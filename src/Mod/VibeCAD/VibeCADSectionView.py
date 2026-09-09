@@ -130,6 +130,9 @@ _settings = SectionViewSettings()
 _overlay_node: Any | None = None
 _cap_node: Any | None = None
 _dragger_node: Any | None = None
+_dragger_view: Any | None = None
+_dragger_document: Any | None = None
+_section_document_observer: Any | None = None
 _dragger_busy = False
 _drag_start_settings: SectionViewSettings | None = None
 _drag_start_origin: tuple[float, float, float] | None = None
@@ -1523,13 +1526,52 @@ def _remove_overlay(view: Any) -> None:
     _cap_node = None
 
 
+class _SectionViewDocumentObserver:
+    def slotActivateDocument(self, gui_document: Any) -> None:
+        if _dragger_node is None:
+            return
+        if getattr(gui_document, "Document", None) is _dragger_document:
+            _start_dragger_poll()
+        else:
+            _stop_dragger_poll()
+
+    def slotDeletedDocument(self, gui_document: Any) -> None:
+        global _dragger_view, _dragger_document
+        if getattr(gui_document, "Document", None) is not _dragger_document:
+            return
+        # Gui's delete notification precedes scene destruction. Pivy wrappers
+        # must be released here, before the poll timer can see deleted nodes.
+        view = _dragger_view
+        _stop_selection_snap()
+        _remove_dragger(view)
+        _remove_overlay(view)
+        _dragger_view = None
+        _dragger_document = None
+        _close_ui()
+
+
+def _observe_section_document(view: Any, document: Any | None) -> None:
+    global _dragger_view, _dragger_document, _section_document_observer
+    import FreeCADGui as Gui
+
+    if _section_document_observer is None:
+        observer = _SectionViewDocumentObserver()
+        Gui.addDocumentObserver(observer)
+        _section_document_observer = observer
+    _dragger_view = view
+    _dragger_document = document if document is not None else _active_document()
+
+
 def _remove_dragger(view: Any) -> None:
     global _dragger_node, _dragger_busy, _drag_start_settings
+    global _dragger_view, _dragger_document
     global _drag_start_origin, _drag_start_axes, _drag_start_rot_counts, _triad_parts
     scene = _scene_from_view(view)
     _stop_dragger_poll()
     _detach_scene_node(scene, _dragger_node)
     _dragger_node = None
+    _dragger_view = None
+    _dragger_document = None
     _dragger_busy = False
     _drag_start_settings = None
     _drag_start_origin = None
@@ -2569,6 +2611,7 @@ def _sync_dragger(
             _triad_parts = None
             return
         _dragger_node = dragger
+        _observe_section_document(view, document)
         _start_dragger_poll()
     _set_dragger_pose(coin, _dragger_node, origin, axes)
     _autoscale_dragger(view, origin)
@@ -2599,6 +2642,10 @@ def _apply_clip(
     preview: bool = False,
     sync_dragger: bool = True,
 ) -> None:
+    if _dragger_view is not None and view != _dragger_view:
+        # The section editor owns one scene. Transfer it before attaching new
+        # nodes, rather than leaving the previous view with dangling wrappers.
+        set_section_view(False, view=_dragger_view, document=_dragger_document)
     placement = section_view_placement(document, settings)
     if is_section_view_active(view):
         if not _update_clip_plane(view, placement):
