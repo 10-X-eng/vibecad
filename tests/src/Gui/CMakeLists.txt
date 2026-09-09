@@ -29,6 +29,11 @@ setup_qt_test(MacroTaskAcceptance)
 setup_qt_test(QuantitySpinBox)
 set(RenderMeshController_LIBS PartGui Part)
 setup_qt_test(RenderMeshController)
+setup_qt_test(UnitSettings)
+
+target_sources(UnitSettings_Tests_run PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/Gui/PreferencePages/DlgSettingsGeneral.cpp
+)
 
 target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main
