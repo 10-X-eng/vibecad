@@ -19,8 +19,14 @@
  *                                                                            *
  ******************************************************************************/
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <future>
+#include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <QAbstractEventDispatcher>
 #include <QCoreApplication>
@@ -58,6 +64,109 @@ App::HostWorkflow<int> orderedWorkerPhases(std::vector<std::thread::id>& threads
     }
     co_return 0;
 }
+
+App::HostWorkflow<int> singleComputePhase(std::thread::id& worker, std::thread::id& owner)
+{
+    co_yield App::HostWorkflow<int>::Step {App::HostRuntime::Lane::Compute, [&](std::stop_token) {
+        worker = std::this_thread::get_id();
+    }};
+    owner = std::this_thread::get_id();
+    co_return 11;
+}
+
+class QueuedOwner
+{
+public:
+    QueuedOwner()
+        : thread([this] { run(); })
+    {
+        started.get_future().wait();
+    }
+
+    QueuedOwner(const QueuedOwner&) = delete;
+    QueuedOwner& operator=(const QueuedOwner&) = delete;
+
+    ~QueuedOwner()
+    {
+        {
+            std::lock_guard lock(mutex);
+            stop = true;
+        }
+        cv.notify_one();
+        thread.join();
+    }
+
+    std::thread::id id() const
+    {
+        return ownerId;
+    }
+
+    void dispatch(std::function<void()> work)
+    {
+        {
+            std::lock_guard lock(mutex);
+            queue.push_back(std::move(work));
+        }
+        cv.notify_one();
+    }
+
+private:
+    void run()
+    {
+        ownerId = std::this_thread::get_id();
+        started.set_value();
+        std::unique_lock lock(mutex);
+        while (true) {
+            cv.wait(lock, [&] { return stop || !queue.empty(); });
+            if (queue.empty()) {
+                if (stop) {
+                    break;
+                }
+                continue;
+            }
+            auto work = std::move(queue.front());
+            queue.pop_front();
+            lock.unlock();
+            work();
+            lock.lock();
+        }
+    }
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<std::function<void()>> queue;
+    std::thread thread;
+    std::thread::id ownerId;
+    std::promise<void> started;
+    bool stop {false};
+};
+
+std::thread::id queuedOwnerId;
+std::mutex queuedOwnerMutex;
+std::deque<std::function<void()>> queuedOwnerWork;
+
+bool queuedOwnerIsMainThread()
+{
+    return std::this_thread::get_id() == queuedOwnerId;
+}
+
+void queuedOwnerInvoke(std::function<void()>&& work, bool blocking)
+{
+    if (blocking || std::this_thread::get_id() == queuedOwnerId) {
+        work();
+        return;
+    }
+    std::lock_guard lock(queuedOwnerMutex);
+    queuedOwnerWork.push_back(std::move(work));
+}
+
+std::deque<std::function<void()>> takeQueuedOwnerWork()
+{
+    std::lock_guard lock(queuedOwnerMutex);
+    std::deque<std::function<void()>> pending;
+    pending.swap(queuedOwnerWork);
+    return pending;
+}
 }
 
 TEST(HostWorkflowTest, WorkerErrorsReturnToTheSuspendedPhase)
@@ -87,6 +196,78 @@ TEST(HostWorkflowTest, WorkerErrorsReturnToTheSuspendedPhase)
     EXPECT_EQ(orderedWorkerPhases(threads).runSynchronously(), 7);
     ASSERT_EQ(threads.size(), 2);
     EXPECT_EQ(threads.front(), std::this_thread::get_id());
+}
+
+TEST(HostWorkflowTest, RunAsyncResumesOnTheOwnerAndRunsWorkOffIt)
+{
+    using namespace std::chrono_literals;
+    App::HostRuntime runtime(2);
+    QueuedOwner owner;
+    std::thread::id worker;
+    std::thread::id resumed;
+    std::thread::id finishedOn;
+    auto future = singleComputePhase(worker, resumed).runAsync(
+        runtime,
+        [&](std::function<void()> resume) { owner.dispatch(std::move(resume)); },
+        [&] { finishedOn = std::this_thread::get_id(); }
+    );
+    ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(future.get(), 11);
+    EXPECT_EQ(resumed, owner.id());
+    EXPECT_EQ(finishedOn, owner.id());
+    EXPECT_NE(worker, std::thread::id {});
+    EXPECT_NE(worker, owner.id());
+    EXPECT_NE(worker, std::this_thread::get_id());
+}
+
+TEST(HostWorkflowTest, RunAsyncWorkerErrorsReturnToTheOwner)
+{
+    using namespace std::chrono_literals;
+    App::HostRuntime runtime(2);
+    QueuedOwner owner;
+    std::vector<std::thread::id> threads;
+    std::thread::id finishedOn;
+    auto future = orderedWorkerPhases(threads).runAsync(
+        runtime,
+        [&](std::function<void()> resume) { owner.dispatch(std::move(resume)); },
+        [&] { finishedOn = std::this_thread::get_id(); }
+    );
+    ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(future.get(), 7);
+    ASSERT_EQ(threads.size(), 2);
+    for (const auto thread : threads) {
+        EXPECT_NE(thread, owner.id());
+        EXPECT_NE(thread, std::this_thread::get_id());
+    }
+    EXPECT_EQ(finishedOn, owner.id());
+}
+
+TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
+{
+    using namespace std::chrono_literals;
+    App::HostRuntime runtime(1);
+    QueuedOwner owner;
+    std::thread::id worker;
+    std::thread::id resumed;
+    std::atomic<int> dispatches {0};
+    std::atomic<int> finishedCalls {0};
+    auto future = singleComputePhase(worker, resumed).runAsync(
+        runtime,
+        [&](std::function<void()> resume) {
+            if (dispatches.fetch_add(1) >= 1) {
+                throw std::runtime_error("owner dispatch failed");
+            }
+            owner.dispatch(std::move(resume));
+        },
+        [&] { ++finishedCalls; }
+    );
+    ASSERT_EQ(future.wait_for(2s), std::future_status::ready)
+        << "Owner dispatch failure must complete the workflow future; HostRuntime "
+           "swallows the completion exception and the coordinator currently hangs";
+    EXPECT_THROW(future.get(), std::runtime_error);
+    EXPECT_EQ(resumed, std::thread::id {});
+    EXPECT_NE(worker, std::thread::id {});
+    EXPECT_EQ(finishedCalls.load(), 1);
 }
 
 class AsyncRecomputeTest: public ::testing::Test
@@ -425,4 +606,68 @@ TEST_F(AsyncRecomputeTest, PendingStateCoversQueuedAndInFlightWork)
         std::this_thread::sleep_for(10ms);
     }
     EXPECT_FALSE(App::GetApplication().hasPendingRecomputeRequest(_docName));
+}
+
+TEST_F(AsyncRecomputeTest, FinishedSignalDoesNotAdoptAReplacementDocument)
+{
+    using namespace std::chrono_literals;
+    auto& application = App::GetApplication();
+    queuedOwnerId = std::this_thread::get_id();
+    takeQueuedOwnerWork();
+    App::MainThreadSignalConfig::setHooks(&queuedOwnerIsMainThread, &queuedOwnerInvoke);
+    BOOST_SCOPE_EXIT_ALL(&) {
+        App::MainThreadSignalConfig::setHooks(nullptr, nullptr);
+        takeQueuedOwnerWork();
+    };
+
+    auto* object = dynamic_cast<App::FeatureTestAsyncBlocker*>(
+        _doc->addObject("App::FeatureTestAsyncBlocker", "BlockingFeature")
+    );
+    ASSERT_NE(object, nullptr);
+    const std::string originalUid = _doc->Uid.getValueStr();
+
+    std::atomic<int> finishedAfterReplacement {0};
+    fastsignals::scoped_connection finished =
+        application.signalRecomputeRequestFinished.connect([&](const std::string& name) {
+            if (name != _docName) {
+                return;
+            }
+            auto* current = application.getDocument(name.c_str());
+            if (current && current->Uid.getValueStr() != originalUid) {
+                ++finishedAfterReplacement;
+            }
+        });
+
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    BOOST_SCOPE_EXIT_ALL(&) {
+        App::FeatureTestAsyncBlocker::releaseBlocker();
+    };
+
+    object->touch();
+    application.queueRecomputeRequest(App::RecomputeRequest::fromDocumentObject(*object));
+    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(2s));
+    App::FeatureTestAsyncBlocker::releaseBlocker();
+
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while ((application.hasPendingRecomputeRequest(_docName)
+            || _doc->isCooperativeMutationActive()
+            || _doc->isPresentationUpdateActive())
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(10ms);
+    }
+    ASSERT_FALSE(application.hasPendingRecomputeRequest(_docName));
+    ASSERT_FALSE(_doc->isCooperativeMutationActive());
+    ASSERT_TRUE(application.closeDocument(_docName.c_str()));
+    _doc = nullptr;
+    auto* replacement = application.newDocument(_docName.c_str(), "testUser");
+    ASSERT_NE(replacement, nullptr);
+    EXPECT_NE(replacement->Uid.getValueStr(), originalUid);
+
+    for (auto& work : takeQueuedOwnerWork()) {
+        work();
+    }
+
+    EXPECT_EQ(finishedAfterReplacement.load(), 0)
+        << "A queued recompute-finished notification must not adopt a replacement "
+           "document that reused the cancelled document's name";
 }
