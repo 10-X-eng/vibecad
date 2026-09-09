@@ -28,7 +28,12 @@ requirements:
   build:
     - ccache
     - cmake
-    - compilers>=1.10,<1.11
+    - if: osx
+      then:
+        - compilers>=2,<3
+        - libcxx>=21,<22
+      else:
+        - compilers>=1.10,<1.11
     - doxygen
     - gtest
     - ninja
@@ -137,6 +142,10 @@ requirements:
     - xerces-c
     - yaml-cpp
     - zlib
+
+    - if: osx
+      then:
+        - libcxx>=21,<22
 
     - if: win
       then:
