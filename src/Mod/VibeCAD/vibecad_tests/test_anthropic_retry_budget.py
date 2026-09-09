@@ -193,3 +193,66 @@ def test_stream_status_retry_limit_survives_mixed_failures(run_transport):
     )
     assert len(requests) == 5
     assert messages[-1]["type"] == "error"
+
+
+def test_deferred_compaction_metadata_retains_retries(monkeypatch):
+    real_client = anthropic.Anthropic
+    metadata = []
+    generations = []
+    clients = []
+
+    def handle(request):
+        if request.method == "GET":
+            model = request.url.path.rsplit("/", 1)[-1]
+            metadata.append(model)
+            if model == "compact" and metadata.count(model) < 3:
+                return httpx.Response(503, json={
+                    "type": "error", "error": {
+                        "type": "overloaded_error", "message": "Temporary"
+                    },
+                })
+            return httpx.Response(200, json={
+                "id": model, "type": "model", "display_name": model,
+                "created_at": "2026-01-01T00:00:00Z", "max_tokens": 8192,
+            })
+        generations.append(clients[0].max_retries)
+        events = b"".join(_response_events())
+        if len(generations) == 1:
+            events = events.replace(b'"end_turn"', b'"max_tokens"')
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              content=events)
+
+    def make_client(**kwargs):
+        client = real_client(
+            **kwargs, http_client=httpx.Client(transport=httpx.MockTransport(handle))
+        )
+        clients.append(client)
+        return client
+
+    messages = []
+
+    class Connection:
+        def send(self, message):
+            messages.append(message)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(anthropic, "Anthropic", make_client)
+    monkeypatch.setattr(provider, "_validate_provider_wire_surface", lambda _: None)
+    monkeypatch.setattr(provider.time, "sleep", lambda _: None)
+    monkeypatch.setattr(provider, "_anthropic_compact_turn_in_thread",
+                        lambda **_: {"current_request": "Finish the model."})
+    try:
+        provider._anthropic_child_main(
+            Connection(), "Finish the model.", {
+                "provider_tool_schemas": [],
+                "_vibecad_provider_options": {"compaction_model": "compact"},
+            }, "primary", "fake-key", None, 1.0, 2, False,
+        )
+    finally:
+        for client in clients:
+            client.close()
+    assert metadata == ["primary", "compact", "compact", "compact"]
+    assert generations == [0, 0]
+    assert messages[-1]["type"] == "done"
