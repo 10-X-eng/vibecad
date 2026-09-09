@@ -62,6 +62,95 @@ class AssemblyObject(Part):
         ...
 
     @constmethod
+    def startSimulation(self, simulationObject: DocumentObject, /) -> int:
+        """Capture inputs and submit a detached native simulation to HostRuntime.
+
+        Call on the GUI/document owner. Existing solved frames remain available
+        until finishSimulation adopts a successful, still-current result.
+        Returns a request token. Pass it to finish/cancel to address only this job.
+        """
+        ...
+
+    @constmethod
+    def startSimulationPlayback(self, simulationObject: DocumentObject, /) -> int:
+        """Prepare playback asynchronously, reusing persisted frames for exact inputs.
+
+        Uses finishSimulation and the asynchronous frame methods. Cached poses
+        do not replace the last full native solver or its diagnostics. Request
+        startSimulation instead when complete solver state is required.
+        Missing, corrupt or stale cached data is regenerated on HostRuntime.
+        """
+        ...
+
+    @constmethod
+    def finishSimulation(self, request: int = 0, /) -> bool:
+        """Adopt a ready simulation without waiting; return False while running.
+
+        Raises RuntimeError on cancellation, invalidated inputs or solver failure.
+        Call on the same document owner as startSimulation.
+        A superseded token raises without consuming another caller's job.
+        Omitting the token addresses the current job.
+        """
+        ...
+
+    @constmethod
+    def cancelSimulation(self, request: int = 0, /) -> None:
+        """Cancel without waiting. Superseded tokens leave the current job alone."""
+        ...
+
+    @constmethod
+    def requestSimulationFrame(self, index: int, /) -> int:
+        """Prepare an async-generated simulation frame on the native worker pool.
+
+        Returns a request token. A newer request cancels the previous frame.
+        Inputs must still match the adopted asynchronous simulation.
+        """
+        ...
+
+    @constmethod
+    def getSimulationFrame(self, index: int, /) -> Any:
+        """Return one cached pose without scheduling work or changing the document.
+
+        The result is a list of ``(object_name, placement)`` pairs intended for
+        direct ViewProvider presentation on the GUI owner thread.
+        """
+        ...
+
+    @constmethod
+    def finishSimulationFrame(self, request: int, /) -> bool:
+        """Apply a ready frame on its document owner without waiting.
+
+        False means preparation is still running. Superseded, cancelled or
+        invalidated requests raise without applying their placements.
+        """
+        ...
+
+    @constmethod
+    def takeSimulationFrame(self, request: int, /) -> Any:
+        """Consume a ready frame for graphics-only presentation.
+
+        Returns None while preparation is running. A ready result is a list of
+        ``(object_name, placement)`` pairs and does not change document properties.
+        Superseded, cancelled, or invalidated requests raise.
+        """
+        ...
+
+    @constmethod
+    def cancelSimulationFrame(self, request: int = 0, /) -> None:
+        """Cancel one frame token (or the current frame with zero), without waiting."""
+        ...
+
+    @constmethod
+    def setSimulationPresentation(self, active: bool, /) -> bool:
+        """Scope transient component placements on the owner thread.
+
+        Return the previous state, which must be restored in finally. Do not
+        process GUI events, generate a simulation, or yield inside the scope.
+        Other properties and objects continue to invalidate solved inputs.
+        """
+        ...
+
+    @constmethod
     def updateForFrame(self, index: int, /) -> None:
         """
         Update entire assembly to frame number specified.

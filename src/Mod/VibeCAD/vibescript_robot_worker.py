@@ -28,7 +28,6 @@ _OPERATION_OUTPUT = {
     "dressup": "dressup",
     "simulate": "simulation",
 }
-_MAX_DEFINITION_BYTES = 1_000_000
 _MAX_SIMULATION_SAMPLES = 100_000
 _SAMPLE_WIDTH = 15
 
@@ -160,12 +159,6 @@ def _encoded(value: Any) -> bytes:
             stage="definition_contract",
             exception_type=type(exc).__name__,
         ) from exc
-    if len(payload) > _MAX_DEFINITION_BYTES:
-        raise _fail(
-            f"A Robot definition exceeds {_MAX_DEFINITION_BYTES} JSON bytes.",
-            stage="definition_contract",
-            json_bytes=len(payload),
-        )
     return payload
 
 

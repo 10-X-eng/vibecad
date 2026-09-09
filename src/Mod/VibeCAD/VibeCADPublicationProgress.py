@@ -90,6 +90,14 @@ class PublicationProgress:
         self._emit(completed=self._total, phase="completed")
         self._yield_if_due(now)
 
+    def finalizing(self) -> None:
+        """Report post-mutation rendering and projection work."""
+
+        now = self._clock()
+        self._last_completed = self._total
+        self._emit(completed=self._total, phase="finalizing")
+        self._yield_if_due(now)
+
     def fail(self) -> None:
         now = self._clock()
         self._emit(completed=self._last_completed, phase="failed")

@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <Inventor/actions/SoGLRenderAction.h>
 #include <Inventor/bundles/SoMaterialBundle.h>
 #include <Inventor/elements/SoCoordinateElement.h>
@@ -35,6 +36,9 @@
 #include <Inventor/misc/SoState.h>
 
 #include "SoFCShapeObject.h"
+
+#include <Base/Exception.h>
+#include <Mod/Part/App/RenderMesh.h>
 
 
 using namespace PartGui;
@@ -54,6 +58,71 @@ SoFCShape::SoFCShape()
 void SoFCShape::initClass()
 {
     SO_NODE_INIT_CLASS(SoFCShape, SoSeparator, "Separator");
+}
+
+void PartGui::bindPreparedRenderMesh(
+    std::shared_ptr<const Part::RenderMesh> mesh,
+    std::shared_ptr<const Part::RenderMesh>& installedMesh,
+    SoCoordinate3* coords,
+    SoBrepFaceSet* faceset,
+    SoNormal* norm,
+    SoBrepEdgeSet* lineset,
+    SoBrepPointSet* nodeset,
+    bool bindLineMaterialIndices
+)
+{
+    if (!mesh) {
+        throw Base::ValueError("Cannot bind an empty render mesh artifact");
+    }
+    const auto coinSize = [](std::size_t size) {
+        if (size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            throw Base::MemoryException("Render mesh exceeds Coin field capacity");
+        }
+        return static_cast<int>(size);
+    };
+
+    const int vertexCount = coinSize(mesh->vertexCount());
+    const int normalCount = coinSize(mesh->normalCount());
+    const int triangleIndexCount = coinSize(mesh->triangleIndices.size());
+    const int faceCount = coinSize(mesh->faceTriangleCounts.size());
+    const int lineIndexCount = coinSize(mesh->lineIndices.size());
+    const int lineMaterialCount = bindLineMaterialIndices
+        ? coinSize(mesh->lineMaterialIndices.size())
+        : 0;
+
+    // Coin borrows these buffers. Keep the prior generation alive until every
+    // field has been rebound, then retain the new generation with this node.
+    auto previous = std::move(installedMesh);
+    installedMesh = mesh;
+    coords->point.setValuesPointer(vertexCount, mesh->vertices.data());
+    norm->vector.setValuesPointer(normalCount, mesh->normals.data());
+    faceset->coordIndex.setValuesPointer(
+        triangleIndexCount,
+        mesh->triangleIndices.data()
+    );
+    faceset->partIndex.setValuesPointer(faceCount, mesh->faceTriangleCounts.data());
+    lineset->coordIndex.setValuesPointer(lineIndexCount, mesh->lineIndices.data());
+    if (bindLineMaterialIndices) {
+        lineset->materialIndex.setValuesPointer(
+            lineMaterialCount,
+            mesh->lineMaterialIndices.data()
+        );
+    }
+    nodeset->startIndex.setValue(mesh->vertexStart);
+}
+
+void SoFCShape::bindRenderMesh(std::shared_ptr<const Part::RenderMesh> mesh)
+{
+    bindPreparedRenderMesh(
+        std::move(mesh),
+        installedRenderMesh,
+        coords,
+        faceset,
+        norm,
+        lineset,
+        nodeset,
+        true
+    );
 }
 
 SO_NODE_SOURCE(SoFCControlPoints)

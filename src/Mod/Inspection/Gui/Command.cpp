@@ -71,7 +71,10 @@ bool CmdVisualInspection::isActive()
     App::Document* document = App::GetApplication().getActiveDocument();
     return document && PartGui::canStartRetainedModelingTask(document)
         && !Gui::Control().activeDialog()
-        && InspectionGui::VisualInspection::candidateObjects(document).size() >= 2;
+        // Enablement only needs two eligible sources. The dialog requests the
+        // complete list when opened; do not resolve every shape on each shared
+        // command refresh after the answer is already known.
+        && InspectionGui::VisualInspection::candidateObjects(document, 2).size() == 2;
 }
 
 //--------------------------------------------------------------------------------------

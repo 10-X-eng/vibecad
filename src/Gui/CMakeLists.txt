@@ -951,6 +951,7 @@ SET(View3D_SRCS
     View3DSettings.h
     CoinRiftWidget.h
     View3DViewerPy.h
+    AsyncImageExport.h
     NaviCube.h
 )
 SOURCE_GROUP("View3D" FILES ${View3D_SRCS})
@@ -1182,6 +1183,7 @@ SOURCE_GROUP("View3D\\Inventor" FILES ${Inventor_SRCS})
 SET(Widget_CPP_SRCS
     ComboLinks.cpp
     FeatureTimeline.cpp
+    FrameBudget.cpp
     FileDialog.cpp
     MainWindow.cpp
     MainWindowPy.cpp
@@ -1214,6 +1216,8 @@ endif(WIN32)
 SET(Widget_HPP_SRCS
     ComboLinks.h
     FeatureTimeline.h
+    FrameBudget.h
+    FrameSequence.h
     FileDialog.h
     FileDialogInternal.h
     MainWindow.h

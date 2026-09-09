@@ -208,6 +208,15 @@ bool GroupExtension::hasObject(const DocumentObject* obj, bool recursive) const
     }
 
     try {
+        if (!recursive) {
+            const int member = obj ? Group.findObject(obj) : -1;
+            const int cycle = Group.findObject(getExtendedObject());
+            if (cycle >= 0 && (member < 0 || cycle < member)) {
+                throw Base::RuntimeError(
+                    "Cyclic dependencies detected: Search cannot be performed");
+            }
+            return member >= 0;
+        }
         const std::vector<DocumentObject*>& grp = Group.getValues();
         for (auto child : grp) {
 
@@ -330,8 +339,7 @@ DocumentObject* GroupExtension::getGroupOfObject(const DocumentObject* obj)
             ext = o->getExtension(GroupExtensionPython::getExtensionClassTypeId(), false, true);
         }
         if (ext) {
-            auto grp = static_cast<GroupExtension*>(ext)->Group.getValues();
-            if (std::find(grp.begin(), grp.end(), obj) != grp.end()) {
+            if (static_cast<GroupExtension*>(ext)->Group.findObject(obj) >= 0) {
                 return o;
             }
         }
@@ -369,8 +377,7 @@ void GroupExtension::extensionOnChanged(const Property* p)
                 for (auto in : list) {
                     auto ext = in->getExtension(GroupExtension::getExtensionClassTypeId(), false, true);
                     if (ext && (in != getExtendedObject())) {
-                        auto grp = static_cast<GroupExtension*>(ext)->Group.getValues();
-                        if (std::find(grp.begin(), grp.end(), obj) != grp.end()) {
+                        if (static_cast<GroupExtension*>(ext)->Group.findObject(obj) >= 0) {
                             error = true;
                             corrected.erase(std::remove(corrected.begin(), corrected.end(), obj),
                                             corrected.end());

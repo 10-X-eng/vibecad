@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include "SoBrepEdgeSet.h"
@@ -40,8 +41,28 @@
 
 #include <Mod/Part/PartGlobal.h>
 
+namespace Part
+{
+struct RenderMesh;
+}
+
 namespace PartGui
 {
+
+/**
+ * Atomically lend immutable prepared arrays to Coin fields while retaining
+ * both the old and new owners for the duration of the rebind.
+ */
+PartGuiExport void bindPreparedRenderMesh(
+    std::shared_ptr<const Part::RenderMesh> mesh,
+    std::shared_ptr<const Part::RenderMesh>& installedMesh,
+    SoCoordinate3* coords,
+    SoBrepFaceSet* faceset,
+    SoNormal* norm,
+    SoBrepEdgeSet* lineset,
+    SoBrepPointSet* nodeset,
+    bool bindLineMaterialIndices = false
+);
 
 class PartGuiExport SoFCShape: public SoSeparator
 {
@@ -52,11 +73,17 @@ public:
     SoFCShape();
     static void initClass();
 
+    /** Install immutable worker-prepared buffers without copying them. */
+    void bindRenderMesh(std::shared_ptr<const Part::RenderMesh> mesh);
+
     SoCoordinate3* coords;
     SoNormal* norm;
     SoBrepFaceSet* faceset;
     SoBrepEdgeSet* lineset;
     SoBrepPointSet* nodeset;
+
+private:
+    std::shared_ptr<const Part::RenderMesh> installedRenderMesh;
 };
 
 class PartGuiExport SoFCControlPoints: public SoShape

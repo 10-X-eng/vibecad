@@ -78,6 +78,12 @@ public:
     //@{
     /// open a file
     void open(const char* FileName, const char* Module);
+    /// Interactive entry point; native restore is queued, not executed inline.
+    void openFileFromGui(const char* filename, const char* module);
+    /// Queue a native file open and report completion on the GUI owner.
+    std::stop_source openNativeDocumentAsync(
+        const char* filename, bool userInitiated = true,
+        std::function<void(App::OpenDocumentsResult)> completed = {});
     /// import a file into the document DocName
     void importFrom(const char* FileName, const char* DocName, const char* Module);
     /// Export objects from the document DocName to a single file
@@ -86,6 +92,8 @@ public:
     App::Document* reopen(App::Document* doc);
     /// Prompt about recomputing if needed
     static void checkForRecomputes();
+    /// The queued form uses the same prompt and the shared recompute runtime.
+    static void checkForRecomputes(bool queue);
     /// Prompt about PartialRestore
     void checkPartialRestore(App::Document* doc);
     /// Prompt for Errors on open
@@ -388,10 +396,11 @@ public:
     //@}
 
 private:
+    void resumeCloseAfterDocumentOpen();
     struct ApplicationP* d;
     /// workbench python dictionary
     PyObject* _pcWorkbenchDictionary;
-    NavlibInterface* pNavlibInterface;
+    NavlibInterface* pNavlibInterface {};
     static void init3DMouse(MainWindow* mainWindow, QApplication* qtApp);
 
     friend class ApplicationPy;

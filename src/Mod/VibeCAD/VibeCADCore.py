@@ -381,10 +381,12 @@ class VibeCADService:
     def invalidate_vibescript_reference_snapshots_many(
         self,
         objects: Any,
+        *,
+        identities: Any = (),
     ) -> None:
-        """Invalidate snapshots for many changed sources under one cache lock."""
+        """Invalidate changed sources, including identities captured before deletion."""
 
-        identities = {
+        identities = set(identities) | {
             identity
             for identity in (
                 self._vibescript_object_identity(obj)

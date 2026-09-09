@@ -5,6 +5,7 @@ add_subdirectory(propertyeditor)
 
 # Standard C++ GTest tests
 add_executable(Gui_tests_run
+        AsyncImageExport.cpp
         Assistant.cpp
         Camera.cpp
         DocumentProjection.cpp
@@ -23,8 +24,11 @@ add_executable(Gui_tests_run
 
 # Qt tests
 setup_qt_test(DockLayoutState)
+setup_qt_test(DocumentBulkMutation)
 setup_qt_test(MacroTaskAcceptance)
 setup_qt_test(QuantitySpinBox)
+set(RenderMeshController_LIBS PartGui Part)
+setup_qt_test(RenderMeshController)
 
 target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main

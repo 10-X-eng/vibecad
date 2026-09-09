@@ -30,6 +30,7 @@
 #include <gp_Sphere.hxx>
 
 #include <optional>
+#include <cstdlib>
 #include <string>
 #include <unordered_set>
 
@@ -61,6 +62,17 @@ namespace PartApp = Part;
 
 namespace
 {
+bool inactiveAssemblyObject(const App::DocumentObject* object, const char* reason)
+{
+    const auto* document = object ? object->getDocument() : nullptr;
+    if (std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") && document
+        && document->testStatus(App::Document::Recomputing)) {
+        Base::Console().log("VIBECAD_ASSEMBLY_INACTIVE object=%s reason=%s\n",
+                            object->getFullName(), reason);
+    }
+    return false;
+}
+
 struct ManagedAssemblySourceIdentity
 {
     std::string documentUid;
@@ -156,11 +168,11 @@ bool isAssemblyObjectActive(
     std::unordered_set<const App::DocumentObject*>& visiting
 )
 {
-    if (!App::DocumentTimeline::isObjectUsableAtCurrentPosition(
-            object
-        )
-        || !visiting.insert(object).second) {
-        return false;
+    if (!App::DocumentTimeline::isObjectUsableAtCurrentPosition(object)) {
+        return inactiveAssemblyObject(object, "history");
+    }
+    if (!visiting.insert(object).second) {
+        return inactiveAssemblyObject(object, "source_cycle");
     }
 
     bool active = true;
@@ -170,6 +182,9 @@ bool isAssemblyObjectActive(
             resolveManagedAssemblySource(*sourceIdentity);
         active = source
             && isAssemblyObjectActive(source, visiting);
+        if (!source) {
+            inactiveAssemblyObject(object, "managed_source_missing");
+        }
     }
 
     if (active && object->isLink()) {
@@ -180,6 +195,9 @@ bool isAssemblyObjectActive(
                 linkedObject,
                 visiting
             );
+        if (!linkedObject || linkedObject == object) {
+            inactiveAssemblyObject(object, "link_target_unresolved");
+        }
     }
     else if (active) {
         if (const auto* assemblyLink =
@@ -211,8 +229,11 @@ bool isTimelineOperationActive(const App::DocumentObject* object)
         std::unordered_set<const App::DocumentObject*> visiting;
         return isAssemblyObjectActive(object, visiting);
     }
+    catch (const std::exception& error) {
+        return inactiveAssemblyObject(object, error.what());
+    }
     catch (...) {
-        return false;
+        return inactiveAssemblyObject(object, "unknown_exception");
     }
 }
 

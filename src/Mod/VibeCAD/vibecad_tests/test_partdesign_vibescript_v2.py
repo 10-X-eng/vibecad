@@ -1180,6 +1180,7 @@ def test_unchanged_saved_partdesign_source_gets_private_compatibility_runtime(
     prepared = runtime.prepare_candidate(capture)
     assert prepared["source"] == source
     assert prepared["worker_request"]["compatibility_methods"] == ["pad"]
+    assert prepared["worker_request"]["max_operations"] == 0
     runtime.abandon_prepared_candidate(prepared)
 
 

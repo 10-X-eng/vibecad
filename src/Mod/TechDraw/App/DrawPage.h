@@ -22,10 +22,10 @@
 
 #pragma once
 
-#include <fastsignals/signal.h>
 #include <fastsignals/connection.h>
 
 #include <App/DocumentObject.h>
+#include <App/MainThreadSignal.h>
 #include <App/PropertyStandard.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
@@ -71,7 +71,7 @@ public:
     int removeView(App::DocumentObject* docObj);
     bool isTimelineStructuralChild(const App::DocumentObject* object) const override;
     short mustExecute() const override;
-    fastsignals::signal<void(const DrawPage*)> signalGuiPaint;
+    App::MainThreadSignal<void(const DrawPage*)> signalGuiPaint;
 
     /// returns the type name of the ViewProvider
     const char* getViewProviderName() const override

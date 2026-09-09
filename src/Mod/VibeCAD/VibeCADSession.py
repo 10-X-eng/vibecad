@@ -10,6 +10,7 @@ in the live state packet. There is no workflow phase machine or prose parser.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 from copy import deepcopy
 from dataclasses import dataclass
 import json
@@ -372,6 +373,16 @@ def _document_recompute_state(service: VibeCADService) -> dict[str, Any]:
         if document is not None
         else False,
     }
+
+
+def _start_service_tool(service, tool_name, arguments, *, asynchronous):
+    """Owner-thread entry; preserve schema validation for deferred handlers."""
+    if asynchronous and tool_name == 'assembly.play_simulation':
+        from tool_impl.service.assembly_play_simulation import run_async
+
+        service.registry.get(tool_name).spec.validate_arguments(arguments)
+        return run_async(service, **arguments)
+    return service.registry.call(tool_name, **arguments)
 
 
 def _wait_for_document_idle(
@@ -1831,36 +1842,22 @@ _PROVIDER_REDUNDANT_SOURCE_FIELDS = frozenset(
 
 
 def _provider_editable_sources_payload(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Remove tool-schema duplication from the model-visible source index."""
+    """Orient the model without copying the full program/output inventories."""
 
-    if int(value.get("source_count") or 0) == 0:
+    page = _paged_source_index_payload(value)
+    if page["program_count"] == 0:
         return {
             key: value[key]
             for key in ("schema", "domain", "source_count")
             if key in value
         }
     result = {
-        key: item
-        for key, item in value.items()
-        if key != "tools"
-        and not (
-            key in {"sources_truncated", "sources_omitted"}
-            and item in (False, 0)
-        )
+        key: value[key]
+        for key in ("schema", "domain", "workbench", "source_count",
+                    "authoring_domains", "domain_source_counts", "api_groups", "core_api")
+        if key in value
     }
-    for collection_name in ("sources", "all_sources", "component_sources"):
-        collection = result.get(collection_name)
-        if not isinstance(collection, list):
-            continue
-        result[collection_name] = [
-            {
-                key: item
-                for key, item in source.items()
-                if key not in _PROVIDER_REDUNDANT_SOURCE_FIELDS
-            }
-            for source in collection
-            if isinstance(source, Mapping)
-        ]
+    result["program_index"] = page
     return result
 
 
@@ -2376,6 +2373,14 @@ def _trace_result(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _validate_domain_candidate(adapter, prepared, execution, cancellation_check):
+    """Pass cancellation to capable validators without changing legacy adapters."""
+    validate = getattr(adapter, "validate_result_with_cancellation", None)
+    if callable(validate):
+        return validate(prepared, execution, cancellation_check=cancellation_check)
+    return adapter.validate_result(prepared, execution)
+
+
 def _run_domain_vibescript_tool(
     service: VibeCADService,
     tool_name: str,
@@ -2670,7 +2675,8 @@ def _run_domain_vibescript_tool(
         try:
             validated = run_phase(
                 "validate",
-                lambda: adapter.validate_result(prepared, execution),
+                lambda: _validate_domain_candidate(
+                    adapter, prepared, execution, cancellation_check),
             )
         except DomainRuntimeFailure as exc:
             return retain_failed_candidate(
@@ -3076,6 +3082,75 @@ def _read_source_payload(
         if compact_state:
             result["model_state"] = compact_state
     return result
+
+
+def _paged_source_index_payload(
+    editable_sources: Mapping[str, Any] | None,
+    *,
+    offset: int = 0,
+    limit: int = 20,
+    query: str = "",
+) -> dict[str, Any]:
+    """Page program identities, not their potentially enormous generated outputs.
+
+    The page size bounds model-facing responses, never document capacity. The
+    full internal index remains available for exact tool resolution and reads.
+    """
+    if offset < 0 or not 1 <= limit <= 100:
+        raise ValueError("Source index offset must be nonnegative; limit must be 1-100.")
+    data = editable_sources or {}
+    sources: dict[str, Mapping[str, Any]] = {}
+    for collection in ("all_sources", "sources", "component_sources"):
+        for source in data.get(collection) or []:
+            if isinstance(source, Mapping) and source.get("program"):
+                sources.setdefault(str(source["program"]), source)
+    needle = query.strip().casefold()
+    matches = [
+        name for name, source in sorted(sources.items())
+        if not needle or any(needle in str(source.get(field) or "").casefold()
+                             for field in ("program", "label", "domain"))
+        or any(needle in str(output.get(field) or "").casefold()
+               for output in source.get("affected_outputs") or []
+               if isinstance(output, Mapping)
+               for field in ("name", "label", "object_name"))
+    ]
+    programs = []
+    for name in matches[offset:offset + limit]:
+        source = sources[name]
+        entry = {key: source[key] for key in
+                 ("program", "label", "domain", "status", "current_revision", "accepted_revision")
+                 if source.get(key) not in (None, "")}
+        outputs = source.get("affected_outputs") or []
+        entry["output_count"] = len(outputs)
+        candidate = source.get("latest_candidate")
+        if isinstance(candidate, Mapping):
+            entry["latest_candidate"] = {
+                key: candidate[key] for key in ("status", "revision", "failure")
+                if candidate.get(key) not in (None, "", {})
+            }
+        if source.get("error"):
+            entry["error"] = source["error"]
+        programs.append(entry)
+    next_offset = offset + len(programs)
+    return {
+        "ok": True,
+        "program_count": len(sources),
+        "matched_count": len(matches),
+        "offset": offset,
+        "programs": programs,
+        "next_read": (
+            {"tool": "vibescript.read_source",
+             "arguments": {"offset": next_offset, "limit": limit, "query": query}}
+            if next_offset < len(matches) else None
+        ),
+        "usage": (
+            "This is a program index, not source code or a geometry listing. "
+            "Search with vibescript.read_source(query=part or program name), with program omitted; "
+            "follow next_read to page. Read one exact program with program=<listed identity>; "
+            "line_start/line_end select source lines. Read its current revision before editing. "
+            "Use vibescript.read_api for callable details."
+        ),
+    }
 
 
 def _read_source_index_payload(
@@ -4276,7 +4351,12 @@ def _run_universal_vibescript_tool(
         )
 
         if target is None:
-            return _read_source_index_payload(editable_sources)
+            return _paged_source_index_payload(
+                editable_sources,
+                offset=args.get("offset", 0),
+                limit=args.get("limit", 20),
+                query=args.get("query", ""),
+            )
         source_id = target.source_id
         try:
             captured = _on_document_thread(
@@ -4735,7 +4815,8 @@ def build_domain_vibescript_editor_candidate(
             }
             return execution
         try:
-            validated = adapter.validate_result(prepared, execution)
+            validated = _validate_domain_candidate(
+                adapter, prepared, execution, cancellation_check)
         except DomainRuntimeFailure as exc:
             retained = retain_candidate(
                 prepared,
@@ -5714,16 +5795,42 @@ def make_provider_tool_runner(
             },
         )
         document_phase_started = time.monotonic()
+        owner_elapsed = None
         try:
             raw = _on_document_thread(
                 document_thread_dispatch,
-                lambda: service.registry.call(tool_name, **args),
+                lambda: _start_service_tool(
+                    service, tool_name, args,
+                    asynchronous=document_thread_dispatch is not None,
+                ),
             )
+            owner_elapsed = time.monotonic() - document_phase_started
+            if isinstance(raw, Future):
+                pending = raw
+                while True:
+                    if cancellation_check is not None and cancellation_check():
+                        _on_document_thread(document_thread_dispatch, pending.cancel)
+                        raw = tool_failure(
+                            tool_name, 'TOOL_CANCELLED', 'native_call',
+                            'Simulation playback was cancelled.',
+                        )
+                        break
+                    try:
+                        # Provider-thread wait only: the player completes on Qt
+                        # after native generation and exact frame adoption.
+                        raw = pending.result(timeout=0.1)
+                        break
+                    except FutureTimeout:
+                        continue
             payload = dict(raw) if isinstance(raw, dict) else {"value": raw}
             payload.setdefault("ok", payload.get("error") in (None, ""))
         except ToolArgumentValidationError as exc:
+            if owner_elapsed is None:
+                owner_elapsed = time.monotonic() - document_phase_started
             payload = exc.payload
         except Exception as exc:
+            if owner_elapsed is None:
+                owner_elapsed = time.monotonic() - document_phase_started
             payload = tool_failure(
                 tool_name,
                 "TOOL_HANDLER_EXCEPTION",
@@ -5733,7 +5840,7 @@ def make_provider_tool_runner(
                 observed={"exception_type": exc.__class__.__name__},
             )
         document_thread_elapsed = round(
-            time.monotonic() - document_phase_started,
+            owner_elapsed,
             4,
         )
         payload.setdefault(

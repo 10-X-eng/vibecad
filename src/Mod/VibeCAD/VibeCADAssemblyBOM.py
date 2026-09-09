@@ -20,11 +20,12 @@ from typing import Any
 
 ASSEMBLY_BOM_SCHEMA = "vibecad-assembly-bom-v1"
 MAX_BOM_COLUMNS = 32
-MAX_BOM_ROWS = 4096
-MAX_BOM_OCCURRENCE_PATHS = 8192
+# Zero denotes no fixed model-capacity ceiling in publication metadata.
+MAX_BOM_ROWS = 0
+MAX_BOM_OCCURRENCE_PATHS = 0
 MAX_BOM_PATH_SEGMENTS = 16
 MAX_BOM_ERROR_PATHS = 256
-MAX_BOM_CONTRACT_BYTES = 400_000
+MAX_BOM_CONTRACT_BYTES = 0
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PROPERTY_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
@@ -502,15 +503,12 @@ def _column_label(number: int) -> str:
 
 
 def _stable_digest(value: Mapping[str, Any]) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(ensure_ascii=True, sort_keys=True,
+                               separators=(",", ":"), allow_nan=False)
+    for chunk in encoder.iterencode(value):
+        digest.update(chunk.encode("utf-8"))
+    return digest.hexdigest()
 
 
 def plan_assembly_bom(
@@ -590,7 +588,6 @@ def plan_assembly_bom(
         )
 
     rows: list[dict[str, Any]] = []
-    total_paths = 0
 
     def child_instances(parent: Mapping[str, Any]) -> list[dict[str, Any]]:
         node = parent["node"]
@@ -666,7 +663,6 @@ def plan_assembly_bom(
         index_prefix: str,
         active: tuple[tuple[str, str], ...],
     ) -> None:
-        nonlocal total_paths
         eligible: list[dict[str, Any]] = []
         for instance in instances:
             if only_parts and instance["node"]["kind"] == "shape":
@@ -697,20 +693,6 @@ def plan_assembly_bom(
             paths = list(
                 dict.fromkeys(path for member in members for path in member["paths"])
             )
-            total_paths += len(paths)
-            if len(rows) >= MAX_BOM_ROWS or total_paths > MAX_BOM_OCCURRENCE_PATHS:
-                raise _error(
-                    "The detailed Assembly BOM exceeds its bounded row/path budget.",
-                    stage="bom_budget",
-                    correction=(
-                        "Set detail_subassemblies=False or detail_parts=False, or split "
-                        "the design into smaller module BOMs."
-                    ),
-                    maximum_rows=MAX_BOM_ROWS,
-                    maximum_occurrence_paths=MAX_BOM_OCCURRENCE_PATHS,
-                    observed_rows=len(rows) + 1,
-                    observed_occurrence_paths=total_paths,
-                )
             quantity = sum(int(member["units"]) for member in members)
             cells = {
                 str(column["heading"]): _column_text(
@@ -905,28 +887,6 @@ def plan_assembly_bom(
         },
     }
     contract["table_sha256"] = _stable_digest(contract)
-    encoded_bytes = len(
-        json.dumps(
-            contract,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    )
-    if encoded_bytes > MAX_BOM_CONTRACT_BYTES:
-        raise _error(
-            "The Assembly BOM exceeds its bounded publication contract size.",
-            stage="bom_budget",
-            correction=(
-                "Reduce columns or hierarchy detail, omit long custom values, or split "
-                "the design into smaller named module BOMs."
-            ),
-            observed_contract_bytes=encoded_bytes,
-            maximum_contract_bytes=MAX_BOM_CONTRACT_BYTES,
-            observed_rows=len(rows),
-            observed_occurrence_paths=contract["occurrence_path_count"],
-        )
     return contract
 
 

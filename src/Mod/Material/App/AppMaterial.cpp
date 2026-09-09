@@ -26,6 +26,7 @@
 #include <Base/PyObjectBase.h>
 
 #include <App/CleanupProcess.h>
+#include <App/HostRuntime.h>
 
 #include "MaterialLoader.h"
 #include "MaterialManagerLocal.h"
@@ -130,6 +131,20 @@ PyMOD_INIT_FUNC(Materials)
 
     Materials::PropertyMaterial         ::init();
     // clang-format on
+
+    // Material discovery parses every configured library. Start that one-time
+    // I/O work as soon as the module is ready so the first Part feature does
+    // not perform the catalog scan on the GUI thread during document restore.
+    // The application-owned runtime outlives this module and owns the task.
+    [[maybe_unused]] auto materialInitialization =
+        App::GetApplication().hostRuntime().submit(
+            App::HostRuntime::Lane::Io,
+            [](std::stop_token stopToken) {
+                if (!stopToken.stop_requested()) {
+                    (void)Materials::MaterialManager::getManager();
+                }
+            }
+        );
 
     PyMOD_Return(module);
 }

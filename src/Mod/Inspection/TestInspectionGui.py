@@ -5,6 +5,7 @@
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
 import FreeCAD as App
@@ -669,6 +670,44 @@ class InspectionTimelineTest(unittest.TestCase):
         )
         self.assertFalse(replay_actual.Visibility)
         self.assertFalse(replay_nominal.Visibility)
+
+    def test_visual_inspection_enablement_stops_after_two_candidates(self):
+        def wait_for_display():
+            deadline = time.monotonic() + 10
+            while (self.document.PresentationUpdateActive
+                   or self.document.CooperativeMutationActive):
+                self.assertLess(time.monotonic(), deadline, "Display did not settle")
+                self._process_events(10)
+
+        command = Gui.Command.get("Inspection_VisualInspection")
+        self.assertFalse(command.isActive())
+        first = self.document.addObject("Part::Feature", "FirstCandidate")
+        first.Shape = Part.makeBox(2, 2, 2)
+        self.assertFalse(command.isActive())
+        second = self.document.addObject("Part::Feature", "SecondCandidate")
+        second.Shape = first.Shape
+
+        class ObservedSource:
+            calls = 0
+
+            def getLinkedObject(self, obj, recurse, matrix, transform, depth):
+                self.calls += 1
+                return None
+
+        tail = self.document.addObject("App::FeaturePython", "UnneededCandidate")
+        observer = ObservedSource()
+        tail.Proxy = observer
+        self._process_events()
+        wait_for_display()
+        observer.calls = 0
+        self.assertTrue(command.isActive())
+        self.assertEqual(observer.calls, 0,
+                         "Button enablement must not resolve the rest of the document")
+        self.document.removeObject(second.Name)
+        observer.calls = 0
+        self.assertFalse(command.isActive())
+        self.assertGreater(observer.calls, 0,
+                           "Fewer than two candidates must still check remaining sources")
 
     def test_visual_inspection_offers_linked_part_mesh_and_points_occurrences(self):
         if not App.GuiUp:

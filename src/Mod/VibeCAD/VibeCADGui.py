@@ -15,6 +15,7 @@ import html
 import json
 import queue
 import re
+import sys
 import tempfile
 import threading
 import uuid
@@ -28,6 +29,7 @@ from VibeCADCore import get_service
 from VibeCADDebug import list_provider_request_captures
 from VibeCADDocumentChangeBatch import (
     document_change_batch_active,
+    document_change_batch_rolling_back,
     document_change_batch_origins,
     register_document_change_batch_completed,
     register_document_change_batch_finished,
@@ -2367,6 +2369,8 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         phase = str(event.get("phase") or "publishing")
         if phase == "completed":
             return f"Published {total} CAD objects."
+        if phase == "finalizing":
+            return "Finalizing CAD display and document history..."
         if phase == "failed":
             return f"VibeScript publication stopped after {completed} of {total} objects."
         current = str(event.get("current_output") or "").strip()
@@ -3897,6 +3901,13 @@ def _document_render_refresh_blocked(document: Any) -> bool:
     if _document_restore_active(document) or _document_recompute_active(document):
         return True
     try:
+        if any(
+            bool(getattr(document, state, False))
+            for state in (
+                "RecomputePending", "CooperativeMutationActive", "PresentationUpdateActive",
+            )
+        ):
+            return True
         document_uid = str(getattr(document, "Uid", "") or "").strip()
     except (ReferenceError, RuntimeError):
         return False
@@ -4071,9 +4082,8 @@ def _redraw_document_view(document: Any) -> None:
         gui_document = Gui.getDocument(str(document.Name))
         view = gui_document.activeView() if gui_document is not None else None
         if view is not None:
-            update_gui = getattr(Gui, "updateGui", None)
-            if callable(update_gui):
-                update_gui()
+            # A redraw schedules paint; draining the GUI here recursively runs
+            # unrelated restore/assistant callbacks inside this presentation step.
             redraw = getattr(view, "redraw", None)
             if callable(redraw):
                 redraw()
@@ -4135,12 +4145,29 @@ def _recompute_pending_document_geometry(document: Any) -> bool:
 
 def _recompute_pending_document_geometry_slice(
     document: Any,
+    attempted: set[str] | None = None,
 ) -> tuple[bool, bool]:
-    """Recompute one restored object and report whether more work remains."""
+    """Queue restored geometry together, or advance a legacy direct caller."""
 
-    if _document_recompute_active(document):
+    if _document_render_refresh_blocked(document):
         return False, True
     pending = _pending_document_objects(document)
+    if attempted is not None and callable(getattr(document, "recomputeAsync", None)):
+        targets = [obj for obj in pending if str(obj.Name) not in attempted]
+        if targets:
+            # A list produces one recursive request per object in the native
+            # API, repeating dependency walks and resetting progress. One
+            # document request evaluates dirty dependency waves together.
+            document.recomputeAsync()
+            attempted.update(str(obj.Name) for obj in targets)
+            return False, True
+        unresolved = _document_geometry_problems(document, pending)
+        if unresolved:
+            _warn(
+                "VibeCAD restored-document recompute left invalid geometry: "
+                + ", ".join(unresolved)
+            )
+        return bool(attempted) and not unresolved, False
     if not pending:
         unresolved = _document_geometry_problems(document, [])
         if unresolved:
@@ -4388,6 +4415,7 @@ def _schedule_document_render_after_restore(document: Any) -> None:
         modified_state_captured = False
         geometry_recomputed_any = False
         restored_projection_names: set[str] = set()
+        recompute_attempted: set[str] = set()
         was_modified = None
 
         def finish_refresh() -> None:
@@ -4498,7 +4526,9 @@ def _schedule_document_render_after_restore(document: Any) -> None:
                 return
 
             geometry_recomputed, geometry_remaining = (
-                _recompute_pending_document_geometry_slice(live_document)
+                _recompute_pending_document_geometry_slice(
+                    live_document, recompute_attempted
+                )
             )
             geometry_recomputed_any = geometry_recomputed_any or geometry_recomputed
             if _document_recompute_active(live_document):
@@ -4680,10 +4710,14 @@ def _defer_vibescript_dependency_change(
         return
     state = _deferred_vibescript_dependency_changes.setdefault(
         uid,
-        {"changes": {}, "excluded_programs": set()},
+        {"changes": {}, "identities": set(), "excluded_programs": set()},
     )
     name = str(getattr(obj, "Name", "") or "")
-    identity = name or f"@{id(obj)}"
+    # Retain the cache identity before a later slice can delete the object.
+    # Python wrapper identity also distinguishes replacements with the same name.
+    if name:
+        state["identities"].add((uid, name))
+    identity = id(obj)
     state["changes"][(identity, str(property_name or ""))] = (
         obj,
         str(property_name or ""),
@@ -4704,13 +4738,18 @@ def _finish_vibescript_dependency_batch(
     state = _deferred_vibescript_dependency_changes.pop(uid, None)
     if not state or not committed:
         return
-    changes = tuple(state["changes"].values())
-    if not changes:
+    if not state["changes"]:
         return
     unique_objects = {}
-    for obj, _property_name in changes:
-        name = str(getattr(obj, "Name", "") or "")
-        unique_objects[name or f"@{id(obj)}"] = obj
+    changes = []
+    for obj, property_name in state["changes"].values():
+        try:
+            # Do not pass a deleted wrapper into the live dependency traversal.
+            getattr(obj, "Name", "")
+        except ReferenceError:
+            continue
+        unique_objects[id(obj)] = obj
+        changes.append((obj, property_name))
     service = get_service()
     invalidate_many = getattr(
         service,
@@ -4718,7 +4757,7 @@ def _finish_vibescript_dependency_batch(
         None,
     )
     if callable(invalidate_many):
-        invalidate_many(tuple(unique_objects.values()))
+        invalidate_many(tuple(unique_objects.values()), identities=state["identities"])
     else:
         for obj in unique_objects.values():
             service.invalidate_vibescript_reference_snapshots(obj)
@@ -4728,7 +4767,7 @@ def _finish_vibescript_dependency_batch(
         )
 
         marked = mark_programs_stale_from_sources(
-            changes,
+            tuple(changes),
             excluded_programs=frozenset(state["excluded_programs"]),
         )
     except Exception as exc:
@@ -4739,6 +4778,19 @@ def _finish_vibescript_dependency_batch(
 
 
 class _VibeCADDocumentObserver:
+    def slotCooperativeMutationChanged(self, doc, active: bool) -> None:
+        """Use the same batch for native mutations and nested Python publication."""
+
+        uid = str(doc.Uid)
+        service = get_service()
+        if active:
+            service.begin_document_change_batch(uid)
+        else:
+            # The native lease describes ownership, not transaction outcome.
+            # Nested publishers supply rollback via commit=False; native-only
+            # edits invalidate once against their final, stable document state.
+            service.end_document_change_batch(uid)
+
     @staticmethod
     def _refresh_native_authority_selector(document_uid: str = "") -> None:
         _schedule_native_authority_selector_refresh(document_uid)
@@ -4762,20 +4814,29 @@ class _VibeCADDocumentObserver:
         _schedule_assistant_document_refresh()
 
     def slotChangedObject(self, obj, property_name) -> None:
+        # Playback applies temporary poses, not source edits. Test the exact
+        # synchronous application scope before authority/dependency observers;
+        # an open player alone must never exempt a user's normal CAD edits.
+        assembly_utils = sys.modules.get("UtilsAssembly")
+        if assembly_utils is not None and assembly_utils.isPresentationPlacementChange(
+            obj, property_name
+        ):
+            return
         is_restoring = getattr(App, "isRestoring", None)
         if callable(is_restoring) and bool(is_restoring()):
             return
         document = getattr(obj, "Document", None)
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
-        if str(getattr(document, "Uid", "") or "").strip():
+        document_uid = str(getattr(document, "Uid", "") or "").strip()
+        if document_change_batch_rolling_back(document_uid):
+            return
+        if document_uid:
             get_service().note_native_object_property_change(
                 obj,
                 str(property_name or ""),
             )
-            self._refresh_native_authority_selector(
-                str(getattr(document, "Uid", "") or "")
-            )
+            self._refresh_native_authority_selector(document_uid)
         try:
             from VibeCADVibeScriptDomainPublication import (
                 source_property_affects_vibescript_snapshot,
@@ -4786,7 +4847,6 @@ class _VibeCADDocumentObserver:
         except Exception as exc:
             _warn(f"VibeCAD VibeScript dependency filter failed: {exc}")
             return
-        document_uid = str(getattr(document, "Uid", "") or "").strip()
         if document_uid and document_change_batch_active(document_uid):
             _defer_vibescript_dependency_change(
                 document_uid,
@@ -4816,10 +4876,11 @@ class _VibeCADDocumentObserver:
         document = getattr(obj, "Document", None)
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
+        document_uid = str(getattr(document, "Uid", "") or "").strip()
+        if document_change_batch_rolling_back(document_uid):
+            return
         get_service().note_native_object_created(obj)
-        self._refresh_native_authority_selector(
-            str(getattr(document, "Uid", "") or "")
-        )
+        self._refresh_native_authority_selector(document_uid)
 
     def slotDeletedObject(self, obj) -> None:
         is_restoring = getattr(App, "isRestoring", None)
@@ -4828,10 +4889,11 @@ class _VibeCADDocumentObserver:
         document = getattr(obj, "Document", None)
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
+        document_uid = str(getattr(document, "Uid", "") or "").strip()
+        if document_change_batch_rolling_back(document_uid):
+            return
         get_service().note_native_object_deleted(obj)
-        self._refresh_native_authority_selector(
-            str(getattr(document, "Uid", "") or "")
-        )
+        self._refresh_native_authority_selector(document_uid)
 
     def slotStartSaveDocument(self, doc, filepath) -> None:
         try:

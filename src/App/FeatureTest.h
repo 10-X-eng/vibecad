@@ -216,7 +216,7 @@ public:
     FeatureTestAttribute();
     ~FeatureTestAttribute() override;
     DocumentObjectExecReturn* execute() override;
-    bool canRecomputeOnWorker() const override { return false; }
+    bool canRecomputeOnWorker() const override { return true; }
 
     App::PropertyPythonObject Object;
     App::PropertyString Attribute;
@@ -234,7 +234,10 @@ public:
 
     static void resetBlocker();
     static bool waitUntilStarted(std::chrono::milliseconds timeout);
+    static bool waitUntilStarted(std::size_t count, std::chrono::milliseconds timeout);
     static void releaseBlocker();
+
+    App::PropertyInteger ExecutionCount;
 };
 
 

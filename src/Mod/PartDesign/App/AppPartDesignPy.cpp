@@ -182,6 +182,11 @@ public:
             "Validate and atomically publish one Design operation edit."
         );
         add_varargs_method(
+            "adoptDesignScriptOperationEdit",
+            &Module::adoptDesignScriptOperationEdit,
+            "Adopt accepted VibeScript output states without evaluating dependency branches."
+        );
+        add_varargs_method(
             "finalizeDesignScriptOperationEdit",
             &Module::finalizeDesignScriptOperationEdit,
             "Publish one worker-validated VibeScript edit and defer unrelated downstream "
@@ -715,7 +720,13 @@ private:
         return finalizeDesignOperationEditImpl(args, true);
     }
 
-    Py::Object finalizeDesignOperationEditImpl(const Py::Tuple& args, bool scriptOperation)
+    Py::Object adoptDesignScriptOperationEdit(const Py::Tuple& args)
+    {
+        return finalizeDesignOperationEditImpl(args, true, true);
+    }
+
+    Py::Object finalizeDesignOperationEditImpl(
+        const Py::Tuple& args, bool scriptOperation, bool adoptAcceptedState = false)
     {
         PyObject* editObject = nullptr;
         int affectedBodiesOnly = scriptOperation ? 1 : 0;
@@ -731,7 +742,9 @@ private:
         auto* edit = designEditFromCapsule(editObject);
         std::vector<Body*> bodies;
         try {
-            bodies = scriptOperation
+            bodies = adoptAcceptedState
+                ? DesignModel::adoptScriptOperation(*edit)
+                : scriptOperation
                 ? DesignModel::finalizeScriptOperation(*edit)
                 : DesignModel::finalizeOperation(*edit, affectedBodiesOnly != 0);
         }
