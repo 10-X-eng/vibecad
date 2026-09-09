@@ -5676,6 +5676,7 @@ def _provider_budget_history(
         context_bytes = max(0, (int(window) - reserve) * 4)
         effective_limit = min(limit, context_bytes) if limit else context_bytes
     enabled = bool(limit) or window is not None
+    enforce_limit = (configured is not None and bool(limit)) or window is not None
     before = _provider_json_bytes(request)
     messages = list(request["messages"])
     old_snapshot = state.get("snapshot")
@@ -5754,7 +5755,8 @@ def _provider_budget_history(
         "provider": provider,
         "before_json_bytes": before,
         "request_json_bytes": after,
-        "history_limit_bytes": effective_limit if enabled else None,
+        "history_limit_bytes": effective_limit if enforce_limit else None,
+        "history_reduction_target_bytes": target if enabled else None,
         "compacted_results": reduced,
         "estimator": "ceil(serialized_json_bytes/4); images included as encoded bytes",
         "estimated_input_tokens": (after + 3) // 4,
@@ -5762,7 +5764,7 @@ def _provider_budget_history(
         "estimated_total_tokens": (after + 3) // 4 + reserve,
         "context_window_tokens": window,
     }
-    if enabled and after > effective_limit:
+    if enforce_limit and after > effective_limit:
         raise _ProviderHistoryBudgetExceeded(accounting)
     return updated, accounting
 

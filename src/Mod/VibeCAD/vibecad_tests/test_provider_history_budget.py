@@ -227,3 +227,36 @@ def test_gemini_available_usage_is_separate_from_budget_estimates(monkeypatch):
     budget = next(e for e in events if e["event"] == "provider_history_budget")
     assert "estimated_input_tokens" in budget
     assert "token_usage" not in budget
+
+
+@pytest.mark.parametrize("engine", ["gemini", "anthropic"])
+def test_default_history_reduction_keeps_productive_large_requests_running(engine):
+    # Recorded sessions routinely exceed 512 KiB while retaining exact source
+    # and recent tool results. Reduce old observations without a default stop.
+    instruction = "Preserve this exact source: " + "x" * 600000
+    messages = [{"role": "user", "content": instruction}]
+    for index in range(5):
+        call_id = str(index)
+        result = json.dumps({"ok": True, "data": "x" * 150000})
+        if engine == "gemini":
+            messages.extend([
+                {"role": "assistant", "tool_calls": [{"id": call_id,
+                 "function": {"name": "read_geometry", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": call_id, "content": result},
+            ])
+        else:
+            messages.extend([
+                {"role": "assistant", "content": [{"type": "tool_use",
+                 "id": call_id, "name": "read_geometry", "input": {}}]},
+                {"role": "user", "content": [{"type": "tool_result",
+                 "tool_use_id": call_id, "content": result}]},
+            ])
+    updated, accounting = provider._provider_budget_history(
+        {"messages": messages}, {}, provider=engine, state={}, output_reserve_tokens=8192,
+    )
+    assert accounting["compacted_results"] > 0
+    assert accounting["request_json_bytes"] < accounting["before_json_bytes"]
+    assert accounting["request_json_bytes"] > provider.DEFAULT_PROVIDER_HISTORY_BYTES
+    assert accounting["history_limit_bytes"] is None
+    assert updated["messages"][0]["content"] == instruction
+    assert updated["messages"][-5:-1] == messages[-4:]

@@ -113,20 +113,24 @@ never select or switch a workbench, ribbon, or authoring mode for itself.
 
 ### Anthropic and Gemini conversation budgets
 
-Long tool loops use a 512 KiB serialized request budget. Above 75% of that budget,
+Long tool loops use a 512 KiB serialized request target for automatic reduction.
+Above 75% of that target,
 older bulky successful observations can become explicit references to data that
 must be read again when needed. The latest two tool batches, original user
 instructions, tool arguments/signatures, exact source/API reads, failures,
 pending jobs and critical state are retained. A current state snapshot accompanies
-reduced history. If the remaining request cannot fit, VibeCAD stops before
-generation and explains how to continue; completed CAD work remains available.
+reduced history. Requests continue if protected content exceeds that target;
+there is no default hard stop on productive work. An explicitly configured byte
+or context-window limit stops generation if protected content cannot fit and
+explains how to continue; completed CAD work remains available.
 
 Integrators can pass these options in the provider run context (these are Python
 integration settings, not GUI preferences):
 
 ```python
 context["_vibecad_provider_options"] = {
-    "history_budget_bytes": 512 * 1024,  # 0 disables the byte limit
+    # "history_budget_bytes": 512 * 1024,  # opt into a hard byte limit
+    # "history_budget_bytes": 0,          # disable automatic byte reduction
     # "context_window_tokens": 200_000,  # optional, set for the selected model
     # "output_reserve_tokens": 8192,    # Gemini estimate; not an API output cap
 }
