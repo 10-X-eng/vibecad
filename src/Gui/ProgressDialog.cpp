@@ -23,6 +23,7 @@
 
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QThread>
@@ -30,6 +31,7 @@
 
 
 #include "ProgressDialog.h"
+#include "FrameBudget.h"
 #include "MainWindow.h"
 
 
@@ -42,6 +44,7 @@ struct SequencerDialogPrivate
     ProgressDialog* dlg;
     QElapsedTimer measureTime;
     QElapsedTimer progressTime;
+    QElapsedTimer eventServiceTime;
     QString text;
     bool guiThread;
     bool canabort;
@@ -67,10 +70,12 @@ SequencerDialog::SequencerDialog()
     d->dlg->hide();
     d->guiThread = true;
     d->canabort = false;
+    setProgressPulseHandler(&SequencerDialog::progressPulse, this);
 }
 
 SequencerDialog::~SequencerDialog()
 {
+    setProgressPulseHandler(nullptr, nullptr);
     delete d;
 }
 
@@ -82,6 +87,7 @@ void SequencerDialog::resume()
 
 void SequencerDialog::startStep()
 {
+    d->eventServiceTime.start();
     QThread* currentThread = QThread::currentThread();
     QThread* thr = d->dlg->thread();  // this is the main thread
     if (thr != currentThread) {
@@ -114,6 +120,31 @@ void SequencerDialog::startStep()
         d->dlg->setValueEx(0);
         d->dlg->aboutToShow();
     }
+}
+
+void SequencerDialog::serviceGuiEvents()
+{
+    if (d->dlg->thread() != QThread::currentThread()) {
+        return;
+    }
+    if (!d->eventServiceTime.isValid()) {
+        d->eventServiceTime.start();
+        return;
+    }
+    if (d->eventServiceTime.elapsed() < FrameBudget::Milliseconds) {
+        return;
+    }
+
+    d->eventServiceTime.restart();
+    qApp->processEvents(
+        QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers,
+        1
+    );
+}
+
+void SequencerDialog::progressPulse(void* context)
+{
+    static_cast<SequencerDialog*>(context)->serviceGuiEvents();
 }
 
 void SequencerDialog::nextStep(bool canAbort)
@@ -186,7 +217,6 @@ void SequencerDialog::setValue(int step)
             }
             else {
                 d->dlg->setValueEx(d->dlg->value() + 1);
-                qApp->processEvents();
             }
         }
     }
@@ -207,7 +237,6 @@ void SequencerDialog::setValue(int step)
             if (d->dlg->isVisible()) {
                 showRemainingTime();
             }
-            qApp->processEvents();
         }
     }
 }

@@ -24,7 +24,7 @@ import time
 from typing import Any, Callable, Mapping
 
 
-CODEX_APP_SERVER_VERSION = "0.144.5"
+CODEX_APP_SERVER_VERSION = "0.153.4"
 CODEX_APP_SERVER_ENV = "VIBECAD_CODEX_APP_SERVER"
 CODEX_HOME_ENV = "VIBECAD_CODEX_HOME"
 CODEX_RUNTIME_DIRECTORY = "codex_runtime"
@@ -228,6 +228,14 @@ def resolve_runtime_command() -> CodexRuntimeCommand:
 
     root = bundled_runtime_root()
     executable = root / _runtime_binary_name()
+    if (root / "codex-package.json").is_file():
+        executable = root / "bin" / _runtime_binary_name()
+        companion = executable.with_name("codex-code-mode-host" + executable.suffix)
+        if not companion.is_file():
+            raise CodexAppServerError(
+                "The bundled Codex code-mode companion is missing. Reinstall VibeCAD "
+                "with the complete OpenAI Codex runtime."
+            )
     if not executable.is_file():
         raise CodexAppServerError(
             "The bundled Codex app-server runtime is missing. Reinstall VibeCAD "

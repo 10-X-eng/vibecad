@@ -136,7 +136,7 @@ struct base64_encoder
         pos += end - buf;
         bio::write(dev, buf, end - buf);
         buffer.clear();
-        return n;
+        return res;
     }
 
     std::size_t line_size;

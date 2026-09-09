@@ -486,6 +486,23 @@ const std::vector<DocumentObject*>& DocumentObject::getOutList() const
     return _outList;
 }
 
+bool DocumentObject::hasPropertyLinkTo(const DocumentObject* target) const
+{
+    if (!_propertyLinkTargetsCached) {
+        _propertyLinkTargets.clear();
+        std::vector<Property*> properties;
+        getPropertyList(properties);
+        for (auto* property : properties) {
+            if (auto* link = freecad_cast<PropertyLinkBase*>(property)) {
+                link->getLinks(_propertyLinkTargets, true);
+            }
+        }
+        _propertyLinkTargetsCached = true;
+    }
+    return std::find(_propertyLinkTargets.begin(), _propertyLinkTargets.end(), target)
+        != _propertyLinkTargets.end();
+}
+
 std::vector<DocumentObject*> DocumentObject::getOutList(int options) const
 {
     std::vector<DocumentObject*> res;
@@ -866,10 +883,21 @@ bool DocumentObject::removeDynamicProperty(const char* name)
         ExpressionEngine.setValue(it, std::shared_ptr<Expression>());
     }
 
-    if (bypassLock) {
-        return TransactionalObject::removeDynamicPropertyForTransaction(name);
+    // Removal callbacks run before the property disappears and may inspect
+    // visibility. Invalidate again afterward so that inspection cannot leave
+    // an ownership index containing the removed metadata.
+    const std::string removedName(name);
+    const bool removed = bypassLock
+        ? TransactionalObject::removeDynamicPropertyForTransaction(name)
+        : TransactionalObject::removeDynamicProperty(name);
+    if (removed && _pDoc) {
+        _pDoc->advanceObjectChangeGeneration();
+        _pDoc->invalidateTimelineVisibilityResources(removedName.c_str());
+        if (!_pDoc->signalObjectSchemaChanged.empty()) {
+            _pDoc->signalObjectSchemaChanged(getID());
+        }
     }
-    return TransactionalObject::removeDynamicProperty(name);
+    return removed;
 }
 
 bool DocumentObject::renameDynamicProperty(Property* prop, const char* name)
@@ -902,6 +930,9 @@ bool DocumentObject::renameDynamicProperty(Property* prop, const char* name)
         ExpressionEngine.setValue(idNewProp, exprToMove);
     }
 
+    if (renamed && _pDoc && !_pDoc->signalObjectSchemaChanged.empty()) {
+        _pDoc->signalObjectSchemaChanged(getID());
+    }
     return renamed;
 }
 
@@ -918,12 +949,18 @@ App::Property* DocumentObject::addDynamicProperty(
     auto prop = TransactionalObject::addDynamicProperty(type, name, group, doc, attr, ro, hidden);
     if (prop && _pDoc) {
         _pDoc->addOrRemovePropertyOfObject(this, prop, true);
+        if (!_pDoc->signalObjectSchemaChanged.empty()) {
+            _pDoc->signalObjectSchemaChanged(getID());
+        }
     }
     return prop;
 }
 
 void DocumentObject::onBeforeChange(const Property* prop)
 {
+    if (_pDoc) {
+        _pDoc->advanceObjectChangeGeneration(prop);
+    }
     // Frozen objects reject ordinary edits, but transaction replay and
     // document-owned dependency teardown still have to capture the value
     // being replaced. Without the dependency-teardown case, removing a link
@@ -1048,6 +1085,9 @@ void DocumentObject::onEarlyChange(const Property* prop)
 /// get called by the container when a Property was changed
 void DocumentObject::onChanged(const Property* prop)
 {
+    if (_pDoc) {
+        _pDoc->advanceObjectChangeGeneration(prop);
+    }
     const bool labelChanged = prop == &Label && _pDoc && oldLabel != Label.getStrValue();
     if (labelChanged && _pDoc->containsObject(this)) {
         _pDoc->unregisterLabel(oldLabel);
@@ -1141,6 +1181,8 @@ void DocumentObject::onChanged(const Property* prop)
 
 void DocumentObject::clearOutListCache() const
 {
+    _propertyLinkTargets.clear();
+    _propertyLinkTargetsCached = false;
     _outList.clear();
     _outListMap.clear();
     _outListCached = false;
@@ -1500,6 +1542,9 @@ void App::DocumentObject::_removeBackLink(DocumentObject* rmvObj)
     auto it = std::ranges::find(_inList, rmvObj);
     if (it != _inList.end()) {
         _inList.erase(it);
+        if (_pDoc) {
+            _pDoc->advanceObjectChangeGeneration();
+        }
     }
 }
 
@@ -1510,6 +1555,11 @@ void App::DocumentObject::_addBackLink(DocumentObject* newObj)
     // only once this removal would clear the object from the inlist, even though there may be other
     // link properties from this object that link to us.
     _inList.push_back(newObj);
+    if (_pDoc) {
+        // Incoming ownership may be changed by a property in another document.
+        // Invalidate this target's snapshots as well as the property owner's.
+        _pDoc->advanceObjectChangeGeneration();
+    }
 }
 
 // Fully mimics _removeBackLink()

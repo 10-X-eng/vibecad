@@ -186,7 +186,7 @@ bool TextDocumentEditorView::onMsg(const char* msg)
 
     if (strcmp(msg, "Save") == 0) {
         saveToObject();
-        getGuiDocument()->save();
+        getGuiDocument()->saveAsync();
         return true;
     }
     if (strcmp(msg, "Cut") == 0) {

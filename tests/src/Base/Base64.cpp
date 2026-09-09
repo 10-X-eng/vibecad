@@ -27,10 +27,24 @@ the tests into individual parts.
 */
 
 #include "Base/Base64.h"
+#include "Base/Base64Filter.h"
 
 #include <gtest/gtest.h>
+#include <sstream>
 
 using namespace Base;
+
+TEST(Base64, filterReportsConsumedBytesIncludingPendingTail)
+{
+    std::ostringstream encoded;
+    base64_encoder filter(0);
+    const std::string input = "abcdefg";
+    EXPECT_EQ(filter.write(encoded, input.data(), 1), 1);
+    EXPECT_EQ(filter.write(encoded, input.data() + 1, 2), 2);
+    EXPECT_EQ(filter.write(encoded, input.data() + 3, 4), 4);
+    filter.close(encoded);
+    EXPECT_EQ(base64_decode(encoded.str()), input);
+}
 
 // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
 

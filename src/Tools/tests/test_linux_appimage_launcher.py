@@ -12,6 +12,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CREATE_BUNDLE = REPO_ROOT / "package" / "rattler-build" / "linux" / "create_bundle.sh"
 TRACKED_LAUNCHER = REPO_ROOT / "package" / "rattler-build" / "linux" / "AppDir" / "AppRun"
+EXCLUDE_HOST_GRAPHICS_LIBRARIES = (
+    REPO_ROOT
+    / "package"
+    / "rattler-build"
+    / "scripts"
+    / "exclude_appimage_host_graphics_libraries.sh"
+)
 
 
 def generated_launcher() -> str:
@@ -26,6 +33,31 @@ def generated_launcher() -> str:
 
 
 class TestLinuxAppImageLauncher(unittest.TestCase):
+    def test_bundled_libdrm_libraries_are_excluded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            prefix = Path(temp_dir) / "usr"
+            library_dir = prefix / "lib"
+            library_dir.mkdir(parents=True)
+
+            (library_dir / "libdrm.so.2.125.0").touch()
+            (library_dir / "libdrm.so.99.999.0").touch()
+            (library_dir / "libdrm_futuregpu.so.42").touch()
+            (library_dir / "libdrm.so.2").symlink_to("libdrm.so.2.125.0")
+            (library_dir / "libdrm_amdgpu.so.1.125.0").touch()
+            (library_dir / "libdrm_amdgpu.so.1").symlink_to(
+                "libdrm_amdgpu.so.1.125.0"
+            )
+            preserved_library = library_dir / "libQt6Core.so.6.8.3"
+            preserved_library.touch()
+
+            subprocess.run(
+                [str(EXCLUDE_HOST_GRAPHICS_LIBRARIES), str(prefix)],
+                check=True,
+            )
+
+            self.assertEqual(list(library_dir.glob("libdrm*.so*")), [])
+            self.assertTrue(preserved_library.exists())
+
     def test_generated_launcher_matches_tracked_launcher(self) -> None:
         self.assertEqual(
             generated_launcher(),

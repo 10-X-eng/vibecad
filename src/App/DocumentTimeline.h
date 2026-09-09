@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "DocumentObject.h"
@@ -266,6 +267,15 @@ public:
      * requirements as reorderOperationBlocksAfter() apply.
      */
     bool reorderOperationDependentClosureAfter(DocumentObject* operation, DocumentObject* target);
+
+    /** Rebase several operations and their shared downstream closure once.
+     * Uses the single-root entry's ownership and chronology validation.
+     * Duplicate/overlapping roots and dependency cycles reject atomically.
+     */
+    bool reorderOperationDependentClosuresAfter(
+        const std::vector<DocumentObject*>& operations,
+        DocumentObject* target
+    );
 
     /**
      * Return the complete tracked semantic closure required to copy objects.
@@ -634,6 +644,11 @@ public:
      * is intentionally disabled while the marker is rolled back.
      */
     void captureVisibility();
+    /**
+     * Update the accepted end-state for one exact changed operation and any
+     * owned resources whose effective presentation depends on it.
+     */
+    void captureVisibility(DocumentObject* changedOperation);
 
     /**
      * Suppress baseline capture and automatic normalization while a timeline
@@ -674,6 +689,11 @@ protected:
 
 private:
     friend class Document;
+
+    void invalidateVisibilityResources() noexcept;
+    void indexVisibilityResources();
+    bool _visibilityResourcesValid {false};
+    std::unordered_map<long, std::vector<std::size_t>> _visibilityResources;
 
     struct ProvisionalEnrollment
     {
@@ -815,7 +835,8 @@ private:
     [[nodiscard]] bool isCreatedByCurrentTransaction(const DocumentObject* object) const noexcept;
     [[nodiscard]] bool publicationMatchesLiveState(
         const ProvisionalPublication& publication,
-        const std::vector<DocumentObject*>* expectedBlock
+        const std::vector<DocumentObject*>* expectedBlock,
+        const std::unordered_map<const DocumentObject*, std::size_t>* memberCounts = nullptr
     ) const noexcept;
     void discardTransactionProvenance(int transactionId) noexcept;
     void normalizeStoredState(bool migrateLegacy);

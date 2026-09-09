@@ -24,6 +24,7 @@
 import FreeCAD as App
 import Part
 import tempfile
+import time
 import unittest
 
 import UtilsAssembly
@@ -147,6 +148,38 @@ class TestCore(unittest.TestCase):
         JointObject.Joint(joint, 0)
 
         self.assertTrue(hasattr(joint, "JointType"), "'{}' failed".format(operation))
+
+    def test_joint_worker_recompute_never_enters_view_provider(self):
+        """Keep worker recompute model-only; presentation belongs to Qt."""
+
+        class WorkerJoint:
+            Label = "WorkerJoint"
+            Reference1 = None
+            Reference2 = None
+
+            @property
+            def ViewObject(self):
+                raise AssertionError("worker recompute entered the GUI view provider")
+
+        proxy = object.__new__(JointObject.Joint)
+        calls = []
+        proxy.updateJCSPlacements = lambda joint, **options: calls.append(
+            (joint, options)
+        )
+        original_usable = JointObject._jointInteractionUsable
+        JointObject._jointInteractionUsable = lambda _joint: True
+        self.addCleanup(
+            setattr,
+            JointObject,
+            "_jointInteractionUsable",
+            original_usable,
+        )
+
+        joint = WorkerJoint()
+        proxy.execute(joint)
+
+        self.assertEqual(calls, [(joint, {"redraw": False})])
+        self.assertTrue(proxy.supportsAsyncRecompute(joint))
 
     def test_create_grounded_joint(self):
         """Create a grounded joint in an assembly."""
@@ -300,6 +333,59 @@ class TestCore(unittest.TestCase):
         self.doc.recompute()
         self.assertEqual(UtilsAssembly.number_of_components_in(self.assembly), 2)
         self.assertTrue(self.assembly.isPartConnected(moving_part))
+
+    def test_repeated_connectivity_queries_reuse_unchanged_topology(self):
+        """Joint overlays must not rebuild the assembly graph per tree item."""
+        self._disable_solve_on_recompute()
+
+        parts = [
+            self.assembly.newObject("Part::Box", "ConnectivityPart{:02d}".format(index))
+            for index in range(48)
+        ]
+        self.doc.recompute()
+        ground = self.jointgroup.newObject(
+            "App::FeaturePython", "ConnectivityGroundedJoint"
+        )
+        JointObject.GroundedJoint(ground, parts[0])
+
+        joints = []
+        for index, (part1, part2) in enumerate(zip(parts, parts[1:])):
+            joint = self.jointgroup.newObject(
+                "App::FeaturePython", "ConnectivityJoint{:02d}".format(index)
+            )
+            JointObject.Joint(joint, 0)
+            joint.Proxy.setJointConnectors(
+                joint,
+                [
+                    [part1, ["Face6", "Vertex7"]],
+                    [part2, ["Face6", "Vertex7"]],
+                ],
+            )
+            joints.append(joint)
+        self.doc.recompute()
+
+        started = time.perf_counter()
+        self.assertTrue(self.assembly.isPartConnected(parts[-1]))
+        one_query_seconds = time.perf_counter() - started
+
+        started = time.perf_counter()
+        for part in parts:
+            self.assertTrue(self.assembly.isPartConnected(part))
+        all_queries_seconds = time.perf_counter() - started
+
+        self.assertLess(
+            all_queries_seconds,
+            max(0.05, one_query_seconds * 8.0),
+            "unchanged connectivity was recomputed for every joint overlay: "
+            "one={:.6f}s all={:.6f}s".format(
+                one_query_seconds, all_queries_seconds
+            ),
+        )
+
+        joints[len(joints) // 2].Suppressed = True
+        self.assertFalse(self.assembly.isPartConnected(parts[-1]))
+        joints[len(joints) // 2].Suppressed = False
+        self.assertTrue(self.assembly.isPartConnected(parts[-1]))
 
     def test_timeline_grounding_survives_undo_redo_and_reopen(self):
         """A future GroundedJoint is retained, unlocked, and restored exactly."""

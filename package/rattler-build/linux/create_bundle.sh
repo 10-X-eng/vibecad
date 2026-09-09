@@ -77,6 +77,7 @@ EOF
     ../scripts/purge_vibecad_retired_authoring_artifacts.sh \
         "${conda_env}" \
         "${conda_env}/Mod/VibeCAD"
+    ../scripts/exclude_appimage_host_graphics_libraries.sh "${conda_env}"
 
     echo -e "\nDelete unnecessary stuff"
     rm -rf ${conda_env}/include

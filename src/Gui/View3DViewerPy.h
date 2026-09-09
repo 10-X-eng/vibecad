@@ -24,10 +24,13 @@
 
 #include <CXX/Extensions.hxx>
 #include <list>
+#include <cstdint>
+#include <memory>
 
 
 namespace Gui
 {
+namespace detail { class AsyncImageExport; }
 
 class View3DInventorViewer;
 class EditableDatumLabelPy;
@@ -74,6 +77,9 @@ public:
     Py::Object setRedirectToSceneGraph(const Py::Tuple& args);
     Py::Object isRedirectedToSceneGraph(const Py::Tuple& args);
     Py::Object grabFramebuffer(const Py::Tuple& args);
+    Py::Object startFrameExport(const Py::Tuple& args);
+    Py::Object finishFrameExport(const Py::Tuple& args);
+    Py::Object cancelFrameExport(const Py::Tuple& args);
 
     Py::Object setOverrideMode(const Py::Tuple& args);
 
@@ -99,6 +105,8 @@ private:
     friend class EditableDatumLabelPy;
     std::list<PyObject*> callbacks;
     View3DInventorViewer* _viewer;
+    std::unique_ptr<detail::AsyncImageExport> frameExport;
+    std::uint64_t frameExportRequest {0};
     friend class View3DInventorViewer;
 };
 

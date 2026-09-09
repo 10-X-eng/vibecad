@@ -28,6 +28,8 @@
 #include "SoBrepPointSet.h"
 #include "SoFCShapeObject.h"
 
+#include <memory>
+
 #include <QtCore>
 
 #include <Inventor/nodes/SoSubNode.h>
@@ -46,6 +48,8 @@
 
 namespace PartGui
 {
+
+class RenderMeshController;
 
 class PartGuiExport SoPreviewShape: public SoFCShape
 {
@@ -78,6 +82,7 @@ public:
     App::PropertyColor PreviewColor;
 
     ViewProviderPreviewExtension();
+    ~ViewProviderPreviewExtension() override;
 
     /// Returns shape that should be used as the preview
     virtual Part::TopoShape getPreviewShape() const
@@ -105,12 +110,15 @@ protected:
     virtual void updatePreview();
     /// updates geometry of the preview shape
     void updatePreviewShape(Part::TopoShape shape, SoPreviewShape* preview);
+    /// cancels pending rendering before transient preview nodes are replaced
+    void cancelPreviewRendering();
 
     Gui::CoinPtr<SoSeparator> pcPreviewRoot;
     Gui::CoinPtr<SoPreviewShape> pcPreviewShape;
 
 private:
     bool _isPreviewEnabled {false};
+    std::unique_ptr<RenderMeshController> renderMeshController;
 };
 
 using ViewProviderPreviewExtensionPython

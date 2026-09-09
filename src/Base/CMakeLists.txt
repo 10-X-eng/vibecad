@@ -211,6 +211,7 @@ SET(FreeCADBase_CPP_SRCS
     PyObjectBase.cpp
     PythonTypeExt.cpp
     Reader.cpp
+    CancellationScope.cpp
     Rotation.cpp
     RotationPyImp.cpp
     Sequencer.cpp
@@ -280,6 +281,7 @@ SET(FreeCADBase_HPP_SRCS
     PyWrapParseTupleAndKeywords.h
     PythonTypeExt.h
     Reader.h
+    CancellationScope.h
     Rotation.h
     ServiceProvider.h
     Sequencer.h
