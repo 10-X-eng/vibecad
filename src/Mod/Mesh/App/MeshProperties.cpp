@@ -986,10 +986,10 @@ void PropertyMeshKernel::RestoreDocFile(Base::Reader& reader)
 App::Property* PropertyMeshKernel::Copy() const
 {
     // Note: Copy the content, do NOT reference the same mesh object
-    PropertyMeshKernel* prop = new PropertyMeshKernel();
-    const auto snapshot = _meshObject->snapshot();
-    *(prop->_meshObject) = *snapshot;
-    return prop;
+    auto prop = std::make_unique<PropertyMeshKernel>();
+    auto snapshot = _meshObject->snapshot();
+    prop->_meshObject = snapshot.release();
+    return prop.release();
 }
 
 void PropertyMeshKernel::Paste(const App::Property& from)
@@ -999,7 +999,9 @@ void PropertyMeshKernel::Paste(const App::Property& from)
     const PropertyMeshKernel& prop = dynamic_cast<const PropertyMeshKernel&>(from);
     const auto snapshot = prop._meshObject->snapshot();
     auto lock = _meshObject->acquireMutationLock();
-    *(this->_meshObject) = *snapshot;
+    // Preserve the mesh object's identity for existing Python wrappers, but
+    // transfer the detached snapshot's buffers instead of copying them again.
+    *(this->_meshObject) = std::move(*snapshot);
     bumpGeometryRevision();
     lock.unlock();
     hasSetValue();

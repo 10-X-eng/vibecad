@@ -3,7 +3,14 @@
 #include <gtest/gtest.h>
 
 #include "Base/Exception.h"
+#include "Base/Persistence.h"
 #include "Base/Writer.h"
+
+#include <thread>
+#ifdef _MSC_VER
+#include <zipios++/zipios-config.h>
+#endif
+#include <zipios++/zipinputstream.h>
 
 // Writer is designed to be a base class, so for testing we actually instantiate a StringWriter,
 // which is derived from it
@@ -128,4 +135,128 @@ TEST_F(WriterTest, charStreamBase64Encoded)
     // Assert
     // Conversion done using https://www.base64encode.org for testing purposes
     EXPECT_EQ(std::string("RnJlZUNBRCByb2NrcyEg8J+qqPCfqqjwn6qo\n"), _writer.getString());
+}
+
+TEST_F(WriterTest, ownerCaptureDoesNotWriteDestinationOnOwner)
+{
+    const auto caller = std::this_thread::get_id();
+    int dispatched = 0;
+    auto dispatch = [&](std::function<void()> capture) {
+        std::exception_ptr failure;
+        std::thread owner([&] {
+            ++dispatched;
+            EXPECT_NE(std::this_thread::get_id(), caller);
+            try {
+                capture();
+            }
+            catch (...) {
+                failure = std::current_exception();
+            }
+        });
+        owner.join();
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+    };
+    _writer.Stream() << "before:";
+    _writer.captureOnOwner(dispatch, [&] {
+        _writer.beginCharStream() << "captured";
+        _writer.endCharStream();
+        // No owner write may have reached the destination stream buffer.
+        EXPECT_EQ(_writer.getString(), "before:");
+    });
+    EXPECT_EQ(_writer.getString(), "before:<![CDATA[captured]]>");
+    EXPECT_EQ(dispatched, 1);
+
+    EXPECT_THROW(
+        _writer.captureOnOwner(
+            dispatch,
+            [&] {
+                _writer.Stream() << "discarded";
+                throw std::runtime_error("capture failed");
+            }
+        ),
+        std::runtime_error
+    );
+    _writer.Stream() << ":after";
+    EXPECT_EQ(_writer.getString(), "before:<![CDATA[captured]]>:after");
+}
+
+TEST_F(WriterTest, nestedBinaryFilesRetainCaptureOwner)
+{
+    struct Payload final: Base::Persistence
+    {
+        std::thread::id caller;
+        const Payload* child {nullptr};
+        mutable int writes {0};
+        unsigned int getMemSize() const override
+        {
+            return 0;
+        }
+        void Restore(Base::XMLReader&) override
+        {}
+        void Save(Base::Writer& writer) const override
+        {
+            writer.addFile("payload.bin", this);
+        }
+        void SaveDocFile(Base::Writer& writer) const override
+        {
+            EXPECT_NE(std::this_thread::get_id(), caller);
+            ++writes;
+            writer.Stream().write("a\0b", 3);
+            if (child) {
+                child->Save(writer);
+            }
+        }
+    };
+    Payload parent, child;
+    parent.caller = child.caller = std::this_thread::get_id();
+    parent.child = &child;
+    std::ostringstream archive;
+    {
+        Base::ZipWriter writer(archive);
+        writer.putNextEntry("root.xml");
+        writer.captureOnOwner(
+            [](std::function<void()> capture) {
+                std::exception_ptr failure;
+                std::thread owner([&] {
+                    try {
+                        capture();
+                    }
+                    catch (...) {
+                        failure = std::current_exception();
+                    }
+                });
+                owner.join();
+                if (failure) {
+                    std::rethrow_exception(failure);
+                }
+            },
+            [&] {
+                writer.Stream() << "root";
+                parent.Save(writer);
+            }
+        );
+        writer.writeFiles();
+    }
+    EXPECT_EQ(parent.writes, 1);
+    EXPECT_EQ(child.writes, 1);
+    std::istringstream input(archive.str());
+    zipios::ZipInputStream zip(input);
+    std::ostringstream root;
+    root << zip.rdbuf();
+    EXPECT_EQ(root.str(), "root");
+    std::vector<std::string> names;
+    // ZipInputStream reports the central directory with an exception rather
+    // than an EOF entry. Read the two registered payloads explicitly.
+    for (int index = 0; index < 2; ++index) {
+        auto entry = zip.getNextEntry();
+        ASSERT_TRUE(entry->isValid());
+        names.push_back(entry->getName());
+        std::ostringstream bytes;
+        bytes << zip.rdbuf();
+        EXPECT_EQ(bytes.str(), std::string("a\0b", 3));
+    }
+    ASSERT_EQ(names.size(), 2);
+    EXPECT_NE(names[0], names[1]);
 }

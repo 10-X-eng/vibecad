@@ -88,6 +88,11 @@ namespace Part
 class Geometry;
 }
 
+namespace PartGui
+{
+class RenderMeshController;
+}
+
 namespace Gui
 {
 class View3DInventorViewer;
@@ -1063,6 +1068,7 @@ private:
 
     Gui::CoinPtr<SoSketchFaces> pcSketchFaces;
     Gui::CoinPtr<SoToggleSwitch> pcSketchFacesToggle;
+    std::unique_ptr<PartGui::RenderMeshController> sketchFaceRenderController;
 
     std::unique_ptr<ShortcutListener> listener;
 

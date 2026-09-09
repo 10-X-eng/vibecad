@@ -87,12 +87,7 @@ _DIMENSION_TYPES = {
     "angle_3_point": "Angle3Pt",
     "area": "Area",
 }
-_MAX_DEFINITION_BYTES = 4 * 1024 * 1024
 _MAX_NATIVE_READBACK_BYTES = 64 * 1024 * 1024
-_MAX_REFERENCES = 128
-_MAX_PROJECTION_EDGES = 200_000
-_MAX_PROJECTION_FACES = 50_000
-_MAX_DESCRIPTOR_ITEMS = 250_000
 _MAX_MODEL_REFERENCE_SAMPLES = 64
 _REFERENCES: Mapping[tuple[str, str], Mapping[str, Any]] = MappingProxyType({})
 
@@ -203,7 +198,7 @@ def _fail(message: str, *, stage: str, **details: Any) -> TechDrawCandidateError
 def _encoded(
     value: Any,
     *,
-    limit: int = _MAX_DEFINITION_BYTES,
+    limit: int | None = None,
     label: str = "definition",
 ) -> bytes:
     try:
@@ -220,7 +215,7 @@ def _encoded(
             stage="definition_contract",
             exception_type=type(exc).__name__,
         ) from exc
-    if len(payload) > limit:
+    if limit is not None and len(payload) > limit:
         raise _fail(
             f"A TechDraw {label} exceeds {limit} JSON bytes.",
             stage="definition_contract",
@@ -457,13 +452,6 @@ def configure_techdraw_references(
 ) -> None:
     """Authenticate exact detached BREP inputs for worker-only projection."""
 
-    if len(document_references) > _MAX_REFERENCES:
-        raise _fail(
-            f"TechDraw accepts at most {_MAX_REFERENCES} document references.",
-            stage="reference_resolution",
-            reference_count=len(document_references),
-            maximum=_MAX_REFERENCES,
-        )
     from vibescript_part_worker import (
         configure_part_references,
         detached_reference_shape,
@@ -761,17 +749,11 @@ def _projection_snapshot(
     classes = [int(value) for value in snapshot["edge_classes"]]
     visibility = [bool(value) for value in snapshot["edge_visibility"]]
     source_indices = [int(value) for value in snapshot["source_indices"]]
-    if not 1 <= edge_count <= _MAX_PROJECTION_EDGES:
+    if not edge_count:
         raise _fail(
-            "Native TechDraw produced no edges or exceeded the projection edge limit.",
+            "Native TechDraw produced no edges.",
             stage="native_projection",
             edge_count=edge_count,
-        )
-    if face_count > _MAX_PROJECTION_FACES:
-        raise _fail(
-            "Native TechDraw exceeded the projection face limit.",
-            stage="native_projection",
-            face_count=face_count,
         )
     if not (
         len(classes) == len(visibility) == len(source_indices) == edge_count
@@ -797,10 +779,7 @@ def _projection_snapshot(
         )
     descriptor_edges = list(descriptors["edges"])
     descriptor_vertices = list(descriptors["vertices"])
-    if (
-        len(descriptor_edges) != edge_count
-        or len(descriptor_vertices) > _MAX_DESCRIPTOR_ITEMS
-    ):
+    if len(descriptor_edges) != edge_count:
         raise _fail(
             "Native TechDraw projected-element inventory is inconsistent.",
             stage="native_projection",

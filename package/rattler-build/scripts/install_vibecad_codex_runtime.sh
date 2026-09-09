@@ -15,7 +15,7 @@ download_cache="${VIBECAD_DOWNLOAD_CACHE:-${repository_root}/package/rattler-bui
 runtime_root="${module_directory}/codex_runtime"
 stamp="${runtime_root}/runtime-spec.sha256"
 
-codex_version="0.144.5"
+codex_version="0.153.4"
 release_tag="rust-v${codex_version}"
 release_root="https://github.com/openai/codex/releases/download/${release_tag}"
 license_url="https://raw.githubusercontent.com/openai/codex/${release_tag}/LICENSE"
@@ -30,34 +30,34 @@ platform="$(${python_executable} -c 'import sys; print(sys.platform)')"
 machine="$(${python_executable} -c 'import platform; print(platform.machine().lower())')"
 case "${platform}:${machine}" in
     linux:x86_64|linux:amd64)
-        archive="codex-app-server-x86_64-unknown-linux-musl.tar.gz"
-        archive_sha256="834a0c85947cd1840141f347f4b7368e2e21bf9c1b85934bcc8c397ece93ee74"
-        executable="${runtime_root}/codex-app-server"
+        archive="codex-app-server-package-x86_64-unknown-linux-musl.tar.gz"
+        archive_sha256="a5d37ff1fa6953ee6d317b7e69bfafd39f5f53350b631d790fa7531159f22420"
+        executable="${runtime_root}/bin/codex-app-server"
         ;;
     linux:aarch64|linux:arm64)
-        archive="codex-app-server-aarch64-unknown-linux-musl.tar.gz"
-        archive_sha256="d2230513fcbe363e6230a4cb53917fafd68c2d2bad953035d99059eb18c07117"
-        executable="${runtime_root}/codex-app-server"
+        archive="codex-app-server-package-aarch64-unknown-linux-musl.tar.gz"
+        archive_sha256="5673c5a8935ff2f85ca67b489e560fdd5e08fb0f0e2f7426f048ec7449aa4fdc"
+        executable="${runtime_root}/bin/codex-app-server"
         ;;
     win32:amd64|win32:x86_64)
-        archive="codex-app-server-x86_64-pc-windows-msvc.exe.tar.gz"
-        archive_sha256="dd79c88858523619273faeb50d4d79923dca53095d88e2ad0b477d5222fcf19d"
-        executable="${runtime_root}/codex-app-server.exe"
+        archive="codex-app-server-package-x86_64-pc-windows-msvc.tar.gz"
+        archive_sha256="69441ca4c8f6197923dc1b70a8aa870ff912b5367347287d021eaca1f3add971"
+        executable="${runtime_root}/bin/codex-app-server.exe"
         ;;
     win32:arm64|win32:aarch64)
-        archive="codex-app-server-aarch64-pc-windows-msvc.exe.tar.gz"
-        archive_sha256="6dc2fa9de0b0f88d9578d66319b2fa9069bdc9f61c7ce1f0897fdea0e8861801"
-        executable="${runtime_root}/codex-app-server.exe"
+        archive="codex-app-server-package-aarch64-pc-windows-msvc.tar.gz"
+        archive_sha256="d5f0ef33223912a1559a7e97012afa18eef3369f1d07dde199edfada062503ee"
+        executable="${runtime_root}/bin/codex-app-server.exe"
         ;;
     darwin:arm64|darwin:aarch64)
-        archive="codex-app-server-aarch64-apple-darwin.tar.gz"
-        archive_sha256="ec98c5647ff482cde7fe7b4091950a23f19ffceb0b343612a1bab0de0857f5d1"
-        executable="${runtime_root}/codex-app-server"
+        archive="codex-app-server-package-aarch64-apple-darwin.tar.gz"
+        archive_sha256="90f0467fd03294896204e8856bf969a0691590e8bef78dc2563a264b186f3265"
+        executable="${runtime_root}/bin/codex-app-server"
         ;;
     darwin:x86_64|darwin:amd64)
-        archive="codex-app-server-x86_64-apple-darwin.tar.gz"
-        archive_sha256="6900e9f59347d9ea0909cffd56a8e6659dd89c793e33f70372ff5fb2c00081da"
-        executable="${runtime_root}/codex-app-server"
+        archive="codex-app-server-package-x86_64-apple-darwin.tar.gz"
+        archive_sha256="ee286ca326a0df4a2b81dddb213d61e610d7b9c4f3173cc16f6023683a94ca82"
+        executable="${runtime_root}/bin/codex-app-server"
         ;;
     *)
         echo "No pinned Codex app-server is available for ${platform}/${machine}." >&2
@@ -92,6 +92,27 @@ runtime_spec="$({
 
 smoke_runtime() {
     local output
+    "${python_executable}" - "${runtime_root}" "${codex_version}" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / "codex-package.json").read_text())
+if manifest.get("layoutVersion") != 1 or manifest.get("version") != sys.argv[2]:
+    raise SystemExit("Unexpected Codex package layout or version")
+suffix = ".exe" if sys.platform == "win32" else ""
+required = ["bin/codex-app-server" + suffix, "bin/codex-code-mode-host" + suffix,
+            "codex-path/rg" + suffix]
+if suffix:
+    required += ["codex-resources/codex-command-runner.exe",
+                 "codex-resources/codex-windows-sandbox-setup.exe"]
+if manifest.get("entrypoint") != required[0]:
+    raise SystemExit("Unexpected Codex package entrypoint")
+for name in required:
+    if not (root / name).is_file():
+        raise SystemExit(f"Missing Codex package companion: {name}")
+PY
     output="$("${executable}" --version)"
     if [[ "${output}" != *"${codex_version}"* ]]; then
         echo "Unexpected Codex app-server version: ${output}" >&2
@@ -160,27 +181,10 @@ with tarfile.open(archive, "r:gz") as package:
     package.extractall(target)
 PY
 
-source_executable="$(${python_executable} - "${temporary_root}" <<'PY'
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1])
-candidates = [
-    path
-    for path in root.rglob("*")
-    if path.is_file() and path.name.startswith("codex-app-server-")
-]
-if len(candidates) != 1:
-    raise SystemExit(
-        f"Codex archive must contain exactly one app-server executable; found {candidates}"
-    )
-print(candidates[0])
-PY
-)"
-
 rm -rf "${runtime_root}"
 mkdir -p "${runtime_root}"
-cp "${source_executable}" "${executable}"
+# Preserve the official package layout: companion discovery is relative to bin.
+cp -R "${temporary_root}/." "${runtime_root}/"
 cp "${license_path}" "${runtime_root}/LICENSE"
 chmod +x "${executable}"
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from email.utils import mktime_tz, parsedate_tz
 import hashlib
 import json
 import multiprocessing
@@ -1930,6 +1931,46 @@ class GeminiProvider(BaseProvider):
             raise
 
 
+
+# Parent-process cache: provider objects and subprocesses are recreated per turn.
+_ANTHROPIC_CAPABILITY_CACHE: dict[tuple[str, str], tuple[float, int]] = {}
+_ANTHROPIC_CAPABILITY_CACHE_LOCK = threading.Lock()
+_ANTHROPIC_CAPABILITY_CACHE_TTL = 300.0
+_ANTHROPIC_CAPABILITY_CACHE_SIZE = 64
+
+
+def _anthropic_capability_scope(api_key: str | None, base_url: str | None) -> str:
+    # Keep credentials and credential-bearing endpoints out of cache keys/events.
+    identity = [
+        base_url or os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com",
+        api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
+        os.environ.get("ANTHROPIC_AUTH_TOKEN", ""),
+    ]
+    return hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
+
+
+def _anthropic_cached_capabilities(scope: str, models: set[str]) -> dict[str, int]:
+    with _ANTHROPIC_CAPABILITY_CACHE_LOCK:
+        now = time.monotonic()
+        expired = [key for key, (stamp, _) in _ANTHROPIC_CAPABILITY_CACHE.items()
+                   if now - stamp >= _ANTHROPIC_CAPABILITY_CACHE_TTL]
+        for key in expired:
+            del _ANTHROPIC_CAPABILITY_CACHE[key]
+        return {model: _ANTHROPIC_CAPABILITY_CACHE[(scope, model)][1]
+                for model in models if (scope, model) in _ANTHROPIC_CAPABILITY_CACHE}
+
+
+def _anthropic_cache_capability(scope: str, model: str, maximum: Any) -> None:
+    if type(maximum) is not int or maximum <= 0:
+        return
+    with _ANTHROPIC_CAPABILITY_CACHE_LOCK:
+        key = (scope, model)
+        _ANTHROPIC_CAPABILITY_CACHE.pop(key, None)
+        _ANTHROPIC_CAPABILITY_CACHE[key] = (time.monotonic(), maximum)
+        while len(_ANTHROPIC_CAPABILITY_CACHE) > _ANTHROPIC_CAPABILITY_CACHE_SIZE:
+            del _ANTHROPIC_CAPABILITY_CACHE[next(iter(_ANTHROPIC_CAPABILITY_CACHE))]
+
+
 class AnthropicProvider(BaseProvider):
     """Native Anthropic Messages API adapter.
 
@@ -1968,12 +2009,26 @@ class AnthropicProvider(BaseProvider):
         progress_callback: ProgressCallback | None = None,
     ) -> ProviderResult:
         try:
+            scope = _anthropic_capability_scope(self.api_key, self.base_url)
+            models = {self.model, self.compaction_model}
             provider_context = dict(context)
-            provider_context["_vibecad_provider_options"] = {
-                **dict(context.get("_vibecad_provider_options") or {}),
+            options = dict(context.get("_vibecad_provider_options") or {})
+            options.update({
                 "web_search_enabled": self.web_search_enabled,
                 "compaction_model": self.compaction_model,
-            }
+                "model_capabilities": _anthropic_cached_capabilities(scope, models),
+            })
+            provider_context["_vibecad_provider_options"] = options
+
+            def on_progress(event: dict[str, Any]) -> None:
+                if event.get("event") == "anthropic_model_capability":
+                    if event.get("model") in models:
+                        _anthropic_cache_capability(
+                            scope, event["model"], event.get("max_tokens")
+                        )
+                    return
+                if progress_callback is not None:
+                    progress_callback(event)
             return _run_provider_subprocess(
                 prompt=prompt,
                 context=provider_context,
@@ -1985,7 +2040,7 @@ class AnthropicProvider(BaseProvider):
                 max_turns=self.max_turns,
                 base_url=self.base_url,
                 cancellation_check=cancellation_check,
-                progress_callback=progress_callback,
+                progress_callback=on_progress,
                 child_main=_anthropic_child_main,
                 provider_label="Anthropic provider",
             )
@@ -4733,6 +4788,43 @@ def _is_retryable_anthropic_stream_error(
     return any(token in text for token in retry_tokens)
 
 
+def _is_retryable_anthropic_request_error(
+    exc: BaseException, anthropic_module: Any
+) -> bool:
+    status_error = getattr(anthropic_module, "APIStatusError", ())
+    if isinstance(exc, status_error):
+        directive = exc.response.headers.get("x-should-retry")
+        if directive in {"true", "false"}:
+            return directive == "true"
+        return exc.status_code in {408, 409, 429} or exc.status_code >= 500
+    return _is_retryable_anthropic_stream_error(exc, anthropic_module)
+
+
+def _anthropic_request_retry_delay(exc: BaseException, attempt: int) -> float:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return min(2.0, 0.25 * attempt)
+
+    headers = response.headers
+    delay = None
+    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
+        try:
+            delay = float(headers[name]) * scale
+            break
+        except (KeyError, TypeError, ValueError):
+            continue
+    if delay is None and headers.get("retry-after"):
+        try:
+            parsed = parsedate_tz(headers["retry-after"])
+            if parsed is not None:
+                delay = mktime_tz(parsed) - time.time()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if delay is not None and 0 < delay <= 60:
+        return delay
+    return min(8.0, 0.5 * 2 ** min(attempt - 1, 4))
+
+
 def _bounded_compaction_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
@@ -5938,6 +6030,7 @@ def _gemini_child_main(
             )
 
             for tool_call in assistant_tool_calls:
+                previous_context = live_context
                 function = tool_call["function"]
                 function_name = str(function["name"])
                 tool_name = tools_by_name.get(function_name)
@@ -5982,6 +6075,7 @@ def _gemini_child_main(
                 state_after = _provider_state_after_tool(
                     live_context,
                     result if isinstance(result, dict) else None,
+                    previous_context=previous_context,
                 )
                 if isinstance(result, dict) and state_after:
                     result["vibecad_state_after"] = state_after
@@ -6107,20 +6201,39 @@ def _anthropic_child_main(
         if timeout_seconds is not None and timeout_seconds > 0:
             client_kwargs["timeout"] = timeout_seconds
         client = anthropic.Anthropic(**client_kwargs)
-        max_tokens = _anthropic_model_max_tokens(
-            client,
-            model,
-            sdk_fallback=DEFAULT_ANTHROPIC_MAX_TOKENS,
-        )
-        compaction_max_tokens = (
-            max_tokens
-            if compaction_model == model
-            else _anthropic_model_max_tokens(
-                client,
-                compaction_model,
-                sdk_fallback=ANTHROPIC_TURN_COMPACTION_MAX_TOKENS,
-            )
-        )
+        cached = _provider_option_value(live_context, "model_capabilities")
+        capabilities = dict(cached) if isinstance(cached, dict) else {}
+
+        def model_max_tokens(model_id: str, fallback: int) -> int:
+            maximum = capabilities.get(model_id)
+            if type(maximum) is int and maximum > 0:
+                return maximum
+            # Deferred metadata runs between generations on this child-owned
+            # client. Restore its SDK retry allowance only for the lookup;
+            # streamed generations retain the outer-loop-only retry policy.
+            stream_retries = getattr(client, "max_retries", client_kwargs["max_retries"])
+            try:
+                client.max_retries = client_kwargs["max_retries"]
+                maximum = _anthropic_model_max_tokens(
+                    client, model_id, sdk_fallback=fallback
+                )
+            finally:
+                client.max_retries = stream_retries
+            capabilities[model_id] = maximum
+            # Older SDK fallback values are not model-reported capabilities.
+            if callable(getattr(getattr(client, "models", None), "retrieve", None)):
+                _send_child_progress(conn, {
+                    "event": "anthropic_model_capability",
+                    "model": model_id,
+                    "max_tokens": maximum,
+                })
+            return maximum
+
+        max_tokens = model_max_tokens(model, DEFAULT_ANTHROPIC_MAX_TOKENS)
+
+        # Stream retries belong to the outer loop, including failures after
+        # headers. Keep metadata and separate compaction SDK retries intact.
+        client.max_retries = 0
 
         request_kwargs: dict[str, Any] = {
             "model": model,
@@ -6136,9 +6249,11 @@ def _anthropic_child_main(
             }
 
         history_state: dict[str, Any] = {}
+        response_content_observed = False
 
         def _stream_response(turn: int, attempt: int) -> Any:
-            nonlocal messages
+            nonlocal messages, response_content_observed
+            response_content_observed = False
             # The SDK rejects non-streaming requests that could exceed ten
             # minutes (large max_tokens plus thinking budgets), so always
             # stream and accumulate the final message.
@@ -6213,6 +6328,8 @@ def _anthropic_child_main(
                     event_count += 1
                     summary = _anthropic_stream_event_summary(stream_event)
                     stream_event_type = summary.get("stream_event_type")
+                    if stream_event_type in {"content_block_start", "content_block_delta"}:
+                        response_content_observed = True
                     delta_type = summary.get("delta_type")
                     text_delta = summary.get("text_delta")
                     if text_delta:
@@ -6288,15 +6405,22 @@ def _anthropic_child_main(
                 return stream.get_final_message()
 
         def _stream_response_with_retries(turn: int) -> Any:
+            status_failures = 0
             for attempt in range(1, ANTHROPIC_STREAM_MAX_ATTEMPTS + 1):
                 try:
                     return _stream_response(turn, attempt)
                 except anthropic.BadRequestError:
                     raise
                 except Exception as exc:
+                    is_status_error = isinstance(
+                        exc, getattr(anthropic, "APIStatusError", ())
+                    )
+                    if is_status_error:
+                        status_failures += 1
                     if (
                         attempt >= ANTHROPIC_STREAM_MAX_ATTEMPTS
-                        or not _is_retryable_anthropic_stream_error(exc, anthropic)
+                        or status_failures >= client_kwargs["max_retries"] + 1
+                        or not _is_retryable_anthropic_request_error(exc, anthropic)
                     ):
                         raise
                     _send_child_progress(
@@ -6306,11 +6430,17 @@ def _anthropic_child_main(
                             "turn": turn,
                             "attempt": attempt,
                             "next_attempt": attempt + 1,
+                            "transport_attempt_count": attempt,
+                            "response_content_observed": response_content_observed,
                             "max_attempts": ANTHROPIC_STREAM_MAX_ATTEMPTS,
                             "error": _short_provider_error(exc),
                         },
                     )
-                    time.sleep(min(2.0, 0.25 * attempt))
+                    time.sleep(
+                        _anthropic_request_retry_delay(
+                            exc, status_failures if is_status_error else attempt
+                        )
+                    )
             raise RuntimeError("Anthropic stream retry loop exited unexpectedly.")
 
         turn = 1
@@ -6387,7 +6517,9 @@ def _anthropic_child_main(
                     debug_context=live_context,
                     base_url=base_url,
                     generation=compaction_count,
-                    max_tokens=compaction_max_tokens,
+                    max_tokens=model_max_tokens(
+                        compaction_model, ANTHROPIC_TURN_COMPACTION_MAX_TOKENS
+                    ),
                 )
                 messages = [
                     {

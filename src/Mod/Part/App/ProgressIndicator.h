@@ -25,6 +25,7 @@
 #pragma once
 
 #include <memory>
+#include <stop_token>
 
 #include <Message_ProgressIndicator.hxx>
 #include <Standard_Version.hxx>
@@ -40,6 +41,9 @@ class PartExport ProgressIndicator: public Message_ProgressIndicator
 {
 public:
     ProgressIndicator();
+    /// Kernel cancellation for a worker whose owner already reports progress.
+    /// Does not create another global sequencer or access GUI state.
+    explicit ProgressIndicator(std::stop_token cancellation);
     ~ProgressIndicator() override;
 
     void Show(const Message_ProgressScope& theScope, const Standard_Boolean isForce) override;
@@ -49,6 +53,7 @@ public:
 private:
     std::size_t currentStep {0};
     std::unique_ptr<Base::SequencerLauncher> progress;
+    std::stop_token cancellation;
 };
 
 }  // namespace Part

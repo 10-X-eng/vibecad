@@ -54,8 +54,10 @@
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QMenu>
-#include <QTimer>
+#include <QMetaObject>
+#include <atomic>
 #include <deque>
+#include <map>
 #include <memory>
 #include <sstream>
 
@@ -87,6 +89,7 @@
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Control.h>
+#include <Gui/FrameBudget.h>
 #include <Gui/ProgressBar.h>
 #include <Gui/Selection/SoFCSelectionAction.h>
 #include <Gui/Selection/SoFCUnifiedSelection.h>
@@ -94,6 +97,7 @@
 #include <Gui/Utilities.h>
 
 #include <Mod/Part/App/ShapeMapHasher.h>
+#include <Mod/Part/App/RenderMesh.h>
 #include <Mod/Part/App/Tools.h>
 
 #include "ViewProviderExt.h"
@@ -121,18 +125,150 @@ App::PropertyQuantityConstraint::Constraints ViewProviderPartExt::angDeflectionR
 const char* ViewProviderPartExt::LightingEnums[] = {"One side", "Two side", nullptr};
 const char* ViewProviderPartExt::DrawStyleEnums[] = {"Solid", "Dashed", "Dotted", "Dashdot", nullptr};
 
-namespace
+namespace PartGui
 {
+// Names locate documents; UIDs and provider instances authorize adoption.
+// A queued request never owns a document or a view provider.
 struct DeferredVisual
 {
     std::string documentName;
-    std::string objectName;
+    std::string documentUid;
+    long objectId;
+    std::uint64_t instanceId;
+
+    explicit DeferredVisual(const ViewProviderPartExt& view)
+        : documentName(view.getObject()->getDocument()->getName()),
+          documentUid(view.getObject()->getDocument()->Uid.getValueStr()),
+          objectId(view.getObject()->getID()), instanceId(view.visualInstanceId)
+    {}
+
+    bool matches(const ViewProviderPartExt* view) const
+    {
+        return view && view->visualInstanceId == instanceId;
+    }
+};
+}
+
+namespace
+{
+std::atomic_uint64_t nextVisualInstanceId {1};
+
+std::pair<std::uint64_t, std::uint64_t> appearanceStamp(
+    const SoMaterial* material, const SoMaterialBinding* binding)
+{
+    return {material->getNodeId(), binding->getNodeId()};
+}
+
+void copyRenderMesh(
+    const Part::RenderMesh& mesh,
+    SoCoordinate3* coords,
+    SoBrepFaceSet* faceset,
+    SoNormal* norm,
+    SoBrepEdgeSet* lineset,
+    SoBrepPointSet* nodeset
+)
+{
+    const auto coinSize = [](std::size_t size) {
+        if (size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            throw Base::MemoryException("Render mesh exceeds Coin field capacity");
+        }
+        return static_cast<int>(size);
+    };
+
+    coords->point.setNum(coinSize(mesh.vertexCount()));
+    norm->vector.setNum(coinSize(mesh.normalCount()));
+    faceset->coordIndex.setNum(coinSize(mesh.triangleIndices.size()));
+    faceset->partIndex.setNum(coinSize(mesh.faceTriangleCounts.size()));
+    lineset->coordIndex.setNum(coinSize(mesh.lineIndices.size()));
+
+    auto* vertices = coords->point.startEditing();
+    for (std::size_t index = 0; index < mesh.vertexCount(); ++index) {
+        const std::size_t offset = index * 3;
+        vertices[index].setValue(
+            mesh.vertices[offset],
+            mesh.vertices[offset + 1],
+            mesh.vertices[offset + 2]
+        );
+    }
+    auto* normals = norm->vector.startEditing();
+    for (std::size_t index = 0; index < mesh.normalCount(); ++index) {
+        const std::size_t offset = index * 3;
+        normals[index].setValue(
+            mesh.normals[offset],
+            mesh.normals[offset + 1],
+            mesh.normals[offset + 2]
+        );
+    }
+    std::copy(
+        mesh.triangleIndices.begin(),
+        mesh.triangleIndices.end(),
+        faceset->coordIndex.startEditing()
+    );
+    std::copy(
+        mesh.faceTriangleCounts.begin(),
+        mesh.faceTriangleCounts.end(),
+        faceset->partIndex.startEditing()
+    );
+    std::copy(
+        mesh.lineIndices.begin(),
+        mesh.lineIndices.end(),
+        lineset->coordIndex.startEditing()
+    );
+    nodeset->startIndex.setValue(mesh.vertexStart);
+
+    coords->point.finishEditing();
+    norm->vector.finishEditing();
+    faceset->coordIndex.finishEditing();
+    faceset->partIndex.finishEditing();
+    lineset->coordIndex.finishEditing();
+}
+
+class PresentationUpdateEnd
+{
+public:
+    explicit PresentationUpdateEnd(App::Document* document)
+        : documentName(document ? document->getName() : ""),
+          documentUid(document ? document->Uid.getValueStr() : "")
+    {}
+
+    ~PresentationUpdateEnd()
+    {
+        auto* document = App::GetApplication().getDocument(documentName.c_str());
+        if (document && document->Uid.getValueStr() == documentUid) {
+            try {
+                document->endPresentationUpdate();
+            }
+            catch (const Base::Exception& failure) {
+                failure.reportException();
+            }
+            catch (const std::exception& failure) {
+                Base::Console().error("Render presentation release failed: %s\n", failure.what());
+            }
+            catch (...) {
+                Base::Console().error("Render presentation release failed\n");
+            }
+        }
+    }
+
+    PresentationUpdateEnd(const PresentationUpdateEnd&) = delete;
+    PresentationUpdateEnd& operator=(const PresentationUpdateEnd&) = delete;
+
+private:
+    const std::string documentName;
+    const std::string documentUid;
 };
 
 std::deque<DeferredVisual> deferredVisuals;
+// false = queued, true = started. Cancelling a queued request must not consume
+// another provider's outstanding completion.
+std::map<std::uint64_t, bool> deferredVisualIdentities;
+std::size_t deferredVisualOutstanding = 0;
 bool deferredVisualRefreshScheduled = false;
+bool deferredVisualDispatchPending = false;
 bool deferredVisualShutdown = false;
 bool deferredVisualShutdownConnected = false;
+fastsignals::scoped_connection deferredRestoreIdleConnection;
+fastsignals::scoped_connection deferredOpenFinishedConnection;
 std::unique_ptr<Base::SequencerLauncher> deferredVisualProgress;
 Gui::ProgressBar* deferredVisualProgressBar = nullptr;
 int deferredVisualProgressMinimumDuration = -1;
@@ -155,8 +291,6 @@ void startDeferredVisualProgress()
     deferredVisualProgress =
         std::make_unique<Base::SequencerLauncher>(text.constData(), deferredVisuals.size());
 
-    // Paint the native progress indicator and wait cursor before tessellating the next shape.
-    qApp->processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
 void advanceDeferredVisualProgress()
@@ -180,9 +314,16 @@ void shutdownDeferredVisualRestore()
 {
     deferredVisualShutdown = true;
     deferredVisuals.clear();
+    deferredVisualIdentities.clear();
+    deferredVisualOutstanding = 0;
     deferredVisualRefreshScheduled = false;
+    deferredVisualDispatchPending = false;
+    deferredRestoreIdleConnection.disconnect();
+    deferredOpenFinishedConnection.disconnect();
     finishDeferredVisualProgress();
 }
+
+void scheduleNextDeferredVisual();
 
 void connectDeferredVisualShutdown()
 {
@@ -196,16 +337,49 @@ void connectDeferredVisualShutdown()
                      qApp,
                      shutdownDeferredVisualRestore,
                      Qt::DirectConnection);
+    const auto restoreIdle = [] {
+        Gui::dispatchToGuiFrame(qApp, [] {
+            if (!deferredVisuals.empty()) { scheduleNextDeferredVisual(); }
+        });
+    };
+    deferredRestoreIdleConnection = App::GetApplication().signalRestoreActivityIdle.connect(restoreIdle);
+    deferredOpenFinishedConnection = App::GetApplication().signalFinishOpenDocument.connect(restoreIdle);
 }
 
 void refreshNextDeferredVisual();
 
-void scheduleNextDeferredVisual(int delay = 0)
+void completeDeferredVisualRestore(std::uint64_t instanceId)
 {
-    if (deferredVisualShutdown || !qApp) {
+    const auto found = deferredVisualIdentities.find(instanceId);
+    if (deferredVisualShutdown || found == deferredVisualIdentities.end()) {
         return;
     }
-    QTimer::singleShot(delay, qApp, refreshNextDeferredVisual);
+    const bool started = found->second;
+    deferredVisualIdentities.erase(found);
+    if (started) {
+        --deferredVisualOutstanding;
+    }
+    advanceDeferredVisualProgress();
+    if (deferredVisuals.empty() && deferredVisualOutstanding == 0) {
+        finishDeferredVisualProgress();
+        deferredVisualRefreshScheduled = false;
+    }
+}
+
+void scheduleNextDeferredVisual()
+{
+    if (deferredVisualShutdown || !qApp || deferredVisualDispatchPending) {
+        return;
+    }
+    deferredVisualDispatchPending = true;
+    if (!Gui::dispatchToGuiFrame(qApp, [] {
+        deferredVisualDispatchPending = false;
+        refreshNextDeferredVisual();
+    })) {
+        deferredVisualDispatchPending = false;
+        deferredVisualRefreshScheduled = false;
+        Base::Console().error("Cannot schedule restored model display: GUI dispatcher unavailable\n");
+    }
 }
 
 void refreshNextDeferredVisual()
@@ -214,31 +388,60 @@ void refreshNextDeferredVisual()
         return;
     }
     if (App::Document::isAnyRestoring()) {
-        scheduleNextDeferredVisual(25);
-        return;
+        return; // The actual restore-idle transition schedules the next frame.
     }
 
     startDeferredVisualProgress();
 
+    Gui::FrameBudget budget;
     while (!deferredVisuals.empty()) {
-        DeferredVisual identity = std::move(deferredVisuals.front());
-        deferredVisuals.pop_front();
-        auto* document = App::GetApplication().getDocument(identity.documentName.c_str());
-        auto* object = document ? document->getObject(identity.objectName.c_str()) : nullptr;
-        auto* viewProvider = object && Gui::Application::Instance
-            ? Gui::Application::Instance->getViewProvider<ViewProviderPartExt>(object)
-            : nullptr;
-        if (viewProvider) {
-            viewProvider->finishDeferredVisualRestore();
-            advanceDeferredVisualProgress();
+        if (budget.exhausted()) {
             scheduleNextDeferredVisual();
             return;
         }
-        advanceDeferredVisualProgress();
+        DeferredVisual identity = std::move(deferredVisuals.front());
+        deferredVisuals.pop_front();
+        if (!deferredVisualIdentities.contains(identity.instanceId)) {
+            continue;
+        }
+        auto* document = App::GetApplication().getDocument(identity.documentName.c_str());
+        if (document && document->Uid.getValueStr() != identity.documentUid) {
+            document = nullptr;
+        }
+        if (document && document->testStatus(App::Document::Restoring)) {
+            // A document can remain Restoring between worker phases even when
+            // no archive scope is active. Do not consume its display request.
+            deferredVisuals.push_front(std::move(identity));
+            return;
+        }
+        auto* object = document ? document->getObjectByID(identity.objectId) : nullptr;
+        auto* viewProvider = object && Gui::Application::Instance
+            ? Gui::Application::Instance->getViewProvider<ViewProviderPartExt>(object)
+            : nullptr;
+        if (identity.matches(viewProvider)) {
+            deferredVisualIdentities.at(identity.instanceId) = true;
+            ++deferredVisualOutstanding;
+            try {
+                viewProvider->finishDeferredVisualRestore();
+            }
+            catch (const std::exception& error) {
+                completeDeferredVisualRestore(identity.instanceId);
+                Base::Console().error("Restored model display failed: %s\n", error.what());
+            }
+            catch (...) {
+                completeDeferredVisualRestore(identity.instanceId);
+                Base::Console().error("Restored model display failed\n");
+            }
+            scheduleNextDeferredVisual();
+            return;
+        }
+        completeDeferredVisualRestore(identity.instanceId);
     }
 
-    finishDeferredVisualProgress();
-    deferredVisualRefreshScheduled = false;
+    if (deferredVisualOutstanding == 0) {
+        finishDeferredVisualProgress();
+        deferredVisualRefreshScheduled = false;
+    }
 }
 
 void deferVisualRestore(const ViewProviderPartExt& viewProvider)
@@ -252,7 +455,13 @@ void deferVisualRestore(const ViewProviderPartExt& viewProvider)
         return;
     }
     connectDeferredVisualShutdown();
-    deferredVisuals.push_back({document->getName(), object->getNameInDocument()});
+    DeferredVisual identity(viewProvider);
+    if (!deferredVisualIdentities
+             .emplace(identity.instanceId, false)
+             .second) {
+        return;
+    }
+    deferredVisuals.push_back(std::move(identity));
     if (!deferredVisualRefreshScheduled) {
         deferredVisualRefreshScheduled = true;
         scheduleNextDeferredVisual();
@@ -262,6 +471,7 @@ void deferVisualRestore(const ViewProviderPartExt& viewProvider)
 
 ViewProviderPartExt::ViewProviderPartExt()
 {
+    visualInstanceId = nextVisualInstanceId.fetch_add(1, std::memory_order_relaxed);
     texture.initExtension(this);
 
     VisualTouched = true;
@@ -429,6 +639,9 @@ ViewProviderPartExt::ViewProviderPartExt()
 
 ViewProviderPartExt::~ViewProviderPartExt()
 {
+    visualMeshController.cancelAll();
+    // The provider can disappear before its queued request even starts.
+    completeDeferredVisualRestore(visualInstanceId);
     pcFaceBind->unref();
     pcLineBind->unref();
     pcPointBind->unref();
@@ -532,10 +745,12 @@ void ViewProviderPartExt::onChanged(const App::Property* prop)
         pcPointMaterial->transparency.setValue(Mat.transparency);
     }
     else if (prop == &PointColorArray) {
-        setHighlightedPoints(PointColorArray.getValues());
+        pointAppearanceStamp = {};
+        applyPointAppearance();
     }
     else if (prop == &LineColorArray) {
-        setHighlightedEdges(LineColorArray.getValues());
+        edgeAppearanceStamp = {};
+        applyEdgeAppearance();
     }
     else if (prop == &_diffuseColor) {
         // Used to load the old DiffuseColor values asynchronously
@@ -550,7 +765,8 @@ void ViewProviderPartExt::onChanged(const App::Property* prop)
         ShapeAppearance.setTransparencies(transparencies);
     }
     else if (prop == &ShapeAppearance) {
-        setHighlightedFaces(ShapeAppearance);
+        shapeAppearanceStamp = {};
+        applyShapeAppearance();
         ViewProviderGeometryObject::onChanged(prop);
     }
     else if (prop == &Transparency) {
@@ -842,13 +1058,21 @@ void ViewProviderPartExt::setHighlightedFaces(const std::vector<App::Material>& 
     action.apply(this->faceset);
 
     int size = static_cast<int>(materials.size());
+    if (size == 1) {
+        // Uniform appearance is independent of topology. In particular, do
+        // not traverse a restored BREP before its worker mesh is installed.
+        pcFaceBind->value = SoMaterialBinding::OVERALL;
+        setCoinAppearance(materials[0]);
+        return;
+    }
+    if (size == 0) { return; }
     int faceCount = this->faceset->partIndex.getNum();
     if (faceCount == 0) {
         if (const auto* feature = getObject<Part::Feature>()) {
             faceCount = static_cast<int>(feature->Shape.getShape().countSubShapes(TopAbs_FACE));
         }
     }
-    if (size > 1 && size == faceCount) {
+    if (size == faceCount) {
         pcFaceBind->value = SoMaterialBinding::PER_PART;
         texture.activateMaterial();
 
@@ -898,15 +1122,44 @@ void ViewProviderPartExt::setHighlightedFaces(const std::vector<App::Material>& 
         pcShapeMaterial->shininess.finishEditing();
         pcShapeMaterial->transparency.finishEditing();
     }
-    else if (size == 1) {
-        pcFaceBind->value = SoMaterialBinding::OVERALL;
-        setCoinAppearance(materials[0]);
-    }
 }
 
 void ViewProviderPartExt::setHighlightedFaces(const App::PropertyMaterialList& appearance)
 {
     setHighlightedFaces(appearance.getValues());
+}
+
+void ViewProviderPartExt::applyShapeAppearance()
+{
+    const int faceCount = faceset->partIndex.getNum();
+    if (appearanceFaceCount == faceCount
+        && shapeAppearanceStamp == appearanceStamp(pcShapeMaterial, pcFaceBind)) {
+        return;
+    }
+    // Multi-face appearance needs the worker's topology result, not a second
+    // BREP traversal during restore. finishVisualBuild applies the latest
+    // property values after installing that result. Uniform colour is immediate.
+    if (ShapeAppearance.getSize() <= 1 || faceCount > 0) {
+        setHighlightedFaces(ShapeAppearance);
+        shapeAppearanceStamp = appearanceStamp(pcShapeMaterial, pcFaceBind);
+        appearanceFaceCount = faceCount;
+    }
+}
+
+void ViewProviderPartExt::applyEdgeAppearance()
+{
+    if (edgeAppearanceStamp != appearanceStamp(pcLineMaterial, pcLineBind)) {
+        setHighlightedEdges(LineColorArray.getValues());
+        edgeAppearanceStamp = appearanceStamp(pcLineMaterial, pcLineBind);
+    }
+}
+
+void ViewProviderPartExt::applyPointAppearance()
+{
+    if (pointAppearanceStamp != appearanceStamp(pcPointMaterial, pcPointBind)) {
+        setHighlightedPoints(PointColorArray.getValues());
+        pointAppearanceStamp = appearanceStamp(pcPointMaterial, pcPointBind);
+    }
 }
 
 std::map<std::string, Base::Color> ViewProviderPartExt::getElementColors(const char* element) const
@@ -1032,20 +1285,12 @@ void ViewProviderPartExt::setHighlightedEdges(const std::vector<Base::Color>& co
     if (size > 1) {
         // Although indexed lineset is used the material binding must be PER_FACE!
         pcLineBind->value = SoMaterialBinding::PER_FACE;
-        const int32_t* cindices = this->lineset->coordIndex.getValues(0);
-        int numindices = this->lineset->coordIndex.getNum();
         pcLineMaterial->diffuseColor.setNum(size);
         SbColor* ca = pcLineMaterial->diffuseColor.startEditing();
-        int linecount = 0;
-
-        for (int i = 0; i < numindices; ++i) {
-            if (cindices[i] < 0) {
-                ca[linecount].setValue(colors[linecount].r, colors[linecount].g, colors[linecount].b);
-                linecount++;
-                if (linecount >= size) {
-                    break;
-                }
-            }
+        // Colours already have one entry per edge, not per tessellation
+        // vertex. Install the complete table even before geometry arrives.
+        for (int i = 0; i < size; ++i) {
+            ca[i].setValue(colors[i].r, colors[i].g, colors[i].b);
         }
 
         pcLineMaterial->diffuseColor.finishEditing();
@@ -1159,8 +1404,20 @@ void ViewProviderPartExt::finishRestoring()
 
 void ViewProviderPartExt::finishDeferredVisualRestore()
 {
-    if (VisualTouched && (isUpdateForced() || Visibility.getValue())) {
-        updateVisual();
+    deferredVisualRestorePending = true;
+    try {
+        if (VisualTouched && (isUpdateForced() || Visibility.getValue())) {
+            updateVisual();
+        }
+    }
+    catch (...) {
+        deferredVisualRestorePending = false;
+        completeDeferredVisualRestore(visualInstanceId);
+        throw;
+    }
+    if (!visualBuildInFlight) {
+        deferredVisualRestorePending = false;
+        completeDeferredVisualRestore(visualInstanceId);
     }
 }
 
@@ -1220,395 +1477,22 @@ void ViewProviderPartExt::setupCoinGeometry(
     bool normalsFromUV
 )
 {
-    if (Part::Tools::isShapeEmpty(shape)) {
-        coords->point.setNum(0);
-        norm->vector.setNum(0);
-        faceset->coordIndex.setNum(0);
-        faceset->partIndex.setNum(0);
-        lineset->coordIndex.setNum(0);
-        nodeset->startIndex.setValue(0);
-        return;
-    }
+    const Part::RenderMesh mesh =
+        Part::prepareRenderMesh(shape, deviation, angularDeflection, normalsFromUV);
+    copyRenderMesh(mesh, coords, faceset, norm, lineset, nodeset);
+}
 
-    // time measurement and book keeping
-    Base::TimeElapsed startTime;
-
-    [[maybe_unused]]
-    int numTriangles = 0,
-        numNodes = 0, numNorms = 0, numFaces = 0, numEdges = 0, numLines = 0;
-
-    std::set<int> faceEdges;
-
-    // calculating the deflection value
-    Standard_Real deflection = Part::Tools::getDeflection(shape, deviation);
-
-    // Since OCCT 7.6 a value of equal 0 is not allowed any more, this can happen if a single
-    // vertex should be displayed.
-    if (deflection < gp::Resolution()) {
-        deflection = Precision::Confusion();
-    }
-
-    // For very big objects the computed deflection can become very high and thus leads to a
-    // useless tessellation. To avoid this the upper limit is set to 20.0 See also forum:
-    // https://forum.freecad.org/viewtopic.php?t=77521
-    // deflection = std::min(deflection, 20.0);
-
-    // create or use the mesh on the data structure
-    Standard_Real AngDeflectionRads = Base::toRadians(angularDeflection);
-
-    IMeshTools_Parameters meshParams;
-    meshParams.Deflection = deflection;
-    meshParams.Relative = Standard_False;
-    meshParams.Angle = AngDeflectionRads;
-    meshParams.InParallel = Standard_True;
-    meshParams.AllowQualityDecrease = Standard_True;
-
-    // Clear triangulation and PCurves from geometry which can slow down the process
-#if OCC_VERSION_HEX < 0x070600
-    BRepTools::Clean(shape);
-#else
-    BRepTools::Clean(shape, Standard_True);
-#endif
-
-    BRepMesh_IncrementalMesh(shape, meshParams);
-
-    // We must reset the location here because the transformation data
-    // are set in the placement property
-    TopLoc_Location aLoc;
-    shape.Location(aLoc);
-
-    // count triangles and nodes in the mesh
-    TopTools_IndexedMapOfShape faceMap;
-    TopExp::MapShapes(shape, TopAbs_FACE, faceMap);
-    for (int i = 1; i <= faceMap.Extent(); i++) {
-        Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(TopoDS::Face(faceMap(i)), aLoc);
-
-        if (mesh.IsNull()) {
-            mesh = Part::Tools::triangulationOfFace(TopoDS::Face(faceMap(i)));
-        }
-
-        // Note: we must also count empty faces
-        if (!mesh.IsNull()) {
-            numTriangles += mesh->NbTriangles();
-            numNodes += mesh->NbNodes();
-            numNorms += mesh->NbNodes();
-        }
-
-        TopExp_Explorer xp;
-        for (xp.Init(faceMap(i), TopAbs_EDGE); xp.More(); xp.Next()) {
-            faceEdges.insert(Part::ShapeMapHasher {}(xp.Current()));
-        }
-        numFaces++;
-    }
-
-    // get an indexed map of edges
-    TopTools_IndexedMapOfShape edgeMap;
-    TopExp::MapShapes(shape, TopAbs_EDGE, edgeMap);
-
-    // key is the edge number, value the coord indexes. This is needed to keep the same order as
-    // the edges.
-    std::map<int, std::vector<int32_t>> lineSetMap;
-    std::set<int> edgeIdxSet;
-    std::vector<int32_t> edgeVector;
-
-    // count and index the edges
-    for (int i = 1; i <= edgeMap.Extent(); i++) {
-        edgeIdxSet.insert(i);
-        numEdges++;
-
-        const TopoDS_Edge& aEdge = TopoDS::Edge(edgeMap(i));
-        TopLoc_Location aLoc;
-
-        // handling of the free edge that are not associated to a face
-        // Note: The assumption that if for an edge BRep_Tool::Polygon3D
-        // returns a valid object is wrong. This e.g. happens for ruled
-        // surfaces which gets created by two edges or wires.
-        // So, we have to store the hashes of the edges associated to a face.
-        // If the hash of a given edge is not in this list we know it's really
-        // a free edge.
-        int hash = Part::ShapeMapHasher {}(aEdge);
-        if (faceEdges.find(hash) == faceEdges.end()) {
-            Handle(Poly_Polygon3D) aPoly = Part::Tools::polygonOfEdge(aEdge, aLoc);
-            if (!aPoly.IsNull()) {
-                int nbNodesInEdge = aPoly->NbNodes();
-                numNodes += nbNodesInEdge;
-            }
-        }
-    }
-
-    // handling of the vertices
-    TopTools_IndexedMapOfShape vertexMap;
-    TopExp::MapShapes(shape, TopAbs_VERTEX, vertexMap);
-    numNodes += vertexMap.Extent();
-
-    // create memory for the nodes and indexes
-    coords->point.setNum(numNodes);
-    norm->vector.setNum(numNorms);
-    faceset->coordIndex.setNum(numTriangles * 4);
-    faceset->partIndex.setNum(numFaces);
-
-    // get the raw memory for fast fill up
-    SbVec3f* verts = coords->point.startEditing();
-    SbVec3f* norms = norm->vector.startEditing();
-    int32_t* index = faceset->coordIndex.startEditing();
-    int32_t* parts = faceset->partIndex.startEditing();
-
-    // preset the normal vector with null vector
-    for (int i = 0; i < numNorms; i++) {
-        norms[i] = SbVec3f(0.0, 0.0, 0.0);
-    }
-
-    int ii = 0, faceNodeOffset = 0, faceTriaOffset = 0;
-    for (int i = 1; i <= faceMap.Extent(); i++, ii++) {
-        TopLoc_Location aLoc;
-        const TopoDS_Face& actFace = TopoDS::Face(faceMap(i));
-        // get the mesh of the shape
-        Handle(Poly_Triangulation) mesh = BRep_Tool::Triangulation(actFace, aLoc);
-        if (mesh.IsNull()) {
-            mesh = Part::Tools::triangulationOfFace(actFace);
-        }
-        if (mesh.IsNull()) {
-            parts[ii] = 0;
-            continue;
-        }
-
-        // getting the transformation of the shape/face
-        gp_Trsf myTransf;
-        Standard_Boolean identity = true;
-        if (!aLoc.IsIdentity()) {
-            identity = false;
-            myTransf = aLoc.Transformation();
-        }
-
-        // getting size of node and triangle array of this face
-        int nbNodesInFace = mesh->NbNodes();
-        int nbTriInFace = mesh->NbTriangles();
-        // check orientation
-        TopAbs_Orientation orient = actFace.Orientation();
-
-        // cycling through the poly mesh
-#if OCC_VERSION_HEX < 0x070600
-        const Poly_Array1OfTriangle& Triangles = mesh->Triangles();
-        const TColgp_Array1OfPnt& Nodes = mesh->Nodes();
-        TColgp_Array1OfDir Normals(Nodes.Lower(), Nodes.Upper());
-#else
-        int numNodes = mesh->NbNodes();
-        TColgp_Array1OfDir Normals(1, numNodes);
-#endif
-        if (normalsFromUV) {
-            Part::Tools::getPointNormals(actFace, mesh, Normals);
-        }
-
-        for (int g = 1; g <= nbTriInFace; g++) {
-            // Get the triangle
-            Standard_Integer N1, N2, N3;
-#if OCC_VERSION_HEX < 0x070600
-            Triangles(g).Get(N1, N2, N3);
-#else
-            mesh->Triangle(g).Get(N1, N2, N3);
-#endif
-
-            // change orientation of the triangle if the face is reversed
-            if (orient != TopAbs_FORWARD) {
-                Standard_Integer tmp = N1;
-                N1 = N2;
-                N2 = tmp;
-            }
-
-            // get the 3 points of this triangle
-#if OCC_VERSION_HEX < 0x070600
-            gp_Pnt V1(Nodes(N1)), V2(Nodes(N2)), V3(Nodes(N3));
-#else
-            gp_Pnt V1(mesh->Node(N1)), V2(mesh->Node(N2)), V3(mesh->Node(N3));
-#endif
-
-            // get the 3 normals of this triangle
-            gp_Vec NV1, NV2, NV3;
-            if (normalsFromUV) {
-                NV1.SetXYZ(Normals(N1).XYZ());
-                NV2.SetXYZ(Normals(N2).XYZ());
-                NV3.SetXYZ(Normals(N3).XYZ());
-            }
-            else {
-                gp_Vec v1 = Base::convertTo<gp_Vec>(V1);
-                gp_Vec v2 = Base::convertTo<gp_Vec>(V2);
-                gp_Vec v3 = Base::convertTo<gp_Vec>(V3);
-
-                gp_Vec normal = (v2 - v1) ^ (v3 - v1);
-                NV1 = normal;
-                NV2 = normal;
-                NV3 = normal;
-            }
-
-            // transform the vertices and normals to the place of the face
-            if (!identity) {
-                V1.Transform(myTransf);
-                V2.Transform(myTransf);
-                V3.Transform(myTransf);
-                if (normalsFromUV) {
-                    NV1.Transform(myTransf);
-                    NV2.Transform(myTransf);
-                    NV3.Transform(myTransf);
-                }
-            }
-
-            // add the normals for all points of this triangle
-            norms[faceNodeOffset + N1 - 1] += Base::convertTo<SbVec3f>(NV1);
-            norms[faceNodeOffset + N2 - 1] += Base::convertTo<SbVec3f>(NV2);
-            norms[faceNodeOffset + N3 - 1] += Base::convertTo<SbVec3f>(NV3);
-
-            // set the vertices
-            verts[faceNodeOffset + N1 - 1] = Base::convertTo<SbVec3f>(V1);
-            verts[faceNodeOffset + N2 - 1] = Base::convertTo<SbVec3f>(V2);
-            verts[faceNodeOffset + N3 - 1] = Base::convertTo<SbVec3f>(V3);
-
-            // set the index vector with the 3 point indexes and the end delimiter
-            index[faceTriaOffset * 4 + 4 * (g - 1)] = faceNodeOffset + N1 - 1;
-            index[faceTriaOffset * 4 + 4 * (g - 1) + 1] = faceNodeOffset + N2 - 1;
-            index[faceTriaOffset * 4 + 4 * (g - 1) + 2] = faceNodeOffset + N3 - 1;
-            index[faceTriaOffset * 4 + 4 * (g - 1) + 3] = SO_END_FACE_INDEX;
-        }
-
-        parts[ii] = nbTriInFace;  // new part
-
-        // handling the edges lying on this face
-        TopExp_Explorer Exp;
-        for (Exp.Init(actFace, TopAbs_EDGE); Exp.More(); Exp.Next()) {
-            const TopoDS_Edge& curEdge = TopoDS::Edge(Exp.Current());
-            // get the overall index of this edge
-            int edgeIndex = edgeMap.FindIndex(curEdge);
-            edgeVector.push_back((int32_t)edgeIndex - 1);
-            // already processed this index ?
-            if (edgeIdxSet.find(edgeIndex) != edgeIdxSet.end()) {
-
-                // this holds the indices of the edge's triangulation to the current polygon
-                Handle(Poly_PolygonOnTriangulation)
-                    aPoly = BRep_Tool::PolygonOnTriangulation(curEdge, mesh, aLoc);
-                if (aPoly.IsNull()) {
-                    continue;  // polygon does not exist
-                }
-
-                // getting the indexes of the edge polygon
-                const TColStd_Array1OfInteger& indices = aPoly->Nodes();
-                for (Standard_Integer i = indices.Lower(); i <= indices.Upper(); i++) {
-                    int nodeIndex = indices(i);
-                    int index = faceNodeOffset + nodeIndex - 1;
-                    lineSetMap[edgeIndex].push_back(index);
-
-                    // usually the coordinates for this edge are already set by the
-                    // triangles of the face this edge belongs to. However, there are
-                    // rare cases where some points are only referenced by the polygon
-                    // but not by any triangle. Thus, we must apply the coordinates to
-                    // make sure that everything is properly set.
-#if OCC_VERSION_HEX < 0x070600
-                    gp_Pnt p(Nodes(nodeIndex));
-#else
-                    gp_Pnt p(mesh->Node(nodeIndex));
-#endif
-                    if (!identity) {
-                        p.Transform(myTransf);
-                    }
-                    verts[index] = Base::convertTo<SbVec3f>(p);
-                }
-
-                // remove the handled edge index from the set
-                edgeIdxSet.erase(edgeIndex);
-            }
-        }
-
-        edgeVector.push_back(-1);
-
-        // counting up the per Face offsets
-        faceNodeOffset += nbNodesInFace;
-        faceTriaOffset += nbTriInFace;
-    }
-
-    // handling of the free edges
-    for (int i = 1; i <= edgeMap.Extent(); i++) {
-        const TopoDS_Edge& aEdge = TopoDS::Edge(edgeMap(i));
-        Standard_Boolean identity = true;
-        gp_Trsf myTransf;
-        TopLoc_Location aLoc;
-
-        // handling of the free edge that are not associated to a face
-        int hash = Part::ShapeMapHasher {}(aEdge);
-        if (faceEdges.find(hash) == faceEdges.end()) {
-            Handle(Poly_Polygon3D) aPoly = Part::Tools::polygonOfEdge(aEdge, aLoc);
-            if (!aPoly.IsNull()) {
-                if (!aLoc.IsIdentity()) {
-                    identity = false;
-                    myTransf = aLoc.Transformation();
-                }
-
-                const TColgp_Array1OfPnt& aNodes = aPoly->Nodes();
-                int nbNodesInEdge = aPoly->NbNodes();
-
-                gp_Pnt pnt;
-                for (Standard_Integer j = 1; j <= nbNodesInEdge; j++) {
-                    pnt = aNodes(j);
-                    if (!identity) {
-                        pnt.Transform(myTransf);
-                    }
-                    int index = faceNodeOffset + j - 1;
-                    verts[index] = Base::convertTo<SbVec3f>(pnt);
-                    lineSetMap[i].push_back(index);
-                }
-
-                faceNodeOffset += nbNodesInEdge;
-            }
-        }
-    }
-
-    nodeset->startIndex.setValue(faceNodeOffset);
-    for (int i = 0; i < vertexMap.Extent(); i++) {
-        const TopoDS_Vertex& aVertex = TopoDS::Vertex(vertexMap(i + 1));
-        gp_Pnt pnt = BRep_Tool::Pnt(aVertex);
-
-        verts[faceNodeOffset + i] = Base::convertTo<SbVec3f>(pnt);
-    }
-
-    // normalize all normals
-    for (int i = 0; i < numNorms; i++) {
-        norms[i].normalize();
-    }
-
-    std::vector<int32_t> lineSetCoords;
-    for (const auto& it : lineSetMap) {
-        lineSetCoords.insert(lineSetCoords.end(), it.second.begin(), it.second.end());
-        lineSetCoords.push_back(-1);
-    }
-
-    // preset the index vector size
-    numLines = lineSetCoords.size();
-    lineset->coordIndex.setNum(numLines);
-    int32_t* lines = lineset->coordIndex.startEditing();
-
-    int l = 0;
-    for (auto it = lineSetCoords.begin(); it != lineSetCoords.end(); ++it, l++) {
-        lines[l] = *it;
-    }
-
-    // end the editing of the nodes
-    coords->point.finishEditing();
-    norm->vector.finishEditing();
-    faceset->coordIndex.finishEditing();
-    faceset->partIndex.finishEditing();
-    lineset->coordIndex.finishEditing();
-
-#ifdef FC_DEBUG
-    Base::Console().log(
-        "ViewProvider update time: %f s\n",
-        Base::TimeElapsed::diffTimeF(startTime, Base::TimeElapsed())
+void ViewProviderPartExt::bindRenderMesh(std::shared_ptr<const Part::RenderMesh> mesh)
+{
+    bindPreparedRenderMesh(
+        std::move(mesh),
+        installedRenderMesh,
+        coords,
+        faceset,
+        norm,
+        lineset,
+        nodeset
     );
-    Base::Console().log(
-        "Shape mesh info: Faces:%d Edges:%d Nodes:%d Triangles:%d IdxVec:%d\n",
-        numFaces,
-        numEdges,
-        numNodes,
-        numTriangles,
-        numLines
-    );
-#endif
 }
 
 void ViewProviderPartExt::setupCoinGeometry(
@@ -1632,6 +1516,141 @@ void ViewProviderPartExt::setupCoinGeometry(
     );
 }
 
+void ViewProviderPartExt::startVisualBuild(
+    TopoDS_Shape shape,
+    std::uint64_t generation
+)
+{
+    auto* object = getObject();
+    auto* document = object ? object->getDocument() : nullptr;
+    if (!object || !document || !qApp) {
+        return;
+    }
+
+    const std::string documentName = document->getName();
+    const std::string documentUid = document->Uid.getValueStr();
+    const long objectId = object->getID();
+    const std::uint64_t instanceId = visualInstanceId;
+    visualBuildInFlight = true;
+    // The controller owns callbacks on the GUI thread. Completion, cancellation
+    // and provider destruction all release this lease there; workers never
+    // retain or dereference a document or view provider.
+    auto presentationFinished = std::make_shared<PresentationUpdateEnd>(document);
+    document->beginPresentationUpdate();
+
+    try {
+        visualMeshController.request(
+            this,
+            shape,
+            Deviation.getValue(),
+            AngularDeflection.getValue(),
+            NormalsFromUV,
+            [documentName, documentUid, objectId, instanceId, generation,
+             shape,
+             presentationFinished](RenderMeshResult result) mutable {
+                auto* document = App::GetApplication().getDocument(documentName.c_str());
+                if (document && document->Uid.getValueStr() != documentUid) {
+                    document = nullptr;
+                }
+                auto* object = document ? document->getObjectByID(objectId) : nullptr;
+                auto* viewProvider = object && Gui::Application::Instance
+                    ? Gui::Application::Instance->getViewProvider<ViewProviderPartExt>(object)
+                    : nullptr;
+                if (viewProvider) {
+                    viewProvider->finishVisualBuild(
+                        instanceId, generation, std::move(shape),
+                        std::move(result.mesh), std::move(result.error)
+                    );
+                }
+                else {
+                    completeDeferredVisualRestore(instanceId);
+                }
+            }
+        );
+    }
+    catch (const std::exception& failure) {
+        visualBuildInFlight = false;
+        FC_ERR(
+            "Cannot schedule render mesh preparation for "
+            << object->getFullName() << ": " << failure.what()
+        );
+        if (deferredVisualRestorePending) {
+            deferredVisualRestorePending = false;
+            completeDeferredVisualRestore(instanceId);
+        }
+    }
+}
+
+void ViewProviderPartExt::finishVisualBuild(
+    std::uint64_t instanceId,
+    std::uint64_t generation,
+    TopoDS_Shape shape,
+    std::shared_ptr<const Part::RenderMesh> mesh,
+    std::string error
+)
+{
+    if (instanceId != visualInstanceId) {
+        return;
+    }
+
+    visualBuildInFlight = false;
+    const bool currentRequest = generation == visualRequestGeneration;
+    bool applied = false;
+    if (currentRequest && !error.empty()) {
+        const auto* object = getObject();
+        FC_ERR(
+            "Cannot compute Inventor representation for the shape of "
+            << (object ? object->getFullName() : "<detached object>")
+            << ": " << error
+        );
+    }
+    else if (currentRequest && mesh) {
+        Gui::SoUpdateVBOAction action;
+        action.apply(this->faceset);
+
+        Gui::SoSelectionElementAction selectionAction(
+            Gui::SoSelectionElementAction::None
+        );
+        selectionAction.apply(this->faceset);
+        selectionAction.apply(this->lineset);
+        selectionAction.apply(this->nodeset);
+
+        Gui::SoHighlightElementAction highlightAction;
+        highlightAction.apply(this->faceset);
+        highlightAction.apply(this->lineset);
+        highlightAction.apply(this->nodeset);
+
+        try {
+            bindRenderMesh(std::move(mesh));
+            lastRenderedShape = shape;
+            VisualTouched = false;
+            applied = true;
+        }
+        catch (const Base::Exception& failure) {
+            failure.reportException();
+        }
+        catch (const std::exception& failure) {
+            const auto* object = getObject();
+            FC_ERR(
+                "Cannot install Inventor representation for the shape of "
+                << (object ? object->getFullName() : "<detached object>")
+                << ": " << failure.what()
+            );
+        }
+    }
+
+    if (applied) {
+        applyShapeAppearance();
+        applyEdgeAppearance();
+        applyPointAppearance();
+    }
+
+    if (!visualBuildInFlight && deferredVisualRestorePending) {
+        deferredVisualRestorePending = false;
+        completeDeferredVisualRestore(visualInstanceId);
+    }
+}
+
 void ViewProviderPartExt::updateVisual()
 {
     auto* object = getObject();
@@ -1643,66 +1662,20 @@ void ViewProviderPartExt::updateVisual()
     }
 
     TopoDS_Shape shape = getRenderedShape().getShape();
-
     if (!VisualTouched && lastRenderedShape.IsPartner(shape)) {
-        // shape unchanged so do not rebuild geometry
-        // but still re-apply materials in case colors changed
-        Gui::SoHighlightElementAction haction;
-        haction.apply(this->faceset);
-        haction.apply(this->lineset);
-        haction.apply(this->nodeset);
-        setHighlightedFaces(ShapeAppearance.getValues());
-        setHighlightedEdges(LineColorArray.getValues());
-        setHighlightedPoints(PointColorArray.getValue());
+        Gui::SoHighlightElementAction highlightAction;
+        highlightAction.apply(this->faceset);
+        highlightAction.apply(this->lineset);
+        highlightAction.apply(this->nodeset);
+        applyShapeAppearance();
+        applyEdgeAppearance();
+        applyPointAppearance();
         return;
     }
 
-    Gui::SoUpdateVBOAction action;
-    action.apply(this->faceset);
-
-    // Clear selection
-    Gui::SoSelectionElementAction saction(Gui::SoSelectionElementAction::None);
-    saction.apply(this->faceset);
-    saction.apply(this->lineset);
-    saction.apply(this->nodeset);
-
-    // Clear highlighting
-    Gui::SoHighlightElementAction haction;
-    haction.apply(this->faceset);
-    haction.apply(this->lineset);
-    haction.apply(this->nodeset);
-
-    try {
-        setupCoinGeometry(
-            shape,
-            coords,
-            faceset,
-            norm,
-            lineset,
-            nodeset,
-            Deviation.getValue(),
-            AngularDeflection.getValue(),
-            NormalsFromUV
-        );
-
-        lastRenderedShape = shape;
-
-        VisualTouched = false;
-    }
-    catch (const Standard_Failure& e) {
-        FC_ERR(
-            "Cannot compute Inventor representation for the shape of "
-            << pcObject->getFullName() << ": " << e.GetMessageString()
-        );
-    }
-    catch (...) {
-        FC_ERR("Cannot compute Inventor representation for the shape of " << pcObject->getFullName());
-    }
-
-    // The material has to be checked again
-    setHighlightedFaces(ShapeAppearance.getValues());
-    setHighlightedEdges(LineColorArray.getValues());
-    setHighlightedPoints(PointColorArray.getValue());
+    VisualTouched = true;
+    const std::uint64_t generation = ++visualRequestGeneration;
+    startVisualBuild(std::move(shape), generation);
 }
 
 void ViewProviderPartExt::forceUpdate(bool enable)

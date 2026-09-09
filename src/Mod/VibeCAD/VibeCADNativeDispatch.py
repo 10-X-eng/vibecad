@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from concurrent.futures import Future
 from dataclasses import dataclass
 import json
 import threading
@@ -594,6 +595,28 @@ class NativeTurnDispatcher:
         arguments_json: str,
         provider_call_id: str,
     ) -> dict[str, Any]:
+        return self._call(tool_name, arguments_json, provider_call_id)
+
+    def call_async(
+        self,
+        tool_name: str,
+        arguments_json: str,
+        provider_call_id: str,
+        *,
+        document_dispatch: Callable[[Callable[[], Any]], Any],
+    ) -> dict[str, Any] | Future:
+        """Launch on the owner and defer final validation until work completes.
+
+        A returned Future must only be waited on outside the GUI thread. Its
+        result is the same validated/cached JSON response as call().
+        """
+        if not callable(document_dispatch):
+            raise TypeError('Asynchronous dispatch requires an owner dispatcher')
+        return self._call(tool_name, arguments_json, provider_call_id, document_dispatch)
+
+    def _call(
+        self, tool_name, arguments_json, provider_call_id, document_dispatch=None
+    ):
         name = str(tool_name or "").strip()
         try:
             call_id = self._call_id(provider_call_id)
@@ -661,53 +684,30 @@ class NativeTurnDispatcher:
                         "NATIVE_IMPLEMENTATION_MISSING",
                         "The frozen Native capability has no implementation.",
                     )
-                payload = implementation.handler(
+                handler = (
+                    implementation.async_handler
+                    if document_dispatch is not None and implementation.async_handler is not None
+                    else implementation.handler
+                )
+                payload = handler(
                     NativeCapabilityCall(
                         normalized_arguments,
                         ticket,
                         self._runtimes[name],
                     )
                 )
-                if not isinstance(payload, Mapping) or "ok" in payload:
-                    raise NativeDispatchError(
-                        "NATIVE_RESULT_INVALID",
-                        "A Native capability returned an invalid result contract.",
+                if document_dispatch is not None and isinstance(payload, Future):
+                    return self._defer_payload(
+                        payload, document_dispatch, name, variant, normalized_arguments, ticket, record
                     )
-                self._guard_after_call(variant, payload)
-                definition = self._registry.definition(name)
-                if (
-                    definition is not None
-                    and definition.primary_classification in {"read", "view"}
-                ):
-                    revision_after = self._state.current_revision(self._document_uid)
-                    if revision_after != ticket.expected_revision:
-                        raise NativeDispatchError(
-                            "NATIVE_READ_SIDE_EFFECT",
-                            "A read-only Native capability changed the document; "
-                            "its result was rejected.",
-                            details={
-                                "current_revision": revision_after,
-                                "repair": {
-                                    "operation": normalized_arguments.get("operation"),
-                                    "revision_before": ticket.expected_revision,
-                                    "revision_after": revision_after,
-                                },
-                            },
-                        )
-                response = {"ok": True, **dict(payload)}
-                record.result_json = _canonical_json(
-                    response,
-                    label="result",
-                    byte_limit=MAX_NATIVE_RESULT_JSON_BYTES,
-                )
-                if name != "native.job":
-                    self._expected_revision = self._state.current_revision(
-                        self._document_uid
-                    )
-                return json.loads(record.result_json)
+                return self._finish_payload(name, variant, normalized_arguments, ticket, record, payload)
             except Exception as exc:
                 self._debug(name, exc)
                 response = _failure_payload(exc)
+                if isinstance(exc, NativeDispatchError) and exc.code in {
+                    'NATIVE_CALL_IN_PROGRESS', 'NATIVE_CALL_ID_REUSED'
+                }:
+                    return response
                 encoded = _canonical_json(
                     response,
                     label="failure",
@@ -724,6 +724,67 @@ class NativeTurnDispatcher:
                 if record is not None:
                     record.result_json = encoded
                 return json.loads(encoded)
+
+    def _finish_payload(self, name, variant, arguments, ticket, record, payload):
+        if not isinstance(payload, Mapping) or 'ok' in payload:
+            raise NativeDispatchError(
+                'NATIVE_RESULT_INVALID', 'A Native capability returned an invalid result contract.'
+            )
+        self._guard_after_call(variant, payload)
+        definition = self._registry.definition(name)
+        if definition is not None and definition.primary_classification in {'read', 'view'}:
+            revision_after = self._state.current_revision(self._document_uid)
+            if revision_after != ticket.expected_revision:
+                raise NativeDispatchError(
+                    'NATIVE_READ_SIDE_EFFECT',
+                    'A read-only Native capability changed the document; its result was rejected.',
+                    details={'current_revision': revision_after, 'repair': {
+                        'operation': arguments.get('operation'),
+                        'revision_before': ticket.expected_revision,
+                        'revision_after': revision_after,
+                    }},
+                )
+        record.result_json = _canonical_json(
+            {'ok': True, **dict(payload)}, label='result', byte_limit=MAX_NATIVE_RESULT_JSON_BYTES
+        )
+        if name != 'native.job':
+            self._expected_revision = self._state.current_revision(self._document_uid)
+        return json.loads(record.result_json)
+
+    def _defer_payload(self, pending, document_dispatch, name, variant, arguments, ticket, record):
+        response = Future()
+
+        def finalize():
+            with self._lock:
+                try:
+                    return self._finish_payload(name, variant, arguments, ticket, record, pending.result())
+                except Exception as error:
+                    self._debug(name, error)
+                    record.result_json = _canonical_json(
+                        _failure_payload(error), label='failure', byte_limit=MAX_NATIVE_RESULT_JSON_BYTES
+                    )
+                    return json.loads(record.result_json)
+
+        def completed(_future):
+            deliver = response.set_running_or_notify_cancel()
+            try:
+                result = document_dispatch(finalize)
+            except Exception as error:
+                result = _failure_payload(error)
+                with self._lock:
+                    record.result_json = _canonical_json(
+                        result, label='failure', byte_limit=MAX_NATIVE_RESULT_JSON_BYTES
+                    )
+            if deliver:
+                response.set_result(result)
+
+        def cancelled(future):
+            if future.cancelled():
+                document_dispatch(pending.cancel)
+
+        response.add_done_callback(cancelled)
+        pending.add_done_callback(completed)
+        return response
 
     @property
     def call_count(self) -> int:

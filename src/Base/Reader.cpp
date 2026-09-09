@@ -22,6 +22,8 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <chrono>
+#include <cstdlib>
 #include <map>
 #include <vector>
 #include <iostream>
@@ -32,6 +34,7 @@
 #include <locale>
 
 #include "Reader.h"
+#include "CancellationScope.h"
 #include "Base64.h"
 #include "Base64Filter.h"
 #include "Console.h"
@@ -59,6 +62,7 @@ using namespace XERCES_CPP_NAMESPACE;
 Base::XMLReader::XMLReader(const char* FileName, std::istream& str)
     : _File(FileName)
 {
+    CancellationScope::check();
     str.imbue(std::locale::classic());
 
     // create the parser
@@ -71,6 +75,12 @@ Base::XMLReader::XMLReader(const char* FileName, std::istream& str)
     try {
         StdInputSource file(str, _File.filePath().c_str());
         _valid = parser->parseFirst(file, token);
+    }
+    catch (const Base::AbortException&) {
+        // A failed constructor does not run ~XMLReader(). Cancellation must
+        // retain its type without leaking the parser allocated above.
+        delete parser;
+        throw;
     }
     catch (const XMLException& toCatch) {
         char* message = XMLString::transcode(toCatch.getMessage());
@@ -195,10 +205,14 @@ bool Base::XMLReader::hasAttribute(const char* AttrName) const
 
 bool Base::XMLReader::read()
 {
+    CancellationScope::check();
     ReadType = None;
 
     try {
         parser->parseNext(token);
+    }
+    catch (const Base::AbortException&) {
+        throw;
     }
     catch (const XMLException& toCatch) {
 
@@ -332,6 +346,7 @@ void Base::XMLReader::readCharacters(const char* filename, CharStreamFormat form
 
 std::streamsize Base::XMLReader::read(char_type* s, std::streamsize n)
 {
+    CancellationScope::check();
 
     char_type* buf = s;
     if (CharacterOffset < 0) {
@@ -435,6 +450,10 @@ void Base::XMLReader::readBinFile(const char* filename)
 
 void Base::XMLReader::readFiles(zipios::ZipInputStream& zipstream) const
 {
+    CancellationScope::check();
+    const bool traceRestore = std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr;
+    const auto filesStarted = std::chrono::steady_clock::now();
+    std::size_t restoredFileCount = 0;
     // It's possible that not all objects inside the document could be created, e.g. if a module
     // is missing that would know these object types. So, there may be data files inside the zip
     // file that cannot be read. We simply ignore these files.
@@ -455,6 +474,7 @@ void Base::XMLReader::readFiles(zipios::ZipInputStream& zipstream) const
     std::vector<FileEntry>::const_iterator it = FileList.begin();
     Base::SequencerLauncher seq("Importing project files...", FileList.size());
     while (entry->isValid() && it != FileList.end()) {
+        CancellationScope::check();
         std::vector<FileEntry>::const_iterator jt = it;
         // Check if the current entry is registered, otherwise check the next registered files as
         // soon as both file names match
@@ -464,12 +484,16 @@ void Base::XMLReader::readFiles(zipios::ZipInputStream& zipstream) const
         // If this condition is true both file names match and we can read-in the data, otherwise
         // no file name for the current entry in the zip was registered.
         if (jt != FileList.end()) {
+            const auto fileStarted = std::chrono::steady_clock::now();
             try {
                 Base::Reader reader(zipstream, jt->FileName, FileVersion);
-                jt->Object->RestoreDocFile(reader);
+                restoreFile(*jt->Object, reader);
                 if (reader.getLocalReader()) {
                     reader.getLocalReader()->readFiles(zipstream);
                 }
+            }
+            catch (const Base::AbortException&) {
+                throw;
             }
             catch (...) {
                 // For any exception we just continue with the next file.
@@ -488,6 +512,20 @@ void Base::XMLReader::readFiles(zipios::ZipInputStream& zipstream) const
                     FailedFiles.push_back(jt->FileName);
                 }
             }
+            ++restoredFileCount;
+            if (traceRestore) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - fileStarted
+                ).count();
+                if (elapsed >= 20) {
+                    Base::Console().message(
+                        "VIBECAD_RESTORE_DETAIL embedded_file name=%s size=%lld elapsed_ms=%lld\n",
+                        jt->FileName.c_str(),
+                        static_cast<long long>(entry->getSize()),
+                        static_cast<long long>(elapsed)
+                    );
+                }
+            }
             // Go to the next registered file name
             it = jt + 1;
         }
@@ -503,6 +541,21 @@ void Base::XMLReader::readFiles(zipios::ZipInputStream& zipstream) const
             break;
         }
     }
+    if (traceRestore) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - filesStarted
+        ).count();
+        Base::Console().message(
+            "VIBECAD_RESTORE_DETAIL embedded_files count=%llu elapsed_ms=%lld\n",
+            static_cast<unsigned long long>(restoredFileCount),
+            static_cast<long long>(elapsed)
+        );
+    }
+}
+
+void Base::XMLReader::restoreFile(Persistence& object, Reader& reader) const
+{
+    object.RestoreDocFile(reader);
 }
 
 const char* Base::XMLReader::addFile(const char* Name, Base::Persistence* Object)
@@ -610,6 +663,11 @@ void Base::XMLReader::endCDATA()
 void Base::XMLReader::characters(const XMLCh* const chars, const XMLSize_t length)
 {
     Characters = StrX(chars).c_str();
+    if (CharacterOffset >= 0) {
+        // A SAX character callback replaces the current buffer. Reset here,
+        // not after parseNext: the same parse step may also end a CDATA section.
+        CharacterOffset = 0;
+    }
     ReadType = Chars;
     CharacterCount += length;
 }

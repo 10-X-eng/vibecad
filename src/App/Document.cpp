@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include <bitset>
+#include <atomic>
 #include <stack>
 #include <deque>
 #include <exception>
@@ -37,8 +38,11 @@
 #include <vector>
 #include <list>
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
+#include <future>
 #include <optional>
 
 #include <boost/algorithm/string.hpp>
@@ -53,10 +57,12 @@
 
 #include <QCryptographicHash>
 #include <QCoreApplication>
+#include <QEventLoop>
 
 #include <FCConfig.h>
 
 #include <App/DocumentPy.h>
+#include <Base/CancellationScope.h>
 #include <Base/Interpreter.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -80,6 +86,8 @@
 #include "BackupPolicy.h"
 #include "ExpressionParser.h"
 #include "GeoFeature.h"
+#include "PropertyGeo.h"
+#include "HostRuntime.h"
 #include "License.h"
 #include "Link.h"
 #include "MergeDocuments.h"
@@ -122,13 +130,232 @@ bool transactionStateBlocksRecoveryWrite(const DocumentP& documentPrivate)
         || documentPrivate.activeUndoTransaction != nullptr || documentPrivate.committing;
 }
 
+class RestorePresentationStartGuard final
+{
+public:
+    RestorePresentationStartGuard(Document& document, unsigned int& persistentDepth)
+        : document(document)
+        , persistentDepth(persistentDepth)
+    {
+        document.beginPresentationUpdate();
+        ++persistentDepth;
+    }
+
+    ~RestorePresentationStartGuard()
+    {
+        if (!transferred) {
+            --persistentDepth;
+            document.endPresentationUpdate();
+        }
+    }
+
+    void transfer() noexcept
+    {
+        transferred = true;
+    }
+
+    RestorePresentationStartGuard(const RestorePresentationStartGuard&) = delete;
+    RestorePresentationStartGuard& operator=(const RestorePresentationStartGuard&) = delete;
+
+private:
+    Document& document;
+    unsigned int& persistentDepth;
+    bool transferred {false};
+};
+
+class RestorePresentationFinishGuard final
+{
+public:
+    RestorePresentationFinishGuard(Document& document, unsigned int& persistentDepth)
+        : document(document)
+        , persistentDepth(persistentDepth)
+    {}
+
+    ~RestorePresentationFinishGuard()
+    {
+        if (persistentDepth > 0) {
+            --persistentDepth;
+            document.endPresentationUpdate();
+        }
+    }
+
+    RestorePresentationFinishGuard(const RestorePresentationFinishGuard&) = delete;
+    RestorePresentationFinishGuard& operator=(const RestorePresentationFinishGuard&) = delete;
+
+private:
+    Document& document;
+    unsigned int& persistentDepth;
+};
+
+std::vector<DocumentObject*> recomputeDependencies(
+    DocumentObject* object,
+    bool fineGrained,
+    int options
+)
+{
+    const int outListOptions = ((options & Document::DepNoXLinked) != 0)
+        ? DocumentObject::OutListNoXLinked
+        : 0;
+    if (!fineGrained) {
+        return object->getOutList(outListOptions);
+    }
+
+    std::vector<DocumentObject*> dependencies;
+    std::unordered_set<DocumentObject*> uniqueDependencies;
+    for (const auto& [objFrom, propFrom, objTo, propNameTo] :
+         object->getOutListProp(outListOptions)) {
+        (void)objFrom;
+        (void)propFrom;
+        if (!objTo) {
+            continue;
+        }
+        if (propNameTo.empty() || !objTo->isInputProperty(propNameTo)) {
+            if (uniqueDependencies.insert(objTo).second) {
+                dependencies.push_back(objTo);
+            }
+        }
+    }
+    return dependencies;
+}
+
+std::vector<std::vector<DocumentObject*>> makeRecomputeWaves(
+    const std::vector<DocumentObject*>& objects,
+    bool fineGrained,
+    int options
+)
+{
+    std::unordered_map<DocumentObject*, std::size_t> positions;
+    positions.reserve(objects.size());
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        positions.emplace(objects[index], index);
+    }
+
+    std::vector<std::size_t> remainingDependencies(objects.size(), 0);
+    std::vector<std::vector<std::size_t>> dependents(objects.size());
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        std::unordered_set<std::size_t> uniqueDependencies;
+        for (auto* dependency : recomputeDependencies(objects[index], fineGrained, options)) {
+            const auto dependencyPosition = positions.find(dependency);
+            if (dependencyPosition == positions.end()
+                || !uniqueDependencies.insert(dependencyPosition->second).second) {
+                continue;
+            }
+            ++remainingDependencies[index];
+            dependents[dependencyPosition->second].push_back(index);
+        }
+    }
+
+    std::vector<std::size_t> ready;
+    ready.reserve(objects.size());
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        if (remainingDependencies[index] == 0) {
+            ready.push_back(index);
+        }
+    }
+
+    std::vector<std::vector<DocumentObject*>> waves;
+    std::size_t scheduledCount = 0;
+    while (!ready.empty()) {
+        std::vector<DocumentObject*> wave;
+        wave.reserve(ready.size());
+        std::vector<std::size_t> next;
+        for (const auto index : ready) {
+            wave.push_back(objects[index]);
+            ++scheduledCount;
+            for (const auto dependent : dependents[index]) {
+                if (--remainingDependencies[dependent] == 0) {
+                    next.push_back(dependent);
+                }
+            }
+        }
+        std::ranges::sort(next);
+        waves.push_back(std::move(wave));
+        ready = std::move(next);
+    }
+
+    if (scheduledCount != objects.size()) {
+        FC_THROWM(Base::BadGraphError, "Dependency cycle detected while scheduling recompute");
+    }
+    return waves;
+}
+
 }  // namespace
 
 namespace App
 {
 
-static bool globalIsRestoring;
-static bool globalIsRelabeling;
+namespace
+{
+// A thread-local identity avoids a mutex (and therefore an owner-thread wait)
+// when a direct property or object edit races with worker archive serialization.
+thread_local const char archiveThreadIdentity = 0;
+
+void checkArchiveMutation(const DocumentP& state)
+{
+    const auto writer = state.archiveWriter.load(std::memory_order_acquire);
+    if (writer && writer != &archiveThreadIdentity) {
+        throw Base::RuntimeError("Cannot modify document while its archive is being saved");
+    }
+}
+
+class ArchiveReadScope
+{
+public:
+    ArchiveReadScope(DocumentP& state, const void* writer) : state(&state)
+    {
+        const void* expected = nullptr;
+        if (!state.archiveWriter.compare_exchange_strong(
+                expected, writer, std::memory_order_acq_rel)) {
+            throw Base::RuntimeError("A document archive save is already active");
+        }
+    }
+    ~ArchiveReadScope() { release(); }
+    void release()
+    {
+        if (state) {
+            state->archiveWriter.store(nullptr, std::memory_order_release);
+            state = nullptr;
+        }
+    }
+    ArchiveReadScope(const ArchiveReadScope&) = delete;
+    ArchiveReadScope& operator=(const ArchiveReadScope&) = delete;
+
+private:
+    DocumentP* state;
+};
+
+std::atomic<unsigned int> activeRestoreScopes {0};
+
+class RestoreActivityScope final
+{
+public:
+    RestoreActivityScope() { activeRestoreScopes.fetch_add(1, std::memory_order_acq_rel); }
+    ~RestoreActivityScope()
+    {
+        if (activeRestoreScopes.fetch_sub(1, std::memory_order_acq_rel) != 1) { return; }
+        // FinishRestoreDocument is emitted inside this scope. A GUI consumer
+        // can observe that signal while the worker still reports restoring;
+        // wake it again at the real idle transition, including exception exits.
+        try {
+            MainThreadSignalConfig::invoke([] {
+                GetApplication().signalRestoreActivityIdle();
+            }, false);
+        }
+        catch (const std::exception& error) {
+            Base::Console().error("Cannot dispatch restore-idle notification: %s\n", error.what());
+        }
+        catch (...) {
+            Base::Console().error("Cannot dispatch restore-idle notification\n");
+        }
+    }
+    RestoreActivityScope(const RestoreActivityScope&) = delete;
+    RestoreActivityScope& operator=(const RestoreActivityScope&) = delete;
+};
+}
+
+// Relabel observers suppress only changes made in that notification stack,
+// never unrelated transactions executing on another document worker.
+static thread_local bool globalIsRelabeling;
 
 DocumentP::DocumentP()
 {
@@ -179,8 +406,8 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
-    if (isCooperativeMutationActive()) {
-        FC_WARN("Cannot undo while a cooperative document mutation is active");
+    if (isCooperativeMutationActive() || isPresentationUpdateActive()) {
+        FC_WARN("Cannot undo while a document update is active");
         return false;
     }
     if (d->iUndoMode != 0) {
@@ -230,7 +457,7 @@ bool Document::undo(const int id)
         }
 
         signalUndo(*this);  // now signal the undo
-        signalBecameStable(*this);
+        notifyBecameStable();
 
         return true;
     }
@@ -240,8 +467,8 @@ bool Document::undo(const int id)
 
 bool Document::redo(const int id)
 {
-    if (isCooperativeMutationActive()) {
-        FC_WARN("Cannot redo while a cooperative document mutation is active");
+    if (isCooperativeMutationActive() || isPresentationUpdateActive()) {
+        FC_WARN("Cannot redo while a document update is active");
         return false;
     }
     if (d->iUndoMode != 0) {
@@ -288,7 +515,7 @@ bool Document::redo(const int id)
         }
 
         signalRedo(*this);
-        signalBecameStable(*this);
+        notifyBecameStable();
         return true;
     }
 
@@ -324,13 +551,29 @@ void Document::changePropertyOfObject(
 
 void Document::renamePropertyOfObject(TransactionalObject* obj, const Property* prop, const char* oldName)
 {
+    advanceObjectChangeGeneration();
+    invalidateTimelineVisibilityResources(oldName);
+    invalidateTimelineVisibilityResources(prop ? prop->getName() : nullptr);
     changePropertyOfObject(obj, prop, [this, obj, prop, oldName]() {
         d->activeUndoTransaction->renameProperty(obj, prop, oldName);
     });
 }
 
+void Document::invalidateTimelineVisibilityResources(const char* name)
+{
+    if (name && (strcmp(name, DocumentTimeline::OwnerPropertyName) == 0
+                 || strcmp(name, DocumentTimeline::RolePropertyName) == 0)) {
+        std::lock_guard lock(d->propertyChangeMutex);
+        if (auto* timeline = DocumentTimeline::get(this)) {
+            timeline->invalidateVisibilityResources();
+        }
+    }
+}
+
 void Document::addOrRemovePropertyOfObject(TransactionalObject* obj, const Property* prop, const bool add)
 {
+    advanceObjectChangeGeneration();
+    invalidateTimelineVisibilityResources(prop ? prop->getName() : nullptr);
     changePropertyOfObject(obj, prop, [this, obj, prop, add]() {
         d->activeUndoTransaction->addOrRemoveProperty(obj, prop, add);
     });
@@ -530,29 +773,160 @@ bool Document::isTransactionLocked() const
 
 void Document::beginCooperativeMutation()
 {
-    if (++d->cooperativeMutationDepth == 1) {
+    unsigned int previous;
+    {
+        std::lock_guard lock(d->presentationUpdateMutex);
+        previous = d->cooperativeMutationDepth.fetch_add(1, std::memory_order_acq_rel);
+    }
+    if (previous == 0) {
         signalCooperativeMutationChanged(*this, true);
     }
 }
 
 void Document::endCooperativeMutation()
 {
-    if (d->cooperativeMutationDepth == 0) {
+    unsigned int depth;
+    bool presentationBecameActive = false;
+    {
+        std::lock_guard lock(d->presentationUpdateMutex);
+        depth = d->cooperativeMutationDepth.load(std::memory_order_acquire);
+        if (depth == 1) {
+            // Keep completion false while stable observers synchronously
+            // acquire their asynchronous presentation work.
+            const auto presentationDepth =
+                d->presentationUpdateDepth.fetch_add(1, std::memory_order_acq_rel);
+            presentationBecameActive = presentationDepth == 0;
+        }
+        if (depth != 0) {
+            d->cooperativeMutationDepth.fetch_sub(1, std::memory_order_acq_rel);
+        }
+    }
+    if (depth == 0) {
         FC_WARN("Ignoring unmatched cooperative document mutation end");
         return;
     }
-    if (--d->cooperativeMutationDepth == 0) {
-        signalCooperativeMutationChanged(*this, false);
-        // Projection observers may have ignored the transaction's earlier
-        // stable signal while this explicit bulk mutation was still active.
-        signalBecameStable(*this);
+    if (depth == 1) {
+        try {
+            if (presentationBecameActive) {
+                signalPresentationUpdateChanged(*this, true);
+            }
+            signalCooperativeMutationChanged(*this, false);
+            // Projection observers may have ignored the transaction's earlier
+            // stable signal while this explicit bulk mutation was still active.
+            signalBecameStable(*this);
+        }
+        catch (...) {
+            endPresentationUpdate();
+            throw;
+        }
+        endPresentationUpdate();
     }
 }
 
 bool Document::isCooperativeMutationActive() const
 {
-    return d->cooperativeMutationDepth > 0;
+    return d->cooperativeMutationDepth.load(std::memory_order_acquire) > 0;
 }
+
+void Document::beginPresentationUpdate() const
+{
+    bool becameActive = false;
+    {
+        std::lock_guard lock(d->presentationUpdateMutex);
+        const auto depth =
+            d->presentationUpdateDepth.fetch_add(1, std::memory_order_acq_rel);
+        becameActive = depth == 0;
+    }
+    if (becameActive) {
+        signalPresentationUpdateChanged(*this, true);
+    }
+}
+
+void Document::endPresentationUpdate() const
+{
+    const bool tracePresentation = std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr;
+    const auto presentationStarted = std::chrono::steady_clock::now();
+    bool ready = false;
+    {
+        std::lock_guard lock(d->presentationUpdateMutex);
+        const auto depth = d->presentationUpdateDepth.load(std::memory_order_acquire);
+        if (depth == 0) {
+            FC_WARN("Ignoring unmatched document presentation update end");
+            return;
+        }
+        d->presentationUpdateDepth.fetch_sub(1, std::memory_order_acq_rel);
+        ready = depth == 1
+            && d->cooperativeMutationDepth.load(std::memory_order_acquire) == 0;
+    }
+    if (ready) {
+        const auto notification = d->presentationUpdateChanged;
+        try {
+            signalPresentationUpdateChanged(*this, false);
+        }
+        catch (...) {
+            notification->notify_all();
+            throw;
+        }
+        notification->notify_all();
+    }
+    if (tracePresentation && ready) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - presentationStarted
+        ).count();
+        Base::Console().message(
+            "VIBECAD_RESTORE_DETAIL presentation_release signal_ms=%lld\n",
+            static_cast<long long>(elapsed)
+        );
+    }
+}
+
+bool Document::isPresentationUpdateActive() const
+{
+    std::lock_guard lock(d->presentationUpdateMutex);
+    return d->presentationUpdateDepth.load(std::memory_order_acquire) > 0
+        || d->presentationWaiterCount > 0;
+}
+
+void Document::waitForPresentationReady() const
+{
+    std::unique_lock lock(d->presentationUpdateMutex);
+    ++d->presentationWaiterCount;
+    d->presentationUpdateChanged->wait(lock, [this] {
+        return d->cooperativeMutationDepth.load(std::memory_order_acquire) == 0
+            && d->presentationUpdateDepth.load(std::memory_order_acquire) == 0;
+    });
+    --d->presentationWaiterCount;
+    if (d->presentationWaiterCount == 0) {
+        // Waiters are part of isPresentationUpdateActive()/isClosable(). The
+        // earlier mesh/projection completion signal still saw these waiters;
+        // publish their final release as well, without retaining a raw document
+        // pointer after its lifetime protection is released.
+        auto finished = [name = std::string(getName()), uid = Uid.getValueStr()] {
+            auto* document = GetApplication().getDocument(name.c_str());
+            if (document && document->Uid.getValueStr() == uid
+                && !document->isCooperativeMutationActive()
+                && !document->isPresentationUpdateActive()) {
+                document->signalPresentationUpdateChanged(*document, false);
+            }
+        };
+        lock.unlock();
+        MainThreadSignalConfig::invoke(std::move(finished), false);
+    }
+}
+
+void Document::notifyBecameStable() const
+{
+    beginPresentationUpdate();
+    try {
+        signalBecameStable(*this);
+    }
+    catch (...) {
+        endPresentationUpdate();
+        throw;
+    }
+    endPresentationUpdate();
+}
+
 bool Document::transacting() const
 {
     return isPerformingTransaction() || d->committing;
@@ -652,7 +1026,7 @@ void Document::commitTransaction()  // NOLINT
         const bool wasRecoveryWriteBlocked = transactionStateBlocksRecoveryWrite(*d);
         setBookedTransaction(NullTransaction);
         if (wasRecoveryWriteBlocked) {
-            signalBecameStable(*this);
+            notifyBecameStable();
         }
     }
 }
@@ -697,7 +1071,7 @@ bool Document::_commitTransaction(const bool notify)
         committed = true;
     }
     if (committed) {
-        signalBecameStable(*this);
+        notifyBecameStable();
     }
     return true;
 }
@@ -723,7 +1097,7 @@ void Document::abortTransaction() const
         const bool wasRecoveryWriteBlocked = transactionStateBlocksRecoveryWrite(*d);
         setBookedTransaction(NullTransaction);
         if (wasRecoveryWriteBlocked) {
-            signalBecameStable(*this);
+            notifyBecameStable();
         }
     }
 }
@@ -755,7 +1129,7 @@ void Document::_abortTransaction()
         aborted = true;
     }
     if (aborted) {
-        signalBecameStable(*this);
+        notifyBecameStable();
     }
 }
 
@@ -825,18 +1199,19 @@ void Document::clearDocument()  // NOLINT
     d->activeObject = nullptr;
 
     if (!d->objectArray.empty()) {
-        GetApplication().signalDeleteDocument(*this);
+        MainThreadSignalConfig::invoke([this] { GetApplication().signalDeleteDocument(*this); }, true);
         d->clearDocument();
-        GetApplication().signalNewDocument(*this, false);
+        MainThreadSignalConfig::invoke([this] { GetApplication().signalNewDocument(*this, false); }, true);
     }
 
-    Base::FlagToggler<> flag(globalIsRestoring, false);
+    RestoreActivityScope restoreActivity;
 
     setStatus(Document::PartialDoc, false);
 
     d->clearRecomputeLog();
     d->objectLabelManager.clear();
     d->objectArray.clear();
+    d->objectAddresses.clear();
     d->objectMap.clear();
     d->objectNameManager.clear();
     d->objectIdMap.clear();
@@ -955,6 +1330,7 @@ unsigned int Document::getMaxUndoStackSize() const
 
 void Document::onBeforeChange(const Property* prop)
 {
+    checkArchiveMutation(*d);
     if (prop == &Label) {
         oldLabel = Label.getValue();
     }
@@ -967,11 +1343,13 @@ void Document::onChanged(const Property* prop)
 
     // the Name property is a label for display purposes
     if (prop == &Label) {
-        Base::FlagToggler<> flag(globalIsRelabeling);
-        GetApplication().signalRelabelDocument(*this);
+        MainThreadSignalConfig::invoke([this] {
+            Base::FlagToggler<> flag(globalIsRelabeling, false);
+            GetApplication().signalRelabelDocument(*this);
+        }, true);
     }
     else if (prop == &ShowHidden) {
-        GetApplication().signalShowHidden(*this);
+        MainThreadSignalConfig::invoke([this] { GetApplication().signalShowHidden(*this); }, true);
     }
     else if (prop == &Uid) {
         std::string new_dir
@@ -1029,9 +1407,11 @@ void Document::onChanged(const Property* prop)
 
 void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Property* What)
 {
+    checkArchiveMutation(*d);
     if (Who->isDerivedFrom<DocumentObject>()) {
         signalBeforeChangeObject(*static_cast<const DocumentObject*>(Who), *What);
     }
+    std::lock_guard lock(d->propertyChangeMutex);
     if (!d->rollback && !globalIsRelabeling) {
         _checkTransaction(nullptr, What, __LINE__);
         if (d->activeUndoTransaction) {
@@ -1043,21 +1423,30 @@ void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Prop
 void Document::onChangedProperty(const DocumentObject* Who, const Property* What)
 {
     const auto* suppressible = Who ? Who->getExtensionByType<SuppressibleExtension>(true) : nullptr;
-    const bool timelineOwnershipChanged = Who && What
-        && (What == Who->PropertyContainer::getDynamicPropertyByName(DocumentTimeline::RolePropertyName)
-            || What
-                == Who->PropertyContainer::getDynamicPropertyByName(
-                    DocumentTimeline::OwnerPropertyName
-                ));
+    const char* propertyName = What ? What->getName() : nullptr;
+    const bool timelineOwnershipChanged = Who && propertyName
+        && (strcmp(propertyName, DocumentTimeline::RolePropertyName) == 0
+            || strcmp(propertyName, DocumentTimeline::OwnerPropertyName) == 0);
     const bool timelineStateChanged = Who && What
         && (What == &Who->Visibility || (suppressible && What == &suppressible->Suppressed)
             || timelineOwnershipChanged);
-    if (timelineStateChanged && !testStatus(Document::Restoring) && !isPerformingTransaction()) {
-        if (auto* timeline = DocumentTimeline::get(this); timeline && !timeline->isApplying()) {
-            if (timelineOwnershipChanged) {
-                timeline->recordOperation(const_cast<DocumentObject*>(Who));
+    {
+        std::lock_guard lock(d->propertyChangeMutex);
+        if (timelineOwnershipChanged) {
+            if (auto* timeline = DocumentTimeline::get(this)) {
+                timeline->invalidateVisibilityResources();
             }
-            timeline->captureVisibility();
+        }
+        if (timelineStateChanged && !testStatus(Document::Restoring) && !isPerformingTransaction()) {
+            if (auto* timeline = DocumentTimeline::get(this); timeline && !timeline->isApplying()) {
+                if (timelineOwnershipChanged) {
+                    timeline->recordOperation(const_cast<DocumentObject*>(Who));
+                    timeline->captureVisibility();
+                }
+                else {
+                    timeline->captureVisibility(const_cast<DocumentObject*>(Who));
+                }
+            }
         }
     }
     signalChangedObject(*Who, *What);
@@ -1685,6 +2074,8 @@ static void loadDeps(
 
 std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
 {
+    const bool traceRestore = std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr;
+    const auto objectsStarted = std::chrono::steady_clock::now();
     d->touchedObjs.clear();
     bool keepDigits = testStatus(Document::KeepTrailingDigits);
     setStatus(Document::KeepTrailingDigits, !reader.doNameMapping());
@@ -1749,6 +2140,7 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
     bool warnedRemovedArchitecture = false;
     Base::SequencerLauncher restoreObjects("Creating document objects...", 2 * Cnt);
     for (int i = 0; i < Cnt; i++) {
+        const auto objectStarted = std::chrono::steady_clock::now();
         restoreObjects.next();
         reader.readElement("Object");
         std::string type = reader.getAttribute<const char*>("type");
@@ -1836,7 +2228,24 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
                 );
             }
         }
+        if (traceRestore) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - objectStarted
+            ).count();
+            if (elapsed >= 20) {
+                Base::Console().message(
+                    "VIBECAD_RESTORE_DETAIL create_object index=%d count=%d type=%s name=%s "
+                    "elapsed_ms=%lld\n",
+                    i + 1,
+                    Cnt,
+                    type.c_str(),
+                    name.c_str(),
+                    static_cast<long long>(elapsed)
+                );
+            }
+        }
     }
+    const auto objectsCreated = std::chrono::steady_clock::now();
     if (!testStatus(Status::Importing)) {
         d->lastObjectId = lastId;
     }
@@ -1850,6 +2259,7 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
     Cnt = static_cast<int>(reader.getAttribute<long>("Count"));
     restoreObjects.setText("Restoring document properties...");
     for (int i = 0; i < Cnt; i++) {
+        const auto objectStarted = std::chrono::steady_clock::now();
         restoreObjects.next();
         reader.readElement("Object");
         std::string name = reader.getName(reader.getAttribute<const char*>("name"));
@@ -1880,6 +2290,23 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
 
             pObj->setStatus(ObjectStatus::Restore, false);
 
+            if (traceRestore) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - objectStarted
+                ).count();
+                if (elapsed >= 20) {
+                    Base::Console().message(
+                        "VIBECAD_RESTORE_DETAIL restore_object index=%d count=%d type=%s name=%s "
+                        "elapsed_ms=%lld\n",
+                        i + 1,
+                        Cnt,
+                        pObj->getTypeId().getName(),
+                        name.c_str(),
+                        static_cast<long long>(elapsed)
+                    );
+                }
+            }
+
             if (reader.testStatus(Base::XMLReader::ReaderStatus::PartialRestoreInDocumentObject)) {
                 Base::Console().error(
                     "Object \"%s\" was subject to a partial restore. As a result "
@@ -1892,6 +2319,21 @@ std::vector<DocumentObject*> Document::readObjects(Base::XMLReader& reader)
         reader.readEndElement("Object");
     }
     reader.readEndElement("ObjectData");
+
+    if (traceRestore) {
+        const auto objectsRestored = std::chrono::steady_clock::now();
+        const auto elapsed = [](auto begin, auto end) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+        };
+        Base::Console().message(
+            "VIBECAD_RESTORE_DETAIL object_phases count=%d create_ms=%lld restore_ms=%lld "
+            "total_ms=%lld\n",
+            Cnt,
+            static_cast<long long>(elapsed(objectsStarted, objectsCreated)),
+            static_cast<long long>(elapsed(objectsCreated, objectsRestored)),
+            static_cast<long long>(elapsed(objectsStarted, objectsRestored))
+        );
+    }
 
     return objs;
 }
@@ -1908,7 +2350,7 @@ void Document::addRecomputeObject(DocumentObject* obj)  // NOLINT
 std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
 {
     d->hashers.clear();
-    Base::FlagToggler<> flag(globalIsRestoring, false);
+    RestoreActivityScope restoreActivity;
     Base::ObjectStatusLocker<Status, Document> restoreBit(Status::Restoring, this);
     Base::ObjectStatusLocker<Status, Document> restoreBit2(Status::Importing, this);
     ExpressionParser::ExpressionImporter expImporter(reader);
@@ -1957,7 +2399,9 @@ std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
     signalImportObjects(objs, reader);
     afterRestore(objs, true);
 
-    GetApplication().signalFinishImportObjects(*this, objs);
+    MainThreadSignalConfig::invoke([this, &objs] {
+        GetApplication().signalFinishImportObjects(*this, objs);
+    }, true);
     signalFinishImportObjects(objs);
 
     for (const auto o : objs) {
@@ -2230,9 +2674,31 @@ bool Document::save()
     return false;
 }
 
-bool Document::saveToFile(const char* filename) const
+bool Document::saveToFile(const char* inputFilename) const
 {
-    signalStartSave(*this, filename);
+    // Start-save observers may change FileName. Keep the requested target alive.
+    const std::string requestedFilename(inputFilename);
+    const char* filename = requestedFilename.c_str();
+    const bool traceSave = std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr;
+    auto phaseStarted = std::chrono::steady_clock::now();
+    const auto tracePhase = [&](const char* phase) {
+        if (!traceSave) { return; }
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsed = std::chrono::duration<double, std::milli>(now - phaseStarted).count();
+        Base::Console().message(
+            "VIBECAD_SAVE_DETAIL phase=%s document=%s thread=%s elapsed_ms=%.3f\n",
+            phase, getName(), MainThreadSignalConfig::isMainThread() ? "gui" : "worker", elapsed);
+        phaseStarted = now;
+    };
+    std::optional<ArchiveReadScope> archiveRead;
+    const auto* writerThread = &archiveThreadIdentity;
+    MainThreadSignalConfig::invoke([&] {
+        signalStartSave(*this, filename);
+        // Admit the reader on the GUI owner, after its current edit/callback
+        // finishes and before another user event can start a property write.
+        archiveRead.emplace(*d, writerThread);
+    }, true);
+    tracePhase("start_observers");
 
     auto hGrp = GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document");
     int compression = static_cast<int>(hGrp->GetInt("CompressionLevel", 7));
@@ -2318,13 +2784,17 @@ bool Document::saveToFile(const char* filename) const
                         << " FreeCAD Document, see https://www.freecad.org for more information..."
                         << '\n'
                         << "-->" << '\n';
+        tracePhase("open_archive");
         Document::Save(writer);
+        tracePhase("document_xml");
 
         // Special handling for Gui document.
         signalSaveDocument(writer);
+        tracePhase("register_gui_files");
 
         // write additional files
         writer.writeFiles();
+        tracePhase("embedded_files");
         if (writer.hasErrors()) {
             // retrieve Writer error strings
             std::stringstream message;
@@ -2333,8 +2803,13 @@ bool Document::saveToFile(const char* filename) const
             throw Base::FileException(message.str().c_str(), tmp);
         }
 
-        GetApplication().signalSaveDocument(*this);
+        // All document-owned data is now captured. Compression finalization and
+        // file publication below no longer read it; save observers may edit again.
+        archiveRead->release();
+        MainThreadSignalConfig::invoke([this] { GetApplication().signalSaveDocument(*this); }, true);
+        tracePhase("archive_observers");
     }
+    tracePhase("close_archive");
 
     if (policy) {
         // if saving the project data succeeded rename to the actual file name
@@ -2373,7 +2848,9 @@ bool Document::saveToFile(const char* filename) const
         backupPolicy.apply(fn, nativePath);
     }
 
+    tracePhase("publish_file");
     signalFinishSave(*this, filename);
+    tracePhase("finish_observers");
 
     return true;
 }
@@ -2408,12 +2885,17 @@ std::string Document::makeUniqueLabel(std::string_view modelLabel)
 
 bool Document::isAnyRestoring()
 {
-    return globalIsRestoring;
+    return activeRestoreScopes.load(std::memory_order_acquire) != 0;
 }
 
 // Open the document
 void Document::restore(const char* filename, bool delaySignal, const std::vector<std::string>& objNames)
 {
+    Base::CancellationScope::check();
+    const bool traceRestore = std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr;
+    const auto restoreStarted = std::chrono::steady_clock::now();
+    RestorePresentationStartGuard restorePresentation(*this, d->restorePresentationDepth);
+
     clearUndos();
     d->activeObject = nullptr;
 
@@ -2421,27 +2903,30 @@ void Document::restore(const char* filename, bool delaySignal, const std::vector
     Document* activeDoc = GetApplication().getActiveDocument();
     if (!d->objectArray.empty()) {
         signal = true;
-        GetApplication().signalDeleteDocument(*this);
+        MainThreadSignalConfig::invoke([this] { GetApplication().signalDeleteDocument(*this); }, true);
         d->clearDocument();
     }
 
-    Base::FlagToggler<> flag(globalIsRestoring, false);
+    RestoreActivityScope restoreActivity;
 
     setStatus(Document::PartialDoc, false);
 
     d->clearRecomputeLog();
     d->objectLabelManager.clear();
     d->objectArray.clear();
+    d->objectAddresses.clear();
     d->objectNameManager.clear();
     d->objectMap.clear();
     d->objectIdMap.clear();
     d->lastObjectId = 0;
 
     if (signal) {
-        GetApplication().signalNewDocument(*this, true);
-        if (activeDoc == this) {
-            GetApplication().setActiveDocument(this);
-        }
+        MainThreadSignalConfig::invoke([this, activeDoc] {
+            GetApplication().signalNewDocument(*this, true);
+            if (activeDoc == this) {
+                GetApplication().setActiveDocument(this);
+            }
+        }, true);
     }
 
     if (!filename) {
@@ -2463,7 +2948,7 @@ void Document::restore(const char* filename, bool delaySignal, const std::vector
         throw Base::FileException("Error reading compression file", filename);
     }
 
-    GetApplication().signalStartRestoreDocument(*this);
+    MainThreadSignalConfig::invoke([this] { GetApplication().signalStartRestoreDocument(*this); }, true);
     setStatus(Document::Restoring, true);
 
     d->partialLoadObjects.clear();
@@ -2473,10 +2958,14 @@ void Document::restore(const char* filename, bool delaySignal, const std::vector
     try {
         Document::Restore(reader);
     }
+    catch (const Base::AbortException&) {
+        throw;
+    }
     catch (const Base::Exception& e) {
         Base::Console().error("Invalid Document.xml: %s\n", e.what());
         setStatus(Document::RestoreError, true);
     }
+    const auto documentXmlRestored = std::chrono::steady_clock::now();
 
     d->partialLoadObjects.clear();
     d->programVersion = reader.ProgramVersion;
@@ -2487,6 +2976,7 @@ void Document::restore(const char* filename, bool delaySignal, const std::vector
     // without GUI. But if available then follow after all data files of the App document.
     signalRestoreDocument(reader);
     reader.readFiles(zipstream);
+    const auto embeddedFilesRestored = std::chrono::steady_clock::now();
 
     DocumentP::checkStringHasher(reader);
 
@@ -2499,29 +2989,75 @@ void Document::restore(const char* filename, bool delaySignal, const std::vector
         );
     }
 
+    restorePresentation.transfer();
     if (!delaySignal) {
         afterRestore(true);
+    }
+    if (traceRestore) {
+        const auto restoreFinished = std::chrono::steady_clock::now();
+        const auto elapsed = [](auto begin, auto end) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+        };
+        Base::Console().message(
+            "VIBECAD_RESTORE_DETAIL document_restore document_xml_ms=%lld embedded_files_ms=%lld "
+            "after_restore_ms=%lld total_ms=%lld\n",
+            static_cast<long long>(elapsed(restoreStarted, documentXmlRestored)),
+            static_cast<long long>(elapsed(documentXmlRestored, embeddedFilesRestored)),
+            static_cast<long long>(elapsed(embeddedFilesRestored, restoreFinished)),
+            static_cast<long long>(elapsed(restoreStarted, restoreFinished))
+        );
+    }
+}
+
+void Document::abandonRestore()
+{
+    // Leave Restoring set until close: releasing the presentation scopes must
+    // not attach/render a document whose archive was cancelled halfway through.
+    while (d->restorePresentationDepth > 0) {
+        --d->restorePresentationDepth;
+        endPresentationUpdate();
     }
 }
 
 bool Document::afterRestore(const bool checkPartial)
 {
-    Base::FlagToggler<> flag(globalIsRestoring, false);
+    const bool traceRestore = std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr;
+    const auto restoreStarted = std::chrono::steady_clock::now();
+    RestorePresentationFinishGuard restorePresentation(*this, d->restorePresentationDepth);
+
+    Base::CancellationScope::check();
+    RestoreActivityScope restoreActivity;
     if (!afterRestore(d->objectArray, checkPartial)) {
         FC_WARN("Reload partial document " << getName());
-        GetApplication().signalPendingReloadDocument(*this);
+        MainThreadSignalConfig::invoke([this] { GetApplication().signalPendingReloadDocument(*this); }, true);
         return false;
     }
     if (!testStatus(Document::TempDoc)) {
         DocumentTimeline::ensure(this)->normalizeAfterRestore();
     }
-    GetApplication().signalFinishRestoreDocument(*this);
+    MainThreadSignalConfig::invoke([this] { GetApplication().signalFinishRestoreDocument(*this); }, true);
+    const auto finishSignalComplete = std::chrono::steady_clock::now();
     setStatus(Document::Restoring, false);
+    if (traceRestore) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            finishSignalComplete - restoreStarted
+        ).count();
+        Base::Console().message(
+            "VIBECAD_RESTORE_DETAIL after_restore finish_signal_ms=%lld\n",
+            static_cast<long long>(elapsed)
+        );
+    }
     return true;
 }
 
 bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool checkPartial)
 {
+    const bool traceRestore = std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr;
+    const auto restoreStarted = std::chrono::steady_clock::now();
+    Base::SequencerLauncher finalizeRestore(
+        "Finalizing restored document...",
+        objArray.size() * 2
+    );
     checkPartial = checkPartial && testStatus(Document::PartialDoc);
     if (checkPartial && !d->touchedObjs.empty()) {
         return false;
@@ -2535,11 +3071,18 @@ bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool c
     // information is not ready yet.
     std::map<DocumentObject*, std::vector<Property*>> propMap;
     for (auto obj : objArray) {
+        Base::CancellationScope::check();
+        finalizeRestore.next(false);
+        const auto objectStarted = std::chrono::steady_clock::now();
         auto& props = propMap[obj];
         obj->getPropertyList(props);
         for (auto prop : props) {
+            Base::CancellationScope::check();
             try {
                 prop->afterRestore();
+            }
+            catch (const Base::AbortException&) {
+                throw;
             }
             catch (const Base::Exception& e) {
                 FC_ERR(
@@ -2548,7 +3091,21 @@ bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool c
                 );
             }
         }
+        if (traceRestore) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - objectStarted
+            ).count();
+            if (elapsed >= 20) {
+                Base::Console().message(
+                    "VIBECAD_RESTORE_DETAIL property_after_restore type=%s name=%s elapsed_ms=%lld\n",
+                    obj->getTypeId().getName(),
+                    obj->getNameInDocument(),
+                    static_cast<long long>(elapsed)
+                );
+            }
+        }
     }
+    const auto propertiesRestored = std::chrono::steady_clock::now();
 
     if (checkPartial && !d->touchedObjs.empty()) {
         // partial document touched, signal full reload
@@ -2557,12 +3114,17 @@ bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool c
 
     std::set<DocumentObject*> objSet(objArray.begin(), objArray.end());
     auto objs = getDependencyList(objArray.empty() ? d->objectArray : objArray, DepSort);
+    const auto dependenciesSorted = std::chrono::steady_clock::now();
     for (auto obj : objs) {
+        Base::CancellationScope::check();
         if (objSet.find(obj) == objSet.end()) {
             continue;
         }
+        finalizeRestore.next(false);
+        const auto objectStarted = std::chrono::steady_clock::now();
         try {
             for (auto prop : propMap[obj]) {
+                Base::CancellationScope::check();
                 prop->onContainerRestored();
             }
             bool touched = false;
@@ -2580,6 +3142,9 @@ bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool c
                 d->touchedObjs.insert(obj);
             }
         }
+        catch (const Base::AbortException&) {
+            throw;
+        }
         catch (const Base::Exception& e) {
             d->addRecomputeLog(e.what(), obj);
             FC_ERR("Failed to restore " << obj->getFullName() << ": " << e.what());
@@ -2593,10 +3158,15 @@ bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool c
             // If a Python exception occurred, it must be cleared immediately.
             // Otherwise, the interpreter remains in a dirty state, causing
             // Segfaults later when FreeCAD interacts with Python.
-            if (PyErr_Occurred()) {
-                Base::Console().error("Python error during object restore:\n");
-                PyErr_Print();  // Print the traceback to stderr/Console
-                PyErr_Clear();  // Reset the interpreter state
+            {
+                // Native restore phases do not hold the GIL. Even querying
+                // Python's error indicator requires an attached thread state.
+                Base::PyGILStateLocker python;
+                if (PyErr_Occurred()) {
+                    Base::Console().error("Python error during object restore:\n");
+                    PyErr_Print();  // Print the traceback to stderr/Console
+                    PyErr_Clear();  // Reset the interpreter state
+                }
             }
 
             d->addRecomputeLog("Unknown exception on restore", obj);
@@ -2638,9 +3208,37 @@ bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool c
         }
 
         signalFinishRestoreObject(*obj);
+        if (traceRestore) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - objectStarted
+            ).count();
+            if (elapsed >= 20) {
+                Base::Console().message(
+                    "VIBECAD_RESTORE_DETAIL finalize_object type=%s name=%s elapsed_ms=%lld\n",
+                    obj->getTypeId().getName(),
+                    obj->getNameInDocument(),
+                    static_cast<long long>(elapsed)
+                );
+            }
+        }
     }
 
     d->touchedObjs.clear();
+    if (traceRestore) {
+        const auto restoreFinished = std::chrono::steady_clock::now();
+        const auto elapsed = [](auto begin, auto end) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+        };
+        Base::Console().message(
+            "VIBECAD_RESTORE_DETAIL after_restore_phases count=%llu property_ms=%lld "
+            "dependency_ms=%lld finalize_ms=%lld total_ms=%lld\n",
+            static_cast<unsigned long long>(objArray.size()),
+            static_cast<long long>(elapsed(restoreStarted, propertiesRestored)),
+            static_cast<long long>(elapsed(propertiesRestored, dependenciesSorted)),
+            static_cast<long long>(elapsed(dependenciesSorted, restoreFinished)),
+            static_cast<long long>(elapsed(restoreStarted, restoreFinished))
+        );
+    }
     return true;
 }
 
@@ -2739,7 +3337,8 @@ void Document::setClosable(bool c)  // NOLINT
 
 bool Document::isClosable() const
 {
-    return testStatus(Document::Closable) && !isCooperativeMutationActive();
+    return testStatus(Document::Closable) && !isCooperativeMutationActive()
+        && !isPresentationUpdateActive();
 }
 
 int Document::countObjects() const
@@ -3145,20 +3744,74 @@ void Document::renameObjectIdentifiers(
 
 int Document::recompute(const std::vector<DocumentObject*>& objs, bool force, bool* hasError, int options)
 {
-    ZoneScoped;
-
-    if (isCooperativeMutationActive()) {
-        FC_WARN("Cannot recompute while a cooperative document mutation is active");
+    if (isCooperativeMutationActive() || isPresentationUpdateActive()) {
+        FC_WARN("Cannot recompute while a document update is active");
         return 0;
     }
+    if (MainThreadSignalConfig::hasHooks() && MainThreadSignalConfig::isMainThread()) {
+        // Preserve the synchronous public API, but not a synchronous GUI wait:
+        // feature workers emit owner-thread notifications before they finish.
+        // The coordinator must therefore run off-owner while Qt keeps serving
+        // those notifications, input and paint. The existing document lease
+        // prevents an intervening edit/undo/close from invalidating its targets.
+        beginCooperativeMutation();
+        int count = 0;
+        std::exception_ptr failure;
+        try {
+            QEventLoop events;
+            bool complete = false;
+            std::unique_ptr<Base::PyGILStateRelease> release;
+            if (Py_IsInitialized() && PyGILState_Check()) {
+                release = std::make_unique<Base::PyGILStateRelease>();
+            }
+            GetApplication().hostRuntime().submitWithCompletion(
+                HostRuntime::Lane::Document,
+                [this, &objs, force, hasError, options](std::stop_token stop) {
+                    return recomputeCancellable(objs, force, hasError, options, stop);
+                },
+                [&](std::future<int> result) {
+                    QMetaObject::invokeMethod(
+                        &events,
+                        [&, result = result.share()] {
+                            try { count = result.get(); }
+                            catch (...) { failure = std::current_exception(); }
+                            complete = true;
+                            // Stop WaitForMoreEvents in this dispatch, rather
+                            // than waiting for unrelated input after completion.
+                            events.quit();
+                        },
+                        Qt::QueuedConnection
+                    );
+                }
+            );
+            // Event-driven, not a polling timer or a deadline. Keep the frame
+            // dispatcher alive even if an outer event loop is asked to quit;
+            // stack-owned targets stay alive until the worker acknowledges.
+            while (!complete) {
+                events.processEvents(QEventLoop::AllEvents | QEventLoop::WaitForMoreEvents);
+            }
+        }
+        catch (...) {
+            failure = std::current_exception();
+        }
+        endCooperativeMutation();
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+        return count;
+    }
+    return recomputeCancellable(objs, force, hasError, options, {});
+}
 
-    // Recompute can execute Python-backed features. Keep the GIL for the full
-    // recompute so async recompute still serializes Python execution the same
-    // way the main-thread path does, preserving compatibility with existing
-    // Python-backed objects and addons. Main-thread signal hops such as
-    // signalBeforeRecompute() temporarily release it when they need to run
-    // Python on the GUI thread to avoid deadlocks.
-    Base::PyGILStateLocker locker;
+int Document::recomputeCancellable(
+    const std::vector<DocumentObject*>& objs,
+    bool force,
+    bool* hasError,
+    int options,
+    std::stop_token stopToken
+)
+{
+    ZoneScoped;
 
     if (d->undoing || d->rollback) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -3232,96 +3885,149 @@ int Document::recompute(const std::vector<DocumentObject*>& objs, bool force, bo
     tracker.checkpoint("pre-recompute & topo sort");
 
     try {
+        const auto recomputeWaves = makeRecomputeWaves(
+            topoSortedObjects,
+            fineGrained,
+            options
+        );
+        auto& runtime = GetApplication().hostRuntime();
         std::set<DocumentObject*> filter;
-        size_t idx = 0;
-        // maximum two passes to allow some form of dependency inversion
-        for (int passes = 0; passes < 2 && idx < topoSortedObjects.size(); ++passes) {
+        bool terminatePasses = false;
+
+        // A second pass preserves the established dependency-inversion repair
+        // behavior. Within each pass, only dependency-independent objects are
+        // evaluated together; touched propagation remains deterministic.
+        for (int pass = 0; pass < 2 && !terminatePasses; ++pass) {
             std::unique_ptr<Base::SequencerLauncher> seq;
             if (canAbort) {
                 seq = std::make_unique<Base::SequencerLauncher>(
-                    "Recompute...",
+                    (std::string("Recomputing updated geometry: ") + Label.getValue()).c_str(),
                     topoSortedObjects.size()
                 );
             }
-            FC_LOG("Recompute pass " << passes);
-            for (; idx < topoSortedObjects.size(); ++idx) {
-                auto obj = topoSortedObjects[idx];
-                if (!obj->isAttachedToDocument() || filter.find(obj) != filter.end()) {
-                    continue;
+            FC_LOG("Recompute pass " << pass);
+
+            for (const auto& wave : recomputeWaves) {
+                if (stopToken.stop_requested()) {
+                    terminatePasses = true;
+                    break;
                 }
-                // A rolled-back document state must be computational, not
-                // merely visual. Native suppressible features still execute
-                // their explicit bypass branch. Other future operations keep
-                // their touched state so edits and upstream changes are
-                // recomputed exactly once when the marker advances again.
-                if (const auto* timeline = DocumentTimeline::get(obj->getDocument()); timeline
-                    && !timeline->isOperationActive(obj)
-                    && !obj->getExtensionByType<SuppressibleExtension>(true)) {
-                    filter.insert(obj);
-                    continue;
-                }
-                // ask the object if it should be recomputed
-                bool doRecompute = false;
-                if (obj->mustRecompute()) {
-                    doRecompute = true;
+
+                struct PendingFeature
+                {
+                    DocumentObject* object;
+                    std::future<int> result;
+                };
+                std::vector<PendingFeature> pending;
+                pending.reserve(wave.size());
+                std::unordered_set<DocumentObject*> eligible;
+                eligible.reserve(wave.size());
+
+                for (auto* object : wave) {
+                    if (!object->isAttachedToDocument() || filter.contains(object)) {
+                        continue;
+                    }
+                    if (const auto* timeline = DocumentTimeline::get(object->getDocument());
+                        timeline && !timeline->isOperationActive(object)
+                        && !object->getExtensionByType<SuppressibleExtension>(true)) {
+                        filter.insert(object);
+                        continue;
+                    }
+                    eligible.insert(object);
+                    if (!object->mustRecompute()) {
+                        continue;
+                    }
+                    if (!object->canRecomputeOnWorker()) {
+                        FC_THROWM(
+                            Base::RuntimeError,
+                            "Object '" << object->getFullName()
+                                       << "' rejects worker-thread recompute"
+                        );
+                    }
                     ++objectCount;
-                    int res = _recomputeFeature(obj);
-                    if (res != 0) {
+                    pending.push_back(PendingFeature {
+                        object,
+                        runtime.submit([this, object, stopToken](std::stop_token runtimeStop) {
+                            if (stopToken.stop_requested() || runtimeStop.stop_requested()) {
+                                return -1;
+                            }
+                            return _recomputeFeature(object);
+                        })
+                    });
+                }
+
+                std::unordered_map<DocumentObject*, int> results;
+                results.reserve(pending.size());
+                for (auto& feature : pending) {
+                    results.emplace(feature.object, runtime.wait(feature.result));
+                }
+
+                bool abortAfterWave = false;
+                for (auto* object : wave) {
+                    if (seq) {
+                        seq->next(true);
+                    }
+                    if (!eligible.contains(object)) {
+                        continue;
+                    }
+
+                    const auto result = results.find(object);
+                    const bool didRecompute = result != results.end();
+                    if (didRecompute && result->second != 0) {
                         if (hasError) {
                             *hasError = true;
                         }
-                        if (res < 0) {
-                            passes = 2;
-                            break;
+                        if (result->second < 0) {
+                            abortAfterWave = true;
+                            continue;
                         }
-                        // if something happened filter all object in its
-                        // inListRecursive from the queue then proceed
-                        obj->getInListEx(filter, true);
-                        filter.insert(obj);
+                        object->getInListEx(filter, true);
+                        filter.insert(object);
                         continue;
                     }
-                }
-                if (obj->isTouched() || doRecompute) {
-                    signalRecomputedObject(*obj);
-                    if (fineGrained) {
-                        // set all dependent objects touched based on properties
-                        std::vector<DepEdge> inList = obj->getInListProp();
-                        for (auto& [objFrom, propFrom, objTo, propTo] : inList) {
-                            if (obj->touchedProps.contains(propTo) || propTo.empty()) {
-                                objFrom->enforceRecompute(propFrom);
+
+                    if (object->isTouched() || didRecompute) {
+                        signalRecomputedObject(*object);
+                        if (fineGrained) {
+                            const std::vector<DepEdge> inList = object->getInListProp();
+                            for (const auto& [objFrom, propFrom, objTo, propTo] : inList) {
+                                (void)objTo;
+                                if (object->touchedProps.contains(propTo) || propTo.empty()) {
+                                    objFrom->enforceRecompute(propFrom);
+                                }
+                            }
+                            object->purgeTouched();
+                        }
+                        else {
+                            object->purgeTouched();
+                            for (auto* dependent : object->getInList()) {
+                                dependent->enforceRecompute();
                             }
                         }
-                        obj->purgeTouched();
-                    }
-                    else {
-                        obj->purgeTouched();
-                        // set all dependent objects touched to force recompute
-                        for (auto inObjIt : obj->getInList()) {
-                            inObjIt->enforceRecompute();
-                        }
                     }
                 }
-                if (seq) {
-                    seq->next(true);
+                if (abortAfterWave) {
+                    terminatePasses = true;
+                    break;
                 }
             }
-            // check if all objects are recomputed but still thouched
-            for (size_t i = 0; i < topoSortedObjects.size(); ++i) {
-                auto obj = topoSortedObjects[i];
-                obj->setStatus(ObjectStatus::Recompute2, false);
-                if (!filter.contains(obj) && obj->isTouched()) {
-                    if (passes > 0) {
-                        FC_ERR(obj->getFullName() << " still touched after recompute");
+
+            bool needsAnotherPass = false;
+            for (auto* object : topoSortedObjects) {
+                object->setStatus(ObjectStatus::Recompute2, false);
+                if (!filter.contains(object) && object->isTouched()) {
+                    if (pass > 0) {
+                        FC_ERR(object->getFullName() << " still touched after recompute");
                     }
                     else {
-                        FC_LOG(obj->getFullName() << " still touched after recompute");
-                        if (idx >= topoSortedObjects.size()) {
-                            // let's start the next pass on the first touched object
-                            idx = i;
-                        }
-                        obj->setStatus(ObjectStatus::Recompute2, true);
+                        FC_LOG(object->getFullName() << " still touched after recompute");
+                        object->setStatus(ObjectStatus::Recompute2, true);
+                        needsAnotherPass = true;
                     }
                 }
+            }
+            if (!needsAnotherPass) {
+                break;
             }
         }
     }
@@ -3347,11 +4053,11 @@ int Document::recompute(const std::vector<DocumentObject*>& objs, bool force, bo
 
     signalRecomputed(*this, topoSortedObjects);
     recomputingStatus.reset();
-    signalBecameStable(*this);
+    notifyBecameStable();
 
     tracker.checkpoint("Recompute total");
 
-    if (!d->_RecomputeLog.empty()) {
+    if (d->hasRecomputeLog()) {
         if (!testStatus(Status::IgnoreErrorOnRecompute)) {
             for (auto it : topoSortedObjects) {
                 if (it->isError()) {
@@ -3573,7 +4279,7 @@ const char* Document::getErrorDescription(const DocumentObject* Obj) const
 
 std::uint64_t Document::getRecomputeDiagnosticGeneration() const
 {
-    return d->recomputeDiagnosticGeneration;
+    return d->getRecomputeDiagnosticGeneration();
 }
 
 const std::vector<RecomputeDiagnostic>& Document::getRecomputeDiagnostics() const
@@ -3787,8 +4493,13 @@ DocumentObject* Document::addObject(
     const bool isPartial
 )
 {
+    checkArchiveMutation(*d);
+    const bool traceRestore = testStatus(Status::Restoring)
+        && std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr;
+    const auto traceStart = std::chrono::steady_clock::now();
     const Base::Type type
         = Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
+    const auto typeReady = std::chrono::steady_clock::now();
     if (type.isBad()) {
         std::stringstream str;
         str << "Document::addObject: '" << sType << "' is not a document object type";
@@ -3796,6 +4507,7 @@ DocumentObject* Document::addObject(
     }
 
     void* typeInstance = type.createInstance();
+    const auto instanceReady = std::chrono::steady_clock::now();
     if (!typeInstance) {
         return nullptr;
     }
@@ -3812,6 +4524,27 @@ DocumentObject* Document::addObject(
             | AddObjectOption::ActivateObject,
         viewType
     );
+    const auto objectAdded = std::chrono::steady_clock::now();
+
+    if (traceRestore) {
+        const auto elapsed = [](auto begin, auto end) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+        };
+        const auto total = elapsed(traceStart, objectAdded);
+        if (total >= 20) {
+            Base::Console().message(
+                "VIBECAD_RESTORE_DETAIL add_object type=%.*s name=%s type_lookup_ms=%lld "
+                "create_instance_ms=%lld register_and_signal_ms=%lld total_ms=%lld\n",
+                static_cast<int>(sType.size()),
+                sType.data(),
+                pObjectName ? pObjectName : "",
+                static_cast<long long>(elapsed(traceStart, typeReady)),
+                static_cast<long long>(elapsed(typeReady, instanceReady)),
+                static_cast<long long>(elapsed(instanceReady, objectAdded)),
+                static_cast<long long>(total)
+            );
+        }
+    }
 
     // return the Object
     return pcObject;
@@ -3823,6 +4556,7 @@ std::vector<DocumentObject*> Document::addObjects(
     bool isNew
 )
 {
+    checkArchiveMutation(*d);
     Base::Type type = Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
     if (type.isBad()) {
         std::stringstream str;
@@ -3861,6 +4595,7 @@ std::vector<DocumentObject*> Document::addObjects(
 
 void Document::addObject(DocumentObject* obj, const char* name)
 {
+    checkArchiveMutation(*d);
     if (obj->getDocument()) {
         throw Base::RuntimeError("Document object is already added to a document");
     }
@@ -3893,6 +4628,8 @@ void Document::_addObject(
         DocumentP& state;
     } addObjectCriticalScope(*d);
 
+    advanceObjectChangeGeneration();
+
     // get unique name
     string ObjectName;
     if (!Base::Tools::isNullOrEmpty(pObjectName)) {
@@ -3917,6 +4654,7 @@ void Document::_addObject(
     }
     d->objectIdMap[pcObject->_Id] = pcObject;
     d->objectArray.push_back(pcObject);
+    d->objectAddresses.insert(pcObject);
 
     // do no transactions if we do a rollback!
     if (!d->rollback) {
@@ -4039,6 +4777,7 @@ void Document::_addObject(
         }
     }
 
+    advanceObjectChangeGeneration();
     if (setupException) {
         std::rethrow_exception(setupException);
     }
@@ -4049,7 +4788,7 @@ bool Document::containsObject(const DocumentObject* pcObject) const
     // Compare stored addresses without dereferencing the candidate. Callers
     // use this during link cleanup, where a property may briefly retain the
     // address of an object which has already left the document.
-    return pcObject && std::ranges::find(d->objectArray, pcObject) != d->objectArray.end();
+    return pcObject && d->objectAddresses.contains(pcObject);
 }
 
 /// Remove an object out of the document
@@ -4063,6 +4802,7 @@ void Document::removeObject(const DocumentObject* object)
 /// Remove an object out of the document
 void Document::removeObject(const char* sName)
 {
+    checkArchiveMutation(*d);
     auto pos = d->objectMap.find(sName);
     if (pos == d->objectMap.end()) {
         FC_MSG("Object " << sName << " already deleted in document " << getName());
@@ -4102,6 +4842,7 @@ void Document::removeObject(const char* sName)
 }
 void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions options)
 {
+    advanceObjectChangeGeneration();
     if (!options.testFlag(RemoveObjectOption::MayRemoveWhileRecomputing)
         && testStatus(Document::Recomputing)) {
         FC_ERR("Cannot delete " << pcObject->getFullName() << " while recomputing");
@@ -4156,6 +4897,7 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
     }
 
     // Mark the object as about to be removed
+    d->objectRemovalGeneration.fetch_add(1, std::memory_order_release);
     pcObject->setStatus(ObjectStatus::Remove, true);
     if (!d->undoing && !d->rollback) {
         pcObject->unsetupObject();
@@ -4198,6 +4940,7 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
             break;
         }
     }
+    d->objectAddresses.erase(pcObject);
 
     // In case the object gets deleted the pointer must be nullified
     if (tobedestroyed) {
@@ -4207,6 +4950,8 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
     // Erase last to avoid invalidating pcObject->pcNameInDocument
     // when it is still needed in Transaction::addObjectNew
     d->objectMap.erase(pos);
+    d->objectRemovalGeneration.fetch_add(1, std::memory_order_release);
+    advanceObjectChangeGeneration();
 }
 
 void Document::breakDependency(DocumentObject* pcObject, const bool clear)  // NOLINT
@@ -4677,6 +5422,40 @@ const std::vector<DocumentObject*>& Document::getObjects() const
     return d->objectArray;
 }
 
+std::uint64_t Document::getObjectChangeGeneration() const noexcept
+{
+    return d->objectChangeGeneration.load(std::memory_order_acquire);
+}
+
+void Document::advanceObjectChangeGeneration() noexcept
+{
+    advanceObjectChangeGeneration(nullptr);
+}
+
+std::uint64_t Document::getObjectStructureGeneration() const noexcept
+{
+    return d->objectStructureGeneration.load(std::memory_order_acquire);
+}
+
+std::uint64_t Document::getObjectRemovalGeneration() const noexcept
+{
+    return d->objectRemovalGeneration.load(std::memory_order_acquire);
+}
+
+void Document::advanceObjectChangeGeneration(const Property* changedValue) noexcept
+{
+    d->objectChangeGeneration.fetch_add(1, std::memory_order_release);
+    if (changedValue) {
+        const auto* object = dynamic_cast<const DocumentObject*>(changedValue->getContainer());
+        if ((object && changedValue == &object->Visibility)
+            || dynamic_cast<const PropertyPlacement*>(changedValue)
+            || dynamic_cast<const PropertyComplexGeoData*>(changedValue)) {
+            return;
+        }
+    }
+    d->objectStructureGeneration.fetch_add(1, std::memory_order_release);
+}
+
 std::vector<DocumentObject*> Document::getObjectsOfType(const Base::Type& typeId) const
 {
     std::vector<DocumentObject*> Objects;
@@ -4724,6 +5503,16 @@ std::vector<DocumentObject*> Document::findObjects(
     const char* label
 ) const
 {
+    return findObjects(typeId, objname, label, nullptr);
+}
+
+std::vector<DocumentObject*> Document::findObjects(
+    const Base::Type& typeId,
+    const char* objname,
+    const char* label,
+    const char* property
+) const
+{
     boost::cmatch what;
     boost::regex rx_name;
     boost::regex rx_label;
@@ -4739,7 +5528,7 @@ std::vector<DocumentObject*> Document::findObjects(
     std::vector<DocumentObject*> Objects;
     DocumentObject* found = nullptr;
     for (const auto it : d->objectArray) {
-        if (it->isDerivedFrom(typeId)) {
+        if (it->isDerivedFrom(typeId) && (!property || it->getPropertyByName(property))) {
             found = it;
 
             if (!rx_name.empty() && !boost::regex_search(it->getNameInDocument(), what, rx_name)) {

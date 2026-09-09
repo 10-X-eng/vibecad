@@ -11,7 +11,8 @@ until the outermost atomic document change has finished.
 from __future__ import annotations
 
 import threading
-from typing import Callable
+from contextlib import contextmanager
+from typing import Callable, Iterator
 
 _lock = threading.RLock()
 _depth_by_document: dict[str, int] = {}
@@ -20,6 +21,31 @@ _origins_by_document: dict[str, set[tuple[str, str]]] = {}
 _completed_listeners: list[Callable[[str], None]] = []
 _finished_listeners: list[Callable[[str, bool], None]] = []
 _flush_listeners: list[Callable[[str], None]] = []
+_rollback_scope = threading.local()
+
+
+@contextmanager
+def rolling_back_document_change_batch(document_uid: str) -> Iterator[None]:
+    """Scope advisory notification discard to an already failed atomic batch.
+
+    Native rollback and other observers still run normally. Ordinary undo/redo,
+    changes to other documents and notifications on other threads are unaffected.
+    The caller remains responsible for ending the batch with commit=False.
+    """
+    uid = str(document_uid or "").strip()
+    if not document_change_batch_active(uid):
+        yield
+        return
+    previous = getattr(_rollback_scope, "documents", frozenset())
+    _rollback_scope.documents = previous | {uid}
+    try:
+        yield
+    finally:
+        _rollback_scope.documents = previous
+
+
+def document_change_batch_rolling_back(document_uid: str) -> bool:
+    return document_uid in getattr(_rollback_scope, "documents", ())
 
 
 def begin_document_change_batch(

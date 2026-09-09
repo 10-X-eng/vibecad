@@ -10,8 +10,10 @@
 #endif
 
 #include "Base/Exception.h"
+#include "Base/CancellationScope.h"
 #include "Base/Persistence.h"
 #include "Base/Reader.h"
+#include "Base/Writer.h"
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -92,6 +94,42 @@ protected:
     {}
 };
 
+TEST_F(ReaderTest, parserCallbackCancellationIsNotReportedAsCorruptXml)
+{
+    class CancellingReader: public Base::XMLReader
+    {
+    public:
+        using Base::XMLReader::XMLReader;
+
+    protected:
+        void startElement(const XMLCh* const, const XMLCh* const, const XMLCh* const,
+                          const XERCES_CPP_NAMESPACE::Attributes&) override
+        {
+            throw Base::AbortException();
+        }
+    };
+
+    std::istringstream input("<?xml version='1.0'?><document><item/></document>");
+    CancellingReader reader("cancelled-parser.xml", input);
+    EXPECT_THROW(reader.readElement("document"), Base::AbortException);
+}
+
+TEST_F(ReaderTest, cancellationStopsParsingAndDoesNotLeakToTheNextRequest)
+{
+    ReaderXML fixture;
+    fixture.givenDataAsXMLStream("<first/><second/>");
+    std::stop_source request;
+    {
+        Base::CancellationScope operation(request.get_token());
+        fixture.Reader()->readElement("first");
+        request.request_stop();
+        // An uncancelled nested scope must not hide its parent's cancellation.
+        Base::CancellationScope nested(std::stop_token {});
+        EXPECT_THROW(fixture.Reader()->readElement("second"), Base::AbortException);
+    }
+    EXPECT_NO_THROW(fixture.Reader()->readElement("second"));
+}
+
 TEST_F(ReaderTest, beginCharStreamNormal)
 {
     // Arrange
@@ -104,6 +142,30 @@ TEST_F(ReaderTest, beginCharStreamNormal)
 
     // Assert
     EXPECT_TRUE(result.good());
+}
+
+TEST_F(ReaderTest, characterStreamPreservesAllParserChunks)
+{
+    std::string input;
+    for (int i = 0; i < 20000; ++i) {
+        input.push_back(static_cast<char>('A' + i % 26));
+    }
+    for (const auto format : {Base::CharStreamFormat::Raw,
+                              Base::CharStreamFormat::Base64Encoded}) {
+        Base::StringWriter writer;
+        writer.Stream() << "<?xml version='1.0'?><document><data>";
+        writer.beginCharStream(format) << input;
+        writer.endCharStream() << "</data><after/></document>";
+        std::istringstream xml(writer.getString());
+        Base::XMLReader reader("character-chunks.xml", xml);
+        reader.readElement("data");
+        auto& stream = reader.beginCharStream(format);
+        const std::string result {std::istreambuf_iterator<char>(stream), {}};
+        ASSERT_EQ(result.size(), input.size());
+        EXPECT_TRUE(result == input);
+        reader.readEndElement("data");
+        EXPECT_NO_THROW(reader.readElement("after"));
+    }
 }
 
 TEST_F(ReaderTest, beginCharStreamOpenClose)

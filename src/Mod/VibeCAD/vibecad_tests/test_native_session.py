@@ -537,6 +537,9 @@ class _Dispatcher:
         self.calls.append((name, arguments, call_id))
         return dict(self.result)
 
+    def call_async(self, name, arguments, call_id, *, document_dispatch):
+        return self.call(name, arguments, call_id)
+
 
 class _Ledger:
     def __init__(self) -> None:
@@ -705,6 +708,34 @@ def test_provider_runner_dispatches_call_id_and_records_concise_trace() -> None:
         "native_tool_started",
         "native_tool_completed",
     ]
+
+
+def test_provider_runner_waits_for_deferred_payload_outside_owner_dispatch():
+    from concurrent.futures import Future
+
+    runner, dispatcher, _ledger, _traces, _events = _provider_runner()
+    inside_owner = False
+
+    class Pending(Future):
+        def result(self, timeout=None):
+            assert not inside_owner, 'A pending tool must not wait on the GUI owner'
+            self.set_result({'ok': True, 'value': 4})
+            return super().result(timeout)
+
+    pending = Pending()
+
+    def owner(operation):
+        nonlocal inside_owner
+        inside_owner = True
+        try:
+            return operation()
+        finally:
+            inside_owner = False
+
+    runner._document_dispatch = owner
+    dispatcher.call_async = lambda *args, **kwargs: pending
+    result = runner('state.read', '{"operation":"active"}', 'deferred-owner')
+    assert result['ok'] and result['value'] == 4
 
 
 def test_provider_runner_waits_off_document_thread_before_a_dependent_call() -> None:

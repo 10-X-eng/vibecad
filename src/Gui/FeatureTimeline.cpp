@@ -3,11 +3,13 @@
 #include "FeatureTimeline.h"
 
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <iterator>
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <span>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -18,10 +20,12 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QColor>
+#include <QElapsedTimer>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QImage>
+#include <QItemSelectionModel>
 #include <QListView>
 #include <QListWidget>
 #include <QMenu>
@@ -29,12 +33,14 @@
 #include <QMouseEvent>
 #include <QPalette>
 #include <QPixmap>
+#include <QPointer>
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QStyle>
 #include <QTimer>
+#include <QThread>
 #include <QToolButton>
 #include <QVariant>
 #include <QtGlobal>
@@ -43,10 +49,12 @@
 #include <App/Document.h>
 #include <App/DocumentTimeline.h>
 #include <App/DocumentObject.h>
+#include <App/HostRuntime.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <App/SuppressibleExtension.h>
 #include <Base/Console.h>
+#include <Base/CancellationScope.h>
 #include <Base/Exception.h>
 
 #include "ActiveObjectList.h"
@@ -56,6 +64,7 @@
 #include "Command.h"
 #include "Control.h"
 #include "Document.h"
+#include "FrameBudget.h"
 #include "Macro.h"
 #include "MDIView.h"
 #include "ModelTreeBrowser.h"
@@ -73,6 +82,42 @@ namespace
 constexpr int timelineHeight = 56;
 constexpr int timelineItemHeight = 34;
 constexpr int timelineItemWidth = 38;
+
+bool timelineStructureProperty(
+    const App::DocumentObject& object,
+    const App::Property& property
+)
+{
+    const std::string_view name = property.getName();
+    if (object.isDerivedFrom<App::DocumentTimeline>()) {
+        return name == "Operations" || name == "Position";
+    }
+
+    // These properties define membership, semantic ownership, or ordering in
+    // the shared Tree/History projection. Every other property can change an
+    // existing item's status or icon without rebuilding the operation list.
+    static constexpr std::array structuralProperties {
+        std::string_view("BaseFeature"),
+        std::string_view("Group"),
+        std::string_view("Originals"),
+        std::string_view("ProgramId"),
+        std::string_view("ProgramObjectName"),
+        std::string_view("Tip"),
+        std::string_view("TransformMode"),
+        std::string_view("Transformations"),
+        std::string_view("VibeCADPartDesignComponentOccurrenceNames"),
+        std::string_view("VibeCADPartDesignComponentOccurrences"),
+        std::string_view("VibeCADScriptedEngine"),
+        std::string_view("VibeCADScriptedModelId"),
+        std::string_view("VibeCADScriptedOutputKey"),
+        std::string_view("VibeCADScriptedRole"),
+        std::string_view("VibeCADVibeScriptOutputType"),
+        std::string_view(App::DocumentTimeline::EditorPropertyName),
+        std::string_view(App::DocumentTimeline::OwnerPropertyName),
+        std::string_view(App::DocumentTimeline::RolePropertyName),
+    };
+    return std::ranges::find(structuralProperties, name) != structuralProperties.end();
+}
 
 QPixmap desaturatePixmap(const QPixmap& source)
 {
@@ -432,7 +477,8 @@ bool isVisibleTimelineOperation(
 
 const App::DocumentObject* semanticTimelineRoot(
     const App::DocumentObject* object,
-    const App::Document* document
+    const App::Document* document,
+    std::unordered_map<const App::DocumentObject*, const App::DocumentObject*>& roots
 ) noexcept
 {
     if (!object || !document || !document->containsObject(object)
@@ -440,19 +486,28 @@ const App::DocumentObject* semanticTimelineRoot(
         return nullptr;
     }
 
-    std::unordered_set<const App::DocumentObject*> visited;
+    std::vector<const App::DocumentObject*> path;
     auto* current = object;
-    while (App::DocumentTimeline::hasTimelineResourceRole(current)) {
-        if (!visited.insert(current).second) {
-            return nullptr;
+    const App::DocumentObject* root = nullptr;
+    while (current && document->containsObject(current) && current->getDocument() == document) {
+        const auto [entry, inserted] = roots.emplace(current, nullptr);
+        if (!inserted) {
+            // A null entry denotes either a previously invalid chain or a
+            // cycle back into this walk. Neither can expose a history block.
+            root = entry->second;
+            break;
+        }
+        path.push_back(current);
+        if (!App::DocumentTimeline::hasTimelineResourceRole(current)) {
+            root = current;
+            break;
         }
         current = App::DocumentTimeline::timelineOwner(current);
-        if (!current || !document->containsObject(current)
-            || current->getDocument() != document) {
-            return nullptr;
-        }
     }
-    return current;
+    for (const auto* member : path) {
+        roots[member] = root;
+    }
+    return root;
 }
 
 struct SemanticTimelineBlock
@@ -471,8 +526,9 @@ class SemanticTimelineLayout
 public:
     SemanticTimelineLayout(
         const std::vector<App::DocumentObject*>& operations,
-        const App::Document* document
-    ) noexcept
+        const App::Document* document,
+        const ModelTreeBrowserProjection* snapshot = nullptr
+    )
         : document(document)
     {
         if (!document) {
@@ -482,44 +538,48 @@ public:
             valid = true;
             return;
         }
+        if (snapshot) {
+            roots = snapshot->timelineRoots();
+        }
 
         std::unordered_set<const App::DocumentObject*> operationIdentities;
         operationIdentities.reserve(operations.size());
         for (const auto* operation : operations) {
-            if (!operation || !document->containsObject(operation)
-                || operation->getDocument() != document
+            Base::CancellationScope::check();
+            const bool present = snapshot ? roots.contains(operation)
+                : operation && document->containsObject(operation)
+                    && operation->getDocument() == document;
+            if (!operation || !present
                 || !operationIdentities.insert(operation).second) {
                 return;
             }
         }
 
         blocks.reserve(operations.size());
+        roots.reserve(operations.size());
+        orderedBlocks.reserve(operations.size());
+        const App::DocumentObject* previousRoot = nullptr;
         for (std::size_t index = 0; index < operations.size(); ++index) {
-            const auto* root = semanticTimelineRoot(operations[index], document);
+            Base::CancellationScope::check();
+            const auto* root = snapshot ? roots.at(operations[index])
+                : semanticTimelineRoot(operations[index], document, roots);
             if (!root || !operationIdentities.contains(root)) {
                 return;
             }
             const auto position = static_cast<int>(index);
-            auto& block = blocks[root];
-            block.begin = block.begin < 0 ? position : std::min(block.begin, position);
-            block.end = std::max(block.end, position + 1);
-        }
-
-        orderedBlocks.reserve(blocks.size());
-        for (const auto& [root, block] : blocks) {
-            (void)root;
-            if (!block.isValid()) {
-                return;
+            if (root != previousRoot) {
+                const SemanticTimelineBlock block {position, position + 1};
+                if (!blocks.emplace(root, block).second) {
+                    // Returning to an earlier root interleaves its resources
+                    // with another operation, so no exact boundary exists.
+                    return;
+                }
+                orderedBlocks.push_back(block);
+                previousRoot = root;
             }
-            orderedBlocks.push_back(block);
-        }
-        std::ranges::sort(orderedBlocks, {}, &SemanticTimelineBlock::begin);
-        for (std::size_t index = 1; index < orderedBlocks.size(); ++index) {
-            if (orderedBlocks[index - 1].end > orderedBlocks[index].begin) {
-                // Interleaved semantic blocks cannot expose an exact state
-                // boundary. Refuse navigation instead of activating only part
-                // of either operation.
-                return;
+            else {
+                blocks.at(root).end = position + 1;
+                orderedBlocks.back().end = position + 1;
             }
         }
         valid = true;
@@ -537,7 +597,9 @@ public:
         if (!valid) {
             return {};
         }
-        const auto* root = semanticTimelineRoot(operation, document);
+        const auto cached = roots.find(operation);
+        const auto* root = cached != roots.end() ? cached->second
+            : semanticTimelineRoot(operation, document, roots);
         const auto found = blocks.find(root);
         return found == blocks.end() ? SemanticTimelineBlock {} : found->second;
     }
@@ -550,6 +612,7 @@ public:
 private:
     const App::Document* document {};
     std::unordered_map<const App::DocumentObject*, SemanticTimelineBlock> blocks;
+    mutable std::unordered_map<const App::DocumentObject*, const App::DocumentObject*> roots;
     std::vector<SemanticTimelineBlock> orderedBlocks;
     bool valid {false};
 };
@@ -936,6 +999,68 @@ private:
 
 }  // namespace
 
+struct FeatureTimeline::RebuildState
+{
+    enum class Phase
+    {
+        CaptureProjection,
+        WaitProjection,
+        Scan,
+        RemoveItems,
+        AddItems,
+        Finish,
+    };
+
+    struct VisibleOperation
+    {
+        TimelineObjectIdentity identity;
+        std::size_t operationIndex {};
+        SemanticTimelineBlock block;
+        bool active {false};
+    };
+
+    std::uint64_t requestGeneration {};
+    std::uint64_t documentGeneration {};
+    TimelineDocumentIdentity documentIdentity;
+    TimelineObjectIdentity controllerIdentity;
+    std::span<App::DocumentObject* const> operations;
+    std::shared_ptr<SemanticTimelineLayout> semanticLayout;
+    std::shared_ptr<const ModelTreeBrowserProjection> projection;
+    std::stop_source cancellation;
+    const std::unordered_set<App::DocumentObject*>* internalTransformations {};
+    std::vector<VisibleOperation> visibleOperations;
+    std::size_t scanIndex {};
+    std::size_t addIndex {};
+    int position {};
+    int lastActiveVisible {-1};
+    int activeVisibleCount {};
+    bool historyEnabled {false};
+    bool recomputeEnabled {false};
+    bool previousEnabled {false};
+    bool nextEnabled {false};
+    bool endEnabled {false};
+    bool markerAdded {false};
+    QListWidgetItem* stateMarker {};
+    QString emptyMessage;
+    QString toolTip;
+    QElapsedTimer elapsed;
+    Phase phase {Phase::Scan};
+
+    ~RebuildState() { cancellation.request_stop(); }
+};
+
+struct FeatureTimeline::PresentationRefreshState
+{
+    std::uint64_t documentGeneration {};
+    TimelineDocumentIdentity documentIdentity;
+    std::unordered_set<long> objectIds;
+    std::unordered_set<QListWidgetItem*> refreshedItems;
+    std::unordered_set<QListWidgetItem*>::const_iterator item;
+    bool iteratingItems {false};
+    std::size_t dirtyObjectCount {};
+    QElapsedTimer elapsed;
+};
+
 FeatureTimeline::FeatureTimeline(QWidget* parent)
     : QWidget(parent)
     , SelectionObserver(true, ResolveMode::OldStyleElement)
@@ -1073,7 +1198,7 @@ FeatureTimeline::FeatureTimeline(QWidget* parent)
     refreshTimer->setSingleShot(true);
     refreshTimer->setInterval(0);
 
-    connect(refreshTimer, &QTimer::timeout, this, &FeatureTimeline::rebuild);
+    connect(refreshTimer, &QTimer::timeout, this, &FeatureTimeline::processRefresh);
     connect(
         timeline,
         &QListWidget::itemSelectionChanged,
@@ -1104,11 +1229,31 @@ FeatureTimeline::FeatureTimeline(QWidget* parent)
     recomputeRequestFinishedConnection
         = App::GetApplication().signalRecomputeRequestFinished.connect(
             [this](const std::string& documentName) {
-                if (documentName == observedDocumentName) {
-                    scheduleRefresh();
-                }
+                dispatchToGuiFrame(this, [this, documentName] {
+                    if (documentName == observedDocumentName) {
+                        scheduleControlRefresh();
+                    }
+                });
             }
         );
+    finishRestoreDocumentConnection =
+        App::GetApplication().signalFinishRestoreDocument.connect(
+            [this](const App::Document& restored) {
+                if (&restored != observedAppDocument) {
+                    return;
+                }
+                // Record the refresh even if the worker's outer restore scope
+                // is still active. The idle connections below wake it again.
+                QTimer::singleShot(0, this, [this] { scheduleRefresh(); });
+            }
+        );
+    const auto restoreIdle = [this] {
+        dispatchToGuiFrame(this, [this] {
+            if (auto* document = activeAppDocument()) { scheduleStableRefresh(*document); }
+        });
+    };
+    restoreActivityIdleConnection = App::GetApplication().signalRestoreActivityIdle.connect(restoreIdle);
+    finishOpenDocumentConnection = App::GetApplication().signalFinishOpenDocument.connect(restoreIdle);
 
     if (Gui::Application::Instance) {
         activeDocumentConnection = Gui::Application::Instance->signalActiveDocument.connect(
@@ -1138,6 +1283,9 @@ FeatureTimeline::FeatureTimeline(QWidget* parent)
 
 FeatureTimeline::~FeatureTimeline()
 {
+    restoreActivityIdleConnection.disconnect();
+    finishOpenDocumentConnection.disconnect();
+    releasePresentationUpdate();
     detachDocument();
 }
 
@@ -1174,7 +1322,13 @@ void FeatureTimeline::setObservedDocument(Gui::Document* document)
     changedObjectConnection.disconnect();
     touchedObjectConnection.disconnect();
     recomputedObjectConnection.disconnect();
+    releasePresentationUpdate();
     detachDocument();
+    rebuildState.reset();
+    presentationRefreshState.reset();
+    pendingPresentationObjects.clear();
+    fullRefreshPending = false;
+    controlRefreshPending = false;
     observedAppDocument = nextDocument;
     observedDocumentName = nextName;
     ++observedDocumentGeneration;
@@ -1182,19 +1336,28 @@ void FeatureTimeline::setObservedDocument(Gui::Document* document)
     if (document && nextDocument) {
         attachDocument(document);
         bookedTransactionConnection = document->getDocument()->signalBookedTransactionChanged.connect(
-            [this](const App::Document&, int, int) { scheduleRefresh(); }
+            [this](const App::Document&, int, int) { scheduleControlRefresh(); }
         );
         stableDocumentConnection = document->getDocument()->signalBecameStable.connect(
-            [this](const App::Document&) { scheduleRefresh(); }
+            [this](const App::Document& stableDocument) {
+                scheduleStableRefresh(const_cast<App::Document&>(stableDocument));
+            }
         );
         changedObjectConnection = document->getDocument()->signalChangedObject.connect(
-            [this](const App::DocumentObject&, const App::Property&) { scheduleRefresh(); }
+            [this](const App::DocumentObject& object, const App::Property& property) {
+                if (timelineStructureProperty(object, property)) {
+                    scheduleRefresh();
+                }
+                else {
+                    scheduleObjectRefresh(object);
+                }
+            }
         );
         touchedObjectConnection = document->getDocument()->signalTouchedObject.connect(
-            [this](const App::DocumentObject&) { scheduleRefresh(); }
+            [this](const App::DocumentObject& object) { scheduleObjectRefresh(object); }
         );
         recomputedObjectConnection = document->getDocument()->signalRecomputedObject.connect(
-            [this](const App::DocumentObject&) { scheduleRefresh(); }
+            [this](const App::DocumentObject& object) { scheduleObjectRefresh(object); }
         );
     }
 
@@ -1203,9 +1366,138 @@ void FeatureTimeline::setObservedDocument(Gui::Document* document)
 
 void FeatureTimeline::scheduleRefresh()
 {
+    if (QThread::currentThread() != thread()) {
+        dispatchToGuiFrame(this, [this] { scheduleRefresh(); });
+        return;
+    }
+    fullRefreshPending = true;
+    ++requestedRefreshGeneration;
+    if (Gui::Document::projectionRefreshBlocked(activeAppDocument())) {
+        rebuildState.reset();
+        presentationRefreshState.reset();
+        return;
+    }
+    startRefreshTimer();
+}
+
+void FeatureTimeline::scheduleObjectRefresh(const App::DocumentObject& object)
+{
+    const long objectId = object.getID();
+    const std::string documentName = object.getDocument() ? object.getDocument()->getName() : "";
+    if (QThread::currentThread() != thread()) {
+        dispatchToGuiFrame(this, [this, documentName, objectId] {
+            auto* document = activeAppDocument();
+            if (document && document->getName() == documentName) {
+                scheduleObjectRefresh(objectId);
+            }
+        });
+        return;
+    }
+    auto* document = activeAppDocument();
+    if (document && document->getName() == documentName) {
+        scheduleObjectRefresh(objectId);
+    }
+}
+
+void FeatureTimeline::scheduleObjectRefresh(long objectId)
+{
+    if (objectId < 0) {
+        return;
+    }
+    pendingPresentationObjects.insert(objectId);
+    if (!Gui::Document::projectionRefreshBlocked(activeAppDocument())) {
+        startRefreshTimer();
+    }
+}
+
+void FeatureTimeline::scheduleControlRefresh()
+{
+    if (QThread::currentThread() != thread()) {
+        dispatchToGuiFrame(this, [this] { scheduleControlRefresh(); });
+        return;
+    }
+    controlRefreshPending = true;
+    if (!Gui::Document::projectionRefreshBlocked(activeAppDocument())) {
+        startRefreshTimer();
+    }
+}
+
+void FeatureTimeline::scheduleStableRefresh(App::Document& document)
+{
+    if (QThread::currentThread() != thread()) {
+        const std::string documentName = document.getName();
+        dispatchToGuiFrame(this, [this, documentName] {
+            auto* current = activeAppDocument();
+            if (current && current->getName() == documentName) {
+                scheduleStableRefresh(*current);
+            }
+        });
+        return;
+    }
+    if (&document != activeAppDocument()) {
+        return;
+    }
+    if (fullRefreshPending || rebuildState || presentationRefreshState
+        || !pendingPresentationObjects.empty() || controlRefreshPending) {
+        acquirePresentationUpdate(document);
+        startRefreshTimer();
+    }
+}
+
+void FeatureTimeline::startRefreshTimer()
+{
     if (refreshTimer && !refreshTimer->isActive()) {
         refreshTimer->start();
     }
+}
+
+void FeatureTimeline::processRefresh()
+{
+    auto* document = activeAppDocument();
+    if (Gui::Document::projectionRefreshBlocked(document)) {
+        if (rebuildState) {
+            fullRefreshPending = true;
+        }
+        if (presentationRefreshState) {
+            pendingPresentationObjects.merge(presentationRefreshState->objectIds);
+        }
+        rebuildState.reset();
+        presentationRefreshState.reset();
+        return;
+    }
+    if (rebuildState) {
+        rebuild();
+        return;
+    }
+    if (fullRefreshPending) {
+        fullRefreshPending = false;
+        controlRefreshPending = false;
+        pendingPresentationObjects.clear();
+        presentationRefreshState.reset();
+        rebuild();
+        return;
+    }
+    refreshPresentation();
+}
+
+void FeatureTimeline::acquirePresentationUpdate(App::Document& document)
+{
+    if (presentationUpdateDocument == &document) {
+        return;
+    }
+    releasePresentationUpdate();
+    document.beginPresentationUpdate();
+    presentationUpdateDocument = &document;
+}
+
+void FeatureTimeline::releasePresentationUpdate()
+{
+    if (!presentationUpdateDocument) {
+        return;
+    }
+    auto* document = presentationUpdateDocument;
+    presentationUpdateDocument = nullptr;
+    document->endPresentationUpdate();
 }
 
 bool FeatureTimeline::canChangeHistory() const
@@ -1224,6 +1516,198 @@ bool FeatureTimeline::canChangeHistory() const
         && editAllowsHistory && !Gui::Control().activeDialog(document);
 }
 
+void FeatureTimeline::updateTimelineItemPresentation(
+    QListWidgetItem* item,
+    App::DocumentObject* object,
+    App::DocumentObject* owner
+)
+{
+    if (!item || !object) {
+        return;
+    }
+
+    const bool isCurrent = item->data(IsCurrentRole).toBool();
+    const bool afterPosition = item->data(IsAfterPositionRole).toBool();
+    const auto presentationVisible = timelinePresentationVisibility(object, owner);
+    const QString label = objectLabel(object);
+    const QString ownerLabel = owner && owner != object ? objectLabel(owner) : QString();
+    const QString statusText = timelineStatusText(object);
+    item->setData(
+        Qt::AccessibleTextRole,
+        statusText.isEmpty() ? label : tr("%1, %2").arg(label, statusText)
+    );
+
+    if (Gui::Application::Instance) {
+        item->setIcon({});
+        const auto* editor = App::DocumentTimeline::timelineEditor(object);
+        const auto* iconObject = editor ? editor : object;
+        if (auto* viewProvider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+                Gui::Application::Instance->getViewProvider(iconObject)
+            )) {
+            item->setIcon(
+                timelineObjectIcon(
+                    viewProvider->getIcon(),
+                    object,
+                    afterPosition,
+                    presentationVisible
+                )
+            );
+        }
+    }
+
+    QFont font = timeline->font();
+    font.setBold(isCurrent);
+    if (object->hasExtension(App::SuppressibleExtension::getExtensionClassTypeId())) {
+        if (auto* suppressible = object->getExtensionByType<App::SuppressibleExtension>()) {
+            font.setStrikeOut(suppressible->Suppressed.getValue());
+        }
+    }
+    item->setFont(font);
+
+    const QString ownershipText = ownerLabel.isEmpty() ? QString()
+                                                       : tr("\nPart: %1").arg(ownerLabel);
+    const bool bodyOwned = ModelTreeBrowserProjection::isBody(owner);
+    const QString visibilityLabel = bodyOwned ? tr("Body visibility") : tr("Visibility");
+    const QString visibilityText = !presentationVisible.has_value()
+        ? QString()
+        : *presentationVisible ? tr("\n%1: Visible").arg(visibilityLabel)
+                               : tr("\n%1: Hidden").arg(visibilityLabel);
+    if (afterPosition) {
+        item->setForeground(palette().brush(QPalette::Disabled, QPalette::Text));
+        item->setToolTip(
+            statusText.isEmpty()
+                ? tr("%1%2%3\nAfter the current document state")
+                      .arg(label, ownershipText, visibilityText)
+                : tr("%1%2%3\n%4\nAfter the current document state")
+                      .arg(label, ownershipText, visibilityText, statusText)
+        );
+    }
+    else if (isCurrent) {
+        item->setForeground(palette().brush(QPalette::Active, QPalette::Link));
+        item->setToolTip(
+            statusText.isEmpty()
+                ? tr("%1%2%3\nCurrent document state")
+                      .arg(label, ownershipText, visibilityText)
+                : tr("%1%2%3\n%4\nCurrent document state")
+                      .arg(label, ownershipText, visibilityText, statusText)
+        );
+    }
+    else {
+        item->setData(Qt::ForegroundRole, QVariant());
+        item->setToolTip(
+            statusText.isEmpty()
+                ? tr("%1%2%3").arg(label, ownershipText, visibilityText)
+                : tr("%1%2%3\n%4").arg(label, ownershipText, visibilityText, statusText)
+        );
+    }
+}
+
+void FeatureTimeline::refreshPresentation()
+{
+    auto* document = activeAppDocument();
+    if (!document) {
+        pendingPresentationObjects.clear();
+        controlRefreshPending = false;
+        presentationRefreshState.reset();
+        releasePresentationUpdate();
+        return;
+    }
+    if (Gui::Document::projectionRefreshBlocked(document)) {
+        if (presentationRefreshState) {
+            pendingPresentationObjects.merge(presentationRefreshState->objectIds);
+        }
+        presentationRefreshState.reset();
+        return;
+    }
+
+    if (!presentationRefreshState) {
+        auto state = std::make_unique<PresentationRefreshState>();
+        state->documentGeneration = observedDocumentGeneration;
+        state->documentIdentity = documentIdentity(document);
+        state->objectIds = std::move(pendingPresentationObjects);
+        pendingPresentationObjects.clear();
+        controlRefreshPending = false;
+        state->dirtyObjectCount = state->objectIds.size();
+        state->elapsed.start();
+        presentationRefreshState = std::move(state);
+    }
+
+    QSignalBlocker timelineBlocker(timeline);
+    FrameBudget budget;
+    auto* state = presentationRefreshState.get();
+    while (!state->objectIds.empty() && !budget.exhausted()) {
+        const auto dirty = state->objectIds.begin();
+        const auto rows = itemsByObject.find(*dirty);
+        if (rows == itemsByObject.end()) {
+            state->objectIds.erase(dirty);
+            continue;
+        }
+        if (!state->iteratingItems) {
+            state->item = rows->second.begin();
+            state->iteratingItems = true;
+        }
+        if (state->item == rows->second.end()) {
+            state->objectIds.erase(dirty);
+            state->iteratingItems = false;
+            continue;
+        }
+        auto* item = *state->item++;
+        // Both an operation and its owner may be dirty in this epoch.
+        if (!state->refreshedItems.insert(item).second) {
+            continue;
+        }
+        const long objectId = item->data(ObjectIdRole).toLongLong();
+        const long ownerId = item->data(OwnerIdRole).toLongLong();
+
+        auto* currentDocument = resolveDocument(state->documentIdentity);
+        auto* object = resolveObject(
+            currentDocument,
+            item->data(ObjectNameRole).toString().toStdString(),
+            objectId
+        );
+        auto* owner = ownerId < 0
+            ? nullptr
+            : resolveObject(
+                  currentDocument,
+                  item->data(OwnerNameRole).toString().toStdString(),
+                  ownerId
+              );
+        if (!currentDocument || observedDocumentGeneration != state->documentGeneration || !object) {
+            presentationRefreshState.reset();
+            scheduleRefresh();
+            startRefreshTimer();
+            return;
+        }
+        updateTimelineItemPresentation(item, object, owner);
+    }
+    if (!state->objectIds.empty()) {
+        dispatchToGuiFrame(this, [this] { processRefresh(); });
+        return;
+    }
+
+    const qint64 elapsed = state->elapsed.elapsed();
+    const std::size_t projectedObjects = state->dirtyObjectCount;
+    presentationRefreshState.reset();
+    syncSelectionFromGui();
+    if (Gui::Application::Instance) {
+        auto* command = Gui::Application::Instance->commandManager().getCommandByName("Std_Refresh");
+        recomputeButton->setEnabled(canChangeHistory() && command && command->canInvoke());
+    }
+    if (qEnvironmentVariableIsSet("VIBECAD_RESTORE_DETAIL_TRACE")) {
+        Base::Console().message(
+            "VIBECAD_PROJECTION history total_ms=%lld objects=%zu full=0\n",
+            static_cast<long long>(elapsed),
+            projectedObjects
+        );
+    }
+    if (fullRefreshPending || !pendingPresentationObjects.empty() || controlRefreshPending) {
+        startRefreshTimer();
+    }
+    else {
+        releasePresentationUpdate();
+    }
+}
+
 void FeatureTimeline::rebuild()
 {
     App::Document* document = activeAppDocument();
@@ -1236,91 +1720,231 @@ void FeatureTimeline::rebuild()
         previousButton->setEnabled(false);
         nextButton->setEnabled(false);
         endButton->setEnabled(false);
+        if (rebuildState) {
+            fullRefreshPending = true;
+            rebuildState.reset();
+        }
         return;
     }
 
-    if (auto* timelineList = dynamic_cast<TimelineListWidget*>(timeline)) {
-        timelineList->cancelMarkerDrag();
-    }
     QScopedValueRollback rebuildingGuard(rebuildingTimeline, true);
     QSignalBlocker timelineBlocker(timeline);
+    FrameBudget budget;
 
-    timeline->clear();
-    timeline->setEnabled(false);
-    recomputeButton->setEnabled(false);
-    previousButton->setEnabled(false);
-    nextButton->setEnabled(false);
-    endButton->setEnabled(false);
-
-    if (!document) {
-        auto* empty = new QListWidgetItem(tr("Open a document to see its feature history"));
-        empty->setFlags(Qt::NoItemFlags);
-        timeline->addItem(empty);
-        return;
+    if (rebuildState
+        && (rebuildState->requestGeneration != requestedRefreshGeneration
+            || rebuildState->documentGeneration != observedDocumentGeneration)) {
+        // A document notification arrived between cooperative slices. The
+        // partial list contains presentation data only, so discard its build
+        // state and rebuild from the newest authoritative document snapshot.
+        rebuildState.reset();
     }
 
-    if (Gui::Application::Instance) {
-        auto* command = Gui::Application::Instance->commandManager().getCommandByName(
-            "Std_Refresh"
-        );
-        recomputeButton->setEnabled(
-            canChangeHistory() && command && command->canInvoke()
-        );
+    if (!rebuildState) {
+        if (auto* timelineList = dynamic_cast<TimelineListWidget*>(timeline)) {
+            timelineList->cancelMarkerDrag();
+        }
+        timeline->setEnabled(false);
+        recomputeButton->setEnabled(false);
+        previousButton->setEnabled(false);
+        nextButton->setEnabled(false);
+        endButton->setEnabled(false);
+
+        auto state = std::make_unique<RebuildState>();
+        state->requestGeneration = requestedRefreshGeneration;
+        state->documentGeneration = observedDocumentGeneration;
+        state->documentIdentity = ::documentIdentity(document);
+        state->elapsed.start();
+
+        if (!document) {
+            state->emptyMessage = tr("Open a document to see its feature history");
+            state->phase = RebuildState::Phase::RemoveItems;
+        }
+        else {
+            if (Gui::Application::Instance) {
+                auto* command = Gui::Application::Instance->commandManager().getCommandByName(
+                    "Std_Refresh"
+                );
+                state->recomputeEnabled = canChangeHistory() && command && command->canInvoke();
+            }
+
+            auto* controller = App::DocumentTimeline::get(document);
+            if (!controller) {
+                state->emptyMessage = tr("Create a modeling operation to begin");
+                state->phase = RebuildState::Phase::RemoveItems;
+            }
+            else {
+                state->controllerIdentity = objectIdentity(controller);
+                state->position = static_cast<int>(std::clamp(
+                    controller->Position.getValue(),
+                    0L,
+                    static_cast<long>(controller->Operations.getValues().size())
+                ));
+                state->phase = RebuildState::Phase::CaptureProjection;
+            }
+        }
+        rebuildState = std::move(state);
     }
 
-    auto* controller = App::DocumentTimeline::get(document);
-    if (!controller) {
-        auto* empty = new QListWidgetItem(tr("Create a modeling operation to begin"));
-        empty->setFlags(Qt::NoItemFlags);
-        timeline->addItem(empty);
-        return;
-    }
-
-    const auto operations = controller->Operations.getValues();
-    const int position = static_cast<int>(
-        std::clamp(controller->Position.getValue(), 0L, static_cast<long>(operations.size()))
-    );
-    const SemanticTimelineLayout semanticLayout(operations, document);
-    ModelTreeBrowserProjection projection(document);
-    const auto internalTransformations = internalTransformationChildren(operations);
-    const bool historyEnabled = canChangeHistory() && semanticLayout.isValid();
-    timeline->setEnabled(historyEnabled);
-
-    const bool transactionBusy = document->getBookedTransactionID() != App::NullTransaction
-        || document->hasPendingTransaction() || document->isPerformingTransaction()
-        || document->isTransactionLocked();
-
-    struct VisibleSemanticBlock
-    {
-        SemanticTimelineBlock block;
-        bool active {false};
+    auto scheduleNextSlice = [this]() {
+        dispatchToGuiFrame(this, [this] { processRefresh(); });
     };
-    std::vector<VisibleSemanticBlock> visibleBlocks;
-    visibleBlocks.reserve(operations.size());
-    int lastActiveVisible = -1;
-    for (std::size_t index = 0; index < operations.size(); ++index) {
-        if (!isVisibleTimelineOperation(operations[index], internalTransformations, projection)) {
-            continue;
+    auto* state = rebuildState.get();
+
+    if (state->phase == RebuildState::Phase::WaitProjection) {
+        return; // Worker completion posts the next owner step; no polling.
+    }
+    if (state->phase == RebuildState::Phase::CaptureProjection) {
+        state->phase = RebuildState::Phase::WaitProjection;
+        const auto request = state->requestGeneration;
+        const auto generation = state->documentGeneration;
+        const auto cancellation = state->cancellation.get_token();
+        const QPointer<FeatureTimeline> lifetime(this);
+        auto ready = [lifetime, request, generation](
+                         std::shared_ptr<const ModelTreeBrowserProjection> projection,
+                         std::shared_ptr<SemanticTimelineLayout> layout,
+                         std::string failure) {
+            dispatchToGuiFrame([lifetime, request, generation,
+                                projection = std::move(projection),
+                                layout = std::move(layout),
+                                failure = std::move(failure)] {
+                if (!lifetime) {
+                    return;
+                }
+                auto* self = lifetime.data();
+                auto* current = self->rebuildState.get();
+                if (!current || current->requestGeneration != request
+                    || current->documentGeneration != generation
+                    || self->requestedRefreshGeneration != request
+                    || self->observedDocumentGeneration != generation) {
+                    return;
+                }
+                if (!projection) {
+                    current->historyEnabled = false;
+                    current->emptyMessage = tr("Could not prepare feature history: %1")
+                        .arg(QString::fromStdString(failure));
+                    current->phase = RebuildState::Phase::RemoveItems;
+                    Base::Console().error("Feature history preparation failed: %s\n", failure.c_str());
+                }
+                else {
+                    if (!projection->isCurrent()) {
+                        self->scheduleRefresh();
+                        self->rebuildState.reset();
+                        self->startRefreshTimer();
+                        return;
+                    }
+                    current->projection = std::move(projection);
+                    current->semanticLayout = std::move(layout);
+                    current->operations = current->projection->timelineOperations();
+                    current->internalTransformations = &current->projection->internalTransformations();
+                    current->historyEnabled = self->canChangeHistory()
+                        && current->semanticLayout->isValid();
+                    current->visibleOperations.reserve(current->operations.size());
+                    current->phase = RebuildState::Phase::Scan;
+                }
+                self->processRefresh();
+            });
+        };
+        try {
+            auto* guiDocument = Gui::Application::Instance
+                ? Gui::Application::Instance->getDocument(document) : nullptr;
+            if (!guiDocument) {
+                throw std::runtime_error("The feature history document was closed");
+            }
+            auto& cache = guiDocument->modelBrowserProjectionCache();
+            cache.observeInvalidation(this, [this, document] {
+                if (activeAppDocument() == document) { scheduleRefresh(); }
+            });
+            cache.request(this,
+                [lifetime, request, generation, ready, cancellation, document]
+                (auto projection, std::string failure) {
+                    if (!lifetime || lifetime->requestedRefreshGeneration != request
+                        || lifetime->observedDocumentGeneration != generation) {
+                        return;
+                    }
+                    if (!projection) {
+                        ready({}, {}, std::move(failure));
+                        return;
+                    }
+                    try {
+                        App::GetApplication().hostRuntime().submitWithCompletion(
+                            App::HostRuntime::Lane::Compute,
+                            [projection, cancellation, document](std::stop_token shutdown) {
+                                Base::CancellationScope shutdownScope(shutdown);
+                                Base::CancellationScope operationScope(cancellation);
+                                Base::CancellationScope::check();
+                                // document is opaque; read only the immutable projection.
+                                return std::make_shared<SemanticTimelineLayout>(
+                                    projection->timelineOperations(), document, projection.get());
+                            },
+                            [projection, ready](std::future<std::shared_ptr<SemanticTimelineLayout>> result) {
+                                try { ready(projection, result.get(), {}); }
+                                catch (const std::exception& error) { ready({}, {}, error.what()); }
+                                catch (...) { ready({}, {}, "History preparation cancelled or failed"); }
+                            });
+                    }
+                    catch (const std::exception& error) {
+                        ready({}, {}, error.what());
+                    }
+                });
         }
-        const auto block = semanticLayout.blockFor(operations[index]);
-        if (!block.isValid()) {
-            continue;
+        catch (const std::exception& failure) {
+            ready({}, {}, failure.what());
         }
-        const bool active = controller->isOperationActive(operations[index]);
-        visibleBlocks.push_back({block, active});
-        if (active) {
-            lastActiveVisible = static_cast<int>(index);
+        return;
+    }
+
+    while (state->phase == RebuildState::Phase::Scan
+           && state->scanIndex < state->operations.size()) {
+        const std::size_t index = state->scanIndex++;
+        auto* operation = state->operations[index];
+        if (operation && operation->isAttachedToDocument()
+            && isVisibleTimelineOperation(
+                operation,
+                *state->internalTransformations,
+                *state->projection
+            )) {
+            const auto block = state->semanticLayout->blockFor(operation);
+            if (block.isValid()) {
+                auto* currentDocument = resolveDocument(state->documentIdentity);
+                auto* controller = dynamic_cast<App::DocumentTimeline*>(
+                    resolveObject(currentDocument, state->controllerIdentity)
+                );
+                if (!controller) {
+                    scheduleRefresh();
+                    rebuildState.reset();
+                    scheduleNextSlice();
+                    return;
+                }
+                const bool active = controller->isOperationActive(operation);
+                state->visibleOperations.push_back(
+                    {objectIdentity(operation), index, block, active}
+                );
+                if (active) {
+                    state->lastActiveVisible = static_cast<int>(index);
+                    ++state->activeVisibleCount;
+                    state->previousEnabled |= block.begin < state->position;
+                }
+                else {
+                    state->nextEnabled |= block.end > state->position;
+                }
+            }
+        }
+        if (budget.exhausted()) {
+            scheduleNextSlice();
+            return;
         }
     }
-    const auto activeVisibleCount = static_cast<int>(std::ranges::count_if(
-        visibleBlocks,
-        [](const VisibleSemanticBlock& visible) {
-            return visible.active;
-        }
-    ));
-    timeline->setToolTip(
-        !historyEnabled
-            ? !semanticLayout.isValid()
+
+    if (state->phase == RebuildState::Phase::Scan) {
+        auto* currentDocument = resolveDocument(state->documentIdentity);
+        const bool transactionBusy = currentDocument
+            && (currentDocument->getBookedTransactionID() != App::NullTransaction
+                || currentDocument->hasPendingTransaction()
+                || currentDocument->isPerformingTransaction()
+                || currentDocument->isTransactionLocked());
+        state->toolTip = !state->historyEnabled
+            ? !state->semanticLayout->isValid()
                 ? tr("Document history has invalid operation ownership")
                 : transactionBusy
                 ? tr("Wait for the current document operation to finish")
@@ -1328,38 +1952,52 @@ void FeatureTimeline::rebuild()
                 ? tr("Wait for the document to finish opening")
                 : tr("Finish or cancel the active task before changing model history")
             : tr("Document history: %1 of %2 operations active")
-                  .arg(activeVisibleCount)
-                  .arg(static_cast<int>(visibleBlocks.size()))
-    );
-    const bool hasPrevious = std::ranges::any_of(
-        visibleBlocks,
-        [position](const VisibleSemanticBlock& visible) {
-            return visible.active && visible.block.begin < position;
-        }
-    );
-    const bool hasNext = std::ranges::any_of(
-        visibleBlocks,
-        [position](const VisibleSemanticBlock& visible) {
-            return !visible.active && visible.block.end > position;
-        }
-    );
-    previousButton->setEnabled(historyEnabled && hasPrevious);
-    nextButton->setEnabled(historyEnabled && hasNext);
-    endButton->setEnabled(historyEnabled && position < static_cast<int>(operations.size()));
+                  .arg(state->activeVisibleCount)
+                  .arg(static_cast<int>(state->visibleOperations.size()));
+        state->previousEnabled &= state->historyEnabled;
+        state->nextEnabled &= state->historyEnabled;
+        state->endEnabled = state->historyEnabled
+            && state->position < static_cast<int>(state->operations.size());
+        state->phase = RebuildState::Phase::RemoveItems;
+    }
 
-    int operationCount = 0;
-    bool markerAdded = false;
-    QListWidgetItem* stateMarker = nullptr;
-    auto addCurrentStateMarker = [&]() {
-        auto* marker = new QListWidgetItem(tr("▮"));
-        marker->setData(DocumentNameRole, QString::fromStdString(document->getName()));
+    while (state->phase == RebuildState::Phase::RemoveItems && timeline->count() > 0) {
+        auto* item = timeline->takeItem(timeline->count() - 1);
+        if (item->data(ObjectIdRole).isValid()) {
+            for (const auto role : {ObjectIdRole, OwnerIdRole}) {
+                const auto found = itemsByObject.find(item->data(role).toLongLong());
+                if (found != itemsByObject.end()) {
+                    found->second.erase(item);
+                    if (found->second.empty()) {
+                        itemsByObject.erase(found);
+                    }
+                }
+            }
+        }
+        delete item;
+        if (budget.exhausted()) {
+            scheduleNextSlice();
+            return;
+        }
+    }
+    if (state->phase == RebuildState::Phase::RemoveItems) {
+        state->phase = RebuildState::Phase::AddItems;
+    }
+
+    auto addCurrentStateMarker = [this, state]() {
+        auto* currentDocument = resolveDocument(state->documentIdentity);
+        if (!currentDocument) {
+            return false;
+        }
+        auto* marker = new QListWidgetItem(QString(QChar(0x25AE)));
+        marker->setData(DocumentNameRole, QString::fromStdString(currentDocument->getName()));
         marker->setData(
             DocumentGenerationRole,
-            QVariant::fromValue<qulonglong>(observedDocumentGeneration)
+            QVariant::fromValue<qulonglong>(state->documentGeneration)
         );
         marker->setData(IsCurrentRole, false);
         marker->setData(IsAfterPositionRole, false);
-        marker->setData(OperationIndexRole, position);
+        marker->setData(OperationIndexRole, state->position);
         marker->setData(IsMarkerRole, true);
         marker->setData(Qt::AccessibleTextRole, tr("Current document state"));
         marker->setFlags(Qt::ItemIsEnabled);
@@ -1371,29 +2009,44 @@ void FeatureTimeline::rebuild()
                               "Drag to roll the complete document backward or forward"));
         marker->setSizeHint(QSize(22, timelineItemHeight));
         timeline->addItem(marker);
-        stateMarker = marker;
-        markerAdded = true;
+        state->stateMarker = marker;
+        state->markerAdded = true;
+        return true;
     };
 
-    for (std::size_t index = 0; index < operations.size(); ++index) {
-        auto* object = operations[index];
-        if (!object || !object->isAttachedToDocument()
-            || !isVisibleTimelineOperation(object, internalTransformations, projection)) {
-            continue;
+    while (state->phase == RebuildState::Phase::AddItems
+           && state->addIndex < state->visibleOperations.size()) {
+        const auto& visible = state->visibleOperations[state->addIndex];
+        auto* currentDocument = resolveDocument(state->documentIdentity);
+        auto* controller = dynamic_cast<App::DocumentTimeline*>(
+            resolveObject(currentDocument, state->controllerIdentity)
+        );
+        auto* object = resolveObject(currentDocument, visible.identity);
+        if (!controller || !object) {
+            scheduleRefresh();
+            rebuildState.reset();
+            scheduleNextSlice();
+            return;
         }
 
-        if (!markerAdded && static_cast<int>(index) >= position) {
-            addCurrentStateMarker();
+        if (!state->markerAdded
+            && static_cast<int>(visible.operationIndex) >= state->position) {
+            if (!addCurrentStateMarker()) {
+                scheduleRefresh();
+                rebuildState.reset();
+                scheduleNextSlice();
+                return;
+            }
+            if (budget.exhausted()) {
+                scheduleNextSlice();
+                return;
+            }
         }
 
-        const bool isCurrent = static_cast<int>(index) == lastActiveVisible;
-        const bool afterPosition = !controller->isOperationActive(object);
-        auto* owner = operationOwner(object, projection);
-        const std::optional<bool> presentationVisible =
-            timelinePresentationVisibility(object, owner);
-        const QString label = objectLabel(object);
-        const QString ownerLabel = owner && owner != object ? objectLabel(owner) : QString();
-        const QString statusText = timelineStatusText(object);
+        const bool isCurrent = static_cast<int>(visible.operationIndex)
+            == state->lastActiveVisible;
+        const bool afterPosition = !visible.active;
+        auto* owner = operationOwner(object, *state->projection);
         auto* item = new QListWidgetItem;
         item->setData(ObjectNameRole, QString::fromUtf8(object->getNameInDocument()));
         item->setData(ObjectIdRole, QVariant::fromValue<qlonglong>(object->getID()));
@@ -1403,106 +2056,85 @@ void FeatureTimeline::rebuild()
                                                 : QString()
         );
         item->setData(OwnerIdRole, QVariant::fromValue<qlonglong>(owner ? owner->getID() : -1));
-        item->setData(DocumentNameRole, QString::fromStdString(document->getName()));
+        item->setData(DocumentNameRole, QString::fromStdString(currentDocument->getName()));
         item->setData(
             DocumentGenerationRole,
-            QVariant::fromValue<qulonglong>(observedDocumentGeneration)
+            QVariant::fromValue<qulonglong>(state->documentGeneration)
         );
         item->setData(IsCurrentRole, isCurrent);
         item->setData(IsAfterPositionRole, afterPosition);
-        item->setData(OperationIndexRole, static_cast<qlonglong>(index));
+        item->setData(OperationIndexRole, static_cast<qlonglong>(visible.operationIndex));
         item->setData(IsMarkerRole, false);
-        item->setData(
-            Qt::AccessibleTextRole,
-            statusText.isEmpty() ? label : tr("%1, %2").arg(label, statusText)
-        );
-
-        if (Gui::Application::Instance) {
-            const auto* editor = App::DocumentTimeline::timelineEditor(object);
-            const auto* iconObject = editor ? editor : object;
-            if (auto* viewProvider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
-                    Gui::Application::Instance->getViewProvider(iconObject)
-                )) {
-                const QIcon icon = viewProvider->getIcon();
-                item->setIcon(
-                    timelineObjectIcon(
-                        icon,
-                        object,
-                        afterPosition,
-                        presentationVisible
-                    )
-                );
-            }
-        }
-
-        QFont font = timeline->font();
-        font.setBold(isCurrent);
-        if (object->hasExtension(App::SuppressibleExtension::getExtensionClassTypeId())) {
-            if (auto* suppressible = object->getExtensionByType<App::SuppressibleExtension>()) {
-                font.setStrikeOut(suppressible->Suppressed.getValue());
-            }
-        }
-        item->setFont(font);
-
-        const QString ownershipText = ownerLabel.isEmpty() ? QString()
-                                                           : tr("\nPart: %1").arg(ownerLabel);
-        const bool bodyOwned = ModelTreeBrowserProjection::isBody(owner);
-        const QString visibilityLabel = bodyOwned ? tr("Body visibility") : tr("Visibility");
-        const QString visibilityText = !presentationVisible.has_value()
-            ? QString()
-            : *presentationVisible ? tr("\n%1: Visible").arg(visibilityLabel)
-                                   : tr("\n%1: Hidden").arg(visibilityLabel);
-        if (afterPosition) {
-            item->setForeground(palette().brush(QPalette::Disabled, QPalette::Text));
-            item->setToolTip(
-                statusText.isEmpty()
-                    ? tr("%1%2%3\nAfter the current document state")
-                          .arg(label, ownershipText, visibilityText)
-                    : tr("%1%2%3\n%4\nAfter the current document state")
-                          .arg(label, ownershipText, visibilityText, statusText)
-            );
-        }
-        else if (isCurrent) {
-            item->setForeground(palette().brush(QPalette::Active, QPalette::Link));
-            item->setToolTip(
-                statusText.isEmpty()
-                    ? tr("%1%2%3\nCurrent document state")
-                          .arg(label, ownershipText, visibilityText)
-                    : tr("%1%2%3\n%4\nCurrent document state")
-                          .arg(label, ownershipText, visibilityText, statusText)
-            );
-        }
-        else {
-            item->setToolTip(
-                statusText.isEmpty()
-                    ? tr("%1%2%3").arg(label, ownershipText, visibilityText)
-                    : tr("%1%2%3\n%4").arg(label, ownershipText, visibilityText, statusText)
-            );
-        }
-
+        updateTimelineItemPresentation(item, object, owner);
         item->setSizeHint(QSize(timelineItemWidth, timelineItemHeight));
         timeline->addItem(item);
-        ++operationCount;
+        itemsByObject[object->getID()].insert(item);
+        if (owner) {
+            itemsByObject[owner->getID()].insert(item);
+        }
+        ++state->addIndex;
+        if (budget.exhausted()) {
+            scheduleNextSlice();
+            return;
+        }
     }
 
-    if (!markerAdded) {
-        addCurrentStateMarker();
+    if (state->phase == RebuildState::Phase::AddItems) {
+        if (!state->emptyMessage.isEmpty()) {
+            auto* empty = new QListWidgetItem(state->emptyMessage);
+            empty->setFlags(Qt::NoItemFlags);
+            timeline->addItem(empty);
+        }
+        else {
+            if (!state->markerAdded && !addCurrentStateMarker()) {
+                scheduleRefresh();
+                rebuildState.reset();
+                scheduleNextSlice();
+                return;
+            }
+            if (state->visibleOperations.empty()) {
+                auto* empty = new QListWidgetItem(tr("No modeling operations in this document"));
+                empty->setFlags(Qt::NoItemFlags);
+                timeline->addItem(empty);
+            }
+        }
+        state->phase = RebuildState::Phase::Finish;
     }
 
-    if (operationCount == 0) {
-        auto* empty = new QListWidgetItem(tr("No modeling operations in this document"));
-        empty->setFlags(Qt::NoItemFlags);
-        timeline->addItem(empty);
-    }
-
-    timelineBlocker.unblock();
-    if (stateMarker) {
+    if (state->phase == RebuildState::Phase::Finish) {
+        timeline->setToolTip(state->toolTip);
+        timeline->setEnabled(state->historyEnabled);
+        recomputeButton->setEnabled(state->recomputeEnabled);
+        previousButton->setEnabled(state->previousEnabled);
+        nextButton->setEnabled(state->nextEnabled);
+        endButton->setEnabled(state->endEnabled);
+        auto* stateMarker = state->stateMarker;
+        const qint64 elapsed = state->elapsed.elapsed();
+        const std::size_t projectedObjects = state->visibleOperations.size();
+        timelineBlocker.unblock();
+        rebuildState.reset();
+        if (stateMarker) {
         // QListWidget resets its horizontal position when rebuilt. Reveal the
         // end-of-history marker first; syncSelectionFromGui() deliberately runs
         // afterward so an ordinary object selection still takes precedence.
-        timeline->scrollToItem(stateMarker, QAbstractItemView::EnsureVisible);
+            timeline->scrollToItem(stateMarker, QAbstractItemView::EnsureVisible);
+        }
+        syncSelectionFromGui();
+        if (qEnvironmentVariableIsSet("VIBECAD_RESTORE_DETAIL_TRACE")) {
+            Base::Console().message(
+                "VIBECAD_PROJECTION history total_ms=%lld objects=%zu full=1\n",
+                static_cast<long long>(elapsed),
+                projectedObjects
+            );
+        }
+        if (fullRefreshPending || !pendingPresentationObjects.empty()
+            || controlRefreshPending) {
+            startRefreshTimer();
+        }
+        else {
+            releasePresentationUpdate();
+        }
     }
-    syncSelectionFromGui();
 }
 
 void FeatureTimeline::activateOwningBody(App::DocumentObject* object)
@@ -1602,35 +2234,58 @@ void FeatureTimeline::onTimelineSelectionChanged()
 
 void FeatureTimeline::syncSelectionFromGui()
 {
-    if (syncingSelection) {
+    if (syncingSelection || rebuildState
+        || Gui::Document::projectionRefreshBlocked(activeAppDocument())) {
         return;
     }
     App::Document* document = activeAppDocument();
     QScopedValueRollback syncingGuard(syncingSelection, true);
     QSignalBlocker blocker(timeline);
 
-    std::unordered_set<App::DocumentObject*> selectedObjects;
+    std::vector<int> selectedRows;
+    std::unordered_set<long> selectedIds;
     if (document) {
         for (const auto& selection :
              Gui::Selection().getSelection(document->getName(), ResolveMode::OldStyleElement)) {
-            if (selection.pObject) {
-                selectedObjects.insert(selection.pObject);
+            if (!selection.pObject) {
+                continue;
+            }
+            const auto id = selection.pObject->getID();
+            if (!selectedIds.insert(id).second) {
+                continue;
+            }
+            const auto found = itemsByObject.find(id);
+            if (found == itemsByObject.end()) {
+                continue;
+            }
+            for (auto* item : found->second) {
+                // The presentation index also includes owner dependencies.
+                // Selecting an owner must not select every operation it owns.
+                if (item->data(ObjectIdRole).toLongLong() == id
+                    && itemBelongsToObservedDocument(item)) {
+                    selectedRows.push_back(timeline->row(item));
+                }
             }
         }
     }
 
-    QListWidgetItem* firstSelected = nullptr;
-    for (int row = 0; row < timeline->count(); ++row) {
-        auto* item = timeline->item(row);
-        const bool selected = selectedObjects.contains(objectForItem(item));
-        item->setSelected(selected);
-        if (selected && !firstSelected) {
-            firstSelected = item;
+    std::ranges::sort(selectedRows);
+    selectedRows.erase(std::unique(selectedRows.begin(), selectedRows.end()), selectedRows.end());
+    QItemSelection selected;
+    for (std::size_t index = 0; index < selectedRows.size();) {
+        const int first = selectedRows[index];
+        int last = first;
+        while (++index < selectedRows.size() && selectedRows[index] == last + 1) {
+            last = selectedRows[index];
         }
+        selected.select(timeline->model()->index(first, 0), timeline->model()->index(last, 0));
     }
-    if (firstSelected) {
-        timeline->setCurrentItem(firstSelected);
-        timeline->scrollToItem(firstSelected, QAbstractItemView::EnsureVisible);
+    auto* selectionModel = timeline->selectionModel();
+    selectionModel->select(selected, QItemSelectionModel::ClearAndSelect);
+    if (!selectedRows.empty()) {
+        const auto first = timeline->model()->index(selectedRows.front(), 0);
+        selectionModel->setCurrentIndex(first, QItemSelectionModel::NoUpdate);
+        timeline->scrollTo(first, QAbstractItemView::EnsureVisible);
     }
 }
 
@@ -1644,12 +2299,9 @@ void FeatureTimeline::onSelectionChanged(const SelectionChanges& message)
         case SelectionChanges::SetSelection:
         case SelectionChanges::RmvSelection:
         case SelectionChanges::ClrSelection:
-            syncSelectionFromGui();
-            // Selection observers can be called before the singleton finishes
-            // publishing its new aggregate selection. Re-check once the event
-            // loop settles so clicks in the 3D view and tree always reach the
-            // same global timeline without changing its contents.
-            QTimer::singleShot(0, this, [this]() { syncSelectionFromGui(); });
+            // The existing single-shot projection scheduler coalesces the
+            // notification burst and reads selection after publication ends.
+            scheduleControlRefresh();
             break;
         default:
             break;
@@ -2961,24 +3613,31 @@ void FeatureTimeline::slotDeletedObject(const ViewProviderDocumentObject&)
     scheduleRefresh();
 }
 
-void FeatureTimeline::slotChangedObject(const ViewProviderDocumentObject&, const App::Property&)
+void FeatureTimeline::slotChangedObject(
+    const ViewProviderDocumentObject& viewProvider,
+    const App::Property&
+)
 {
-    scheduleRefresh();
+    if (auto* object = viewProvider.getObject()) {
+        scheduleObjectRefresh(*object);
+    }
 }
 
-void FeatureTimeline::slotRelabelObject(const ViewProviderDocumentObject&)
+void FeatureTimeline::slotRelabelObject(const ViewProviderDocumentObject& viewProvider)
 {
-    scheduleRefresh();
+    if (auto* object = viewProvider.getObject()) {
+        scheduleObjectRefresh(*object);
+    }
 }
 
 void FeatureTimeline::slotEnterEditObject(const ViewProviderDocumentObject&)
 {
-    scheduleRefresh();
+    scheduleControlRefresh();
 }
 
 void FeatureTimeline::slotResetEditObject(const ViewProviderDocumentObject&)
 {
-    scheduleRefresh();
+    scheduleControlRefresh();
 }
 
 void FeatureTimeline::slotUndoDocument(const Gui::Document&)

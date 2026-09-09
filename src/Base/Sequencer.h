@@ -177,6 +177,13 @@ protected:
      */
     bool next(bool canAbort = false);
     /**
+     * Services owner-specific liveness work without advancing the visible
+     * progress value. Nested launchers use this because only the outermost
+     * launcher owns percentage presentation, while every nested unit of work
+     * must still keep the host responsive.
+     */
+    void pulse();
+    /**
      * Stops the sequencer if all operations are finished. It returns false if
      * there are still pending operations, otherwise it returns true.
      */
@@ -205,6 +212,8 @@ protected:
     void rejectCancel();
 
 protected:
+    using ProgressPulseHandler = void (*)(void* context);
+
     /** construction */
     SequencerBase();
     SequencerBase(const SequencerBase&) = default;
@@ -233,6 +242,13 @@ protected:
      * re-implementation this method can throw an AbortException if canAbort is true.
      */
     virtual void nextStep(bool canAbort);
+    /**
+     * Installs an owner-specific callback invoked for every unlocked progress
+     * advance, independently of percentage presentation. The callback is kept
+     * outside the object layout so adding GUI heartbeat service does not alter
+     * the ABI of SequencerBase. Passing nullptr removes the callback.
+     */
+    void setProgressPulseHandler(ProgressPulseHandler handler, void* context);
     /**
      * Sets the progress indicator to a certain position.
      */

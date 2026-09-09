@@ -43,6 +43,7 @@
 #include <utility>
 #include <list>
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <string_view>
 
@@ -297,6 +298,11 @@ public:
     App::MainThreadSignal<void(const Document&)> signalTransactionLockChanged;
     /// Signal when the outermost cooperative document mutation begins or ends.
     App::MainThreadSignal<void(const Document&, bool)> signalCooperativeMutationChanged;
+    /// Signal when asynchronous presentation work transitions between idle and active.
+    App::MainThreadSignal<void(const Document&, bool)> signalPresentationUpdateChanged;
+    /// Completed property-schema or extension change. The immutable object ID
+    /// avoids exposing a removed property to deferred projection consumers.
+    App::MainThreadSignal<void(long)> signalObjectSchemaChanged;
     /// Signal after document recompute/transaction state has fully unwound and
     /// observers may treat the document as stable again.
     App::MainThreadSignal<void(const Document&)> signalBecameStable;
@@ -941,6 +947,14 @@ public:
         const char* label
     ) const;
 
+    /** Match the existing criteria and require a named native property. */
+    std::vector<DocumentObject*> findObjects(
+        const Base::Type& typeId,
+        const char* objname,
+        const char* label,
+        const char* property
+    ) const;
+
     /**
      * @brief Get all objects of a given type.
      *
@@ -1028,6 +1042,15 @@ public:
         int options = 0
     );
 
+    /** Recompute with cooperative cancellation between dependency operations. */
+    int recomputeCancellable(
+        const std::vector<DocumentObject*>& objs,
+        bool force,
+        bool* hasError,
+        int options,
+        std::stop_token stopToken
+    );
+
     /**
      * @brief Recompute a single object.
      *
@@ -1049,6 +1072,16 @@ public:
 
     /// Generation and structured errors produced by the latest recompute.
     std::uint64_t getRecomputeDiagnosticGeneration() const;
+    /// Monotonic invalidation token for captured object structure and values.
+    /// This is not a lock: capture still requires document-owner access.
+    std::uint64_t getObjectChangeGeneration() const noexcept;
+    /// Structural snapshot token; excludes geometry/placement values and the
+    /// built-in Visibility value. Schema, links, and other metadata still count.
+    /// Consumers reading excluded values must use getObjectChangeGeneration().
+    std::uint64_t getObjectStructureGeneration() const noexcept;
+    /// Invalidates owner-thread identity caches on object removal/clear, but
+    /// not additions or property edits. This token does not grant read access.
+    std::uint64_t getObjectRemovalGeneration() const noexcept;
     const std::vector<RecomputeDiagnostic>& getRecomputeDiagnostics() const;
 
     /**
@@ -1136,6 +1169,18 @@ public:
     void beginCooperativeMutation();
     void endCooperativeMutation();
     bool isCooperativeMutationActive() const;
+
+    /** Track asynchronous GUI presentation work belonging to a document change.
+     *
+     * Presentation owners acquire a nested update before scheduling work and
+     * release it only after their final GUI-owned slice. Background callers
+     * can then await the complete model-and-presentation boundary without
+     * polling or an arbitrary timeout.
+     */
+    void beginPresentationUpdate() const;
+    void endPresentationUpdate() const;
+    bool isPresentationUpdateActive() const;
+    void waitForPresentationReady() const;
 
     bool transacting() const;
 
@@ -1537,6 +1582,7 @@ public:
     // because of transaction handling
     friend class TransactionalObject;
     friend class DocumentObject;
+    friend class ExtensionContainer;
     friend class Transaction;
     friend class TransactionDocumentObject;
 
@@ -1713,6 +1759,13 @@ protected:
     void _abortTransaction();
 
 private:
+    void advanceObjectChangeGeneration() noexcept;
+    void advanceObjectChangeGeneration(const Property* changedValue) noexcept;
+    // Application calls this only after an interrupted restore worker has
+    // unwound, immediately before removing its incomplete document.
+    void abandonRestore();
+    void invalidateTimelineVisibilityResources(const char* propertyName);
+    void notifyBecameStable() const;
     void setBookedTransaction(int transactionId) const;
     bool isBreakingDependency() const noexcept;
     void changePropertyOfObject(
