@@ -28,6 +28,7 @@ from VibeCADModelingSurface import (
     validate_surface_names,
 )
 from VibeCADProviderDrawingResult import provider_visible_drawing_readiness
+from VibeCADTokenUsage import TokenUsageAccumulator, usage_metadata_for_status
 from VibeCADVibeScriptDomains import get_vibescript_pack
 
 
@@ -241,6 +242,8 @@ class ProviderUnavailable(RuntimeError):
 class ProviderResult:
     final_output: str
     raw: Any = None
+    # Optional provider-reported usage. Appended to preserve positional callers.
+    usage: dict[str, Any] | None = None
 
 
 ToolRunner = Callable[[str, str, str], dict[str, Any]]
@@ -1160,12 +1163,39 @@ class CodexProvider(BaseProvider):
         turn_error = ""
         latest_message = ""
         skill_catalog: dict[str, Any] = {}
+        token_usage = TokenUsageAccumulator(
+            provider=self.provider_id,
+            auth_mode=self.auth_mode,
+        )
+        token_usage_updated = threading.Event()
 
         def notification(method: str, params: dict[str, Any]) -> None:
             nonlocal turn_status, turn_error, latest_message
             event_thread_id = str(params.get("threadId") or "")
             event_turn_id = str(params.get("turnId") or "")
             if thread_id and event_thread_id and event_thread_id != thread_id:
+                return
+            if method in {
+                "thread/tokenUsage/updated",
+                "thread/token_usage/updated",
+            }:
+                usage = token_usage.observe(
+                    params,
+                    thread_id=event_thread_id,
+                    turn_id=event_turn_id,
+                    source="codex-app-server.thread/tokenUsage/updated",
+                )
+                if usage is not None and token_usage.has_current_turn_usage:
+                    token_usage_updated.set()
+                    _emit_provider_progress(
+                        progress_callback,
+                        {
+                            "event": "provider_usage",
+                            "provider": self.provider_label,
+                            "turn": 1,
+                            "usage": usage,
+                        },
+                    )
                 return
             if turn_id and event_turn_id and event_turn_id != turn_id:
                 return
@@ -1253,6 +1283,32 @@ class CodexProvider(BaseProvider):
             if method == "turn/completed":
                 turn = params.get("turn")
                 if isinstance(turn, dict):
+                    completion_usage = turn.get("tokenUsage")
+                    if not isinstance(completion_usage, dict):
+                        completion_usage = turn.get("token_usage")
+                    if not isinstance(completion_usage, dict):
+                        completion_usage = turn.get("usage")
+                    if isinstance(completion_usage, dict):
+                        usage = token_usage.observe(
+                            completion_usage,
+                            thread_id=event_thread_id,
+                            turn_id=(
+                                str(turn.get("id") or "")
+                                or event_turn_id
+                            ),
+                            source="codex-app-server.turn/completed",
+                        )
+                        if usage is not None and token_usage.has_current_turn_usage:
+                            token_usage_updated.set()
+                            _emit_provider_progress(
+                                progress_callback,
+                                {
+                                    "event": "provider_usage",
+                                    "provider": self.provider_label,
+                                    "turn": 1,
+                                    "usage": usage,
+                                },
+                            )
                     with state_lock:
                         turn_status = str(turn.get("status") or "")
                         error = turn.get("error")
@@ -1678,6 +1734,19 @@ class CodexProvider(BaseProvider):
             resumed_thread = bool(
                 managed_lease is not None and managed_lease.thread_id
             )
+            transport_model = str(
+                (
+                    thread_result.get("model")
+                    if isinstance(thread_result, dict)
+                    else ""
+                )
+                or thread.get("model")
+                or ""
+            ).strip()
+            token_usage.set_model(
+                transport_model or self.model,
+                source="transport" if transport_model else "requested",
+            )
             if managed_lease is not None:
                 managed_lease.remember_thread(thread_id)
 
@@ -1749,6 +1818,19 @@ class CodexProvider(BaseProvider):
             if not isinstance(turn, dict) or not turn.get("id"):
                 raise ProviderUnavailable("Codex app-server created no VibeCAD turn.")
             turn_id = str(turn["id"])
+            turn_model = str(
+                (
+                    turn_result.get("model")
+                    if isinstance(turn_result, dict)
+                    else ""
+                )
+                or turn.get("model")
+                or ""
+            ).strip()
+            if turn_model:
+                token_usage.set_model(turn_model, source="transport")
+            token_usage.set_thread_id(thread_id)
+            token_usage.set_active_turn(turn_id)
 
             transition_interrupt_sent = False
             while not turn_completed.wait(0.05):
@@ -1771,6 +1853,18 @@ class CodexProvider(BaseProvider):
                             timeout=5.0,
                         )
                     finally:
+                        if token_usage.has_current_turn_usage:
+                            _emit_provider_progress(
+                                progress_callback,
+                                {
+                                    "event": "provider_usage",
+                                    "provider": self.provider_label,
+                                    "turn": 1,
+                                    "usage": token_usage.metadata(
+                                        status="cancelled"
+                                    ),
+                                },
+                            )
                         raise ProviderUnavailable("VibeCAD run stopped by user.")
                 if deadline is not None and time.monotonic() >= deadline:
                     try:
@@ -1780,6 +1874,18 @@ class CodexProvider(BaseProvider):
                             timeout=5.0,
                         )
                     finally:
+                        if token_usage.has_current_turn_usage:
+                            _emit_provider_progress(
+                                progress_callback,
+                                {
+                                    "event": "provider_usage",
+                                    "provider": self.provider_label,
+                                    "turn": 1,
+                                    "usage": token_usage.metadata(
+                                        status="failed"
+                                    ),
+                                },
+                            )
                         raise TimeoutError
                 if not client.alive:
                     shutdown = _codex_shutdown_summary(client)
@@ -1794,6 +1900,40 @@ class CodexProvider(BaseProvider):
                 completed_status = turn_status
                 completed_error = turn_error
                 final_output = latest_message
+            if not token_usage.has_current_turn_usage:
+                # The app-server reader can deliver the usage notification just
+                # after turn/completed. Drain that bounded notification tail so
+                # reported usage is not lost without changing the request.
+                token_usage_updated.wait(0.25)
+            usage_metadata = (
+                token_usage.metadata(
+                    status=(
+                        "completed"
+                        if completed_status == "completed"
+                        else "incomplete"
+                    )
+                )
+                if token_usage.has_current_turn_usage
+                else None
+            )
+
+            def emit_terminal_usage(status: str) -> None:
+                if usage_metadata is None:
+                    return
+                terminal_usage = usage_metadata_for_status(
+                    usage_metadata,
+                    status=status,
+                )
+                _emit_provider_progress(
+                    progress_callback,
+                    {
+                        "event": "provider_usage",
+                        "provider": self.provider_label,
+                        "turn": 1,
+                        "usage": terminal_usage or usage_metadata,
+                    },
+                )
+
             if completed_status == "interrupted" and transition_interrupt_sent:
                 return ProviderResult(
                     final_output="",
@@ -1801,11 +1941,15 @@ class CodexProvider(BaseProvider):
                         "thread_id": thread_id,
                         "auth_mode": self.auth_mode,
                         "cad_transition": True,
+                        **({"usage": usage_metadata} if usage_metadata else {}),
                     },
+                    usage=usage_metadata,
                 )
             if completed_status == "interrupted":
+                emit_terminal_usage("cancelled")
                 raise ProviderUnavailable("VibeCAD run stopped by user.")
             if completed_status != "completed":
+                emit_terminal_usage("failed")
                 raise ProviderUnavailable(
                     completed_error
                     or f"Codex turn ended with {completed_status or 'unknown status'}."
@@ -1821,7 +1965,9 @@ class CodexProvider(BaseProvider):
                         "thread_id": thread_id,
                         "auth_mode": self.auth_mode,
                         "cad_transition": True,
+                        **({"usage": usage_metadata} if usage_metadata else {}),
                     },
+                    usage=usage_metadata,
                 )
             if not final_output:
                 context_note = (
@@ -1843,6 +1989,7 @@ class CodexProvider(BaseProvider):
                 raw={
                     "thread_id": thread_id,
                     "auth_mode": self.auth_mode,
+                    **({"usage": usage_metadata} if usage_metadata else {}),
                     **(
                         {
                             "ollama": {
@@ -1860,6 +2007,7 @@ class CodexProvider(BaseProvider):
                         else {}
                     ),
                 },
+                usage=usage_metadata,
             )
         except CodexAppServerError as exc:
             raise ProviderUnavailable(str(exc)) from exc

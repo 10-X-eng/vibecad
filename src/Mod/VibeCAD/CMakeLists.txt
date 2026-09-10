@@ -43,6 +43,7 @@ set(VibeCAD_Scripts
     VibeCADGeometryInspection.py
     VibeCADPlacementInspection.py
     VibeCADGui.py
+    VibeCADTokenUsage.py
     VibeCADLegacyArchitecture.py
     VibeCADLiveAcceptanceOracle.py
     VibeCADIntentMemory.py

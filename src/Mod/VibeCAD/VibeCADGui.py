@@ -50,6 +50,11 @@ from VibeCADSession import (
     run_prompt,
     run_sketch_close_continuation,
 )
+from VibeCADTokenUsage import (
+    format_usage_summary,
+    sanitize_usage_metadata,
+    summarize_conversation_usage,
+)
 
 
 DOCK_NAME = "VibeCADAssistantPanel"
@@ -514,7 +519,7 @@ def _find_child(widget_type: str, name: str, dock: Any | None = None):
         return None
     if dock is None:
         dock = _find_dock()
-    if dock is None:
+    if dock is None or not callable(getattr(dock, "findChild", None)):
         return None
     qt_type = getattr(QtWidgets, widget_type, None)
     if qt_type is None:
@@ -1636,6 +1641,51 @@ def _provider_runtime_tooltip(runtime: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _conversation_usage_entries(output: Any) -> list[dict[str, Any]]:
+    entries = output.property("VibeConversationEntries")
+    if not isinstance(entries, list):
+        return []
+    return [dict(entry) for entry in entries if isinstance(entry, dict)]
+
+
+def _render_usage_summary(
+    dock: Any | None = None,
+    *,
+    conversation: list[dict[str, Any]] | None = None,
+) -> None:
+    """Refresh the compact provider-usage disclosure below the conversation header."""
+
+    output = _find_child("QTextBrowser", "VibeConversation", dock)
+    details = _find_child("QLabel", "VibeUsageSummaryDetails", dock)
+    toggle = _find_child("QToolButton", "VibeUsageSummaryToggle", dock)
+    if output is None or details is None or toggle is None:
+        return
+    entries = (
+        [dict(entry) for entry in conversation if isinstance(entry, dict)]
+        if conversation is not None
+        else _conversation_usage_entries(output)
+    )
+    active = sanitize_usage_metadata(output.property("VibeActiveTokenUsage"))
+    if active is not None:
+        entries.append(
+            {
+                "role": "assistant",
+                "content": "Active provider request",
+                "sequence": len(entries) + 1,
+                "metadata": {"usage": active},
+            }
+        )
+    summary = summarize_conversation_usage(entries)
+    details.setText(format_usage_summary(summary))
+    details.setVisible(bool(toggle.isChecked()))
+    details.setToolTip(
+        "Provider-reported actual usage only. No quota or monetary cost is inferred."
+    )
+    toggle.setToolTip(
+        "Show actual input, cached-input, output, reasoning, and per-model usage."
+    )
+
+
 def _render_saved_conversation(dock: Any | None = None) -> None:
     if _is_assistant_run_active():
         return
@@ -1648,9 +1698,17 @@ def _render_saved_conversation(dock: Any | None = None) -> None:
         _warn(f"VibeCAD conversation load failed: {exc}")
         return
     output.clear()
-    for block in _saved_conversation_blocks(history.get("conversation", [])):
+    conversation = [
+        dict(entry)
+        for entry in history.get("conversation", [])
+        if isinstance(entry, dict)
+    ]
+    output.setProperty("VibeConversationEntries", conversation)
+    output.setProperty("VibeActiveTokenUsage", None)
+    for block in _saved_conversation_blocks(conversation):
         _append_transcript_block(output, block)
     output.setProperty("VibeConversationPath", str(history.get("path", "")))
+    _render_usage_summary(dock)
     _scroll_to_end(output)
 
 
@@ -1805,12 +1863,40 @@ def _append_conversation(
     if role == "AI thinking":
         _append_thinking(clean)
         return
-    image_paths = _turn_image_paths({"metadata": metadata}) if metadata else []
-    runtime = metadata.get("provider_runtime") if isinstance(metadata, dict) else None
+    clean_metadata: dict[str, Any] | None = None
+    if isinstance(metadata, dict):
+        clean_metadata = dict(metadata)
+        if "usage" in clean_metadata:
+            usage = sanitize_usage_metadata(clean_metadata.get("usage"))
+            if usage is None:
+                clean_metadata.pop("usage", None)
+            else:
+                clean_metadata["usage"] = usage
+    image_paths = _turn_image_paths({"metadata": clean_metadata}) if clean_metadata else []
+    runtime = (
+        clean_metadata.get("provider_runtime")
+        if isinstance(clean_metadata, dict)
+        else None
+    )
     tooltip = _provider_runtime_tooltip(runtime) if isinstance(runtime, dict) else ""
     _append_output(f"{role}:\n{clean}", image_paths, tooltip=tooltip)
+    output = _find_child("QTextBrowser", "VibeConversation")
+    if output is not None:
+        entries = _conversation_usage_entries(output)
+        entry: dict[str, Any] = {
+            "role": _storage_role_for_conversation(role) or "system",
+            "content": clean,
+            "sequence": len(entries) + 1,
+        }
+        if clean_metadata:
+            entry["metadata"] = clean_metadata
+        entries.append(entry)
+        output.setProperty("VibeConversationEntries", entries)
+        if clean_metadata and "usage" in clean_metadata:
+            output.setProperty("VibeActiveTokenUsage", None)
+        _render_usage_summary()
     if persist:
-        _record_conversation_turn(role, clean, metadata=metadata)
+        _record_conversation_turn(role, clean, metadata=clean_metadata)
 
 
 def _pending_questions() -> list[dict[str, Any]]:
@@ -3450,6 +3536,8 @@ def _execute_assistant_run(
     )
     _clear_thinking(dock)
     displayed_provider_texts: list[str] = []
+    run_usage_lock = threading.RLock()
+    latest_run_usage: dict[str, Any] | None = None
 
     def _cancelled() -> bool:
         return _assistant_run_controller.is_cancelled(run_id)
@@ -3489,24 +3577,44 @@ def _execute_assistant_run(
 
     def _progress_on_document_thread(event: dict[str, Any]) -> None:
         current_dock = _find_dock() or dock
+        if event.get("event") == "provider_usage":
+            usage = sanitize_usage_metadata(event.get("usage"))
+            output = _find_child("QTextBrowser", "VibeConversation", current_dock)
+            if usage is not None and output is not None:
+                output.setProperty("VibeActiveTokenUsage", usage)
+                _render_usage_summary(current_dock)
         if event.get("event") == "provider_turn_output":
             text = str(event.get("text") or "").strip()
             if text:
                 displayed_provider_texts.append(text)
                 runtime = event.get("provider_runtime")
+                usage = sanitize_usage_metadata(event.get("usage"))
                 _append_conversation(
                     "VibeCAD",
                     text,
                     metadata=(
-                        {"provider_runtime": dict(runtime)}
-                        if isinstance(runtime, dict)
+                        {
+                            **(
+                                {"provider_runtime": dict(runtime)}
+                                if isinstance(runtime, dict)
+                                else {}
+                            ),
+                            **({"usage": usage} if usage is not None else {}),
+                        }
+                        if isinstance(runtime, dict) or usage is not None
                         else None
                     ),
                 )
         _handle_progress_event(current_dock, event)
 
     def _progress(event: dict[str, Any]) -> None:
+        nonlocal latest_run_usage
         event_copy = dict(event)
+        if event_copy.get("event") == "provider_usage":
+            usage = sanitize_usage_metadata(event_copy.get("usage"))
+            if usage is not None:
+                with run_usage_lock:
+                    latest_run_usage = usage
         _dispatch_to_document_thread(lambda: _progress_on_document_thread(event_copy))
 
     def _complete_run(response: Any | None, failure: BaseException | None) -> None:
@@ -3516,31 +3624,64 @@ def _execute_assistant_run(
         surface_continuation = None
         terminal_status = ""
         run_cancelled = _cancelled()
+        response_usage = sanitize_usage_metadata(
+            getattr(response, "usage", None) if response is not None else None
+        )
+        with run_usage_lock:
+            run_usage = response_usage or latest_run_usage
+        if run_usage is None:
+            output = _find_child("QTextBrowser", "VibeConversation", current_dock)
+            if output is not None:
+                run_usage = sanitize_usage_metadata(
+                    output.property("VibeActiveTokenUsage")
+                )
         if run_cancelled:
             terminal_status = "Stopped."
+            if run_usage is not None:
+                _append_conversation(
+                    "System",
+                    terminal_status,
+                    persist=True,
+                    metadata={"source": "provider_cancelled", "usage": run_usage},
+                )
         elif failure is not None:
             terminal_status = f"The CAD run failed: {failure}"
             _append_conversation(
                 "System",
                 terminal_status,
                 persist=True,
-                metadata={"source": "provider_runtime_error"},
+                metadata={
+                    "source": "provider_runtime_error",
+                    **({"usage": run_usage} if run_usage is not None else {}),
+                },
             )
         elif response is not None:
             final_text = str(response.final_output or "").strip()
             if response.error:
                 terminal_status = final_text or str(response.error)
-                if terminal_status and not displayed_provider_texts:
+                if terminal_status and (not displayed_provider_texts or run_usage is not None):
                     _append_conversation(
                         "System",
                         terminal_status,
                         persist=True,
-                        metadata={"source": "provider_error"},
+                        metadata={
+                            "source": "provider_error",
+                            **(
+                                {"usage": run_usage}
+                                if run_usage is not None
+                                else {}
+                            ),
+                        },
                     )
             elif final_text and not displayed_provider_texts:
                 _append_conversation(
                     "VibeCAD",
                     final_text,
+                    metadata=(
+                        {"usage": run_usage}
+                        if run_usage is not None
+                        else None
+                    ),
                 )
             memory_update = (
                 response.context.get("intent_memory_update")
@@ -5132,6 +5273,17 @@ def _build_panel_widget():
     )
     conversation_header_layout.addWidget(authoring_mode)
 
+    usage_toggle = QtWidgets.QToolButton(conversation_header)
+    usage_toggle.setObjectName("VibeUsageSummaryToggle")
+    usage_toggle.setText("Usage")
+    usage_toggle.setCheckable(True)
+    usage_toggle.setChecked(False)
+    usage_toggle.setAutoRaise(True)
+    usage_toggle.setToolTip(
+        "Show actual provider-reported token usage and per-model totals"
+    )
+    conversation_header_layout.addWidget(usage_toggle)
+
     new_conversation = QtWidgets.QToolButton(conversation_header)
     new_conversation.setObjectName("VibeNewConversation")
     new_conversation.setIcon(QtGui.QIcon(_icon_path(ICON_NEW_CONVERSATION)))
@@ -5142,6 +5294,17 @@ def _build_panel_widget():
     new_conversation.clicked.connect(_new_conversation_from_panel)
     conversation_header_layout.addWidget(new_conversation)
     conversation_layout.addWidget(conversation_header)
+
+    usage_details = QtWidgets.QLabel(conversation_panel)
+    usage_details.setObjectName("VibeUsageSummaryDetails")
+    usage_details.setWordWrap(True)
+    usage_details.setTextFormat(QtCore.Qt.PlainText)
+    usage_details.setText("No actual provider-reported token usage is available.")
+    usage_details.setVisible(False)
+    conversation_layout.addWidget(usage_details)
+    usage_toggle.toggled.connect(
+        lambda checked: _render_usage_summary(dock=conversation_panel)
+    )
 
     conversation = QtWidgets.QTextBrowser(conversation_panel)
     conversation.setObjectName("VibeConversation")
