@@ -1443,10 +1443,10 @@ def is_section_view_active(view: Any | None = None) -> bool:
     active = view if view is not None else _active_3d_view()
     if active is None:
         return False
-    has_clip = getattr(active, "hasClippingPlane", None)
-    if not callable(has_clip):
-        return False
     try:
+        has_clip = getattr(active, "hasClippingPlane", None)
+        if not callable(has_clip):
+            return False
         return bool(has_clip())
     except Exception:
         return False
@@ -2730,6 +2730,10 @@ def _poll_dragger() -> None:
     if _dragger_node is None:
         return
     view = _active_3d_view()
+    # A queued timeout can arrive after deactivation. Do not read the old
+    # scene's Pivy nodes when another view (or no view) is active.
+    if view is None or view != _dragger_view:
+        return
     if (_cap_dirty and not _dragger_busy and view is not None
             and _dragger_document is not None and _dragger_document.isClosable()):
         _sync_overlay(view, _dragger_document, _settings)

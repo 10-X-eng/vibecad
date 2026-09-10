@@ -1317,3 +1317,16 @@ def test_section_dialog_slider_failure_does_not_disable_further_input(monkeypatc
     with pytest.raises(RuntimeError, match="plane update failed"):
         dialog._offset_slider_changed(10)
     assert not dialog._updating
+
+
+def test_section_state_query_handles_a_deleted_view_wrapper():
+    assert not section.is_section_view_active(_DeletedSectionView())
+
+
+@pytest.mark.parametrize("active", [None, object()])
+def test_dragger_poll_does_not_touch_nodes_without_its_own_active_view(monkeypatch, active):
+    monkeypatch.setattr(section, "_dragger_node", object())
+    monkeypatch.setattr(section, "_dragger_view", object())
+    monkeypatch.setattr(section, "_active_3d_view", lambda: active)
+    monkeypatch.setattr(section, "_current_dragger_origin", lambda: pytest.fail("stale scene access"))
+    section._poll_dragger()
