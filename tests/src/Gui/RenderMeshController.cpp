@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <cmath>
 #include <QThread>
 #include <QTest>
 #include <QElapsedTimer>
@@ -27,6 +28,7 @@
 #include <Mod/Part/App/PropertyTopoShape.h>
 #include <Mod/Part/App/SectionGeometry.h>
 #include <Mod/Part/Gui/RenderMeshController.h>
+#include <Mod/Part/Gui/SectionFaceController.h>
 #include <Mod/Part/Gui/SoBrepEdgeSet.h>
 #include <Mod/Part/Gui/SoBrepFaceSet.h>
 #include <Mod/Part/Gui/SoBrepPointSet.h>
@@ -366,6 +368,66 @@ private Q_SLOTS:
                                                  Base::Vector3d(0.0, 0.0, 1.0), token);
             });
         QVERIFY_EXCEPTION_THROWN(cancellation.get(), std::runtime_error);
+    }
+
+    void sectionControllerDeliversOnlyLatestOnOwner()
+    {
+        PartGui::SectionFaceController controller;
+        const auto source = BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape();
+        int deliveries = 0;
+        for (int index = 0; index < 3; ++index) {
+            controller.request({{source, {}}}, Base::Vector3d(0.0, 0.0, 1.0 + index),
+                               Base::Vector3d(0.0, 0.0, 1.0),
+                [&, index](PartGui::SectionFaceResult result) {
+                    QCOMPARE(QThread::currentThread(), qApp->thread());
+                    QCOMPARE(index, 2);
+                    QVERIFY2(result.error.empty(), result.error.c_str());
+                    QCOMPARE(result.faces.size(), std::size_t(1));
+                    ++deliveries;
+                });
+        }
+        QTRY_COMPARE(deliveries, 1);
+    }
+
+    void sectionCancellationReleasesCapturesOnOwner()
+    {
+        PartGui::SectionFaceController controller;
+        bool released = false;
+        auto capture = std::make_shared<ReleaseCallback>();
+        capture->callback = [&] {
+            QCOMPARE(QThread::currentThread(), qApp->thread());
+            released = true;
+        };
+        controller.request({{BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape(), {}}},
+                           Base::Vector3d(0.0, 0.0, 1.0), Base::Vector3d(0.0, 0.0, 1.0),
+                           [capture](PartGui::SectionFaceResult) { QFAIL("Cancelled result delivered"); });
+        capture.reset();
+        QVERIFY(!released);
+        controller.cancel();
+        QVERIFY(released);
+    }
+
+    void sectionCaptureReleaseCanSubmitANewerRequest()
+    {
+        PartGui::SectionFaceController controller;
+        const auto shape = BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape();
+        const Base::Vector3d origin(0.0, 0.0, 1.0), normal(0.0, 0.0, 1.0);
+        int delivered = 0;
+        auto capture = std::make_shared<ReleaseCallback>();
+        capture->callback = [&] {
+            QCOMPARE(QThread::currentThread(), qApp->thread());
+            controller.request({{shape, {}}}, origin, normal, [&](PartGui::SectionFaceResult result) {
+                QVERIFY(result.error.empty());
+                QCOMPARE(result.faces.size(), std::size_t(1));
+                ++delivered;
+            });
+        };
+        controller.request({{shape, {}}}, origin, normal,
+                           [capture](PartGui::SectionFaceResult) { QFAIL("Obsolete first result"); });
+        capture.reset();
+        controller.request({{shape, {}}}, origin, normal,
+                           [](PartGui::SectionFaceResult) { QFAIL("Obsolete pending result"); });
+        QTRY_COMPARE(delivered, 1);
     }
 
     void cancelledCompletionCannotAdoptIntoReusedTarget()
