@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <Python.h>
 #include <condition_variable>
 #include <future>
 #include <mutex>
@@ -38,8 +39,15 @@ class FrameBudgetTest: public QObject
 private Q_SLOTS:
     void shutdownDrainsWorkerCleanupOnOwner()
     {
+        Py_Initialize();
+        QVERIFY(PyGILState_Check());
+        bool joinedWithoutGil = false;
+        bool cleanupHasGil = false;
         App::HostRuntime runtime(1);
-        Gui::initializeGuiFrameDispatcher([&] { runtime.shutdown(); });
+        Gui::initializeGuiFrameDispatcher([&] {
+            joinedWithoutGil = !PyGILState_Check();
+            runtime.shutdown();
+        });
         bool normalCleanup = false;
         QVERIFY(Gui::dispatchToGuiCleanup([&] { normalCleanup = true; }));
         QTRY_VERIFY(normalCleanup);
@@ -78,6 +86,7 @@ private Q_SLOTS:
                 ordinaryAccepted = Gui::dispatchToGuiFrame([] {});
                 cleanupAccepted = Gui::dispatchToGuiCleanup([&] {
                     cleanedOnOwner = QThread::currentThread() == qApp->thread();
+                    cleanupHasGil = PyGILState_Check();
                 });
             });
         ready.get();
@@ -90,6 +99,9 @@ private Q_SLOTS:
         QVERIFY(!ordinaryAccepted);
         QVERIFY(cleanupAccepted);
         QVERIFY(cleanedOnOwner);
+        QVERIFY(joinedWithoutGil);
+        QVERIFY(cleanupHasGil);
+        QVERIFY(PyGILState_Check());
         QVERIFY(!runtime.isAccepting());
         QVERIFY(!Gui::dispatchToGuiCleanup([] {}));
     }

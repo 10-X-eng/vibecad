@@ -362,6 +362,36 @@ TEST(HostWorkflowTest, DispatchFailureDestroysSuspendedFrameOnOwner)
         << "Suspended document resources must be released by their owner";
 }
 
+TEST(HostWorkflowTest, OwnerSubmissionFailureUsesCleanupQueue)
+{
+    App::HostRuntime runtime(1);
+    runtime.shutdown();
+    QueuedOwner owner;
+    std::promise<std::thread::id> destroyedOn;
+    auto destroyed = destroyedOn.get_future();
+    std::atomic<int> dispatches {0};
+    std::atomic<int> cleanupDispatches {0};
+    auto future = phaseWithOwnerCleanup(destroyedOn).runAsyncWithCleanup(
+        runtime,
+        [&](std::function<void()> resume) {
+            if (dispatches.fetch_add(1) != 0) {
+                throw std::runtime_error("normal queue stopped");
+            }
+            owner.dispatch(std::move(resume));
+        },
+        [&](std::function<void()> cleanup) {
+            ++cleanupDispatches;
+            owner.dispatch(std::move(cleanup));
+        }
+    );
+    ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
+    EXPECT_THROW(future.get(), std::runtime_error);
+    ASSERT_EQ(destroyed.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(destroyed.get(), owner.id());
+    EXPECT_EQ(cleanupDispatches.load(), 1)
+        << "Owner-side cancellation must also defer cleanup until after worker joining";
+}
+
 TEST(HostWorkflowTest, RejectedDispatchUsesIndependentOwnerCleanup)
 {
     App::HostRuntime runtime(1);

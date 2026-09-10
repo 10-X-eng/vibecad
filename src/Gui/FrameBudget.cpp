@@ -121,6 +121,12 @@ private:
         // Release queued synchronous handoffs before joining their workers.
         cancelled.clear();
         if (auto finish = std::move(finishWorkers)) {
+            // A Python-triggered close can hold the GIL while a worker needs
+            // it to finish. Restore it before draining owner cleanup below.
+            std::unique_ptr<Base::PyGILStateRelease> release;
+            if (Py_IsInitialized() && PyGILState_Check()) {
+                release = std::make_unique<Base::PyGILStateRelease>();
+            }
             finish();
         }
         // Workers are now joined, so no workflow can arrive after this seal.

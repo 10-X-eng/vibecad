@@ -204,7 +204,9 @@ private:
 
             void dispatchFailure(std::exception_ptr error)
             {
-                if (dispatchCleanup && std::this_thread::get_id() != ownerThread) {
+                if (dispatchCleanup) {
+                    // Owner-side queued cancellation can occur inside worker
+                    // joining, with the GIL released. Cleanup must wait too.
                     auto self = this->shared_from_this();
                     dispatchCleanup([self, error] { self->completeFromDispatchFailure(error); });
                     return;
