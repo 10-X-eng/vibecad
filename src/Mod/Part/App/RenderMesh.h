@@ -36,6 +36,10 @@ struct PartExport RenderMesh
     // and thousands of individual Coin field updates during adoption.
     std::vector<std::int32_t> lineMaterialIndices {0};
     std::int32_t vertexStart {0};
+    // Face indices (into faceTriangleCounts) belonging to each solid. Section
+    // preparation keeps touching solids separate without copying mesh buffers.
+    // Empty preserves the unpartitioned path for caller-supplied meshes.
+    std::vector<std::vector<std::int32_t>> solidFaceIndices;
 
     [[nodiscard]] std::size_t vertexCount() const
     {

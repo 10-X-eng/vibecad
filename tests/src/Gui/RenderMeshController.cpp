@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <cmath>
+#include <tuple>
 #include <QThread>
 #include <QTest>
 #include <QElapsedTimer>
 
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
 #include <Inventor/nodes/SoMaterial.h>
 #include <Inventor/nodes/SoSeparator.h>
 
@@ -22,7 +30,9 @@
 #include <Gui/Inventor/SoFCBoundingBox.h>
 #include <Gui/ViewProviderGeometryObject.h>
 #include <Mod/Part/App/PropertyTopoShape.h>
+#include <Mod/Part/App/SectionGeometry.h>
 #include <Mod/Part/Gui/RenderMeshController.h>
+#include <Mod/Part/Gui/SectionFaceController.h>
 #include <Mod/Part/Gui/SoBrepEdgeSet.h>
 #include <Mod/Part/Gui/SoBrepFaceSet.h>
 #include <Mod/Part/Gui/SoBrepPointSet.h>
@@ -45,7 +55,8 @@ public:
     void setFaceCount(int count) { faceset->partIndex.setNum(count); }
     void clearLineGeometry() { lineset->coordIndex.setNum(0); }
     mutable unsigned shapeReads {0};
-    Part::TopoShape getRenderedShape() const override { ++shapeReads; return {}; }
+    Part::TopoShape renderedShape;
+    Part::TopoShape getRenderedShape() const override { ++shapeReads; return renderedShape; }
     void refreshUnchangedGeometry() { VisualTouched = false; updateVisual(); }
 };
 
@@ -237,6 +248,7 @@ private Q_SLOTS:
             auto* view = new InspectablePartView;
             view->attach(object);
             guiApplication.getDocument(document)->addViewProvider(view);
+            guiApplication.getDocument(document)->signalNewObject(*view);
             view->Visibility.setValue(true);
             return view;
         };
@@ -258,6 +270,305 @@ private Q_SLOTS:
         // because its name and its first object's name/ID were reused.
         QCOMPARE(replacementView->shapeReads, 0U);
         QVERIFY(app.closeDocument("DeferredRestoreIdentity"));
+    }
+
+    void renderedSnapshotDoesNotReadDocumentAndSurvivesViewRemoval()
+    {
+        if (PartGui::SoBrepFaceSet::getClassTypeId().isBad()) {
+            PartGui::SoBrepFaceSet::initClass();
+            PartGui::SoBrepEdgeSet::initClass();
+            PartGui::SoBrepPointSet::initClass();
+        }
+        if (PartGui::ViewProviderPartExt::getClassTypeId().isBad()) {
+            PartGui::ViewProviderPartExt::init();
+        }
+        auto& app = App::GetApplication();
+        auto* document = app.newDocument("RenderedSectionSnapshot");
+        auto* object = document->addObject("App::DocumentObject", "Shape");
+        auto* view = new InspectablePartView;
+        view->attach(object);
+        application->getDocument(document)->addViewProvider(view);
+        application->getDocument(document)->signalNewObject(*view);
+        QVERIFY(view->getRenderedShapeSnapshot().IsNull());
+        view->renderedShape = Part::TopoShape(BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape());
+        QVERIFY(!view->renderedShape.isNull());
+        QCOMPARE(application->getViewProvider<PartGui::ViewProviderPartExt>(object), view);
+        view->refreshUnchangedGeometry();
+        QVERIFY(document->isPresentationUpdateActive());
+        QTRY_VERIFY(document->isClosable());
+        view->shapeReads = 0;
+        const auto snapshot = view->getRenderedShapeSnapshot();
+        QVERIFY(!snapshot.IsNull());
+        QVERIFY(snapshot.IsPartner(view->renderedShape.getShape()));
+        QCOMPARE(view->shapeReads, 0U);
+        // Capturing the displayed generation must not inspect a newer model
+        // shape which has not yet been installed by the presentation worker.
+        view->renderedShape = Part::TopoShape(BRepPrimAPI_MakeCylinder(5.0, 6.0).Shape());
+        QVERIFY(view->getRenderedShapeSnapshot().IsPartner(snapshot));
+        document->removeObject("Shape");
+        QVERIFY(app.closeDocument("RenderedSectionSnapshot"));
+        // The snapshot owns native geometry, not a view/document wrapper.
+        const auto owner = std::this_thread::get_id();
+        auto read = app.hostRuntime().submit([snapshot, owner](std::stop_token) {
+            return std::pair {
+                std::this_thread::get_id() != owner,
+                Part::TopoShape(snapshot).countSubElements("Face")
+            };
+        });
+        const auto [offOwner, faces] = read.get();
+        QVERIFY(offOwner);
+        QCOMPARE(faces, 6UL);
+    }
+
+    void meshSectionPreservesHolesAndDisplayedPlacement()
+    {
+        const auto tube = BRepAlgoAPI_Cut(
+            BRepPrimAPI_MakeCylinder(5.0, 6.0).Shape(),
+            BRepPrimAPI_MakeCylinder(2.0, 6.0).Shape()).Shape();
+        auto mesh = Part::prepareRenderMesh(tube, 0.05, 5.0);
+        const auto originalVertices = mesh.vertices;
+        Base::Matrix4D displayed;
+        displayed.move(Base::Vector3d(200.0, 40.0, 60.0));
+        const auto result = Part::prepareSectionMeshFaces(
+            mesh, displayed, Base::Vector3d(200.0, 40.0, 63.0), Base::Vector3d(0.0, 0.0, 1.0));
+        QVERIFY(!result.IsNull());
+        GProp_GProps area;
+        BRepGProp::SurfaceProperties(result, area);
+        QVERIFY(std::abs(area.Mass() - 21.0 * std::acos(-1.0)) < 0.2);
+        QVERIFY(std::abs(area.CentreOfMass().Z() - 63.0) < 1e-7);
+        QVERIFY(mesh.vertices == originalVertices);
+        QVERIFY(Part::prepareSectionMeshFaces(mesh, displayed, Base::Vector3d(0, 0, 100), Base::Vector3d(0, 0, 1)).IsNull());
+        std::stop_source cancelled;
+        cancelled.request_stop();
+        QVERIFY_EXCEPTION_THROWN(Part::prepareSectionMeshFaces(
+            mesh, displayed, Base::Vector3d(0, 0, 63), Base::Vector3d(0, 0, 1), cancelled.get_token()), std::runtime_error);
+    }
+
+    void meshSectionHandlesVerticesAndCoplanarBoundary()
+    {
+        const auto mesh = Part::prepareRenderMesh(BRepPrimAPI_MakeBox(2.0, 2.0, 2.0).Shape(), 0.5, 10.0);
+        for (const auto& [origin, normal, expected] : {
+                 std::tuple {Base::Vector3d(1, 1, 0), Base::Vector3d(1, 1, 0), 4 * std::sqrt(2.0)},
+                 std::tuple {Base::Vector3d(), Base::Vector3d(1, 0, 0), 4.0}}) {
+            const auto faces = Part::prepareSectionMeshFaces(mesh, {}, origin, normal);
+            QVERIFY(!faces.IsNull());
+            GProp_GProps area;
+            BRepGProp::SurfaceProperties(faces, area);
+            QVERIFY(std::abs(area.Mass() - expected) < 1e-6);
+        }
+    }
+
+    void meshSectionAtStepUsesTheKeptSideContour()
+    {
+        const auto step = BRepAlgoAPI_Fuse(
+            BRepPrimAPI_MakeBox(2.0, 2.0, 1.0).Shape(),
+            BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 1), 1.0, 2.0, 1.0).Shape()).Shape();
+        const auto mesh = Part::prepareRenderMesh(step, 0.1, 5.0);
+        for (double sign : {1.0, -1.0}) {
+            const auto faces = Part::prepareSectionMeshFaces(
+                mesh, {}, Base::Vector3d(0, 0, 1), Base::Vector3d(0, 0, sign));
+            QVERIFY(!faces.IsNull());
+            GProp_GProps area;
+            BRepGProp::SurfaceProperties(faces, area);
+            QVERIFY(std::abs(area.Mass() - (sign > 0 ? 2.0 : 4.0)) < 1e-6);
+        }
+    }
+
+    void meshSectionKeepsCompoundSolidsSeparate()
+    {
+        for (const auto& position : {gp_Pnt(2, 2, 0), gp_Pnt(2, 0, 0), gp_Pnt(1, 1, 0)}) {
+            BRep_Builder builder;
+            TopoDS_Compound compound;
+            builder.MakeCompound(compound);
+            builder.Add(compound, BRepPrimAPI_MakeBox(2.0, 2.0, 2.0).Shape());
+            builder.Add(compound, BRepPrimAPI_MakeBox(position, 2.0, 2.0, 2.0).Shape());
+            const auto mesh = Part::prepareRenderMesh(compound, 0.1, 5.0);
+            for (double sign : {1.0, -1.0}) {
+                const auto faces = Part::prepareSectionMeshFaces(
+                    mesh, {}, Base::Vector3d(0, 0, 1), Base::Vector3d(0, 0, sign));
+                QVERIFY(!faces.IsNull());
+                GProp_GProps area;
+                BRepGProp::SurfaceProperties(faces, area);
+                // A compound retains its independent solids, including overlaps.
+                QVERIFY(std::abs(area.Mass() - 8.0) < 1e-6);
+            }
+        }
+    }
+
+    void meshSectionRejectsOpenContours()
+    {
+        Part::RenderMesh mesh;
+        mesh.vertices = {0, 0, -1, 1, 0, 1, 0, 1, 1};
+        mesh.triangleIndices = {0, 1, 2, -1};
+        QVERIFY_EXCEPTION_THROWN(Part::prepareSectionMeshFaces(
+            mesh, {}, Base::Vector3d(), Base::Vector3d(0, 0, 1)), std::runtime_error);
+    }
+
+    void sectionFacesUseDisplayedPlacementAndPreserveHoles()
+    {
+        auto source = BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape();
+        gp_Trsf oldPlacement;
+        oldPlacement.SetTranslation(gp_Vec(700.0, 800.0, 900.0));
+        source.Location(TopLoc_Location(oldPlacement));
+        Base::Matrix4D displayed;
+        displayed.move(Base::Vector3d(200.0, 40.0, 60.0));
+        auto result = App::GetApplication().hostRuntime().submit(
+            [source, displayed](std::stop_token stop) {
+                return Part::prepareSectionFaces(
+                    source, displayed, Base::Vector3d(201.0, 40.0, 60.0),
+                    Base::Vector3d(1.0, 0.0, 0.0), stop);
+            }).get();
+        QVERIFY(!result.IsNull());
+        GProp_GProps area;
+        BRepGProp::SurfaceProperties(result, area);
+        QVERIFY(std::abs(area.Mass() - 12.0) < 1e-7);
+        QCOMPARE(source.Location().Transformation().TranslationPart().X(), 700.0);
+
+        const auto tube = BRepAlgoAPI_Cut(
+            BRepPrimAPI_MakeCylinder(5.0, 6.0).Shape(),
+            BRepPrimAPI_MakeCylinder(2.0, 6.0).Shape()).Shape();
+        result = App::GetApplication().hostRuntime().submit([tube](std::stop_token stop) {
+            return Part::prepareSectionFaces(tube, {}, Base::Vector3d(0.0, 0.0, 3.0),
+                                             Base::Vector3d(0.0, 0.0, 1.0), stop);
+        }).get();
+        QVERIFY(!result.IsNull());
+        GProp_GProps tubeArea;
+        BRepGProp::SurfaceProperties(result, tubeArea);
+        QVERIFY2(std::abs(tubeArea.Mass() - 21.0 * std::acos(-1.0)) < 1e-7,
+                 qPrintable(QString::number(tubeArea.Mass(), 'g', 17)));
+
+        Base::Matrix4D scaled;
+        scaled.scale(-2.0, 3.0, 0.5);
+        result = App::GetApplication().hostRuntime().submit([source, scaled](std::stop_token stop) {
+            return Part::prepareSectionFaces(source, scaled, Base::Vector3d(0.0, 0.0, 1.0),
+                                             Base::Vector3d(0.0, 0.0, 1.0), stop);
+        }).get();
+        QVERIFY(!result.IsNull());
+        GProp_GProps scaledArea;
+        BRepGProp::SurfaceProperties(result, scaledArea);
+        QVERIFY(std::abs(scaledArea.Mass() - 36.0) < 1e-7);
+
+        std::stop_source cancelled;
+        cancelled.request_stop();
+        auto cancellation = App::GetApplication().hostRuntime().submit(
+            [source, token = cancelled.get_token()](std::stop_token) {
+                return Part::prepareSectionFaces(source, {}, Base::Vector3d(),
+                                                 Base::Vector3d(0.0, 0.0, 1.0), token);
+            });
+        QVERIFY_EXCEPTION_THROWN(cancellation.get(), std::runtime_error);
+    }
+
+    void sectionControllerDeliversOnlyLatestOnOwner()
+    {
+        PartGui::SectionFaceController controller;
+        const auto source = BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape();
+        int deliveries = 0;
+        for (int index = 0; index < 3; ++index) {
+            controller.request({{source, {}}}, Base::Vector3d(0.0, 0.0, 1.0 + index),
+                               Base::Vector3d(0.0, 0.0, 1.0),
+                [&, index](PartGui::SectionFaceResult result) {
+                    QCOMPARE(QThread::currentThread(), qApp->thread());
+                    QCOMPARE(index, 2);
+                    QVERIFY2(result.error.empty(), result.error.c_str());
+                    QCOMPARE(result.faces.size(), std::size_t(1));
+                    ++deliveries;
+                });
+        }
+        QTRY_COMPARE(deliveries, 1);
+    }
+
+    void sectionDisplayKeepsTrianglesAndHatchOutOfHoles()
+    {
+        const auto tube = BRepAlgoAPI_Cut(
+            BRepPrimAPI_MakeCylinder(5.0, 6.0).Shape(),
+            BRepPrimAPI_MakeCylinder(2.0, 6.0).Shape()).Shape();
+        auto geometry = App::GetApplication().hostRuntime().submit([tube](std::stop_token stop) {
+            const Base::Vector3d origin(0.0, 0.0, 3.0), normal(0.0, 0.0, 1.0);
+            const auto faces = Part::prepareSectionFaces(tube, {}, origin, normal, stop);
+            return Part::prepareSectionDisplay(faces, origin, normal, 0.5, stop);
+        }).get();
+        QVERIFY(!geometry.triangles.empty());
+        QVERIFY(!geometry.hatch.empty());
+        QVERIFY(!geometry.outlines.empty());
+        double area = 0.0;
+        for (const auto& triangle : geometry.triangles) {
+            area += (triangle[1] - triangle[0]).Cross(triangle[2] - triangle[0]).Length() * 0.5;
+            const auto center = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+            QVERIFY(std::hypot(center.x, center.y) >= 1.75);
+            for (const auto& point : triangle) {
+                QVERIFY(std::abs(point.z - 2.95) < 1e-7);
+            }
+        }
+        QVERIFY(std::abs(area - 21.0 * std::acos(-1.0)) < 1.0);
+        for (const auto& line : geometry.hatch) {
+            const auto delta = line[1] - line[0];
+            const double lengthSquared = delta.Dot(delta);
+            QVERIFY(lengthSquared > 0);
+            const double t = std::clamp(-line[0].Dot(delta) / lengthSquared, 0.0, 1.0);
+            const auto nearest = line[0] + delta * t;
+            QVERIFY(std::hypot(nearest.x, nearest.y) >= 1.75);
+            QVERIFY(std::abs(line[0].z - 2.95) < 1e-7);
+            QVERIFY(std::abs(line[1].z - 2.95) < 1e-7);
+        }
+    }
+
+    void sectionControllerDeliversPreparedDisplay()
+    {
+        PartGui::SectionFaceController controller;
+        bool completed = false;
+        controller.requestDisplay({{BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape(), {}}},
+                                  Base::Vector3d(0.0, 0.0, 1.0), Base::Vector3d(0.0, 0.0, 1.0), 0.5,
+            [&](PartGui::SectionFaceResult result) {
+                QCOMPARE(QThread::currentThread(), qApp->thread());
+                QVERIFY(result.error.empty());
+                QVERIFY(result.geometry);
+                QVERIFY(!result.geometry->triangles.empty());
+                QVERIFY(!result.geometry->hatch.empty());
+                QVERIFY(!result.geometry->outlines.empty());
+                completed = true;
+            });
+        QTRY_VERIFY(completed);
+    }
+
+    void sectionCancellationReleasesCapturesOnOwner()
+    {
+        PartGui::SectionFaceController controller;
+        bool released = false;
+        auto capture = std::make_shared<ReleaseCallback>();
+        capture->callback = [&] {
+            QCOMPARE(QThread::currentThread(), qApp->thread());
+            released = true;
+        };
+        controller.request({{BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape(), {}}},
+                           Base::Vector3d(0.0, 0.0, 1.0), Base::Vector3d(0.0, 0.0, 1.0),
+                           [capture](PartGui::SectionFaceResult) { QFAIL("Cancelled result delivered"); });
+        capture.reset();
+        QVERIFY(!released);
+        controller.cancel();
+        QVERIFY(released);
+    }
+
+    void sectionCaptureReleaseCanSubmitANewerRequest()
+    {
+        PartGui::SectionFaceController controller;
+        const auto shape = BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape();
+        const Base::Vector3d origin(0.0, 0.0, 1.0), normal(0.0, 0.0, 1.0);
+        int delivered = 0;
+        auto capture = std::make_shared<ReleaseCallback>();
+        capture->callback = [&] {
+            QCOMPARE(QThread::currentThread(), qApp->thread());
+            controller.request({{shape, {}}}, origin, normal, [&](PartGui::SectionFaceResult result) {
+                QVERIFY(result.error.empty());
+                QCOMPARE(result.faces.size(), std::size_t(1));
+                ++delivered;
+            });
+        };
+        controller.request({{shape, {}}}, origin, normal,
+                           [capture](PartGui::SectionFaceResult) { QFAIL("Obsolete first result"); });
+        capture.reset();
+        controller.request({{shape, {}}}, origin, normal,
+                           [](PartGui::SectionFaceResult) { QFAIL("Obsolete pending result"); });
+        QTRY_COMPARE(delivered, 1);
     }
 
     void cancelledCompletionCannotAdoptIntoReusedTarget()

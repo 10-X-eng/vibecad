@@ -131,6 +131,25 @@ Part::RenderMesh Part::prepareRenderMesh(
     TopTools_MapOfShape faceEdges;
     TopTools_IndexedMapOfShape faceMap;
     TopExp::MapShapes(shape, TopAbs_FACE, faceMap);
+    TopTools_IndexedMapOfShape solidMap;
+    TopExp::MapShapes(shape, TopAbs_SOLID, solidMap);
+    result.solidFaceIndices.reserve(solidMap.Extent());
+    for (int solidIndex = 1; solidIndex <= solidMap.Extent(); ++solidIndex) {
+        checkCancellation(stopToken);
+        TopTools_IndexedMapOfShape solidFaces;
+        TopExp::MapShapes(solidMap(solidIndex), TopAbs_FACE, solidFaces);
+        auto& indices = result.solidFaceIndices.emplace_back();
+        indices.reserve(solidFaces.Extent());
+        for (int i = 1; i <= solidFaces.Extent(); ++i) {
+            checkCancellation(stopToken);
+            const int faceIndex = faceMap.FindIndex(solidFaces(i));
+            if (faceIndex == 0) {
+                throw std::logic_error("Solid face missing from render mesh topology");
+            }
+            indices.push_back(faceIndex - 1);
+        }
+    }
+
     TopTools_IndexedMapOfShape edgeMap;
     TopExp::MapShapes(shape, TopAbs_EDGE, edgeMap);
     struct FaceInput
