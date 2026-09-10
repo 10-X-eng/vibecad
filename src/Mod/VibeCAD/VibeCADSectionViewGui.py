@@ -85,8 +85,9 @@ class SectionViewDialog(QtWidgets.QWidget):
         except ImportError:
             return
         document = getattr(App, "ActiveDocument", None)
-        objects = getattr(document, "Objects", ()) if document is not None else ()
-        bounds = section.model_bounds(objects)
+        # Use the same displayed bounds as the clipping plane. Reading model
+        # bounds here can materialize compounds and disagree with the view.
+        bounds = section._bounds_for_view(section._active_3d_view(), document)
         if bounds is None:
             return
         settings = section.current_section_view_settings()
@@ -142,18 +143,22 @@ class SectionViewDialog(QtWidgets.QWidget):
         if self._updating:
             return
         self._updating = True
-        self._set_slider_from_offset(value)
-        section.configure_section_view(offset=float(value))
-        self._updating = False
+        try:
+            self._set_slider_from_offset(value)
+            section.configure_section_view(offset=float(value))
+        finally:
+            self._updating = False
 
     def _offset_slider_changed(self, value: int) -> None:
         if self._updating:
             return
         offset = self._slider_to_offset(value)
         self._updating = True
-        self.offset_spin.setValue(offset)
-        section.configure_section_view(offset=float(offset))
-        self._updating = False
+        try:
+            self.offset_spin.setValue(offset)
+            section.configure_section_view(offset=float(offset))
+        finally:
+            self._updating = False
 
     def _flip_changed(self, checked: bool) -> None:
         if self._updating:

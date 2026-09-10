@@ -1549,10 +1549,12 @@ def _detach_scene_node(scene: Any, node: Any) -> None:
 
 
 def _scene_from_view(view: Any) -> Any | None:
-    get_scene = getattr(view, "getSceneGraph", None)
-    if not callable(get_scene):
-        return None
     try:
+        # FreeCAD wrappers can raise during attribute lookup after their view
+        # is deleted, before a bound method can even be obtained.
+        get_scene = getattr(view, "getSceneGraph", None)
+        if not callable(get_scene):
+            return None
         return get_scene()
     except Exception:
         return None
@@ -1742,8 +1744,8 @@ def _remove_dragger(view: Any) -> None:
     global _dragger_view, _dragger_document, _bounds_view, _section_bounds, _cap_dirty
     global _last_dragger_scale
     global _drag_start_origin, _drag_start_axes, _drag_start_rot_counts, _triad_parts
-    scene = _scene_from_view(view)
     _stop_dragger_poll()
+    scene = _scene_from_view(view)
     _detach_scene_node(scene, _dragger_node)
     _dragger_node = None
     _dragger_view = None

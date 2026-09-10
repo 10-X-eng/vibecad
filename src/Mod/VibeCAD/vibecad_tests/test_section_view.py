@@ -1239,3 +1239,81 @@ def test_native_cap_worker_keeps_valid_caps_when_another_solid_fails(monkeypatch
     assert len(warnings) == 1
     assert "invalid solid" in warnings[0]
     assert not worker._running
+
+
+class _DeletedSectionView:
+    def __getattribute__(self, name):
+        raise RuntimeError(f"Cannot access attribute '{name}' of deleted object")
+
+
+def test_scene_lookup_handles_a_deleted_view_wrapper():
+    assert section._scene_from_view(_DeletedSectionView()) is None
+
+
+def test_document_close_cleans_section_state_after_view_was_deleted(monkeypatch):
+    document = object()
+    events = []
+    monkeypatch.setattr(section, "_dragger_document", document)
+    monkeypatch.setattr(section, "_dragger_view", _DeletedSectionView())
+    for name in ("_dragger_node", "_overlay_node", "_cap_node"):
+        monkeypatch.setattr(section, name, object())
+    monkeypatch.setattr(section, "_cap_worker", SimpleNamespace(cancel=lambda: events.append("cancel")))
+    monkeypatch.setattr(section, "_stop_dragger_poll", lambda: events.append("stop"))
+    monkeypatch.setattr(section, "_stop_selection_snap", lambda: None)
+    monkeypatch.setattr(section, "_close_ui", lambda: events.append("close"))
+    section._SectionViewDocumentObserver().slotDeletedDocument(SimpleNamespace(Document=document))
+    assert events == ["stop", "cancel", "close"]
+    assert section._dragger_view is None
+    assert section._dragger_document is None
+    assert section._dragger_node is None
+    assert section._overlay_node is None
+    assert section._cap_node is None
+
+
+def _section_dialog_without_gui(monkeypatch):
+    import importlib.util
+    import sys
+    monkeypatch.setitem(sys.modules, "FreeCADGui", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(
+        QtCore=SimpleNamespace(), QtWidgets=SimpleNamespace(QWidget=object),
+    ))
+    path = REPO / "src/Mod/VibeCAD/VibeCADSectionViewGui.py"
+    spec = importlib.util.spec_from_file_location("section_dialog_unit_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return object.__new__(module.SectionViewDialog)
+
+
+def test_section_dialog_range_uses_the_displayed_section_bounds(monkeypatch):
+    import sys
+    dialog = _section_dialog_without_gui(monkeypatch)
+    class Document:
+        @property
+        def Objects(self):
+            pytest.fail("Slider refresh must not read document shapes")
+    monkeypatch.setitem(sys.modules, "FreeCAD", SimpleNamespace(ActiveDocument=Document()))
+    view = object()
+    monkeypatch.setattr(section, "_active_3d_view", lambda: view)
+    monkeypatch.setattr(section, "_bounds_view", view)
+    monkeypatch.setattr(section, "_section_bounds", section.ModelBounds(0, 40, 0, 20, 0, 10))
+    limits = []
+    dialog.offset_spin = SimpleNamespace(
+        setRange=lambda low, high: limits.append((low, high)),
+        setMinimum=lambda value: None, setMaximum=lambda value: None,
+    )
+    dialog.offset_slider = SimpleNamespace(setRange=lambda *args: None)
+    dialog._sync_offset_limits()
+    assert limits == [(-5., 5.)]
+
+
+def test_section_dialog_slider_failure_does_not_disable_further_input(monkeypatch):
+    dialog = _section_dialog_without_gui(monkeypatch)
+    dialog._updating = False
+    dialog._slider_to_offset = lambda value: 2.
+    dialog.offset_spin = SimpleNamespace(setValue=lambda value: None)
+    def fail(**kwargs):
+        raise RuntimeError("plane update failed")
+    monkeypatch.setattr(section, "configure_section_view", fail)
+    with pytest.raises(RuntimeError, match="plane update failed"):
+        dialog._offset_slider_changed(10)
+    assert not dialog._updating
