@@ -1644,7 +1644,9 @@ class _NativeSectionCapWorker:
                 return
             self._running = False
             if error:
-                raise RuntimeError(error)
+                # The native worker preserves successful instances when an
+                # individual solid cannot be cut, as the geometry API does.
+                App.Console.PrintWarning("Section View: " + error + "\n")
             steps = publish(handle)
             if steps is not None:
                 self._steps = iter(steps)

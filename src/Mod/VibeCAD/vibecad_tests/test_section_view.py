@@ -1222,3 +1222,20 @@ def test_native_cap_worker_adoption_yields_and_cancels():
     backend.queued.pop(0)()
     assert adopted == ["started"]
     assert not worker._running
+
+
+def test_native_cap_worker_keeps_valid_caps_when_another_solid_fails(monkeypatch):
+    backend = _NativeSectionBackend()
+    worker = section._NativeSectionCapWorker(backend)
+    warnings, published = [], []
+    monkeypatch.setattr(section, "App", SimpleNamespace(
+        Console=SimpleNamespace(PrintWarning=warnings.append),
+    ))
+    worker.request(iter([]), (0, 0, 0), (0, 0, 1), 1, published.append)
+    backend.queued.pop(0)()
+    geometry = object()
+    backend.requests[-1][-1](geometry, "invalid solid")
+    assert published == [geometry]
+    assert len(warnings) == 1
+    assert "invalid solid" in warnings[0]
+    assert not worker._running
