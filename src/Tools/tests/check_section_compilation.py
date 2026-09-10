@@ -27,10 +27,13 @@ def main():
                       if line.startswith("CMAKE_HOME_DIRECTORY:INTERNAL="))
     failures = 0
     with tempfile.TemporaryDirectory(prefix="section-compile-") as temporary:
-        for module, target, filename in (("Gui", "PartGui", "AppPartGui.cpp"),
-                                         ("App", "Part", "SectionGeometry.cpp"),
-                                         ("App", "Part", "GizmoHelper.cpp")):
-            obj = f"src/Mod/Part/{module}/CMakeFiles/{target}.dir/{filename}.o"
+        for directory, target, filename in (
+            ("src/Mod/Part/Gui", "PartGui", "AppPartGui.cpp"),
+            ("src/Mod/Part/App", "Part", "SectionGeometry.cpp"),
+            ("src/Mod/Part/App", "Part", "GizmoHelper.cpp"),
+            ("src/Gui", "FreeCADGui", "NaviCube.cpp"),
+        ):
+            obj = f"{directory}/CMakeFiles/{target}.dir/{filename}.o"
             commands = subprocess.check_output(
                 ["ninja", "-C", str(build), "-t", "commands", obj], text=True)
             command = shlex.split(commands.splitlines()[-1])
@@ -49,7 +52,7 @@ def main():
                     if flag.startswith("-I" + old_source + "/src"):
                         cleaned.append(flag.replace(old_source, str(source), 1))
                     cleaned.append(flag)
-            production = source / "src/Mod/Part" / module / filename
+            production = source / directory / filename
             probe = Path(temporary) / filename
             probe.write_text(f'#include "{production.as_posix()}"\n' + (
                 "// MSVC eagerly instantiates this exported nested destructor.\n"
