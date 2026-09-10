@@ -38,6 +38,7 @@ target_sources(UnitSettings_Tests_run PRIVATE
 
 target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main
+    ${Python3_LIBRARIES}
     FreeCADApp
     FreeCADGui
 )
