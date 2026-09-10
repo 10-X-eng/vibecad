@@ -74,6 +74,22 @@ App::HostWorkflow<int> singleComputePhase(std::thread::id& worker, std::thread::
     co_return 11;
 }
 
+App::HostWorkflow<int> phaseWithCapturedOwnerResource(std::promise<std::thread::id>& destroyedOn)
+{
+    struct OwnerResource
+    {
+        std::promise<std::thread::id>& destroyedOn;
+        explicit OwnerResource(std::promise<std::thread::id>& result) : destroyedOn(result) {}
+        ~OwnerResource() { destroyedOn.set_value(std::this_thread::get_id()); }
+    };
+    auto resource = std::make_shared<OwnerResource>(destroyedOn);
+    App::HostWorkflow<int>::Step phase {
+        App::HostRuntime::Lane::Compute, [resource](std::stop_token) {}
+    };
+    co_yield std::move(phase);
+    co_return 1;
+}
+
 class QueuedOwner
 {
 public:
@@ -270,6 +286,35 @@ TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
     EXPECT_NE(worker, std::thread::id {});
     EXPECT_EQ(finishedOn.get_future().get(), owner.id());
     EXPECT_EQ(finishedCalls.load(), 1);
+}
+
+TEST(HostWorkflowTest, WorkerDoesNotRetainPhaseCapturesAfterOwnerCompletion)
+{
+    App::HostRuntime runtime(1);
+    QueuedOwner owner;
+    std::promise<std::thread::id> destroyedOn;
+    auto destroyed = destroyedOn.get_future();
+    std::promise<void> finished;
+    auto finishedFuture = finished.get_future().share();
+    std::atomic<int> dispatches {0};
+    auto future = phaseWithCapturedOwnerResource(destroyedOn).runAsync(
+        runtime,
+        [&](std::function<void()> resume) {
+            const bool completion = dispatches.fetch_add(1) != 0;
+            owner.dispatch(std::move(resume));
+            if (completion) {
+                // Hold the worker completion on this side of dispatch until
+                // the owner has destroyed its frame and notified the caller.
+                EXPECT_EQ(finishedFuture.wait_for(2s), std::future_status::ready);
+            }
+        },
+        [&] { finished.set_value(); }
+    );
+    ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(future.get(), 1);
+    runtime.shutdown();
+    ASSERT_EQ(destroyed.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(destroyed.get(), owner.id());
 }
 
 class AsyncRecomputeTest: public ::testing::Test

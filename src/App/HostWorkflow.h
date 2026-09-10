@@ -184,13 +184,16 @@ public:
 
                 auto self = this->shared_from_this();
                 try {
-                    const auto next = workflow->step();
+                    const auto& next = workflow->step();
+                    // The suspended frame owns the callable until completion
+                    // returns to the owner. A worker-side copy could outlive
+                    // owner cleanup and release its captures on the worker.
                     runtime.submitWithCompletion(next.lane,
-                        [self, work = next.work](std::stop_token stop) {
+                        [self, work = &next.work](std::stop_token stop) {
                             Base::CancellationScope shutdown(stop);
                             Base::CancellationScope operation(self->cancellation);
                             Base::CancellationScope::check();
-                            work(stop);
+                            (*work)(stop);
                         },
                         [self](std::future<void> result) {
                             std::exception_ptr failure;
