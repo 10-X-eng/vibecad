@@ -28,7 +28,8 @@ def main():
     failures = 0
     with tempfile.TemporaryDirectory(prefix="section-compile-") as temporary:
         for module, target, filename in (("Gui", "PartGui", "AppPartGui.cpp"),
-                                         ("App", "Part", "SectionGeometry.cpp")):
+                                         ("App", "Part", "SectionGeometry.cpp"),
+                                         ("App", "Part", "GizmoHelper.cpp")):
             obj = f"src/Mod/Part/{module}/CMakeFiles/{target}.dir/{filename}.o"
             commands = subprocess.check_output(
                 ["ninja", "-C", str(build), "-t", "commands", obj], text=True)
