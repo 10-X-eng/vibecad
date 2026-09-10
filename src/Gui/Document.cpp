@@ -2796,11 +2796,16 @@ bool queueDocumentSave(std::vector<SaveTarget> targets, Document::SaveCallback f
             target.document->beginCooperativeMutation();
         }
         getMainWindow()->showMessage(QObject::tr("Saving document…"));
-        pending->result = saveDocuments(pending).runAsync(
+        pending->result = saveDocuments(pending).runAsyncWithCleanup(
             App::GetApplication().hostRuntime(),
             [](std::function<void()> resume) {
                 if (!dispatchToGuiFrame(std::move(resume))) {
                     throw Base::RuntimeError("Unable to dispatch document save completion");
+                }
+            },
+            [](std::function<void()> cleanup) {
+                if (!dispatchToGuiCleanup(std::move(cleanup))) {
+                    throw Base::RuntimeError("Document save cleanup requested after runtime shutdown");
                 }
             },
             [pending, finished = std::move(finished)] {

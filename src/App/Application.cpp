@@ -219,6 +219,12 @@ std::atomic<App::MainThreadSignalConfig::IsMainThreadFn>& mainThreadCheckHook()
     return hook;
 }
 
+std::atomic<App::MainThreadSignalConfig::CleanupFn>& mainThreadCleanupHook()
+{
+    static std::atomic<App::MainThreadSignalConfig::CleanupFn> hook {nullptr};
+    return hook;
+}
+
 std::atomic<App::MainThreadSignalConfig::InvokeFn>& mainThreadInvokeHook()
 {
     static std::atomic<App::MainThreadSignalConfig::InvokeFn> hook {nullptr};
@@ -369,6 +375,25 @@ bool App::MainThreadSignalConfig::hasHooks()
 {
     return mainThreadCheckHook().load(std::memory_order_acquire)
         && mainThreadInvokeHook().load(std::memory_order_acquire);
+}
+
+void App::MainThreadSignalConfig::setCleanupHook(CleanupFn cleanup)
+{
+    mainThreadCleanupHook().store(cleanup, std::memory_order_release);
+}
+
+bool App::MainThreadSignalConfig::hasCleanupHook()
+{
+    return mainThreadCleanupHook().load(std::memory_order_acquire) != nullptr;
+}
+
+void App::MainThreadSignalConfig::invokeCleanup(std::function<void()>&& fn)
+{
+    const auto hook = mainThreadCleanupHook().load(std::memory_order_acquire);
+    if (!hook) {
+        throw std::runtime_error("Owner cleanup dispatcher is not installed");
+    }
+    hook(std::move(fn));
 }
 
 void App::MainThreadSignalConfig::invoke(std::function<void()>&& fn, bool blocking)
@@ -1334,14 +1359,27 @@ void Application::startNextDocumentOpen()
         if (request.prepare) {
             request.prepare(request);
         }
-        task->work = openDocumentsWorkflow(
+        auto workflow = openDocumentsWorkflow(
             request.filenames,
             request.paths.empty() ? nullptr : &request.paths,
             request.labels.empty() ? nullptr : &request.labels,
             &task->result.errors, request.initFlags, &request.inputFlags
-        ).runAsync(hostRuntime(), [](std::function<void()> resume) {
+        );
+        auto dispatch = [](std::function<void()> resume) {
             MainThreadSignalConfig::invoke(std::move(resume), false);
-        }, [this, task] { finishDocumentOpen(task); }, request.cancellation.get_token());
+        };
+        auto finished = [this, task] { finishDocumentOpen(task); };
+        if (MainThreadSignalConfig::hasCleanupHook()) {
+            task->work = std::move(workflow).runAsyncWithCleanup(
+                hostRuntime(), dispatch,
+                [](std::function<void()> cleanup) {
+                    MainThreadSignalConfig::invokeCleanup(std::move(cleanup));
+                }, finished, request.cancellation.get_token());
+        }
+        else {
+            task->work = std::move(workflow).runAsync(
+                hostRuntime(), dispatch, finished, request.cancellation.get_token());
+        }
     }
     catch (...) {
         task->result.failure = std::current_exception();
@@ -3840,12 +3878,21 @@ void Application::drainRecomputeDocument(
         _recomputeGeneration.erase(current);
     }
 
-    if (Document* document = getDocument(documentName.c_str());
-        document && document->isCooperativeMutationActive()) {
-        document->endCooperativeMutation();
+    std::string documentUid;
+    if (Document* document = getDocument(documentName.c_str()); document) {
+        documentUid = document->Uid.getValueStr();
+        if (document->isCooperativeMutationActive()) {
+            document->endCooperativeMutation();
+        }
     }
 
-    auto notifyFinished = [this, documentName]() {
+    auto notifyFinished = [this, documentName, documentUid]() {
+        Document* document = getDocument(documentName.c_str());
+        if (documentUid.empty()
+            || !document
+            || document->Uid.getValueStr() != documentUid) {
+            return;
+        }
         signalRecomputeRequestFinished(documentName);
     };
     if (App::MainThreadSignalConfig::hasHooks()
