@@ -10,8 +10,11 @@ if [[ -n "${CCACHE_DIR:-}" ]] && command -v ccache >/dev/null 2>&1; then
     ccache -z >/dev/null 2>&1 || true
 fi
 
-if [[ ${HOST} =~ .*linux.*  ]]; then
-    CMAKE_PRESET=conda-linux-release
+VIBECAD_BUILD_PLATFORM="${VIBECAD_TARGET_PLATFORM:-${HOST:-}}"
+# Rattler executes this script from the source root.
+CMAKE_PRESET="$(bash package/rattler-build/scripts/select_cmake_preset.sh "${VIBECAD_BUILD_PLATFORM}")"
+
+if [[ ${CMAKE_PRESET} == conda-linux-release ]]; then
 
     # The Linux conda preset builds with Clang, but conda compiler activation
     # can still provide GCC-only flags.
@@ -22,9 +25,7 @@ if [[ ${HOST} =~ .*linux.*  ]]; then
     done
 fi
 
-if [[ ${HOST} =~ .*darwin.* ]]; then
-    CMAKE_PRESET=conda-macos-release
-
+if [[ ${CMAKE_PRESET} == conda-macos-release ]]; then
     # add hacks for osx here!
     echo "adding hacks for osx"
 
@@ -38,7 +39,9 @@ if [[ ${HOST} =~ .*darwin.* ]]; then
     CMAKE_PLATFORM_FLAGS+=(-DFREECAD_USE_3DCONNEXION:BOOL=ON)
     CMAKE_PLATFORM_FLAGS+=(-D3DCONNEXIONCLIENT_FRAMEWORK:FILEPATH="/Library/Frameworks/3DconnexionClient.framework")
 
-    CXXFLAGS="${CXXFLAGS} -D_LIBCPP_DISABLE_AVAILABILITY"
+    # We bundle conda's libc++, whose symbols are newer than the system libc++.
+    # Export explicitly: newer compiler environments may not export CXXFLAGS.
+    export CXXFLAGS="${CXXFLAGS:-} -D_LIBCPP_DISABLE_AVAILABILITY"
 
     # Use MACOS_DEPLOYMENT_TARGET from environment, default to 11.0 for backwards compat.
     # Note that CI sets this per target: 10.13 (Intel), 11.0 (ARM legacy), 15.0 (ARM modern)
