@@ -78,8 +78,8 @@ class QueuedOwner
 {
 public:
     QueuedOwner()
-        : thread([this] { run(); })
     {
+        thread = std::thread([this] { run(); });
         started.get_future().wait();
     }
 
@@ -205,16 +205,16 @@ TEST(HostWorkflowTest, RunAsyncResumesOnTheOwnerAndRunsWorkOffIt)
     QueuedOwner owner;
     std::thread::id worker;
     std::thread::id resumed;
-    std::thread::id finishedOn;
+    std::promise<std::thread::id> finishedOn;
     auto future = singleComputePhase(worker, resumed).runAsync(
         runtime,
         [&](std::function<void()> resume) { owner.dispatch(std::move(resume)); },
-        [&] { finishedOn = std::this_thread::get_id(); }
+        [&] { finishedOn.set_value(std::this_thread::get_id()); }
     );
     ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
     EXPECT_EQ(future.get(), 11);
     EXPECT_EQ(resumed, owner.id());
-    EXPECT_EQ(finishedOn, owner.id());
+    EXPECT_EQ(finishedOn.get_future().get(), owner.id());
     EXPECT_NE(worker, std::thread::id {});
     EXPECT_NE(worker, owner.id());
     EXPECT_NE(worker, std::this_thread::get_id());
@@ -226,11 +226,11 @@ TEST(HostWorkflowTest, RunAsyncWorkerErrorsReturnToTheOwner)
     App::HostRuntime runtime(2);
     QueuedOwner owner;
     std::vector<std::thread::id> threads;
-    std::thread::id finishedOn;
+    std::promise<std::thread::id> finishedOn;
     auto future = orderedWorkerPhases(threads).runAsync(
         runtime,
         [&](std::function<void()> resume) { owner.dispatch(std::move(resume)); },
-        [&] { finishedOn = std::this_thread::get_id(); }
+        [&] { finishedOn.set_value(std::this_thread::get_id()); }
     );
     ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
     EXPECT_EQ(future.get(), 7);
@@ -239,7 +239,7 @@ TEST(HostWorkflowTest, RunAsyncWorkerErrorsReturnToTheOwner)
         EXPECT_NE(thread, owner.id());
         EXPECT_NE(thread, std::this_thread::get_id());
     }
-    EXPECT_EQ(finishedOn, owner.id());
+    EXPECT_EQ(finishedOn.get_future().get(), owner.id());
 }
 
 TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
@@ -250,6 +250,7 @@ TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
     std::thread::id worker;
     std::thread::id resumed;
     std::atomic<int> dispatches {0};
+    std::promise<std::thread::id> finishedOn;
     std::atomic<int> finishedCalls {0};
     auto future = singleComputePhase(worker, resumed).runAsync(
         runtime,
@@ -259,7 +260,7 @@ TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
             }
             owner.dispatch(std::move(resume));
         },
-        [&] { ++finishedCalls; }
+        [&] { ++finishedCalls; finishedOn.set_value(std::this_thread::get_id()); }
     );
     ASSERT_EQ(future.wait_for(2s), std::future_status::ready)
         << "Owner dispatch failure must complete the workflow future; HostRuntime "
@@ -267,6 +268,7 @@ TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
     EXPECT_THROW(future.get(), std::runtime_error);
     EXPECT_EQ(resumed, std::thread::id {});
     EXPECT_NE(worker, std::thread::id {});
+    EXPECT_EQ(finishedOn.get_future().get(), owner.id());
     EXPECT_EQ(finishedCalls.load(), 1);
 }
 
