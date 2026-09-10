@@ -74,6 +74,19 @@ App::HostWorkflow<int> singleComputePhase(std::thread::id& worker, std::thread::
     co_return 11;
 }
 
+App::HostWorkflow<int> phaseWithOwnerCleanup(std::promise<std::thread::id>& destroyedOn)
+{
+    struct OwnerResource
+    {
+        std::promise<std::thread::id>& destroyedOn;
+        ~OwnerResource() { destroyedOn.set_value(std::this_thread::get_id()); }
+    } resource {destroyedOn};
+    co_yield App::HostWorkflow<int>::Step {
+        App::HostRuntime::Lane::Compute, [](std::stop_token) {}
+    };
+    co_return 1;
+}
+
 App::HostWorkflow<int> phaseWithCapturedOwnerResource(std::promise<std::thread::id>& destroyedOn)
 {
     struct OwnerResource
@@ -285,6 +298,42 @@ TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
     EXPECT_EQ(resumed, std::thread::id {});
     EXPECT_NE(worker, std::thread::id {});
     EXPECT_EQ(finishedOn.get_future().get(), owner.id());
+    EXPECT_EQ(finishedCalls.load(), 1);
+}
+
+TEST(HostWorkflowTest, DroppedOwnerDispatchStillCleansUpOnOwner)
+{
+    App::HostRuntime runtime(1);
+    QueuedOwner owner;
+    std::promise<std::thread::id> destroyedOn;
+    auto destroyed = destroyedOn.get_future();
+    std::promise<void> discarded;
+    auto discardedOnOwner = discarded.get_future();
+    std::atomic<int> dispatches {0};
+    std::atomic<int> finishedCalls {0};
+    auto future = phaseWithOwnerCleanup(destroyedOn).runAsync(
+        runtime,
+        [&](std::function<void()> resume) {
+            if (dispatches.fetch_add(1) == 0) {
+                owner.dispatch(std::move(resume));
+                return;
+            }
+            // Model a GUI queue accepting a completion and then discarding it
+            // on shutdown while the submitting worker still owns its driver.
+            owner.dispatch([resume = std::move(resume), &discarded]() mutable {
+                resume = {};
+                discarded.set_value();
+            });
+            discardedOnOwner.wait();
+        },
+        [&] { ++finishedCalls; }
+    );
+    ASSERT_EQ(discardedOnOwner.wait_for(2s), std::future_status::ready);
+    runtime.shutdown();
+    ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
+    EXPECT_ANY_THROW(future.get());
+    ASSERT_EQ(destroyed.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(destroyed.get(), owner.id());
     EXPECT_EQ(finishedCalls.load(), 1);
 }
 

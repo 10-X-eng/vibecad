@@ -6,6 +6,7 @@
 #include <exception>
 #include <optional>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 #include "HostRuntime.h"
@@ -136,6 +137,7 @@ public:
             std::promise<Result> completion;
             std::function<void()> finished;
             std::stop_token cancellation;
+            std::thread::id ownerThread;
 
             Driver(HostWorkflow&& workflow, HostRuntime& runtime,
                    std::function<void(std::function<void()>)> dispatchOwner,
@@ -162,8 +164,47 @@ public:
                 }
             }
 
+            std::function<void()> continuation(std::exception_ptr failure)
+            {
+                struct Delivery
+                {
+                    std::shared_ptr<Driver> driver;
+                    std::exception_ptr failure;
+                    bool invoked {false};
+
+                    Delivery(std::shared_ptr<Driver> driver, std::exception_ptr failure)
+                        : driver(std::move(driver)), failure(std::move(failure))
+                    {}
+
+                    ~Delivery()
+                    {
+                        // An accepted callback can be discarded by its owner
+                        // during shutdown while the worker still holds Driver.
+                        // Release the suspended frame here, before that worker
+                        // drops the last reference. Rejection on the submitting
+                        // thread is handled separately by the dispatch catch.
+                        if (!invoked && std::this_thread::get_id() == driver->ownerThread) {
+                            try {
+                                driver->completeFromDispatchFailure(std::make_exception_ptr(
+                                    std::runtime_error("Owner discarded workflow completion")));
+                            }
+                            catch (...) {
+                                // A completion notification must not throw from
+                                // destruction of a cancelled queue entry.
+                            }
+                        }
+                    }
+                };
+                return [delivery = std::make_shared<Delivery>(
+                            this->shared_from_this(), std::move(failure))] {
+                    delivery->invoked = true;
+                    delivery->driver->resume(delivery->failure);
+                };
+            }
+
             void resume(std::exception_ptr failure = {})
             {
+                ownerThread = std::this_thread::get_id();
                 workflow->failStep(std::move(failure));
                 if (!workflow->advance()) {
                     try {
@@ -201,8 +242,7 @@ public:
                             try { result.get(); }
                             catch (...) { failure = std::current_exception(); }
                             try {
-                                self->dispatchOwner(
-                                    [self, failure] { self->resume(failure); });
+                                self->dispatchOwner(self->continuation(failure));
                             }
                             catch (...) {
                                 self->completeFromDispatchFailure(
