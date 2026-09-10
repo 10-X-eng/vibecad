@@ -153,6 +153,11 @@ public:
      * geometry as read-only and make a private copy before kernel mutation.
      * Returns a null shape until a rendered generation is available.
      */
+    std::shared_ptr<const Part::RenderMesh> getRenderedMeshSnapshot() const
+    {
+        return installedRenderMesh;
+    }
+
     TopoDS_Shape getRenderedShapeSnapshot() const
     {
         return lastRenderedShape;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <cmath>
+#include <tuple>
 #include <QThread>
 #include <QTest>
 #include <QElapsedTimer>
@@ -8,6 +9,7 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <Inventor/nodes/SoMaterial.h>
@@ -314,6 +316,69 @@ private Q_SLOTS:
         const auto [offOwner, faces] = read.get();
         QVERIFY(offOwner);
         QCOMPARE(faces, 6UL);
+    }
+
+    void meshSectionPreservesHolesAndDisplayedPlacement()
+    {
+        const auto tube = BRepAlgoAPI_Cut(
+            BRepPrimAPI_MakeCylinder(5.0, 6.0).Shape(),
+            BRepPrimAPI_MakeCylinder(2.0, 6.0).Shape()).Shape();
+        auto mesh = Part::prepareRenderMesh(tube, 0.05, 5.0);
+        const auto originalVertices = mesh.vertices;
+        Base::Matrix4D displayed;
+        displayed.move(Base::Vector3d(200.0, 40.0, 60.0));
+        const auto result = Part::prepareSectionMeshFaces(
+            mesh, displayed, Base::Vector3d(200.0, 40.0, 63.0), Base::Vector3d(0.0, 0.0, 1.0));
+        QVERIFY(!result.IsNull());
+        GProp_GProps area;
+        BRepGProp::SurfaceProperties(result, area);
+        QVERIFY(std::abs(area.Mass() - 21.0 * std::acos(-1.0)) < 0.2);
+        QVERIFY(std::abs(area.CentreOfMass().Z() - 63.0) < 1e-7);
+        QVERIFY(mesh.vertices == originalVertices);
+        QVERIFY(Part::prepareSectionMeshFaces(mesh, displayed, Base::Vector3d(0, 0, 100), Base::Vector3d(0, 0, 1)).IsNull());
+        std::stop_source cancelled;
+        cancelled.request_stop();
+        QVERIFY_EXCEPTION_THROWN(Part::prepareSectionMeshFaces(
+            mesh, displayed, Base::Vector3d(0, 0, 63), Base::Vector3d(0, 0, 1), cancelled.get_token()), std::runtime_error);
+    }
+
+    void meshSectionHandlesVerticesAndCoplanarBoundary()
+    {
+        const auto mesh = Part::prepareRenderMesh(BRepPrimAPI_MakeBox(2.0, 2.0, 2.0).Shape(), 0.5, 10.0);
+        for (const auto& [origin, normal, expected] : {
+                 std::tuple {Base::Vector3d(1, 1, 0), Base::Vector3d(1, 1, 0), 4 * std::sqrt(2.0)},
+                 std::tuple {Base::Vector3d(), Base::Vector3d(1, 0, 0), 4.0}}) {
+            const auto faces = Part::prepareSectionMeshFaces(mesh, {}, origin, normal);
+            QVERIFY(!faces.IsNull());
+            GProp_GProps area;
+            BRepGProp::SurfaceProperties(faces, area);
+            QVERIFY(std::abs(area.Mass() - expected) < 1e-6);
+        }
+    }
+
+    void meshSectionAtStepUsesTheKeptSideContour()
+    {
+        const auto step = BRepAlgoAPI_Fuse(
+            BRepPrimAPI_MakeBox(2.0, 2.0, 1.0).Shape(),
+            BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 1), 1.0, 2.0, 1.0).Shape()).Shape();
+        const auto mesh = Part::prepareRenderMesh(step, 0.1, 5.0);
+        for (double sign : {1.0, -1.0}) {
+            const auto faces = Part::prepareSectionMeshFaces(
+                mesh, {}, Base::Vector3d(0, 0, 1), Base::Vector3d(0, 0, sign));
+            QVERIFY(!faces.IsNull());
+            GProp_GProps area;
+            BRepGProp::SurfaceProperties(faces, area);
+            QVERIFY(std::abs(area.Mass() - (sign > 0 ? 2.0 : 4.0)) < 1e-6);
+        }
+    }
+
+    void meshSectionRejectsOpenContours()
+    {
+        Part::RenderMesh mesh;
+        mesh.vertices = {0, 0, -1, 1, 0, 1, 0, 1, 1};
+        mesh.triangleIndices = {0, 1, 2, -1};
+        QVERIFY_EXCEPTION_THROWN(Part::prepareSectionMeshFaces(
+            mesh, {}, Base::Vector3d(), Base::Vector3d(0, 0, 1)), std::runtime_error);
     }
 
     void sectionFacesUseDisplayedPlacementAndPreserveHoles()

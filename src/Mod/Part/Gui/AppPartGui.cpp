@@ -181,6 +181,8 @@ public:
                            "Prepare native section faces asynchronously; callback(faces, error) runs on the GUI owner.");
         add_varargs_method("cancelSectionFaces", &Module::cancelSectionFaces,
                            "cancelSectionFaces(handle)\nCancel requests and release callbacks on the GUI owner.");
+        add_varargs_method("requestSectionMeshDisplay", &Module::requestSectionMeshDisplay,
+                           "Prepare section display from immutable mesh snapshots off the GUI thread.");
         add_varargs_method("requestSectionDisplay", &Module::requestSectionDisplay,
                            "requestSectionDisplay(handle, instances, origin, normal, spacing, callback)\n"
                            "Prepare cap display data on native workers; callback receives a geometry handle and error.");
@@ -307,8 +309,9 @@ private:
 
     Py::Object requestSectionFaces(const Py::Tuple& args) { return requestSection(args, false); }
     Py::Object requestSectionDisplay(const Py::Tuple& args) { return requestSection(args, true); }
+    Py::Object requestSectionMeshDisplay(const Py::Tuple& args) { return requestSection(args, true, true); }
 
-    Py::Object requestSection(const Py::Tuple& args, bool display)
+    Py::Object requestSection(const Py::Tuple& args, bool display, bool mesh = false)
     {
         PyObject *controller, *pythonInstances, *origin, *normal, *callback;
         double spacing = 0.0;
@@ -331,6 +334,16 @@ private:
             if (pair.size() != 2) { throw Py::TypeError("each instance requires a shape and matrix"); }
             Py::Object shape = pair[0];
             Py::Object matrix = pair[1];
+            if (mesh) {
+                if (!PyObject_TypeCheck(matrix.ptr(), &Base::MatrixPy::Type)) {
+                    throw Py::TypeError("each mesh instance requires a Base matrix");
+                }
+                using MeshOwner = std::shared_ptr<const Part::RenderMesh>;
+                auto* snapshot = static_cast<MeshOwner*>(PyCapsule_GetPointer(shape.ptr(), "PartGui.RenderMesh"));
+                if (!snapshot) { throw Py::Exception(); }
+                instances.push_back({{}, *static_cast<Base::MatrixPy*>(matrix.ptr())->getMatrixPtr(), *snapshot});
+                continue;
+            }
             if (!PyObject_TypeCheck(shape.ptr(), &Part::TopoShapePy::Type)
                 || !PyObject_TypeCheck(matrix.ptr(), &Base::MatrixPy::Type)) {
                 throw Py::TypeError("each instance requires a Part shape and Base matrix");

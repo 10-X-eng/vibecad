@@ -11,6 +11,18 @@
 
 namespace Part
 {
+struct RenderMesh;
+
+/** Prepare visual section faces from immutable, already displayed triangles.
+ * Curved boundaries follow display tessellation; exact CAD callers retain
+ * prepareSectionFaces. No source buffers or document geometry are modified.
+ */
+PartExport TopoDS_Shape prepareSectionMeshFaces(
+    const RenderMesh& mesh, const Base::Matrix4D& displayedTransform,
+    const Base::Vector3d& origin, const Base::Vector3d& normal,
+    std::stop_token stopToken = {}
+);
+
 /** Prepare exact section faces from a cached rendered shape on a compute worker.
  * The root location is replaced by the displayed instance transform, matching
  * render-mesh placement. Source geometry is never mutated. No GUI/Python access.

@@ -13,6 +13,7 @@ struct SectionInstance
 {
     TopoDS_Shape shape;
     Base::Matrix4D transform;
+    std::shared_ptr<const Part::RenderMesh> mesh;
 };
 
 struct SectionFaceResult

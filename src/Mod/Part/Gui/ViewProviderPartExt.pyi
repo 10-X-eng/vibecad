@@ -18,6 +18,15 @@ class ViewProviderPartExt(ViewProviderGeometryObject):
     """
 
     @no_args
+    def getRenderedMeshSnapshot(self) -> object:
+        """Retain the immutable displayed mesh, or None before it is available.
+
+        Call on the GUI thread. Pass the opaque snapshot to
+        PartGui.requestSectionMeshDisplay; it remains valid after view closure.
+        """
+        ...
+
+    @no_args
     def getRenderedShapeSnapshot(self) -> object:
         """Return the cached native shape without reading document geometry.
 

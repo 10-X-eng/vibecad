@@ -263,6 +263,11 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         self.assertAlmostEqual(shape.Volume, 8000.0)
         self.assertEqual(transform.multVec(App.Vector()), displayed.Base)
         self.assertEqual(link.Placement.Base, App.Vector(100, 20, 30))
+        bounds = VibeCADSectionView._render_bounds(view)
+        self.assertAlmostEqual(bounds.xmin, 200, places=3)
+        self.assertAlmostEqual(bounds.xmax, 240, places=3)
+        self.assertAlmostEqual(bounds.ymin, 40, places=3)
+        self.assertAlmostEqual(bounds.zmin, 60, places=3)
 
     def test_native_section_controller_delivers_faces_on_gui(self):
         import PartGui
@@ -333,7 +338,7 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         from unittest.mock import patch
 
         submitted = []
-        original = PartGui.requestSectionDisplay
+        original = PartGui.requestSectionMeshDisplay
 
         def close_after_submit(*args):
             original(*args)
@@ -343,7 +348,7 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
             App.closeDocument(self.document.Name)
 
         self.assertTrue(self._wait_until(self.document.isClosable))
-        with patch.object(PartGui, "requestSectionDisplay", close_after_submit):
+        with patch.object(PartGui, "requestSectionMeshDisplay", close_after_submit):
             view = Gui.ActiveDocument.ActiveView
             VibeCADSectionView.set_section_view(True, view=view, document=self.document)
             self.assertTrue(self._wait_until(lambda: bool(submitted)))
@@ -373,6 +378,127 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         dialog.offset_slider.setValue(500)
         self.assertFalse(dialog._updating)
         self.assertAlmostEqual(VibeCADSectionView.current_section_view_settings().offset, 2.5, places=3)
+
+    def test_mesh_snapshot_keeps_caps_available_after_document_close(self):
+        import PartGui
+
+        snapshot = self.document.getObject("SectionBox").ViewObject.getRenderedMeshSnapshot()
+        self.assertIsNotNone(snapshot)
+        controller = PartGui.createSectionFaceController()
+        received = []
+        App.closeDocument(self.document.Name)
+        PartGui.requestSectionMeshDisplay(controller, [(snapshot, App.Matrix())],
+                                          App.Vector(0, 0, 5), App.Vector(0, 0, 1), 1.0,
+                                          lambda geometry, error: received.append((geometry, error)))
+        self.assertTrue(self._wait_until(lambda: bool(received)))
+        geometry, error = received[0]
+        self.assertEqual(error, "")
+        triangles, hatch, outlines = PartGui.sectionDisplaySizes(geometry)
+        self.assertGreater(triangles, 0)
+        self.assertGreater(hatch, 0)
+        self.assertGreater(outlines, 0)
+
+    def test_panel_can_hide_plane_without_rebuilding_cut(self):
+        import VibeCADSectionViewGui as panel
+        from unittest.mock import patch
+
+        view = Gui.ActiveDocument.ActiveView
+        VibeCADSectionView.reset_section_view_settings()
+        VibeCADSectionView.set_section_view(True, view=view, document=self.document)
+        self.assertTrue(self._wait_until(lambda: not VibeCADSectionView._cap_worker._running))
+        cap = VibeCADSectionView._cap_node
+        dialog = panel.show_section_view_dialog()
+        checkbox = dialog.findChild(QtWidgets.QCheckBox, "sectionShowPlane")
+        self.assertIsNotNone(checkbox)
+        with patch.object(VibeCADSectionView, "_schedule_cap_build", side_effect=AssertionError("Rebuilt cut")):
+            checkbox.setChecked(False)
+            self.assertIsNone(VibeCADSectionView._overlay_node)
+            self.assertIs(VibeCADSectionView._cap_node, cap)
+            self.assertTrue(view.hasClippingPlane())
+            checkbox.setChecked(True)
+            self.assertIsNotNone(VibeCADSectionView._overlay_node)
+            self.assertIs(VibeCADSectionView._cap_node, cap)
+
+    def test_panel_can_hide_handles_without_rebuilding_cut(self):
+        import VibeCADSectionViewGui as panel
+        from unittest.mock import patch
+
+        view = Gui.ActiveDocument.ActiveView
+        VibeCADSectionView.reset_section_view_settings()
+        VibeCADSectionView.set_section_view(True, view=view, document=self.document)
+        self.assertTrue(self._wait_until(lambda: not VibeCADSectionView._cap_worker._running))
+        cap, guide = VibeCADSectionView._cap_node, VibeCADSectionView._overlay_node
+        dragger = VibeCADSectionView._dragger_node
+        checkbox = panel.show_section_view_dialog().findChild(QtWidgets.QCheckBox, "sectionShowHandles")
+        self.assertIsNotNone(checkbox)
+        with patch.object(VibeCADSectionView, "_schedule_cap_build", side_effect=AssertionError("Rebuilt cut")):
+            checkbox.setChecked(False)
+            self.assertEqual(view.getSceneGraph().findChild(dragger), -1)
+            self.assertIs(VibeCADSectionView._cap_node, cap)
+            self.assertIs(VibeCADSectionView._overlay_node, guide)
+            self.assertTrue(view.hasClippingPlane())
+            checkbox.setChecked(True)
+            self.assertGreaterEqual(view.getSceneGraph().findChild(dragger), 0)
+            self.assertIs(VibeCADSectionView._cap_node, cap)
+
+    def test_drag_plane_in_canvas_preserves_document(self):
+        view = Gui.ActiveDocument.ActiveView
+        view.viewAxonometric()
+        view.fitAll()
+        VibeCADSectionView.reset_section_view_settings()
+        VibeCADSectionView.set_section_view(True, view=view, document=self.document)
+        self._process_events()
+        widget = view.graphicsView().viewport()
+        # Just inside the guide's padded corner, outside the model and gizmo.
+        point = view.getPointOnScreen(App.Vector(-0.8, -0.4, 5))
+        start = QtCore.QPoint(int(point[0]), widget.height() - 1 - int(point[1]))
+        finish = start + QtCore.QPoint(0, -40)
+        box = self.document.getObject("SectionBox")
+        placement = box.Placement
+        undo = self.document.UndoCount
+        for kind, position, button, buttons in (
+            (QtCore.QEvent.MouseButtonPress, start, QtCore.Qt.LeftButton, QtCore.Qt.LeftButton),
+            (QtCore.QEvent.MouseMove, finish, QtCore.Qt.NoButton, QtCore.Qt.LeftButton),
+            (QtCore.QEvent.MouseButtonRelease, finish, QtCore.Qt.LeftButton, QtCore.Qt.NoButton),
+        ):
+            event = QtGui.QMouseEvent(kind, QtCore.QPointF(position),
+                                     QtCore.QPointF(widget.mapToGlobal(position)),
+                                     button, buttons, QtCore.Qt.NoModifier)
+            QtCore.QCoreApplication.sendEvent(widget, event)
+        self._process_events()
+        self.assertNotAlmostEqual(VibeCADSectionView.current_section_view_settings().offset, 0)
+        self.assertEqual(box.Placement, placement)
+        self.assertEqual(self.document.UndoCount, undo)
+
+    def test_scene_helpers_do_not_expand_section_bounds(self):
+        from pivy import coin
+
+        view = Gui.ActiveDocument.ActiveView
+        scene = view.getSceneGraph()
+        helper = coin.SoSeparator()
+        # A visible grid/datum is scene geometry, but is not model geometry.
+        cube = coin.SoCube()
+        cube.width = 45000
+        cube.height = 45000
+        cube.depth = 1
+        helper.addChild(cube)
+        scene.addChild(helper)
+        try:
+            bounds = VibeCADSectionView._render_bounds(view)
+            self.assertIsNotNone(bounds)
+            self.assertAlmostEqual(bounds.xmin, 0, places=3)
+            self.assertAlmostEqual(bounds.xmax, 40, places=3)
+            self.assertAlmostEqual(bounds.ymax, 20, places=3)
+            self.assertAlmostEqual(bounds.zmax, 10, places=3)
+            import VibeCADSectionViewGui as panel
+            VibeCADSectionView.reset_section_view_settings()
+            VibeCADSectionView.configure_section_view(plane="right")
+            VibeCADSectionView.set_section_view(True, view=view, document=self.document)
+            dialog = panel.show_section_view_dialog()
+            self.assertAlmostEqual(dialog.offset_spin.minimum(), -20, places=3)
+            self.assertAlmostEqual(dialog.offset_spin.maximum(), 20, places=3)
+        finally:
+            scene.removeChild(helper)
 
     def test_section_queries_are_safe_after_native_view_deletion(self):
         view = Gui.ActiveDocument.ActiveView

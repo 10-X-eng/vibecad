@@ -55,11 +55,21 @@ class SectionViewDialog(QtWidgets.QWidget):
         self.offset_slider.setObjectName("sectionOffsetSlider")
         self.offset_slider.setRange(-1000, 1000)
         layout.addWidget(self.offset_slider)
+        self.show_plane_checkbox = QtWidgets.QCheckBox("Show plane", self)
+        self.show_plane_checkbox.setObjectName("sectionShowPlane")
+        self.show_plane_checkbox.setToolTip("Show the plane guide while keeping the section cut active")
+        layout.addWidget(self.show_plane_checkbox)
+        self.show_handles_checkbox = QtWidgets.QCheckBox("Show handles", self)
+        self.show_handles_checkbox.setObjectName("sectionShowHandles")
+        self.show_handles_checkbox.setToolTip("Show the on-canvas translation and rotation handles")
+        layout.addWidget(self.show_handles_checkbox)
         layout.addStretch(1)
 
         self.offset_spin.valueChanged.connect(self._offset_spin_changed)
         self.offset_slider.valueChanged.connect(self._offset_slider_changed)
         self.flip_button.toggled.connect(self._flip_changed)
+        self.show_plane_checkbox.toggled.connect(self._show_plane_changed)
+        self.show_handles_checkbox.toggled.connect(self._show_handles_changed)
         self.destroyed.connect(_clear_dialog)
         self._load_from_settings()
 
@@ -77,6 +87,8 @@ class SectionViewDialog(QtWidgets.QWidget):
         self._set_slider_from_offset(settings.offset)
         if self.flip_button.isChecked() != bool(settings.flipped):
             self.flip_button.setChecked(settings.flipped)
+        self.show_plane_checkbox.setChecked(settings.show_plane)
+        self.show_handles_checkbox.setChecked(settings.show_handles)
         self._updating = False
 
     def _sync_offset_limits(self) -> None:
@@ -164,6 +176,16 @@ class SectionViewDialog(QtWidgets.QWidget):
         if self._updating:
             return
         section.configure_section_view(flipped=bool(checked))
+
+    def _show_plane_changed(self, checked: bool) -> None:
+        if self._updating:
+            return
+        section.configure_section_view(show_plane=bool(checked))
+
+    def _show_handles_changed(self, checked: bool) -> None:
+        if self._updating:
+            return
+        section.configure_section_view(show_handles=bool(checked))
 
     def isVisible(self) -> bool:  # noqa: N802
         if _dock is not None:

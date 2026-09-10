@@ -59,6 +59,7 @@ class SectionViewSettings:
     yaw: float = 0.0
     pitch: float = 0.0
     roll: float = 0.0
+    show_handles: bool = True
 
     def __post_init__(self) -> None:
         plane = str(self.plane).strip().casefold()
@@ -71,6 +72,7 @@ class SectionViewSettings:
         object.__setattr__(self, "yaw", float(self.yaw))
         object.__setattr__(self, "pitch", float(self.pitch))
         object.__setattr__(self, "roll", float(self.roll))
+        object.__setattr__(self, "show_handles", bool(self.show_handles))
 
 
 @dataclass(frozen=True)
@@ -402,7 +404,7 @@ def section_plane_from_view_direction(
     toward_camera = (-look[0], -look[1], -look[2])
     plane = principal_plane_for_axis(toward_camera)
     principal = section_plane_normal(plane, flipped=False)
-    flipped = _dot(principal, toward_camera) < 0.0
+    flipped = _dot(principal, look) < 0.0
     return plane, flipped
 
 
@@ -577,6 +579,7 @@ def apply_feature_snap(
                 plane=plane,
                 flipped=flipped,
                 show_plane=settings.show_plane,
+                show_handles=settings.show_handles,
             )
     offset = offset_through_point(next_settings, model_center, point)
     return replace(next_settings, offset=offset)
@@ -1415,16 +1418,33 @@ def _placement_from_bounds(settings: SectionViewSettings, bounds: ModelBounds | 
 
 
 def _render_bounds(view: Any) -> ModelBounds | None:
-    """Use the displayed scene, without materializing document compound shapes."""
+    """Bound displayed BRep instances, excluding grids and editor decorations.
+
+    Applying the action to each visible path preserves Link/display transforms
+    without reading document compound shapes or modifying the scene.
+    """
     scene = _scene_from_view(view)
     if scene is None:
         return None
     try:
         from pivy import coin
 
-        action = coin.SoGetBoundingBoxAction(coin.SbViewportRegion(1, 1))
-        action.apply(scene)
-        box = action.getBoundingBox()
+        box = coin.SbBox3f()
+        for type_name in ("SoBrepFaceSet", "SoBrepEdgeSet", "SoBrepPointSet"):
+            shape_type = coin.SoType.fromName(type_name)
+            if shape_type.isBad():
+                continue
+            search = coin.SoSearchAction()
+            search.setType(shape_type)
+            search.setInterest(coin.SoSearchAction.ALL)
+            search.setSearchingAll(False)
+            search.apply(scene)
+            for path in search.getPaths():
+                action = coin.SoGetBoundingBoxAction(coin.SbViewportRegion(1, 1))
+                action.apply(path)
+                instance_box = action.getBoundingBox()
+                if not instance_box.isEmpty():
+                    box.extendBy(instance_box)
         if box.isEmpty():
             return None
         low, high = _vec3(box.getMin()), _vec3(box.getMax())
@@ -1623,7 +1643,7 @@ class _NativeSectionCapWorker:
         if not self._backend._deferSectionDisplay(run):
             self.cancel()
 
-    def request(self, snapshots, origin, normal, spacing, publish):
+    def request(self, snapshots, origin, normal, spacing, publish, *, mesh=False):
         from time import perf_counter
 
         self.cancel()
@@ -1662,7 +1682,9 @@ class _NativeSectionCapWorker:
                     instance = next(self._steps)
                 except StopIteration:
                     self._steps = None
-                    self._backend.requestSectionDisplay(
+                    request = (self._backend.requestSectionMeshDisplay if mesh
+                               else self._backend.requestSectionDisplay)
+                    request(
                         self._handle, instances, origin, normal, spacing, completed
                     )
                     return
@@ -1744,9 +1766,14 @@ def _remove_dragger(view: Any) -> None:
     global _dragger_view, _dragger_document, _bounds_view, _section_bounds, _cap_dirty
     global _last_dragger_scale
     global _drag_start_origin, _drag_start_axes, _drag_start_rot_counts, _triad_parts
+    _stop_plane_drag()
     _stop_dragger_poll()
     scene = _scene_from_view(view)
     _detach_scene_node(scene, _dragger_node)
+    if _dragger_node is not None:
+        unref = getattr(_dragger_node, "unref", None)
+        if callable(unref):
+            unref()
     _dragger_node = None
     _dragger_view = None
     _dragger_document = None
@@ -1796,23 +1823,38 @@ def _sync_overlay(
     scene = _scene_from_view(view)
     if scene is None:
         return
-    objects = _document_objects(document)
+    _sync_plane_guide(view, document, settings)
     bounds = _bounds_for_view(view, document)
     center = bounds.center if bounds is not None else (0.0, 0.0, 0.0)
     origin, normal = clip_plane_from_settings(settings, center)
+    if not rebuild_caps:
+        return
+    _schedule_cap_build(coin, view, document, origin, normal, hatch_spacing_for_bounds(bounds))
+
+
+def _sync_plane_guide(view, document, settings):
+    """Change guide visibility without cancelling or rebuilding cut faces."""
+    global _overlay_node
+    scene = _scene_from_view(view)
+    if scene is None:
+        return
+    _detach_scene_node(scene, _overlay_node)
+    _overlay_node = None
     if settings.show_plane:
+        from pivy import coin
+
+        bounds = _bounds_for_view(view, document)
+        center = bounds.center if bounds is not None else (0.0, 0.0, 0.0)
+        origin, normal = clip_plane_from_settings(settings, center)
         half_width, half_height = _overlay_size(bounds, normal)
         corners = section_plane_corners(origin, normal, half_width, half_height)
         try:
             _install_overlay_node(coin, scene, corners)
         except Exception:
             pass
-    if not rebuild_caps:
-        return
-    _schedule_cap_build(coin, view, document, origin, normal, hatch_spacing_for_bounds(bounds))
 
 
-def _rendered_section_snapshot_steps(view):
+def _rendered_section_snapshot_steps(view, *, mesh=False):
     """Capture displayed instances on the owner, yielding between providers.
 
     Only detached native shape references and matrices leave this generator.
@@ -1826,10 +1868,11 @@ def _rendered_section_snapshot_steps(view):
     for document in App.listDocuments().values():
         for obj in document.Objects:
             provider = obj.ViewObject
-            snapshot = getattr(provider, "getRenderedShapeSnapshot", None)
+            snapshot = getattr(provider, "getRenderedMeshSnapshot" if mesh else "getRenderedShapeSnapshot", None)
             if callable(snapshot):
                 shape = snapshot()
-                if not shape.isNull():
+                available = shape is not None if mesh else not shape.isNull()
+                if available:
                     search = coin.SoSearchAction()
                     search.setType(face_type)
                     search.setInterest(coin.SoSearchAction.FIRST)
@@ -1880,8 +1923,8 @@ def _schedule_cap_build(coin, view, document, origin, normal, spacing):
             return _install_cap_node_steps(coin, scene, caps)
 
     _cap_worker.request(
-        _rendered_section_snapshot_steps(view),
-        App.Vector(*origin), App.Vector(*normal), spacing, publish,
+        _rendered_section_snapshot_steps(view, mesh=True),
+        App.Vector(*origin), App.Vector(*normal), spacing, publish, mesh=True,
     )
 
 
@@ -2737,6 +2780,8 @@ def _poll_dragger() -> None:
     if (_cap_dirty and not _dragger_busy and view is not None
             and _dragger_document is not None and _dragger_document.isClosable()):
         _sync_overlay(view, _dragger_document, _settings)
+    if not _settings.show_handles:
+        return
     origin = _current_dragger_origin()
     if origin is not None and view is not None:
         _autoscale_dragger(view, origin)
@@ -2833,6 +2878,114 @@ def _poll_dragger() -> None:
     _refresh_dialog()
 
 
+_plane_drag_filter = None
+
+
+def _stop_plane_drag():
+    global _plane_drag_filter
+    handler, _plane_drag_filter = _plane_drag_filter, None
+    if handler is not None:
+        try:
+            handler.widget.removeEventFilter(handler)
+            handler.deleteLater()
+        except RuntimeError:
+            pass
+
+
+def _start_plane_drag(view):
+    """Handle guide drags on the owning Qt viewport, without Coin callbacks."""
+    global _plane_drag_filter
+    if _plane_drag_filter is not None or not callable(getattr(view, "graphicsView", None)):
+        return
+    from PySide import QtCore, QtGui
+
+    class PlaneDragFilter(QtCore.QObject):
+        def __init__(self, widget):
+            super().__init__(widget)
+            self.widget = widget
+            self.dragging = False
+
+        def eventFilter(self, watched, event):
+            if _active_3d_view() != view or _dragger_view != view:
+                self.dragging = False
+                return False
+            kind = event.type()
+            if kind == QtCore.QEvent.MouseButtonPress:
+                if (event.button() != QtCore.Qt.LeftButton
+                        or event.modifiers() != QtCore.Qt.NoModifier
+                        or not _settings.show_plane or _overlay_node is None):
+                    return False
+                bounds = _bounds_for_view(view, _dragger_document)
+                center = bounds.center if bounds else (0, 0, 0)
+                origin, normal = clip_plane_from_settings(_settings, center)
+                width, height = _overlay_size(bounds, normal)
+
+                def project(point):
+                    x, y = view.getPointOnScreen(App.Vector(*point))
+                    return QtCore.QPointF(x, watched.height() - 1 - y)
+
+                corners = section_plane_corners(origin, normal, width, height)
+                polygon = QtGui.QPolygonF([project(point) for point in corners])
+                position = event.position()
+                if not polygon.containsPoint(position, QtCore.Qt.OddEvenFill):
+                    return False
+                # The native gizmo keeps its own arrow/ring interaction when
+                # both the guide and a handle lie under the cursor.
+                from pivy import coin
+                pixel_x, pixel_y = int(position.x()), watched.height() - 1 - int(position.y())
+                ray_point = view.getPoint(pixel_x, pixel_y)
+                direction = view.getCameraOrientation().multVec(App.Vector(0, 0, -1))
+                camera = _view_camera(view)
+                if camera is not None:
+                    ray_point = ray_point - direction * float(camera.farDistance.getValue())
+                pick = coin.SoRayPickAction(coin.SbViewportRegion(watched.width(), watched.height()))
+                pick.setRay(_coin_vec3(coin, _vec3(ray_point)), _coin_vec3(coin, _vec3(direction)))
+                pick.setPickAll(True)
+                pick.apply(_scene_from_view(view))
+                if any(point.getPath().containsNode(_dragger_node) for point in pick.getPickedPointList()):
+                    return False
+                self.start_position = position
+                self.start_settings = _settings
+                self.normal = normal
+                self.center = center
+                self.bounds = bounds
+                self.axis = project(tuple(origin[i] + normal[i] for i in range(3))) - project(origin)
+                # Looking straight at the cut collapses its normal on screen;
+                # vertical dragging then uses the view's world-units-per-pixel.
+                a = view.getPoint(pixel_x, pixel_y)
+                b = view.getPoint(pixel_x, pixel_y + 1)
+                self.pixel_scale = (b - a).Length
+                self.dragging = True
+                return True
+            if not self.dragging:
+                return False
+            if kind == QtCore.QEvent.MouseMove:
+                delta = event.position() - self.start_position
+                length2 = self.axis.x() ** 2 + self.axis.y() ** 2
+                distance = ((delta.x() * self.axis.x() + delta.y() * self.axis.y()) / length2
+                            if length2 > 0.25 else -delta.y() * self.pixel_scale)
+                offset = self.start_settings.offset + distance
+                if self.bounds is not None:
+                    low, high = offset_range_along_normal(self.bounds, self.normal)
+                    offset = max(low, min(high, offset))
+                configure_section_view(offset=offset, view=view, document=_dragger_document,
+                                       preview=True, sync_dragger=False)
+                _sync_plane_guide(view, _dragger_document, _settings)
+                _refresh_dialog()
+                return True
+            if kind == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
+                self.dragging = False
+                configure_section_view(view=view, document=_dragger_document)
+                _refresh_dialog()
+                return True
+            return False
+
+    widget = view.graphicsView().viewport()
+    handler = PlaneDragFilter(widget)
+    widget.installEventFilter(handler)
+    _plane_drag_filter = handler
+
+
 def _sync_dragger(
     view: Any,
     document: Any | None,
@@ -2895,12 +3048,21 @@ def _sync_dragger(
         except Exception:
             _triad_parts = None
             return
+        # Keep a native reference while the handles are detached. A Python
+        # wrapper alone does not keep a Coin node alive after removeChild.
+        dragger.ref()
         _dragger_node = dragger
         _observe_section_document(view, document)
         _start_dragger_poll()
     _set_dragger_pose(coin, _dragger_node, origin, axes)
     _autoscale_dragger(view, origin)
     _snapshot_polled_pose()
+    _start_plane_drag(view)
+    if settings.show_handles:
+        if scene.findChild(_dragger_node) < 0:
+            scene.insertChild(_dragger_node, 0)
+    else:
+        _detach_scene_node(scene, _dragger_node)
     touch = getattr(scene, "touch", None)
     if callable(touch):
         try:
@@ -3170,11 +3332,14 @@ def configure_section_view(
     document: Any | None = None,
     preview: bool = False,
     sync_dragger: bool = True,
+    show_handles: bool | None = None,
 ) -> dict[str, object]:
     """Update the live Front/Top/Right section without changing geometry."""
 
     global _settings
     updates: dict[str, object] = {}
+    if show_handles is not None:
+        updates["show_handles"] = show_handles
     if plane is not None:
         updates["plane"] = plane
     if offset is not None:
@@ -3192,18 +3357,25 @@ def configure_section_view(
     _settings = replace(_settings, **updates) if updates else _settings
     active = view if view is not None else _active_3d_view()
     if active is not None and is_section_view_active(active):
-        _apply_clip(
-            active,
-            document,
-            _settings,
-            preview=preview,
-            sync_dragger=sync_dragger,
-        )
+        if updates and updates.keys() <= {"show_plane", "show_handles"}:
+            if "show_plane" in updates:
+                _sync_plane_guide(active, document, _settings)
+            if "show_handles" in updates:
+                _sync_dragger(active, document, _settings)
+        else:
+            _apply_clip(
+                active,
+                document,
+                _settings,
+                preview=preview,
+                sync_dragger=sync_dragger,
+            )
     return {
         "plane": _settings.plane,
         "offset": _settings.offset,
         "flipped": _settings.flipped,
         "show_plane": _settings.show_plane,
+        "show_handles": _settings.show_handles,
         "yaw": _settings.yaw,
         "pitch": _settings.pitch,
         "roll": _settings.roll,

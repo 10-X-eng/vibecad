@@ -101,8 +101,11 @@ struct SectionFaceController::State: std::enable_shared_from_this<State>
                             break;
                         }
                         try {
-                            auto face = Part::prepareSectionFaces(
-                                instance.shape, instance.transform, origin, normal, stop->get_token());
+                            auto face = instance.mesh
+                                ? Part::prepareSectionMeshFaces(*instance.mesh, instance.transform,
+                                                                origin, normal, stop->get_token())
+                                : Part::prepareSectionFaces(instance.shape, instance.transform,
+                                                           origin, normal, stop->get_token());
                             if (!face.IsNull()) {
                                 if (geometry) {
                                     auto prepared = Part::prepareSectionDisplay(

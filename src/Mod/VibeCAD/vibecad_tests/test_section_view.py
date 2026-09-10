@@ -811,19 +811,13 @@ def test_tiny_axis_jitter_does_not_switch_planes() -> None:
     assert updated.plane == "top"
 
 
-def test_section_plane_from_view_picks_nearest_parallel_and_keeps_the_far_half() -> None:
-    plane, flipped = section.section_plane_from_view_direction((0.0, 0.0, -1.0))
-    assert plane == "top"
-    assert flipped is False
-    plane, flipped = section.section_plane_from_view_direction((0.0, 0.0, 1.0))
-    assert plane == "top"
-    assert flipped is True
-    plane, flipped = section.section_plane_from_view_direction((0.0, -1.0, 0.0))
-    assert plane == "front"
-    assert flipped is False
-    plane, flipped = section.section_plane_from_view_direction((1.0, 0.0, 0.0))
-    assert plane == "right"
-    assert flipped is True
+@pytest.mark.parametrize("look", [(0, 0, -1), (0, 0, 1), (0, -1, 0), (1, 0, 0), (0.2, 0.9, 0.1)])
+def test_section_plane_from_view_keeps_half_away_from_camera(look) -> None:
+    settings = section.initial_section_settings(look)
+    origin, normal = section.clip_plane_from_settings(settings, (0, 0, 0))
+    # SoClipPlane keeps its positive half-space. The camera must be in
+    # the removed half, so the cut face opens toward the viewer.
+    assert section._dot(normal, look) > 0
 
 
 def test_initial_settings_follow_the_camera_look_direction() -> None:
@@ -1033,7 +1027,8 @@ def test_cap_schedule_uses_native_display_without_document_shape_copy(monkeypatc
     monkeypatch.setattr(section, "_cap_worker", None)
     snapshots, published = [], []
 
-    def capture(view):
+    def capture(view, *, mesh=False):
+        assert mesh
         snapshots.append(view)
         yield ("cached-shape", "display-matrix")
 
@@ -1181,6 +1176,21 @@ class _NativeSectionBackend:
 
     def requestSectionDisplay(self, *args):
         self.requests.append(args)
+
+    def requestSectionMeshDisplay(self, *args):
+        self.requests.append(args)
+
+
+def test_mesh_cap_worker_uses_mesh_request_without_exact_geometry():
+    backend = _NativeSectionBackend()
+    received = []
+    backend.requestSectionMeshDisplay = lambda *args: received.append(args)
+    worker = section._NativeSectionCapWorker(backend)
+    worker.request(iter([("mesh", "matrix")]), (0, 0, 0), (0, 0, 1), 1,
+                   lambda *_: None, mesh=True)
+    backend.queued.pop(0)()
+    assert received[0][1] == [("mesh", "matrix")]
+    assert not backend.requests
 
 
 def test_native_cap_worker_cancels_capture_and_rejects_stale_delivery():

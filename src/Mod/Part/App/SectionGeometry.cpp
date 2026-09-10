@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <set>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepAdaptor_CompCurve.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <GCPnts_UniformDeflection.hxx>
@@ -19,6 +22,7 @@
 
 #include "FaceMakerBullseye.h"
 #include "TopoShape.h"
+#include "RenderMesh.h"
 
 namespace
 {
@@ -28,6 +32,156 @@ void checkCancellation(std::stop_token stop)
         throw std::runtime_error("Section face preparation cancelled");
     }
 }
+}
+
+TopoDS_Shape Part::prepareSectionMeshFaces(
+    const RenderMesh& mesh, const Base::Matrix4D& transform,
+    const Base::Vector3d& origin, const Base::Vector3d& normal, std::stop_token stop)
+{
+    checkCancellation(stop);
+    auto direction = normal;
+    if (!std::isfinite(direction.Length()) || direction.Length() <= gp::Resolution()) {
+        throw std::invalid_argument("Section plane requires a finite nonzero normal");
+    }
+    direction.Normalize();
+    if (mesh.vertices.size() % 3 || mesh.triangleIndices.size() % 4) {
+        throw std::invalid_argument("Malformed section mesh buffers");
+    }
+    std::vector<Base::Vector3d> vertices;
+    std::vector<double> distances;
+    vertices.reserve(mesh.vertexCount());
+    distances.reserve(mesh.vertexCount());
+    double low = std::numeric_limits<double>::infinity();
+    double high = -low;
+    double scale = 1.0;
+    for (std::size_t i = 0; i < mesh.vertexCount(); ++i) {
+        if (i % 256 == 0) { checkCancellation(stop); }
+        Base::Vector3d point;
+        transform.multVec(Base::Vector3d(mesh.vertices[3*i], mesh.vertices[3*i+1], mesh.vertices[3*i+2]), point);
+        point -= origin;
+        if (!std::isfinite(point.Length())) {
+            throw std::invalid_argument("Section mesh requires finite coordinates");
+        }
+        scale = std::max(scale, point.Length());
+        const double distance = point.Dot(direction);
+        low = std::min(low, distance);
+        high = std::max(high, distance);
+        vertices.push_back(point);
+        distances.push_back(distance);
+    }
+    const double tolerance = std::max(1e-7, scale * 4 * std::numeric_limits<float>::epsilon());
+    if (low > tolerance || high < -tolerance || vertices.empty()) { return {}; }
+
+    using Cell = std::array<std::int64_t, 3>;
+    using Edge = std::pair<std::size_t, std::size_t>;
+    std::map<Cell, std::vector<std::size_t>> cells;
+    std::vector<Base::Vector3d> points;
+    std::set<Edge> edges;
+    const auto vertexId = [&](const Base::Vector3d& point) {
+        Cell cell {static_cast<std::int64_t>(std::floor(point.x / tolerance)),
+                   static_cast<std::int64_t>(std::floor(point.y / tolerance)),
+                   static_cast<std::int64_t>(std::floor(point.z / tolerance))};
+        // Search adjacent buckets too: rounding alone splits coincident seams
+        // at bucket boundaries and leaves otherwise closed contours open.
+        for (int x = -1; x <= 1; ++x) {
+            for (int y = -1; y <= 1; ++y) {
+                for (int z = -1; z <= 1; ++z) {
+                    const auto found = cells.find({cell[0]+x, cell[1]+y, cell[2]+z});
+                    if (found == cells.end()) { continue; }
+                    for (const auto index : found->second) {
+                        if ((points[index] - point).Length() <= tolerance) { return index; }
+                    }
+                }
+            }
+        }
+        const auto index = points.size();
+        points.push_back(point);
+        cells[cell].push_back(index);
+        return index;
+    };
+    for (std::size_t i = 0; i < mesh.triangleIndices.size(); i += 4) {
+        if (i % 1024 == 0) { checkCancellation(stop); }
+        if (mesh.triangleIndices[i+3] != -1) {
+            throw std::invalid_argument("Section mesh requires triangle delimiters");
+        }
+        std::array<std::size_t, 3> ids;
+        std::array<double, 3> signedDistance;
+        for (std::size_t j = 0; j < 3; ++j) {
+            const auto index = mesh.triangleIndices[i+j];
+            if (index < 0 || static_cast<std::size_t>(index) >= vertices.size()) {
+                throw std::invalid_argument("Invalid section triangle index");
+            }
+            ids[j] = static_cast<std::size_t>(index);
+            signedDistance[j] = std::abs(distances[ids[j]]) <= tolerance ? 0 : distances[ids[j]];
+        }
+        if (signedDistance[0] == 0 && signedDistance[1] == 0 && signedDistance[2] == 0) {
+            continue; // Adjacent non-coplanar triangles supply the perimeter.
+        }
+        // At a step or seam exactly on the plane, the two neighboring
+        // surfaces can have different outlines. Only the positive (kept)
+        // half-space supplies an on-plane edge; combining both outlines
+        // creates spurious branches or hatches the removed side's footprint.
+        if (std::count(signedDistance.begin(), signedDistance.end(), 0.0) == 2
+            && *std::min_element(signedDistance.begin(), signedDistance.end()) < 0.0) {
+            continue;
+        }
+        std::set<std::size_t> cut;
+        for (std::size_t j = 0; j < 3; ++j) {
+            const auto next = (j+1) % 3;
+            if (signedDistance[j] == 0) {
+                const auto point = vertices[ids[j]] - direction * distances[ids[j]];
+                cut.insert(vertexId(point));
+            }
+            else if ((signedDistance[j] < 0 && signedDistance[next] > 0)
+                     || (signedDistance[j] > 0 && signedDistance[next] < 0)) {
+                const double ratio = signedDistance[j] / (signedDistance[j] - signedDistance[next]);
+                cut.insert(vertexId(vertices[ids[j]] + (vertices[ids[next]] - vertices[ids[j]]) * ratio));
+            }
+        }
+        if (cut.size() == 2) { edges.emplace(*cut.begin(), *cut.rbegin()); }
+    }
+    if (edges.empty()) { return {}; }
+    std::vector<std::vector<std::size_t>> adjacent(points.size());
+    for (const auto& [a, b] : edges) {
+        adjacent[a].push_back(b);
+        adjacent[b].push_back(a);
+    }
+    for (const auto& neighbors : adjacent) {
+        if (!neighbors.empty() && neighbors.size() != 2) {
+            throw std::runtime_error("Section mesh contains an open or branching contour");
+        }
+    }
+    FaceMakerBullseye maker;
+    maker.MyElementMapPolicy = ElementMapPolicy::Drop;
+    while (!edges.empty()) {
+        checkCancellation(stop);
+        auto [first, current] = *edges.begin();
+        auto previous = first;
+        edges.erase(edges.begin());
+        BRepBuilderAPI_MakePolygon polygon;
+        const auto add = [&](std::size_t index) {
+            const auto point = points[index] + origin;
+            polygon.Add(gp_Pnt(point.x, point.y, point.z));
+        };
+        add(first);
+        while (current != first) {
+            checkCancellation(stop);
+            add(current);
+            const auto& neighbors = adjacent[current];
+            const auto next = neighbors[0] == previous ? neighbors[1] : neighbors[0];
+            if (!edges.erase(std::minmax(current, next))) {
+                throw std::runtime_error("Section mesh contour cannot be closed");
+            }
+            previous = current;
+            current = next;
+        }
+        polygon.Close();
+        if (!polygon.IsDone()) { throw std::runtime_error("Invalid section mesh polygon"); }
+        maker.addWire(polygon.Wire());
+    }
+    maker.Build();
+    checkCancellation(stop);
+    return maker.Shape();
 }
 
 TopoDS_Shape Part::prepareSectionFaces(
