@@ -22,6 +22,8 @@
 #include <TopoDS_Wire.hxx>
 #include <gp.hxx>
 
+// MSVC instantiates the exported FaceDriller destructor at the class definition.
+#include "WireJoiner.h"
 #include "FaceMakerBullseye.h"
 #include "TopoShape.h"
 #include "RenderMesh.h"

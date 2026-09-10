@@ -350,7 +350,8 @@ private:
             }
             instances.push_back({
                 static_cast<Part::TopoShapePy*>(shape.ptr())->getTopoShapePtr()->getShape(),
-                *static_cast<Base::MatrixPy*>(matrix.ptr())->getMatrixPtr()
+                *static_cast<Base::MatrixPy*>(matrix.ptr())->getMatrixPtr(),
+                {}
             });
         }
         struct OwnerCallback
