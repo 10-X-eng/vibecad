@@ -120,6 +120,34 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
                 return widget
         return None
 
+    def test_display_bounds_include_visible_meshes_but_exclude_grid(self):
+        import Mesh
+        import MeshGui
+        from pivy import coin
+
+        mesh = self.document.addObject("Mesh::Feature", "SectionMesh")
+        mesh.Mesh = Mesh.createBox(20, 20, 20)
+        mesh.Placement.Base = App.Vector(100, 0, 0)
+        self.document.recompute()
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        view = Gui.ActiveDocument.ActiveView
+        scene = view.getSceneGraph()
+        helper = coin.SoCube()
+        helper.width = helper.height = helper.depth = 45000
+        scene.addChild(helper)
+        try:
+            self._process_events()
+            bounds = VibeCADSectionView._render_bounds(view)
+            self.assertIsNotNone(bounds)
+            self.assertAlmostEqual(bounds.xmin, 0, places=4)
+            self.assertAlmostEqual(bounds.xmax, 110, places=4)
+            mesh.ViewObject.Visibility = False
+            self._process_events()
+            hidden = VibeCADSectionView._render_bounds(view)
+            self.assertAlmostEqual(hidden.xmax, 40, places=4)
+        finally:
+            scene.removeChild(helper)
+
     def test_native_command_toggles_clip_plane_action_and_scene(self):
         command_name = "VibeCAD_SectionView"
         self.assertTrue(Gui.isCommandActive(command_name))

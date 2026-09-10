@@ -1418,7 +1418,7 @@ def _placement_from_bounds(settings: SectionViewSettings, bounds: ModelBounds | 
 
 
 def _render_bounds(view: Any) -> ModelBounds | None:
-    """Bound displayed BRep instances, excluding grids and editor decorations.
+    """Bound displayed model instances, excluding grids and editor decorations.
 
     Applying the action to each visible path preserves Link/display transforms
     without reading document compound shapes or modifying the scene.
@@ -1430,7 +1430,10 @@ def _render_bounds(view: Any) -> ModelBounds | None:
         from pivy import coin
 
         box = coin.SbBox3f()
-        for type_name in ("SoBrepFaceSet", "SoBrepEdgeSet", "SoBrepPointSet"):
+        for type_name in (
+            "SoBrepFaceSet", "SoBrepEdgeSet", "SoBrepPointSet",
+            "SoFCMeshObjectShape", "SoFCIndexedFaceSet",
+        ):
             shape_type = coin.SoType.fromName(type_name)
             if shape_type.isBad():
                 continue
