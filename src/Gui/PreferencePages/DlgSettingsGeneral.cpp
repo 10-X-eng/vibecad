@@ -150,7 +150,9 @@ void DlgSettingsGeneral::saveUnitSystemSettings()
     ParameterGrp::handle hGrpu = App::GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Units"
     );
-    hGrpu->SetInt("UserSchema", ui->comboBox_UnitSystem->currentIndex());
+    const int selectedSchema = ui->comboBox_UnitSystem->currentIndex();
+    const bool schemaChanged = selectedSchema != hGrpu->GetInt("UserSchema", 0);
+    hGrpu->SetInt("UserSchema", selectedSchema);
     hGrpu->SetInt("Decimals", ui->spinBoxDecimals->value());
     hGrpu->SetBool("IgnoreProjectSchema", ui->checkBox_projectUnitSystemIgnore->isChecked());
 
@@ -173,17 +175,23 @@ void DlgSettingsGeneral::saveUnitSystemSettings()
 
     // Set and save the Unit System
     if (ui->checkBox_projectUnitSystemIgnore->isChecked()) {
-        // currently selected View System (unit system)
-        int viewSystemIndex = ui->comboBox_UnitSystem->currentIndex();
-        UnitsApi::setSchema(viewSystemIndex);
+        // Use the preference for the current view without changing the
+        // document's own unit system.
+        UnitsApi::setSchema(selectedSchema);
     }
     else if (App::Document* doc = App::GetApplication().getActiveDocument()) {
-        UnitsApi::setSchema(doc->UnitSystem.getValue());
+        if (schemaChanged) {
+            getMainWindow()->setUserSchema(selectedSchema);
+        }
+        else {
+            // Applying unrelated preferences or restoring project units must
+            // preserve the document's own schema.
+            UnitsApi::setSchema(doc->UnitSystem.getValue());
+        }
     }
     else {
         // if there is no existing document then the unit must still be set
-        int viewSystemIndex = ui->comboBox_UnitSystem->currentIndex();
-        UnitsApi::setSchema(viewSystemIndex);
+        UnitsApi::setSchema(selectedSchema);
     }
 
     ui->SubstituteDecimal->onSave();

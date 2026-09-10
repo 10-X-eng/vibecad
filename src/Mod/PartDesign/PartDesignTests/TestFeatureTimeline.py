@@ -107,7 +107,7 @@ def _ordered_object_names(timeline):
     ]
 
 
-def _icon_pixels(icon):
+def _icon_pixels(icon, *, exclude_status_badge=False):
     image = icon.pixmap(QtCore.QSize(22, 22)).toImage().convertToFormat(
         QtGui.QImage.Format_ARGB32
     )
@@ -115,6 +115,8 @@ def _icon_pixels(icon):
         image.pixelColor(x, y).getRgb()
         for y in range(image.height())
         for x in range(image.width())
+        # Recompute/error badges retain their status colors after rollback.
+        if not (exclude_status_badge and x >= image.width() - 10 and y < 10)
     )
 
 
@@ -740,42 +742,6 @@ class TestFeatureTimeline(unittest.TestCase):
             self.timeline_widget,
         )
         self.assertFalse(self.timeline_widget.isHidden())
-
-    def test_history_icons_follow_owning_body_visibility(self):
-        self.body.ViewObject.Visibility = True
-
-        def body_items_with_state(state):
-            items = [
-                item
-                for item in _object_items(self.timeline).values()
-                if item.data(OWNER_NAME_ROLE) == self.body.Name
-            ]
-            return (
-                items
-                if items
-                and all(
-                    "Body visibility: {}".format(state) in item.toolTip()
-                    for item in items
-                )
-                else None
-            )
-
-        visible_items = _wait_until(lambda: body_items_with_state("Visible"))
-        self.assertIsNotNone(visible_items)
-        visible_pixels = _icon_pixels(
-            _object_items(self.timeline)[self.first.Name].icon()
-        )
-
-        self.body.ViewObject.Visibility = False
-        hidden_items = _wait_until(lambda: body_items_with_state("Hidden"))
-        self.assertIsNotNone(hidden_items)
-        hidden_pixels = _icon_pixels(
-            _object_items(self.timeline)[self.first.Name].icon()
-        )
-
-        self.assertTrue(_has_colored_pixel(visible_pixels))
-        self.assertTrue(_is_grayscale(hidden_pixels))
-        self.assertNotEqual(hidden_pixels, visible_pixels)
 
     def test_long_history_rebuild_reveals_current_state_marker(self):
         Gui.Selection.clearSelection()
@@ -5211,4 +5177,173 @@ class TestFeatureTimeline(unittest.TestCase):
         self.assertNotEqual(
             failed_item.icon().pixmap(22, 22).toImage(),
             normal_icon,
+        )
+
+
+class TestFeatureTimelineIconColor(unittest.TestCase):
+    """Timeline icons keep ribbon colors until history rolls back past them."""
+
+    def setUp(self):
+        if not App.GuiUp or Gui.getMainWindow() is None:
+            self.skipTest("Requires GUI")
+
+        Gui.activateWorkbench("PartDesignWorkbench")
+        self.document = App.newDocument("FeatureTimelineIcons")
+        self.document.UndoMode = True
+        Gui.activateView("Gui::View3DInventor", True)
+
+        self.body = self.document.addObject("PartDesign::Body", "IconBody")
+        Gui.activeView().setActiveObject("pdbody", self.body)
+
+        self.first = self.document.addObject("Part::Box", "IconFirst")
+        self.body.addObject(self.first)
+
+        self.second = self.document.addObject("Part::Box", "IconSecond")
+        self.body.addObject(self.second)
+
+        self.body.Tip = self.first
+        self.first.Visibility = True
+        self.second.Visibility = False
+        self.assertTrue(
+            _wait_until(lambda: not self.document.CooperativeMutationActive)
+        )
+        self.document.recompute()
+        timeline_object = _document_timeline(self.document)
+        self.assertIsNotNone(timeline_object)
+        timeline_object.Position = list(timeline_object.Operations).index(self.first) + 1
+        self.assertTrue(
+            _wait_until(lambda: not self.document.CooperativeMutationActive)
+        )
+
+        main_window = Gui.getMainWindow()
+        self.timeline_widget = _wait_until(
+            lambda: main_window.findChild(
+                QtGui.QWidget, "VibeCADFeatureTimeline"
+            )
+        )
+        self.assertIsNotNone(self.timeline_widget)
+        self.timeline = self.timeline_widget.findChild(
+            QtGui.QListWidget, "VibeCADFeatureTimelineItems"
+        )
+        self.assertIsNotNone(self.timeline)
+        self.assertTrue(
+            _wait_until(
+                lambda: {self.first.Name, self.second.Name}.issubset(
+                    set(_object_items(self.timeline))
+                )
+            )
+        )
+
+    def tearDown(self):
+        Gui.Selection.clearSelection()
+        try:
+            document_name = (
+                self.document.Name
+                if getattr(self, "document", None) is not None
+                else ""
+            )
+        except RuntimeError:
+            document_name = ""
+        if document_name and document_name in App.listDocuments():
+            self.assertTrue(
+                _wait_until(lambda: not self.document.CooperativeMutationActive)
+            )
+            App.closeDocument(document_name)
+        if App.GuiUp:
+            Gui.activateWorkbench("PartDesignWorkbench")
+
+    def test_history_icons_keep_ribbon_color_until_rolled_back(self):
+        source_pixels = _icon_pixels(self.first.ViewObject.Icon)
+        self.assertTrue(
+            _has_colored_pixel(source_pixels),
+            "The ribbon/view-provider artwork for this feature must be colored",
+        )
+
+        def item_with_after_state(name, after_position):
+            item = _object_items(self.timeline).get(name)
+            if item is None:
+                return None
+            if bool(item.data(IS_AFTER_POSITION_ROLE)) != after_position:
+                return None
+            return item
+
+        current_item = _wait_until(
+            lambda: item_with_after_state(self.first.Name, False)
+        )
+        future_item = _wait_until(
+            lambda: item_with_after_state(self.second.Name, True)
+        )
+        self.assertIsNotNone(current_item)
+        self.assertIsNotNone(future_item)
+
+        current_pixels = _icon_pixels(current_item.icon())
+        future_pixels = _icon_pixels(future_item.icon(), exclude_status_badge=True)
+        self.assertTrue(_has_colored_pixel(current_pixels))
+        self.assertFalse(
+            _is_grayscale(current_pixels),
+            "In-history timeline icons must stay fully colored like the ribbon",
+        )
+        self.assertEqual(
+            _icon_pixels(self.first.ViewObject.Icon, exclude_status_badge=True),
+            _icon_pixels(current_item.icon(), exclude_status_badge=True),
+            "Timeline artwork must preserve the source icon colors",
+        )
+        self.assertTrue(_is_grayscale(future_pixels))
+        self.assertNotEqual(current_pixels, future_pixels)
+
+        self.body.Visibility = False
+        hidden_items = _wait_until(
+            lambda: (
+                items
+                if (
+                    items := [
+                        item
+                        for item in _object_items(self.timeline).values()
+                        if item.data(OWNER_NAME_ROLE) == self.body.Name
+                    ]
+                )
+                and all(
+                    "Body visibility: Hidden" in item.toolTip() for item in items
+                )
+                else None
+            )
+        )
+        self.assertIsNotNone(hidden_items)
+        hidden_current = _wait_until(
+            lambda: item_with_after_state(self.first.Name, False)
+        )
+        self.assertIsNotNone(hidden_current)
+        self.assertFalse(bool(hidden_current.data(IS_AFTER_POSITION_ROLE)))
+        self.assertEqual(
+            _icon_pixels(self.first.ViewObject.Icon, exclude_status_badge=True),
+            _icon_pixels(hidden_current.icon(), exclude_status_badge=True),
+            "Hiding the body must not desaturate its in-history artwork",
+        )
+
+        end_button = self.timeline_widget.findChild(
+            QtGui.QToolButton,
+            "VibeCADFeatureTimelineEnd",
+        )
+        end_button.click()
+        restored_item = _wait_until(
+            lambda: item_with_after_state(self.second.Name, False)
+        )
+        self.assertIsNotNone(restored_item)
+        restored_pixels = _icon_pixels(restored_item.icon())
+        self.assertTrue(_has_colored_pixel(restored_pixels))
+        self.assertFalse(_is_grayscale(restored_pixels))
+
+        previous_button = self.timeline_widget.findChild(
+            QtGui.QToolButton,
+            "VibeCADFeatureTimelinePrevious",
+        )
+        previous_button.click()
+        rolled_back_item = _wait_until(
+            lambda: item_with_after_state(self.second.Name, True)
+        )
+        self.assertIsNotNone(rolled_back_item)
+        self.assertTrue(
+            _is_grayscale(
+                _icon_pixels(rolled_back_item.icon(), exclude_status_badge=True)
+            )
         )

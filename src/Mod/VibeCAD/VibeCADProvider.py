@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from email.utils import mktime_tz, parsedate_tz
 import hashlib
 import json
 import multiprocessing
@@ -1889,7 +1890,9 @@ class GeminiProvider(BaseProvider):
         timeout_seconds: float | None = None,
         max_turns: int | None = None,
         base_url: str | None = None,
+        no_progress_limit: int = 3,
     ) -> None:
+        self.no_progress_limit = max(0, int(no_progress_limit))
         self.model = model
         self.api_key = api_key
         self.reasoning_effort = reasoning_effort
@@ -1906,6 +1909,10 @@ class GeminiProvider(BaseProvider):
         progress_callback: ProgressCallback | None = None,
     ) -> ProviderResult:
         try:
+            context = dict(context)
+            options = dict(context.get("_vibecad_provider_options") or {})
+            options["gemini_no_progress_limit"] = self.no_progress_limit
+            context["_vibecad_provider_options"] = options
             return _run_provider_subprocess(
                 prompt=prompt,
                 context=context,
@@ -1928,6 +1935,46 @@ class GeminiProvider(BaseProvider):
                     f"{self.timeout_seconds:g} seconds."
                 ) from exc
             raise
+
+
+
+# Parent-process cache: provider objects and subprocesses are recreated per turn.
+_ANTHROPIC_CAPABILITY_CACHE: dict[tuple[str, str], tuple[float, int]] = {}
+_ANTHROPIC_CAPABILITY_CACHE_LOCK = threading.Lock()
+_ANTHROPIC_CAPABILITY_CACHE_TTL = 300.0
+_ANTHROPIC_CAPABILITY_CACHE_SIZE = 64
+
+
+def _anthropic_capability_scope(api_key: str | None, base_url: str | None) -> str:
+    # Keep credentials and credential-bearing endpoints out of cache keys/events.
+    identity = [
+        base_url or os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com",
+        api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
+        os.environ.get("ANTHROPIC_AUTH_TOKEN", ""),
+    ]
+    return hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
+
+
+def _anthropic_cached_capabilities(scope: str, models: set[str]) -> dict[str, int]:
+    with _ANTHROPIC_CAPABILITY_CACHE_LOCK:
+        now = time.monotonic()
+        expired = [key for key, (stamp, _) in _ANTHROPIC_CAPABILITY_CACHE.items()
+                   if now - stamp >= _ANTHROPIC_CAPABILITY_CACHE_TTL]
+        for key in expired:
+            del _ANTHROPIC_CAPABILITY_CACHE[key]
+        return {model: _ANTHROPIC_CAPABILITY_CACHE[(scope, model)][1]
+                for model in models if (scope, model) in _ANTHROPIC_CAPABILITY_CACHE}
+
+
+def _anthropic_cache_capability(scope: str, model: str, maximum: Any) -> None:
+    if type(maximum) is not int or maximum <= 0:
+        return
+    with _ANTHROPIC_CAPABILITY_CACHE_LOCK:
+        key = (scope, model)
+        _ANTHROPIC_CAPABILITY_CACHE.pop(key, None)
+        _ANTHROPIC_CAPABILITY_CACHE[key] = (time.monotonic(), maximum)
+        while len(_ANTHROPIC_CAPABILITY_CACHE) > _ANTHROPIC_CAPABILITY_CACHE_SIZE:
+            del _ANTHROPIC_CAPABILITY_CACHE[next(iter(_ANTHROPIC_CAPABILITY_CACHE))]
 
 
 class AnthropicProvider(BaseProvider):
@@ -1968,11 +2015,26 @@ class AnthropicProvider(BaseProvider):
         progress_callback: ProgressCallback | None = None,
     ) -> ProviderResult:
         try:
+            scope = _anthropic_capability_scope(self.api_key, self.base_url)
+            models = {self.model, self.compaction_model}
             provider_context = dict(context)
-            provider_context["_vibecad_provider_options"] = {
+            options = dict(context.get("_vibecad_provider_options") or {})
+            options.update({
                 "web_search_enabled": self.web_search_enabled,
                 "compaction_model": self.compaction_model,
-            }
+                "model_capabilities": _anthropic_cached_capabilities(scope, models),
+            })
+            provider_context["_vibecad_provider_options"] = options
+
+            def on_progress(event: dict[str, Any]) -> None:
+                if event.get("event") == "anthropic_model_capability":
+                    if event.get("model") in models:
+                        _anthropic_cache_capability(
+                            scope, event["model"], event.get("max_tokens")
+                        )
+                    return
+                if progress_callback is not None:
+                    progress_callback(event)
             return _run_provider_subprocess(
                 prompt=prompt,
                 context=provider_context,
@@ -1984,7 +2046,7 @@ class AnthropicProvider(BaseProvider):
                 max_turns=self.max_turns,
                 base_url=self.base_url,
                 cancellation_check=cancellation_check,
-                progress_callback=progress_callback,
+                progress_callback=on_progress,
                 child_main=_anthropic_child_main,
                 provider_label="Anthropic provider",
             )
@@ -4732,6 +4794,43 @@ def _is_retryable_anthropic_stream_error(
     return any(token in text for token in retry_tokens)
 
 
+def _is_retryable_anthropic_request_error(
+    exc: BaseException, anthropic_module: Any
+) -> bool:
+    status_error = getattr(anthropic_module, "APIStatusError", ())
+    if isinstance(exc, status_error):
+        directive = exc.response.headers.get("x-should-retry")
+        if directive in {"true", "false"}:
+            return directive == "true"
+        return exc.status_code in {408, 409, 429} or exc.status_code >= 500
+    return _is_retryable_anthropic_stream_error(exc, anthropic_module)
+
+
+def _anthropic_request_retry_delay(exc: BaseException, attempt: int) -> float:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return min(2.0, 0.25 * attempt)
+
+    headers = response.headers
+    delay = None
+    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
+        try:
+            delay = float(headers[name]) * scale
+            break
+        except (KeyError, TypeError, ValueError):
+            continue
+    if delay is None and headers.get("retry-after"):
+        try:
+            parsed = parsedate_tz(headers["retry-after"])
+            if parsed is not None:
+                delay = mktime_tz(parsed) - time.time()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if delay is not None and 0 < delay <= 60:
+        return delay
+    return min(8.0, 0.5 * 2 ** min(attempt - 1, 4))
+
+
 def _bounded_compaction_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
@@ -5460,6 +5559,243 @@ def _gemini_forced_tool_completion(
     return _json_safe(arguments)
 
 
+def _gemini_pending_poll(tool_name: str, result: Any) -> bool:
+    """Allow explicit reads of a still-running operation within the turn ceiling."""
+    if not isinstance(result, dict) or result.get("ok") is False:
+        return False
+    if not (
+        tool_name.endswith((".read_operation", ".read_job"))
+        or tool_name.endswith(".inspect")
+        or tool_name == "manufacture.read_setup"
+    ):
+        return False
+    for key in ("operation", "job"):
+        job = result.get(key)
+        if (
+            isinstance(job, dict)
+            and (job.get("operation_id") or job.get("job_id") or job.get("id"))
+            and job.get("status") in {"queued", "pending", "running"}
+        ):
+            return True
+    return False
+
+
+
+DEFAULT_PROVIDER_HISTORY_BYTES = 512 * 1024
+_PROVIDER_HISTORY_PROTECTED_KEYS = {
+    "source", "code", "api", "api_text", "input_schema", "schema",
+    "operation", "job", "background_jobs", "background_job",
+    "error", "errors", "failure_code", "failure_stage", "cancelled",
+    "next_action", "next_actions", "human_steering", "verification",
+    "vibecad_state_after", "native_state", "modeling_surface",
+    "document", "object", "object_name", "created", "updated", "deleted",
+    "changed", "transaction", "expected_outputs", "affected_outputs",
+}
+
+
+class _ProviderHistoryBudgetExceeded(RuntimeError):
+    def __init__(self, accounting: dict[str, Any]) -> None:
+        super().__init__(
+            "I stopped before sending a request that exceeds the conversation budget. "
+            "Completed CAD work is retained. Continue with a narrower request or a "
+            "scoped source/API read; the provider history budget can also be raised. "
+            "Exact reads, failures, pending jobs and signed tool calls were not truncated."
+        )
+        self.accounting = accounting
+
+
+def _provider_history_has_protected_value(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            name = str(key).lower()
+            if (name in _PROVIDER_HISTORY_PROTECTED_KEYS
+                    or "revision" in name or name.endswith(("_id", "_sha256"))
+                    or (name == "ok" and item is False)
+                    or (name == "status" and item in (
+                        "pending", "queued", "running", "failed", "error", "cancelled"
+                    ))):
+                return True
+            if _provider_history_has_protected_value(item):
+                return True
+    elif isinstance(value, list):
+        return any(_provider_history_has_protected_value(item) for item in value)
+    return False
+
+
+def _provider_history_reference(content: Any, tool_name: str, call_id: str) -> str | None:
+    # Exact source/API responses remain whole, even after newer tool batches.
+    if not tool_name or not isinstance(content, str) or any(
+        name in tool_name.lower() for name in ("source", "api")
+    ):
+        return None
+    try:
+        result = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return None
+    if "vibecad_history_reference" in result:
+        return None
+    # Never reduce an unresolved/error result, including nested operation status.
+    def unresolved(value: Any) -> bool:
+        if isinstance(value, dict):
+            if (value.get("ok") is False or value.get("error") or value.get("errors")
+                    or value.get("failure_code") or value.get("cancelled")
+                    or any(key in value for key in ("source", "code", "api_text", "input_schema"))):
+                return True
+            if value.get("status") in ("pending", "queued", "running", "failed", "error", "cancelled"):
+                return True
+            return any(unresolved(item) for item in value.values())
+        return isinstance(value, list) and any(unresolved(item) for item in value)
+    if unresolved(result):
+        return None
+    summary = dict(result)
+    omitted = []
+    for key, value in result.items():
+        if _provider_history_has_protected_value({key: value}):
+            continue
+        if _provider_json_bytes(value) <= 1024:
+            continue
+        summary[key] = {
+            "_vibecad_value_omitted": True,
+            "reason": "older_tool_history",
+            "json_bytes": _provider_json_bytes(value),
+        }
+        omitted.append(key)
+    if not omitted:
+        return None
+    summary["vibecad_history_reference"] = {
+        "tool_call_id": call_id,
+        "tool": tool_name,
+        "original_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "original_utf8_bytes": len(content.encode("utf-8")),
+        "omitted_fields": omitted,
+        "recovery": (
+            "This is an older observation, not exact data. Use the available read "
+            "tools to inspect the current fact before relying on omitted fields. "
+            "The original call arguments are retained; do not replay a mutation."
+        ),
+    }
+    encoded = json.dumps(summary, ensure_ascii=True, separators=(",", ":"))
+    return encoded if len(encoded.encode("utf-8")) < len(content.encode("utf-8")) else None
+
+
+def _provider_budget_history(
+    request: dict[str, Any], context: dict[str, Any], *,
+    provider: str, state: dict[str, Any], output_reserve_tokens: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Bound serialized input; token figures are estimates, never billed usage.
+
+    Optional context-window accounting uses ceil(serialized JSON bytes / 4).
+    This includes encoded images but is not a provider tokenizer or vision-token
+    guarantee. Exact reads/critical state take priority over automatic reduction.
+    """
+    options = state.setdefault("options", {
+        name: _provider_option_value(context, name)
+        for name in ("history_budget_bytes", "context_window_tokens")
+    })
+    configured = options["history_budget_bytes"]
+    limit = DEFAULT_PROVIDER_HISTORY_BYTES if configured is None else max(0, int(configured))
+    window = options["context_window_tokens"]
+    reserve = max(0, int(output_reserve_tokens))
+    effective_limit = limit
+    if window is not None:
+        context_bytes = max(0, (int(window) - reserve) * 4)
+        effective_limit = min(limit, context_bytes) if limit else context_bytes
+    enabled = bool(limit) or window is not None
+    enforce_limit = (configured is not None and bool(limit)) or window is not None
+    before = _provider_json_bytes(request)
+    messages = list(request["messages"])
+    old_snapshot = state.get("snapshot")
+    messages = [message for message in messages if message is not old_snapshot]
+    updated = dict(request, messages=messages)
+    reduced = 0
+
+    def refresh_snapshot() -> None:
+        nonlocal messages
+        visible = _model_visible_context(context)
+        visible = {key: value for key, value in visible.items()
+                   if key not in {"view_screenshot", "reference_images"}}
+        if isinstance(context.get("native_state"), dict):
+            visible["native_state"] = _json_safe(context["native_state"])
+        snapshot = {"role": "user", "content": json.dumps({
+            "vibecad_history_live_state": visible,
+            "instruction": "Continue the original user request. Read current exact data for omitted historical fields.",
+        }, ensure_ascii=True, separators=(",", ":"))}
+        state["snapshot"] = snapshot
+        messages.append(snapshot)
+
+    if state.get("active"):
+        refresh_snapshot()
+    target = effective_limit * 3 // 4
+    current_size = _provider_json_bytes(updated)
+    if enabled and current_size > target:
+        # Retain the latest two assistant/tool batches in full. All assistant
+        # content, call IDs/arguments and thought signatures are always retained.
+        assistant_indices = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
+        cutoff = assistant_indices[-2] if len(assistant_indices) >= 2 else 0
+        calls: dict[str, str] = {}
+        for message in messages:
+            for call in message.get("tool_calls", []):
+                calls[str(call["id"])] = str(call["function"]["name"])
+            content = message.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if block.get("type") == "tool_use":
+                        calls[str(block["id"])] = str(block["name"])
+        for index in range(cutoff):
+            if current_size <= target:
+                break
+            message = messages[index]
+            if provider == "gemini" and message.get("role") == "tool":
+                call_id = str(message.get("tool_call_id", ""))
+                reference = _provider_history_reference(
+                    message.get("content"), calls.get(call_id, ""), call_id
+                )
+                if reference is not None:
+                    messages[index] = dict(message, content=reference)
+                    reduced += 1
+            elif provider == "anthropic" and message.get("role") == "user":
+                content = message.get("content")
+                if not isinstance(content, list):
+                    continue
+                blocks = list(content)
+                for block_index, block in enumerate(content):
+                    if block.get("type") != "tool_result" or block.get("is_error"):
+                        continue
+                    call_id = str(block.get("tool_use_id", ""))
+                    reference = _provider_history_reference(
+                        block.get("content"), calls.get(call_id, ""), call_id
+                    )
+                    if reference is not None:
+                        blocks[block_index] = dict(block, content=reference)
+                        reduced += 1
+                messages[index] = dict(message, content=blocks)
+            current_size += _provider_json_bytes(messages[index]) - _provider_json_bytes(message)
+        if reduced and not state.get("active"):
+            state["active"] = True
+            refresh_snapshot()
+
+    after = _provider_json_bytes(updated)
+    accounting = {
+        "event": "provider_history_budget",
+        "provider": provider,
+        "before_json_bytes": before,
+        "request_json_bytes": after,
+        "history_limit_bytes": effective_limit if enforce_limit else None,
+        "history_reduction_target_bytes": target if enabled else None,
+        "compacted_results": reduced,
+        "estimator": "ceil(serialized_json_bytes/4); images included as encoded bytes",
+        "estimated_input_tokens": (after + 3) // 4,
+        "output_reserve_tokens": reserve,
+        "estimated_total_tokens": (after + 3) // 4 + reserve,
+        "context_window_tokens": window,
+    }
+    if enforce_limit and after > effective_limit:
+        raise _ProviderHistoryBudgetExceeded(accounting)
+    return updated, accounting
+
+
 def _gemini_child_main(
     conn,
     prompt: str,
@@ -5540,6 +5876,14 @@ def _gemini_child_main(
             client_kwargs["timeout"] = timeout_seconds
         client = openai.OpenAI(**client_kwargs)
 
+        no_progress_limit = _provider_option_value(
+            live_context, "gemini_no_progress_limit"
+        )
+        no_progress_limit = 3 if no_progress_limit is None else max(0, int(no_progress_limit))
+        unchanged_calls: dict[str, int] = {}
+        history_state: dict[str, Any] = {}
+        reserve_option = _provider_option_value(context, "output_reserve_tokens")
+        output_reserve = 8192 if reserve_option is None else max(0, int(reserve_option))
         turn = 1
         while max_turns is None or max_turns <= 0 or turn <= max_turns:
             sdk_request: dict[str, Any] = {
@@ -5551,6 +5895,12 @@ def _gemini_child_main(
                 sdk_request["tools"] = tool_definitions
             if reasoning_effort:
                 sdk_request["reasoning_effort"] = reasoning_effort
+            sdk_request, history_accounting = _provider_budget_history(
+                sdk_request, live_context, provider="gemini", state=history_state,
+                output_reserve_tokens=output_reserve,
+            )
+            messages = sdk_request["messages"]
+            _send_child_progress(conn, dict(history_accounting, turn=turn))
             _capture_outbound_request(
                 live_context,
                 provider="gemini",
@@ -5579,9 +5929,16 @@ def _gemini_child_main(
                 turn=turn,
             )
             chunk_count = 0
+            token_usage: dict[str, Any] = {}
             finish_reason = ""
             for chunk in stream:
                 chunk_count += 1
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                        value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+                        if type(value) is int and value >= 0:
+                            token_usage[name] = value
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
@@ -5652,6 +6009,7 @@ def _gemini_child_main(
                 conn,
                 {
                     "event": "gemini_stream_completed",
+                    **({"token_usage": token_usage} if token_usage else {}),
                     "turn": turn,
                     "chunk_count": chunk_count,
                     "finish_reason": finish_reason,
@@ -5706,6 +6064,9 @@ def _gemini_child_main(
             )
 
             for tool_call in assistant_tool_calls:
+                before_state = _anthropic_progress_state_fingerprint(live_context)
+
+                previous_context = live_context
                 function = tool_call["function"]
                 function_name = str(function["name"])
                 tool_name = tools_by_name.get(function_name)
@@ -5750,6 +6111,7 @@ def _gemini_child_main(
                 state_after = _provider_state_after_tool(
                     live_context,
                     result if isinstance(result, dict) else None,
+                    previous_context=previous_context,
                 )
                 if isinstance(result, dict) and state_after:
                     result["vibecad_state_after"] = state_after
@@ -5758,6 +6120,33 @@ def _gemini_child_main(
                     if isinstance(result, dict)
                     else result
                 )
+                after_state = _anthropic_progress_state_fingerprint(live_context)
+                if before_state != after_state:
+                    unchanged_calls.clear()
+                elif no_progress_limit and not _gemini_pending_poll(
+                    tool_name or function_name, result
+                ):
+                    try:
+                        arguments = json.loads(str(function["arguments"]))
+                    except (TypeError, ValueError):
+                        arguments = str(function["arguments"])
+                    fingerprint = _anthropic_progress_fingerprint(
+                        [function_name, arguments, after_state, visible_result]
+                    )
+                    if fingerprint not in unchanged_calls and len(unchanged_calls) >= 128:
+                        unchanged_calls.pop(next(iter(unchanged_calls)))
+                    unchanged_calls[fingerprint] = unchanged_calls.get(fingerprint, 0) + 1
+                    if unchanged_calls[fingerprint] >= no_progress_limit:
+                        conn.send({
+                            "type": "done",
+                            "final_output": (
+                                f"I stopped after repeated unchanged results from {tool_name or function_name}. "
+                                "The work already completed is retained. Inspect the current CAD state "
+                                "and resolve the tool's blocker or revise the request before continuing."
+                            ),
+                            "raw": {"stalled": True, "reason": "no_progress"},
+                        })
+                        return
                 messages.append(
                     {
                         "role": "tool",
@@ -5769,10 +6158,17 @@ def _gemini_child_main(
             turn += 1
         conn.send(
             {
-                "type": "error",
-                "error": "Google Gemini provider turn limit reached.",
+                "type": "done",
+                "final_output": (
+                    "I reached the Gemini turn limit. Completed work is retained; "
+                    "inspect the current result or running job before continuing."
+                ),
+                "raw": {"stalled": True, "reason": "turn_limit"},
             }
         )
+    except _ProviderHistoryBudgetExceeded as exc:
+        conn.send({"type": "done", "final_output": str(exc),
+                   "raw": {"stalled": True, "reason": "input_budget", **exc.accounting}})
     except BaseException as exc:
         _send_child_error(conn, "Google Gemini provider", exc)
     finally:
@@ -5872,20 +6268,39 @@ def _anthropic_child_main(
         if timeout_seconds is not None and timeout_seconds > 0:
             client_kwargs["timeout"] = timeout_seconds
         client = anthropic.Anthropic(**client_kwargs)
-        max_tokens = _anthropic_model_max_tokens(
-            client,
-            model,
-            sdk_fallback=DEFAULT_ANTHROPIC_MAX_TOKENS,
-        )
-        compaction_max_tokens = (
-            max_tokens
-            if compaction_model == model
-            else _anthropic_model_max_tokens(
-                client,
-                compaction_model,
-                sdk_fallback=ANTHROPIC_TURN_COMPACTION_MAX_TOKENS,
-            )
-        )
+        cached = _provider_option_value(live_context, "model_capabilities")
+        capabilities = dict(cached) if isinstance(cached, dict) else {}
+
+        def model_max_tokens(model_id: str, fallback: int) -> int:
+            maximum = capabilities.get(model_id)
+            if type(maximum) is int and maximum > 0:
+                return maximum
+            # Deferred metadata runs between generations on this child-owned
+            # client. Restore its SDK retry allowance only for the lookup;
+            # streamed generations retain the outer-loop-only retry policy.
+            stream_retries = getattr(client, "max_retries", client_kwargs["max_retries"])
+            try:
+                client.max_retries = client_kwargs["max_retries"]
+                maximum = _anthropic_model_max_tokens(
+                    client, model_id, sdk_fallback=fallback
+                )
+            finally:
+                client.max_retries = stream_retries
+            capabilities[model_id] = maximum
+            # Older SDK fallback values are not model-reported capabilities.
+            if callable(getattr(getattr(client, "models", None), "retrieve", None)):
+                _send_child_progress(conn, {
+                    "event": "anthropic_model_capability",
+                    "model": model_id,
+                    "max_tokens": maximum,
+                })
+            return maximum
+
+        max_tokens = model_max_tokens(model, DEFAULT_ANTHROPIC_MAX_TOKENS)
+
+        # Stream retries belong to the outer loop, including failures after
+        # headers. Keep metadata and separate compaction SDK retries intact.
+        client.max_retries = 0
 
         request_kwargs: dict[str, Any] = {
             "model": model,
@@ -5900,7 +6315,12 @@ def _anthropic_child_main(
                 "effort": _anthropic_adaptive_effort(reasoning_effort)
             }
 
+        history_state: dict[str, Any] = {}
+        response_content_observed = False
+
         def _stream_response(turn: int, attempt: int) -> Any:
+            nonlocal messages, response_content_observed
+            response_content_observed = False
             # The SDK rejects non-streaming requests that could exceed ten
             # minutes (large max_tokens plus thinking budgets), so always
             # stream and accumulate the final message.
@@ -5922,6 +6342,12 @@ def _anthropic_child_main(
                 ]
                 if thinking is not None:
                     sdk_request["output_config"] = {"effort": "low"}
+            sdk_request, history_accounting = _provider_budget_history(
+                sdk_request, live_context, provider="anthropic", state=history_state,
+                output_reserve_tokens=sdk_request["max_tokens"],
+            )
+            messages = sdk_request["messages"]
+            _send_child_progress(conn, dict(history_accounting, turn=turn, attempt=attempt))
             _capture_outbound_request(
                 live_context,
                 provider="anthropic",
@@ -5969,6 +6395,8 @@ def _anthropic_child_main(
                     event_count += 1
                     summary = _anthropic_stream_event_summary(stream_event)
                     stream_event_type = summary.get("stream_event_type")
+                    if stream_event_type in {"content_block_start", "content_block_delta"}:
+                        response_content_observed = True
                     delta_type = summary.get("delta_type")
                     text_delta = summary.get("text_delta")
                     if text_delta:
@@ -6044,15 +6472,22 @@ def _anthropic_child_main(
                 return stream.get_final_message()
 
         def _stream_response_with_retries(turn: int) -> Any:
+            status_failures = 0
             for attempt in range(1, ANTHROPIC_STREAM_MAX_ATTEMPTS + 1):
                 try:
                     return _stream_response(turn, attempt)
                 except anthropic.BadRequestError:
                     raise
                 except Exception as exc:
+                    is_status_error = isinstance(
+                        exc, getattr(anthropic, "APIStatusError", ())
+                    )
+                    if is_status_error:
+                        status_failures += 1
                     if (
                         attempt >= ANTHROPIC_STREAM_MAX_ATTEMPTS
-                        or not _is_retryable_anthropic_stream_error(exc, anthropic)
+                        or status_failures >= client_kwargs["max_retries"] + 1
+                        or not _is_retryable_anthropic_request_error(exc, anthropic)
                     ):
                         raise
                     _send_child_progress(
@@ -6062,11 +6497,17 @@ def _anthropic_child_main(
                             "turn": turn,
                             "attempt": attempt,
                             "next_attempt": attempt + 1,
+                            "transport_attempt_count": attempt,
+                            "response_content_observed": response_content_observed,
                             "max_attempts": ANTHROPIC_STREAM_MAX_ATTEMPTS,
                             "error": _short_provider_error(exc),
                         },
                     )
-                    time.sleep(min(2.0, 0.25 * attempt))
+                    time.sleep(
+                        _anthropic_request_retry_delay(
+                            exc, status_failures if is_status_error else attempt
+                        )
+                    )
             raise RuntimeError("Anthropic stream retry loop exited unexpectedly.")
 
         turn = 1
@@ -6143,7 +6584,9 @@ def _anthropic_child_main(
                     debug_context=live_context,
                     base_url=base_url,
                     generation=compaction_count,
-                    max_tokens=compaction_max_tokens,
+                    max_tokens=model_max_tokens(
+                        compaction_model, ANTHROPIC_TURN_COMPACTION_MAX_TOKENS
+                    ),
                 )
                 messages = [
                     {
@@ -6381,6 +6824,9 @@ def _anthropic_child_main(
                 "raw": {"stalled": True, "reason": "turn_limit"},
             }
         )
+    except _ProviderHistoryBudgetExceeded as exc:
+        conn.send({"type": "done", "final_output": str(exc),
+                   "raw": {"stalled": True, "reason": "input_budget", **exc.accounting}})
     except BaseException as exc:
         _send_child_error(conn, "Anthropic provider", exc)
     finally:
