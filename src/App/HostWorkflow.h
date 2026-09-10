@@ -129,11 +129,45 @@ public:
         std::function<void()> finished = {},
         std::stop_token cancellation = {}) &&
     {
+        return std::move(*this).runAsyncImpl(runtime, std::move(dispatchOwner), {},
+                                             std::move(finished), cancellation);
+    }
+
+    /** Use an independent owner queue for failure cleanup.
+     * dispatchCleanup must accept and execute cleanup on the same owner even
+     * after normal dispatch stops. It must not throw or discard accepted work.
+     * Its lifetime must cover worker completion and cleanup during shutdown.
+     * Normal work continues to use dispatchOwner and its existing frame budget.
+     */
+    std::future<Result> runAsyncWithCleanup(
+        HostRuntime& runtime,
+        std::function<void(std::function<void()>)> dispatchOwner,
+        std::function<void(std::function<void()>)> dispatchCleanup,
+        std::function<void()> finished = {},
+        std::stop_token cancellation = {}) &&
+    {
+        if (!dispatchCleanup) {
+            throw std::invalid_argument("Workflow cleanup dispatcher is required");
+        }
+        return std::move(*this).runAsyncImpl(runtime, std::move(dispatchOwner),
+                                             std::move(dispatchCleanup),
+                                             std::move(finished), cancellation);
+    }
+
+private:
+    std::future<Result> runAsyncImpl(
+        HostRuntime& runtime,
+        std::function<void(std::function<void()>)> dispatchOwner,
+        std::function<void(std::function<void()>)> dispatchCleanup,
+        std::function<void()> finished,
+        std::stop_token cancellation) &&
+    {
         struct Driver: std::enable_shared_from_this<Driver>
         {
             std::optional<HostWorkflow> workflow;
             HostRuntime& runtime;
             std::function<void(std::function<void()>)> dispatchOwner;
+            std::function<void(std::function<void()>)> dispatchCleanup;
             std::promise<Result> completion;
             std::function<void()> finished;
             std::stop_token cancellation;
@@ -141,10 +175,12 @@ public:
 
             Driver(HostWorkflow&& workflow, HostRuntime& runtime,
                    std::function<void(std::function<void()>)> dispatchOwner,
+                   std::function<void(std::function<void()>)> dispatchCleanup,
                    std::function<void()> finished,
                    std::stop_token cancellation)
                 : workflow(std::move(workflow)), runtime(runtime),
-                  dispatchOwner(std::move(dispatchOwner)), finished(std::move(finished)),
+                  dispatchOwner(std::move(dispatchOwner)),
+                  dispatchCleanup(std::move(dispatchCleanup)), finished(std::move(finished)),
                   cancellation(std::move(cancellation))
             {}
 
@@ -162,6 +198,16 @@ public:
                 if (auto notify = std::move(finished)) {
                     notify();
                 }
+            }
+
+            void dispatchFailure(std::exception_ptr error)
+            {
+                if (dispatchCleanup && std::this_thread::get_id() != ownerThread) {
+                    auto self = this->shared_from_this();
+                    dispatchCleanup([self, error] { self->completeFromDispatchFailure(error); });
+                    return;
+                }
+                completeFromDispatchFailure(std::move(error));
             }
 
             std::function<void()> continuation(std::exception_ptr failure)
@@ -245,8 +291,7 @@ public:
                                 self->dispatchOwner(self->continuation(failure));
                             }
                             catch (...) {
-                                self->completeFromDispatchFailure(
-                                    std::current_exception());
+                                self->dispatchFailure(std::current_exception());
                             }
                         });
                 }
@@ -258,14 +303,14 @@ public:
                         dispatchOwner([self, failure] { self->resume(failure); });
                     }
                     catch (...) {
-                        completeFromDispatchFailure(std::current_exception());
+                        dispatchFailure(std::current_exception());
                     }
                 }
             }
         };
         auto driver = std::make_shared<Driver>(std::move(*this), runtime,
-                                              std::move(dispatchOwner), std::move(finished),
-                                              std::move(cancellation));
+                                              std::move(dispatchOwner), std::move(dispatchCleanup),
+                                              std::move(finished), std::move(cancellation));
         auto result = driver->completion.get_future();
         // Preserve initial admission failure as an exception to the caller.
         // Its finished callback may read the returned future, which cannot be

@@ -301,6 +301,38 @@ TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
     EXPECT_EQ(finishedCalls.load(), 1);
 }
 
+TEST(HostWorkflowTest, RejectedDispatchUsesIndependentOwnerCleanup)
+{
+    App::HostRuntime runtime(1);
+    QueuedOwner owner;
+    std::promise<std::thread::id> destroyedOn;
+    auto destroyed = destroyedOn.get_future();
+    std::promise<std::thread::id> finishedOn;
+    std::atomic<int> dispatches {0};
+    std::atomic<int> cleanupDispatches {0};
+    auto future = phaseWithOwnerCleanup(destroyedOn).runAsyncWithCleanup(
+        runtime,
+        [&](std::function<void()> resume) {
+            if (dispatches.fetch_add(1) != 0) {
+                throw std::runtime_error("normal queue stopped");
+            }
+            owner.dispatch(std::move(resume));
+        },
+        [&](std::function<void()> cleanup) {
+            ++cleanupDispatches;
+            owner.dispatch(std::move(cleanup));
+        },
+        [&] { finishedOn.set_value(std::this_thread::get_id()); }
+    );
+    ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
+    EXPECT_THROW(future.get(), std::runtime_error);
+    ASSERT_EQ(destroyed.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(destroyed.get(), owner.id());
+    EXPECT_EQ(finishedOn.get_future().get(), owner.id());
+    EXPECT_EQ(dispatches.load(), 2);
+    EXPECT_EQ(cleanupDispatches.load(), 1);
+}
+
 TEST(HostWorkflowTest, DroppedOwnerDispatchStillCleansUpOnOwner)
 {
     App::HostRuntime runtime(1);

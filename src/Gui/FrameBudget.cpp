@@ -66,6 +66,37 @@ public:
         return true;
     }
 
+    void setWorkerShutdown(std::function<void()> finish)
+    {
+        if (stopped || finishWorkers || !finish) {
+            throw std::logic_error("Invalid GUI worker shutdown registration");
+        }
+        finishWorkers = std::move(finish);
+    }
+
+    bool enqueueCleanup(std::function<void()> task)
+    {
+        if (!task || !qApp) {
+            return false;
+        }
+        bool schedule = false;
+        {
+            std::lock_guard lock(mutex);
+            if (cleanupStopped) {
+                return false;
+            }
+            cleanupQueue.push_back(std::move(task));
+            if (!stopped && !scheduled) {
+                scheduled = true;
+                schedule = true;
+            }
+        }
+        if (schedule) {
+            scheduleDrain();
+        }
+        return true;
+    }
+
 private:
     FrameDispatcher() = default;
     ~FrameDispatcher() override = default;
@@ -80,9 +111,32 @@ private:
         std::deque<std::function<void()>> cancelled;
         {
             std::lock_guard lock(mutex);
+            if (stopped) {
+                return;
+            }
             stopped = true;
             scheduled = false;
             cancelled.swap(queue);
+        }
+        // Release queued synchronous handoffs before joining their workers.
+        cancelled.clear();
+        if (auto finish = std::move(finishWorkers)) {
+            finish();
+        }
+        // Workers are now joined, so no workflow can arrive after this seal.
+        // Cleanup may enqueue more cleanup; run it outside the queue mutex.
+        for (;;) {
+            std::function<void()> task;
+            {
+                std::lock_guard lock(mutex);
+                if (cleanupQueue.empty()) {
+                    cleanupStopped = true;
+                    break;
+                }
+                task = std::move(cleanupQueue.front());
+                cleanupQueue.pop_front();
+            }
+            execute(task);
         }
     }
 
@@ -123,29 +177,16 @@ private:
             std::function<void()> task;
             {
                 std::lock_guard lock(mutex);
-                if (queue.empty()) {
+                if (queue.empty() && cleanupQueue.empty()) {
                     scheduled = false;
                     return;
                 }
-                task = std::move(queue.front());
-                queue.pop_front();
+                auto& ready = cleanupQueue.empty() ? queue : cleanupQueue;
+                task = std::move(ready.front());
+                ready.pop_front();
             }
 
-            try {
-                task();
-            }
-            catch (const Base::Exception& exception) {
-                exception.reportException();
-            }
-            catch (const std::exception& exception) {
-                Base::Console().error(
-                    "GUI frame adoption failed: %s\n",
-                    exception.what()
-                );
-            }
-            catch (...) {
-                Base::Console().error("GUI frame adoption failed with an unknown exception\n");
-            }
+            execute(task);
         } while (!budget.exhausted());
 
         // Posting another event while Qt is draining posted events can let the
@@ -156,8 +197,30 @@ private:
         QTimer::singleShot(0, this, [this] { scheduleDrain(); });
     }
 
+    static void execute(const std::function<void()>& task)
+    {
+        try {
+            task();
+        }
+        catch (const Base::Exception& exception) {
+            exception.reportException();
+        }
+        catch (const std::exception& exception) {
+            Base::Console().error(
+                "GUI frame adoption failed: %s\n",
+                exception.what()
+            );
+        }
+        catch (...) {
+            Base::Console().error("GUI frame adoption failed with an unknown exception\n");
+        }
+    }
+
     std::mutex mutex;
     std::deque<std::function<void()>> queue;
+    std::deque<std::function<void()>> cleanupQueue;
+    std::function<void()> finishWorkers;
+    bool cleanupStopped {false};
     bool scheduled {false};
     bool stopped {false};
 };
@@ -189,6 +252,20 @@ void initializeGuiFrameDispatcher()
         throw std::logic_error("GUI frame dispatcher initialization requires the Qt owner");
     }
     FrameDispatcher::instance();
+}
+
+void initializeGuiFrameDispatcher(std::function<void()> finishWorkers)
+{
+    initializeGuiFrameDispatcher();
+    FrameDispatcher::instance()->setWorkerShutdown(std::move(finishWorkers));
+}
+
+bool dispatchToGuiCleanup(std::function<void()> task)
+{
+    if (!task || !qApp) {
+        return false;
+    }
+    return FrameDispatcher::instance()->enqueueCleanup(std::move(task));
 }
 
 bool dispatchToGuiFrame(std::function<void()> task)
