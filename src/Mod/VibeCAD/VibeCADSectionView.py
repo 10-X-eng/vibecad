@@ -135,6 +135,10 @@ _dragger_document: Any | None = None
 _section_document_observer: Any | None = None
 _bounds_view: Any | None = None
 _section_bounds: ModelBounds | None = None
+_cap_worker: Any | None = None
+_cap_dirty = False
+_last_dragger_scale: float | None = None
+_cap_document_observer: Any | None = None
 _dragger_busy = False
 _drag_start_settings: SectionViewSettings | None = None
 _drag_start_origin: tuple[float, float, float] | None = None
@@ -1083,6 +1087,12 @@ def _shape_has_solids(shape: Any) -> bool:
                 return False
         except Exception:
             return False
+    count = getattr(shape, "countElement", None)
+    if callable(count):
+        try:
+            return count("Solid") > 0
+        except Exception:
+            pass
     solids = getattr(shape, "Solids", None)
     try:
         if solids:
@@ -1404,6 +1414,25 @@ def _placement_from_bounds(settings: SectionViewSettings, bounds: ModelBounds | 
     return App.Placement(App.Vector(*origin), rotation)
 
 
+def _render_bounds(view: Any) -> ModelBounds | None:
+    """Use the displayed scene, without materializing document compound shapes."""
+    scene = _scene_from_view(view)
+    if scene is None:
+        return None
+    try:
+        from pivy import coin
+
+        action = coin.SoGetBoundingBoxAction(coin.SbViewportRegion(1, 1))
+        action.apply(scene)
+        box = action.getBoundingBox()
+        if box.isEmpty():
+            return None
+        low, high = _vec3(box.getMin()), _vec3(box.getMax())
+        return ModelBounds(low[0], high[0], low[1], high[1], low[2], high[2])
+    except (ImportError, AttributeError, TypeError):
+        return None
+
+
 def _bounds_for_view(view: Any, document: Any | None) -> ModelBounds | None:
     if view is not None and view == _bounds_view:
         return _section_bounds
@@ -1531,11 +1560,139 @@ def _scene_from_view(view: Any) -> Any | None:
 
 def _remove_overlay(view: Any) -> None:
     global _overlay_node, _cap_node
+    if _cap_worker is not None:
+        _cap_worker.cancel()
     scene = _scene_from_view(view)
     _detach_scene_node(scene, _overlay_node)
     _detach_scene_node(scene, _cap_node)
     _overlay_node = None
     _cap_node = None
+
+
+class _SectionDisplaySequence:
+    """Read immutable worker geometry in bounded batches during GUI adoption."""
+
+    def __init__(self, handle, kind, size, read):
+        self._handle = handle
+        self._kind = kind
+        self._size = size
+        self._read = read
+
+    def __len__(self):
+        return self._size
+
+    def __iter__(self):
+        for first in range(0, self._size, 256):
+            yield from self._read(
+                self._handle, self._kind, first, min(256, self._size - first)
+            )
+
+
+class _NativeSectionCapWorker:
+    """Capture and adopt on the owner; compute geometry on native workers."""
+
+    def __init__(self, backend):
+        self._backend = backend
+        self._handle = backend.createSectionFaceController()
+        self._generation = 0
+        self._steps = None
+        self._running = False
+
+    def cancel(self):
+        self._generation += 1
+        self._running = False
+        steps, self._steps = self._steps, None
+        self._backend.cancelSectionFaces(self._handle)
+        if steps is not None:
+            close = getattr(steps, "close", None)
+            if close is not None:
+                close()
+
+    def _queue(self, generation, callback):
+        def run():
+            if generation != self._generation:
+                return
+            try:
+                callback()
+            except Exception:
+                self.cancel()
+                raise
+
+        if not self._backend._deferSectionDisplay(run):
+            self.cancel()
+
+    def request(self, snapshots, origin, normal, spacing, publish):
+        from time import perf_counter
+
+        self.cancel()
+        generation = self._generation
+        self._steps = iter(snapshots)
+        self._running = True
+        instances = []
+
+        def adopt():
+            try:
+                next(self._steps)
+            except StopIteration:
+                self._steps = None
+                self._running = False
+                return
+            self._queue(generation, adopt)
+
+        def completed(handle, error):
+            if generation != self._generation:
+                return
+            self._running = False
+            if error:
+                raise RuntimeError(error)
+            steps = publish(handle)
+            if steps is not None:
+                self._steps = iter(steps)
+                self._running = True
+                self._queue(generation, adopt)
+
+        def capture():
+            started = perf_counter()
+            for _ in range(128):
+                try:
+                    instance = next(self._steps)
+                except StopIteration:
+                    self._steps = None
+                    self._backend.requestSectionDisplay(
+                        self._handle, instances, origin, normal, spacing, completed
+                    )
+                    return
+                if instance is not None:
+                    instances.append(instance)
+                if perf_counter() - started >= 0.008:
+                    break
+            self._queue(generation, capture)
+
+        self._queue(generation, capture)
+
+
+def _invalidate_caps():
+    global _cap_dirty
+    _cap_dirty = True
+    if _cap_worker is not None:
+        _cap_worker.cancel()
+
+
+class _SectionCapDocumentObserver:
+    def slotChangedObject(self, obj, property_name):
+        if property_name in {"Shape", "Placement", "Visibility", "Group", "LinkedObject"}:
+            self._changed(obj)
+
+    def slotCreatedObject(self, obj):
+        self._changed(obj)
+
+    def slotDeletedObject(self, obj):
+        self._changed(obj)
+
+    @staticmethod
+    def _changed(obj):
+        if _dragger_document is not None and getattr(obj, "Document", None) is _dragger_document:
+            _invalidate_caps()
 
 
 class _SectionViewDocumentObserver:
@@ -1563,20 +1720,25 @@ class _SectionViewDocumentObserver:
 
 
 def _observe_section_document(view: Any, document: Any | None) -> None:
-    global _dragger_view, _dragger_document, _section_document_observer
+    global _dragger_view, _dragger_document, _section_document_observer, _cap_document_observer
     import FreeCADGui as Gui
 
     if _section_document_observer is None:
         observer = _SectionViewDocumentObserver()
         Gui.addDocumentObserver(observer)
         _section_document_observer = observer
+    if _cap_document_observer is None:
+        observer = _SectionCapDocumentObserver()
+        App.addDocumentObserver(observer)
+        _cap_document_observer = observer
     _dragger_view = view
     _dragger_document = document if document is not None else _active_document()
 
 
 def _remove_dragger(view: Any) -> None:
     global _dragger_node, _dragger_busy, _drag_start_settings
-    global _dragger_view, _dragger_document, _bounds_view, _section_bounds
+    global _dragger_view, _dragger_document, _bounds_view, _section_bounds, _cap_dirty
+    global _last_dragger_scale
     global _drag_start_origin, _drag_start_axes, _drag_start_rot_counts, _triad_parts
     scene = _scene_from_view(view)
     _stop_dragger_poll()
@@ -1586,6 +1748,8 @@ def _remove_dragger(view: Any) -> None:
     _dragger_document = None
     _bounds_view = None
     _section_bounds = None
+    _cap_dirty = False
+    _last_dragger_scale = None
     _dragger_busy = False
     _drag_start_settings = None
     _drag_start_origin = None
@@ -1641,18 +1805,80 @@ def _sync_overlay(
             pass
     if not rebuild_caps:
         return
-    caps = section_cap_geometry_from_objects(
-        objects,
-        origin,
-        normal,
-        hatch_spacing_for_bounds(bounds),
+    _schedule_cap_build(coin, view, document, origin, normal, hatch_spacing_for_bounds(bounds))
+
+
+def _rendered_section_snapshot_steps(view):
+    """Capture displayed instances on the owner, yielding between providers.
+
+    Only detached native shape references and matrices leave this generator.
+    Coin traversal uses the visible scene, including Link snapshots and their
+    current display transforms, rather than document Placement properties.
+    """
+    from pivy import coin
+
+    face_type = coin.SoType.fromName("SoBrepFaceSet")
+    sources = {}
+    for document in App.listDocuments().values():
+        for obj in document.Objects:
+            provider = obj.ViewObject
+            snapshot = getattr(provider, "getRenderedShapeSnapshot", None)
+            if callable(snapshot):
+                shape = snapshot()
+                if not shape.isNull():
+                    search = coin.SoSearchAction()
+                    search.setType(face_type)
+                    search.setInterest(coin.SoSearchAction.FIRST)
+                    search.setSearchingAll(True)
+                    search.apply(provider.RootNode)
+                    path = search.getPath()
+                    if path is not None:
+                        sources[path.getTail().getNodeId()] = shape
+            yield None
+
+    search = coin.SoSearchAction()
+    search.setType(face_type)
+    search.setInterest(coin.SoSearchAction.ALL)
+    search.setSearchingAll(False)
+    search.apply(view.getSceneGraph())
+    for path in search.getPaths():
+        shape = sources.get(path.getTail().getNodeId())
+        if shape is None:
+            yield None
+            continue
+        action = coin.SoGetMatrixAction(coin.SbViewportRegion(1, 1))
+        action.apply(path)
+        matrix = action.getMatrix().getValue()
+        # Coin uses row vectors; FreeCAD's matrix convention is transposed.
+        transform = App.Matrix(*(matrix[column][row] for row in range(4) for column in range(4)))
+        yield shape, transform
+
+
+def _schedule_cap_build(coin, view, document, origin, normal, spacing):
+    global _cap_worker, _cap_dirty
+    import PartGui
+
+    _cap_dirty = False
+    owner = document if document is not None else _active_document()
+    if owner is None:
+        return
+    if _cap_worker is None:
+        _cap_worker = _NativeSectionCapWorker(PartGui)
+
+    def publish(handle):
+        sizes = PartGui.sectionDisplaySizes(handle)
+        caps = SectionCapGeometry(*(
+            _SectionDisplaySequence(handle, kind, size, PartGui.readSectionDisplay)
+            for kind, size in zip(("triangles", "hatch", "outlines"), sizes)
+        ))
+        scene = _scene_from_view(view)
+        if scene is not None:
+            return _install_cap_node_steps(coin, scene, caps)
+
+    _cap_worker.request(
+        _rendered_section_snapshot_steps(view),
+        App.Vector(*origin), App.Vector(*normal), spacing, publish,
     )
-    if not caps:
-        return
-    try:
-        _install_cap_node(coin, scene, caps)
-    except Exception:
-        return
 
 
 def _install_overlay_node(coin: Any, scene: Any, corners: Any) -> None:
@@ -1705,7 +1931,26 @@ def _write_indexes(target: Any, values: Sequence[int]) -> None:
         target.coordIndex.set1Value(index, int(value))
 
 
+def _write_points_steps(coords, points):
+    for index, point in enumerate(points):
+        coords.point.set1Value(index, float(point[0]), float(point[1]), float(point[2]))
+        if (index + 1) % 256 == 0:
+            yield
+
+
+def _write_indexes_steps(target, values):
+    for index, value in enumerate(values):
+        target.coordIndex.set1Value(index, int(value))
+        if (index + 1) % 256 == 0:
+            yield
+
+
 def _install_cap_node(coin: Any, scene: Any, caps: SectionCapGeometry) -> None:
+    for _ in _install_cap_node_steps(coin, scene, caps):
+        pass
+
+
+def _install_cap_node_steps(coin: Any, scene: Any, caps: SectionCapGeometry) -> None:
     global _cap_node
     separator = coin.SoSeparator()
     separator.setName(_CAP_OVERLAY_NAME)
@@ -1733,7 +1978,9 @@ def _install_cap_node(coin: Any, scene: Any, caps: SectionCapGeometry) -> None:
         fill.transparency.setValue(0.0)
         points: list[tuple[float, float, float]] = []
         indexes: list[int] = []
-        for triangle in caps.triangles:
+        for index, triangle in enumerate(caps.triangles):
+            if index and index % 256 == 0:
+                yield
             start = len(points)
             points.extend(triangle)
             indexes.extend((start, start + 1, start + 2, -1))
@@ -1741,9 +1988,9 @@ def _install_cap_node(coin: Any, scene: Any, caps: SectionCapGeometry) -> None:
             points.extend((triangle[0], triangle[2], triangle[1]))
             indexes.extend((start, start + 1, start + 2, -1))
         coords = coin.SoCoordinate3()
-        _write_points(coords, points)
+        yield from _write_points_steps(coords, points)
         faces = coin.SoIndexedFaceSet()
-        _write_indexes(faces, indexes)
+        yield from _write_indexes_steps(faces, indexes)
         separator.addChild(fill)
         separator.addChild(coords)
         separator.addChild(faces)
@@ -1757,14 +2004,16 @@ def _install_cap_node(coin: Any, scene: Any, caps: SectionCapGeometry) -> None:
         style.lineWidth = 1
         points = []
         indexes = []
-        for start_point, end_point in caps.hatch:
+        for index, (start_point, end_point) in enumerate(caps.hatch):
+            if index and index % 256 == 0:
+                yield
             start = len(points)
             points.extend((start_point, end_point))
             indexes.extend((start, start + 1, -1))
         coords = coin.SoCoordinate3()
-        _write_points(coords, points)
+        yield from _write_points_steps(coords, points)
         lines = coin.SoIndexedLineSet()
-        _write_indexes(lines, indexes)
+        yield from _write_indexes_steps(lines, indexes)
         separator.addChild(hatch_material)
         separator.addChild(style)
         separator.addChild(coords)
@@ -1779,14 +2028,16 @@ def _install_cap_node(coin: Any, scene: Any, caps: SectionCapGeometry) -> None:
         style.lineWidth = 2
         points = []
         indexes = []
-        for start_point, end_point in caps.outlines:
+        for index, (start_point, end_point) in enumerate(caps.outlines):
+            if index and index % 256 == 0:
+                yield
             start = len(points)
             points.extend((start_point, end_point))
             indexes.extend((start, start + 1, -1))
         coords = coin.SoCoordinate3()
-        _write_points(coords, points)
+        yield from _write_points_steps(coords, points)
         lines = coin.SoIndexedLineSet()
-        _write_indexes(lines, indexes)
+        yield from _write_indexes_steps(lines, indexes)
         separator.addChild(outline_material)
         separator.addChild(style)
         separator.addChild(coords)
@@ -2319,6 +2570,7 @@ def _set_scale_factor(node: Any, scale: float) -> bool:
 
 
 def _autoscale_dragger(view: Any, origin: tuple[float, float, float]) -> None:
+    global _last_dragger_scale
     if _dragger_node is None:
         return
     scale = world_scale_for_ndc(view, origin, _DRAGGER_NDC_SIZE)
@@ -2333,6 +2585,9 @@ def _autoscale_dragger(view: Any, origin: tuple[float, float, float]) -> None:
                 + (bounds.zmax - bounds.zmin) ** 2
             ) ** 0.5
             scale = max(diagonal * 0.12, 15.0)
+    if (_last_dragger_scale is not None
+            and abs(scale - _last_dragger_scale) <= 1e-6 * max(abs(scale), 1.0)):
+        return
     target = None
     if _triad_parts is not None:
         target = _triad_parts.get("scale")
@@ -2345,7 +2600,8 @@ def _autoscale_dragger(view: Any, origin: tuple[float, float, float]) -> None:
                 target = None
     if target is None:
         target = _dragger_node
-    _set_scale_factor(target, scale)
+    if _set_scale_factor(target, scale):
+        _last_dragger_scale = scale
 
 
 def _field_quat(node: Any) -> tuple[float, float, float, float] | None:
@@ -2470,6 +2726,9 @@ def _poll_dragger() -> None:
     if _dragger_node is None:
         return
     view = _active_3d_view()
+    if (_cap_dirty and not _dragger_busy and view is not None
+            and _dragger_document is not None and _dragger_document.isClosable()):
+        _sync_overlay(view, _dragger_document, _settings)
     origin = _current_dragger_origin()
     if origin is not None and view is not None:
         _autoscale_dragger(view, origin)
@@ -2665,8 +2924,12 @@ def _apply_clip(
         # The section editor owns one scene. Transfer it before attaching new
         # nodes, rather than leaving the previous view with dangling wrappers.
         set_section_view(False, view=_dragger_view, document=_dragger_document)
-    if not preview or view != _bounds_view:
-        _section_bounds = model_bounds(_document_objects(document))
+    if view != _bounds_view:
+        _section_bounds = _render_bounds(view)
+        if _section_bounds is None:
+            _section_bounds = model_bounds(_document_objects(document))
+        # Keep the section's world-space reference stable throughout a drag;
+        # subsequently added cap/plane/gizmo nodes must not affect its bounds.
         _bounds_view = view
     placement = _placement_from_bounds(settings, _section_bounds)
     if is_section_view_active(view):
@@ -2676,6 +2939,8 @@ def _apply_clip(
     else:
         view.toggleClippingPlane(toggle=1, noManip=True, pla=placement)
     if preview:
+        if _cap_worker is not None:
+            _cap_worker.cancel()
         return
     _sync_overlay(view, document, settings, rebuild_caps=True)
     if sync_dragger:

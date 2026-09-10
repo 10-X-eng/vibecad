@@ -27,6 +27,7 @@
 
 #include <App/GeoFeature.h>
 #include <App/PropertyStandard.h>
+#include <Mod/Part/App/TopoShapePy.h>
 
 #include "ViewProviderPartExtPy.h"
 #include "ViewProviderPartExtPy.cpp"
@@ -41,6 +42,13 @@ std::string ViewProviderPartExtPy::representation() const
     str << "<View provider geometry object at " << getViewProviderPartExtPtr() << ">";
 
     return str.str();
+}
+
+PyObject* ViewProviderPartExtPy::getRenderedShapeSnapshot()
+{
+    return new Part::TopoShapePy(
+        new Part::TopoShape(getViewProviderPartExtPtr()->getRenderedShapeSnapshot())
+    );
 }
 
 PyObject* ViewProviderPartExtPy::getCustomAttributes(const char* attr) const

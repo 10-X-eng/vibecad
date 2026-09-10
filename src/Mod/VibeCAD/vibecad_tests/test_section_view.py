@@ -530,7 +530,10 @@ def test_sync_overlay_installs_hatched_caps_not_just_the_section_plane(monkeypat
         spacing=5.0,
     )
     monkeypatch.setattr(section, "model_bounds", lambda _objects: section.ModelBounds(0, 40, 0, 20, 0, 10))
-    monkeypatch.setattr(section, "section_cap_geometry_from_objects", lambda *_a, **_k: caps)
+    monkeypatch.setattr(
+        section, "_schedule_cap_build",
+        lambda coin, view, *_args: section._install_cap_node(coin, view.getSceneGraph(), caps),
+    )
     monkeypatch.setattr(
         section,
         "_document_objects",
@@ -1018,3 +1021,204 @@ def test_full_section_update_refreshes_cached_bounds_once(monkeypatch):
     monkeypatch.setattr(section, "_sync_dragger", lambda *_a, **_k: calls.append(section._bounds_for_view(view, None)))
     section._apply_clip(view, None, section.SectionViewSettings())
     assert calls == ["bounds", bounds, bounds]
+
+
+def test_cap_schedule_uses_native_display_without_document_shape_copy(monkeypatch):
+    import sys
+    backend = _NativeSectionBackend()
+    backend.sectionDisplaySizes = lambda handle: (0, 0, 0)
+    backend.readSectionDisplay = lambda *args: ()
+    monkeypatch.setitem(sys.modules, "PartGui", backend)
+    monkeypatch.setattr(section, "App", SimpleNamespace(Vector=lambda *xyz: xyz))
+    monkeypatch.setattr(section, "_cap_worker", None)
+    snapshots, published = [], []
+
+    def capture(view):
+        snapshots.append(view)
+        yield ("cached-shape", "display-matrix")
+
+    monkeypatch.setattr(section, "_rendered_section_snapshot_steps", capture)
+    monkeypatch.setattr(section, "iter_sectionable_shapes", lambda *args: pytest.fail("live shape access"))
+    monkeypatch.setattr(section, "_scene_from_view", lambda view: "scene")
+    monkeypatch.setattr(section, "_install_cap_node_steps", lambda *args: published.append(args[-1]))
+    view = object()
+    section._schedule_cap_build(None, view, object(), (0, 0, 0), (0, 0, 1), 1.0)
+    assert not snapshots
+    assert not backend.requests
+    backend.queued.pop(0)()
+    assert snapshots == [view]
+    assert backend.requests[-1][1] == [("cached-shape", "display-matrix")]
+    backend.requests[-1][-1](object(), "")
+    assert len(published) == 1
+    assert not published[0].triangles
+
+
+def test_removing_overlay_cancels_pending_caps(monkeypatch):
+    cancelled = []
+    monkeypatch.setattr(section, "_cap_worker", SimpleNamespace(cancel=lambda: cancelled.append(True)), raising=False)
+    section._remove_overlay(_View())
+    assert cancelled == [True]
+
+
+@pytest.mark.parametrize("kind", ["points", "indexes"])
+def test_cap_scene_writes_yield_before_large_buffers_finish(kind):
+    writes = []
+    field = SimpleNamespace(set1Value=lambda *args: writes.append(args))
+    if kind == "points":
+        steps = section._write_points_steps(SimpleNamespace(point=field), [(1, 2, 3)] * 700)
+    else:
+        steps = section._write_indexes_steps(SimpleNamespace(coordIndex=field), list(range(700)))
+    next(steps)
+    assert 0 < len(writes) <= 256
+    list(steps)
+    assert len(writes) == 700
+
+
+def test_model_change_invalidates_inflight_cap_snapshot(monkeypatch):
+    owner = object()
+    cancelled = []
+    monkeypatch.setattr(section, "_dragger_document", owner)
+    monkeypatch.setattr(section, "_cap_dirty", False, raising=False)
+    monkeypatch.setattr(section, "_cap_worker", SimpleNamespace(cancel=lambda: cancelled.append(True)))
+    observer = section._SectionCapDocumentObserver()
+    observer.slotChangedObject(SimpleNamespace(Document=object()), "Shape")
+    observer.slotChangedObject(SimpleNamespace(Document=owner), "Label")
+    assert cancelled == []
+    observer.slotChangedObject(SimpleNamespace(Document=owner), "Shape")
+    assert cancelled == [True]
+    assert section._cap_dirty
+
+
+def test_section_enable_uses_render_bounds_without_shape_scan(monkeypatch):
+    view = _View(clipped=True)
+    bounds = section.ModelBounds(0, 10, 0, 20, 0, 30)
+    monkeypatch.setattr(section, "_render_bounds", lambda v: bounds, raising=False)
+    monkeypatch.setattr(section, "model_bounds", lambda *_: pytest.fail("Render section traversed document shapes"))
+    monkeypatch.setattr(section, "_placement_from_bounds", lambda settings, cached: cached)
+    monkeypatch.setattr(section, "_update_clip_plane", lambda v, placement: placement is bounds)
+    monkeypatch.setattr(section, "_sync_overlay", lambda *_a, **_kw: None)
+    monkeypatch.setattr(section, "_sync_dragger", lambda *_a, **_kw: None)
+    section._apply_clip(view, None, section.SectionViewSettings())
+    assert section._section_bounds == bounds
+
+
+def test_idle_dragger_does_not_request_repeated_scene_redraws(monkeypatch):
+    writes = []
+    sizes = iter((3.0, 3.0, 3.00000001, 4.0))
+    monkeypatch.setattr(section, "_dragger_node", object())
+    monkeypatch.setattr(section, "_last_dragger_scale", None, raising=False)
+    monkeypatch.setattr(section, "world_scale_for_ndc", lambda *_: next(sizes))
+    monkeypatch.setattr(section, "_set_scale_factor", lambda node, scale: writes.append(scale) or True)
+    for _ in range(4):
+        section._autoscale_dragger(object(), (0, 0, 0))
+    assert writes == [3.0, 4.0]
+
+
+def test_solid_check_does_not_materialize_every_solid_wrapper():
+    class Shape:
+        def isNull(self):
+            return False
+
+        def countElement(self, kind):
+            assert kind == "Solid"
+            return 4000
+
+        @property
+        def Solids(self):
+            pytest.fail("A visibility check materialized thousands of solids")
+
+    assert section._shape_has_solids(Shape())
+
+
+def test_native_display_sequences_fetch_bounded_chunks_lazily():
+    handle = object()
+    calls = []
+    values = tuple(((float(i), 0., 0.), (float(i), 1., 0.)) for i in range(600))
+
+    def read(actual_handle, kind, first, count):
+        assert actual_handle is handle
+        assert kind == "hatch"
+        assert count <= 256
+        calls.append((first, count))
+        return values[first:first + count]
+
+    primitives = section._SectionDisplaySequence(handle, "hatch", 600, read)
+    assert len(primitives) == 600
+    assert bool(primitives)
+    assert calls == []
+    iterator = iter(primitives)
+    assert next(iterator) == values[0]
+    assert calls == [(0, 256)]
+    assert tuple(iterator) == values[1:]
+    assert calls == [(0, 256), (256, 256), (512, 88)]
+    assert tuple(primitives) == values
+
+
+def test_empty_native_display_sequence_does_not_read():
+    def read(*args):
+        pytest.fail("empty geometry must not fetch a chunk")
+
+    primitives = section._SectionDisplaySequence(object(), "triangles", 0, read)
+    assert not primitives
+    assert tuple(primitives) == ()
+
+
+class _NativeSectionBackend:
+    def __init__(self):
+        self.queued = []
+        self.requests = []
+        self.cancelled = 0
+
+    def createSectionFaceController(self):
+        return object()
+
+    def cancelSectionFaces(self, handle):
+        self.cancelled += 1
+
+    def _deferSectionDisplay(self, callback):
+        self.queued.append(callback)
+        return True
+
+    def requestSectionDisplay(self, *args):
+        self.requests.append(args)
+
+
+def test_native_cap_worker_cancels_capture_and_rejects_stale_delivery():
+    backend = _NativeSectionBackend()
+    worker = section._NativeSectionCapWorker(backend)
+    published = []
+    worker.request(iter([("old", "matrix")]), (0, 0, 0), (0, 0, 1), 1, published.append)
+    assert not backend.requests
+    worker.cancel()
+    backend.queued.pop(0)()
+    assert not backend.requests
+    worker.request(iter([("new", "matrix")]), (0, 0, 0), (0, 0, 1), 1, published.append)
+    backend.queued.pop(0)()
+    assert backend.requests[-1][1] == [("new", "matrix")]
+    callback = backend.requests[-1][-1]
+    worker.cancel()
+    callback(object(), "")
+    assert published == []
+    assert not worker._running
+
+
+def test_native_cap_worker_adoption_yields_and_cancels():
+    backend = _NativeSectionBackend()
+    worker = section._NativeSectionCapWorker(backend)
+    adopted = []
+
+    def publish(handle):
+        adopted.append("started")
+        yield
+        adopted.append("finished")
+
+    worker.request(iter([]), (0, 0, 0), (0, 0, 1), 1, publish)
+    backend.queued.pop(0)()
+    backend.requests[-1][-1](object(), "")
+    assert adopted == []
+    backend.queued.pop(0)()
+    assert adopted == ["started"]
+    worker.cancel()
+    backend.queued.pop(0)()
+    assert adopted == ["started"]
+    assert not worker._running

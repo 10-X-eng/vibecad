@@ -2,6 +2,8 @@
 #pragma once
 
 #include <stop_token>
+#include <array>
+#include <vector>
 #include <TopoDS_Shape.hxx>
 #include <Base/Matrix.h>
 #include <Base/Vector3D.h>
@@ -19,5 +21,18 @@ PartExport TopoDS_Shape prepareSectionFaces(
     const Base::Vector3d& origin,
     const Base::Vector3d& normal,
     std::stop_token stopToken = {}
+);
+
+struct SectionDisplayGeometry
+{
+    std::vector<std::array<Base::Vector3d, 3>> triangles;
+    std::vector<std::array<Base::Vector3d, 2>> hatch;
+    std::vector<std::array<Base::Vector3d, 2>> outlines;
+};
+
+/** Prepare renderer-neutral cap triangles and lines on a compute worker. */
+PartExport SectionDisplayGeometry prepareSectionDisplay(
+    const TopoDS_Shape& faces, const Base::Vector3d& origin,
+    const Base::Vector3d& normal, double spacing, std::stop_token stopToken = {}
 );
 }

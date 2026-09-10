@@ -19,6 +19,7 @@ struct SectionFaceResult
 {
     std::vector<TopoDS_Shape> faces;
     std::string error;
+    std::shared_ptr<const Part::SectionDisplayGeometry> geometry;
 };
 
 /** One active calculation and one replaceable pending section request.
@@ -36,6 +37,9 @@ public:
 
     void request(std::vector<SectionInstance> instances,
                  Base::Vector3d origin, Base::Vector3d normal, Completion completion);
+    void requestDisplay(std::vector<SectionInstance> instances,
+                        Base::Vector3d origin, Base::Vector3d normal,
+                        double spacing, Completion completion);
     void cancel();
 
 private:

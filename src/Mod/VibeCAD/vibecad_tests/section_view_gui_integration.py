@@ -214,3 +214,142 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         self.assertIsNone(VibeCADSectionView._cap_node)
         self.assertIsNone(VibeCADSectionView._dragger_document)
         VibeCADSectionView._poll_dragger()
+
+    def test_section_updates_preserve_document_geometry_and_undo_history(self):
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        box = self.document.getObject("SectionBox")
+        before = (box.Placement.toMatrix().A, box.Shape.Volume, self.document.UndoCount)
+        view = Gui.ActiveDocument.ActiveView
+        VibeCADSectionView.set_section_view(True, view=view, document=self.document)
+        for offset in range(6):
+            VibeCADSectionView.configure_section_view(
+                offset=float(offset), view=view, document=self.document,
+                preview=True, sync_dragger=False,
+            )
+        VibeCADSectionView.configure_section_view(view=view, document=self.document)
+        self.assertTrue(self._wait_until(
+            lambda: VibeCADSectionView._cap_worker is not None
+            and not VibeCADSectionView._cap_worker._running
+        ))
+        after = (box.Placement.toMatrix().A, box.Shape.Volume, self.document.UndoCount)
+        self.assertEqual(after, before)
+
+    def test_native_rendered_snapshot_survives_document_close(self):
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        box = self.document.getObject("SectionBox")
+        snapshot = box.ViewObject.getRenderedShapeSnapshot()
+        self.assertFalse(snapshot.isNull())
+        self.assertAlmostEqual(snapshot.Volume, 8000.0)
+        App.closeDocument(self.document.Name)
+        self._process_events()
+        self.assertAlmostEqual(snapshot.Volume, 8000.0)
+
+    def test_rendered_instances_follow_link_display_transform(self):
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        box = self.document.getObject("SectionBox")
+        link = self.document.addObject("App::Link", "SectionInstance")
+        link.setLink(box)
+        link.Placement = App.Placement(App.Vector(100, 20, 30), App.Rotation())
+        box.Visibility = False
+        self.document.recompute()
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        displayed = App.Placement(App.Vector(200, 40, 60), App.Rotation())
+        link.ViewObject.setTransformation(displayed)
+        view = Gui.ActiveDocument.ActiveView
+        instances = [item for item in VibeCADSectionView._rendered_section_snapshot_steps(view)
+                     if item is not None]
+        self.assertEqual(len(instances), 1)
+        shape, transform = instances[0]
+        self.assertAlmostEqual(shape.Volume, 8000.0)
+        self.assertEqual(transform.multVec(App.Vector()), displayed.Base)
+        self.assertEqual(link.Placement.Base, App.Vector(100, 20, 30))
+
+    def test_native_section_controller_delivers_faces_on_gui(self):
+        import PartGui
+
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        snapshot = self.document.getObject("SectionBox").ViewObject.getRenderedShapeSnapshot()
+        controller = PartGui.createSectionFaceController()
+        received = []
+
+        def completed(faces, error):
+            self.assertEqual(QtCore.QThread.currentThread(), Gui.getMainWindow().thread())
+            received.append((faces, error))
+
+        PartGui.requestSectionFaces(controller, [(snapshot, App.Matrix())],
+                                    App.Vector(0, 0, 5), App.Vector(0, 0, 1), completed)
+        self.assertTrue(self._wait_until(lambda: bool(received)))
+        faces, error = received[0]
+        self.assertEqual(error, "")
+        self.assertEqual(len(faces), 1)
+        self.assertAlmostEqual(faces[0].Area, 800.0)
+        PartGui.cancelSectionFaces(controller)
+        from threading import Thread
+
+        errors = []
+
+        def cancel_off_owner():
+            try:
+                PartGui.cancelSectionFaces(controller)
+            except RuntimeError as error:
+                errors.append(str(error))
+
+        thread = Thread(target=cancel_off_owner)
+        thread.start()
+        thread.join()
+        self.assertEqual(len(errors), 1)
+        self.assertIn("GUI owner", errors[0])
+
+    def test_native_section_display_is_read_in_bounded_chunks(self):
+        import PartGui
+
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        snapshot = self.document.getObject("SectionBox").ViewObject.getRenderedShapeSnapshot()
+        controller = PartGui.createSectionFaceController()
+        received = []
+        PartGui.requestSectionDisplay(controller, [(snapshot, App.Matrix())],
+                                      App.Vector(0, 0, 5), App.Vector(0, 0, 1), 0.01,
+                                      lambda geometry, error: received.append((geometry, error)))
+        self.assertTrue(self._wait_until(lambda: bool(received)))
+        geometry, error = received[0]
+        self.assertEqual(error, "")
+        triangles, hatch, outlines = PartGui.sectionDisplaySizes(geometry)
+        self.assertGreater(triangles, 0)
+        self.assertGreater(hatch, 256)
+        self.assertGreater(outlines, 0)
+        chunk = PartGui.readSectionDisplay(geometry, "hatch", 0, 10000)
+        self.assertEqual(len(chunk), 256)
+        following = PartGui.readSectionDisplay(geometry, "hatch", 256, 256)
+        self.assertTrue(following)
+        self.assertNotEqual(chunk, following)
+        self.assertAlmostEqual(chunk[0][0][2], 4.95)
+        deferred = []
+        self.assertTrue(PartGui._deferSectionDisplay(lambda: deferred.append(True)))
+        self.assertFalse(deferred)
+        self.assertTrue(self._wait_until(lambda: bool(deferred)))
+
+    def test_close_during_cap_computation_discards_worker_result(self):
+        import PartGui
+        from unittest.mock import patch
+
+        submitted = []
+        original = PartGui.requestSectionDisplay
+
+        def close_after_submit(*args):
+            original(*args)
+            submitted.append(True)
+            # The native completion is queued to the owner, so close before
+            # its delivery without blocking the GUI or any worker.
+            App.closeDocument(self.document.Name)
+
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        with patch.object(PartGui, "requestSectionDisplay", close_after_submit):
+            view = Gui.ActiveDocument.ActiveView
+            VibeCADSectionView.set_section_view(True, view=view, document=self.document)
+            self.assertTrue(self._wait_until(lambda: bool(submitted)))
+            self.assertTrue(self._wait_until(
+                lambda: not VibeCADSectionView._cap_worker._running
+            ))
+        self.assertIsNone(VibeCADSectionView._cap_node)
+        self.assertIsNone(VibeCADSectionView._dragger_node)
+        self.assertIsNone(VibeCADSectionView._poll_timer)

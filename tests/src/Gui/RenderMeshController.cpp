@@ -389,6 +389,59 @@ private Q_SLOTS:
         QTRY_COMPARE(deliveries, 1);
     }
 
+    void sectionDisplayKeepsTrianglesAndHatchOutOfHoles()
+    {
+        const auto tube = BRepAlgoAPI_Cut(
+            BRepPrimAPI_MakeCylinder(5.0, 6.0).Shape(),
+            BRepPrimAPI_MakeCylinder(2.0, 6.0).Shape()).Shape();
+        auto geometry = App::GetApplication().hostRuntime().submit([tube](std::stop_token stop) {
+            const Base::Vector3d origin(0.0, 0.0, 3.0), normal(0.0, 0.0, 1.0);
+            const auto faces = Part::prepareSectionFaces(tube, {}, origin, normal, stop);
+            return Part::prepareSectionDisplay(faces, origin, normal, 0.5, stop);
+        }).get();
+        QVERIFY(!geometry.triangles.empty());
+        QVERIFY(!geometry.hatch.empty());
+        QVERIFY(!geometry.outlines.empty());
+        double area = 0.0;
+        for (const auto& triangle : geometry.triangles) {
+            area += (triangle[1] - triangle[0]).Cross(triangle[2] - triangle[0]).Length() * 0.5;
+            const auto center = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+            QVERIFY(std::hypot(center.x, center.y) >= 1.75);
+            for (const auto& point : triangle) {
+                QVERIFY(std::abs(point.z - 2.95) < 1e-7);
+            }
+        }
+        QVERIFY(std::abs(area - 21.0 * std::acos(-1.0)) < 1.0);
+        for (const auto& line : geometry.hatch) {
+            const auto delta = line[1] - line[0];
+            const double lengthSquared = delta.Dot(delta);
+            QVERIFY(lengthSquared > 0);
+            const double t = std::clamp(-line[0].Dot(delta) / lengthSquared, 0.0, 1.0);
+            const auto nearest = line[0] + delta * t;
+            QVERIFY(std::hypot(nearest.x, nearest.y) >= 1.75);
+            QVERIFY(std::abs(line[0].z - 2.95) < 1e-7);
+            QVERIFY(std::abs(line[1].z - 2.95) < 1e-7);
+        }
+    }
+
+    void sectionControllerDeliversPreparedDisplay()
+    {
+        PartGui::SectionFaceController controller;
+        bool completed = false;
+        controller.requestDisplay({{BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape(), {}}},
+                                  Base::Vector3d(0.0, 0.0, 1.0), Base::Vector3d(0.0, 0.0, 1.0), 0.5,
+            [&](PartGui::SectionFaceResult result) {
+                QCOMPARE(QThread::currentThread(), qApp->thread());
+                QVERIFY(result.error.empty());
+                QVERIFY(result.geometry);
+                QVERIFY(!result.geometry->triangles.empty());
+                QVERIFY(!result.geometry->hatch.empty());
+                QVERIFY(!result.geometry->outlines.empty());
+                completed = true;
+            });
+        QTRY_VERIFY(completed);
+    }
+
     void sectionCancellationReleasesCapturesOnOwner()
     {
         PartGui::SectionFaceController controller;
