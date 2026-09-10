@@ -451,6 +451,9 @@ class VibeCADService:
     def provider_reasoning_effort(self) -> str:
         return load_settings().reasoning_effort
 
+    def provider_adaptive_reasoning(self) -> bool:
+        return bool(load_settings().adaptive_reasoning)
+
     def web_search_enabled(self) -> bool:
         return bool(load_settings().web_search_enabled)
 
@@ -5962,6 +5965,7 @@ class VibeCADService:
             "provider": {
                 "model": self.provider_model(),
                 "reasoning_effort": self.provider_reasoning_effort(),
+                "adaptive_reasoning": self.provider_adaptive_reasoning(),
                 "use_online_by_default": self.use_online_provider_by_default(),
             },
             "workbench": self.active_workbench_name(),

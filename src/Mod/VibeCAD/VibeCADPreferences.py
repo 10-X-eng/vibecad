@@ -127,6 +127,7 @@ class VibeCADSettings:
     scripted_memory_limit_mb: int = DEFAULT_SCRIPTED_MEMORY_LIMIT_MB
     mcp_enabled: bool = False
     new_document_authoring_mode: str = DEFAULT_NEW_DOCUMENT_AUTHORING_MODE
+    adaptive_reasoning: bool = False
 
     @property
     def resolved_dotenv_path(self) -> Path | None:
@@ -266,6 +267,7 @@ def load_settings() -> VibeCADSettings:
         reasoning_effort=normalize_reasoning_effort(
             pref.GetString("ReasoningEffort", DEFAULT_REASONING_EFFORT)
         ),
+        adaptive_reasoning=pref.GetBool("AdaptiveReasoningEnabled", False),
         provider=normalize_provider(pref.GetString("Provider", DEFAULT_PROVIDER)),
         anthropic_model=pref.GetString("AnthropicModel", DEFAULT_ANTHROPIC_MODEL)
         or DEFAULT_ANTHROPIC_MODEL,
@@ -317,6 +319,7 @@ def save_settings(settings: VibeCADSettings) -> None:
     pref.SetString(
         "ReasoningEffort", normalize_reasoning_effort(settings.reasoning_effort)
     )
+    pref.SetBool("AdaptiveReasoningEnabled", bool(settings.adaptive_reasoning))
     pref.SetString("Provider", normalize_provider(settings.provider))
     pref.SetString(
         "AnthropicModel", settings.anthropic_model.strip() or DEFAULT_ANTHROPIC_MODEL
@@ -375,6 +378,7 @@ def reset_settings() -> None:
     pref.RemString("Model")
     pref.RemString("DotenvPath")
     pref.RemString("ReasoningEffort")
+    pref.RemBool("AdaptiveReasoningEnabled")
     pref.RemString("Provider")
     pref.RemString("AnthropicModel")
     pref.RemString("ChatGPTModel")
@@ -573,6 +577,15 @@ class VibeCADPreferencesPage:
         self.reasoning_effort.setObjectName("VibeCADPrefReasoningEffort")
         self.reasoning_effort.addItems(REASONING_EFFORTS)
         layout.addRow("Reasoning effort", self.reasoning_effort)
+
+        self.adaptive_reasoning = QtWidgets.QCheckBox(self.form)
+        self.adaptive_reasoning.setObjectName("VibeCADPrefAdaptiveReasoning")
+        self.adaptive_reasoning.setToolTip(
+            "For supported online providers, allow a provider-supported lower effort "
+            "for unambiguous read-only requests. The selected model and effort remain "
+            "the ceiling; ongoing or uncertain work keeps the selected effort."
+        )
+        layout.addRow("Adapt reasoning effort", self.adaptive_reasoning)
 
         self.intent_memory_enabled = QtWidgets.QCheckBox(self.form)
         self.intent_memory_enabled.setObjectName("VibeCADPrefIntentMemoryEnabled")
@@ -826,6 +839,10 @@ class VibeCADPreferencesPage:
         self._set_form_row_visible(self.web_search_enabled, provider != "gemini")
         self._set_form_row_visible(self.design_review_enabled, True)
         self._set_form_row_visible(self.codex_skills_enabled, provider == "chatgpt")
+        self._set_form_row_visible(
+            self.adaptive_reasoning,
+            provider in {"openai", "chatgpt", "grok", "anthropic", "gemini"},
+        )
         self._set_form_row_visible(self.openai_base_url, provider == "openai")
         self._set_form_row_visible(self.anthropic_base_url, provider == "anthropic")
         self._set_form_row_visible(
@@ -1544,6 +1561,7 @@ class VibeCADPreferencesPage:
             reasoning_effort=normalize_reasoning_effort(
                 self.reasoning_effort.currentText()
             ),
+            adaptive_reasoning=self.adaptive_reasoning.isChecked(),
             provider=self._selected_provider(),
             anthropic_model=self.anthropic_model.currentText().strip()
             or DEFAULT_ANTHROPIC_MODEL,
@@ -1654,6 +1672,7 @@ class VibeCADPreferencesPage:
         self.codex_skills_enabled.setChecked(settings.codex_skills_enabled)
         index = self.reasoning_effort.findText(settings.reasoning_effort)
         self.reasoning_effort.setCurrentIndex(index if index >= 0 else 0)
+        self.adaptive_reasoning.setChecked(settings.adaptive_reasoning)
         self.dotenv_path.setText(settings.dotenv_path)
         self.openai_base_url.setText(settings.openai_base_url)
         self.anthropic_base_url.setText(settings.anthropic_base_url)
