@@ -10,6 +10,8 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <Inventor/nodes/SoMaterial.h>
@@ -369,6 +371,27 @@ private Q_SLOTS:
             GProp_GProps area;
             BRepGProp::SurfaceProperties(faces, area);
             QVERIFY(std::abs(area.Mass() - (sign > 0 ? 2.0 : 4.0)) < 1e-6);
+        }
+    }
+
+    void meshSectionKeepsCompoundSolidsSeparate()
+    {
+        for (const auto& position : {gp_Pnt(2, 2, 0), gp_Pnt(2, 0, 0), gp_Pnt(1, 1, 0)}) {
+            BRep_Builder builder;
+            TopoDS_Compound compound;
+            builder.MakeCompound(compound);
+            builder.Add(compound, BRepPrimAPI_MakeBox(2.0, 2.0, 2.0).Shape());
+            builder.Add(compound, BRepPrimAPI_MakeBox(position, 2.0, 2.0, 2.0).Shape());
+            const auto mesh = Part::prepareRenderMesh(compound, 0.1, 5.0);
+            for (double sign : {1.0, -1.0}) {
+                const auto faces = Part::prepareSectionMeshFaces(
+                    mesh, {}, Base::Vector3d(0, 0, 1), Base::Vector3d(0, 0, sign));
+                QVERIFY(!faces.IsNull());
+                GProp_GProps area;
+                BRepGProp::SurfaceProperties(faces, area);
+                // A compound retains its independent solids, including overlaps.
+                QVERIFY(std::abs(area.Mass() - 8.0) < 1e-6);
+            }
         }
     }
 

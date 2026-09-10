@@ -498,6 +498,36 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         self.assertEqual(box.Placement, placement)
         self.assertEqual(self.document.UndoCount, undo)
 
+    def test_face_on_plane_pull_keeps_world_direction_when_flipped(self):
+        view = Gui.ActiveDocument.ActiveView
+        view.viewTop()
+        view.fitAll()
+        widget = view.graphicsView().viewport()
+        for flipped in (False, True):
+            VibeCADSectionView.reset_section_view_settings()
+            VibeCADSectionView.configure_section_view(plane="top", flipped=flipped)
+            VibeCADSectionView.set_section_view(True, view=view, document=self.document)
+            self._process_events()
+            bounds = VibeCADSectionView._bounds_for_view(view, self.document)
+            before, _ = VibeCADSectionView.clip_plane_from_settings(
+                VibeCADSectionView.current_section_view_settings(), bounds.center)
+            point = view.getPointOnScreen(App.Vector(-0.8, -0.4, 5))
+            start = QtCore.QPoint(int(point[0]), widget.height() - 1 - int(point[1]))
+            finish = start + QtCore.QPoint(0, -10)
+            for kind, position, button, buttons in (
+                (QtCore.QEvent.MouseButtonPress, start, QtCore.Qt.LeftButton, QtCore.Qt.LeftButton),
+                (QtCore.QEvent.MouseMove, finish, QtCore.Qt.NoButton, QtCore.Qt.LeftButton),
+                (QtCore.QEvent.MouseButtonRelease, finish, QtCore.Qt.LeftButton, QtCore.Qt.NoButton),
+            ):
+                event = QtGui.QMouseEvent(kind, QtCore.QPointF(position),
+                                         QtCore.QPointF(widget.mapToGlobal(position)),
+                                         button, buttons, QtCore.Qt.NoModifier)
+                QtCore.QCoreApplication.sendEvent(widget, event)
+            after, _ = VibeCADSectionView.clip_plane_from_settings(
+                VibeCADSectionView.current_section_view_settings(), bounds.center)
+            self.assertGreater(after[2], before[2], f"Pull reversed with flipped={flipped}")
+            VibeCADSectionView.set_section_view(False, view=view, document=self.document)
+
     def test_scene_helpers_do_not_expand_section_bounds(self):
         from pivy import coin
 

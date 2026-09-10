@@ -2957,7 +2957,11 @@ def _start_plane_drag(view):
                 # vertical dragging then uses the view's world-units-per-pixel.
                 a = view.getPoint(pixel_x, pixel_y)
                 b = view.getPoint(pixel_x, pixel_y + 1)
-                self.pixel_scale = (b - a).Length
+                # A face-on pull has no projected normal. Keep its world
+                # direction tied to the camera when Flip reverses the normal.
+                look = _view_look_direction(view)
+                toward_camera = tuple(-value for value in look)
+                self.pixel_scale = (b - a).Length * (1 if _dot(normal, toward_camera) >= 0 else -1)
                 self.dragging = True
                 return True
             if not self.dragging:
