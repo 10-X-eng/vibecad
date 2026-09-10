@@ -317,6 +317,51 @@ TEST(HostWorkflowTest, WorkerDoesNotRetainPhaseCapturesAfterOwnerCompletion)
     EXPECT_EQ(destroyed.get(), owner.id());
 }
 
+TEST(HostWorkflowTest, QueuedPhaseCancellationReleasesCapturesOnOwner)
+{
+    QueuedOwner owner;
+    App::HostRuntime runtime(1);
+    std::promise<void> blockerStarted;
+    auto started = blockerStarted.get_future();
+    auto blocker = runtime.submit(App::HostRuntime::Lane::Compute, [&](std::stop_token stop) {
+        std::promise<void> released;
+        auto release = released.get_future();
+        std::stop_callback cancelled(stop, [&] { released.set_value(); });
+        blockerStarted.set_value();
+        release.get();
+    });
+    ASSERT_EQ(started.wait_for(2s), std::future_status::ready);
+    std::promise<std::thread::id> destroyedOn;
+    auto destroyed = destroyedOn.get_future();
+    std::promise<void> phaseQueued;
+    auto queued = phaseQueued.get_future();
+    std::promise<void> finished;
+    auto finish = finished.get_future().share();
+    std::atomic<int> dispatches {0};
+    auto future = phaseWithCapturedOwnerResource(destroyedOn).runAsync(
+        runtime,
+        [&](std::function<void()> resume) {
+            const bool initial = dispatches.fetch_add(1) == 0;
+            owner.dispatch([&, initial, resume = std::move(resume)] {
+                resume();
+                if (initial) { phaseQueued.set_value(); }
+            });
+            if (!initial) {
+                EXPECT_EQ(finish.wait_for(2s), std::future_status::ready);
+            }
+        },
+        [&] { finished.set_value(); }
+    );
+    ASSERT_EQ(queued.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(runtime.queuedTaskCount(App::HostRuntime::Lane::Compute), 1);
+    runtime.shutdown();
+    blocker.get();
+    ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
+    EXPECT_THROW(future.get(), std::runtime_error);
+    ASSERT_EQ(destroyed.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(destroyed.get(), owner.id());
+}
+
 class AsyncRecomputeTest: public ::testing::Test
 {
 protected:
