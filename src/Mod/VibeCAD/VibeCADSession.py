@@ -3315,8 +3315,6 @@ def _filtered_api_payload(
     requested_order = list(names)
     for group in groups:
         requested_order.extend(api_groups[group])
-    if str(result.get("domain") or "") == "assembly":
-        requested_order.extend(("assembly", "solve"))
     ordered_names = list(dict.fromkeys(requested_order))
     focused = {
         key: result[key]

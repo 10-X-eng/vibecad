@@ -840,8 +840,6 @@ def test_universal_source_and_api_focused_reads_are_small_and_explicit() -> None
     )
     assert [item["name"] for item in assembly_api["runtime_exports"]] == [
         "component",
-        "assembly",
-        "solve",
     ]
 
     wrong_surface = session._filtered_api_payload(
