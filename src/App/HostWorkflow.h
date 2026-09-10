@@ -118,8 +118,9 @@ public:
      * finished runs once on the owner after the frame is destroyed and the
      * future is ready (success or failure); it must not throw. Dispatch must
      * enqueue, never invoke inline, including the initial coordinator step.
-     * If dispatchOwner throws, the future is completed with that error and
-     * finished still runs once; the coordinator is not resumed on the caller.
+     * Initial dispatch failure propagates to the caller without invoking
+     * finished. For a later dispatch failure the future receives that error;
+     * the coordinator is not resumed on the failing thread.
      */
     std::future<Result> runAsync(
         HostRuntime& runtime,
@@ -226,12 +227,10 @@ public:
                                               std::move(dispatchOwner), std::move(finished),
                                               std::move(cancellation));
         auto result = driver->completion.get_future();
-        try {
-            driver->dispatchOwner([driver] { driver->resume(); });
-        }
-        catch (...) {
-            driver->completeFromDispatchFailure(std::current_exception());
-        }
+        // Preserve initial admission failure as an exception to the caller.
+        // Its finished callback may read the returned future, which cannot be
+        // stored until this function returns. Never notify it inline here.
+        driver->dispatchOwner([driver] { driver->resume(); });
         return result;
     }
 

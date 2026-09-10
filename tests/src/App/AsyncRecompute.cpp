@@ -362,6 +362,25 @@ TEST(HostWorkflowTest, QueuedPhaseCancellationReleasesCapturesOnOwner)
     EXPECT_EQ(destroyed.get(), owner.id());
 }
 
+TEST(HostWorkflowTest, InitialDispatchFailurePropagatesWithoutInlineCompletion)
+{
+    App::HostRuntime runtime(1);
+    std::thread::id worker, resumed;
+    bool finished = false;
+    EXPECT_THROW(
+        singleComputePhase(worker, resumed).runAsync(
+            runtime,
+            [](std::function<void()>) { throw std::runtime_error("initial dispatch failed"); },
+            [&] { finished = true; }
+        ),
+        std::runtime_error
+    );
+    EXPECT_FALSE(finished)
+        << "The caller has not received or stored the workflow future yet";
+    EXPECT_EQ(worker, std::thread::id {});
+    EXPECT_EQ(resumed, std::thread::id {});
+}
+
 class AsyncRecomputeTest: public ::testing::Test
 {
 protected:
