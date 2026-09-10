@@ -6,6 +6,9 @@
 
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
 #include <Inventor/nodes/SoMaterial.h>
 #include <Inventor/nodes/SoSeparator.h>
 
@@ -22,6 +25,7 @@
 #include <Gui/Inventor/SoFCBoundingBox.h>
 #include <Gui/ViewProviderGeometryObject.h>
 #include <Mod/Part/App/PropertyTopoShape.h>
+#include <Mod/Part/App/SectionGeometry.h>
 #include <Mod/Part/Gui/RenderMeshController.h>
 #include <Mod/Part/Gui/SoBrepEdgeSet.h>
 #include <Mod/Part/Gui/SoBrepFaceSet.h>
@@ -308,6 +312,60 @@ private Q_SLOTS:
         const auto [offOwner, faces] = read.get();
         QVERIFY(offOwner);
         QCOMPARE(faces, 6UL);
+    }
+
+    void sectionFacesUseDisplayedPlacementAndPreserveHoles()
+    {
+        auto source = BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape();
+        gp_Trsf oldPlacement;
+        oldPlacement.SetTranslation(gp_Vec(700.0, 800.0, 900.0));
+        source.Location(TopLoc_Location(oldPlacement));
+        Base::Matrix4D displayed;
+        displayed.move(Base::Vector3d(200.0, 40.0, 60.0));
+        auto result = App::GetApplication().hostRuntime().submit(
+            [source, displayed](std::stop_token stop) {
+                return Part::prepareSectionFaces(
+                    source, displayed, Base::Vector3d(201.0, 40.0, 60.0),
+                    Base::Vector3d(1.0, 0.0, 0.0), stop);
+            }).get();
+        QVERIFY(!result.IsNull());
+        GProp_GProps area;
+        BRepGProp::SurfaceProperties(result, area);
+        QVERIFY(std::abs(area.Mass() - 12.0) < 1e-7);
+        QCOMPARE(source.Location().Transformation().TranslationPart().X(), 700.0);
+
+        const auto tube = BRepAlgoAPI_Cut(
+            BRepPrimAPI_MakeCylinder(5.0, 6.0).Shape(),
+            BRepPrimAPI_MakeCylinder(2.0, 6.0).Shape()).Shape();
+        result = App::GetApplication().hostRuntime().submit([tube](std::stop_token stop) {
+            return Part::prepareSectionFaces(tube, {}, Base::Vector3d(0.0, 0.0, 3.0),
+                                             Base::Vector3d(0.0, 0.0, 1.0), stop);
+        }).get();
+        QVERIFY(!result.IsNull());
+        GProp_GProps tubeArea;
+        BRepGProp::SurfaceProperties(result, tubeArea);
+        QVERIFY2(std::abs(tubeArea.Mass() - 21.0 * std::acos(-1.0)) < 1e-7,
+                 qPrintable(QString::number(tubeArea.Mass(), 'g', 17)));
+
+        Base::Matrix4D scaled;
+        scaled.scale(-2.0, 3.0, 0.5);
+        result = App::GetApplication().hostRuntime().submit([source, scaled](std::stop_token stop) {
+            return Part::prepareSectionFaces(source, scaled, Base::Vector3d(0.0, 0.0, 1.0),
+                                             Base::Vector3d(0.0, 0.0, 1.0), stop);
+        }).get();
+        QVERIFY(!result.IsNull());
+        GProp_GProps scaledArea;
+        BRepGProp::SurfaceProperties(result, scaledArea);
+        QVERIFY(std::abs(scaledArea.Mass() - 36.0) < 1e-7);
+
+        std::stop_source cancelled;
+        cancelled.request_stop();
+        auto cancellation = App::GetApplication().hostRuntime().submit(
+            [source, token = cancelled.get_token()](std::stop_token) {
+                return Part::prepareSectionFaces(source, {}, Base::Vector3d(),
+                                                 Base::Vector3d(0.0, 0.0, 1.0), token);
+            });
+        QVERIFY_EXCEPTION_THROWN(cancellation.get(), std::runtime_error);
     }
 
     void cancelledCompletionCannotAdoptIntoReusedTarget()
