@@ -45,7 +45,8 @@ public:
     void setFaceCount(int count) { faceset->partIndex.setNum(count); }
     void clearLineGeometry() { lineset->coordIndex.setNum(0); }
     mutable unsigned shapeReads {0};
-    Part::TopoShape getRenderedShape() const override { ++shapeReads; return {}; }
+    Part::TopoShape renderedShape;
+    Part::TopoShape getRenderedShape() const override { ++shapeReads; return renderedShape; }
     void refreshUnchangedGeometry() { VisualTouched = false; updateVisual(); }
 };
 
@@ -237,6 +238,7 @@ private Q_SLOTS:
             auto* view = new InspectablePartView;
             view->attach(object);
             guiApplication.getDocument(document)->addViewProvider(view);
+            guiApplication.getDocument(document)->signalNewObject(*view);
             view->Visibility.setValue(true);
             return view;
         };
@@ -258,6 +260,54 @@ private Q_SLOTS:
         // because its name and its first object's name/ID were reused.
         QCOMPARE(replacementView->shapeReads, 0U);
         QVERIFY(app.closeDocument("DeferredRestoreIdentity"));
+    }
+
+    void renderedSnapshotDoesNotReadDocumentAndSurvivesViewRemoval()
+    {
+        if (PartGui::SoBrepFaceSet::getClassTypeId().isBad()) {
+            PartGui::SoBrepFaceSet::initClass();
+            PartGui::SoBrepEdgeSet::initClass();
+            PartGui::SoBrepPointSet::initClass();
+        }
+        if (PartGui::ViewProviderPartExt::getClassTypeId().isBad()) {
+            PartGui::ViewProviderPartExt::init();
+        }
+        auto& app = App::GetApplication();
+        auto* document = app.newDocument("RenderedSectionSnapshot");
+        auto* object = document->addObject("App::DocumentObject", "Shape");
+        auto* view = new InspectablePartView;
+        view->attach(object);
+        application->getDocument(document)->addViewProvider(view);
+        application->getDocument(document)->signalNewObject(*view);
+        QVERIFY(view->getRenderedShapeSnapshot().IsNull());
+        view->renderedShape = Part::TopoShape(BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape());
+        QVERIFY(!view->renderedShape.isNull());
+        QCOMPARE(application->getViewProvider<PartGui::ViewProviderPartExt>(object), view);
+        view->refreshUnchangedGeometry();
+        QVERIFY(document->isPresentationUpdateActive());
+        QTRY_VERIFY(document->isClosable());
+        view->shapeReads = 0;
+        const auto snapshot = view->getRenderedShapeSnapshot();
+        QVERIFY(!snapshot.IsNull());
+        QVERIFY(snapshot.IsPartner(view->renderedShape.getShape()));
+        QCOMPARE(view->shapeReads, 0U);
+        // Capturing the displayed generation must not inspect a newer model
+        // shape which has not yet been installed by the presentation worker.
+        view->renderedShape = Part::TopoShape(BRepPrimAPI_MakeCylinder(5.0, 6.0).Shape());
+        QVERIFY(view->getRenderedShapeSnapshot().IsPartner(snapshot));
+        document->removeObject("Shape");
+        QVERIFY(app.closeDocument("RenderedSectionSnapshot"));
+        // The snapshot owns native geometry, not a view/document wrapper.
+        const auto owner = std::this_thread::get_id();
+        auto read = app.hostRuntime().submit([snapshot, owner](std::stop_token) {
+            return std::pair {
+                std::this_thread::get_id() != owner,
+                Part::TopoShape(snapshot).countSubElements("Face")
+            };
+        });
+        const auto [offOwner, faces] = read.get();
+        QVERIFY(offOwner);
+        QCOMPARE(faces, 6UL);
     }
 
     void cancelledCompletionCannotAdoptIntoReusedTarget()

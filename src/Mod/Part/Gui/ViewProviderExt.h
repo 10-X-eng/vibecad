@@ -148,6 +148,16 @@ public:
         );
     }
 
+    /** Capture the installed native geometry on the GUI owner, without reading
+     * document properties. The reference survives view removal. Treat shared
+     * geometry as read-only and make a private copy before kernel mutation.
+     * Returns a null shape until a rendered generation is available.
+     */
+    TopoDS_Shape getRenderedShapeSnapshot() const
+    {
+        return lastRenderedShape;
+    }
+
     /** @name Highlight handling
      * This group of methods do the highlighting of elements.
      */
