@@ -353,3 +353,31 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         self.assertIsNone(VibeCADSectionView._cap_node)
         self.assertIsNone(VibeCADSectionView._dragger_node)
         self.assertIsNone(VibeCADSectionView._poll_timer)
+
+    def test_hidden_infinite_datum_does_not_expand_offset_slider(self):
+        import VibeCADSectionViewGui as panel
+        plane = self.document.addObject("App::Plane", "InfiniteDatum")
+        plane.Placement = App.Placement(App.Vector(), App.Rotation(App.Vector(1, 0, 0), 90))
+        plane.Visibility = False
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        self.document.recompute()
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        self.assertGreater(abs(plane.Shape.BoundBox.ZMax), 1e90)
+        view = Gui.ActiveDocument.ActiveView
+        VibeCADSectionView.reset_section_view_settings()
+        VibeCADSectionView.set_section_view(True, view=view, document=self.document)
+        dialog = panel.show_section_view_dialog()
+        self.assertIsNotNone(dialog)
+        self.assertAlmostEqual(dialog.offset_spin.minimum(), -5., places=3)
+        self.assertAlmostEqual(dialog.offset_spin.maximum(), 5., places=3)
+        dialog.offset_slider.setValue(500)
+        self.assertFalse(dialog._updating)
+        self.assertAlmostEqual(VibeCADSectionView.current_section_view_settings().offset, 2.5, places=3)
+
+    def test_section_queries_are_safe_after_native_view_deletion(self):
+        view = Gui.ActiveDocument.ActiveView
+        self.assertTrue(self._wait_until(self.document.isClosable))
+        App.closeDocument(self.document.Name)
+        self._process_events()
+        self.assertIsNone(VibeCADSectionView._scene_from_view(view))
+        self.assertFalse(VibeCADSectionView.is_section_view_active(view))
