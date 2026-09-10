@@ -198,6 +198,42 @@ std::deque<std::function<void()>> takeQueuedOwnerWork()
 }
 }
 
+TEST(MainThreadCleanupTest, MissingHookNeverRunsCleanupInline)
+{
+    ASSERT_FALSE(App::MainThreadSignalConfig::hasCleanupHook());
+    bool invoked = false;
+    EXPECT_THROW(App::MainThreadSignalConfig::invokeCleanup([&] { invoked = true; }),
+                 std::runtime_error);
+    EXPECT_FALSE(invoked);
+}
+
+TEST(MainThreadCleanupTest, CleanupHasAnIndependentOwnerHook)
+{
+    queuedOwnerId = std::this_thread::get_id();
+    takeQueuedOwnerWork();
+    App::MainThreadSignalConfig::setCleanupHook([](std::function<void()>&& cleanup) {
+        std::lock_guard lock(queuedOwnerMutex);
+        queuedOwnerWork.push_back(std::move(cleanup));
+    });
+    BOOST_SCOPE_EXIT_ALL(&) {
+        App::MainThreadSignalConfig::setCleanupHook(nullptr);
+        takeQueuedOwnerWork();
+    };
+    ASSERT_TRUE(App::MainThreadSignalConfig::hasCleanupHook());
+    std::thread::id cleanedOn;
+    std::thread worker([&] {
+        App::MainThreadSignalConfig::invokeCleanup([&] {
+            cleanedOn = std::this_thread::get_id();
+        });
+    });
+    worker.join();
+    EXPECT_EQ(cleanedOn, std::thread::id {});
+    auto cleanup = takeQueuedOwnerWork();
+    ASSERT_EQ(cleanup.size(), 1);
+    cleanup.front()();
+    EXPECT_EQ(cleanedOn, queuedOwnerId);
+}
+
 TEST(HostWorkflowTest, WorkerErrorsReturnToTheSuspendedPhase)
 {
     App::HostRuntime runtime(4);
@@ -281,7 +317,7 @@ TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
     std::atomic<int> dispatches {0};
     std::promise<std::thread::id> finishedOn;
     std::atomic<int> finishedCalls {0};
-    auto future = singleComputePhase(worker, resumed).runAsync(
+    auto future = singleComputePhase(worker, resumed).runAsyncWithCleanup(
         runtime,
         [&](std::function<void()> resume) {
             if (dispatches.fetch_add(1) >= 1) {
@@ -289,6 +325,7 @@ TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
             }
             owner.dispatch(std::move(resume));
         },
+        [&](std::function<void()> cleanup) { owner.dispatch(std::move(cleanup)); },
         [&] { ++finishedCalls; finishedOn.set_value(std::this_thread::get_id()); }
     );
     ASSERT_EQ(future.wait_for(2s), std::future_status::ready)
@@ -299,6 +336,30 @@ TEST(HostWorkflowTest, RunAsyncOwnerDispatchFailureCompletesTheFuture)
     EXPECT_NE(worker, std::thread::id {});
     EXPECT_EQ(finishedOn.get_future().get(), owner.id());
     EXPECT_EQ(finishedCalls.load(), 1);
+}
+
+TEST(HostWorkflowTest, DispatchFailureDestroysSuspendedFrameOnOwner)
+{
+    App::HostRuntime runtime(1);
+    QueuedOwner owner;
+    std::promise<std::thread::id> destroyedOn;
+    auto destroyed = destroyedOn.get_future();
+    std::atomic<int> dispatches {0};
+    auto future = phaseWithOwnerCleanup(destroyedOn).runAsyncWithCleanup(
+        runtime,
+        [&](std::function<void()> resume) {
+            if (dispatches.fetch_add(1) != 0) {
+                throw std::runtime_error("owner dispatch failed");
+            }
+            owner.dispatch(std::move(resume));
+        },
+        [&](std::function<void()> cleanup) { owner.dispatch(std::move(cleanup)); }
+    );
+    ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
+    EXPECT_THROW(future.get(), std::runtime_error);
+    ASSERT_EQ(destroyed.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(destroyed.get(), owner.id())
+        << "Suspended document resources must be released by their owner";
 }
 
 TEST(HostWorkflowTest, RejectedDispatchUsesIndependentOwnerCleanup)

@@ -119,6 +119,8 @@ public:
      * finished runs once on the owner after the frame is destroyed and the
      * future is ready (success or failure); it must not throw. Dispatch must
      * enqueue, never invoke inline, including the initial coordinator step.
+     * After initial admission, dispatchOwner must remain available until the
+     * workflow finishes. Use runAsyncWithCleanup when that queue can stop first.
      * Initial dispatch failure propagates to the caller without invoking
      * finished. For a later dispatch failure the future receives that error;
      * the coordinator is not resumed on the failing thread.

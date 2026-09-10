@@ -59,6 +59,7 @@
 #include <App/DocumentObserver.h>
 #include <App/DocumentObjectPy.h>
 #include <App/MainThreadSignal.h>
+#include <App/HostRuntime.h>
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
 #include <Base/Exception.h>
@@ -505,6 +506,14 @@ bool qtIsMainThread()
     return !qApp || (QThread::currentThread() == qApp->thread());
 }
 
+// Cleanup delivery remains available until document workers have joined.
+void qtInvokeCleanup(std::function<void()>&& fn)
+{
+    if (!dispatchToGuiCleanup(std::move(fn))) {
+        throw Base::RuntimeError("Owner cleanup requested after runtime shutdown");
+    }
+}
+
 // Hook: invoke a functor on the GUI thread, either blocking or queued.
 void qtInvokeOnMain(std::function<void()>&& fn, bool blocking)
 {
@@ -611,7 +620,8 @@ Application::Application(bool GUIenabled)
 {
     // App::GetApplication().Attach(this);
     if (GUIenabled) {
-        initializeGuiFrameDispatcher();
+        initializeGuiFrameDispatcher([] { App::GetApplication().hostRuntime().shutdown(); });
+        App::MainThreadSignalConfig::setCleanupHook(&qtInvokeCleanup);
         App::MainThreadSignalConfig::setHooks(&qtIsMainThread, &qtInvokeOnMain);
 
         // NOLINTBEGIN
