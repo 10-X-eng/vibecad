@@ -67,6 +67,7 @@ public:
                                                (PyObject *self,PyObject *args, PyObject *kwd);
     static PyObject* sNewDocument            (PyObject *self,PyObject *args, PyObject *kwd);
     static PyObject* sCloseDocument          (PyObject *self,PyObject *args);
+    static PyObject* sRequestCloseDocument   (PyObject *self,PyObject *args);
     static PyObject* sActiveDocument         (PyObject *self,PyObject *args);
     static PyObject* sSetActiveDocument      (PyObject *self,PyObject *args);
     static PyObject* sGetDocument            (PyObject *self,PyObject *args);

@@ -1466,7 +1466,7 @@ void FeatureTimeline::acquirePresentationUpdate(App::Document& document)
         return;
     }
     releasePresentationUpdate();
-    document.beginPresentationUpdate();
+    document.beginVisualUpdate();
     presentationUpdateDocument = &document;
 }
 
@@ -1477,7 +1477,7 @@ void FeatureTimeline::releasePresentationUpdate()
     }
     auto* document = presentationUpdateDocument;
     presentationUpdateDocument = nullptr;
-    document->endPresentationUpdate();
+    document->endVisualUpdate();
 }
 
 bool FeatureTimeline::canChangeHistory() const

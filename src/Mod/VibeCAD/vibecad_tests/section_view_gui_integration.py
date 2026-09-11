@@ -228,6 +228,45 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
             "Section View did not close its editor dialog.",
         )
 
+    def test_native_command_chooses_the_plane_from_the_live_camera(self):
+        command_name = "VibeCAD_SectionView"
+        view = Gui.ActiveDocument.ActiveView
+
+        for orient, expected in (
+            (view.viewFront, "front"),
+            (view.viewTop, "top"),
+            (view.viewRight, "right"),
+        ):
+            orient()
+            self._process_events()
+            look = VibeCADSectionView._view_look_direction(view)
+            self.assertIsNotNone(
+                look,
+                f"Section View could not read the live {expected} camera direction.",
+            )
+            Gui.runCommand(command_name, 0)
+            self.assertTrue(
+                self._wait_until(lambda: VibeCADSectionView.is_section_view_active(view)),
+                f"Section View did not enable from the {expected} camera.",
+            )
+            self.assertEqual(
+                VibeCADSectionView.current_section_view_settings().plane,
+                expected,
+                f"Live camera direction was {look!r}.",
+            )
+            self.assertTrue(
+                self._wait_until(
+                    lambda: self._named_scene_nodes(view, "VibeCADSectionCapOverlay")
+                ),
+                f"Section View did not publish its {expected} cut cap.",
+            )
+            Gui.runCommand(command_name, 0)
+            self.assertTrue(
+                self._wait_until(
+                    lambda: not VibeCADSectionView.is_section_view_active(view)
+                )
+            )
+
     def test_close_with_section_enabled_releases_poll_and_scene(self):
         view = Gui.ActiveDocument.ActiveView
         VibeCADSectionView.set_section_view(True, view=view, document=self.document)

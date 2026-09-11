@@ -300,6 +300,9 @@ public:
     App::MainThreadSignal<void(const Document&, bool)> signalCooperativeMutationChanged;
     /// Signal when asynchronous presentation work transitions between idle and active.
     App::MainThreadSignal<void(const Document&, bool)> signalPresentationUpdateChanged;
+    /// Signal when presentation work that mutates document projections starts or ends.
+    App::MainThreadSignal<void(const Document&, bool)>
+        signalMutationBlockingPresentationUpdateChanged;
     /// Completed property-schema or extension change. The immutable object ID
     /// avoids exposing a removed property to deferred projection consumers.
     App::MainThreadSignal<void(long)> signalObjectSchemaChanged;
@@ -1180,6 +1183,9 @@ public:
     void beginPresentationUpdate() const;
     void endPresentationUpdate() const;
     bool isPresentationUpdateActive() const;
+    bool isMutationBlockingPresentationUpdateActive() const;
+    void beginVisualUpdate() const;
+    void endVisualUpdate() const;
     void waitForPresentationReady() const;
 
     bool transacting() const;
@@ -1766,6 +1772,7 @@ private:
     void abandonRestore();
     void invalidateTimelineVisibilityResources(const char* propertyName);
     void notifyBecameStable() const;
+    void scheduleGuiRecomputeFollowUp() const;
     void setBookedTransaction(int transactionId) const;
     bool isBreakingDependency() const noexcept;
     void changePropertyOfObject(

@@ -88,6 +88,24 @@ class TestVibeCADFastenersGui(unittest.TestCase):
         Gui.updateGui()
         QtWidgets.QApplication.instance().processEvents()
 
+    def _wait_for_document(self, document, timeout_ms: int = 5000) -> None:
+        from PySide import QtCore
+
+        elapsed = QtCore.QElapsedTimer()
+        elapsed.start()
+        while elapsed.elapsed() < timeout_ms:
+            self._process_events()
+            if (
+                document.isClosable()
+                and int(document.getBookedTransactionID()) == 0
+                and not bool(document.HasPendingTransaction)
+            ):
+                return
+        self.fail(
+            "The document did not finish its asynchronous update and "
+            "deferred transaction settlement."
+        )
+
     def _finish_native_task(self, *, accept: bool) -> None:
         """Commit or cancel the one active native task through its real button."""
 
@@ -1026,6 +1044,12 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             selected = Gui.Selection.getSelection()
             self.assertEqual(len(selected), 1)
             body = selected[0]
+            self.assertTrue(
+                Gui.Control.activeDialog(),
+                "Inserted fastener did not open its native placement task.",
+            )
+            self._finish_native_task(accept=True)
+            self._wait_for_document(document)
             self.assertEqual(body.TypeId, "PartDesign::Body")
             self.assertEqual(body.Label, "M3 socket bolt")
             publication, state, operation, generator = (
@@ -1107,8 +1131,10 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
             end.click()
             self._process_events()
+            self._wait_for_document(document)
             previous.click()
             self._process_events()
+            self._wait_for_document(document)
             self.assertEqual(controller.Position, block_start)
             # History presence must not overwrite either saved eye state.
             # Before the creating operation, the stable publication remains
@@ -1121,6 +1147,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
             next_button.click()
             self._process_events()
+            self._wait_for_document(document)
             self.assertEqual(controller.Position, block_end)
             self.assertIs(body.Tip, publication)
             self.assertIs(publication.CurrentState, state)
@@ -1339,6 +1366,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             assembly.newObject("Assembly::JointGroup", "Joints")
             self.assertTrue(Gui.getDocument(document.Name).setEdit(assembly))
             self._process_events()
+            self._wait_for_document(document)
             self.assertIs(UtilsAssembly.activeAssembly(), assembly)
             controller = document.getObject("VibeCADTimeline")
             self.assertIsNotNone(controller)
@@ -1362,17 +1390,33 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             }
             command = VibeCADFastenersGui._InsertStandardFastenerCommand()
             self.assertTrue(command.IsActive())
-            with mock.patch.object(
-                VibeCADFastenersGui,
-                "_FastenerDialog",
-            ) as dialog_class:
+            with (
+                mock.patch.object(
+                    VibeCADFastenersGui,
+                    "_FastenerDialog",
+                ) as dialog_class,
+                mock.patch.object(
+                    VibeCADFastenersGui,
+                    "_show_error",
+                ) as show_error,
+            ):
                 dialog_class.return_value.exec.return_value = values
                 command.Activated()
+            show_error.assert_not_called()
             self._process_events()
 
             selected = Gui.Selection.getSelection()
             self.assertEqual(len(selected), 1)
             occurrence = selected[0]
+            self.assertIs(UtilsAssembly.activeAssembly(), assembly)
+            self.assertTrue(
+                assembly.ViewObject.DraggerVisibility,
+                "Assembly fastener insertion did not expose its placement dragger.",
+            )
+            self.assertFalse(
+                Gui.Control.activeDialog(),
+                "Assembly fastener insertion opened a nested task dialog.",
+            )
             self.assertEqual(occurrence.TypeId, "App::Link")
             self.assertIn(occurrence, assembly.Group)
             self.assertEqual(
@@ -1492,19 +1536,23 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             self.assertNotIn(source.Name, visible_timeline_names())
             end.click()
             self._process_events()
+            self._wait_for_document(document)
             previous.click()
             self._process_events()
+            self._wait_for_document(document)
             self.assertEqual(controller.Position, position_before_insert)
             self.assertFalse(occurrence.Visibility)
             self.assertNotIn(source.Name, visible_timeline_names())
 
             next_button.click()
             self._process_events()
+            self._wait_for_document(document)
             self.assertEqual(controller.Position, occurrence_boundary)
             self.assertTrue(occurrence.Visibility)
 
             previous.click()
             self._process_events()
+            self._wait_for_document(document)
             self.assertEqual(controller.Position, position_before_insert)
             self.assertFalse(occurrence.Visibility)
 
@@ -1522,6 +1570,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
                 restored_document = App.openDocument(str(saved_file))
                 self._process_events()
+                self._wait_for_document(restored_document)
                 restored_occurrence = restored_document.getObject(occurrence_name)
                 restored_source = restored_document.getObject(source_name)
                 restored_controller = restored_document.getObject("VibeCADTimeline")
@@ -1565,6 +1614,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             if document is not None and document.Name in App.listDocuments():
                 if Gui.getDocument(document.Name) is not None:
                     Gui.getDocument(document.Name).resetEdit()
+                self._wait_for_document(document)
                 App.closeDocument(document.Name)
 
     def test_deleting_assembly_fastener_occurrence_removes_its_definition(
@@ -1589,6 +1639,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             assembly.newObject("Assembly::JointGroup", "Joints")
             self.assertTrue(Gui.getDocument(document.Name).setEdit(assembly))
             self._process_events()
+            self._wait_for_document(document)
             self.assertIs(UtilsAssembly.activeAssembly(), assembly)
 
             identity = resolve_fastener(
@@ -1653,6 +1704,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             gui_document = Gui.getDocument(document.Name)
             if gui_document is not None and gui_document.getInEdit() is not None:
                 gui_document.resetEdit()
+            self._wait_for_document(document)
             App.closeDocument(document.Name)
 
     def test_legacy_assembly_fastener_migration_requires_one_occurrence(
@@ -2980,6 +3032,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
         import FreeCADGui as Gui
         import Part
         import PartDesign
+        import PartGui
 
         document = App.newDocument("FastenerRibbonAttach")
         document.UndoMode = True
@@ -3019,6 +3072,12 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             selected = Gui.Selection.getSelection()
             self.assertEqual(len(selected), 1)
             body = selected[0]
+            self.assertTrue(
+                Gui.Control.activeDialog(),
+                "Inserted fastener did not open its native placement task.",
+            )
+            self._finish_native_task(accept=True)
+            self._wait_for_document(document)
             publication, state, operation, fastener = (
                 self._design_fastener_graph(body)
             )
@@ -3054,13 +3113,23 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             Gui.Selection.addSelection(host_body, sub_name)
             self._process_events()
             action = actions["VibeCAD_AttachStandardFastener"]
-            self.assertTrue(action.isEnabled())
+            self.assertTrue(
+                action.isEnabled(),
+                (
+                    "attach action remained disabled after the document became "
+                    "stable: "
+                    f"modeling_ready={PartGui.canStartRetainedModelingTask()} "
+                    f"closable={document.isClosable()} "
+                    f"booked_transaction={document.getBookedTransactionID()}"
+                ),
+            )
             undo_before = int(document.UndoCount)
             with mock.patch(
                 "VibeCADFastenersGui._show_error"
             ) as show_error:
                 action.trigger()
                 self._process_events()
+                self._wait_for_document(document)
             self.assertFalse(
                 show_error.called,
                 str(show_error.call_args),
@@ -3163,6 +3232,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
             document.undo()
             self._process_events()
+            self._wait_for_document(document)
             body = document.getObject(names["body"])
             publication, state, operation, fastener = (
                 self._design_fastener_graph(body)
@@ -3194,6 +3264,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
             document.redo()
             self._process_events()
+            self._wait_for_document(document)
             body = document.getObject(names["body"])
             publication, state, operation, fastener = (
                 self._design_fastener_graph(body)
@@ -3229,13 +3300,16 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 )
                 host_body_name = host_body.Name
                 host_state_name = host_state.Name
+                self._wait_for_document(document)
                 document.saveAs(str(saved_file))
+                self._wait_for_document(document)
                 App.closeDocument(document.Name)
                 document = None
 
                 restored_document = App.openDocument(str(saved_file))
                 restored_document.UndoMode = True
                 self._process_events()
+                self._wait_for_document(restored_document)
                 body = restored_document.getObject(names["body"])
                 host_body = restored_document.getObject(host_body_name)
                 host_state = restored_document.getObject(host_state_name)
@@ -3291,8 +3365,10 @@ class TestVibeCADFastenersGui(unittest.TestCase):
                 restored_document is not None
                 and restored_document.Name in App.listDocuments()
             ):
+                self._wait_for_document(restored_document)
                 App.closeDocument(restored_document.Name)
             if document is not None and document.Name in App.listDocuments():
+                self._wait_for_document(document)
                 App.closeDocument(document.Name)
 
     def test_attach_accepts_body_owned_edge_and_rejects_assembly_occurrence(

@@ -189,6 +189,16 @@ void queuedOwnerInvoke(std::function<void()>&& work, bool blocking)
     queuedOwnerWork.push_back(std::move(work));
 }
 
+void queuedOwnerInvokeNextFrame(std::function<void()>&& work, bool blocking)
+{
+    if (blocking) {
+        work();
+        return;
+    }
+    std::lock_guard lock(queuedOwnerMutex);
+    queuedOwnerWork.push_back(std::move(work));
+}
+
 std::deque<std::function<void()>> takeQueuedOwnerWork()
 {
     std::lock_guard lock(queuedOwnerMutex);
@@ -670,6 +680,161 @@ TEST_F(AsyncRecomputeTest, SynchronousGuiCallerKeepsEventsAndMutationLeaseLive)
     EXPECT_TRUE(timerRan);
     EXPECT_TRUE(protectedDocument);
     EXPECT_FALSE(_doc->isCooperativeMutationActive());
+}
+
+TEST_F(AsyncRecomputeTest, SynchronousGuiCallerRecomputesWorkTouchedDuringItsActiveUpdate)
+{
+    int argc = 1;
+    char name[] = "recompute-gui-follow-up";
+    char* argv[] = {name, nullptr};
+    std::unique_ptr<QCoreApplication> application;
+    if (!QCoreApplication::instance()) {
+        application = std::make_unique<QCoreApplication>(argc, argv);
+    }
+    ASSERT_FALSE(App::MainThreadSignalConfig::hasHooks());
+    App::MainThreadSignalConfig::setHooks(
+        [] { return QThread::currentThread() == QCoreApplication::instance()->thread(); },
+        [](std::function<void()>&& work, bool) { work(); }
+    );
+    BOOST_SCOPE_EXIT_ALL(&) { App::MainThreadSignalConfig::setHooks(nullptr, nullptr); };
+
+    auto* blocker = _doc->addObject("App::FeatureTestAsyncBlocker", "FollowUpBlocker");
+    auto* followUp = _doc->addObject("App::FeatureTest", "FollowUpFeature");
+    ASSERT_NE(blocker, nullptr);
+    ASSERT_NE(followUp, nullptr);
+    followUp->purgeTouched();
+    ASSERT_FALSE(followUp->isTouched());
+
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    BOOST_SCOPE_EXIT_ALL(&) { App::FeatureTestAsyncBlocker::releaseBlocker(); };
+    blocker->touch();
+    bool nestedRequestRan = false;
+    QObject timerOwner;
+    QTimer::singleShot(0, &timerOwner, [&] {
+        ASSERT_TRUE(_doc->isCooperativeMutationActive());
+        followUp->touch();
+        nestedRequestRan = true;
+        EXPECT_EQ(_doc->recompute(), 0);
+        App::FeatureTestAsyncBlocker::releaseBlocker();
+    });
+
+    EXPECT_GE(_doc->recompute(), 2);
+    EXPECT_TRUE(nestedRequestRan);
+    EXPECT_FALSE(followUp->isTouched());
+    EXPECT_FALSE(_doc->isCooperativeMutationActive());
+}
+
+TEST_F(AsyncRecomputeTest, RequestedCloseRunsOnceAfterPresentationReleases)
+{
+    queuedOwnerId = std::this_thread::get_id();
+    takeQueuedOwnerWork();
+    App::MainThreadSignalConfig::setHooks(&queuedOwnerIsMainThread, &queuedOwnerInvokeNextFrame);
+    BOOST_SCOPE_EXIT_ALL(&) {
+        App::MainThreadSignalConfig::setHooks(nullptr, nullptr);
+        takeQueuedOwnerWork();
+    };
+
+    const std::string documentName = _doc->getName();
+    _doc->beginCooperativeMutation();
+    _doc->beginPresentationUpdate();
+    _doc->beginVisualUpdate();
+    EXPECT_TRUE(App::GetApplication().requestCloseDocument(documentName.c_str()));
+    EXPECT_TRUE(App::GetApplication().requestCloseDocument(documentName.c_str()));
+    EXPECT_NE(App::GetApplication().getDocument(documentName.c_str()), nullptr);
+
+    _doc->endPresentationUpdate();
+    _doc->endVisualUpdate();
+    _doc->endCooperativeMutation();
+    EXPECT_NE(App::GetApplication().getDocument(documentName.c_str()), nullptr);
+    auto queued = takeQueuedOwnerWork();
+    ASSERT_EQ(queued.size(), 1);
+    queued.front()();
+    EXPECT_EQ(App::GetApplication().getDocument(documentName.c_str()), nullptr);
+    _doc = nullptr;
+}
+
+TEST_F(AsyncRecomputeTest, VisualUpdateRetainsLifetimeWithoutBlockingRecompute)
+{
+    std::vector<bool> lifetimeTransitions;
+    std::vector<bool> mutationTransitions;
+    auto lifetimeConnection = _doc->signalPresentationUpdateChanged.connect(
+        [&lifetimeTransitions](const App::Document&, bool active) {
+            lifetimeTransitions.push_back(active);
+        }
+    );
+    auto mutationConnection = _doc->signalMutationBlockingPresentationUpdateChanged.connect(
+        [&mutationTransitions](const App::Document&, bool active) {
+            mutationTransitions.push_back(active);
+        }
+    );
+    auto* object = dynamic_cast<App::FeatureTest*>(
+        _doc->addObject("App::FeatureTest", "VisualUpdateFeature")
+    );
+    ASSERT_NE(object, nullptr);
+    object->touch();
+    _doc->beginVisualUpdate();
+
+    EXPECT_TRUE(_doc->isPresentationUpdateActive());
+    EXPECT_FALSE(_doc->isMutationBlockingPresentationUpdateActive());
+    EXPECT_EQ(lifetimeTransitions, std::vector<bool>({true}));
+    EXPECT_TRUE(mutationTransitions.empty());
+    EXPECT_GE(_doc->recompute(), 1);
+    EXPECT_FALSE(object->isTouched());
+    EXPECT_TRUE(_doc->isPresentationUpdateActive());
+    EXPECT_EQ(mutationTransitions, std::vector<bool>({true, false}));
+
+    _doc->beginPresentationUpdate();
+    EXPECT_TRUE(_doc->isMutationBlockingPresentationUpdateActive());
+    EXPECT_EQ(lifetimeTransitions, std::vector<bool>({true}));
+    EXPECT_EQ(mutationTransitions, std::vector<bool>({true, false, true}));
+    _doc->endPresentationUpdate();
+    EXPECT_FALSE(_doc->isMutationBlockingPresentationUpdateActive());
+    EXPECT_TRUE(_doc->isPresentationUpdateActive());
+    EXPECT_EQ(lifetimeTransitions, std::vector<bool>({true}));
+    EXPECT_EQ(mutationTransitions, std::vector<bool>({true, false, true, false}));
+
+    _doc->endVisualUpdate();
+    EXPECT_FALSE(_doc->isPresentationUpdateActive());
+    EXPECT_EQ(lifetimeTransitions, std::vector<bool>({true, false}));
+}
+
+TEST_F(AsyncRecomputeTest, GuiRecomputeDuringPublicationRunsAtNextStableBoundary)
+{
+    int argc = 1;
+    char name[] = "recompute-gui-publication-follow-up";
+    char* argv[] = {name, nullptr};
+    std::unique_ptr<QCoreApplication> application;
+    if (!QCoreApplication::instance()) {
+        application = std::make_unique<QCoreApplication>(argc, argv);
+    }
+
+    queuedOwnerId = std::this_thread::get_id();
+    takeQueuedOwnerWork();
+    App::MainThreadSignalConfig::setHooks(&queuedOwnerIsMainThread, &queuedOwnerInvokeNextFrame);
+    BOOST_SCOPE_EXIT_ALL(&) {
+        App::MainThreadSignalConfig::setHooks(nullptr, nullptr);
+        takeQueuedOwnerWork();
+    };
+
+    auto* object = dynamic_cast<App::FeatureTest*>(
+        _doc->addObject("App::FeatureTest", "DeferredGuiRecomputeFeature")
+    );
+    ASSERT_NE(object, nullptr);
+    object->touch();
+    _doc->beginPresentationUpdate();
+
+    EXPECT_EQ(_doc->recompute(), 0);
+    EXPECT_TRUE(object->isTouched());
+    EXPECT_TRUE(takeQueuedOwnerWork().empty());
+
+    _doc->endPresentationUpdate();
+    auto queued = takeQueuedOwnerWork();
+    ASSERT_EQ(queued.size(), 1);
+    queued.front()();
+
+    EXPECT_FALSE(object->isTouched());
+    EXPECT_FALSE(_doc->isCooperativeMutationActive());
+    EXPECT_FALSE(_doc->isMutationBlockingPresentationUpdateActive());
 }
 
 TEST_F(AsyncRecomputeTest, WorkerSafetyIsCheckedFromRequest)

@@ -555,6 +555,7 @@ Application::Application(std::map<std::string,std::string> &mConfig)
 
 Application::~Application()
 {
+    _pendingDocumentCloses.clear();
     {
         std::lock_guard<std::mutex> lock(_recomputeMutex);
         for (auto& [name, cancellation] : _recomputeCancellation) {
@@ -943,6 +944,107 @@ void Application::closeAllDocuments()
     }
 }
 
+bool Application::requestCloseDocument(const char* name)
+{
+    const std::string documentName(name ? name : "");
+    auto* document = getDocument(documentName.c_str());
+    if (!document) {
+        return false;
+    }
+    if (!(document->isCooperativeMutationActive()
+          || document->isPresentationUpdateActive())) {
+        return closeDocument(documentName.c_str());
+    }
+    if (!MainThreadSignalConfig::hasHooks() || !MainThreadSignalConfig::isMainThread()) {
+        return false;
+    }
+
+    const std::string documentUid = document->Uid.getValueStr();
+    if (auto existing = _pendingDocumentCloses.find(documentName);
+        existing != _pendingDocumentCloses.end()) {
+        return existing->second.documentUid == documentUid;
+    }
+
+    PendingDocumentClose pending;
+    pending.documentUid = documentUid;
+    const auto changed = [this, documentName, documentUid](const Document&, bool active) {
+        if (active) {
+            return;
+        }
+        queueRequestedDocumentClose(documentName, documentUid);
+    };
+    pending.cooperativeMutationConnection =
+        document->signalCooperativeMutationChanged.connect(changed);
+    pending.presentationUpdateConnection =
+        document->signalPresentationUpdateChanged.connect(changed);
+    _pendingDocumentCloses.emplace(documentName, std::move(pending));
+    return true;
+}
+
+void Application::queueRequestedDocumentClose(
+    const std::string& documentName,
+    const std::string& documentUid
+)
+{
+    const auto pending = _pendingDocumentCloses.find(documentName);
+    if (pending == _pendingDocumentCloses.end()
+        || pending->second.documentUid != documentUid
+        || pending->second.resumeQueued) {
+        return;
+    }
+
+    pending->second.resumeQueued = true;
+    MainThreadSignalConfig::invoke(
+        [this, documentName, documentUid] {
+            resumeRequestedDocumentClose(documentName, documentUid);
+        },
+        false
+    );
+}
+
+void Application::resumeRequestedDocumentClose(
+    const std::string& documentName,
+    const std::string& documentUid
+)
+{
+    const auto pending = _pendingDocumentCloses.find(documentName);
+    if (pending == _pendingDocumentCloses.end()
+        || pending->second.documentUid != documentUid) {
+        return;
+    }
+
+    auto* document = getDocument(documentName.c_str());
+    if (!document || document->Uid.getValueStr() != documentUid) {
+        _pendingDocumentCloses.erase(pending);
+        return;
+    }
+    if (document->isCooperativeMutationActive() || document->isPresentationUpdateActive()) {
+        pending->second.resumeQueued = false;
+        return;
+    }
+
+    if (closeDocument(documentName.c_str())) {
+        _pendingDocumentCloses.erase(documentName);
+        return;
+    }
+
+    document = getDocument(documentName.c_str());
+    const auto current = _pendingDocumentCloses.find(documentName);
+    if (current != _pendingDocumentCloses.end()
+        && document && document->Uid.getValueStr() == documentUid
+        && (document->isCooperativeMutationActive()
+            || document->isPresentationUpdateActive())) {
+        current->second.resumeQueued = false;
+        return;
+    }
+
+    _pendingDocumentCloses.erase(documentName);
+    Base::Console().error(
+        "Requested close failed for stable document '%s'\n",
+        documentName.c_str()
+    );
+}
+
 Document* Application::getDocument(const char *Name) const
 {
 
@@ -1126,7 +1228,7 @@ bool Application::tryQueueRecomputeRequests(std::vector<RecomputeRequest> reques
                 Document* document = request.resolveDocument();
                 return !request.documentName.empty() && document
                     && (!(document->isCooperativeMutationActive()
-                          || document->isPresentationUpdateActive())
+                          || document->isMutationBlockingPresentationUpdateActive())
                         || _recomputeDocumentsScheduled.contains(request.documentName));
             })) {
             return false;

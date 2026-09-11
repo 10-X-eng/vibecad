@@ -656,9 +656,9 @@ struct DocumentItem::BrowserFolderStatus
         : document(owner->document()->getDocument()), generation(generation)
     {
         stack.push_back({owner});
-        document->beginPresentationUpdate();
+        document->beginVisualUpdate();
     }
-    ~BrowserFolderStatus() { document->endPresentationUpdate(); }
+    ~BrowserFolderStatus() { document->endVisualUpdate(); }
 };
 
 class DocumentItem::ExpandInfo: public std::unordered_map<std::string, DocumentItem::ExpandInfoPtr>
@@ -4760,10 +4760,11 @@ void TreeWidget::processUpdateStatus()
             continue;
         }
 
-        if (!docItem->PopulateObjects.empty()) {
-            auto* obj = docItem->PopulateObjects.back();
-            docItem->PopulateObjects.pop_back();
-            if (obj && obj->isAttachedToDocument() && obj->getDocument() == doc) {
+        if (!docItem->PopulateObjectIds.empty()) {
+            const long objectId = docItem->PopulateObjectIds.back();
+            docItem->PopulateObjectIds.pop_back();
+            if (auto* obj = doc->getObjectByID(objectId);
+                obj && obj->isAttachedToDocument()) {
                 docItem->populateObject(obj);
             }
             if (budget.exhausted()) {
@@ -9179,7 +9180,7 @@ void DocumentItem::acquirePresentationUpdate(App::Document& document)
         return;
     }
     releasePresentationUpdate();
-    document.beginPresentationUpdate();
+    document.beginVisualUpdate();
     presentationUpdateDocument = &document;
 }
 
@@ -9190,7 +9191,7 @@ void DocumentItem::releasePresentationUpdate()
     }
     auto* document = presentationUpdateDocument;
     presentationUpdateDocument = nullptr;
-    document->endPresentationUpdate();
+    document->endVisualUpdate();
 }
 
 Gui::Document* DocumentItem::document() const
@@ -10040,7 +10041,7 @@ DocumentObjectItem::~DocumentObjectItem()
     if (myOwner && myData->items.empty()) {
         auto it = myOwner->_ParentMap.find(object()->getObject());
         if (it != myOwner->_ParentMap.end() && !it->second.empty()) {
-            myOwner->PopulateObjects.push_back(*it->second.begin());
+            myOwner->PopulateObjectIds.push_back((*it->second.begin())->getID());
             myOwner->getTree()->_updateStatus();
         }
     }

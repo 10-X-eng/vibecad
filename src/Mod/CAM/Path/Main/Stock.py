@@ -73,15 +73,19 @@ class StockType:
 def shapeBoundBox(obj):
     Path.Log.track(type(obj))
     if isinstance(obj, list) and obj:
+        bounds = [bound for item in obj if (bound := shapeBoundBox(item)) is not None]
+        if not bounds:
+            return None
         bb = FreeCAD.BoundBox()
-        for o in obj:
-            bb.add(shapeBoundBox(o))
+        for bound in bounds:
+            bb.add(bound)
         return bb
 
     if hasattr(obj, "Shape"):
-        return obj.Shape.BoundBox
+        bounds = obj.Shape.BoundBox
+        return bounds if bounds.isValid() else None
     if obj and "App::Part" == obj.TypeId:
-        bounds = [shapeBoundBox(o) for o in obj.Group]
+        bounds = [bound for item in obj.Group if (bound := shapeBoundBox(item)) is not None]
         if bounds:
             bb = bounds[0]
             for b in bounds[1:]:

@@ -223,20 +223,20 @@ void copyRenderMesh(
     lineset->coordIndex.finishEditing();
 }
 
-class PresentationUpdateEnd
+class VisualUpdateEnd
 {
 public:
-    explicit PresentationUpdateEnd(App::Document* document)
+    explicit VisualUpdateEnd(App::Document* document)
         : documentName(document ? document->getName() : ""),
           documentUid(document ? document->Uid.getValueStr() : "")
     {}
 
-    ~PresentationUpdateEnd()
+    ~VisualUpdateEnd()
     {
         auto* document = App::GetApplication().getDocument(documentName.c_str());
         if (document && document->Uid.getValueStr() == documentUid) {
             try {
-                document->endPresentationUpdate();
+                document->endVisualUpdate();
             }
             catch (const Base::Exception& failure) {
                 failure.reportException();
@@ -250,8 +250,8 @@ public:
         }
     }
 
-    PresentationUpdateEnd(const PresentationUpdateEnd&) = delete;
-    PresentationUpdateEnd& operator=(const PresentationUpdateEnd&) = delete;
+    VisualUpdateEnd(const VisualUpdateEnd&) = delete;
+    VisualUpdateEnd& operator=(const VisualUpdateEnd&) = delete;
 
 private:
     const std::string documentName;
@@ -1535,8 +1535,8 @@ void ViewProviderPartExt::startVisualBuild(
     // The controller owns callbacks on the GUI thread. Completion, cancellation
     // and provider destruction all release this lease there; workers never
     // retain or dereference a document or view provider.
-    auto presentationFinished = std::make_shared<PresentationUpdateEnd>(document);
-    document->beginPresentationUpdate();
+    auto presentationFinished = std::make_shared<VisualUpdateEnd>(document);
+    document->beginVisualUpdate();
 
     try {
         visualMeshController.request(

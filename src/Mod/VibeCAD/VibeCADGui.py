@@ -4665,15 +4665,15 @@ def _move_saved_document_conversation(doc: Any, filepath: str) -> None:
 
 
 def _queue_zero_delay_callback(callback: Any) -> None:
-    """Queue one callback on Qt without making document observers block."""
+    """Queue one callback on the shared GUI frame dispatcher."""
 
     try:
-        from PySide import QtCore
-    except ImportError:
+        import FreeCADGui as gui_application
+    except ImportError:  # pragma: no cover - tooling outside FreeCAD
         callback()
         return
-
-    QtCore.QTimer.singleShot(0, callback)
+    if not gui_application.deferToNextFrame(callback):
+        _warn("VibeCAD GUI callback was discarded during application shutdown.")
 
 
 def _schedule_native_authority_selector_refresh(document_uid: str = "") -> None:
