@@ -248,7 +248,15 @@ void MDIView::closeEvent(QCloseEvent* e)
                 guard->closePreparationPending = false;
                 if (!ready) { return; }
                 guard->closePrepared = true;
-                guard->close();
+                // Re-enter through the owning MDI window. Closing only the
+                // child view removes the document while leaving QMdiArea's
+                // tab container behind until a second close request.
+                if (auto* subWindow = qobject_cast<QMdiSubWindow*>(guard->parentWidget())) {
+                    subWindow->close();
+                }
+                else {
+                    guard->close();
+                }
                 if (guard) { guard->closePrepared = false; }
             }, true);
         }

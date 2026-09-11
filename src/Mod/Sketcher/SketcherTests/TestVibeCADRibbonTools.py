@@ -1253,13 +1253,28 @@ class TestVibeCADSketchRibbonTools(SketcherGuiTestCase):
         self.flush_gui()
         before = self.sketch.ConstraintCount
 
-        self._respond_to_modal(True)
-        Gui.runCommand("Sketcher_ConstrainRadius", 0)
-        self.flush_gui(80)
+        messages = []
+        previous_handler = QtCore.qInstallMessageHandler(
+            lambda _kind, _context, message: messages.append(str(message))
+        )
+        preferences = App.ParamGet("User parameter:BaseApp/Preferences/Mod/Sketcher")
+        original_auto_recompute = preferences.GetBool("AutoRecompute", False)
+        try:
+            preferences.SetBool("AutoRecompute", True)
+            self._respond_to_modal(True)
+            Gui.runCommand("Sketcher_ConstrainRadius", 0)
+            self.flush_gui(80)
+        finally:
+            preferences.SetBool("AutoRecompute", original_auto_recompute)
+            QtCore.qInstallMessageHandler(previous_handler)
 
         self.assertEqual(before + 1, self.sketch.ConstraintCount)
         self.assertEqual("Radius", self.sketch.Constraints[-1].Type)
         self.assertFalse(self.doc.HasPendingTransaction)
+        self.assertFalse(
+            [message for message in messages if "Timer" in message and "thread" in message],
+            messages,
+        )
 
     def test_group_constraint_accepts_two_distinct_native_geometries(self):
         self._enter_edit()

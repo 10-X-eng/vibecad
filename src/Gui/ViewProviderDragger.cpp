@@ -104,6 +104,16 @@ void ViewProviderDragger::resetTransformOrigin()
 }
 
 
+bool ViewProviderDragger::setGizmosVisible(bool visible)
+{
+    if (!gizmoContainer) {
+        return false;
+    }
+    const bool previous = gizmoContainer->visible.getValue();
+    gizmoContainer->visible = visible;
+    return previous;
+}
+
 void ViewProviderDragger::setGizmoContainer(Gui::GizmoContainer* gizmoContainer)
 {
     this->gizmoContainer = gizmoContainer;
@@ -252,14 +262,27 @@ void ViewProviderDragger::setEditViewer(Gui::View3DInventorViewer* viewer, int M
     }
 
     if (gizmoContainer) {
+        if (!gizmoEventRedirectionActive) {
+            previousGizmoEventRedirection = viewer->isRedirectedToSceneGraph();
+            gizmoEventRedirectionActive = true;
+        }
+        // Let the editing controls consume their gestures before navigation
+        // modes such as Inventor interpret a left drag as camera rotation.
+        // Unhandled events still reach the selected navigation style.
+        viewer->setRedirectToSceneGraph(true);
         auto originPlacement = App::GeoFeature::getGlobalPlacement(getObject())
             * getObjectPlacement().inverse();
         gizmoContainer->attachViewer(viewer, originPlacement);
     }
 }
 
-void ViewProviderDragger::unsetEditViewer([[maybe_unused]] Gui::View3DInventorViewer* viewer)
-{}
+void ViewProviderDragger::unsetEditViewer(Gui::View3DInventorViewer* viewer)
+{
+    if (viewer && gizmoEventRedirectionActive) {
+        viewer->setRedirectToSceneGraph(previousGizmoEventRedirection);
+        gizmoEventRedirectionActive = false;
+    }
+}
 
 void ViewProviderDragger::dragStartCallback(void* data, [[maybe_unused]] SoDragger* d)
 {

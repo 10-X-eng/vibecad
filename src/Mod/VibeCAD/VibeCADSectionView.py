@@ -2958,11 +2958,10 @@ def _start_plane_drag(view):
                 # vertical dragging then uses the view's world-units-per-pixel.
                 a = view.getPoint(pixel_x, pixel_y)
                 b = view.getPoint(pixel_x, pixel_y + 1)
-                # A face-on pull has no projected normal. Keep its world
-                # direction tied to the camera when Flip reverses the normal.
-                look = _view_look_direction(view)
-                toward_camera = tuple(-value for value in look)
-                self.pixel_scale = (b - a).Length * (1 if _dot(normal, toward_camera) >= 0 else -1)
+                # A face-on plane has no projected normal. Map an upward pull
+                # to the positive direction of the active section normal, so
+                # Flip reverses both the handle and its interaction together.
+                self.pixel_scale = (b - a).Length
                 self.dragging = True
                 return True
             if not self.dragging:

@@ -766,7 +766,8 @@ bool TaskView::showDialog(TaskDialog* dlg, App::Document* doc)
 
     dlg->adoptCommandInteractionState(doc);
 
-    TaskInfo outInfo {.Document = doc};
+    TaskInfo outInfo {};
+    outInfo.Document = doc;
     // first create the control element, set it up and wire it:
     outInfo.ActiveCtrl = new TaskEditControl(this);
     outInfo.ActiveCtrl->buttonBox->setStandardButtons(dlg->getStandardButtons());

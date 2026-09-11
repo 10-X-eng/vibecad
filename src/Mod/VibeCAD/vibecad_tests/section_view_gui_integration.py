@@ -520,6 +520,10 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
         point = view.getPointOnScreen(App.Vector(-0.8, -0.4, 5))
         start = QtCore.QPoint(int(point[0]), widget.height() - 1 - int(point[1]))
         finish = start + QtCore.QPoint(0, -40)
+        bounds = VibeCADSectionView._bounds_for_view(view, self.document)
+        before_origin, _ = VibeCADSectionView.clip_plane_from_settings(
+            VibeCADSectionView.current_section_view_settings(), bounds.center)
+        before_screen = view.getPointOnScreen(App.Vector(*before_origin))
         box = self.document.getObject("SectionBox")
         placement = box.Placement
         undo = self.document.UndoCount
@@ -534,10 +538,23 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
             QtCore.QCoreApplication.sendEvent(widget, event)
         self._process_events()
         self.assertNotAlmostEqual(VibeCADSectionView.current_section_view_settings().offset, 0)
+        after_origin, _ = VibeCADSectionView.clip_plane_from_settings(
+            VibeCADSectionView.current_section_view_settings(), bounds.center)
+        after_screen = view.getPointOnScreen(App.Vector(*after_origin))
+        plane_motion = QtCore.QPointF(
+            after_screen[0] - before_screen[0],
+            before_screen[1] - after_screen[1],
+        )
+        mouse_motion = QtCore.QPointF(finish - start)
+        self.assertGreater(
+            plane_motion.x() * mouse_motion.x() + plane_motion.y() * mouse_motion.y(),
+            0.0,
+            "Section plane moved away from the pointer during its drag",
+        )
         self.assertEqual(box.Placement, placement)
         self.assertEqual(self.document.UndoCount, undo)
 
-    def test_face_on_plane_pull_keeps_world_direction_when_flipped(self):
+    def test_face_on_plane_pull_follows_active_normal_when_flipped(self):
         view = Gui.ActiveDocument.ActiveView
         view.viewTop()
         view.fitAll()
@@ -547,9 +564,7 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
             VibeCADSectionView.configure_section_view(plane="top", flipped=flipped)
             VibeCADSectionView.set_section_view(True, view=view, document=self.document)
             self._process_events()
-            bounds = VibeCADSectionView._bounds_for_view(view, self.document)
-            before, _ = VibeCADSectionView.clip_plane_from_settings(
-                VibeCADSectionView.current_section_view_settings(), bounds.center)
+            before = VibeCADSectionView.current_section_view_settings()
             point = view.getPointOnScreen(App.Vector(-0.8, -0.4, 5))
             start = QtCore.QPoint(int(point[0]), widget.height() - 1 - int(point[1]))
             finish = start + QtCore.QPoint(0, -10)
@@ -562,10 +577,14 @@ class TestVibeCADSectionViewCommand(unittest.TestCase):
                                          QtCore.QPointF(widget.mapToGlobal(position)),
                                          button, buttons, QtCore.Qt.NoModifier)
                 QtCore.QCoreApplication.sendEvent(widget, event)
-            after, _ = VibeCADSectionView.clip_plane_from_settings(
-                VibeCADSectionView.current_section_view_settings(), bounds.center)
-            self.assertGreater(after[2], before[2], f"Pull reversed with flipped={flipped}")
+            after = VibeCADSectionView.current_section_view_settings()
+            self.assertGreater(
+                after.offset,
+                before.offset,
+                f"Pull opposed the active section normal with flipped={flipped}",
+            )
             VibeCADSectionView.set_section_view(False, view=view, document=self.document)
+            self._process_events()
 
     def test_scene_helpers_do_not_expand_section_bounds(self):
         from pivy import coin

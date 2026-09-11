@@ -12,6 +12,7 @@
 #include <QElapsedTimer>
 #include <QMouseEvent>
 #include <QMessageBox>
+#include <QMdiSubWindow>
 #include <QAbstractButton>
 #include <QListWidget>
 #include <QTest>
@@ -63,6 +64,20 @@
 
 namespace
 {
+
+// Undo keeps the removed object alive, allowing the test to detect stale tree
+// dereferences deterministically instead of relying on freed-memory contents.
+class RemovedObjectProbe final: public App::DocumentObject
+{
+public:
+    mutable int attachmentQueries {0};
+
+    bool isAttachedToDocument() const override
+    {
+        ++attachmentQueries;
+        return App::DocumentObject::isAttachedToDocument();
+    }
+};
 
 #ifdef _MSC_VER
 LONG CALLBACK captureAccessViolation(EXCEPTION_POINTERS* exception)
@@ -208,6 +223,41 @@ class DocumentBulkMutationTest: public QObject
 #endif
 
 private Q_SLOTS:
+    void treeDoesNotDereferenceRemovedObjectWithoutViewProvider()
+    {
+        auto& app = App::GetApplication();
+        auto* document = app.newDocument("RemovedUnpresentedObject");
+        auto* object = new RemovedObjectProbe;
+        document->addObject(object, "InternalObject");
+        QVERIFY(!application->getDocument(document)->getViewProvider(object));
+        QTRY_VERIFY(document->isClosable());
+
+        QTreeWidget* tree = nullptr;
+        for (auto* candidate : window->findChildren<QTreeWidget*>()) {
+            if (candidate->inherits("Gui::TreeWidget")) {
+                tree = candidate;
+                break;
+            }
+        }
+        QVERIFY(tree);
+        document->setUndoMode(1);
+        document->openTransaction("Remove internal object");
+        object->touch();
+        document->removeObject("InternalObject");
+        document->commitTransaction();
+        QVERIFY(!document->containsObject(object));
+        object->attachmentQueries = 0;
+
+        QVERIFY(QMetaObject::invokeMethod(tree, "onUpdateStatus", Qt::DirectConnection));
+        bool dispatched = false;
+        QVERIFY(Gui::dispatchToGuiFrame([&] { dispatched = true; }));
+        QTRY_VERIFY(dispatched);
+        QTRY_VERIFY(document->isClosable());
+        const int queries = object->attachmentQueries;
+        QVERIFY(app.closeDocument("RemovedUnpresentedObject"));
+        QCOMPARE(queries, 0);
+    }
+
     void closeRemainsRejectedWhenAnObserverStartsFinalization()
     {
         auto& guiApplication = *application;
@@ -1168,6 +1218,26 @@ private Q_SLOTS:
         QVERIFY(!app.getDocument(name.c_str()));
         QTRY_VERIFY_WITH_TIMEOUT(view.isNull(), 5000);
         QVERIFY(!window->findChild<QMessageBox*>("confirmSave"));
+    }
+
+    void approvedLastViewCloseRemovesItsMdiSubWindow()
+    {
+        auto& app = App::GetApplication();
+        auto* document = app.newDocument("single_click_view_close");
+        auto* guiDocument = application->getDocument(document);
+        guiDocument->setModified(false);
+
+        const auto views = guiDocument->getMDIViews();
+        QCOMPARE(views.size(), std::size_t(1));
+        QPointer<Gui::MDIView> view = views.front();
+        QPointer<QMdiSubWindow> subWindow = qobject_cast<QMdiSubWindow*>(view->parentWidget());
+        QVERIFY(subWindow);
+
+        subWindow->close();
+
+        QTRY_VERIFY_WITH_TIMEOUT(!app.getDocument("single_click_view_close"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(view.isNull(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(subWindow.isNull(), 5000);
     }
 
     void queuedCloseAllPreservesDocumentsCreatedWhilePrompting()

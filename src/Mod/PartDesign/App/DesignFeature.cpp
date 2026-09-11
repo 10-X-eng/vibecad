@@ -65,6 +65,35 @@
 
 using namespace PartDesign;
 
+bool PartDesign::designToolContactsBody(
+    const Part::TopoShape& body,
+    const Part::TopoShape& tool,
+    bool allowFaceContact,
+    double fuzzyTolerance
+)
+{
+    for (const auto& solid : tool.getSubTopoShapes(TopAbs_SOLID)) {
+        Part::TopoShape overlap;
+        overlap.makeElementBoolean(Part::OpCodes::Common, {body, solid}, nullptr, fuzzyTolerance);
+        if (!overlap.isNull() && overlap.hasSubShape(TopAbs_SOLID)) {
+            return true;
+        }
+        if (allowFaceContact) {
+            // Solid Common discards shared faces. Join permits face contact,
+            // but Cut/Intersect require volume; edge/point contact is not enough.
+            Part::TopoShape boundary;
+            boundary.makeElementCompound(solid.getSubTopoShapes(TopAbs_FACE));
+            overlap.makeElementBoolean(
+                Part::OpCodes::Common, {body, boundary}, nullptr, fuzzyTolerance
+            );
+            if (!overlap.isNull() && overlap.hasSubShape(TopAbs_FACE)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 namespace
 {
 
@@ -687,6 +716,12 @@ App::DocumentObjectExecReturn* computeOutputShapes(
         return outputError("The operation did not generate a valid tool solid");
     }
 
+    if (inputs.empty() && inputBodyIds.empty() && inputFrames.empty()
+        && outputBodyIds.empty() && outputFrames.empty() && previousInputIndices.empty()
+        && outputComponentIds.empty()
+        && (resultOperation == "Join" || resultOperation == "Cut" || resultOperation == "Intersect")) {
+        return outputError("Select at least one target Body for " + std::string(resultOperation));
+    }
     if (inputs.size() != inputBodyIds.size() || inputs.size() != inputFrames.size()
         || outputBodyIds.empty() || outputFrames.size() != outputBodyIds.size()
         || previousInputIndices.size() != outputBodyIds.size()
@@ -772,20 +807,9 @@ App::DocumentObjectExecReturn* computeOutputShapes(
             }
             const Part::TopoShape localTool = transformedShape(tool, outputFrames[index].inverse());
 
-            bool intersects = false;
-            for (const auto& toolSolid : localTool.getSubTopoShapes(TopAbs_SOLID)) {
-                Part::TopoShape overlap;
-                overlap.makeElementBoolean(
-                    Part::OpCodes::Common,
-                    {base, toolSolid},
-                    nullptr,
-                    fuzzyTolerance
-                );
-                if (!overlap.isNull() && overlap.hasSubShape(TopAbs_SOLID)) {
-                    intersects = true;
-                    break;
-                }
-            }
+            const bool intersects = designToolContactsBody(
+                base, localTool, resultOperation == "Join", fuzzyTolerance
+            );
             if (!intersects) {
                 return outputError(
                     std::string("The operation does not intersect selected Body '")

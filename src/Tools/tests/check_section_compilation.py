@@ -32,6 +32,7 @@ def main():
             ("src/Mod/Part/App", "Part", "SectionGeometry.cpp"),
             ("src/Mod/Part/App", "Part", "GizmoHelper.cpp"),
             ("src/Gui", "FreeCADGui", "NaviCube.cpp"),
+            ("src/Gui", "FreeCADGui", "TaskView/TaskView.cpp"),
         ):
             obj = f"{directory}/CMakeFiles/{target}.dir/{filename}.o"
             commands = subprocess.check_output(
@@ -54,6 +55,7 @@ def main():
                     cleaned.append(flag)
             production = source / directory / filename
             probe = Path(temporary) / filename
+            probe.parent.mkdir(parents=True, exist_ok=True)
             probe.write_text(f'#include "{production.as_posix()}"\n' + (
                 "// MSVC eagerly instantiates this exported nested destructor.\n"
                 "// Force the same completeness requirement on other compilers.\n"
