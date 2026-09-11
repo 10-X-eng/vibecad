@@ -97,6 +97,7 @@ class TestNativeRibbonTools(unittest.TestCase):
                 Gui.Control.closeDialog()
             self._process_events()
         if App.getDocument("NativeRibbonTools") is not None:
+            self._wait_for_document_ready()
             App.closeDocument("NativeRibbonTools")
         self._process_events()
 
