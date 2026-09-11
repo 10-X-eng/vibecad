@@ -103,6 +103,43 @@ class SpreadsheetCandidateError(RuntimeError):
         super().__init__(message)
 
 
+def _load_native_spreadsheet() -> None:
+    """Load the native module even when a packaged Python namespace shadows it."""
+
+    import importlib.machinery
+    import importlib.util
+    from pathlib import Path
+    import sys
+
+    import FreeCAD as App
+
+    existing = sys.modules.get("Spreadsheet")
+    if isinstance(
+        getattr(existing, "__loader__", None),
+        importlib.machinery.ExtensionFileLoader,
+    ):
+        return
+    spec = importlib.machinery.PathFinder.find_spec(
+        "Spreadsheet",
+        [str(Path(App.getHomePath()) / "lib")],
+    )
+    if spec is None or spec.loader is None:
+        raise SpreadsheetCandidateError(
+            "The isolated FreeCAD worker cannot load the native Spreadsheet module.",
+            details={"stage": "native_object_creation"},
+        )
+    existing = sys.modules.pop("Spreadsheet", None)
+    try:
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["Spreadsheet"] = module
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop("Spreadsheet", None)
+        if existing is not None:
+            sys.modules["Spreadsheet"] = existing
+        raise
+
+
 def _json_sha256(value: Any) -> str:
     encoded = json.dumps(
         value,
@@ -814,6 +851,8 @@ def validate_and_build_spreadsheets(
     expected_outputs: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Apply, recompute, inspect, and serialize real native Spreadsheet sheets."""
+
+    _load_native_spreadsheet()
 
     definitions: list[tuple[str, dict[str, Any]]] = []
     for expected in expected_outputs:
