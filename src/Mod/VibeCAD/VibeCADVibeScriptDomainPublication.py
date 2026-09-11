@@ -14345,7 +14345,10 @@ def restore_partdesign_history_presentation(doc: Any) -> dict[str, Any]:
     publications: dict[tuple[str, str], list[Any]] = {}
     publication_targets: dict[tuple[str, str], list[Any]] = {}
     program_operations: list[Any] = []
-    for obj in list(getattr(doc, "Objects", []) or []):
+    # Every object relevant to this projection carries the scripted-role
+    # property. Let the native document index select that sparse set instead
+    # of crossing the Python boundary for every object in a large assembly.
+    for obj in doc.findObjects(Property=scripted_publication.PROP_ROLE):
         if (
             str(getattr(obj, "TypeId", "") or "")
             == "PartDesign::DesignScriptOperation"

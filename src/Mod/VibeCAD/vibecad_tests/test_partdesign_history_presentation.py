@@ -107,6 +107,11 @@ class _Document:
     def __init__(self) -> None:
         self.Objects: list[_Object] = []
 
+    def findObjects(self, *, Property: str = "") -> list[_Object]:
+        if not Property:
+            return list(self.Objects)
+        return [obj for obj in self.Objects if Property in obj.PropertiesList]
+
     def addObject(self, type_id: str, name: str) -> _Object:
         obj = _Object(name, type_id, visible=True)
         self.Objects.append(obj)
@@ -340,6 +345,31 @@ def test_current_contract_repairs_duplicate_results_and_hides_publication() -> N
     assert stable.LinkedObject == (root, "BladeBody.")
     assert restored["migrated_bodies"] == []
     assert restored["changed_objects"] == ["Blade", "BladeBody"]
+
+
+def test_restore_only_inspects_objects_with_publication_identity() -> None:
+    document, _root, body, _sketch, _earlier, tip, stable = _document_with_body(
+        body_visible=True,
+        publication_visible=True,
+        schema=publication.PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
+    )
+
+    class _UnrelatedObject:
+        Name = "Unrelated"
+        PropertiesList: list[str] = []
+
+        @property
+        def TypeId(self) -> str:
+            raise AssertionError("unrelated objects must not enter presentation restore")
+
+    document.Objects.insert(0, _UnrelatedObject())
+
+    restored = publication.restore_partdesign_history_presentation(document)
+
+    assert restored["changed_objects"] == ["Blade", "BladeBody"]
+    assert body.ViewObject.Visibility is True
+    assert tip.ViewObject.Visibility is True
+    assert stable.ViewObject.Visibility is False
 
 
 def test_current_contract_hides_private_publication_targets() -> None:
