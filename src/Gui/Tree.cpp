@@ -4592,15 +4592,23 @@ void TreeWidget::processUpdateStatus()
         const auto changedStatus = changedEntry->second;
         ChangedObjects.erase(changedEntry);
 
+        // Touch notifications also include internal objects without a view
+        // provider. Their deletion emits no GUI provider-removal signal, so a
+        // pending address can already be dead. Check the tree's live provider
+        // registry before calling anything on it, including isAttachedToDocument.
+        auto iter = ObjectTable.find(obj);
+        if (iter == ObjectTable.end()) {
+            if (budget.exhausted()) {
+                scheduleNextSlice();
+                return;
+            }
+            continue;
+        }
+
         if (obj && obj->isAttachedToDocument() && obj->getDocument()) {
             statusUpdateObjects.push_back(
                 {obj->getDocument()->getName(), obj->getID()}
             );
-        }
-
-        auto iter = ObjectTable.find(obj);
-        if (iter == ObjectTable.end()) {
-            continue;
         }
 
         if (changedStatus.test(CS_Error) && obj->isError()) {
