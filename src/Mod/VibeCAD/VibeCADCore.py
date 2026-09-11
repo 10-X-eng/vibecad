@@ -83,6 +83,31 @@ _MAX_VIBESCRIPT_REFERENCE_CACHE_ENTRIES = 8
 _MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES = 256 * 1024 * 1024
 
 
+def _native_document_update_active(document_uid: str) -> bool:
+    """Read one document's asynchronous update state on its owning thread."""
+
+    import FreeCAD as App
+
+    uid = str(document_uid or "").strip()
+    document = next(
+        (
+            candidate
+            for candidate in App.listDocuments().values()
+            if str(getattr(candidate, "Uid", "") or "") == uid
+        ),
+        None,
+    )
+    return bool(
+        document is not None
+        and (
+            bool(getattr(document, "Recomputing", False))
+            or bool(getattr(document, "RecomputePending", False))
+            or bool(getattr(document, "CooperativeMutationActive", False))
+            or bool(getattr(document, "PresentationUpdateActive", False))
+        )
+    )
+
+
 def _slug_filename(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip()).strip("._")
     return slug[:64] or "reference"
@@ -225,7 +250,9 @@ class VibeCADService:
         self._project_store = VibeCADProjectStore(self._local_session_id)
         self._native_document_states = NativeDocumentStateStore()
         self._native_assistant_undo = NativeAssistantUndoLedger()
-        self._native_background_jobs = NativeBackgroundManager()
+        self._native_background_jobs = NativeBackgroundManager(
+            document_update_active=_native_document_update_active,
+        )
         self._native_analyze_contexts = AnalyzeContextCoordinator()
         self._native_drawing_source_contexts = DrawingSourceCatalogCoordinator()
         self._native_state_restores: set[tuple[str, str]] = set()
