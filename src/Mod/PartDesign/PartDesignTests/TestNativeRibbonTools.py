@@ -2575,6 +2575,18 @@ class TestNativeRibbonTools(unittest.TestCase):
         self.assertEqual(tuple(body.Group), body_group)
         self.assertFalse(self.document.HasPendingTransaction)
 
+    def test_retained_modeling_commands_lock_during_document_update(self):
+        import PartGui
+
+        self.assertTrue(PartGui.canStartRetainedModelingTask())
+        self.document.beginCooperativeMutation()
+        try:
+            self.assertFalse(PartGui.canStartRetainedModelingTask())
+        finally:
+            self.document.endCooperativeMutation()
+        self._wait_for_document_ready()
+        self.assertTrue(PartGui.canStartRetainedModelingTask())
+
     def test_pad_accept_waits_for_the_active_document_recompute(self):
         body, _feature = self._new_body("AsyncPadBody")
         self._wait_for_document_ready()
