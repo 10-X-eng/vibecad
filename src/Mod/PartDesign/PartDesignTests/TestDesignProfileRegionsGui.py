@@ -315,6 +315,41 @@ class TestDesignProfileRegionsGui(unittest.TestCase):
         self._process_events()
         assert_preview_rgb((0.0, 1.0, 0.6))
 
+    def test_face_attached_extrude_join_accepts_through_task_panel(self):
+        self.document.openTransaction("Create supported extrusion profile")
+        body = self.document.addObject("PartDesign::Body", "JoinTarget")
+        initial = body.newObject("PartDesign::Feature", "JoinInitial")
+        initial.Shape = Part.makeBox(10, 10, 10)
+        body.Tip = initial
+        sketch = self.document.addObject("Sketcher::SketchObject", "SupportedProfile")
+        sketch.AttachmentSupport = [(initial, ["Face6"])]
+        sketch.MapMode = "FlatFace"
+        for a, b in (((2, 2), (6, 2)), ((6, 2), (6, 6)),
+                     ((6, 6), (2, 6)), ((2, 6), (2, 2))):
+            sketch.addGeometry(Part.LineSegment(App.Vector(*a, 0), App.Vector(*b, 0)), False)
+        self.document.recompute()
+        PartDesign.finalizeDesignDefinition(sketch)
+        self.document.commitTransaction()
+        self.document.recompute()
+        self._process_events(50)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(sketch)
+        Gui.Selection.addSelection(body)
+        Gui.runCommand("PartDesign_DesignExtrude", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+        operation = next(obj for obj in self.document.Objects
+                         if obj.TypeId == "PartDesign::DesignExtrude")
+        self.assertEqual(operation.TypeId, "PartDesign::DesignExtrude")
+        self.assertEqual(operation.ResultOperation, "Join")
+        self.assertTrue(operation.isValid(), operation.getStatusString())
+        expected_volume = 1000 + 16 * operation.Length.Value
+        self.assertAlmostEqual(operation.OutputShapes[0].Volume, expected_volume, places=6)
+        self._close_task(QtGui.QDialogButtonBox.Ok)
+        self.assertTrue(body.Shape.isValid())
+        self.assertEqual(len(body.Shape.Solids), 1)
+        self.assertAlmostEqual(body.Shape.Volume, expected_volume, places=6)
+        PartDesign.validateDesign(operation)
 
 if __name__ == "__main__":
     unittest.main()
