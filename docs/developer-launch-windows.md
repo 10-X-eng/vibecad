@@ -382,6 +382,13 @@ $RepoRoot = (Get-Location).Path
 $NativeRoot = (Resolve-Path 'build/authoritative-runtime-native').Path
 $PortableRoot = (Resolve-Path 'package/rattler-build/windows/<portable-folder>').Path
 $DependencyRoot = (Resolve-Path 'package/rattler-build/.pixi/bld/vibecad/<build-id>/host').Path
+# The native CMake tree does not bundle the packaged Codex executables.
+# Stage the complete runtime from the matching portable build, including its
+# manifest, code-mode companion, and resources (not just app-server.exe).
+if (!(Test-Path "$NativeRoot/Mod/VibeCAD/codex_runtime")) {
+    Copy-Item -LiteralPath "$PortableRoot/Mod/VibeCAD/codex_runtime" `
+        -Destination "$NativeRoot/Mod/VibeCAD/codex_runtime" -Recurse
+}
 $ModuleDirectories = Get-ChildItem "$NativeRoot/Mod" -Directory | ForEach-Object FullName
 $env:PATH = (@("$NativeRoot/bin") + $ModuleDirectories + @(
     "$DependencyRoot/Library/bin", "$DependencyRoot/DLLs", $DependencyRoot,
@@ -410,6 +417,11 @@ executable selects its matching Python runtime. Verify the launch logs and the
 process-specific agent endpoint before handing over the window. Rebuild the
 changed native targets and update their installed Python modules first; a
 source revision marker alone does not verify the loaded binaries.
+Check provider readiness too: `assistant_available` only confirms command
+registration, not that the bundled provider runtime exists. A pre-existing
+`codex_runtime` must match the checkout's pinned version. Use
+`-DisableKeepAlive` with PowerShell readiness requests so an exiting shell
+does not reset an idle HTTP connection and print a server traceback.
 
 ## Requirements
 
