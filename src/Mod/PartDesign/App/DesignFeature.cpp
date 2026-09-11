@@ -785,6 +785,24 @@ App::DocumentObjectExecReturn* computeOutputShapes(
                     intersects = true;
                     break;
                 }
+                if (resultOperation == "Join") {
+                    // Solid/solid Common discards lower-dimensional contact.
+                    // An outward pad shares a face with its support, so test
+                    // the tool boundary as faces. Edge/point contact remains
+                    // invalid; compound Body policy is validated below.
+                    Part::TopoShape boundary;
+                    boundary.makeElementCompound(toolSolid.getSubTopoShapes(TopAbs_FACE));
+                    overlap.makeElementBoolean(
+                        Part::OpCodes::Common,
+                        {base, boundary},
+                        nullptr,
+                        fuzzyTolerance
+                    );
+                    if (!overlap.isNull() && overlap.hasSubShape(TopAbs_FACE)) {
+                        intersects = true;
+                        break;
+                    }
+                }
             }
             if (!intersects) {
                 return outputError(

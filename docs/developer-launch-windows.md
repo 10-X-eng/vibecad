@@ -369,6 +369,48 @@ the launcher, but a skipped rebuild is not evidence that the existing binary or
 installed modules were produced from that commit. Do not use it for release
 acceptance. `-SkipRebuild -ReleaseAttestation` is refused.
 
+## Incremental native build for a local spot check
+
+For an already configured native tree, use its matching dependency environment
+and the Python packages from a complete portable build. Set the three paths
+below relative to the repository root; the dependency environment must be the
+one recorded in that native tree's `CMakeCache.txt`, not another installed Python.
+This is an incremental test launch, not a release package verification.
+
+```powershell
+$RepoRoot = (Get-Location).Path
+$NativeRoot = (Resolve-Path 'build/authoritative-runtime-native').Path
+$PortableRoot = (Resolve-Path 'package/rattler-build/windows/<portable-folder>').Path
+$DependencyRoot = (Resolve-Path 'package/rattler-build/.pixi/bld/vibecad/<build-id>/host').Path
+$ModuleDirectories = Get-ChildItem "$NativeRoot/Mod" -Directory | ForEach-Object FullName
+$env:PATH = (@("$NativeRoot/bin") + $ModuleDirectories + @(
+    "$DependencyRoot/Library/bin", "$DependencyRoot/DLLs", $DependencyRoot,
+    "$PortableRoot/bin", $env:PATH
+)) -join ';'
+$env:QT_PLUGIN_PATH = "$DependencyRoot/Library/lib/qt6/plugins"
+$env:QT_QPA_PLATFORM_PLUGIN_PATH = "$env:QT_PLUGIN_PATH/platforms"
+$env:QT_QPA_PLATFORM = 'windows'
+Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+Remove-Item Env:FC_PYTHONHOME -ErrorAction SilentlyContinue
+$env:VIBECAD_DEV_MODE = '1'
+$env:VIBECAD_DEV_SOURCE_ROOT = $RepoRoot
+$env:VIBECAD_DEV_SOURCE_SHA = git rev-parse HEAD
+$env:VIBECAD_DEV_SOURCE_TREE = git write-tree
+$env:VIBECAD_AGENT_HOME = "$RepoRoot/.vibecad-dev/agent"
+Start-Process -FilePath "$NativeRoot/bin/FreeCAD.exe" `
+    -ArgumentList @('-P', ('"{0}/bin/Lib/site-packages"' -f $PortableRoot)) `
+    -WorkingDirectory $NativeRoot `
+    -RedirectStandardOutput "$RepoRoot/build/incremental-launch.out.log" `
+    -RedirectStandardError "$RepoRoot/build/incremental-launch.err.log"
+```
+
+`-P` is required: ambient `PYTHONPATH` does not add these packages to the
+embedded interpreter. Leave `PYTHONHOME` and `FC_PYTHONHOME` unset so the native
+executable selects its matching Python runtime. Verify the launch logs and the
+process-specific agent endpoint before handing over the window. Rebuild the
+changed native targets and update their installed Python modules first; a
+source revision marker alone does not verify the loaded binaries.
+
 ## Requirements
 
 - Windows
