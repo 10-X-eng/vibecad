@@ -47,22 +47,21 @@ public:
             return false;
         }
 
-        bool schedule = false;
+        bool postWake = false;
         {
             std::lock_guard lock(mutex);
             if (stopped) {
                 return false;
             }
             queue.push_back(std::move(task));
-            if (!scheduled) {
-                scheduled = true;
-                schedule = true;
+            if (!wakePending) {
+                wakePending = true;
+                postWake = true;
             }
         }
-        if (!schedule) {
-            return true;
+        if (postWake) {
+            postDrainEvent();
         }
-        scheduleDrain();
         return true;
     }
 
@@ -79,20 +78,20 @@ public:
         if (!task || !qApp) {
             return false;
         }
-        bool schedule = false;
+        bool postWake = false;
         {
             std::lock_guard lock(mutex);
             if (cleanupStopped) {
                 return false;
             }
             cleanupQueue.push_back(std::move(task));
-            if (!stopped && !scheduled) {
-                scheduled = true;
-                schedule = true;
+            if (!stopped && !wakePending) {
+                wakePending = true;
+                postWake = true;
             }
         }
-        if (schedule) {
-            scheduleDrain();
+        if (postWake) {
+            postDrainEvent();
         }
         return true;
     }
@@ -115,7 +114,7 @@ private:
                 return;
             }
             stopped = true;
-            scheduled = false;
+            wakePending = false;
             cancelled.swap(queue);
         }
         // Release queued synchronous handoffs before joining their workers.
@@ -152,12 +151,8 @@ private:
         return type;
     }
 
-    void scheduleDrain()
+    void postDrainEvent()
     {
-        std::lock_guard lock(mutex);
-        if (stopped) {
-            return;
-        }
         // Adoption is important but never more important than input, paint,
         // timers, or status heartbeats already waiting in the Qt queue.
         QCoreApplication::postEvent(
@@ -167,9 +162,31 @@ private:
         );
     }
 
+    void requestDrain()
+    {
+        bool postWake = false;
+        {
+            std::lock_guard lock(mutex);
+            if (!stopped && !wakePending && (!queue.empty() || !cleanupQueue.empty())) {
+                wakePending = true;
+                postWake = true;
+            }
+        }
+        if (postWake) {
+            postDrainEvent();
+        }
+    }
+
     bool event(QEvent* event) override
     {
         if (event->type() == drainEventType()) {
+            {
+                std::lock_guard lock(mutex);
+                wakePending = false;
+                if (stopped) {
+                    return true;
+                }
+            }
             drain();
             return true;
         }
@@ -184,7 +201,6 @@ private:
             {
                 std::lock_guard lock(mutex);
                 if (queue.empty() && cleanupQueue.empty()) {
-                    scheduled = false;
                     return;
                 }
                 auto& ready = cleanupQueue.empty() ? queue : cleanupQueue;
@@ -200,7 +216,7 @@ private:
         // timer is an event-loop yield, not a time delay: it gives input,
         // paint, status, and other due timers one dispatch opportunity before
         // the next bounded adoption frame is posted.
-        QTimer::singleShot(0, this, [this] { scheduleDrain(); });
+        QTimer::singleShot(0, this, [this] { requestDrain(); });
     }
 
     static void execute(const std::function<void()>& task)
@@ -227,7 +243,10 @@ private:
     std::deque<std::function<void()>> cleanupQueue;
     std::function<void()> finishWorkers;
     bool cleanupStopped {false};
-    bool scheduled {false};
+    // A posted wake event, not an active drain. Clearing this before executing
+    // a task lets a worker post a nested owner handoff when that task runs an
+    // event-driven wait for the worker completion.
+    bool wakePending {false};
     bool stopped {false};
 };
 

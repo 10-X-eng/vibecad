@@ -37,6 +37,46 @@ class FrameBudgetTest: public QObject
     Q_OBJECT
 
 private Q_SLOTS:
+    void nestedOwnerHandoffRunsWhileAFrameTaskWaitsForItsWorker()
+    {
+        Gui::initializeGuiFrameDispatcher();
+        App::HostRuntime runtime(1);
+        std::future<bool> worker;
+        std::atomic<bool> outerFinished {false};
+        std::atomic<bool> ownerHandoffRan {false};
+        bool workerFinishedBeforeOuterReturned = false;
+
+        QVERIFY(Gui::dispatchToGuiFrame([&] {
+            worker = runtime.submit([&](std::stop_token) {
+                return Gui::dispatchToGuiFrameAndWait([&] {
+                    ownerHandoffRan.store(true, std::memory_order_release);
+                });
+            });
+
+            QElapsedTimer elapsed;
+            elapsed.start();
+            while (worker.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready
+                   && elapsed.elapsed() < 1000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            }
+            workerFinishedBeforeOuterReturned =
+                worker.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+            outerFinished.store(true, std::memory_order_release);
+        }));
+
+        QTRY_VERIFY_WITH_TIMEOUT(outerFinished.load(std::memory_order_acquire), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            worker.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready,
+            2000
+        );
+        QVERIFY(worker.get());
+        QVERIFY(ownerHandoffRan.load(std::memory_order_acquire));
+        QVERIFY2(
+            workerFinishedBeforeOuterReturned,
+            "The active frame drain suppressed the wake needed by its own worker"
+        );
+    }
+
     void shutdownDrainsWorkerCleanupOnOwner()
     {
         Py_Initialize();

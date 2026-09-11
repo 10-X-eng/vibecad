@@ -406,7 +406,7 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
-    if (isCooperativeMutationActive() || isPresentationUpdateActive()) {
+    if (isCooperativeMutationActive() || isMutationBlockingPresentationUpdateActive()) {
         FC_WARN("Cannot undo while a document update is active");
         return false;
     }
@@ -467,7 +467,7 @@ bool Document::undo(const int id)
 
 bool Document::redo(const int id)
 {
-    if (isCooperativeMutationActive() || isPresentationUpdateActive()) {
+    if (isCooperativeMutationActive() || isMutationBlockingPresentationUpdateActive()) {
         FC_WARN("Cannot redo while a document update is active");
         return false;
     }
@@ -793,9 +793,9 @@ void Document::endCooperativeMutation()
         if (depth == 1) {
             // Keep completion false while stable observers synchronously
             // acquire their asynchronous presentation work.
-            const auto presentationDepth =
-                d->presentationUpdateDepth.fetch_add(1, std::memory_order_acq_rel);
-            presentationBecameActive = presentationDepth == 0;
+            const auto visualDepth = d->visualUpdateDepth.fetch_add(1, std::memory_order_acq_rel);
+            presentationBecameActive = visualDepth == 0
+                && d->presentationUpdateDepth.load(std::memory_order_acquire) == 0;
         }
         if (depth != 0) {
             d->cooperativeMutationDepth.fetch_sub(1, std::memory_order_acq_rel);
@@ -816,10 +816,10 @@ void Document::endCooperativeMutation()
             signalBecameStable(*this);
         }
         catch (...) {
-            endPresentationUpdate();
+            endVisualUpdate();
             throw;
         }
-        endPresentationUpdate();
+        endVisualUpdate();
     }
 }
 
@@ -831,14 +831,20 @@ bool Document::isCooperativeMutationActive() const
 void Document::beginPresentationUpdate() const
 {
     bool becameActive = false;
+    bool mutationBecameActive = false;
     {
         std::lock_guard lock(d->presentationUpdateMutex);
         const auto depth =
             d->presentationUpdateDepth.fetch_add(1, std::memory_order_acq_rel);
-        becameActive = depth == 0;
+        mutationBecameActive = depth == 0;
+        becameActive = mutationBecameActive
+            && d->visualUpdateDepth.load(std::memory_order_acquire) == 0;
     }
     if (becameActive) {
         signalPresentationUpdateChanged(*this, true);
+    }
+    if (mutationBecameActive) {
+        signalMutationBlockingPresentationUpdateChanged(*this, true);
     }
 }
 
@@ -847,6 +853,7 @@ void Document::endPresentationUpdate() const
     const bool tracePresentation = std::getenv("VIBECAD_RESTORE_DETAIL_TRACE") != nullptr;
     const auto presentationStarted = std::chrono::steady_clock::now();
     bool ready = false;
+    bool mutationReady = false;
     {
         std::lock_guard lock(d->presentationUpdateMutex);
         const auto depth = d->presentationUpdateDepth.load(std::memory_order_acquire);
@@ -855,8 +862,14 @@ void Document::endPresentationUpdate() const
             return;
         }
         d->presentationUpdateDepth.fetch_sub(1, std::memory_order_acq_rel);
+        mutationReady = depth == 1;
         ready = depth == 1
+            && d->visualUpdateDepth.load(std::memory_order_acquire) == 0
             && d->cooperativeMutationDepth.load(std::memory_order_acquire) == 0;
+    }
+    scheduleGuiRecomputeFollowUp();
+    if (mutationReady) {
+        signalMutationBlockingPresentationUpdateChanged(*this, false);
     }
     if (ready) {
         const auto notification = d->presentationUpdateChanged;
@@ -884,7 +897,111 @@ bool Document::isPresentationUpdateActive() const
 {
     std::lock_guard lock(d->presentationUpdateMutex);
     return d->presentationUpdateDepth.load(std::memory_order_acquire) > 0
+        || d->visualUpdateDepth.load(std::memory_order_acquire) > 0
         || d->presentationWaiterCount > 0;
+}
+
+bool Document::isMutationBlockingPresentationUpdateActive() const
+{
+    std::lock_guard lock(d->presentationUpdateMutex);
+    return d->presentationUpdateDepth.load(std::memory_order_acquire) > 0;
+}
+
+void Document::scheduleGuiRecomputeFollowUp() const
+{
+    if (!MainThreadSignalConfig::hasHooks()
+        || isCooperativeMutationActive()
+        || isMutationBlockingPresentationUpdateActive()
+        || !d->guiRecomputeFollowUpRequested.load(std::memory_order_acquire)
+        || d->guiRecomputeFollowUpQueued.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    const std::string documentName = getName();
+    const std::string documentUid = Uid.getValueStr();
+    try {
+        MainThreadSignalConfig::invoke(
+            [documentName, documentUid] {
+                auto* document = GetApplication().getDocument(documentName.c_str());
+                if (!document || document->Uid.getValueStr() != documentUid) {
+                    return;
+                }
+
+                document->d->guiRecomputeFollowUpQueued.store(false, std::memory_order_release);
+                if (document->isCooperativeMutationActive()
+                    || document->isMutationBlockingPresentationUpdateActive()) {
+                    document->scheduleGuiRecomputeFollowUp();
+                    return;
+                }
+
+                const bool requested = document->d->guiRecomputeFollowUpRequested.exchange(
+                    false,
+                    std::memory_order_acq_rel
+                );
+                const bool force = document->d->guiRecomputeFollowUpForce.exchange(
+                    false,
+                    std::memory_order_acq_rel
+                );
+                if (!requested) {
+                    return;
+                }
+                const bool workRemains = std::ranges::any_of(
+                    document->d->objectArray,
+                    [](const DocumentObject* object) { return object && object->isTouched(); }
+                );
+                if (force || workRemains) {
+                    document->recompute({}, force);
+                }
+            },
+            false
+        );
+    }
+    catch (...) {
+        d->guiRecomputeFollowUpQueued.store(false, std::memory_order_release);
+        throw;
+    }
+}
+
+void Document::beginVisualUpdate() const
+{
+    bool becameActive = false;
+    {
+        std::lock_guard lock(d->presentationUpdateMutex);
+        const auto depth = d->visualUpdateDepth.fetch_add(1, std::memory_order_acq_rel);
+        becameActive = depth == 0
+            && d->presentationUpdateDepth.load(std::memory_order_acquire) == 0;
+    }
+    if (becameActive) {
+        signalPresentationUpdateChanged(*this, true);
+    }
+}
+
+void Document::endVisualUpdate() const
+{
+    bool ready = false;
+    {
+        std::lock_guard lock(d->presentationUpdateMutex);
+        const auto depth = d->visualUpdateDepth.load(std::memory_order_acquire);
+        if (depth == 0) {
+            FC_WARN("Ignoring unmatched document visual update end");
+            return;
+        }
+        d->visualUpdateDepth.fetch_sub(1, std::memory_order_acq_rel);
+        ready = depth == 1
+            && d->presentationUpdateDepth.load(std::memory_order_acquire) == 0
+            && d->cooperativeMutationDepth.load(std::memory_order_acquire) == 0;
+    }
+    if (ready) {
+        const auto notification = d->presentationUpdateChanged;
+        try {
+            signalPresentationUpdateChanged(*this, false);
+        }
+        catch (...) {
+            notification->notify_all();
+            throw;
+        }
+        notification->notify_all();
+    }
 }
 
 void Document::waitForPresentationReady() const
@@ -893,7 +1010,8 @@ void Document::waitForPresentationReady() const
     ++d->presentationWaiterCount;
     d->presentationUpdateChanged->wait(lock, [this] {
         return d->cooperativeMutationDepth.load(std::memory_order_acquire) == 0
-            && d->presentationUpdateDepth.load(std::memory_order_acquire) == 0;
+            && d->presentationUpdateDepth.load(std::memory_order_acquire) == 0
+            && d->visualUpdateDepth.load(std::memory_order_acquire) == 0;
     });
     --d->presentationWaiterCount;
     if (d->presentationWaiterCount == 0) {
@@ -916,15 +1034,15 @@ void Document::waitForPresentationReady() const
 
 void Document::notifyBecameStable() const
 {
-    beginPresentationUpdate();
+    beginVisualUpdate();
     try {
         signalBecameStable(*this);
     }
     catch (...) {
-        endPresentationUpdate();
+        endVisualUpdate();
         throw;
     }
-    endPresentationUpdate();
+    endVisualUpdate();
 }
 
 bool Document::transacting() const
@@ -3744,56 +3862,104 @@ void Document::renameObjectIdentifiers(
 
 int Document::recompute(const std::vector<DocumentObject*>& objs, bool force, bool* hasError, int options)
 {
-    if (isCooperativeMutationActive() || isPresentationUpdateActive()) {
-        FC_WARN("Cannot recompute while a document update is active");
+    const bool guiOwner = MainThreadSignalConfig::hasHooks()
+        && MainThreadSignalConfig::isMainThread();
+    if (guiOwner
+        && (d->guiRecomputeCoordinatorActive.load(std::memory_order_acquire)
+            || isCooperativeMutationActive()
+            || isMutationBlockingPresentationUpdateActive())) {
+        d->guiRecomputeFollowUpRequested.store(true, std::memory_order_release);
+        if (force) {
+            d->guiRecomputeFollowUpForce.store(true, std::memory_order_release);
+        }
+        if (!d->guiRecomputeCoordinatorActive.load(std::memory_order_acquire)) {
+            scheduleGuiRecomputeFollowUp();
+        }
         return 0;
     }
-    if (MainThreadSignalConfig::hasHooks() && MainThreadSignalConfig::isMainThread()) {
+    if (isCooperativeMutationActive()
+        || isMutationBlockingPresentationUpdateActive()) {
+        FC_WARN(
+            "Cannot recompute document '" << getName()
+            << "' while a document update is active"
+            << " [guiOwner=" << guiOwner
+            << ", cooperative=" << isCooperativeMutationActive()
+            << ", presentation=" << isMutationBlockingPresentationUpdateActive() << "]"
+        );
+        return 0;
+    }
+    if (guiOwner) {
         // Preserve the synchronous public API, but not a synchronous GUI wait:
         // feature workers emit owner-thread notifications before they finish.
         // The coordinator must therefore run off-owner while Qt keeps serving
         // those notifications, input and paint. The existing document lease
         // prevents an intervening edit/undo/close from invalidating its targets.
+        d->guiRecomputeCoordinatorActive.store(true, std::memory_order_release);
         beginCooperativeMutation();
         int count = 0;
         std::exception_ptr failure;
         try {
-            QEventLoop events;
-            bool complete = false;
             std::unique_ptr<Base::PyGILStateRelease> release;
             if (Py_IsInitialized() && PyGILState_Check()) {
                 release = std::make_unique<Base::PyGILStateRelease>();
             }
-            GetApplication().hostRuntime().submitWithCompletion(
-                HostRuntime::Lane::Document,
-                [this, &objs, force, hasError, options](std::stop_token stop) {
-                    return recomputeCancellable(objs, force, hasError, options, stop);
-                },
-                [&](std::future<int> result) {
-                    QMetaObject::invokeMethod(
-                        &events,
-                        [&, result = result.share()] {
-                            try { count = result.get(); }
-                            catch (...) { failure = std::current_exception(); }
-                            complete = true;
-                            // Stop WaitForMoreEvents in this dispatch, rather
-                            // than waiting for unrelated input after completion.
-                            events.quit();
-                        },
-                        Qt::QueuedConnection
-                    );
+            const std::vector<DocumentObject*> noObjectFilter;
+            const std::vector<DocumentObject*>* objects = &objs;
+            bool passForce = force;
+            for (;;) {
+                d->guiRecomputeFollowUpRequested.store(false, std::memory_order_release);
+                d->guiRecomputeFollowUpForce.store(false, std::memory_order_release);
+                QEventLoop events;
+                bool complete = false;
+                GetApplication().hostRuntime().submitWithCompletion(
+                    HostRuntime::Lane::Document,
+                    [this, objects, passForce, hasError, options](std::stop_token stop) {
+                        return recomputeCancellable(*objects, passForce, hasError, options, stop);
+                    },
+                    [&](std::future<int> result) {
+                        QMetaObject::invokeMethod(
+                            &events,
+                            [&, result = result.share()] {
+                                try { count += result.get(); }
+                                catch (...) { failure = std::current_exception(); }
+                                complete = true;
+                                // Stop WaitForMoreEvents in this dispatch, rather
+                                // than waiting for unrelated input after completion.
+                                events.quit();
+                            },
+                            Qt::QueuedConnection
+                        );
+                    }
+                );
+                // Event-driven, not a polling timer or a deadline. Keep the frame
+                // dispatcher alive even if an outer event loop is asked to quit;
+                // stack-owned targets stay alive until the worker acknowledges.
+                while (!complete) {
+                    events.processEvents(QEventLoop::AllEvents | QEventLoop::WaitForMoreEvents);
                 }
-            );
-            // Event-driven, not a polling timer or a deadline. Keep the frame
-            // dispatcher alive even if an outer event loop is asked to quit;
-            // stack-owned targets stay alive until the worker acknowledges.
-            while (!complete) {
-                events.processEvents(QEventLoop::AllEvents | QEventLoop::WaitForMoreEvents);
+                if (failure) {
+                    break;
+                }
+
+                const bool followUpRequested
+                    = d->guiRecomputeFollowUpRequested.exchange(false, std::memory_order_acq_rel);
+                const bool followUpForce
+                    = d->guiRecomputeFollowUpForce.exchange(false, std::memory_order_acq_rel);
+                const bool workRemains = std::ranges::any_of(
+                    d->objectArray,
+                    [](const DocumentObject* object) { return object && object->isTouched(); }
+                );
+                if (!followUpRequested || (!followUpForce && !workRemains)) {
+                    break;
+                }
+                objects = &noObjectFilter;
+                passForce = followUpForce;
             }
         }
         catch (...) {
             failure = std::current_exception();
         }
+        d->guiRecomputeCoordinatorActive.store(false, std::memory_order_release);
         endCooperativeMutation();
         if (failure) {
             std::rethrow_exception(failure);

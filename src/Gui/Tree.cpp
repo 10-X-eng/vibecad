@@ -656,9 +656,9 @@ struct DocumentItem::BrowserFolderStatus
         : document(owner->document()->getDocument()), generation(generation)
     {
         stack.push_back({owner});
-        document->beginPresentationUpdate();
+        document->beginVisualUpdate();
     }
-    ~BrowserFolderStatus() { document->endPresentationUpdate(); }
+    ~BrowserFolderStatus() { document->endVisualUpdate(); }
 };
 
 class DocumentItem::ExpandInfo: public std::unordered_map<std::string, DocumentItem::ExpandInfoPtr>
@@ -9179,7 +9179,7 @@ void DocumentItem::acquirePresentationUpdate(App::Document& document)
         return;
     }
     releasePresentationUpdate();
-    document.beginPresentationUpdate();
+    document.beginVisualUpdate();
     presentationUpdateDocument = &document;
 }
 
@@ -9190,7 +9190,7 @@ void DocumentItem::releasePresentationUpdate()
     }
     auto* document = presentationUpdateDocument;
     presentationUpdateDocument = nullptr;
-    document->endPresentationUpdate();
+    document->endVisualUpdate();
 }
 
 Gui::Document* DocumentItem::document() const

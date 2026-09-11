@@ -185,6 +185,12 @@ PyMethodDef ApplicationPy::Methods[] = {
      METH_VARARGS,
      "closeDocument(string) -> None\n\n"
      "Close the document with a given name."},
+    {"requestCloseDocument",
+     (PyCFunction)ApplicationPy::sRequestCloseDocument,
+     METH_VARARGS,
+     "requestCloseDocument(string) -> bool\n\n"
+     "Close immediately when stable, or queue one owner-thread close after active "
+     "document work finishes."},
     {"writeRecoverySnapshotToTransientDir",
      reinterpret_cast<PyCFunction>(
          reinterpret_cast<void (*)()>(ApplicationPy::sWriteRecoverySnapshotToTransientDir)
@@ -501,7 +507,6 @@ PyObject* ApplicationPy::sCloseDocument(PyObject* /*self*/, PyObject* args)
             PyErr_Format(PyExc_RuntimeError, "Invalid document");
             return nullptr;
         }
-
         if (!doc->isClosable()) {
             PyErr_Format(PyExc_RuntimeError, "The document '%s' is not closable for the moment", doc->getName());
             return nullptr;
@@ -1310,6 +1315,15 @@ PyObject* ApplicationPy::sTimelineOperationDeletionPlan(
         return Py::new_reference_to(result);
     }
     PY_CATCH;
+}
+
+PyObject* ApplicationPy::sRequestCloseDocument(PyObject* /*self*/, PyObject* args)
+{
+    const char* name = nullptr;
+    if (!PyArg_ParseTuple(args, "s", &name)) {
+        return nullptr;
+    }
+    return PyBool_FromLong(GetApplication().requestCloseDocument(name));
 }
 
 

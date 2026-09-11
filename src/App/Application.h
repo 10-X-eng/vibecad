@@ -225,6 +225,15 @@ public:
      * @return Returns true if the document was found and closed, false otherwise.
      */
     bool closeDocument(const char* name);
+
+    /**
+     * Close a document at its next stable owner-thread boundary.
+     *
+     * Unlike closeDocument(), this accepts a document whose cooperative or
+     * presentation work is still active and queues exactly one close after
+     * that work releases. It never blocks the GUI thread.
+     */
+    bool requestCloseDocument(const char* name);
     /**
      * @brief Acquire a unique document name from a proposed name.
      *
@@ -1198,6 +1207,23 @@ private:
     bool _isClosingAll{false};
     // Owner-thread close callbacks may re-enter document closure.
     std::set<std::string> _closingDocuments;
+    struct PendingDocumentClose
+    {
+        std::string documentUid;
+        bool resumeQueued {false};
+        fastsignals::scoped_connection cooperativeMutationConnection;
+        fastsignals::scoped_connection presentationUpdateConnection;
+    };
+    std::map<std::string, PendingDocumentClose> _pendingDocumentCloses;
+
+    void resumeRequestedDocumentClose(
+        const std::string& documentName,
+        const std::string& documentUid
+    );
+    void queueRequestedDocumentClose(
+        const std::string& documentName,
+        const std::string& documentUid
+    );
 
     // for estimate max link depth
     int _objCount{-1};

@@ -23,7 +23,7 @@ class TestPathToolShapeDoc(unittest.TestCase):
     def setUp(self):
         """Reset mocks before each test."""
         # Resetting the top-level mock recursively resets its children
-        # (newDocument, getDocument, openDocument, closeDocument, Console, etc.)
+        # (newDocument, getDocument, openDocument, requestCloseDocument, Console, etc.)
         # and their call counts, return_values, side_effects.
         mock_freecad.reset_mock()
         mock_doc.reset_mock()
@@ -36,7 +36,7 @@ class TestPathToolShapeDoc(unittest.TestCase):
         mock_obj.Name = "MockObjectName"
         mock_obj.getTypeIdOfProperty = MagicMock(return_value="App::PropertyString")
         # Ensure mock_doc also has a Name attribute used in tests/code
-        mock_doc.Name = "Document_Mock"  # Used in closeDocument calls
+        mock_doc.Name = "Document_Mock"  # Used in deferred close requests
 
         # Clear attributes potentially added by setattr in previous tests.
         # reset_mock() doesn't remove attributes added this way.
@@ -122,8 +122,8 @@ class TestPathToolShapeDoc(unittest.TestCase):
 
     @patch("FreeCAD.openDocument")
     @patch("FreeCAD.getDocument")
-    @patch("FreeCAD.closeDocument")
-    def test_ShapeDocFromBytes(self, mock_close_doc, mock_get_doc, mock_open_doc):
+    @patch("FreeCAD.requestCloseDocument", return_value=True)
+    def test_ShapeDocFromBytes(self, mock_request_close, mock_get_doc, mock_open_doc):
         """Test ShapeDocFromBytes loads doc from a byte string."""
         content = b"fake_content"
         mock_opened_doc = MagicMock(Name="OpenedDoc_Mock")
@@ -142,7 +142,7 @@ class TestPathToolShapeDoc(unittest.TestCase):
                 self.assertEqual(temp_doc, mock_open_doc.return_value)
 
             # Verify cleanup after exiting the context
-            mock_close_doc.assert_called_once_with(mock_open_doc.return_value.Name)
+            mock_request_close.assert_called_once_with(mock_open_doc.return_value.Name)
             self.assertFalse(os.path.exists(temp_file_path))
 
         finally:
@@ -152,8 +152,10 @@ class TestPathToolShapeDoc(unittest.TestCase):
 
     @patch("FreeCAD.openDocument")
     @patch("FreeCAD.getDocument")
-    @patch("FreeCAD.closeDocument")
-    def test_ShapeDocFromBytes_open_exception(self, mock_close_doc, mock_get_doc, mock_open_doc):
+    @patch("FreeCAD.requestCloseDocument", return_value=True)
+    def test_ShapeDocFromBytes_open_exception(
+        self, mock_request_close, mock_get_doc, mock_open_doc
+    ):
         """Test ShapeDocFromBytes propagates exceptions and cleans up."""
         content = b"fake_content_exception"
         load_error = Exception("Fake load error")
@@ -175,9 +177,9 @@ class TestPathToolShapeDoc(unittest.TestCase):
                 self.assertEqual(f.read(), content)
 
             mock_get_doc.assert_not_called()
-            # closeDocument is called in __exit__ only if _doc is not None,
+            # requestCloseDocument is called in __exit__ only if _doc is not None,
             # which it will be if openDocument failed.
-            mock_close_doc.assert_not_called()
+            mock_request_close.assert_not_called()
 
         finally:
             # Verify cleanup after exiting the context (even with exception)
@@ -189,8 +191,10 @@ class TestPathToolShapeDoc(unittest.TestCase):
 
     @patch("FreeCAD.openDocument")
     @patch("FreeCAD.getDocument")
-    @patch("FreeCAD.closeDocument")
-    def test_ShapeDocFromBytes_exit_cleans_up(self, mock_close_doc, mock_get_doc, mock_open_doc):
+    @patch("FreeCAD.requestCloseDocument", return_value=True)
+    def test_ShapeDocFromBytes_exit_cleans_up(
+        self, mock_request_close, mock_get_doc, mock_open_doc
+    ):
         """Test ShapeDocFromBytes __exit__ cleans up temp file."""
         content = b"fake_content_cleanup"
         mock_opened_doc = MagicMock(Name="OpenedDoc_Cleanup_Mock")
@@ -208,7 +212,7 @@ class TestPathToolShapeDoc(unittest.TestCase):
                 pass  # Exit the context
 
             # Verify cleanup after exiting the context
-            mock_close_doc.assert_called_once_with(mock_open_doc.return_value.Name)
+            mock_request_close.assert_called_once_with(mock_open_doc.return_value.Name)
             self.assertFalse(os.path.exists(temp_file_path))
 
         finally:

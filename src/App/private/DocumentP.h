@@ -108,9 +108,14 @@ struct DocumentP
     unsigned int UndoMaxStackSize {20};
     unsigned int TransactionLock {0};
     std::atomic_uint cooperativeMutationDepth {0};
+    std::atomic_bool guiRecomputeCoordinatorActive {false};
+    std::atomic_bool guiRecomputeFollowUpRequested {false};
+    std::atomic_bool guiRecomputeFollowUpForce {false};
+    std::atomic_bool guiRecomputeFollowUpQueued {false};
     // Non-null only while the archive writer consumes live document properties.
     std::atomic<const void*> archiveWriter {nullptr};
     std::atomic_uint presentationUpdateDepth {0};
+    std::atomic_uint visualUpdateDepth {0};
     unsigned int restorePresentationDepth {0};
     unsigned int presentationWaiterCount {0};
     mutable std::mutex presentationUpdateMutex;

@@ -88,6 +88,17 @@ class TestVibeCADFastenersGui(unittest.TestCase):
         Gui.updateGui()
         QtWidgets.QApplication.instance().processEvents()
 
+    def _wait_for_document(self, document, timeout_ms: int = 5000) -> None:
+        from PySide import QtCore
+
+        elapsed = QtCore.QElapsedTimer()
+        elapsed.start()
+        while elapsed.elapsed() < timeout_ms:
+            self._process_events()
+            if document.isClosable():
+                return
+        self.fail("The document did not finish its asynchronous update.")
+
     def _finish_native_task(self, *, accept: bool) -> None:
         """Commit or cancel the one active native task through its real button."""
 
@@ -1026,6 +1037,12 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             selected = Gui.Selection.getSelection()
             self.assertEqual(len(selected), 1)
             body = selected[0]
+            self.assertTrue(
+                Gui.Control.activeDialog(),
+                "Inserted fastener did not open its native placement task.",
+            )
+            self._finish_native_task(accept=True)
+            self._wait_for_document(document)
             self.assertEqual(body.TypeId, "PartDesign::Body")
             self.assertEqual(body.Label, "M3 socket bolt")
             publication, state, operation, generator = (
@@ -1107,8 +1124,10 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
             end.click()
             self._process_events()
+            self._wait_for_document(document)
             previous.click()
             self._process_events()
+            self._wait_for_document(document)
             self.assertEqual(controller.Position, block_start)
             # History presence must not overwrite either saved eye state.
             # Before the creating operation, the stable publication remains
@@ -1121,6 +1140,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
             next_button.click()
             self._process_events()
+            self._wait_for_document(document)
             self.assertEqual(controller.Position, block_end)
             self.assertIs(body.Tip, publication)
             self.assertIs(publication.CurrentState, state)
@@ -1362,17 +1382,33 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             }
             command = VibeCADFastenersGui._InsertStandardFastenerCommand()
             self.assertTrue(command.IsActive())
-            with mock.patch.object(
-                VibeCADFastenersGui,
-                "_FastenerDialog",
-            ) as dialog_class:
+            with (
+                mock.patch.object(
+                    VibeCADFastenersGui,
+                    "_FastenerDialog",
+                ) as dialog_class,
+                mock.patch.object(
+                    VibeCADFastenersGui,
+                    "_show_error",
+                ) as show_error,
+            ):
                 dialog_class.return_value.exec.return_value = values
                 command.Activated()
+            show_error.assert_not_called()
             self._process_events()
 
             selected = Gui.Selection.getSelection()
             self.assertEqual(len(selected), 1)
             occurrence = selected[0]
+            self.assertIs(UtilsAssembly.activeAssembly(), assembly)
+            self.assertTrue(
+                assembly.ViewObject.DraggerVisibility,
+                "Assembly fastener insertion did not expose its placement dragger.",
+            )
+            self.assertFalse(
+                Gui.Control.activeDialog(),
+                "Assembly fastener insertion opened a nested task dialog.",
+            )
             self.assertEqual(occurrence.TypeId, "App::Link")
             self.assertIn(occurrence, assembly.Group)
             self.assertEqual(
@@ -1492,19 +1528,23 @@ class TestVibeCADFastenersGui(unittest.TestCase):
             self.assertNotIn(source.Name, visible_timeline_names())
             end.click()
             self._process_events()
+            self._wait_for_document(document)
             previous.click()
             self._process_events()
+            self._wait_for_document(document)
             self.assertEqual(controller.Position, position_before_insert)
             self.assertFalse(occurrence.Visibility)
             self.assertNotIn(source.Name, visible_timeline_names())
 
             next_button.click()
             self._process_events()
+            self._wait_for_document(document)
             self.assertEqual(controller.Position, occurrence_boundary)
             self.assertTrue(occurrence.Visibility)
 
             previous.click()
             self._process_events()
+            self._wait_for_document(document)
             self.assertEqual(controller.Position, position_before_insert)
             self.assertFalse(occurrence.Visibility)
 
@@ -1522,6 +1562,7 @@ class TestVibeCADFastenersGui(unittest.TestCase):
 
                 restored_document = App.openDocument(str(saved_file))
                 self._process_events()
+                self._wait_for_document(restored_document)
                 restored_occurrence = restored_document.getObject(occurrence_name)
                 restored_source = restored_document.getObject(source_name)
                 restored_controller = restored_document.getObject("VibeCADTimeline")

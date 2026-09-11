@@ -159,6 +159,7 @@ _stable_ticks = 0
 _DRAGGER_NDC_SIZE = 0.03
 _POLL_MS = 50
 _STABLE_TICKS = 5
+_pending_toggle_generation = 0
 
 
 def reset_section_view_settings() -> SectionViewSettings:
@@ -3411,3 +3412,43 @@ def toggle_section_view(
         document=document,
         show_ui=show_ui,
     )
+
+
+def request_section_view_toggle(
+    *,
+    view: Any | None = None,
+    document: Any | None = None,
+    show_ui: bool = True,
+) -> dict[str, bool]:
+    """Toggle after an in-flight camera move reaches its requested orientation."""
+
+    import FreeCADGui as Gui
+
+    active = view if view is not None else _active_3d_view()
+    if active is None:
+        raise RuntimeError("Section view requires an active 3D view.")
+    if is_section_view_active(active):
+        return toggle_section_view(view=active, document=document, show_ui=show_ui)
+
+    global _pending_toggle_generation
+    _pending_toggle_generation += 1
+    generation = _pending_toggle_generation
+
+    def apply_when_camera_settles() -> None:
+        if generation != _pending_toggle_generation:
+            return
+        try:
+            animating = bool(active.isAnimating())
+        except RuntimeError:
+            return
+        if animating:
+            if not Gui.deferToNextFrame(apply_when_camera_settles):
+                raise RuntimeError("The GUI frame dispatcher is shutting down.")
+            return
+        toggle_section_view(view=active, document=document, show_ui=show_ui)
+
+    if active.isAnimating():
+        if not Gui.deferToNextFrame(apply_when_camera_settles):
+            raise RuntimeError("The GUI frame dispatcher is shutting down.")
+        return {"section_view": False}
+    return toggle_section_view(view=active, document=document, show_ui=show_ui)

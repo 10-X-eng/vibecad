@@ -474,15 +474,24 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
         except (ReferenceError, RuntimeError):
             current_document_name = None
         if current_document_name in App.listDocuments():
-            App.closeDocument(current_document_name)
+            App.requestCloseDocument(current_document_name)
         for name in (
             "VibeCADCAMBackgroundTask",
             "VibeCADCAMDeletedTaskDocument",
             "VibeCADCAMRibbonTools",
         ):
             if name in App.listDocuments():
-                App.closeDocument(name)
-        self._process_events()
+                App.requestCloseDocument(name)
+        self._wait_until(
+            lambda: not any(
+                name in App.listDocuments()
+                for name in (
+                    "VibeCADCAMBackgroundTask",
+                    "VibeCADCAMDeletedTaskDocument",
+                    "VibeCADCAMRibbonTools",
+                )
+            )
+        )
 
     @staticmethod
     def _process_events(wait_ms=30):
@@ -494,6 +503,15 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
             loop = QtCore.QEventLoop()
             QtCore.QTimer.singleShot(wait_ms, loop.quit)
             loop.exec()
+
+    @classmethod
+    def _wait_until(cls, predicate, timeout_ms=5000):
+        """Keep the GUI responsive while awaiting an asynchronous test boundary."""
+        elapsed = QtCore.QElapsedTimer()
+        elapsed.start()
+        while not predicate() and elapsed.elapsed() < timeout_ms:
+            cls._process_events(min(20, timeout_ms - elapsed.elapsed()))
+        return predicate()
 
     def _move_timeline_to(self, position):
         timeline = self.document.getObject("VibeCADTimeline")
@@ -2427,7 +2445,10 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
         before = tuple(self.document.Objects)
         before_undo = int(self.document.UndoCount)
 
-        self.assertTrue(Gui.isCommandActive("CAM_Profile"))
+        self.assertTrue(
+            self._wait_until(lambda: Gui.isCommandActive("CAM_Profile")),
+            "CAM profile command did not reactivate after asynchronous publication",
+        )
         Gui.runCommand("CAM_Profile")
         self._process_events(100)
         self.assertTrue(Gui.Control.activeDialog())
@@ -2436,6 +2457,10 @@ class TestVibeCADCAMRibbonTools(unittest.TestCase):
         self.assertEqual(tuple(self.document.Objects), before)
         self.assertEqual(int(self.document.UndoCount), before_undo)
 
+        self.assertTrue(
+            self._wait_until(lambda: Gui.isCommandActive("CAM_Profile")),
+            "CAM profile command did not reactivate after task cancellation",
+        )
         Gui.runCommand("CAM_Profile")
         self._process_events(100)
         self.assertTrue(Gui.Control.activeDialog())

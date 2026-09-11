@@ -655,7 +655,7 @@ bool Command::canInvoke()
     App::Document* document = getDocument();
     if (document
         && (document->isCooperativeMutationActive()
-            || document->isPresentationUpdateActive())) {
+            || document->isMutationBlockingPresentationUpdateActive())) {
         const std::string_view name(getName());
         if ((eType & AlterDoc) || name == "Std_Undo" || name == "Std_Redo"
             || name == "Std_Refresh") {

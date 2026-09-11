@@ -607,6 +607,13 @@ PyMethodDef ApplicationPy::Methods[] = {
      "Worker callers release the GIL while waiting. Return values and Python exceptions\n"
      "are delivered to the caller. Geometry, document computation and I/O belong on workers;\n"
      "this call cannot interrupt an expensive callback."},
+    {"deferToNextFrame",
+     (PyCFunction)ApplicationPy::sDeferToNextFrame,
+     METH_VARARGS,
+     "deferToNextFrame(callable, *args) -> bool\n"
+     "\n"
+     "Queue one short presentation callback on the shared GUI frame dispatcher.\n"
+     "Returns false only when GUI shutdown has stopped accepting work."},
     {"doCommand",
      (PyCFunction)ApplicationPy::sDoCommand,
      METH_VARARGS,
@@ -975,6 +982,57 @@ PyObject* ApplicationPy::sRunOnMainThread(PyObject* /*self*/, PyObject* args)
     PyObject* result = runPythonOnMainThread([&] { return PyObject_CallObject(callable, arguments); });
     Py_DECREF(arguments);
     return result;
+}
+
+PyObject* ApplicationPy::sDeferToNextFrame(PyObject* /*self*/, PyObject* args)
+{
+    if (PyTuple_Size(args) == 0 || !PyCallable_Check(PyTuple_GetItem(args, 0))) {
+        PyErr_SetString(
+            PyExc_TypeError,
+            "deferToNextFrame requires a callable followed by its arguments"
+        );
+        return nullptr;
+    }
+
+    struct DeferredPythonCall
+    {
+        PyObject* callable;
+        PyObject* arguments;
+
+        DeferredPythonCall(PyObject* callable, PyObject* arguments)
+            : callable(callable)
+            , arguments(arguments)
+        {
+            Py_INCREF(callable);
+            Py_INCREF(arguments);
+        }
+
+        ~DeferredPythonCall()
+        {
+            Base::PyGILStateLocker lock;
+            Py_DECREF(arguments);
+            Py_DECREF(callable);
+        }
+    };
+
+    PyObject* callable = PyTuple_GetItem(args, 0);
+    PyObject* arguments = PyTuple_GetSlice(args, 1, PyTuple_Size(args));
+    if (!arguments) {
+        return nullptr;
+    }
+    auto deferred = std::make_shared<DeferredPythonCall>(callable, arguments);
+    Py_DECREF(arguments);
+    const bool accepted = dispatchToGuiFrame([deferred] {
+        Base::PyGILStateLocker lock;
+        PyObject* result = PyObject_CallObject(deferred->callable, deferred->arguments);
+        if (result) {
+            Py_DECREF(result);
+        }
+        else {
+            PyErr_Print();
+        }
+    });
+    return PyBool_FromLong(accepted);
 }
 
 PyObject* ApplicationPy::sGetDocument(PyObject* /*self*/, PyObject* args)
