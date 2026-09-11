@@ -12,6 +12,7 @@
 #include <QElapsedTimer>
 #include <QMouseEvent>
 #include <QMessageBox>
+#include <QMdiSubWindow>
 #include <QAbstractButton>
 #include <QListWidget>
 #include <QTest>
@@ -1168,6 +1169,26 @@ private Q_SLOTS:
         QVERIFY(!app.getDocument(name.c_str()));
         QTRY_VERIFY_WITH_TIMEOUT(view.isNull(), 5000);
         QVERIFY(!window->findChild<QMessageBox*>("confirmSave"));
+    }
+
+    void approvedLastViewCloseRemovesItsMdiSubWindow()
+    {
+        auto& app = App::GetApplication();
+        auto* document = app.newDocument("single_click_view_close");
+        auto* guiDocument = application->getDocument(document);
+        guiDocument->setModified(false);
+
+        const auto views = guiDocument->getMDIViews();
+        QCOMPARE(views.size(), std::size_t(1));
+        QPointer<Gui::MDIView> view = views.front();
+        QPointer<QMdiSubWindow> subWindow = qobject_cast<QMdiSubWindow*>(view->parentWidget());
+        QVERIFY(subWindow);
+
+        subWindow->close();
+
+        QTRY_VERIFY_WITH_TIMEOUT(!app.getDocument("single_click_view_close"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(view.isNull(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(subWindow.isNull(), 5000);
     }
 
     void queuedCloseAllPreservesDocumentsCreatedWhilePrompting()
