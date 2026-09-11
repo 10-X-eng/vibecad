@@ -1,7 +1,7 @@
 # VibeCAD performance work
 
 Status: active
-Last updated: 2026-09-09
+Last updated: 2026-09-11
 
 ## What this work delivers
 
@@ -129,6 +129,14 @@ round trips. Detailed measurements and red/green history are retained in
 These are concrete checkpoints from the tested documents and machines, not
 universal performance guarantees:
 
+- The PR #205 Windows package passes clean startup and real GUI acceptance for
+  Part Design task accept/cancel, every additive and subtractive primitive,
+  Assembly simulation playback, Drawing redraw and section views, Analyze/FEM,
+  and Manufacturing/CAM. A disposable 2,685-object robot document opened,
+  saved, reopened, and compared equal by exact object type, link, and state
+  inventory. Its first display settled in 176.4 seconds and save completed in
+  9.4 seconds, with no access violation, Qt thread-affinity, invalid-extension,
+  lost-link, or nested-recompute diagnostic.
 - A saved robot simulation prepared and displayed in 47.648 seconds from a
   fresh solve and 0.571 seconds after reopen from matching authenticated native
   results. All 337 component poses were checked at three frames, along with 672
@@ -205,15 +213,16 @@ The current Linux AppImage has direct build and owner acceptance evidence.
 Remaining work is focused on final acceptance rather than another architecture
 rewrite:
 
-- Build and exercise one final ABI-consistent Windows portable archive without
-  source overlays. Repeat publication cancel/rollback/retry, independent
-  multi-output create/patch/input edits, playback invalidation, export, and
-  document lifecycle checks.
-- Attribute and reduce the measured 1.219-second combined cleanup,
-  close, and reopen callback while preserving safe document shutdown.
-- Complete the application-wide acceptance inventory for Analyze, Drawing,
-  Manufacturing, Mesh, import/export, multi-document, memory-pressure, and
-  shutdown scenarios.
+- Repeat packaged publication cancel/rollback/retry, independent multi-output
+  create/patch/input edits, playback invalidation, and export measurements on
+  future publication changes. The current ABI-consistent Windows archive and
+  document lifecycle acceptance are complete.
+- Reduce the remaining large-document first-load and teardown event spans. The
+  final PR #205 package preserves exact state and stays operational, but the
+  independent input probe still records isolated 0.12-0.38 second open spans
+  and a 0.75 second document-close span against the research-grade 100 ms gate.
+- Complete the remaining application-wide acceptance inventory for Mesh,
+  import/export, multi-document, memory-pressure, and shutdown scenarios.
 - Run equivalent packaging and lifecycle acceptance on macOS.
 - Continue measuring direct GUI callbacks against the 8-millisecond p95 target
   and investigate any repeatable heartbeat or native-input gap over 100
