@@ -44,12 +44,16 @@ class EngineeringBriefLifecycleTests(unittest.TestCase):
     def dialog(self, persist, turn_runner=None):
         state = new_engineering_brief(
             "Make a bracket",
-            {"project_root": "synthetic", "document_uid": "brief-test",
-             "conversation_id": "a" * 32},
+            {
+                "project_root": "synthetic",
+                "document_uid": "brief-test",
+                "conversation_id": "a" * 32,
+            },
             {},
         )
         dialog = EngineeringBriefDialog(
-            state, persist_callback=persist,
+            state,
+            persist_callback=persist,
             turn_runner=turn_runner or (lambda state, **kwargs: state),
             start_callback=lambda state, readable: True,
         )
@@ -78,9 +82,11 @@ class EngineeringBriefLifecycleTests(unittest.TestCase):
         self.assertLess(elapsed, 0.1, "Closing blocked Qt on disk I/O")
         self.assertTrue(dialog.isVisible(), "Keep the draft alive until saved")
         self.assertTrue(dialog._cancel_event.is_set())
+
         # A queued GUI event releases I/O: it cannot run if close blocks Qt.
         class ReleaseIO(QtCore.QObject):
             requested = QtCore.Signal()
+
         bridge = ReleaseIO()
         bridge.requested.connect(release.set, QtCore.Qt.QueuedConnection)
         bridge.requested.emit()
@@ -144,13 +150,15 @@ class EngineeringBriefLifecycleTests(unittest.TestCase):
         import json
         import tempfile
         from types import SimpleNamespace
+
         try:
             import FreeCAD as App
             import FreeCADGui as Gui
         except ImportError:
             self.skipTest("Requires the built VibeCAD GUI")
         from VibeCADEngineeringBrief import (
-            EngineeringBriefStore, engineering_brief_handoff,
+            EngineeringBriefStore,
+            engineering_brief_handoff,
             run_engineering_brief_turn,
         )
 
@@ -160,7 +168,11 @@ class EngineeringBriefLifecycleTests(unittest.TestCase):
         box = document.addObject("Part::Box", "Box")
         document.recompute()
         Gui.Selection.addSelection(box)
-        before = (box.Shape.Volume, str(box.Placement), tuple(o.Name for o in document.Objects))
+        before = (
+            box.Shape.Volume,
+            str(box.Placement),
+            tuple(o.Name for o in document.Objects),
+        )
         handoffs = []
         calls = []
         document_name = document.Name
@@ -173,47 +185,84 @@ class EngineeringBriefLifecycleTests(unittest.TestCase):
                 assert context["document"]["name"] == document_name
                 calls.append(prompt)
                 ready = len(calls) == 2
-                return SimpleNamespace(final_output=json.dumps({
-                    "assistant_message": "Ready" if ready else "What service load?",
-                    "next_question": "" if ready else "What service load?",
-                    "ready": ready,
-                    "brief": {"objective": "Make a bracket", "units": "mm",
-                              "loads": ["1.5 kN"] if ready else []},
-                    "assumptions": [], "open_questions": [] if ready else ["Load"],
-                }))
+                return SimpleNamespace(
+                    final_output=json.dumps(
+                        {
+                            "assistant_message": (
+                                "Ready" if ready else "What service load?"
+                            ),
+                            "next_question": "" if ready else "What service load?",
+                            "ready": ready,
+                            "brief": {
+                                "objective": "Make a bracket",
+                                "units": "mm",
+                                "loads": ["1.5 kN"] if ready else [],
+                            },
+                            "assumptions": [],
+                            "open_questions": [] if ready else ["Load"],
+                        }
+                    )
+                )
 
         with tempfile.TemporaryDirectory(prefix="vibecad-brief-store-") as directory:
             store = EngineeringBriefStore(directory)
-            state = new_engineering_brief("Make a bracket", {
-                "project_root": directory, "document_uid": str(document.Uid),
-                "conversation_id": "b" * 32,
-            }, {"document": {"name": document.Name}, "selection": {"object": box.Name}})
+            state = new_engineering_brief(
+                "Make a bracket",
+                {
+                    "project_root": directory,
+                    "document_uid": str(document.Uid),
+                    "conversation_id": "b" * 32,
+                },
+                {
+                    "document": {"name": document.Name},
+                    "selection": {"object": box.Name},
+                },
+            )
             dialog = EngineeringBriefDialog(
                 state,
                 turn_runner=lambda state, **kwargs: run_engineering_brief_turn(
-                    state, provider=Provider(), **kwargs),
+                    state, provider=Provider(), **kwargs
+                ),
                 persist_callback=store.write,
                 start_callback=lambda state, text: (
-                    handoffs.append(engineering_brief_handoff(state, approved_text=text)) or True),
+                    handoffs.append(
+                        engineering_brief_handoff(state, approved_text=text)
+                    )
+                    or True
+                ),
             )
             self.dialogs.append(dialog)
             dialog.show()
             self.assertFalse(dialog.isModal())
             dialog.primary_button.click()
-            self.wait_until(lambda: dialog.state["next_question"] == "What service load?")
+            self.wait_until(
+                lambda: dialog.state["next_question"] == "What service load?"
+            )
             dialog.answer_edit.setPlainText("1.5 kN")
             dialog.primary_button.click()
             self.wait_until(lambda: dialog.state["ready"])
             self.assertEqual(dialog.primary_button.text(), "Start CAD Work")
-            dialog.preview.appendPlainText("Human requirement: reuse the mounting bolts.")
+            dialog.preview.appendPlainText(
+                "Human requirement: reuse the mounting bolts."
+            )
             dialog.primary_button.click()
             self.wait_until(lambda: not dialog._persist_thread.is_alive())
-            loaded = store.load(document_uid=str(document.Uid), conversation_id="b" * 32)
+            loaded = store.load(
+                document_uid=str(document.Uid), conversation_id="b" * 32
+            )
             self.assertTrue(loaded["recoverable"])
             self.assertIn("reuse the mounting bolts", loaded["state"]["editable_text"])
             self.assertIn("reuse the mounting bolts", handoffs[0])
             self.assertIn("1.5 kN", handoffs[0])
             self.assertEqual(len(calls), 2)
-            self.assertEqual(before, (
-                box.Shape.Volume, str(box.Placement), tuple(o.Name for o in document.Objects)))
-            self.assertEqual([item.Name for item in Gui.Selection.getSelection()], [box.Name])
+            self.assertEqual(
+                before,
+                (
+                    box.Shape.Volume,
+                    str(box.Placement),
+                    tuple(o.Name for o in document.Objects),
+                ),
+            )
+            self.assertEqual(
+                [item.Name for item in Gui.Selection.getSelection()], [box.Name]
+            )

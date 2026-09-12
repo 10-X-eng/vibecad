@@ -1319,6 +1319,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/session_recovery_gui_integration.py
         vibecad_tests/engineering_brief_gui_integration.py
         vibecad_tests/engineering_brief_lifecycle_gui_integration.py
+        vibecad_tests/engineering_brief_panel_gui_integration.py
         vibecad_tests/test_engineering_brief.py
         vibecad_tests/test_session_recovery.py
     vibecad_tests/native_background_gui_integration.py
