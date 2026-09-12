@@ -34,8 +34,9 @@ if (BUILD_ASSEMBLY AND NOT FREECAD_USE_EXTERNAL_ONDSELSOLVER)
             "setParallelExecutor). Extra git worktrees often leave a non-git "
             "directory that git submodule update --init will not replace. Run:\n"
             "  python src/Tools/ensure_git_submodules.py\n"
-            "or remove the directory and run git submodule update --init -- "
-            "src/3rdParty/OndselSolver")
+            "The helper preserves non-git copies in .git-submodule-backups. "
+            "Existing git checkouts must be updated to the recorded revision; "
+            "preserve any local edits before resolving a git update failure.")
     endif()
     add_subdirectory(OndselSolver)
 endif()
@@ -48,4 +49,3 @@ if (BUILD_TRACY_FRAME_PROFILER)
     set(TRACY_STATIC OFF)
     add_subdirectory(tracy)
 endif()
-

@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import sys
 
@@ -68,6 +69,110 @@ class TestOndselSubmoduleContract(unittest.TestCase):
             self.assertTrue(
                 any(c[:3] == ["git", "submodule", "update"] for c in calls)
             )
+            backups = list((root / ".git-submodule-backups").glob("*/checkout/CMakeLists.txt"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(), "stale copy\n")
+
+
+class TestPreserveSubmoduleFiles(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name) / "repo"
+        self.root.mkdir()
+
+    def configure(self, relative):
+        (self.root / ".gitmodules").write_text(
+            '[submodule "solver"]\n\tpath = ' + relative + '\n\turl = missing\n'
+        )
+
+    def test_failed_clone_keeps_every_stale_file_recoverable(self):
+        self.configure("solver")
+        stale = self.root / "solver"
+        stale.mkdir()
+        (stale / "my_changes.cpp").write_text("user edits")
+        (stale / ".hidden").write_bytes(b"\x00\x01")
+        with patch.object(helper, "git_run", side_effect=subprocess.CalledProcessError(1, "git")):
+            with self.assertRaises(subprocess.CalledProcessError):
+                helper.ensure_submodules(self.root)
+        backups = list((self.root / ".git-submodule-backups").glob("*/checkout"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / "my_changes.cpp").read_text(), "user edits")
+        self.assertEqual((backups[0] / ".hidden").read_bytes(), b"\x00\x01")
+
+    def test_paths_outside_repository_are_rejected_before_mutation(self):
+        self.configure("../outside")
+        outside = self.root.parent / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("untouched")
+        with patch.object(helper, "git_run") as git:
+            with self.assertRaises(ValueError):
+                helper.ensure_submodules(self.root)
+            git.assert_not_called()
+        self.assertEqual((outside / "keep").read_text(), "untouched")
+
+    def test_symlinked_parent_is_not_followed(self):
+        self.configure("linked/solver")
+        outside = self.root.parent / "outside"
+        (outside / "solver").mkdir(parents=True)
+        (outside / "solver" / "keep").write_text("untouched")
+        (self.root / "linked").symlink_to(outside, target_is_directory=True)
+        with patch.object(helper, "git_run") as git:
+            with self.assertRaises(ValueError):
+                helper.ensure_submodules(self.root)
+            git.assert_not_called()
+        self.assertEqual((outside / "solver" / "keep").read_text(), "untouched")
+
+    def test_paths_with_spaces_follow_git_config_parsing(self):
+        self.configure('"third party/solver"')
+        self.assertEqual(helper.submodule_paths(self.root), [self.root / "third party/solver"])
+
+    def test_existing_git_checkout_is_not_moved(self):
+        self.configure("solver")
+        checkout = self.root / "solver"
+        checkout.mkdir()
+        (checkout / ".git").write_text("gitdir: ../metadata\n")
+        (checkout / "my_changes.cpp").write_text("user edits")
+        with patch.object(helper, "git_run"):
+            helper.ensure_submodules(self.root)
+        self.assertEqual((checkout / "my_changes.cpp").read_text(), "user edits")
+        self.assertFalse((self.root / ".git-submodule-backups").exists())
+
+    def test_real_linked_worktree_repairs_stale_copy_without_losing_edits(self):
+        def git(directory, *args):
+            return subprocess.run(
+                ["git", "-c", "protocol.file.allow=always", *args], cwd=directory,
+                check=True, text=True, capture_output=True,
+                env={**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                     "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.invalid"},
+            )
+        source = self.root.parent / "solver-origin"
+        source.mkdir()
+        git(source, "init")
+        (source / "upstream.txt").write_text("recorded revision")
+        git(source, "add", ".")
+        git(source, "commit", "-m", "Solver fixture")
+        expected = git(source, "rev-parse", "HEAD").stdout.strip()
+        git(self.root, "init")
+        git(self.root, "submodule", "add", str(source), "third party/solver")
+        git(self.root, "commit", "-am", "Parent fixture")
+        checkout = self.root.parent / "linked-worktree"
+        git(self.root, "worktree", "add", "--detach", str(checkout))
+        stale = checkout / "third party" / "solver"
+        stale.mkdir(parents=True, exist_ok=True)
+        (stale / "local.cpp").write_text("uncommitted local work")
+        with patch.object(helper, "git_run", side_effect=lambda argv, cwd: git(cwd, *argv[1:])):
+            helper.ensure_submodules(checkout)
+        self.assertEqual(git(stale, "rev-parse", "HEAD").stdout.strip(), expected)
+        self.assertEqual((stale / "upstream.txt").read_text(), "recorded revision")
+        backups = list((checkout / ".git-submodule-backups").glob("*/checkout/local.cpp"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), "uncommitted local work")
+        (stale / "upstream.txt").write_text("new local edit")
+        with patch.object(helper, "git_run", side_effect=lambda argv, cwd: git(cwd, *argv[1:])):
+            helper.ensure_submodules(checkout)
+        self.assertEqual((stale / "upstream.txt").read_text(), "new local edit")
+        self.assertEqual(list((checkout / ".git-submodule-backups").glob("*/checkout/local.cpp")), backups)
 
 
 if __name__ == "__main__":
