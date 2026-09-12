@@ -311,9 +311,9 @@ def _shutdown_internal_assistant() -> None:
     except Exception as exc:
         _warn(f"VibeCAD Codex shutdown failed: {exc}")
     try:
-        from VibeCADMCPToolServers import shutdown_mcp_tool_servers
+        from VibeCADMCPToolServers import shutdown_mcp_tool_servers_async
 
-        shutdown_mcp_tool_servers()
+        shutdown_mcp_tool_servers_async()
     except Exception as exc:
         _warn(f"VibeCAD MCP tool server shutdown failed: {exc}")
 

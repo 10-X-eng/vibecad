@@ -12,6 +12,7 @@ import asyncio
 import base64
 import json
 import os
+from pathlib import Path
 import sys
 
 
@@ -37,6 +38,8 @@ async def _serve() -> None:
 
     async def list_tools(ctx, params):
         del ctx, params
+        if delay := os.environ.get("FAKE_MCP_LIST_DELAY"):
+            await asyncio.sleep(float(delay))
         return ListToolsResult(
             tools=[
                 Tool(
@@ -116,7 +119,15 @@ async def _serve() -> None:
                 isError=True,
             )
         if name == "sleep":
-            await asyncio.sleep(float(arguments.get("seconds", 0)))
+            marker = os.environ.get("FAKE_MCP_SLEEP_MARKER")
+            if marker:
+                Path(marker).write_text("started")
+            try:
+                await asyncio.sleep(float(arguments.get("seconds", 0)))
+            except asyncio.CancelledError:
+                if marker:
+                    Path(marker).write_text("cancelled")
+                raise
             return CallToolResult(content=[TextContent(text="slept")])
         return CallToolResult(
             content=[TextContent(text=f"unknown tool {name}")],

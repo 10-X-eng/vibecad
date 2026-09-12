@@ -445,7 +445,7 @@ def test_disabled_servers_are_skipped(manager) -> None:
 def test_manager_enforces_the_per_server_call_timeout(manager) -> None:
     server = _fake_server("slow", timeout_seconds=1.0)
     _schemas, _routing, statuses = manager.tool_schemas_for_turn([server])
-    assert statuses[0]["ok"]
+    assert statuses[0]["ok"], statuses[0]
     started = time.monotonic()
     result = manager.call("mcp_slow.sleep", {"seconds": 30})
     assert time.monotonic() - started < 10
@@ -455,6 +455,14 @@ def test_manager_enforces_the_per_server_call_timeout(manager) -> None:
     assert manager.call("mcp_slow.echo", {"text": "still here"})["ok"] is True
 
 
+def test_tool_listing_can_take_longer_than_the_tool_call_timeout(manager):
+    server = _fake_server("startup", timeout_seconds=1,
+                          env={"FAKE_MCP_LIST_DELAY": "1.25"})
+    status = manager.tool_schemas_for_turn([server])[2][0]
+    assert status["ok"], status
+    assert manager.call("mcp_startup.echo", {"text": "ready"})["ok"]
+
+
 def test_manager_reconnects_after_shutdown(manager) -> None:
     server = _fake_server("again")
     assert manager.tool_schemas_for_turn([server])[2][0]["ok"]
@@ -462,6 +470,86 @@ def test_manager_reconnects_after_shutdown(manager) -> None:
     assert manager.call("mcp_again.echo", {"text": "x"})["failure_code"] == "MCP_SERVER_UNAVAILABLE"
     assert manager.tool_schemas_for_turn([server])[2][0]["ok"]
     assert manager.call("mcp_again.echo", {"text": "x"})["ok"] is True
+
+
+def test_running_stdio_tool_receives_cancellation_and_server_stays_usable(manager, tmp_path):
+    marker = tmp_path / "sleep-state"
+    server = _fake_server("cancel", env={"FAKE_MCP_SLEEP_MARKER": str(marker)})
+    assert manager.tool_schemas_for_turn([server])[2][0]["ok"]
+    started = time.monotonic()
+    result = manager.call("mcp_cancel.sleep", {"seconds": 30},
+                          cancellation_check=marker.exists)
+    assert result["failure_code"] == "RUN_CANCELLED"
+    assert result["cancelled"] is True
+    assert time.monotonic() - started < 2
+    assert manager.call("mcp_cancel.echo", {"text": "still usable"})["ok"]
+    assert marker.read_text() == "cancelled"
+
+
+def test_http_transport_negotiates_lists_and_calls_with_configured_headers(manager):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((payload["method"], self.headers.get("X-VibeCAD-Test")))
+            if "id" not in payload:
+                self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if payload["method"] == "initialize":
+                result = {"protocolVersion": payload["params"]["protocolVersion"],
+                          "capabilities": {"tools": {}},
+                          "serverInfo": {"name": "http-fixture", "version": "1"}}
+            elif payload["method"] == "tools/list":
+                result = {"tools": [{"name": "echo", "description": "Echo text",
+                          "inputSchema": {"type": "object", "properties": {
+                              "text": {"type": "string"}}}}]}
+            elif payload["method"] == "tools/call":
+                result = {"content": [{"type": "text",
+                          "text": payload["params"]["arguments"]["text"]}]}
+            else:
+                result = {}
+            body = json.dumps({"jsonrpc": "2.0", "id": payload["id"], "result": result}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            self.send_response(405)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=httpd.serve_forever)
+    worker.start()
+    try:
+        server = MCPToolServer(name="http", transport="http",
+            url=f"http://127.0.0.1:{httpd.server_port}/mcp",
+            headers={"X-VibeCAD-Test": "fixture"})
+        schemas, routing, statuses = manager.tool_schemas_for_turn([server])
+        assert statuses[0]["ok"], statuses
+        assert "mcp_http.echo" in routing
+        assert schemas
+        result = manager.call("mcp_http.echo", {"text": "through HTTP"})
+        assert result["ok"], result
+        assert "through HTTP" in json.dumps(result)
+        assert all(header == "fixture" for method, header in requests)
+        assert {method for method, header in requests} >= {"initialize", "tools/list", "tools/call"}
+    finally:
+        manager.shutdown()
+        httpd.shutdown()
+        httpd.server_close()
+        worker.join(2)
 
 
 # --------------------------------------------------------------------------
@@ -822,7 +910,7 @@ def test_mcp_preferences_page_edits_and_tests_registered_tool_servers() -> None:
     assert 'pref.RemString("MCPToolServers")' in preferences
 
     gui = (root / "src/Mod/VibeCAD/VibeCADGui.py").read_text(encoding="utf-8")
-    assert "shutdown_mcp_tool_servers()" in gui
+    assert "shutdown_mcp_tool_servers_async()" in gui
 
 
 def test_gui_renders_external_tool_server_progress_events() -> None:

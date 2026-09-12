@@ -32,6 +32,12 @@ servers extend the built-in agent; they never replace it.
 3. Select **Test connection** to start the server and list its tools.
 4. Select **Apply** or **OK**.
 
+Server initialization has a separate 30-second limit, so a short tool timeout
+does not prevent a server from starting. Cancelling an agent run also requests
+cancellation of its active MCP call; the server determines whether its ongoing
+work can stop. Removing a server or closing VibeCAD drains connections in the
+background without waiting for that cleanup in the preferences window.
+
 Registrations are stored as JSON under the `MCPToolServers` preference key.
 The same list also accepts the `mcpServers` object format used by other MCP
 clients when it is pasted into that preference.

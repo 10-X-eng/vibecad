@@ -2274,7 +2274,7 @@ class VibeCADMCPPreferencesPage:
         if removed:
             manager = get_mcp_tool_server_manager()
             for key in removed:
-                manager.close_server(previous[key].name)
+                manager.close_server_async(previous[key].name)
 
     def _refresh_mcp_status(self) -> None:
         try:

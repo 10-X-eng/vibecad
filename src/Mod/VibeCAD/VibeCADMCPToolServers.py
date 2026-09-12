@@ -773,6 +773,27 @@ def _log_tail(path: Path, limit: int = 1200) -> str:
 # ---------------------------------------------------------------------------
 
 
+class _ToolCallCancelled(Exception):
+    """The caller cancelled an in-flight MCP request."""
+
+
+def _background_cleanup(operation: Callable[[], None]) -> concurrent.futures.Future[None]:
+    completion: concurrent.futures.Future[None] = concurrent.futures.Future()
+
+    def run() -> None:
+        if not completion.set_running_or_notify_cancel():
+            return
+        try:
+            operation()
+        except BaseException as exc:
+            completion.set_exception(exc)
+        else:
+            completion.set_result(None)
+
+    threading.Thread(target=run, name="VibeCAD-MCP-cleanup", daemon=True).start()
+    return completion
+
+
 class _LoopThread:
     """One process-wide asyncio loop shared by every MCP client session."""
 
@@ -829,6 +850,27 @@ class _LoopThread:
         loop.call_soon_threadsafe(loop.stop)
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=5.0)
+
+    def run_cancellable(self, coroutine: Any, timeout: float,
+                        cancellation_check: Callable[[], bool]) -> Any:
+        future = asyncio.run_coroutine_threadsafe(coroutine, self.loop())
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                if cancellation_check():
+                    raise _ToolCallCancelled()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"MCP operation did not complete within {timeout:g}s.")
+                try:
+                    return future.result(min(remaining, 0.05))
+                except concurrent.futures.TimeoutError:
+                    if future.done():
+                        # Preserve a timeout raised by the SDK itself.
+                        return future.result()
+        finally:
+            if not future.done():
+                future.cancel()
 
 
 class _ServerConnection:
@@ -919,7 +961,7 @@ class _ServerConnection:
                     ClientSession(
                         read_stream,
                         write_stream,
-                        read_timeout_seconds=float(self.server.timeout_seconds),
+                        read_timeout_seconds=MCP_CONNECT_TIMEOUT_SECONDS,
                     )
                 )
                 initialized = await session.initialize()
@@ -1172,6 +1214,8 @@ class MCPToolServerManager:
         self._routing_by_server: dict[str, dict[str, tuple[str, str]]] = {}
         self._failures: dict[str, dict[str, Any]] = {}
         self._attempts: dict[str, int] = {}
+        self._cleanup_lock = threading.Lock()
+        self._server_epochs: dict[str, int] = {}
 
     def runtime_directory(self) -> Path:
         if self._runtime_directory is None:
@@ -1191,13 +1235,15 @@ class MCPToolServerManager:
 
     def _ensure_connection(self, server: MCPToolServer) -> tuple[_ServerConnection | None, str]:
         key = server.key
+        with self._cleanup_lock:
+            self._server_epochs[key] = self._server_epochs.get(key, 0) + 1
         self._servers[key] = server
         existing = self._connections.get(key)
         if existing is not None:
             if existing.signature == server.signature and existing.alive:
                 try:
                     self._loop_thread.run(
-                        existing.refresh_tools(), float(server.timeout_seconds) + 10.0
+                        existing.refresh_tools(), MCP_CONNECT_TIMEOUT_SECONDS + 10.0
                     )
                     return existing, ""
                 except Exception as exc:
@@ -1212,7 +1258,7 @@ class MCPToolServerManager:
             return None, str(failure.get("error") or "MCP tool server failed recently.")
         self._attempts[key] = self._attempts.get(key, 0) + 1
         connection = _ServerConnection(server, runtime_directory=self.runtime_directory())
-        connect_timeout = min(MCP_CONNECT_TIMEOUT_SECONDS, float(server.timeout_seconds))
+        connect_timeout = MCP_CONNECT_TIMEOUT_SECONDS
         try:
             self._loop_thread.run(connection.open(connect_timeout), connect_timeout + 15.0)
         except Exception as exc:
@@ -1412,8 +1458,20 @@ class MCPToolServerManager:
         timeout = float(server.timeout_seconds)
         started = time.monotonic()
         try:
-            result = self._loop_thread.run(
-                connection.call(mcp_tool, arguments, timeout), timeout + 10.0
+            operation = connection.call(mcp_tool, arguments, timeout)
+            if cancellation_check is None:
+                result = self._loop_thread.run(operation, timeout + 10.0)
+            else:
+                result = self._loop_thread.run_cancellable(
+                    operation, timeout + 10.0, cancellation_check
+                )
+        except _ToolCallCancelled:
+            return tool_failure(
+                tool_name, "RUN_CANCELLED", "precondition",
+                "VibeCAD run was cancelled during this tool call.",
+                requested=arguments,
+                observed={"cancel_requested": True, "server": server_name},
+                cancelled=True,
             )
         except Exception as exc:
             elapsed = round(time.monotonic() - started, 4)
@@ -1487,6 +1545,26 @@ class MCPToolServerManager:
         with self._lock:
             self._drop(str(name or "").strip().casefold())
 
+    def close_server_async(self, name: str) -> concurrent.futures.Future[None]:
+        """Close a removed registration without waiting on a network-owned lock."""
+        key = str(name or "").strip().casefold()
+        with self._cleanup_lock:
+            epoch = self._server_epochs.get(key, 0) + 1
+            self._server_epochs[key] = epoch
+
+        def close() -> None:
+            with self._lock:
+                with self._cleanup_lock:
+                    if self._server_epochs.get(key) != epoch:
+                        return
+                self._drop(key)
+
+        return _background_cleanup(close)
+
+    def shutdown_async(self) -> concurrent.futures.Future[None]:
+        """Keep connection draining and loop joining off the GUI thread."""
+        return _background_cleanup(self.shutdown)
+
     def shutdown(self) -> None:
         with self._lock:
             for key in list(self._connections):
@@ -1513,6 +1591,17 @@ def shutdown_mcp_tool_servers() -> None:
     if manager is not None:
         with contextlib.suppress(Exception):
             manager.shutdown()
+
+
+def shutdown_mcp_tool_servers_async() -> concurrent.futures.Future[None]:
+    """Start GUI shutdown; synchronous atexit cleanup remains available."""
+    with _manager_lock:
+        manager = _manager
+    if manager is not None:
+        return manager.shutdown_async()
+    completion: concurrent.futures.Future[None] = concurrent.futures.Future()
+    completion.set_result(None)
+    return completion
 
 
 # ---------------------------------------------------------------------------
