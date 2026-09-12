@@ -9,6 +9,11 @@ To keep the in-app Assistant (including Grok) running while a desktop agent
 opens documents or runs scripts, use the separate loopback channel in
 [vibecad-agent-control.md](vibecad-agent-control.md) instead of MCP.
 
+To give the built-in agent *additional* tools from MCP servers such as
+cua-driver, register them as tool servers instead; see
+[vibecad-mcp-tool-servers.md](vibecad-mcp-tool-servers.md). Tool servers do not
+enable this control mode.
+
 ## Connect a client
 
 1. Open **Edit → Preferences → VibeCAD**.
