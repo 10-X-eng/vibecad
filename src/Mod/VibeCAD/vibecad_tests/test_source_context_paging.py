@@ -79,6 +79,48 @@ def test_source_search_uses_provider_session_adapter_without_document_scan():
     assert result["programs"][0]["program"] == "Robot/assembly/Module044"
 
 
+def test_exact_source_reads_are_complete_ranged_and_revision_explicit():
+    inspected = {
+        "ok": True,
+        "program": {
+            "program_id": "program-1",
+            "working_revision": "a" * 64,
+            "source": "first line\nsecond line\nthird line\n",
+            "domain": "assembly",
+            "workbench": "AssemblyWorkbench",
+            "label": "Robot",
+            "input_schema": {},
+            "inputs": {},
+            "expected_outputs": [],
+            "live_outputs": {},
+        },
+    }
+
+    complete = session._read_source_payload(inspected)
+    ranged = session._read_source_payload(inspected, line_start=2, line_end=2)
+
+    assert complete["source"] == "first line\nsecond line\nthird line\n"
+    assert complete["source_range"] == {
+        "line_start": 1,
+        "line_end": 3,
+        "total_lines": 3,
+        "complete": True,
+    }
+    assert complete["current_revision"] == "a" * 64
+    assert ranged["source"] == "second line\n"
+    assert ranged["source_range"] == {
+        "line_start": 2,
+        "line_end": 2,
+        "total_lines": 3,
+        "complete": False,
+    }
+    assert len(ranged["source"]) < len(complete["source"])
+
+    inspected["program"]["working_revision"] = "b" * 64
+    updated = session._read_source_payload(inspected)
+    assert updated["current_revision"] == "b" * 64
+
+
 @pytest.mark.parametrize("args", [{"offset": -1}, {"limit": 0}, {"limit": 101}])
 def test_invalid_page_arguments_are_rejected(args):
     with pytest.raises(ValueError):

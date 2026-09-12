@@ -13,6 +13,7 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import sys
@@ -80,6 +81,55 @@ ANTHROPIC_ADAPTIVE_EFFORT = {
     "xhigh": "xhigh",
 }
 ANTHROPIC_STREAM_MAX_ATTEMPTS = 6
+CODEX_REASONING_EFFORT_ORDER = (
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+)
+CODEX_COMPLEXITY_TERMS = frozenset(
+    {
+        "analyze",
+        "assembly",
+        "build",
+        "clearance",
+        "compare",
+        "constraint",
+        "create",
+        "design",
+        "dimension",
+        "edit",
+        "export",
+        "fem",
+        "geometry",
+        "joint",
+        "mesh",
+        "modify",
+        "motion",
+        "reconfigure",
+        "repair",
+        "revise",
+        "sketch",
+        "source",
+        "tolerance",
+        "verify",
+    }
+)
+CODEX_SIMPLE_REQUEST_TERMS = frozenset(
+    {
+        "check",
+        "list",
+        "report",
+        "show",
+        "status",
+        "where",
+        "which",
+    }
+)
 
 
 VIBECAD_SYSTEM_INSTRUCTIONS = """You are VibeCAD, the mechanical engineer for the user's live FreeCAD model.
@@ -538,13 +588,131 @@ def _codex_skill_read_tool(*, namespaced: bool = True) -> dict[str, Any]:
     }
 
 
-def _codex_turn_input(prompt: str, context: dict[str, Any]) -> list[dict[str, Any]]:
+def _codex_reference_image_key(entry: Mapping[str, Any], index: int) -> str:
+    """Return a stable process-local key for one durable reference image."""
+
+    ident = str(entry.get("id") or "").strip()
+    return ident or f"position:{index}"
+
+
+def _codex_reference_image_fingerprints(
+    context: Mapping[str, Any],
+) -> tuple[dict[str, str], bool]:
+    """Hash available reference bytes plus their exact wire labels.
+
+    A successful hash is only a comparison aid: the current file is still
+    delivered whenever its identity is not remembered. An unreadable or
+    changing file makes reuse unsafe and returns ``False`` so callers retain
+    the existing full-delivery path.
+    """
+
+    references = context.get("reference_images")
+    if not isinstance(references, Mapping):
+        return {}, True
+    raw_entries = references.get("images")
+    if not isinstance(raw_entries, list):
+        return {}, True
+    entries = [entry for entry in raw_entries if isinstance(entry, Mapping)]
+    fingerprints: dict[str, str] = {}
+    seen_keys: set[str] = set()
+    total = len(entries)
+    for index, entry in enumerate(entries, start=1):
+        key = _codex_reference_image_key(entry, index)
+        if key in seen_keys:
+            key = f"{key}#{index}"
+        seen_keys.add(key)
+        path = Path(str(entry.get("path") or "")).expanduser()
+        try:
+            if not path.is_file():
+                return {}, False
+            size = int(path.stat().st_size)
+            if (
+                size <= 0
+                or size > CODEX_LOCAL_IMAGE_MAX_BYTES
+                or _provider_image_mime_for_suffix(path.suffix) is None
+            ):
+                return {}, False
+            before = path.stat()
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            after = path.stat()
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                return {}, False
+            user_label = str(entry.get("label") or "").strip()
+            name = str(entry.get("name") or f"reference-{index}")
+            wire_label = f"R{index}/{total}:{name}"
+            if user_label:
+                wire_label += f"|{user_label}"
+            descriptor = json.dumps(
+                {
+                    "key": key,
+                    "wire_label": wire_label,
+                    "content_sha256": digest.hexdigest(),
+                    "size_bytes": size,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            fingerprints[key] = hashlib.sha256(descriptor).hexdigest()
+        except (OSError, TypeError, ValueError):
+            return {}, False
+    return fingerprints, True
+
+
+def _codex_reference_image_inspection_keys(
+    context: Mapping[str, Any],
+    *,
+    prompt: str = "",
+) -> set[str]:
+    """Return durable references explicitly requested for another inspection."""
+
+    references = context.get("reference_images")
+    if not isinstance(references, Mapping):
+        return set()
+    raw_ids = references.get("inspect_ids")
+    requested = {
+        str(value).strip()
+        for value in list(raw_ids or [])
+        if str(value).strip()
+    }
+    # Only examine the current ask, not replayed history. Reattaching on an
+    # ambiguous image request is safer than omitting a requested inspection.
+    request_words = set(re.findall(r"[a-z]+", _codex_current_request_text(prompt).lower()))
+    asks_for_image = bool(request_words & {"image", "images", "reference", "references", "photo", "picture"})
+    asks_to_inspect = bool(request_words & {"inspect", "reinspect", "review", "revisit", "look", "check", "examine", "again"})
+    if references.get("force_attach") is True or (asks_for_image and asks_to_inspect):
+        raw_entries = references.get("images")
+        if isinstance(raw_entries, list):
+            seen_keys: set[str] = set()
+            for index, entry in enumerate(raw_entries, start=1):
+                if not isinstance(entry, Mapping):
+                    continue
+                key = _codex_reference_image_key(entry, index)
+                if key in seen_keys:
+                    key = f"{key}#{index}"
+                seen_keys.add(key)
+                requested.add(key)
+    return requested
+
+
+def _codex_turn_input(
+    prompt: str,
+    context: dict[str, Any],
+    *,
+    reference_image_keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
     visible = _model_visible_context(context)
     image_blocks = _codex_context_image_blocks(visible)
     items: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
     for note in _context_image_delivery_notes(visible):
         items.append({"type": "text", "text": note})
-    local_references = _codex_local_reference_image_input(visible)
+    local_references = _codex_local_reference_image_input(
+        visible,
+        reference_image_keys=reference_image_keys,
+    )
     if local_references is not None:
         items.extend(local_references)
         image_blocks = [
@@ -563,6 +731,8 @@ def _codex_turn_input(prompt: str, context: dict[str, Any]) -> list[dict[str, An
 
 def _codex_local_reference_image_input(
     context: dict[str, Any],
+    *,
+    reference_image_keys: set[str] | None = None,
 ) -> list[dict[str, Any]] | None:
     """Deliver every durable reference at original detail, or use inline fallback."""
 
@@ -578,8 +748,15 @@ def _codex_local_reference_image_input(
         return None
     result: list[dict[str, Any]] = []
     total = len(entries)
+    seen_keys: set[str] = set()
     try:
         for index, entry in enumerate(entries, start=1):
+            key = _codex_reference_image_key(entry, index)
+            if key in seen_keys:
+                key = f"{key}#{index}"
+            seen_keys.add(key)
+            if reference_image_keys is not None and key not in reference_image_keys:
+                continue
             name = str(entry.get("name") or f"reference-{index}")
             user_label = str(entry.get("label") or "").strip()
             suffix = f"|{user_label}" if user_label else ""
@@ -814,6 +991,7 @@ def _codex_prompt_with_reused_context(
     previous_section_digests: Mapping[str, str] | None,
     *,
     context: Mapping[str, Any] | None = None,
+    anchor_turn_ids: Mapping[str, str] | None = None,
 ) -> tuple[str, dict[str, str], dict[str, Any]]:
     """Replace byte-identical resumed-thread context with hash references."""
 
@@ -829,15 +1007,21 @@ def _codex_prompt_with_reused_context(
         digest = current_digests.get(name)
         if not digest or previous.get(name) != digest or name not in values:
             continue
+        anchor_turn_id = str((anchor_turn_ids or {}).get(name) or "")
+        if anchor_turn_ids is not None and not anchor_turn_id:
+            continue
         reference: dict[str, Any] = {
             "section": name,
-            "status": "unchanged_from_previous_successful_turn",
+            "status": "unchanged_from_full_anchor",
             "sha256": digest,
             "instruction": (
-                "Reuse the exact named section from the previous successful turn; "
-                "current_guard is authoritative."
+                "Reuse the most recent full named section with this sha256"
+                + (f" in turn {anchor_turn_id}" if anchor_turn_id else "")
+                + "; never resolve through another reference. current_guard is authoritative."
             ),
         }
+        if anchor_turn_id:
+            reference["anchor_turn_id"] = anchor_turn_id
         if name == "active_state":
             guard = _codex_context_guard(values[name])
             surface = (
@@ -1024,6 +1208,8 @@ class CodexProvider(BaseProvider):
         skills_enabled: bool = False,
         identity_id: str | None = None,
         identity_label: str | None = None,
+        adaptive_reasoning: bool = False,
+        supported_reasoning_efforts: tuple[str, ...] | None = None,
     ) -> None:
         clean_auth_mode = str(auth_mode or "").strip().lower()
         if clean_auth_mode not in {"api_key", "chatgpt"}:
@@ -1038,6 +1224,12 @@ class CodexProvider(BaseProvider):
         self.skills_enabled = bool(skills_enabled)
         self._identity_id = str(identity_id or "").strip() or None
         self._identity_label = str(identity_label or "").strip() or None
+        self.adaptive_reasoning = bool(adaptive_reasoning)
+        self.supported_reasoning_efforts = tuple(
+            str(value).strip().lower()
+            for value in (supported_reasoning_efforts or ())
+            if str(value).strip().lower() in CODEX_REASONING_EFFORT_ORDER
+        )
 
     @property
     def provider_id(self) -> str:
@@ -1169,6 +1361,33 @@ class CodexProvider(BaseProvider):
                 return
             if turn_id and event_turn_id and event_turn_id != turn_id:
                 return
+            if method == "thread/compacted":
+                if managed_lease is not None:
+                    managed_lease.invalidate_context_reuse()
+                _emit_provider_progress(
+                    progress_callback,
+                    {
+                        "event": "provider_context_compacted",
+                        "provider": self.provider_label,
+                    },
+                )
+                return
+            if method in {"item/started", "item/completed"}:
+                item = params.get("item")
+                if isinstance(item, dict) and item.get("type") in {
+                    "contextCompaction",
+                    "context_compaction",
+                }:
+                    if managed_lease is not None:
+                        managed_lease.invalidate_context_reuse()
+                    _emit_provider_progress(
+                        progress_callback,
+                        {
+                            "event": "provider_context_compacted",
+                            "provider": self.provider_label,
+                        },
+                    )
+                    return
             if method in {"item/agentMessage/delta", "item/plan/delta"}:
                 delta = str(params.get("delta") or "")
                 if delta:
@@ -1487,6 +1706,7 @@ class CodexProvider(BaseProvider):
         )
         managed_stack = ExitStack()
         managed_lease = None
+        context_reuse_committed = False
         if managed:
             runtime_payload = {
                 "auth_mode": self.auth_mode,
@@ -1680,6 +1900,11 @@ class CodexProvider(BaseProvider):
             )
             if managed_lease is not None:
                 managed_lease.remember_thread(thread_id)
+            context_reuse_generation = (
+                managed_lease.context_reuse_generation
+                if managed_lease is not None
+                else None
+            )
 
             turn_prompt = (
                 _codex_prompt_without_replayed_conversation(prompt)
@@ -1701,15 +1926,48 @@ class CodexProvider(BaseProvider):
                     turn_prompt,
                     managed_lease.previous_prompt_section_digests,
                     context=live_context,
+                    anchor_turn_ids=managed_lease.previous_prompt_section_anchor_turn_ids,
                 )
-            # A hash reference may point only at a full section in the
-            # immediately preceding successful turn, never at another
-            # reference. This also re-anchors exact state across compaction.
+            previous_full_prompt_digests = (
+                managed_lease.previous_prompt_section_digests
+                if managed_lease is not None
+                else {}
+            )
+            previous_anchor_turn_ids = (
+                managed_lease.previous_prompt_section_anchor_turn_ids
+                if managed_lease is not None else {}
+            )
+            # Retain the last full section's digest AND its original turn id.
             prompt_section_digests_to_remember = {
-                name: digest
+                name: (
+                    previous_full_prompt_digests.get(name, digest)
+                    if name in prompt_reuse["reused_sections"]
+                    else digest
+                )
                 for name, digest in prompt_section_digests.items()
-                if name not in prompt_reuse["reused_sections"]
             }
+            reference_image_fingerprints, reference_images_safe = (
+                _codex_reference_image_fingerprints(live_context)
+            )
+            reference_image_keys: set[str] | None = None
+            previous_reference_image_deliveries: dict[str, str] = {}
+            if managed_lease is not None:
+                previous_reference_image_deliveries = (
+                    managed_lease.previous_reference_image_deliveries
+                )
+                if reference_images_safe:
+                    forced_reference_keys = _codex_reference_image_inspection_keys(
+                        live_context, prompt=prompt
+                    )
+                    reference_image_keys = {
+                        key
+                        for key, fingerprint in reference_image_fingerprints.items()
+                        if (
+                            previous_reference_image_deliveries.get(key)
+                            != fingerprint
+                            or key in forced_reference_keys
+                        )
+                    }
             input_budget = provider_input_budget(turn_prompt, live_context)
             _emit_provider_progress(
                 progress_callback,
@@ -1726,10 +1984,93 @@ class CodexProvider(BaseProvider):
                 "input": _codex_turn_input(
                     turn_prompt,
                     live_context,
+                    reference_image_keys=reference_image_keys,
                 ),
                 "environments": [],
             }
-            effort = _provider_reasoning_effort(self.reasoning_effort)
+            selected_model = str(
+                self.model
+                or thread.get("model")
+                or (
+                    thread_result.get("model")
+                    if isinstance(thread_result, dict)
+                    else ""
+                )
+                or ""
+            ).strip()
+            supported_reasoning_efforts = self.supported_reasoning_efforts
+            can_discover_efforts = _codex_reasoning_capabilities_allowed(
+                self.provider_id,
+                self.base_url if self.auth_mode == "api_key" else None,
+            )
+            if not can_discover_efforts:
+                supported_reasoning_efforts = ()
+            if self.adaptive_reasoning and can_discover_efforts and not supported_reasoning_efforts:
+                try:
+                    supported_reasoning_efforts = (
+                        _codex_model_supported_reasoning_efforts(
+                            client,
+                            selected_model,
+                            live_context=live_context,
+                            provider=self.provider_id,
+                            base_url=(
+                                self.base_url if self.auth_mode == "api_key" else None
+                            ),
+                        )
+                    )
+                except Exception:
+                    # Capability discovery is an optimization. An unavailable
+                    # catalog must never prevent the selected effort from running.
+                    supported_reasoning_efforts = ()
+            reasoning_decision = _codex_reasoning_effort_for_prompt(
+                prompt,
+                live_context,
+                self.reasoning_effort,
+                adaptive=self.adaptive_reasoning,
+                supported_efforts=supported_reasoning_efforts,
+                ongoing=resumed_thread,
+            )
+            effort = _provider_reasoning_effort(
+                reasoning_decision["effective_effort"]
+            )
+            _emit_provider_progress(
+                progress_callback,
+                {
+                    "event": "provider_reasoning_effort",
+                    "provider": self.provider_label,
+                    "model": selected_model,
+                    **reasoning_decision,
+                },
+            )
+            reference_image_attached_count = sum(
+                1
+                for item in turn_request["input"]
+                if item.get("type") == "localImage"
+            )
+            available_reference_count = len(reference_image_fingerprints)
+            if not reference_images_safe:
+                references = live_context.get("reference_images")
+                entries = (
+                    references.get("images")
+                    if isinstance(references, dict)
+                    else None
+                )
+                available_reference_count = len(
+                    [entry for entry in list(entries or []) if isinstance(entry, dict)]
+                )
+            _emit_provider_progress(
+                progress_callback,
+                {
+                    "event": "provider_reference_image_delivery",
+                    "provider": self.provider_label,
+                    "available_count": available_reference_count,
+                    "attached_count": reference_image_attached_count,
+                    "reused_count": len(reference_image_fingerprints) - len(reference_image_keys or ())
+                    if reference_images_safe and managed_lease is not None
+                    else 0,
+                    "identity_safe": reference_images_safe,
+                },
+            )
             if effort:
                 turn_request["effort"] = effort
                 turn_request["summary"] = "auto"
@@ -1744,6 +2085,44 @@ class CodexProvider(BaseProvider):
                 request=turn_request,
                 base_url=(self.base_url if self.auth_mode == "api_key" else None),
             )
+
+            def remember_successful_context() -> None:
+                nonlocal context_reuse_committed
+                if managed_lease is None:
+                    return
+                if (
+                    context_reuse_generation is not None
+                    and managed_lease.context_reuse_generation
+                    != context_reuse_generation
+                ):
+                    return
+                managed_lease.remember_prompt_section_digests(
+                    prompt_section_digests_to_remember,
+                    anchor_turn_ids={
+                        name: previous_anchor_turn_ids[name]
+                        if name in prompt_reuse["reused_sections"] else turn_id
+                        for name in prompt_section_digests_to_remember
+                    },
+                )
+                # A localImage points at a file, not the bytes hashed before
+                # turn/start. Do not cache a delivery if that file changed
+                # during the turn or the local-input fallback was used.
+                current_images, still_safe = _codex_reference_image_fingerprints(live_context)
+                expected_attached = len(reference_image_keys or ())
+                image_delivery_verified = (
+                    reference_images_safe and still_safe
+                    and current_images == reference_image_fingerprints
+                    and reference_image_attached_count == expected_attached
+                )
+                context_reuse_committed = (
+                    managed_lease.remember_reference_image_deliveries(
+                        reference_image_fingerprints
+                        if image_delivery_verified
+                        else {},
+                        generation=context_reuse_generation,
+                    )
+                )
+
             turn_result = client.request("turn/start", turn_request, timeout=30.0)
             turn = turn_result.get("turn") if isinstance(turn_result, dict) else None
             if not isinstance(turn, dict) or not turn.get("id"):
@@ -1811,10 +2190,7 @@ class CodexProvider(BaseProvider):
                     or f"Codex turn ended with {completed_status or 'unknown status'}."
                 )
             if not final_output and transition_requested.is_set():
-                if managed_lease is not None:
-                    managed_lease.remember_prompt_section_digests(
-                        prompt_section_digests_to_remember
-                    )
+                remember_successful_context()
                 return ProviderResult(
                     final_output="",
                     raw={
@@ -1834,15 +2210,21 @@ class CodexProvider(BaseProvider):
                     "to accept an empty result. The provider may have truncated or "
                     f"exhausted its context.{context_note}"
                 )
-            if managed_lease is not None:
-                managed_lease.remember_prompt_section_digests(
-                    prompt_section_digests_to_remember
-                )
+            remember_successful_context()
             return ProviderResult(
                 final_output=final_output,
                 raw={
                     "thread_id": thread_id,
                     "auth_mode": self.auth_mode,
+                    "model": selected_model,
+                    "requested_reasoning_effort": reasoning_decision[
+                        "requested_effort"
+                    ],
+                    "effective_reasoning_effort": reasoning_decision[
+                        "effective_effort"
+                    ],
+                    "adaptive_reasoning": reasoning_decision["adaptive"],
+                    "reasoning_classification": reasoning_decision["classification"],
                     **(
                         {
                             "ollama": {
@@ -1867,6 +2249,8 @@ class CodexProvider(BaseProvider):
             if callable(response_handler_setter):
                 response_handler_setter(None)
             if managed_lease is not None:
+                if not context_reuse_committed:
+                    managed_lease.invalidate_context_reuse()
                 managed_stack.close()
             else:
                 if client.alive and thread_id:
@@ -1891,6 +2275,7 @@ class GeminiProvider(BaseProvider):
         max_turns: int | None = None,
         base_url: str | None = None,
         no_progress_limit: int = 3,
+        adaptive_reasoning: bool = False,
     ) -> None:
         self.no_progress_limit = max(0, int(no_progress_limit))
         self.model = model
@@ -1899,6 +2284,7 @@ class GeminiProvider(BaseProvider):
         self.timeout_seconds = timeout_seconds
         self.max_turns = max_turns
         self.base_url = base_url or DEFAULT_GEMINI_API_BASE
+        self.adaptive_reasoning = bool(adaptive_reasoning)
 
     def run(
         self,
@@ -1910,16 +2296,32 @@ class GeminiProvider(BaseProvider):
     ) -> ProviderResult:
         try:
             context = dict(context)
+            reasoning_decision = _codex_reasoning_effort_for_prompt(
+                prompt,
+                context,
+                self.reasoning_effort,
+                adaptive=self.adaptive_reasoning,
+                supported_efforts=_gemini_model_supported_reasoning_efforts(self.model, self.base_url),
+            )
+            _emit_provider_progress(
+                progress_callback,
+                {
+                    "event": "provider_reasoning_effort",
+                    "provider": "Google Gemini provider",
+                    "model": self.model,
+                    **reasoning_decision,
+                },
+            )
             options = dict(context.get("_vibecad_provider_options") or {})
             options["gemini_no_progress_limit"] = self.no_progress_limit
             context["_vibecad_provider_options"] = options
-            return _run_provider_subprocess(
+            result = _run_provider_subprocess(
                 prompt=prompt,
                 context=context,
                 tool_runner=tool_runner,
                 model=self.model,
                 api_key=self.api_key,
-                reasoning_effort=self.reasoning_effort,
+                reasoning_effort=reasoning_decision["effective_effort"],
                 timeout_seconds=self.timeout_seconds,
                 max_turns=self.max_turns,
                 base_url=self.base_url,
@@ -1928,6 +2330,21 @@ class GeminiProvider(BaseProvider):
                 child_main=_gemini_child_main,
                 provider_label="Google Gemini provider",
             )
+            raw = dict(result.raw) if isinstance(result.raw, dict) else {}
+            raw.update(
+                {
+                    "model": self.model,
+                    "requested_reasoning_effort": reasoning_decision[
+                        "requested_effort"
+                    ],
+                    "effective_reasoning_effort": reasoning_decision[
+                        "effective_effort"
+                    ],
+                    "adaptive_reasoning": reasoning_decision["adaptive"],
+                    "reasoning_classification": reasoning_decision["classification"],
+                }
+            )
+            return ProviderResult(final_output=result.final_output, raw=raw)
         except TimeoutError as exc:
             if self.timeout_seconds and self.timeout_seconds > 0:
                 raise ProviderUnavailable(
@@ -1996,6 +2413,7 @@ class AnthropicProvider(BaseProvider):
         base_url: str | None = None,
         web_search_enabled: bool = False,
         compaction_model: str | None = None,
+        adaptive_reasoning: bool = False,
     ) -> None:
         self.model = model
         self.api_key = api_key
@@ -2005,6 +2423,7 @@ class AnthropicProvider(BaseProvider):
         self.base_url = base_url
         self.web_search_enabled = bool(web_search_enabled)
         self.compaction_model = str(compaction_model or model).strip() or model
+        self.adaptive_reasoning = bool(adaptive_reasoning)
 
     def run(
         self,
@@ -2015,6 +2434,25 @@ class AnthropicProvider(BaseProvider):
         progress_callback: ProgressCallback | None = None,
     ) -> ProviderResult:
         try:
+            reasoning_decision = _codex_reasoning_effort_for_prompt(
+                prompt,
+                context,
+                self.reasoning_effort,
+                adaptive=self.adaptive_reasoning,
+                supported_efforts=(
+                    _anthropic_model_supported_reasoning_efforts(self.model, self.api_key, self.base_url)
+                    if self.adaptive_reasoning else ()
+                ),
+            )
+            _emit_provider_progress(
+                progress_callback,
+                {
+                    "event": "provider_reasoning_effort",
+                    "provider": "Anthropic provider",
+                    "model": self.model,
+                    **reasoning_decision,
+                },
+            )
             scope = _anthropic_capability_scope(self.api_key, self.base_url)
             models = {self.model, self.compaction_model}
             provider_context = dict(context)
@@ -2035,13 +2473,13 @@ class AnthropicProvider(BaseProvider):
                     return
                 if progress_callback is not None:
                     progress_callback(event)
-            return _run_provider_subprocess(
+            result = _run_provider_subprocess(
                 prompt=prompt,
                 context=provider_context,
                 tool_runner=tool_runner,
                 model=self.model,
                 api_key=self.api_key,
-                reasoning_effort=self.reasoning_effort,
+                reasoning_effort=reasoning_decision["effective_effort"],
                 timeout_seconds=self.timeout_seconds,
                 max_turns=self.max_turns,
                 base_url=self.base_url,
@@ -2050,6 +2488,21 @@ class AnthropicProvider(BaseProvider):
                 child_main=_anthropic_child_main,
                 provider_label="Anthropic provider",
             )
+            raw = dict(result.raw) if isinstance(result.raw, dict) else {}
+            raw.update(
+                {
+                    "model": self.model,
+                    "requested_reasoning_effort": reasoning_decision[
+                        "requested_effort"
+                    ],
+                    "effective_reasoning_effort": reasoning_decision[
+                        "effective_effort"
+                    ],
+                    "adaptive_reasoning": reasoning_decision["adaptive"],
+                    "reasoning_classification": reasoning_decision["classification"],
+                }
+            )
+            return ProviderResult(final_output=result.final_output, raw=raw)
         except TimeoutError as exc:
             if self.timeout_seconds and self.timeout_seconds > 0:
                 raise ProviderUnavailable(
@@ -2085,6 +2538,271 @@ def _provider_reasoning_effort(value: str | None) -> str | None:
     if clean in {"", "none", "off", "disabled", "false", "0"}:
         return None
     return clean
+
+
+def _codex_current_request_text(prompt: str) -> str:
+    text = str(prompt or "")
+    candidates = [
+        text.rsplit("CURRENT_USER_MESSAGE\n", 1),
+        text.rsplit("CURRENT_SESSION_EVENT\n", 1),
+    ]
+    for parts in candidates:
+        if len(parts) == 2:
+            return parts[1].strip()
+    return text.strip()
+
+
+def _codex_recent_turn_count(prompt: str) -> int:
+    text = str(prompt or "")
+    sections = list(re.finditer(r"(?m)^RECENT_CONVERSATION_JSON\n", text))
+    start = sections[-1].start() if sections else -1
+    end = text.find("\nEND_RECENT_CONVERSATION_JSON", start)
+    if start < 0:
+        return 0
+    if end < 0:
+        return 1
+    try:
+        payload = json.loads(text[start + len("RECENT_CONVERSATION_JSON\n") : end])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return 1
+    turns = payload.get("turns") if isinstance(payload, dict) else None
+    return len(turns) if isinstance(turns, list) else 1
+
+
+def _codex_context_has_unresolved_work(context: Mapping[str, Any]) -> bool:
+    pending: list[Any] = [context]
+    seen: set[int] = set()
+    while pending:
+        value = pending.pop()
+        if not isinstance(value, (Mapping, list, tuple)) or id(value) in seen:
+            continue
+        seen.add(id(value))
+        if len(seen) > 1024:
+            return True  # An unusually large state is not an unambiguous simple ask.
+        if isinstance(value, Mapping):
+            for name in ("active_operation", "blocking", "error", "failure", "latest_failure", "unresolved"):
+                if value.get(name) not in (None, False, "", [], {}):
+                    return True
+            status = str(value.get("status") or "").lower()
+            if (
+                value.get("ok") is False or value.get("invalidated") is True
+                or status in {"running", "pending", "queued", "in_progress", "interrupted", "cancelled", "failed", "error"}
+                or status.endswith("_failed")
+            ):
+                return True
+            pending.extend(
+                child for key, child in value.items()
+                if key not in {"provider_tool_schemas", "provider_tool_surface", "core_api", "api_details", "input_schema"}
+            )
+        else:
+            pending.extend(value)
+    return False
+
+
+def _codex_reasoning_effort_for_prompt(
+    prompt: str,
+    context: Mapping[str, Any],
+    selected_effort: str,
+    *,
+    adaptive: bool,
+    supported_efforts: tuple[str, ...] | list[str] | None,
+    ongoing: bool = False,
+) -> dict[str, Any]:
+    """Choose at most one lower supported effort for an unambiguous read-only ask."""
+
+    selected = str(selected_effort or "").strip().lower()
+    supported = {
+        str(value).strip().lower()
+        for value in (supported_efforts or ())
+        if str(value).strip().lower() in CODEX_REASONING_EFFORT_ORDER
+    }
+    result: dict[str, Any] = {
+        "requested_effort": selected,
+        "effective_effort": selected,
+        "adaptive": bool(adaptive),
+        "classification": "disabled" if not adaptive else "uncertain",
+        "reason": "adaptive_reasoning_disabled" if not adaptive else "",
+    }
+    if not adaptive:
+        return result
+    if not supported or selected not in supported:
+        result.update(
+            classification="uncertain",
+            reason="model_capabilities_unavailable",
+        )
+        return result
+    request = _codex_current_request_text(prompt).lower()
+    if ongoing or _codex_recent_turn_count(prompt) > 0 or _codex_context_has_unresolved_work(
+        context
+    ):
+        result.update(classification="uncertain", reason="ongoing_or_unresolved")
+        return result
+    words = set(re.findall(r"[a-z]+", request))
+    if not request or len(request) > 256 or words & CODEX_COMPLEXITY_TERMS:
+        result.update(classification="complex", reason="cad_or_multi_step_request")
+        return result
+    # A keyword is not evidence of a read-only request. Match the whole ask
+    # against a small grammar; unknown language and additional actions retain
+    # the selected effort rather than guessing at user intent.
+    if not re.fullmatch(
+        r"(?:please\s+)?(?:show|list|report)(?:\s+me)?\s+(?:the\s+)?"
+        r"(?:current\s+)?(?:status|selection|active document|active workbench|open documents|objects)"
+        r"(?:\s+please)?[.!?]?",
+        request,
+    ):
+        result.update(classification="uncertain", reason="no_simple_request_signal")
+        return result
+    result["classification"] = "simple"
+    result["reason"] = "single_step_read_request"
+    try:
+        index = CODEX_REASONING_EFFORT_ORDER.index(selected)
+    except ValueError:
+        result["classification"] = "uncertain"
+        result["reason"] = "unknown_selected_effort"
+        return result
+    if index <= 0:
+        result["reason"] = "selected_effort_is_minimum"
+        return result
+    candidate = CODEX_REASONING_EFFORT_ORDER[index - 1]
+    if candidate in supported:
+        result["effective_effort"] = candidate
+        return result
+    result["reason"] = "lower_effort_not_supported_by_model"
+    return result
+
+
+def _codex_model_supported_reasoning_efforts(
+    client: Any,
+    model: str,
+    *,
+    live_context: dict[str, Any],
+    provider: str,
+    base_url: str | None,
+) -> tuple[str, ...]:
+    """Read the selected model's advertised reasoning efforts from app-server."""
+
+    if not _codex_reasoning_capabilities_allowed(provider, base_url):
+        return ()
+    selected_model = str(model or "").strip()
+    cursor: str | None = None
+    fallback_efforts: tuple[str, ...] = ()
+    for _page in range(8):
+        params: dict[str, Any] = {"limit": 100, "includeHidden": False}
+        if cursor:
+            params["cursor"] = cursor
+        _capture_outbound_request(
+            live_context,
+            provider=provider,
+            sdk_call="codex-app-server.model/list",
+            turn=1,
+            request=params,
+            base_url=base_url,
+        )
+        result = client.request("model/list", params, timeout=30.0)
+        if not isinstance(result, dict):
+            return ()
+        for item in result.get("data") or []:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "").strip()
+            if not item_id:
+                continue
+            efforts = tuple(
+                name
+                for name in (
+                    str(entry.get("reasoningEffort") or "").strip().lower()
+                    for entry in item.get("supportedReasoningEfforts") or []
+                    if isinstance(entry, Mapping)
+                )
+                if name in CODEX_REASONING_EFFORT_ORDER
+            )
+            efforts = tuple(dict.fromkeys(efforts))
+            if not fallback_efforts and bool(item.get("isDefault")):
+                fallback_efforts = efforts
+            if selected_model and item_id == selected_model:
+                return efforts
+            if not selected_model and bool(item.get("isDefault")):
+                return efforts
+        cursor = str(result.get("nextCursor") or "").strip() or None
+        if cursor is None:
+            break
+    return fallback_efforts if not selected_model else ()
+
+
+def _codex_reasoning_capabilities_allowed(provider: str, base_url: str | None) -> bool:
+    """The Codex model catalog is not a capability API for third-party endpoints."""
+
+    if provider == "chatgpt":
+        return True
+    if provider != "openai":
+        return False
+    if not base_url:
+        return True
+    endpoint = urlsplit(base_url)
+    return endpoint.scheme == "https" and endpoint.hostname == "api.openai.com"
+
+
+def _gemini_model_supported_reasoning_efforts(model: str, base_url: str | None) -> tuple[str, ...]:
+    """Use Google's documented mappings only for known, explicit model ids.
+
+    Gemini model listings do not advertise per-effort capabilities. Moving
+    aliases, unknown models and compatible endpoints therefore keep the user's
+    effort. Never adapt to `none`: the shared legacy transport omits that value
+    and Gemini interprets omission as its model default.
+
+    https://ai.google.dev/gemini-api/docs/openai#thinking
+    """
+
+    endpoint = urlsplit(base_url or DEFAULT_GEMINI_API_BASE)
+    if endpoint.scheme != "https" or endpoint.hostname != "generativelanguage.googleapis.com":
+        return ()
+    if model in {
+        "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+        "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview",
+    }:
+        return ("minimal", "low", "medium", "high")
+    return ()
+
+
+def _anthropic_model_supported_reasoning_efforts(
+    model: str, api_key: str | None, base_url: str | None,
+) -> tuple[str, ...]:
+    """Read the selected model's effort/adaptive-thinking capability tree.
+
+    This optional, bounded metadata lookup never changes the normal request
+    when the SDK, endpoint or capability fields are unavailable.
+    https://platform.claude.com/docs/en/api/models/retrieve
+    """
+
+    endpoint = urlsplit(base_url or "https://api.anthropic.com")
+    if endpoint.scheme != "https" or endpoint.hostname != "api.anthropic.com":
+        return ()
+    client = None
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key, timeout=2.0, max_retries=0)
+        info = _object_payload(client.models.retrieve(model))
+        capabilities = info.get("capabilities") or {}
+        effort = capabilities.get("effort") or {}
+        thinking = capabilities.get("thinking") or {}
+        adaptive = (thinking.get("types") or {}).get("adaptive") or {}
+        if effort.get("supported") is not True or adaptive.get("supported") is not True:
+            return ()
+        # Only include distinct effort literals already supported by the
+        # existing Anthropic serializer. `minimal` maps to `low`, not a step.
+        return tuple(
+            value for value in ("low", "medium", "high", "xhigh")
+            if (effort.get(value) or {}).get("supported") is True
+        )
+    except Exception:
+        return ()
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def _provider_windows_gui_session() -> bool:

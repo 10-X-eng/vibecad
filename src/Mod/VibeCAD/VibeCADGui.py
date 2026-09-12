@@ -2185,6 +2185,21 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         if delta and not delta.startswith("not available"):
             return f"{base} | {delta}"
         return base
+    if name == "provider_reasoning_effort":
+        effective = str(event.get("effective_effort") or "none")
+        if event.get("adaptive"):
+            requested = str(event.get("requested_effort") or effective)
+            return f"Reasoning effort: {effective} (adaptive; selected {requested})"
+        return f"Reasoning effort: {effective}"
+    if name == "provider_context_compacted":
+        return "Provider context was compacted; re-anchoring the next turn."
+    if name == "provider_reference_image_delivery":
+        attached = int(event.get("attached_count", 0) or 0)
+        available = int(event.get("available_count", 0) or 0)
+        reused = int(event.get("reused_count", 0) or 0)
+        if reused:
+            return f"Reference images: {attached} new, {reused} reused ({available} available)."
+        return f"Reference images: {attached} attached ({available} available)."
     if name == "provider_turn_completed":
         return "CAD step completed."
     if name == "provider_turn_output":
@@ -2426,6 +2441,9 @@ _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
     "native_tool_document_phase_completed",
     "native_tool_document_phase_started",
     "provider_turn_started",
+    "provider_reasoning_effort",
+    "provider_context_compacted",
+    "provider_reference_image_delivery",
     "vibescript_domain_deferred_recompute_completed",
     "vibescript_domain_phase_completed",
     "vibescript_domain_phase_started",
