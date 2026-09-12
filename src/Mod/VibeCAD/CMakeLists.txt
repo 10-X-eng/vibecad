@@ -1807,6 +1807,41 @@ if(VibeCAD_UpdateTrustFiles)
     )
 endif()
 
+# Native cmake --build does not go through rattler create_bundle.sh, so pin
+# Codex here or the module keeps a leftover runtime from an older tree.
+option(VIBECAD_INSTALL_CODEX_RUNTIME "Install the pinned Codex app-server into the build module" ON)
+if(UNIX AND VIBECAD_INSTALL_CODEX_RUNTIME)
+    if(NOT Python3_EXECUTABLE)
+        message(FATAL_ERROR "Python3_EXECUTABLE is required to install the Codex app-server runtime")
+    endif()
+    set(VIBECAD_CODEX_INSTALLER
+        "${CMAKE_SOURCE_DIR}/package/rattler-build/scripts/install_vibecad_codex_runtime.sh")
+    set(VIBECAD_CODEX_MODULE_DIR "${CMAKE_BINARY_DIR}/Mod/VibeCAD")
+    set(VIBECAD_CODEX_RUNTIME_STAMP "${VIBECAD_CODEX_MODULE_DIR}/codex_runtime/runtime.json")
+    add_custom_command(
+        OUTPUT "${VIBECAD_CODEX_RUNTIME_STAMP}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${VIBECAD_CODEX_MODULE_DIR}"
+        COMMAND
+            bash "${VIBECAD_CODEX_INSTALLER}"
+            "${Python3_EXECUTABLE}"
+            "${VIBECAD_CODEX_MODULE_DIR}"
+        DEPENDS
+            "${VIBECAD_CODEX_INSTALLER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/VibeCADCodex.py"
+        COMMENT "Installing pinned Codex app-server into ${VIBECAD_CODEX_MODULE_DIR}"
+        VERBATIM
+    )
+    add_custom_target(VibeCADCodexRuntime ALL
+        DEPENDS "${VIBECAD_CODEX_RUNTIME_STAMP}"
+    )
+    add_dependencies(VibeCADScripts VibeCADCodexRuntime)
+    install(
+        DIRECTORY "${VIBECAD_CODEX_MODULE_DIR}/codex_runtime"
+        DESTINATION Mod/VibeCAD
+        OPTIONAL
+    )
+endif()
+
 install(
     FILES
         ${VibeCAD_Scripts}
