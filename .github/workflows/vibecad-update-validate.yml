@@ -73,6 +73,7 @@ jobs:
           src.Tools.tests.test_generate_update_manifest
           src.Tools.tests.test_release_workflow
           src.Tools.tests.test_vibecad_update
+          src.Tools.tests.test_macos_bundle_identity
 
   validate-windows-launch:
     name: Validate Windows updater process launch
