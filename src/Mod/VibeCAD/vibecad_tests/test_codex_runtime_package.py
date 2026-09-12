@@ -28,6 +28,15 @@ def test_codex_runtime_release_is_consistent():
     assert all(name.startswith('codex-app-server-package-') for name, _ in archives)
 
 
+def test_native_cmake_installs_pinned_codex_runtime_into_build_module():
+    root = Path(__file__).resolve().parents[4]
+    cmake = (root / "src/Mod/VibeCAD/CMakeLists.txt").read_text()
+    assert "install_vibecad_codex_runtime.sh" in cmake
+    assert "VibeCADCodexRuntime" in cmake
+    assert "CMAKE_BINARY_DIR}/Mod/VibeCAD" in cmake
+    assert "ALL" in cmake
+
+
 def test_complete_runtime_resolves_packaged_entrypoint_and_requires_companion(tmp_path, monkeypatch):
     import VibeCADCodex as codex
     monkeypatch.delenv(codex.CODEX_APP_SERVER_ENV, raising=False)
