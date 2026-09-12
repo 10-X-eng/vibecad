@@ -1246,9 +1246,10 @@ void MainWindow::closeActiveWindow()
     d->mdiArea->closeActiveSubWindow();
 }
 
-int MainWindow::confirmSave(App::Document* doc, QWidget* parent, bool addCheckbox)
+QMessageBox* MainWindow::createSaveConfirmation(App::Document* doc, QWidget* parent, bool addCheckbox)
 {
-    QMessageBox box(parent ? parent : this);
+    auto* message = new QMessageBox(parent ? parent : this);
+    auto& box = *message;
     box.setObjectName(QStringLiteral("confirmSave"));
     box.setIcon(QMessageBox::Question);
     box.setWindowFlags(box.windowFlags() | Qt::WindowStaysOnTopHint);
@@ -1266,7 +1267,10 @@ int MainWindow::confirmSave(App::Document* doc, QWidget* parent, bool addCheckbo
     box.setDefaultButton(QMessageBox::Save);
     box.setEscapeButton(QMessageBox::Cancel);
 
-    QCheckBox checkBox(QObject::tr("Apply to all"));
+    auto& checkBox = *new QCheckBox(QObject::tr("Apply to all"), message);
+    checkBox.setObjectName(QStringLiteral("applyToAll"));
+    checkBox.setVisible(addCheckbox);
+    checkBox.setEnabled(addCheckbox);
     ParameterGrp::handle hGrp;
     if (addCheckbox) {
         hGrp = App::GetApplication()
@@ -1294,7 +1298,6 @@ int MainWindow::confirmSave(App::Document* doc, QWidget* parent, bool addCheckbo
         discardBtn->setShortcut(QKeySequence::mnemonic(text));
     }
 
-    int res = ConfirmSaveResult::Cancel;
     box.adjustSize();  // Silence warnings from Qt on Windows
 
     // activates the last used MDI view of the closing document
@@ -1310,18 +1313,69 @@ int MainWindow::confirmSave(App::Document* doc, QWidget* parent, bool addCheckbo
         }
     }
 
-    switch (box.exec()) {
+    return message;
+}
+
+namespace
+{
+int saveConfirmationResult(QMessageBox& box, int answer)
+{
+    const auto* checkBox = box.findChild<QCheckBox*>(QStringLiteral("applyToAll"));
+    const bool all = checkBox && checkBox->isChecked();
+    int res = MainWindow::ConfirmSaveResult::Cancel;
+    switch (answer) {
         case QMessageBox::Save:
-            res = checkBox.isChecked() ? ConfirmSaveResult::SaveAll : ConfirmSaveResult::Save;
+            res = all ? MainWindow::ConfirmSaveResult::SaveAll : MainWindow::ConfirmSaveResult::Save;
             break;
         case QMessageBox::Discard:
-            res = checkBox.isChecked() ? ConfirmSaveResult::DiscardAll : ConfirmSaveResult::Discard;
+            res = all ? MainWindow::ConfirmSaveResult::DiscardAll : MainWindow::ConfirmSaveResult::Discard;
             break;
     }
-    if (addCheckbox && res) {
-        hGrp->SetBool("ConfirmAll", checkBox.isChecked());
+    if (checkBox && checkBox->isEnabled() && res) {
+        App::GetApplication().GetUserParameter().GetGroup("BaseApp")
+            ->GetGroup("Preferences")->GetGroup("General")->SetBool("ConfirmAll", all);
     }
     return res;
+}
+} // namespace
+
+int MainWindow::confirmSave(App::Document* doc, QWidget* parent, bool addCheckbox)
+{
+    std::unique_ptr<QMessageBox> box(createSaveConfirmation(doc, parent, addCheckbox));
+    return saveConfirmationResult(*box, box->exec());
+}
+
+void MainWindow::confirmSaveAsync(App::Document* doc, std::function<void(int)> finished,
+                                  QWidget* parent, bool addCheckbox)
+{
+    auto* box = createSaveConfirmation(doc, parent, addCheckbox);
+    connect(box, &QDialog::finished, this, [box, finished = std::move(finished)](int answer) {
+        const int result = saveConfirmationResult(*box, answer);
+        box->deleteLater();
+        finished(result);
+    });
+    box->open();
+}
+
+void MainWindow::closeAllDocumentsAsync(std::function<void(bool)> finished)
+{
+    auto documents = App::GetApplication().getDocuments();
+    try {
+        documents = App::Document::getDependentDocuments(documents, true);
+    }
+    catch (const Base::Exception& error) {
+        error.reportException();
+        if (finished) { finished(false); }
+        return;
+    }
+    std::vector<Gui::Document*> targets;
+    for (auto* document : documents) {
+        if (auto* gui = Application::Instance->getDocument(document)) { targets.push_back(gui); }
+    }
+    Gui::Document::closeDocumentsAsync(targets, [finished = std::move(finished)](bool closed) {
+        // Documents created during a modeless prompt were never approved.
+        if (finished) { finished(closed && App::GetApplication().getDocuments().empty()); }
+    });
 }
 
 bool MainWindow::closeAllDocuments(bool close)
@@ -1399,6 +1453,7 @@ bool MainWindow::closeAllDocuments(bool close)
 
     if (close) {
         App::GetApplication().closeAllDocuments();
+        return App::GetApplication().getDocuments().empty();
     }
 
     return true;
@@ -1855,8 +1910,12 @@ void MainWindow::setActiveWindow(MDIView* view)
             this->activateWorkbench(currWb);
         }
         else {
-            const std::string name = WorkbenchManager::instance()->active()->name();
-            view->setProperty("ownWB", QString::fromStdString(name));
+            // A native open may finish before the initial workbench activates.
+            // Leave ownership unset until there is an actual workbench to remember.
+            const std::string name = WorkbenchManager::instance()->activeName();
+            if (!name.empty()) {
+                view->setProperty("ownWB", QString::fromStdString(name));
+            }
         }
     }
 

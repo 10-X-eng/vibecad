@@ -33,7 +33,6 @@ _OPERATION_OUTPUT = {
     "measurement": "measurement",
     "report": "report",
 }
-_MAX_DEFINITION_BYTES = 1_000_000
 _MAX_REFERENCES = 128
 _MAX_DISTANCE_COUNT = 2_000_000
 _MAX_ARTIFACT_BYTES = _MAX_DISTANCE_COUNT * 4
@@ -187,12 +186,6 @@ def _encoded(value: Any) -> bytes:
             stage="definition_contract",
             exception_type=type(exc).__name__,
         ) from exc
-    if len(payload) > _MAX_DEFINITION_BYTES:
-        raise _fail(
-            f"An Inspection definition exceeds {_MAX_DEFINITION_BYTES} JSON bytes.",
-            stage="definition_contract",
-            json_bytes=len(payload),
-        )
     return payload
 
 

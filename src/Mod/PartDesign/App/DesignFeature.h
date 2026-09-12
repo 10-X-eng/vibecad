@@ -31,6 +31,17 @@ namespace PartDesign
 
 class Body;
 
+/** Exact contact rule shared by Design Boolean execution and target suggestions.
+ * Shapes must use the same coordinate frame. Callers doing concurrent work
+ * must supply private geometry copies, not mutable document-owned shapes.
+ */
+PartDesignExport bool designToolContactsBody(
+    const Part::TopoShape& body,
+    const Part::TopoShape& tool,
+    bool allowFaceContact,
+    double fuzzyTolerance = 0.0
+);
+
 /** UUID sentinel used when a publication points to a legacy non-state tip. */
 inline constexpr const char* NoDesignBodyStateId = "00000000-0000-4000-8000-000000000000";
 

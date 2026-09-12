@@ -23,7 +23,15 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+#include <QApplication>
+#include <QThread>
+#include <Gui/FrameBudget.h>
 #include <Base/Console.h>
+#include <Base/MatrixPy.h>
+#include <Base/VectorPy.h>
+#include <Mod/Part/App/TopoShapePy.h>
+#include "SectionFaceController.h"
 #include <Base/Interpreter.h>
 #include <Base/PyObjectBase.h>
 #include <Base/ServiceProvider.h>
@@ -166,10 +174,240 @@ public:
             "Return whether a retained Part task can safely own the active "
             "document transaction."
         );
+        add_varargs_method("createSectionFaceController", &Module::createSectionFaceController,
+                           "createSectionFaceController() -> handle\nCreate an owner-held native section controller.");
+        add_varargs_method("requestSectionFaces", &Module::requestSectionFaces,
+                           "requestSectionFaces(handle, instances, origin, normal, callback)\n"
+                           "Prepare native section faces asynchronously; callback(faces, error) runs on the GUI owner.");
+        add_varargs_method("cancelSectionFaces", &Module::cancelSectionFaces,
+                           "cancelSectionFaces(handle)\nCancel requests and release callbacks on the GUI owner.");
+        add_varargs_method("requestSectionMeshDisplay", &Module::requestSectionMeshDisplay,
+                           "Prepare section display from immutable mesh snapshots off the GUI thread.");
+        add_varargs_method("requestSectionDisplay", &Module::requestSectionDisplay,
+                           "requestSectionDisplay(handle, instances, origin, normal, spacing, callback)\n"
+                           "Prepare cap display data on native workers; callback receives a geometry handle and error.");
+        add_varargs_method("sectionDisplaySizes", &Module::sectionDisplaySizes,
+                           "sectionDisplaySizes(handle) -> triangle, hatch, outline counts");
+        add_varargs_method("readSectionDisplay", &Module::readSectionDisplay,
+                           "readSectionDisplay(handle, kind, first, count) -> tuple\nRead at most 256 primitives.");
+        add_varargs_method("_deferSectionDisplay", &Module::deferSectionDisplay,
+                           "Queue a section presentation step through the GUI frame dispatcher.");
         initialize("This module is the PartGui module.");  // register with Python
     }
 
 private:
+    using GeometryOwner = std::shared_ptr<const Part::SectionDisplayGeometry>;
+
+    static const GeometryOwner& sectionGeometry(PyObject* object)
+    {
+        auto* geometry = static_cast<GeometryOwner*>(
+            PyCapsule_GetPointer(object, "PartGui.SectionDisplayGeometry"));
+        if (!geometry) { throw Py::Exception(); }
+        return *geometry;
+    }
+
+    Py::Object sectionDisplaySizes(const Py::Tuple& args)
+    {
+        PyObject* handle;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &handle)) { throw Py::Exception(); }
+        const auto& geometry = sectionGeometry(handle);
+        Py::Tuple sizes(3);
+        sizes.setItem(0, Py::Long(geometry ? geometry->triangles.size() : 0));
+        sizes.setItem(1, Py::Long(geometry ? geometry->hatch.size() : 0));
+        sizes.setItem(2, Py::Long(geometry ? geometry->outlines.size() : 0));
+        return sizes;
+    }
+
+    Py::Object readSectionDisplay(const Py::Tuple& args)
+    {
+        PyObject* handle;
+        const char* kind;
+        Py_ssize_t first, count;
+        if (!PyArg_ParseTuple(args.ptr(), "Osnn", &handle, &kind, &first, &count)) {
+            throw Py::Exception();
+        }
+        if (first < 0 || count < 0) { throw Py::ValueError("chunk indices must be nonnegative"); }
+        const auto& geometry = sectionGeometry(handle);
+        if (!geometry) { return Py::Tuple(); }
+        const auto read = [&](const auto& values) {
+            const auto begin = static_cast<std::size_t>(first);
+            const auto length = begin < values.size()
+                ? std::min({static_cast<std::size_t>(count), std::size_t(256), values.size() - begin})
+                : 0;
+            Py::Tuple result(length);
+            for (std::size_t index = 0; index < length; ++index) {
+                const auto& primitive = values[begin + index];
+                Py::Tuple points(primitive.size());
+                for (std::size_t point = 0; point < primitive.size(); ++point) {
+                    Py::Tuple xyz(3);
+                    xyz.setItem(0, Py::Float(primitive[point].x));
+                    xyz.setItem(1, Py::Float(primitive[point].y));
+                    xyz.setItem(2, Py::Float(primitive[point].z));
+                    points.setItem(point, xyz);
+                }
+                result.setItem(index, points);
+            }
+            return result;
+        };
+        if (strcmp(kind, "triangles") == 0) { return read(geometry->triangles); }
+        if (strcmp(kind, "hatch") == 0) { return read(geometry->hatch); }
+        if (strcmp(kind, "outlines") == 0) { return read(geometry->outlines); }
+        throw Py::ValueError("unknown section primitive kind");
+    }
+
+    Py::Object deferSectionDisplay(const Py::Tuple& args)
+    {
+        PyObject* callback;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &callback)) { throw Py::Exception(); }
+        if (!qApp || QThread::currentThread() != qApp->thread()) {
+            throw Py::RuntimeError("Section display must be queued on the GUI owner");
+        }
+        if (!PyCallable_Check(callback)) { throw Py::TypeError("callback must be callable"); }
+        struct Callback
+        {
+            PyObject* object;
+            explicit Callback(PyObject* object) : object(object) { Py_INCREF(object); }
+            ~Callback() { Base::PyGILStateLocker lock; Py_DECREF(object); }
+        };
+        auto retained = std::make_shared<Callback>(callback);
+        return Py::Boolean(Gui::dispatchToGuiFrame([retained] {
+            Base::PyGILStateLocker lock;
+            try { Py::Callable(retained->object).apply(Py::Tuple()); }
+            catch (Py::Exception&) { PyErr_Print(); }
+        }));
+    }
+
+    static SectionFaceController* sectionController(PyObject* object)
+    {
+        auto* result = static_cast<SectionFaceController*>(
+            PyCapsule_GetPointer(object, "PartGui.SectionFaceController"));
+        if (!result) { throw Py::Exception(); }
+        return result;
+    }
+
+    Py::Object createSectionFaceController(const Py::Tuple& args)
+    {
+        if (!PyArg_ParseTuple(args.ptr(), "")) { throw Py::Exception(); }
+        auto controller = std::make_unique<SectionFaceController>();
+        auto* capsule = PyCapsule_New(controller.get(), "PartGui.SectionFaceController", [](PyObject* object) {
+            delete static_cast<SectionFaceController*>(
+                PyCapsule_GetPointer(object, "PartGui.SectionFaceController"));
+        });
+        if (!capsule) { throw Py::Exception(); }
+        controller.release();
+        return Py::asObject(capsule);
+    }
+
+    Py::Object cancelSectionFaces(const Py::Tuple& args)
+    {
+        PyObject* controller;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &controller)) { throw Py::Exception(); }
+        try { sectionController(controller)->cancel(); }
+        catch (const std::exception& error) { throw Py::RuntimeError(error.what()); }
+        return Py::None();
+    }
+
+    Py::Object requestSectionFaces(const Py::Tuple& args) { return requestSection(args, false); }
+    Py::Object requestSectionDisplay(const Py::Tuple& args) { return requestSection(args, true); }
+    Py::Object requestSectionMeshDisplay(const Py::Tuple& args) { return requestSection(args, true, true); }
+
+    Py::Object requestSection(const Py::Tuple& args, bool display, bool mesh = false)
+    {
+        PyObject *controller, *pythonInstances, *origin, *normal, *callback;
+        double spacing = 0.0;
+        const int parsed = display
+            ? PyArg_ParseTuple(args.ptr(), "OOO!O!dO", &controller, &pythonInstances,
+                               &Base::VectorPy::Type, &origin, &Base::VectorPy::Type, &normal,
+                               &spacing, &callback)
+            : PyArg_ParseTuple(args.ptr(), "OOO!O!O", &controller, &pythonInstances,
+                               &Base::VectorPy::Type, &origin, &Base::VectorPy::Type, &normal, &callback);
+        if (!parsed) {
+            throw Py::Exception();
+        }
+        auto* target = sectionController(controller);
+        if (!PyCallable_Check(callback)) { throw Py::TypeError("callback must be callable"); }
+        std::vector<SectionInstance> instances;
+        Py::Sequence sequence(pythonInstances);
+        instances.reserve(sequence.size());
+        for (auto iterator = sequence.begin(); iterator != sequence.end(); ++iterator) {
+            Py::Tuple pair(*iterator);
+            if (pair.size() != 2) { throw Py::TypeError("each instance requires a shape and matrix"); }
+            Py::Object shape = pair[0];
+            Py::Object matrix = pair[1];
+            if (mesh) {
+                if (!PyObject_TypeCheck(matrix.ptr(), &Base::MatrixPy::Type)) {
+                    throw Py::TypeError("each mesh instance requires a Base matrix");
+                }
+                using MeshOwner = std::shared_ptr<const Part::RenderMesh>;
+                auto* snapshot = static_cast<MeshOwner*>(PyCapsule_GetPointer(shape.ptr(), "PartGui.RenderMesh"));
+                if (!snapshot) { throw Py::Exception(); }
+                instances.push_back({{}, *static_cast<Base::MatrixPy*>(matrix.ptr())->getMatrixPtr(), *snapshot});
+                continue;
+            }
+            if (!PyObject_TypeCheck(shape.ptr(), &Part::TopoShapePy::Type)
+                || !PyObject_TypeCheck(matrix.ptr(), &Base::MatrixPy::Type)) {
+                throw Py::TypeError("each instance requires a Part shape and Base matrix");
+            }
+            instances.push_back({
+                static_cast<Part::TopoShapePy*>(shape.ptr())->getTopoShapePtr()->getShape(),
+                *static_cast<Base::MatrixPy*>(matrix.ptr())->getMatrixPtr(),
+                {}
+            });
+        }
+        struct OwnerCallback
+        {
+            PyObject* object;
+            bool display;
+            OwnerCallback(PyObject* object, bool display) : object(object), display(display) { Py_INCREF(object); }
+            ~OwnerCallback() { Base::PyGILStateLocker lock; Py_DECREF(object); }
+            void deliver(SectionFaceResult result)
+            {
+                Base::PyGILStateLocker lock;
+                try {
+                    Py::Object payload;
+                    if (display) {
+                        auto geometry = std::make_unique<GeometryOwner>(std::move(result.geometry));
+                        auto* capsule = PyCapsule_New(geometry.get(), "PartGui.SectionDisplayGeometry", [](PyObject* object) {
+                            delete static_cast<GeometryOwner*>(PyCapsule_GetPointer(object, "PartGui.SectionDisplayGeometry"));
+                        });
+                        if (!capsule) { throw Py::Exception(); }
+                        geometry.release();
+                        payload = Py::asObject(capsule);
+                    }
+                    else {
+                        Py::Tuple faces(result.faces.size());
+                        for (std::size_t index = 0; index < result.faces.size(); ++index) {
+                            faces.setItem(index, Py::asObject(new Part::TopoShapePy(
+                                new Part::TopoShape(std::move(result.faces[index])))));
+                        }
+                        payload = faces;
+                    }
+                    Py::Tuple args(2);
+                    args.setItem(0, payload);
+                    args.setItem(1, Py::String(result.error));
+                    Py::Callable(object).apply(args);
+                }
+                catch (Py::Exception&) {
+                    PyErr_Print();
+                }
+            }
+        };
+        auto retained = std::make_shared<OwnerCallback>(callback, display);
+        try {
+            auto completion = [retained](SectionFaceResult result) { retained->deliver(std::move(result)); };
+            const auto originValue = *static_cast<Base::VectorPy*>(origin)->getVectorPtr();
+            const auto normalValue = *static_cast<Base::VectorPy*>(normal)->getVectorPtr();
+            if (display) {
+                target->requestDisplay(std::move(instances), originValue, normalValue, spacing, std::move(completion));
+            }
+            else {
+                target->request(std::move(instances), originValue, normalValue, std::move(completion));
+            }
+        }
+        catch (const std::exception& error) { throw Py::RuntimeError(error.what()); }
+        return Py::None();
+    }
+
     Py::Object isModelingObjectActive(const Py::Tuple& args)
     {
         PyObject* pythonObject = nullptr;

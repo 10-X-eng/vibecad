@@ -676,6 +676,7 @@ def test_anthropic_thinking_only_max_tokens_compacts_and_continues(
     assert len(compaction_calls) == 1
     assert compaction_calls[0]["model"] == "memory-model"
     assert compaction_calls[0]["max_tokens"] == 128_000
+    assert compaction_calls[0]["client_kwargs"]["max_retries"] == 2
     assert model_requests == ["interactive-model", "memory-model"]
     assert messages.requests[0]["max_tokens"] == 128_000
     recovery_request = messages.requests[1]
@@ -2691,3 +2692,166 @@ def test_partdesign_does_not_inject_a_model_manifest_at_turn_start(
     assert "partdesign" not in context
     assert "vibescript" not in context
     assert context["editable_sources"]["domain"] == "partdesign"
+
+@pytest.mark.parametrize("change", ["none", "model", "endpoint", "auth", "expired"])
+def test_anthropic_capabilities_survive_new_provider_instances(monkeypatch, change):
+    monkeypatch.setattr(provider, "_ANTHROPIC_CAPABILITY_CACHE", {}, raising=False)
+    now = [10.0]
+    monkeypatch.setattr(provider.time, "monotonic", lambda: now[0])
+    snapshots = []
+    def run(**kwargs):
+        options = kwargs["context"]["_vibecad_provider_options"]
+        snapshots.append(options.get("model_capabilities", {}))
+        kwargs["progress_callback"]({
+            "event": "anthropic_model_capability",
+            "model": kwargs["model"], "max_tokens": 128000,
+        })
+        return provider.ProviderResult(final_output="done", raw=None)
+    monkeypatch.setattr(provider, "_run_provider_subprocess", run)
+    config = {"model": "primary", "api_key": "one", "base_url": "https://one.test"}
+    original = {"_vibecad_provider_options": {"custom": True}}
+    provider.AnthropicProvider(**config).run("hello", original)
+    if change == "model": config["model"] = "other"
+    if change == "endpoint": config["base_url"] = "https://two.test"
+    if change == "auth": config["api_key"] = "two"
+    if change == "expired": now[0] += 301
+    provider.AnthropicProvider(**config).run("hello", original)
+    assert snapshots == [{}, {"primary": 128000} if change == "none" else {}]
+    assert original == {"_vibecad_provider_options": {"custom": True}}
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_anthropic_defers_unused_compaction_capabilities(monkeypatch, cached):
+    requests = []
+    def retrieve(model):
+        requests.append(model)
+        assert model == "primary", "unused compaction metadata was fetched"
+        return SimpleNamespace(max_tokens=128000)
+    messages = _SequenceAnthropicMessages([
+        SimpleNamespace(content=[SimpleNamespace(type="text", text="Done")], stop_reason="end_turn")
+    ])
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(
+        Anthropic=lambda **kw: SimpleNamespace(
+            messages=messages, models=SimpleNamespace(retrieve=retrieve)),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    ))
+    monkeypatch.setattr(provider, "_validate_provider_wire_surface", lambda c: None)
+    conn = _CollectingConnection()
+    provider._anthropic_child_main(conn, "hello", {
+        "provider_tool_schemas": [],
+        "_vibecad_provider_options": {
+            "compaction_model": "unused",
+            "model_capabilities": {"primary": 128000} if cached else {},
+        },
+    }, "primary", "key", None, 1.0, 2, False)
+    assert conn.messages[-1]["type"] == "done"
+    assert requests == ([] if cached else ["primary"])
+    assert messages.requests[0]["max_tokens"] == 128000
+
+@pytest.mark.parametrize("maximum", [None, 0, -1, "broken", True])
+def test_anthropic_capability_cache_rejects_invalid_values(monkeypatch, maximum):
+    monkeypatch.setattr(provider, "_ANTHROPIC_CAPABILITY_CACHE", {})
+    provider._anthropic_cache_capability("scope", "model", maximum)
+    assert provider._anthropic_cached_capabilities("scope", {"model"}) == {}
+
+
+def test_anthropic_capability_cache_is_bounded_and_does_not_extend_ttl(monkeypatch):
+    monkeypatch.setattr(provider, "_ANTHROPIC_CAPABILITY_CACHE", {})
+    now = [1.0]
+    monkeypatch.setattr(provider.time, "monotonic", lambda: now[0])
+    for i in range(70):
+        provider._anthropic_cache_capability("scope", str(i), 128000)
+    assert len(provider._ANTHROPIC_CAPABILITY_CACHE) == 64
+    assert provider._anthropic_cached_capabilities("scope", {"0", "69"}) == {"69": 128000}
+    now[0] = 300
+    assert provider._anthropic_cached_capabilities("scope", {"69"})
+    now[0] = 301
+    assert provider._anthropic_cached_capabilities("scope", {"69"}) == {}
+
+
+def test_anthropic_capability_scope_tracks_environment_without_storing_credentials(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "first-secret")
+    first = provider._anthropic_capability_scope(None, None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "second-secret")
+    second = provider._anthropic_capability_scope(None, None)
+    assert first != second
+    explicit = provider._anthropic_capability_scope("explicit-secret", None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "third-secret")
+    assert provider._anthropic_capability_scope("explicit-secret", None) == explicit
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://another.test")
+    assert provider._anthropic_capability_scope("explicit-secret", None) != explicit
+    assert len(first) == len(second) == 64
+    assert "secret" not in first + second
+
+
+@pytest.mark.parametrize("kind", ["failed", "invalid", "older_sdk"])
+def test_anthropic_non_capability_values_are_not_reported_for_cache(monkeypatch, kind):
+    def retrieve(model):
+        if kind == "failed":
+            raise RuntimeError("lookup failed")
+        return SimpleNamespace(max_tokens=0)
+    messages = _SequenceAnthropicMessages([
+        SimpleNamespace(content=[SimpleNamespace(type="text", text="Done")], stop_reason="end_turn")
+    ])
+    client = SimpleNamespace(messages=messages)
+    if kind != "older_sdk":
+        client.models = SimpleNamespace(retrieve=retrieve)
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(
+        Anthropic=lambda **kw: client,
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    ))
+    monkeypatch.setattr(provider, "_validate_provider_wire_surface", lambda c: None)
+    conn = _CollectingConnection()
+    provider._anthropic_child_main(conn, "hello", {"provider_tool_schemas": []},
+                                  "primary", "key", None, 1.0, 2, False)
+    assert not any(m.get("event", {}).get("event") == "anthropic_model_capability"
+                   for m in conn.messages if m.get("type") == "progress")
+    assert conn.messages[-1]["type"] == ("done" if kind == "older_sdk" else "error")
+
+
+@pytest.mark.parametrize("stop", ["cancel", "deadline"])
+def test_retry_wait_is_terminated_by_parent_stop(monkeypatch, stop) -> None:
+    now = [0.0]
+
+    class RetryWaitProcess(_ExitedProcess):
+        terminated = False
+
+        def is_alive(self):
+            return not self.terminated
+
+        def terminate(self):
+            self.terminated = True
+
+    class RetryWaitPipe(_DelayedPipeMessage):
+        notified = False
+
+        def poll(self, timeout):
+            assert not self.notified, "Parent continued waiting after stop"
+            return True
+
+        def recv(self):
+            self.notified = True
+            now[0] = 2.0
+            return {
+                "type": "progress",
+                "event": {"event": "anthropic_stream_retrying", "attempt": 1},
+            }
+
+    context = _FakeMultiprocessingContext()
+    context.process = RetryWaitProcess()
+    context.parent_conn = RetryWaitPipe()
+    monkeypatch.setattr(
+        provider, "_provider_multiprocessing_context", lambda **kwargs: context
+    )
+    monkeypatch.setattr(provider.time, "monotonic", lambda: now[0])
+    error = provider.ProviderUnavailable if stop == "cancel" else TimeoutError
+    with pytest.raises(error):
+        provider._run_provider_subprocess(
+            prompt="Inspect", context={}, tool_runner=None, model="test-model",
+            api_key=None, reasoning_effort=None,
+            timeout_seconds=1.0 if stop == "deadline" else None,
+            cancellation_check=lambda: stop == "cancel" and context.parent_conn.notified,
+            child_main=_unused_child, clear_inherited_modules=False,
+        )
+    assert context.process.terminated
+    assert context.parent_conn.closed

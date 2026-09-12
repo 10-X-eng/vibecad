@@ -63,10 +63,6 @@ _CONTACT_POLICIES = frozenset(
 )
 _MAX_CONTRACT_BYTES = 64 * 1024 * 1024
 _MAX_CONTRACT_DEPTH = 20
-_MAX_COMPONENTS = 4096
-_MAX_JOINTS = 4096
-_MAX_MOTIONS = 4096
-_MAX_OCCURRENCES = 4096
 
 
 class MechanismContractError(ValueError):
@@ -184,6 +180,29 @@ def _vector(value: Any, *, path: str, size: int) -> list[float]:
         _number(item, path=f"{path}[{index}]")
         for index, item in enumerate(value)
     ]
+
+
+def quaternion_rotation_distance_degrees(first: Any, second: Any) -> float:
+    """Shortest rotation angle, using quaternion chords instead of unstable acos(dot).
+
+    Near identical rotations, rounding a unit dot product loses the entire
+    angle. The chord formula preserves small angles and handles q == -q.
+    """
+    normalized = []
+    for name, value in (("first", first), ("second", second)):
+        values = _vector(value, path=f"quaternion.{name}", size=4)
+        scale = max(abs(item) for item in values)
+        if scale == 0:
+            raise _error(f"quaternion.{name}", "must be non-zero")
+        values = [item / scale for item in values]
+        norm = math.hypot(*values)
+        normalized.append([item / norm for item in values])
+    left, right = normalized
+    if sum(a * b for a, b in zip(left, right)) < 0:
+        right = [-item for item in right]
+    difference = math.hypot(*(a - b for a, b in zip(left, right)))
+    total = math.hypot(*(a + b for a, b in zip(left, right)))
+    return math.degrees(4.0 * math.atan2(difference, total))
 
 
 def _placement(value: Any, *, path: str) -> dict[str, list[float]]:
@@ -560,11 +579,11 @@ def normalize_mechanism_scenario(value: Any) -> dict[str, Any]:
     if (
         not isinstance(raw["components"], Sequence)
         or isinstance(raw["components"], (str, bytes))
-        or not 1 <= len(raw["components"]) <= _MAX_COMPONENTS
+        or not raw["components"]
     ):
         raise _error(
             "scenario.components",
-            f"must contain 1-{_MAX_COMPONENTS} components",
+            "must contain at least one component",
         )
     components: list[dict[str, Any]] = []
     component_ids: set[str] = set()
@@ -615,11 +634,10 @@ def normalize_mechanism_scenario(value: Any) -> dict[str, Any]:
     if (
         not isinstance(raw["joints"], Sequence)
         or isinstance(raw["joints"], (str, bytes))
-        or len(raw["joints"]) > _MAX_JOINTS
     ):
         raise _error(
             "scenario.joints",
-            f"must contain at most {_MAX_JOINTS} joints",
+            "must be a sequence of joints",
         )
     joints: list[dict[str, Any]] = []
     joint_ids: set[str] = set()
@@ -751,11 +769,10 @@ def normalize_mechanism_scenario(value: Any) -> dict[str, Any]:
     if (
         not isinstance(raw["motions"], Sequence)
         or isinstance(raw["motions"], (str, bytes))
-        or len(raw["motions"]) > _MAX_MOTIONS
     ):
         raise _error(
             "scenario.motions",
-            f"must contain at most {_MAX_MOTIONS} motions",
+            "must be a sequence of motions",
         )
     motions: list[dict[str, Any]] = []
     motion_ids: set[str] = set()
@@ -892,15 +909,6 @@ def normalize_mechanism_scenario(value: Any) -> dict[str, Any]:
             raise _error(
                 "scenario.simulation.collision_mode",
                 "must be full or off",
-            )
-        estimated_frames = math.ceil((end - start) / step) + 2
-        if (
-            estimated_frames > 10_000
-            or estimated_frames * len(components) > 100_000
-        ):
-            raise _error(
-                "scenario.simulation",
-                "exceeds the bounded native frame or component-pose limit",
             )
         simulation = {
             "id": _identifier(
@@ -1104,7 +1112,6 @@ def normalize_mechanism_solve_report(
                 "solve_report.component_occurrences",
                 "must contain every scenario component exactly once",
             )
-        occurrence_count = 0
         for component_id, occurrences in component_occurrences.items():
             component_path = (
                 f"solve_report.component_occurrences.{component_id}"
@@ -1113,12 +1120,6 @@ def normalize_mechanism_solve_report(
                 raise _error(component_path, "must be an array")
             seen_paths: set[str] = set()
             for index, occurrence in enumerate(occurrences):
-                occurrence_count += 1
-                if occurrence_count > _MAX_OCCURRENCES:
-                    raise _error(
-                        "solve_report.component_occurrences",
-                        f"must contain at most {_MAX_OCCURRENCES} occurrences",
-                    )
                 path = f"{component_path}[{index}]"
                 occurrence_raw = _mapping(
                     occurrence,
@@ -1156,7 +1157,7 @@ def normalize_mechanism_solve_report(
                     occurrence_raw["source_node_id"],
                     path=f"{path}.source_node_id",
                 )
-                if not re.fullmatch(r"n[0-9]{4}", source_node_id):
+                if not re.fullmatch(r"n[0-9]{4,}", source_node_id):
                     raise _error(
                         f"{path}.source_node_id",
                         "must identify one captured hierarchy node",

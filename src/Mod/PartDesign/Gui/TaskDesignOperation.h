@@ -4,6 +4,10 @@
 
 #include <string>
 #include <vector>
+#include <memory>
+#include <stop_token>
+#include <App/MainThreadSignal.h>
+#include <Gui/Selection/Selection.h>
 
 #include <App/PropertyLinks.h>
 #include <Base/Vector3D.h>
@@ -39,9 +43,10 @@ class ProfileBased;
 
 namespace PartDesignGui
 {
+namespace TaskInternal { class VisibilitySnapshot; }
 
 /** Select exact closed areas from one reusable sketch. */
-class TaskDesignProfileRegions: public Gui::TaskView::TaskBox
+class TaskDesignProfileRegions: public Gui::TaskView::TaskBox, public Gui::SelectionObserver
 {
     Q_OBJECT
 
@@ -63,6 +68,7 @@ private:
     void populate();
     void restoreSelectionSketchVisibility();
     void setError(const QString& message);
+    void onSelectionChanged(const Gui::SelectionChanges&) override;
 
     App::DocumentObject* operation {};
     QLabel* sketchName {};
@@ -70,8 +76,10 @@ private:
     QLabel* instruction {};
     QPushButton* selectRegions {};
     QPushButton* entireSketch {};
-    std::string selectionSketchName;
-    bool selectionSketchWasVisible {false};
+    std::string selectionDocumentName;
+    long selectionOperationId {0};
+    std::unique_ptr<TaskInternal::VisibilitySnapshot> pickingVisibility;
+    bool pickingPreviewWasEnabled {false};
 };
 
 /**
@@ -106,6 +114,8 @@ private:
     void populatePatternParameters();
     void populateScaleParameters();
     void configureOperation();
+    void queueTargetSuggestion();
+    void suggestTargets();
     void configurePattern();
     void configureScale();
     void updatePatternReferenceLabel();
@@ -149,6 +159,12 @@ private:
     QDoubleSpinBox* scaleYFactor {};
     QDoubleSpinBox* scaleZFactor {};
     QLabel* separateSummary {};
+    QLabel* targetHint {};
+    fastsignals::scoped_connection targetGeometryConnection;
+    fastsignals::scoped_connection targetDeletionConnection;
+    std::shared_ptr<std::stop_source> targetSearch;
+    bool suggestionQueued {false};
+    bool targetSelectionExplicit {false};
     QWidget* patternOriginEditor {};
     QWidget* patternDirectionEditor {};
     QWidget* scaleCenterEditor {};

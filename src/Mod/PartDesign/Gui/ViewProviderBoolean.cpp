@@ -214,6 +214,7 @@ void ViewProviderBoolean::updatePreview()
             return;
         }
 
+        cancelPreviewRendering();
         Gui::coinRemoveAllChildren(pcToolsPreview);
         Gui::coinRemoveAllChildren(pcBasePreviewToggle);
 

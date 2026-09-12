@@ -590,12 +590,6 @@ def _named_values(
             f"requires at least {minimum} value(s)",
             value,
         )
-    if len(value) > 4096:
-        raise _error(
-            operation,
-            parameter,
-            "may contain at most 4096 named members",
-        )
     names: list[str] = []
     values: list[DomainValue] = []
     for raw_name, item in value.items():
@@ -1694,8 +1688,7 @@ class AssemblyDomainAPI:
         Prefer a stable-key mapping; mapped motions are owned by the simulation
         and do not consume public ``result`` outputs. The established sequence
         form remains supported and requires each motion as a top-level output.
-        The worker records an initial frame plus native time-series frames and
-        rejects simulations exceeding 100000 component-pose samples.
+        The worker records an initial frame plus native time-series frames.
         ``time_step_s`` controls trace density; ``frames_per_second`` is retained
         only as the live playback rate and does not add solver samples.
         ``collision_mode='off'`` skips dynamic collision analysis for playback;
@@ -1778,14 +1771,6 @@ class AssemblyDomainAPI:
         # output-time states.  The extra slot also covers a non-integral final
         # interval without relying on a hidden solver rounding rule.
         estimated_frames = math.ceil((end - start) / step) + 2
-        component_count = len(model.properties.get("components", ()))
-        if estimated_frames > 10_000 or estimated_frames * component_count > 100_000:
-            raise _error(
-                operation,
-                "time range/time_step_s",
-                "would exceed 10000 native frames or 100000 component-pose samples; "
-                "increase time_step_s or shorten the time range",
-            )
         motion_identities: dict[str, Any] = {}
         if motion_names is not None:
             motion_identities["motion_names"] = motion_names

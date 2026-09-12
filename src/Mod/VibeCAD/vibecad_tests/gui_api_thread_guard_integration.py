@@ -24,6 +24,14 @@ def _run() -> None:
             result["traceback"] = traceback.format_exc()
         else:
             result["returned"] = True
+        result["defer_accepted"] = Gui.deferToNextFrame(
+            lambda: result.update(
+                deferred=True,
+                deferred_on_owner=(
+                    QtCore.QThread.currentThread() is application.thread()
+                ),
+            )
+        )
 
     thread = threading.Thread(
         target=worker,
@@ -40,8 +48,16 @@ def _run() -> None:
             exception = result.get("exception")
             assert isinstance(exception, RuntimeError), result.get("traceback")
             assert "may only be used from the main thread" in str(exception)
+            assert result.get("defer_accepted") is True
+            if result.get("deferred") is not True:
+                return
+            assert result.get("deferred_on_owner") is True
             assert Gui.getMainWindow() is not None
-            print("VIBECAD_GUI_API_THREAD_GUARD_OK catchable-runtime-error", flush=True)
+            print(
+                "VIBECAD_GUI_API_THREAD_GUARD_OK "
+                "catchable-runtime-error owner-frame-deferral",
+                flush=True,
+            )
             application.exit(0)
         except BaseException:
             traceback.print_exc(file=sys.__stderr__)

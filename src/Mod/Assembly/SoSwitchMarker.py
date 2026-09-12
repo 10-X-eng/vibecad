@@ -61,6 +61,10 @@ class SoSwitchMarker(coin.SoSwitch):
         self.gui_doc = Gui.getDocument(app_doc)
 
         self.transform = coin.SoTransform()
+        # Coin fields live as long as this retained transform. Avoid repeated
+        # Python-to-Coin name lookup for every marker in every displayed frame.
+        self._translation = self.transform.translation
+        self._rotation = self.transform.rotation
 
         self.draw_style = coin.SoDrawStyle()
         self.draw_style.style = coin.SoDrawStyle.LINES
@@ -149,10 +153,10 @@ class SoSwitchMarker(coin.SoSwitch):
         placement = global_plc * placement
 
         t = placement.Base
-        self.transform.translation.setValue(t.x, t.y, t.z)
+        self._translation.setValue(t.x, t.y, t.z)
 
         r = placement.Rotation.Q
-        self.transform.rotation.setValue(r[0], r[1], r[2], r[3])
+        self._rotation.setValue(r[0], r[1], r[2], r[3])
 
     def setPickableState(self, state: bool):
         """Set JCS selectable or unselectable in 3D view"""

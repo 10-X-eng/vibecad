@@ -320,6 +320,25 @@ class DocumentBasicCases(unittest.TestCase):
     def testMem(self):
         self.Doc.MemSize
 
+    def testFindObjectsByProperty(self):
+        first = self.Doc.addObject("App::FeaturePython", "First")
+        second = self.Doc.addObject("App::FeaturePython", "Second")
+        group = self.Doc.addObject("App::DocumentObjectGroup", "Group")
+        for obj in (first, group):
+            obj.addProperty("App::PropertyString", "CandidateMetadata")
+        second.Label = "Selected label"
+        self.assertEqual(self.Doc.findObjects(Property="CandidateMetadata"), [first, group])
+        self.assertEqual(self.Doc.findObjects(Type="App::FeaturePython",
+                                             Property="CandidateMetadata"), [first])
+        self.assertEqual(self.Doc.findObjects(Name="Group", Property="CandidateMetadata"), [group])
+        self.assertEqual(self.Doc.findObjects(Label="Selected", Property="CandidateMetadata"), [])
+        first.removeProperty("CandidateMetadata")
+        second.addProperty("App::PropertyString", "CandidateMetadata")
+        self.assertEqual(self.Doc.findObjects(Property="CandidateMetadata"), [second, group])
+        self.assertEqual(self.Doc.findObjects(Property="Label"), self.Doc.Objects)
+        self.assertEqual(self.Doc.findObjects(), self.Doc.Objects)
+        self.assertEqual(self.Doc.findObjects(Property="MissingProperty"), [])
+
     def testDuplicateLinks(self):
         obj = self.Doc.addObject("App::FeatureTest", "obj")
         grp = self.Doc.addObject("App::DocumentObjectGroup", "group")

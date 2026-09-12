@@ -30,7 +30,8 @@ MAX_OPTIONS = 16
 MAX_MODEL_THREAD_DIAMETER_MM = 64.0
 MAX_MODEL_THREAD_AXIAL_LENGTH_MM = 250.0
 MAX_MODEL_THREAD_TURNS = 512.0
-MAX_MODEL_THREAD_OBJECTS_PER_DOCUMENT = 32
+# Zero denotes no fixed object-count ceiling; retained for capability consumers.
+MAX_MODEL_THREAD_OBJECTS_PER_DOCUMENT = 0
 
 PROP_SCHEMA = "VibeCADFastenerSchema"
 PROP_CATALOG = "VibeCADFastenerCatalog"
@@ -274,7 +275,7 @@ def provenance() -> dict[str, str]:
 
 
 def model_thread_limits() -> dict[str, float | int]:
-    """Return the declared release limits for real thread geometry."""
+    """Return geometry limits; a zero document count means unlimited objects."""
 
     return {
         "maximum_nominal_diameter_mm": MAX_MODEL_THREAD_DIAMETER_MM,
@@ -2610,20 +2611,6 @@ def create_fastener_feature(
         raise FastenerCatalogError(
             "container must be a FreeCAD document or Part Design Body."
         )
-    if bool(identity["model_thread"]):
-        model_thread_count = sum(
-            1
-            for candidate in list(getattr(document, "Objects", []) or [])
-            if bool(getattr(candidate, "Thread", False))
-        )
-        if model_thread_count >= MAX_MODEL_THREAD_OBJECTS_PER_DOCUMENT:
-            raise FastenerCatalogError(
-                "The document already contains "
-                f"{MAX_MODEL_THREAD_OBJECTS_PER_DOCUMENT} real-thread "
-                "standard components, which is the release object-count limit; "
-                "use model_thread=False."
-            )
-
     obj = None
     try:
         if is_body:

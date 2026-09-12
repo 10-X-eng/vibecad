@@ -58,7 +58,7 @@ MeshKernel::MeshKernel(const MeshKernel& rclMesh)
 
 MeshKernel::MeshKernel(MeshKernel&& rclMesh)
 {
-    *this = rclMesh;
+    *this = std::move(rclMesh);
 }
 
 MeshKernel& MeshKernel::operator=(const MeshKernel& rclMesh)

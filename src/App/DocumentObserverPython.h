@@ -88,6 +88,8 @@ private:
     void slotBeforeRecomputeDocument(const App::Document& Doc);
     /** Called when an observed document is recomputed */
     void slotRecomputedDocument(const App::Document& Doc);
+    /** Called at the outermost native cooperative mutation boundary. */
+    void slotCooperativeMutationChanged(const App::Document& Doc, bool active);
     /** Called when an observed document opens a transaction */
     void slotOpenTransaction(const App::Document& Doc, std::string str);
     /** Called when an observed document commits a transaction */
@@ -147,6 +149,7 @@ private:
     Connection pyRecomputedObject;
     Connection pyBeforeRecomputeDocument;
     Connection pyRecomputedDocument;
+    Connection pyCooperativeMutationChanged;
     Connection pyOpenTransaction;
     Connection pyCommitTransaction;
     Connection pyAbortTransaction;

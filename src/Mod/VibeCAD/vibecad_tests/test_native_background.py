@@ -325,6 +325,67 @@ def test_cleanup_receives_prepared_value_even_when_commit_validation_fails() -> 
     assert cleaned == [{"artifact": "detached"}]
 
 
+def test_terminal_state_is_not_visible_until_cleanup_releases_the_resource() -> None:
+    manager = NativeBackgroundManager()
+    cleanup_entered = threading.Event()
+    release_cleanup = threading.Event()
+
+    def cleanup(_prepared):
+        cleanup_entered.set()
+        assert release_cleanup.wait(1.0)
+
+    submitted = manager.submit(
+        **_callbacks(
+            prepare=lambda _cancelled, _progress: {"artifact": "detached"},
+        ),
+        cleanup=cleanup,
+    )
+    assert cleanup_entered.wait(1.0)
+
+    cleaning_up = manager.snapshot(submitted.job_id)
+    assert cleaning_up.terminal is False
+    assert cleaning_up.worker_active is True
+    with pytest.raises(NativeBackgroundError, match="already has"):
+        manager.submit(
+            **_callbacks(prepare=lambda _cancelled, _progress: {})
+        )
+
+    release_cleanup.set()
+    completed = manager.wait(submitted.job_id, 2.0)
+    assert completed.phase == "completed"
+    assert completed.worker_active is False
+
+
+def test_mutating_job_stays_active_until_the_document_update_settles() -> None:
+    update_active = threading.Event()
+    update_active.set()
+    manager = NativeBackgroundManager(
+        document_update_active=lambda uid: (
+            uid == "document-a" and update_active.is_set()
+        )
+    )
+
+    submitted = manager.submit(
+        **_callbacks(
+            prepare=lambda _cancelled, _progress: {"artifact": "detached"},
+        ),
+        changes_document=True,
+    )
+    settling = _wait_phase(manager, submitted.job_id, "settling")
+
+    assert settling.terminal is False
+    assert settling.worker_active is True
+    with pytest.raises(NativeBackgroundError, match="already has"):
+        manager.submit(
+            **_callbacks(prepare=lambda _cancelled, _progress: {})
+        )
+
+    update_active.clear()
+    completed = manager.wait(submitted.job_id, 2.0)
+    assert completed.phase == "completed"
+    assert completed.worker_active is False
+
+
 def test_frozen_turn_change_during_preparation_prevents_commit(monkeypatch) -> None:
     import VibeCADNativeActionManifest as action_manifest_module
     from VibeCADNativeSurface import SURFACE_CHANGED

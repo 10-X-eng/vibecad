@@ -132,6 +132,61 @@ def _scenario() -> dict:
     }
 
 
+@pytest.mark.parametrize('field', ['components', 'joints', 'motions'])
+def test_scenario_accepts_ten_thousand_model_entries(field) -> None:
+    scenario = _scenario()
+    if field == 'components':
+        scenario['components'].extend(
+            _component(f'Extra{index}')
+            for index in range(10_000 - len(scenario['components']))
+        )
+    else:
+        template = scenario['joints'][1]  # Revolute joint supports an angular drive.
+        scenario['joints'] = [dict(template, id=f'Joint{index}') for index in range(10_000)]
+        if field == 'motions':
+            scenario['motions'] = [dict(id=f'Motion{index}', label='',
+                joint_id=f'Joint{index}', motion_type='angular', formula='time')
+                for index in range(10_000)]
+            scenario['simulation'] = dict(id='Simulation', label='',
+                motion_ids=[motion['id'] for motion in scenario['motions']],
+                start_time_s=0.0, end_time_s=1.0, time_step_s=0.1,
+                error_tolerance=1.0e-6, frames_per_second=30)
+    assert len(normalize_mechanism_scenario(scenario)[field]) == 10_000
+
+
+@pytest.mark.parametrize('component_count,step', [(10_000, 0.1), (20, 0.00001)])
+def test_simulation_schedule_is_not_limited_by_model_or_frame_count(component_count, step):
+    scenario = _scenario()
+    scenario['components'].extend(_component(f'Extra{i}')
+        for i in range(component_count - len(scenario['components'])))
+    scenario['motions'] = [dict(id='Drive', label='', joint_id='Joint2',
+                               motion_type='angular', formula='time')]
+    scenario['simulation'] = dict(id='Simulation', label='', motion_ids=['Drive'],
+        start_time_s=0.0, end_time_s=1.0, time_step_s=step,
+        error_tolerance=1.0e-6, frames_per_second=30)
+    assert normalize_mechanism_scenario(scenario)['simulation']['time_step_s'] == step
+
+
+@pytest.mark.parametrize('degrees', [0.0, 1e-9, 1e-6, 30.0, 179.999999, 180.0])
+def test_rotation_distance_resolves_small_angles_and_quaternion_sign(degrees):
+    import math
+    from VibeCADMechanismEngine import quaternion_rotation_distance_degrees
+    half = math.radians(degrees) / 2
+    for scale in (1.0, -1.0, 7.0):
+        rotated = [0.0, 0.0, scale * math.sin(half), scale * math.cos(half)]
+        assert quaternion_rotation_distance_degrees([0, 0, 0, 1], rotated) == pytest.approx(
+            degrees, abs=1e-12)
+
+
+def test_solve_report_accepts_ten_thousand_occurrences() -> None:
+    scenario = _scenario()
+    report = _solve_report(scenario)
+    report['component_occurrences']['Part1'] = [
+        _solved_occurrence(f'Occurrence{index}') for index in range(10_000)]
+    normalized = normalize_mechanism_solve_report(scenario, report)
+    assert len(normalized['component_occurrences']['Part1']) == 10_000
+
+
 def test_simulation_collision_mode_is_additive_and_defaults_to_full() -> None:
     scenario = _scenario()
     scenario["motions"] = [

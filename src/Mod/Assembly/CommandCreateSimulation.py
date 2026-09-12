@@ -26,6 +26,8 @@ import re
 import os
 import time
 import tempfile
+import weakref
+from concurrent.futures import Future
 from pathlib import Path
 
 import FreeCAD as App
@@ -957,6 +959,12 @@ SLOPE defines the steepness of the transition between 0 and H1 and H2 to 0 about
 
 ######### Create Simulation Task ###########
 class TaskAssemblyCreateSimulation(QtCore.QObject):
+    generationFinished = QtCore.Signal(bool)
+    frameFinished = QtCore.Signal(int, bool)
+    playbackClosed = QtCore.Signal()
+    rejectPlaybackRequested = QtCore.Signal(object)
+    cancelFrameRequested = QtCore.Signal(object)
+
     def __init__(
         self,
         simFeaturePy=None,
@@ -970,6 +978,12 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         restore_camera=None,
     ):
         super().__init__()
+        self._closing = False
+        self.frame_error = ''
+        self.rejectPlaybackRequested.connect(
+            self._rejectOwnedPlayback, QtCore.Qt.QueuedConnection
+        )
+        self.cancelFrameRequested.connect(self._cancelOwnedFrame)
         self.playback_only = bool(playback_only)
 
         if simFeaturePy is not None:
@@ -1018,6 +1032,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
                 self.assembly
             )
         )
+        self.playback_part_ids = frozenset(record[1] for record in self.initialPlcs.parts)
 
         self.doc = self.assembly.Document
         if document_name is not None and self.doc.Name != document_name:
@@ -1169,7 +1184,24 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.runKinematicsTimer.setSingleShot(True)
         self.runKinematicsTimer.timeout.connect(self.displayLastFrame)
 
+        self.generation_state = 'idle'
+        self.generation_request = None
+        self.generation_error = ''
+        self.generationTimer = QtCore.QTimer(self)
+        # A UI status cadence, not a solver timeout or compute budget.
+        self.generationTimer.setInterval(50)
+        self.generationTimer.timeout.connect(self._finishKinematicsAsync)
+
+        self.background_frames = False
+        self.frame_request = None
+        self.requested_frame = None
+        self.graphics_frame_active = False
+        self.frameTimer = QtCore.QTimer(self)
+        self.frameTimer.setInterval(16)
+        self.frameTimer.timeout.connect(self._finishFrame)
+
         self.animationTimer = QtCore.QTimer()
+        self.animationTimer.setTimerType(QtCore.Qt.PreciseTimer)
         self.animationTimer.setInterval(50)  # ms
         self.animationTimer.timeout.connect(self.playAnimation)
 
@@ -1207,7 +1239,8 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.form.GlobalErrorToleranceSpinBox.valueChanged.connect(
             self.onGlobalErrorToleranceChanged
         )
-        self.form.RunKinematicsButton.clicked.connect(self.runKinematics)
+        self.generate_button_text = self.form.RunKinematicsButton.text()
+        self.form.RunKinematicsButton.clicked.connect(self.runKinematicsAsync)
         self.form.frameSlider.valueChanged.connect(self.onFrameChanged)
         self.form.FramesPerSecondSpinBox.valueChanged.connect(self.onFramesPerSecondChanged)
         self.form.PlayBackwardButton.clicked.connect(self.animationTimerStartBackward)
@@ -1218,7 +1251,8 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.form.AddButton.clicked.connect(self.addMotionClicked)
         self.form.RemoveButton.clicked.connect(self.deleteSelectedMotions)
         self.form.groupBox_player.hide()
-        self.form.SaveAnimationButton.clicked.connect(self.saveAnimation)
+        self.animation_export = None
+        self.form.SaveAnimationButton.clicked.connect(self.saveAnimationAsync)
         self.form.SaveAnimationButton.hide()
 
         if self.playback_only:
@@ -1277,6 +1311,8 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             self._observing_document = True
 
     def _ownsLiveTaskContext(self):
+        if self._closing:
+            return False
         assembly_name, assembly_id, exact_assembly = (
             self.assembly_identity
         )
@@ -1382,6 +1418,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         return True
 
     def _restorePlaybackPresentation(self):
+        self._restoreSimulationGraphics()
         if self.presentation is not None:
             self.presentation.Proxy._last_applied_placements = list(
                 self.presentation_applied_placements
@@ -1404,6 +1441,18 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         if self.playback_only and UtilsAssembly._document_is_open(self.doc):
             self.gui_doc.Modified = self.document_was_modified
 
+    def _restoreSimulationGraphics(self):
+        if not self.graphics_frame_active:
+            return
+        if not UtilsAssembly._document_is_open(self.doc):
+            self.graphics_frame_active = False
+            return
+        for name, object_id, component, _baseline in self.initialPlcs.parts:
+            current = self.doc.getObject(name)
+            if current is component and int(current.ID) == object_id:
+                self.gui_doc.setPos(name, current.Placement.toMatrix())
+        self.graphics_frame_active = False
+
     def _restorePlaybackCamera(self):
         try:
             if (
@@ -1424,8 +1473,15 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         for component, _name, _object_id, _visible in self.presentation_visibility:
             component.ViewObject.Visibility = False
         if self.requested_camera_method:
-            getattr(self.view, self.requested_camera_method)()
-            self.view.fitAll()
+            # Setup must have its final camera before generation/capture starts,
+            # without the viewer's nested animation loop excluding user input.
+            animation = self.view.isAnimationEnabled()
+            self.view.setAnimationEnabled(False)
+            try:
+                getattr(self.view, self.requested_camera_method)()
+                self.view.fitAll()
+            finally:
+                self.view.setAnimationEnabled(animation)
 
     def _applyPlaybackPresentation(self):
         if self.presentation is None:
@@ -1439,6 +1495,12 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
                 move.ViewObject.Visibility = True
 
     def autoClosedOnDeletedDocument(self):
+        self._closing = True
+        self.playbackClosed.emit()
+        self.frameTimer.stop()
+        self.frame_request = None
+        self.generationTimer.stop()
+        self.generation_state = 'cancelled'
         self.animationTimer.stop()
         if self.transaction is not None:
             self.transaction.document_deleted()
@@ -1447,6 +1509,9 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
     def closed(self):
         """Restore transient playback state after every task close path."""
 
+        self._closing = True
+        self.playbackClosed.emit()
+        self._cancelPendingFrame()
         try:
             if UtilsAssembly._document_is_open(self.doc):
                 UtilsAssembly._restoreExactAssemblyPartPlacements(
@@ -1469,6 +1534,11 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.deactivate()
 
     def deactivate(self):
+        if not self._closing:
+            self._closing = True
+            self.playbackClosed.emit()
+        self._cancelPendingFrame()
+        self.cancelGeneration()
         self.animationTimer.stop()
         self._removeDocumentObserver()
         simulation_name, simulation_id, exact_simulation = (
@@ -1493,6 +1563,20 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         except (AttributeError, RuntimeError):
             pass
 
+    @QtCore.Slot(object)
+    def _rejectOwnedPlayback(self, dialog):
+        # Future cancellation may originate on a provider thread. Qt delivers
+        # this slot on the panel's owner; never close a subsequently opened task.
+        if not self._closing:
+            current = _simulationTaskDialog(self)
+            if current is not None:
+                current.reject()
+
+    @QtCore.Slot(object)
+    def _cancelOwnedFrame(self, request):
+        if request is not None and self.frame_request == request:
+            self._cancelPendingFrame()
+
     def slotStartSaveDocument(self, document, _path):
         """Keep transient playback placements out of the saved FCStd file."""
 
@@ -1509,6 +1593,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             int(self.direction),
         )
         self.animationTimer.stop()
+        self._cancelPendingFrame()
         UtilsAssembly._restoreExactAssemblyPartPlacements(
             self.assembly,
             self.initialPlcs,
@@ -1528,9 +1613,16 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             return
         self._activatePlaybackPresentation()
         if 0 <= frame < self.assembly.numberOfFrames():
-            self.assembly.updateForFrame(frame)
-            self._applyPlaybackPresentation()
-            self.form.frameSlider.setValue(frame)
+            # Resume through the same transient placement scope as playback.
+            # Apply exactly once, including when the slider already shows this
+            # frame (Qt otherwise emits either zero or one additional callback).
+            slider = self.form.frameSlider
+            was_blocked = slider.blockSignals(True)
+            try:
+                slider.setValue(frame)
+            finally:
+                slider.blockSignals(was_blocked)
+            self.onFrameChanged(frame)
         # Saving establishes a new clean restoration baseline.  A player that
         # opened while the GUI document was dirty must not re-dirty it when the
         # user later closes that same, successfully saved playback task.
@@ -1635,6 +1727,10 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
     def runKinematics(self):
         if not self._ownsLiveTaskContext():
             return
+        # Preserve the synchronous public method for callers which require its
+        # completed-frame postcondition. Interactive Generate uses the async API.
+        self._cancelPendingFrame()
+        self.background_frames = False
         if self.presentation is not None:
             self.presentation.Proxy._prepareApplicationBaseline(self.assembly)
         status = int(self.assembly.generateSimulation(self.simFeaturePy))
@@ -1652,12 +1748,179 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.form.groupBox_player.show()
         self.form.SaveAnimationButton.show()
 
+    def _setGenerationState(self, state, error=''):
+        self.generation_state = state
+        self.generation_error = error
+        running = state == 'running'
+        self.form.RunKinematicsButton.setText(
+            translate('Assembly', 'Cancel generation') if running else self.generate_button_text
+        )
+        self.form.groupBox_player.setEnabled(not running)
+        self.form.SaveAnimationButton.setEnabled(not running)
+        self.form.RunKinematicsButton.setToolTip(error)
+        Gui.getMainWindow().statusBar().showMessage(
+            translate('Assembly', 'Generating assembly simulation in background…')
+            if running else error or translate('Assembly', 'Simulation ' + state)
+        )
+
+    def runKinematicsAsync(self):
+        if not self._ownsLiveTaskContext():
+            return
+        if self.generation_state == 'running':
+            self.cancelGeneration()
+            return
+        self.animationTimer.stop()
+        self._cancelPendingFrame()
+        self._setGenerationState('running')
+        try:
+            if self.presentation is not None:
+                self.presentation.Proxy._prepareApplicationBaseline(self.assembly)
+            start = (self.assembly.startSimulationPlayback if self.playback_only
+                     else self.assembly.startSimulation)
+            self.generation_request = start(self.simFeaturePy)
+            self.generationTimer.start()
+        except Exception as error:
+            self._setGenerationState('failed', str(error))
+            self.generationFinished.emit(False)
+
+    def _finishKinematicsAsync(self):
+        if not self._ownsLiveTaskContext():
+            self.cancelGeneration()
+            return
+        try:
+            if not self.assembly.finishSimulation(self.generation_request):
+                return
+            self.generation_request = None
+            self.generationTimer.stop()
+            self.background_frames = True
+            last_frame = self.assembly.numberOfFrames() - 1
+            slider = self.form.frameSlider
+            was_blocked = slider.blockSignals(True)
+            try:
+                slider.setMaximum(last_frame)
+                slider.setValue(last_frame)
+            finally:
+                slider.blockSignals(was_blocked)
+            self.onFrameChanged(last_frame)
+            if self.frame_error:
+                raise RuntimeError(self.frame_error)
+            self.form.groupBox_player.show()
+            self.form.SaveAnimationButton.show()
+            self._setGenerationState('ready')
+            self.generationFinished.emit(True)
+        except Exception as error:
+            self.generationTimer.stop()
+            self._setGenerationState('failed', str(error))
+            self.generationFinished.emit(False)
+
+    def cancelGeneration(self):
+        self.generationTimer.stop()
+        if self.generation_state != 'running':
+            return
+        if UtilsAssembly._document_is_open(self.doc):
+            name, object_id, exact_assembly = self.assembly_identity
+            current = self.doc.getObject(name)
+            if current is exact_assembly and int(current.ID) == object_id:
+                if self.generation_request is not None:
+                    current.cancelSimulation(self.generation_request)
+        self.generation_request = None
+        self.generation_state = 'cancelled'
+        if self.form is not None:
+            self._setGenerationState('cancelled')
+        self.generationFinished.emit(False)
+
     def onFrameChanged(self, val):
         if not self._ownsLiveTaskContext():
             return
-        self.assembly.updateForFrame(val)
-        self._applyPlaybackPresentation()
+        if self.background_frames:
+            try:
+                if self.presentation is None:
+                    self.frame_error = ''
+                    self.requested_frame = int(val)
+                    graphics_frame = self.assembly.getSimulationFrame(int(val))
+                    for object_name, placement in graphics_frame:
+                        self.gui_doc.setPos(object_name, placement.toMatrix())
+                    self.graphics_frame_active = True
+                    self._showFrameStatus(val)
+                    self.frameFinished.emit(int(val), True)
+                    return
+                self._cancelPendingFrame()
+                self.frame_error = ''
+                self.requested_frame = int(val)
+                self.frame_request = self.assembly.requestSimulationFrame(int(val))
+                self.frameTimer.start()
+            except Exception as error:
+                self._frameFailed(error)
+            return
+        with UtilsAssembly.presentationPlacementChanges(
+            self.doc, self.playback_part_ids, self.assembly
+        ):
+            self.assembly.updateForFrame(val)
+            self._applyPlaybackPresentation()
+        self._showFrameStatus(val)
+        self.frameFinished.emit(int(val), True)
+
+    def _finishFrame(self):
+        if self.frame_request is None:
+            self.frameTimer.stop()
+            return
+        if not self._ownsLiveTaskContext():
+            self._cancelPendingFrame()
+            return
+        try:
+            if self.presentation is None:
+                graphics_frame = self.assembly.takeSimulationFrame(
+                    self.frame_request
+                )
+                if graphics_frame is None:
+                    return
+                for object_name, placement in graphics_frame:
+                    self.gui_doc.setPos(object_name, placement.toMatrix())
+                self.graphics_frame_active = True
+            else:
+                with UtilsAssembly.presentationPlacementChanges(
+                    self.doc, self.playback_part_ids, self.assembly
+                ):
+                    if not self.assembly.finishSimulationFrame(
+                        self.frame_request
+                    ):
+                        return
+                    self._applyPlaybackPresentation()
+            frame = self.requested_frame
+            self.frame_request = None
+            self.frameTimer.stop()
+            self._showFrameStatus(frame)
+            self.frameFinished.emit(int(frame), True)
+        except Exception as error:
+            self._frameFailed(error)
+
+    def _cancelPendingFrame(self):
+        self.frameTimer.stop()
+        request, self.frame_request = self.frame_request, None
+        if request is None:
+            return
+        if UtilsAssembly._document_is_open(self.doc):
+            name, object_id, exact_assembly = self.assembly_identity
+            current = self.doc.getObject(name)
+            if current is exact_assembly and int(current.ID) == object_id:
+                current.cancelSimulationFrame(request)
+        self.frameFinished.emit(int(self.requested_frame), False)
+
+    def _frameFailed(self, error):
+        self.frame_error = str(error)
+        had_request = self.frame_request is not None
+        self.animationTimer.stop()
+        self._cancelPendingFrame()
+        if self.form is not None:
+            Gui.getMainWindow().statusBar().showMessage(str(error))
+            self.form.FrameLabel.setText(translate('Assembly', 'Frame update failed'))
+            self.form.FrameLabel.setToolTip(str(error))
+        if not had_request:
+            self.frameFinished.emit(int(self.requested_frame), False)
+
+    def _showFrameStatus(self, val):
         self.form.FrameLabel.setText(translate("Assembly", "Frame" + " " + str(val)))
+        self.form.FrameLabel.setToolTip('')
         time = _simulationFrameTime(self.simFeaturePy, val)
         self.form.FrameTimeLabel.setText(
             translate("Assembly", "Input") if time is None else f"{time:.2f} s"
@@ -1783,6 +2046,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         self.fps = self.simFeaturePy.jFramesPerSecond
         self.deltaTime = 1.0 / self.fps
         self.startTime = time.time()
+        self.lastFrameTime = time.perf_counter()
         self.index = self.currentFrm
         self.animationTimer.setInterval(self.deltaTime * 1000)  # ms
         self.animationTimer.start()
@@ -1794,11 +2058,18 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
         if self.form is None or not self._ownsLiveTaskContext():
             self.animationTimer.stop()
             return
-        range_ = self.endFrm - self.startFrm
-        offset = self.currentFrm - self.startFrm
-        count = int((time.time() - self.startTime) / self.deltaTime)
-        self.index = ((self.direction * count + offset) % range_) + self.startFrm
+        now = time.perf_counter()
+        if now - self.lastFrameTime < self.deltaTime * 0.75:
+            return
+        if self.background_frames and self.frame_request is not None:
+            return
+        self.index = self.form.frameSlider.value() + self.direction
+        if self.index > self.endFrm:
+            self.index = self.startFrm
+        elif self.index < self.startFrm:
+            self.index = self.endFrm
         self.setFrameValue(self.index)
+        self.lastFrameTime = time.perf_counter()
 
     def displayLastFrame(self):
         if not self._ownsLiveTaskContext():
@@ -1836,6 +2107,54 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             val = self.form.frameSlider.maximum()
 
         self.form.frameSlider.setValue(val)
+
+    def requestFrameAsync(self, frame, *, include_input=False):
+        """Select one exact paused frame, completing after native adoption."""
+        if not self._ownsLiveTaskContext() or not self.background_frames:
+            raise RuntimeError('The asynchronous simulation player is not ready')
+        frame = int(frame)
+        if not (0 if include_input else 1) <= frame < self.assembly.numberOfFrames():
+            raise RuntimeError('The requested simulation frame is out of range')
+        self.stopAnimation()
+        self._cancelPendingFrame()
+        result = Future()
+
+        def cleanup():
+            self.frameFinished.disconnect(finished)
+            self.playbackClosed.disconnect(closed)
+
+        def finished(applied_frame, ok):
+            if applied_frame != frame:
+                return
+            cleanup()
+            if result.set_running_or_notify_cancel():
+                if ok:
+                    result.set_result(frame)
+                else:
+                    result.set_exception(RuntimeError(self.frame_error or 'Simulation frame was cancelled'))
+
+        def closed():
+            cleanup()
+            if result.set_running_or_notify_cancel():
+                result.set_exception(RuntimeError('Simulation player closed before the frame applied'))
+
+        self.frameFinished.connect(finished)
+        self.playbackClosed.connect(closed)
+        slider = self.form.frameSlider
+        was_blocked = slider.blockSignals(True)
+        try:
+            # Frame zero is the input snapshot included by animation export,
+            # not a time sample on the interactive player's 1-based slider.
+            if frame > 0:
+                slider.setValue(frame)
+        finally:
+            slider.blockSignals(was_blocked)
+        self.onFrameChanged(frame)
+        request = self.frame_request
+        result.add_done_callback(
+            lambda future: self.cancelFrameRequested.emit(request) if future.cancelled() else None
+        )
+        return result
 
     def stopAnimation(self):
         self.animationTimer.stop()
@@ -1891,9 +2210,115 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
             self.simFeaturePy.Group = group
             self.doc.removeObject(motion.Name)
 
+    def saveAnimationAsync(self):
+        """Interactive export; no frame generation, encoding or file I/O waits on Qt."""
+        if not self._ownsLiveTaskContext() or self.animation_export is not None:
+            return
+        if not self.background_frames or self.assembly.numberOfFrames() <= 1:
+            QMessageBox.warning(self.form, translate('Assembly', 'Animation'),
+                                translate('Assembly', 'Generate simulation frames before exporting.'))
+            return
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self.form, translate('Assembly', 'Save Animation'), '',
+            'MP4 Video (*.mp4);;Animated GIF (*.gif);;AVI Video (*.avi)',
+        )
+        if not file_path:
+            return
+        if not Path(file_path).suffix:
+            file_path += '.gif' if '*.gif' in selected_filter else (
+                '.avi' if '*.avi' in selected_filter else '.mp4'
+            )
+        try:
+            if Path(file_path).suffix.lower() not in {'.gif', '.mp4', '.avi'}:
+                raise ValueError('Animation export requires GIF, MP4 or AVI')
+            from AnimationExport import AnimationExportController, AnimationExportJob
+            from VibeCADCore import get_service
+            from VibeCADHostIsolation import execute_staged_script, _freecadcmd
+            import VibeCADHostIsolation
+            from VibeCADPreferences import load_settings
+
+            self.stopAnimation()
+            self._cancelPendingFrame()
+            width, height = self.view.getSize()
+            size = (width - width % 2, height - height % 2)
+            if min(size) <= 0:
+                raise RuntimeError('The animation viewport has no drawable area')
+            # Resolve GUI/application paths before crossing to the supervisor.
+            isolation = {
+                'app': App, 'executable': str(_freecadcmd(App.getHomePath())),
+                'module_root': str(Path(VibeCADHostIsolation.__file__).parent),
+                'memory_limit_bytes': load_settings().scripted_memory_limit_mb * 1024 * 1024,
+                'environment': {},
+            }
+            viewer = self.view.getViewer()
+            # Resolve required native methods before a job owns staging.
+            viewer.startFrameExport
+            viewer.finishFrameExport
+            viewer.cancelFrameExport
+            count = self.assembly.numberOfFrames()
+            progress = QProgressDialog(
+                translate('Assembly', 'Preparing animation export'),
+                translate('Assembly', 'Cancel'), 0, count, self.form,
+            )
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setAutoClose(False)
+            job = AnimationExportJob(
+                get_service().native_background_manager(), document_uid=str(self.doc.Uid),
+                output=file_path, frame_count=count,
+                fps=self.form.FramesPerSecondSpinBox.value(), size=size,
+                execute=execute_staged_script, isolation=isolation,
+            )
+            try:
+                controller = AnimationExportController(self, viewer, job)
+            except Exception:
+                job.manager.cancel(job.job_id)
+                job.finish_capture()
+                raise
+            self.animation_export = controller
+            self.form.SaveAnimationButton.setEnabled(False)
+            progress.canceled.connect(controller.cancel)
+
+            def update(index, message):
+                if self._ownsLiveTaskContext():
+                    label = translate('Assembly', message)
+                    if index < count:
+                        label += f' {index + 1}/{count}'
+                    progress.setLabelText(label)
+                    if index == count:
+                        progress.setRange(0, 0)
+                    else:
+                        progress.setValue(index)
+                    Gui.getMainWindow().statusBar().showMessage(label)
+
+            def finished(snapshot):
+                self.animation_export = None
+                if self._ownsLiveTaskContext():
+                    progress.close()
+                    self.form.SaveAnimationButton.setEnabled(True)
+                error = controller.error or (snapshot.error or {}).get('message', '')
+                if snapshot.phase == 'completed':
+                    App.Console.PrintMessage(f'Animation successfully saved to {file_path}\n')
+                elif snapshot.phase == 'cancelled':
+                    App.Console.PrintMessage('Animation export cancelled.\n')
+                if error and snapshot.phase != 'cancelled':
+                    App.Console.PrintError(f'Animation export: {error}\n')
+                if self._ownsLiveTaskContext():
+                    Gui.getMainWindow().statusBar().showMessage(
+                        error or translate('Assembly', 'Animation export ' + snapshot.phase)
+                    )
+                controller.deleteLater()
+
+            controller.progress.connect(update)
+            controller.finished.connect(finished)
+            progress.show()
+        except Exception as error:
+            QMessageBox.critical(self.form, translate('Assembly', 'Animation export'), str(error))
+
     def saveAnimation(self):
         if not self._ownsLiveTaskContext():
             return
+        self.animationTimer.stop()
+        self._cancelPendingFrame()
         num_frames = self.assembly.numberOfFrames()
         if num_frames <= 1:
             QMessageBox.warning(
@@ -1941,6 +2366,7 @@ class TaskAssemblyCreateSimulation(QtCore.QObject):
 
             try:
                 # Generate and save all frames as temporary images
+                self._restoreSimulationGraphics()
                 frame_files = []
                 for i in range(num_frames):
                     progress.setValue(i)
@@ -2053,6 +2479,172 @@ def _simulationFrameTime(simulation, frame):
     )
 
 
+def _simulationRequestedFrame(simulation, time_seconds, frame_count):
+    start_time = float(simulation.aTimeStart.Value)
+    time_step = float(simulation.cTimeStepOutput.Value)
+    if time_step <= 0:
+        raise RuntimeError("The simulation has no positive output time step")
+    first_time = _simulationFrameTime(simulation, 1)
+    end_time = _simulationFrameTime(simulation, frame_count - 1)
+    requested_time = float(time_seconds)
+    if requested_time < first_time or requested_time > end_time:
+        raise RuntimeError(
+            "Requested playback time "
+            f"{requested_time:g} s is outside the saved simulation range "
+            f"{first_time:g}..{end_time:g} s"
+        )
+    return round((requested_time - start_time) / time_step) + 1
+
+
+_simulationPlayback = None
+
+
+def _simulationTaskDialog(panel):
+    """Native task wrappers are transient; identify the exact hosted Qt form."""
+    dialog = Gui.Control.activeTaskDialog()
+    if dialog is not None and panel.form is not None:
+        for widget in dialog.getDialogContent():
+            if widget is panel.form or widget.isAncestorOf(panel.form):
+                return dialog
+    return None
+
+
+def findSimulationPlayback(simulation, *, presentation=None, hidden_components=(), camera=""):
+    """Return only our exact live saved-player task with the same presentation.
+
+    Keep a weak panel reference; never infer ownership from a task title,
+    transient native wrapper, or object name.
+    """
+    if _simulationPlayback is None:
+        return None
+    panel_ref, shown_presentation, hidden, shown_camera = _simulationPlayback
+    panel = panel_ref()
+    if (panel is None or _simulationTaskDialog(panel) is None
+            or panel.simFeaturePy is not simulation or not panel._ownsLiveTaskContext()
+            or shown_presentation is not presentation or shown_camera != camera
+            or len(hidden) != len(hidden_components)
+            or any(first is not second for first, second in zip(hidden, hidden_components))):
+        return None
+    return panel
+
+
+def controlSimulationPlaybackAsync(panel, *, autoplay=False, time_seconds=None):
+    """Seek the existing player without a second solve; finish after adoption."""
+    frame = (int(panel.form.frameSlider.value()) if time_seconds is None else
+             _simulationRequestedFrame(panel.simFeaturePy, time_seconds,
+                                       int(panel.assembly.numberOfFrames())))
+    pending = panel.requestFrameAsync(frame)
+    result = Future()
+
+    def complete(_done):
+        if not result.set_running_or_notify_cancel():
+            return
+        try:
+            pending.result()
+            if autoplay:
+                panel.animationTimerStartForward()
+            result.set_result(panel)
+        except Exception as error:
+            result.set_exception(error)
+
+    result.add_done_callback(lambda done: pending.cancel() if done.cancelled() else None)
+    pending.add_done_callback(complete)
+    return result
+
+
+def openSimulationAsync(
+    simulation,
+    *,
+    autoplay=False,
+    time_seconds=None,
+    presentation=None,
+    hidden_components=(),
+    camera="",
+):
+    """Start on the GUI owner and resolve only after the requested frame applies.
+
+    Generation and frame computation use the native runtime. No event pumping
+    or wait occurs here. Cancellation is delivered to the exact task via Qt.
+    The synchronous openSimulation contract remains available to external callers.
+    """
+    panel = openSimulation(
+        simulation, presentation=presentation,
+        hidden_components=hidden_components, camera=camera,
+    )
+    dialog = Gui.Control.activeTaskDialog()
+    result = Future()
+    expected_frame = None
+
+    def cleanup():
+        panel.generationFinished.disconnect(generated)
+        panel.frameFinished.disconnect(displayed)
+        panel.playbackClosed.disconnect(closed)
+
+    def fail(error):
+        cleanup()
+        if result.set_running_or_notify_cancel():
+            result.set_exception(error)
+        panel.rejectPlaybackRequested.emit(dialog)
+
+    def closed():
+        cleanup()
+        if result.set_running_or_notify_cancel():
+            result.set_exception(RuntimeError("Simulation player closed before launch completed"))
+
+    def displayed(frame, ok):
+        if expected_frame is None or frame != expected_frame:
+            return
+        if not ok:
+            fail(RuntimeError(panel.frame_error or "Simulation frame was cancelled"))
+            return
+        cleanup()
+        if result.set_running_or_notify_cancel():
+            try:
+                if autoplay:
+                    panel.animationTimerStartForward()
+                result.set_result(panel)
+            except Exception as error:
+                result.set_exception(error)
+                panel.rejectPlaybackRequested.emit(dialog)
+
+    def generated(ok):
+        nonlocal expected_frame
+        if not ok:
+            fail(RuntimeError(panel.generation_error or "Simulation generation was cancelled"))
+            return
+        try:
+            count = int(panel.assembly.numberOfFrames())
+            if count < 2:
+                raise RuntimeError("The simulation generated fewer than two frames")
+            expected_frame = (
+                count - 1 if time_seconds is None
+                else _simulationRequestedFrame(simulation, time_seconds, count)
+            )
+            # Generate already requested its last frame, but it has not applied
+            # yet. A different requested time supersedes that native request.
+            if int(panel.form.frameSlider.value()) != expected_frame:
+                panel.setFrameValue(expected_frame)
+            elif presentation is None and panel.graphics_frame_active:
+                # Graphics-only cached frames complete synchronously. The
+                # generation callback therefore runs after the final frame's
+                # signal rather than before it.
+                displayed(expected_frame, True)
+        except Exception as error:
+            fail(error)
+
+    panel.generationFinished.connect(generated)
+    panel.frameFinished.connect(displayed)
+    panel.playbackClosed.connect(closed)
+    result.add_done_callback(
+        lambda future: panel.rejectPlaybackRequested.emit(dialog) if future.cancelled() else None
+    )
+    try:
+        panel.runKinematicsAsync()
+    except Exception as error:
+        fail(error)
+    return result
+
+
 def openSimulation(
     simulation,
     *,
@@ -2114,22 +2706,9 @@ def openSimulation(
             if assembly.numberOfFrames() < 2:
                 raise RuntimeError("The simulation generated fewer than two frames")
         if time_seconds is not None:
-            start_time = float(simulation.aTimeStart.Value)
-            time_step = float(simulation.cTimeStepOutput.Value)
-            if time_step <= 0:
-                raise RuntimeError("The simulation has no positive output time step")
-            last_frame = assembly.numberOfFrames() - 1
-            first_frame = 1
-            first_time = _simulationFrameTime(simulation, first_frame)
-            end_time = _simulationFrameTime(simulation, last_frame)
-            requested_time = float(time_seconds)
-            if requested_time < first_time or requested_time > end_time:
-                raise RuntimeError(
-                    "Requested playback time "
-                    f"{requested_time:g} s is outside the saved simulation range "
-                    f"{first_time:g}..{end_time:g} s"
-                )
-            requested_frame = round((requested_time - start_time) / time_step) + 1
+            requested_frame = _simulationRequestedFrame(
+                simulation, time_seconds, assembly.numberOfFrames()
+            )
             panel.setFrameValue(requested_frame)
         if autoplay:
             panel.animationTimerStartForward()
@@ -2137,6 +2716,16 @@ def openSimulation(
         if dialog is not None:
             dialog.reject()
         raise
+    global _simulationPlayback
+    binding = (weakref.ref(panel), presentation, tuple(hidden_components), camera)
+    _simulationPlayback = binding
+
+    def releasePlayback():
+        global _simulationPlayback
+        if _simulationPlayback is binding:
+            _simulationPlayback = None
+
+    panel.playbackClosed.connect(releasePlayback)
     return panel
 
 

@@ -9,6 +9,8 @@
 
 #include <QCryptographicHash>
 #include <array>
+#include <barrier>
+#include <thread>
 
 class StringIDTest: public ::testing::Test
 {
@@ -1116,6 +1118,40 @@ protected:
 private:
     Base::Reference<App::StringHasher> _hasher;
 };
+
+TEST_F(StringHasherTest, concurrentInterningPreservesTableAndReferences)  // NOLINT
+{
+    constexpr int workerCount = 8;
+    constexpr int stringsPerWorker = 1000;
+    auto hasher = Hasher();
+    std::barrier start(workerCount);
+    std::array<std::vector<App::StringIDRef>, workerCount> results;
+    std::vector<std::jthread> workers;
+    for (int worker = 0; worker < workerCount; ++worker) {
+        workers.emplace_back([&, worker] {
+            start.arrive_and_wait();
+            for (int index = 0; index < stringsPerWorker; ++index) {
+                // Both repeated and distinct names occur in independent feature recomputes.
+                const auto name = QByteArray::number(index) + ":" + QByteArray::number(worker % 2);
+                results[worker].push_back(hasher->getID(name));
+            }
+        });
+    }
+    workers.clear();
+    ASSERT_EQ(hasher->size(), 2 * stringsPerWorker);
+    for (int worker = 0; worker < workerCount; ++worker) {
+        for (int index = 0; index < stringsPerWorker; ++index) {
+            const auto& id = results[worker][index];
+            EXPECT_EQ(id, results[worker % 2][index]);
+            EXPECT_EQ(id, hasher->getID(id.value()));
+        }
+    }
+    hasher->clear();
+    EXPECT_EQ(hasher->size(), 0);
+    EXPECT_EQ(results[0][0].deref().data(), QByteArray("0:0"));
+    results = {};
+    EXPECT_EQ(hasher->getID("reused").deref().data(), QByteArray("reused"));
+}
 
 TEST_F(StringHasherTest, defaultConstructor)  // NOLINT
 {

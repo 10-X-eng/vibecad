@@ -136,6 +136,7 @@ DocumentObserverPython::DocumentObserverPython(const Py::Object& obj)
     FC_PY_ELEMENT_ARG1(RecomputedObject, ObjectRecomputed)
     FC_PY_ELEMENT_ARG1(BeforeRecomputeDocument, BeforeRecomputeDocument)
     FC_PY_ELEMENT_ARG1(RecomputedDocument, Recomputed)
+    FC_PY_ELEMENT_ARG2(CooperativeMutationChanged, CooperativeMutationChanged)
     FC_PY_ELEMENT_ARG2(OpenTransaction, OpenTransaction)
     FC_PY_ELEMENT_ARG1(CommitTransaction, CommitTransaction)
     FC_PY_ELEMENT_ARG1(AbortTransaction, AbortTransaction)
@@ -443,6 +444,22 @@ void DocumentObserverPython::slotBeforeRecomputeDocument(const App::Document& do
     }
     catch (Py::Exception&) {
         Base::PyException e;  // extract the Python error text
+        e.reportException();
+    }
+}
+
+void DocumentObserverPython::slotCooperativeMutationChanged(const App::Document& doc, bool active)
+{
+    Base::PyGILStateLocker lock;
+    PendingPythonErrorScope pendingError;
+    try {
+        Py::Tuple args(2);
+        args.setItem(0, Py::asObject(const_cast<App::Document&>(doc).getPyObject()));
+        args.setItem(1, Py::Boolean(active));
+        Base::pyCall(pyCooperativeMutationChanged.ptr(), args.ptr());
+    }
+    catch (Py::Exception&) {
+        Base::PyException e;
         e.reportException();
     }
 }

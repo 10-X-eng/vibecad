@@ -47,14 +47,23 @@ ProgressIndicator::ProgressIndicator()
     progress = std::make_unique<Base::SequencerLauncher>("Processing...", 100);
 }
 
+ProgressIndicator::ProgressIndicator(std::stop_token cancellation)
+    : cancellation(cancellation)
+{}
+
 ProgressIndicator::~ProgressIndicator()
 {
-    progress->stop();
+    if (progress) {
+        progress->stop();
+    }
 }
 
 void ProgressIndicator::Show(const Message_ProgressScope& theScope, const Standard_Boolean isForce)
 {
     (void)isForce;
+    if (!progress) {
+        return;
+    }
     const char* name = theScope.Name();
     progress->setText(name ? name : "Processing...");
     std::size_t current = static_cast<std::size_t>(100. * theScope.Value() / theScope.MaxValue());
@@ -66,7 +75,7 @@ void ProgressIndicator::Show(const Message_ProgressScope& theScope, const Standa
 
 Standard_Boolean ProgressIndicator::UserBreak()
 {
-    return progress->wasCanceled();
+    return cancellation.stop_requested() || (progress && progress->wasCanceled());
 }
 
 void ProgressIndicator::Reset()

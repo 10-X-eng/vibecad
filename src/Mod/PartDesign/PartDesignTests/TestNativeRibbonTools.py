@@ -2,6 +2,7 @@
 
 """Live command-contract tests for the native tools exposed by the Model ribbon."""
 
+import time
 import unittest
 
 import FreeCAD as App
@@ -65,6 +66,16 @@ PROFILE_COMMANDS = (
 )
 
 
+class _SlowWorkerFeature:
+    """Keep a document recompute active while the GUI receives task input."""
+
+    def execute(self, _feature):
+        time.sleep(0.25)
+
+    def supportsAsyncRecompute(self, _feature):
+        return True
+
+
 class TestNativeRibbonTools(unittest.TestCase):
     """Ribbon actions must enforce usable inputs and preserve native Body history."""
 
@@ -86,6 +97,7 @@ class TestNativeRibbonTools(unittest.TestCase):
                 Gui.Control.closeDialog()
             self._process_events()
         if App.getDocument("NativeRibbonTools") is not None:
+            self._wait_for_document_ready()
             App.closeDocument("NativeRibbonTools")
         self._process_events()
 
@@ -99,6 +111,18 @@ class TestNativeRibbonTools(unittest.TestCase):
             loop = QtCore.QEventLoop()
             QtCore.QTimer.singleShot(wait_ms, loop.quit)
             loop.exec()
+
+    def _wait_for_document_ready(self, timeout_ms=5000):
+        # Flush queued projection starts before checking the document flags.
+        self._process_events(10)
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while (
+            self.document.CooperativeMutationActive
+            or self.document.PresentationUpdateActive
+        ):
+            if time.monotonic() >= deadline:
+                self.fail("Document presentation did not settle")
+            self._process_events(10)
 
     def _new_body(self, name, *, solid=False, solid_size=10.0):
         body = self.document.addObject("PartDesign::Body", name)
@@ -227,7 +251,9 @@ class TestNativeRibbonTools(unittest.TestCase):
             selections.append(self._path_sketch(body, f"{prefix}Path{index}"))
         if base is not None:
             body.Tip = base
+        self._wait_for_document_ready()
         self.document.recompute()
+        self._wait_for_document_ready()
         return body, base, profile, selections
 
     def _bodies(self):
@@ -319,6 +345,7 @@ class TestNativeRibbonTools(unittest.TestCase):
         self._process_events(50)
         self.assertFalse(Gui.Control.activeDialog(), command_name)
         self.assertFalse(self.document.HasPendingTransaction, command_name)
+        self._wait_for_document_ready()
 
     def _cancel_task(self, command_name):
         self.assertTrue(Gui.Control.activeDialog(), command_name)
@@ -328,6 +355,7 @@ class TestNativeRibbonTools(unittest.TestCase):
         self._process_events(50)
         self.assertFalse(Gui.Control.activeDialog(), command_name)
         self.assertFalse(self.document.HasPendingTransaction, command_name)
+        self._wait_for_document_ready()
 
     def _dismiss_task(self, command_name, *, allow_close=False):
         self.assertTrue(Gui.Control.activeDialog(), command_name)
@@ -344,6 +372,7 @@ class TestNativeRibbonTools(unittest.TestCase):
         self._process_events(50)
         self.assertFalse(Gui.Control.activeDialog(), command_name)
         self.assertFalse(self.document.HasPendingTransaction, command_name)
+        self._wait_for_document_ready()
 
     def _activate_body(self, body, subelement=None):
         Gui.activeView().setActiveObject("pdbody", body)
@@ -1314,13 +1343,14 @@ class TestNativeRibbonTools(unittest.TestCase):
             "Sketcher::SketchObject",
             "AcceptedStandaloneBodySketch",
         )
-        sketch.addGeometry(
-            Part.LineSegment(
-                App.Vector(0, 0, 0),
-                App.Vector(8, 0, 0),
-            ),
-            False,
+        points = (
+            App.Vector(0, 0, 0),
+            App.Vector(8, 0, 0),
+            App.Vector(8, 6, 0),
+            App.Vector(0, 6, 0),
         )
+        for start, end in zip(points, points[1:] + points[:1]):
+            sketch.addGeometry(Part.LineSegment(start, end), False)
         self.document.recompute()
         original_names = tuple(obj.Name for obj in self.document.Objects)
         original_bodies = set(self._bodies())
@@ -1365,6 +1395,30 @@ class TestNativeRibbonTools(unittest.TestCase):
         accepted_selection = Gui.Selection.getSelectionEx()
         self.assertEqual(len(accepted_selection), 1)
         self.assertIs(accepted_selection[0].Object, body)
+
+        # Exercise the complete human workflow that immediately follows this
+        # command. Projection/render catch-up from the Body operation must not
+        # reject Pad, paint a shape while its worker mutates it, or validate an
+        # empty intermediate Body state.
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(sketch)
+        self._process_events()
+        Gui.runCommand("PartDesign_Pad", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+        pad = next(obj for obj in self.document.Objects if obj.TypeId == "PartDesign::Pad")
+        self.assertGreater(len(pad.Shape.Solids), 0)
+        self._accept_task("Pad selected standalone sketch")
+        self.assertFalse(self.document.HasPendingTransaction)
+        self.assertIs(body.Tip, pad)
+        self.assertGreater(len(pad.Shape.Solids), 0)
+        PartDesign.validateDesign(pad)
+
+        pad_name = pad.Name
+        self.document.undo()
+        self._process_events()
+        self.assertIsNone(self.document.getObject(pad_name))
+        self.assertIn(sketch, body.Group)
 
         self.document.undo()
         self._process_events()
@@ -2520,6 +2574,142 @@ class TestNativeRibbonTools(unittest.TestCase):
         self.assertIsNone(self.document.getObject(sketch_name))
         self.assertEqual(tuple(body.Group), body_group)
         self.assertFalse(self.document.HasPendingTransaction)
+
+    def test_retained_modeling_commands_lock_during_document_update(self):
+        import PartGui
+
+        self.assertTrue(PartGui.canStartRetainedModelingTask())
+        self.document.beginCooperativeMutation()
+        try:
+            self.assertFalse(PartGui.canStartRetainedModelingTask())
+        finally:
+            self.document.endCooperativeMutation()
+        self._wait_for_document_ready()
+        self.assertTrue(PartGui.canStartRetainedModelingTask())
+
+    def test_pad_accept_waits_for_the_active_document_recompute(self):
+        body, _feature = self._new_body("AsyncPadBody")
+        self._wait_for_document_ready()
+        profile = self._profile_sketch(body, "AsyncPadProfile")
+        self._wait_for_document_ready()
+        self._activate_body(body)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(profile)
+        self._process_events()
+
+        Gui.runCommand("PartDesign_Pad", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+        pad = next(
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::Pad"
+        )
+        self.assertGreater(len(pad.Shape.Solids), 0)
+
+        blocker = self.document.addObject(
+            "App::FeaturePython",
+            "AsyncPadRecomputeBlocker",
+        )
+        blocker.Proxy = _SlowWorkerFeature()
+        blocker.touch()
+        accept = self._task_button(QtGui.QDialogButtonBox.Ok)
+        self.assertIsNotNone(accept)
+        callback_state = {"ran": False, "dialog_open": False, "error": None}
+
+        def accept_while_recompute_is_active():
+            try:
+                callback_state["ran"] = True
+                self.assertTrue(self.document.CooperativeMutationActive)
+                # Model the task parameter update that has not reached the active
+                # recompute snapshot yet. Accept must wait, recompute this Pad, and
+                # only then validate and commit the Body history.
+                pad.Shape = Part.Shape()
+                pad.touch()
+                accept.click()
+                callback_state["dialog_open"] = bool(Gui.Control.activeDialog())
+            except BaseException as error:
+                callback_state["error"] = error
+
+        QtCore.QTimer.singleShot(25, accept_while_recompute_is_active)
+        self.assertGreaterEqual(self.document.recompute(), 1)
+        self._process_events(100)
+
+        if callback_state["error"] is not None:
+            raise callback_state["error"]
+        self.assertTrue(callback_state["ran"])
+        self.assertTrue(
+            callback_state["dialog_open"],
+            "Pad acceptance ran inside the active document update",
+        )
+        self.assertFalse(Gui.Control.activeDialog())
+        self.assertFalse(self.document.HasPendingTransaction)
+        self.assertIs(body.Tip, pad)
+        self.assertGreater(len(pad.Shape.Solids), 0)
+        PartDesign.validateDesign(pad)
+        self._wait_for_document_ready()
+
+    def test_pad_cancel_waits_for_the_active_document_recompute(self):
+        body, _feature = self._new_body("AsyncPadCancelBody")
+        self._wait_for_document_ready()
+        profile = self._profile_sketch(body, "AsyncPadCancelProfile")
+        self._wait_for_document_ready()
+        self._activate_body(body)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(profile)
+        self._process_events()
+
+        Gui.runCommand("PartDesign_Pad", 0)
+        self._process_events(50)
+        self.assertTrue(Gui.Control.activeDialog())
+        pad = next(
+            obj
+            for obj in self.document.Objects
+            if obj.TypeId == "PartDesign::Pad"
+        )
+        pad_name = pad.Name
+
+        blocker = self.document.addObject(
+            "App::FeaturePython",
+            "AsyncPadCancelRecomputeBlocker",
+        )
+        blocker.Proxy = _SlowWorkerFeature()
+        blocker.touch()
+        cancel = self._task_button(QtGui.QDialogButtonBox.Cancel)
+        self.assertIsNotNone(cancel)
+        callback_state = {"ran": False, "dialog_open": False, "error": None}
+
+        def cancel_while_recompute_is_active():
+            try:
+                callback_state["ran"] = True
+                self.assertTrue(self.document.CooperativeMutationActive)
+                cancel.click()
+                callback_state["dialog_open"] = bool(Gui.Control.activeDialog())
+            except BaseException as error:
+                callback_state["error"] = error
+
+        QtCore.QTimer.singleShot(25, cancel_while_recompute_is_active)
+        self.assertGreaterEqual(self.document.recompute(), 1)
+        self._process_events(100)
+
+        if callback_state["error"] is not None:
+            raise callback_state["error"]
+        self.assertTrue(callback_state["ran"])
+        self.assertTrue(
+            callback_state["dialog_open"],
+            "Pad cancellation ran inside the active document update",
+        )
+        self.assertFalse(Gui.Control.activeDialog())
+        self.assertFalse(self.document.HasPendingTransaction)
+        self._wait_for_document_ready()
+        self.assertIsNone(self.document.getObject(pad_name))
+        self.assertIn(profile, body.Group)
+        touched = [obj.Name for obj in self.document.Objects if "Touched" in obj.State]
+        self.assertEqual(
+            touched,
+            [],
+            "Pad cancellation left restored document work unrecomputed",
+        )
 
     def test_profile_tasks_cancel_back_to_the_exact_body_history(self):
         for index, (

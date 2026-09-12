@@ -22,6 +22,12 @@ ALLOWED_WEAK_EXTERNAL_DEPENDENCIES = {
         "3DconnexionClient",
     )
 }
+# FreeCADGui's PUBLIC link flags propagate the optional driver to consumers.
+# Its location is fixed by the vendor installer, independent of our bundle.
+OPTIONAL_DRIVER_FRAMEWORK = (
+    "/Library/Frameworks/3DconnexionClient.framework/Versions/A/"
+    "3DconnexionClient"
+)
 
 
 def _parse_arguments() -> argparse.Namespace:
@@ -88,7 +94,10 @@ def _validate_path(
     relative_file = file_path.relative_to(bundle).as_posix()
     if (
         command == "LC_LOAD_WEAK_DYLIB"
-        and (relative_file, value) in ALLOWED_WEAK_EXTERNAL_DEPENDENCIES
+        and (
+            (relative_file, value) in ALLOWED_WEAK_EXTERNAL_DEPENDENCIES
+            or value == OPTIONAL_DRIVER_FRAMEWORK
+        )
     ):
         # FreeCAD deliberately weak-links the optional 3Dconnexion driver.
         # The application remains launchable when the framework is absent.

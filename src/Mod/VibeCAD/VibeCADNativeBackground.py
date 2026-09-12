@@ -86,6 +86,7 @@ CommitValidator = Callable[[], Any]
 DiagnosticSink = Callable[[str, Exception], str | None]
 CleanupHandler = Callable[[Any | None], None]
 DocumentChangeResolver = Callable[[Mapping[str, Any]], bool]
+DocumentUpdateProbe = Callable[[str], bool]
 
 
 def _canonical_result(result: Mapping[str, Any]) -> str:
@@ -162,10 +163,18 @@ def _error_summary(exc: Exception, diagnostic_id: str | None) -> dict[str, Any]:
 class NativeBackgroundManager:
     """Prepare detached work off-thread and commit through the document thread."""
 
-    def __init__(self, *, diagnostic_sink: DiagnosticSink | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        diagnostic_sink: DiagnosticSink | None = None,
+        document_update_active: DocumentUpdateProbe | None = None,
+    ) -> None:
         if diagnostic_sink is not None and not callable(diagnostic_sink):
             raise TypeError("diagnostic_sink must be callable")
+        if document_update_active is not None and not callable(document_update_active):
+            raise TypeError("document_update_active must be callable")
         self._diagnostic_sink = diagnostic_sink
+        self._document_update_active = document_update_active
         self._jobs: OrderedDict[str, _Job] = OrderedDict()
         self._active_resources: dict[tuple[str, str], str] = {}
         self._lock = threading.RLock()
@@ -301,6 +310,9 @@ class NativeBackgroundManager:
         cooperative_commit: CooperativeCommitHandler | None,
     ) -> None:
         prepared = None
+        terminal_phase = "failed"
+        terminal_percent = 0
+        terminal_message = "Failed"
         try:
             self._set_progress(job, "preparing", 1, "Preparing detached data")
 
@@ -387,10 +399,30 @@ class NativeBackgroundManager:
                     )
                 with self._lock:
                     job.changes_document = resolved_change
+            with self._lock:
+                changes_document = job.changes_document
+            if changes_document and self._document_update_active is not None:
+                self._set_progress(
+                    job,
+                    "settling",
+                    99,
+                    "Waiting for document update",
+                )
+                idle_observations = 0
+                while idle_observations < 2:
+                    update_active = dispatch_to_document_thread(
+                        lambda: self._document_update_active(job.document_uid)
+                    )
+                    idle_observations = 0 if update_active else idle_observations + 1
+                    if idle_observations == 2:
+                        break
+                    time.sleep(0.05)
             encoded = _canonical_result(result)
             with self._lock:
                 job.result_json = encoded
-            self._set_progress(job, "completed", 100, "Completed")
+            terminal_phase = "completed"
+            terminal_percent = 100
+            terminal_message = "Completed"
         except Exception as exc:
             diagnostic_id = None
             if self._diagnostic_sink is not None:
@@ -405,12 +437,9 @@ class NativeBackgroundManager:
             )
             with self._lock:
                 job.error = _error_summary(exc, diagnostic_id)
-            self._set_progress(
-                job,
-                phase,
-                job.progress_percent,
-                "Cancelled" if phase == "cancelled" else "Failed",
-            )
+                terminal_percent = job.progress_percent
+            terminal_phase = phase
+            terminal_message = "Cancelled" if phase == "cancelled" else "Failed"
         finally:
             if cleanup is not None:
                 try:
@@ -422,6 +451,10 @@ class NativeBackgroundManager:
                         except Exception:
                             pass
             with self._lock:
+                job.phase = terminal_phase
+                job.progress_percent = terminal_percent
+                job.progress_message = terminal_message
+                job.progress_at = time.monotonic()
                 active_key = (job.document_uid, job.resource_scope)
                 if self._active_resources.get(active_key) == job.job_id:
                     self._active_resources.pop(active_key, None)

@@ -33,6 +33,8 @@
 
 #include "Extension.h"
 #include "ExtensionContainer.h"
+#include "Document.h"
+#include "DocumentObject.h"
 
 
 using namespace App;
@@ -59,6 +61,15 @@ void ExtensionContainer::registerExtension(Base::Type extension, Extension* ext)
             "ExtensionContainer::registerExtension: Extension has not this as base object");
     }
 
+    // Attached objects can acquire extensions without setting any property.
+    // Invalidate captures on both sides of that structural change. Ordinary
+    // construction has no document yet and is covered by object insertion.
+    auto* object = dynamic_cast<DocumentObject*>(this);
+    auto* document = object ? object->getDocument() : nullptr;
+    if (document) {
+        document->advanceObjectChangeGeneration();
+    }
+
     // no duplicate extensions (including base classes)
     if (hasExtension(extension)) {
         for (const auto& entry : _extensions) {
@@ -70,6 +81,12 @@ void ExtensionContainer::registerExtension(Base::Type extension, Extension* ext)
     }
 
     _extensions[extension] = ext;
+    if (document) {
+        document->advanceObjectChangeGeneration();
+        if (!document->signalObjectSchemaChanged.empty()) {
+            document->signalObjectSchemaChanged(object->getID());
+        }
+    }
 }
 
 bool ExtensionContainer::hasExtension(Base::Type type, bool derived) const

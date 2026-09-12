@@ -12,6 +12,8 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QPointer>
+#include <QTimer>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QVBoxLayout>
@@ -26,6 +28,8 @@
 #include <unordered_set>
 
 #include <App/Document.h>
+#include <App/Application.h>
+#include <App/HostRuntime.h>
 #include <App/DocumentTimeline.h>
 #include <App/GeoFeature.h>
 #include <App/Part.h>
@@ -36,6 +40,7 @@
 #include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
 #include <Gui/MainWindow.h>
+#include <Gui/FrameBudget.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/ViewProvider.h>
 #include <Mod/Part/App/Part2DObject.h>
@@ -49,6 +54,8 @@
 
 #include "ReferenceSelection.h"
 #include "Utils.h"
+#include "TaskDialogState.h"
+#include "ViewProvider.h"
 
 using namespace PartDesignGui;
 
@@ -69,6 +76,7 @@ QString bodyDisplayName(const PartDesign::Body& body)
 
 TaskDesignProfileRegions::TaskDesignProfileRegions(App::DocumentObject* operation, QWidget* parent)
     : TaskBox(Gui::BitmapFactory().pixmap("Sketcher_Sketch"), tr("Profiles"), true, parent)
+    , Gui::SelectionObserver(false)
     , operation(operation)
     , sketchName(new QLabel(this))
     , regionSummary(new QLabel(this))
@@ -151,19 +159,23 @@ void TaskDesignProfileRegions::setError(const QString& message)
 
 void TaskDesignProfileRegions::restoreSelectionSketchVisibility()
 {
-    if (selectionSketchName.empty() || !operation || !operation->getDocument()
-        || selectionSketchWasVisible || !Gui::Application::Instance) {
-        selectionSketchName.clear();
-        selectionSketchWasVisible = false;
+    detachSelection();
+    if (!pickingVisibility) {
         return;
     }
-    if (auto* sketch = operation->getDocument()->getObject(selectionSketchName.c_str())) {
-        if (auto* viewProvider = Gui::Application::Instance->getViewProvider(sketch)) {
-            viewProvider->hide();
+    auto* document = App::GetApplication().getDocument(selectionDocumentName.c_str());
+    if (document) {
+        pickingVisibility->restore(document);
+        auto* object = document->getObjectByID(selectionOperationId);
+        if (auto* view = object
+                ? Gui::Application::Instance->getViewProvider<PartDesignGui::ViewProvider>(object)
+                : nullptr) {
+            view->setProfilePicking(false);
+            view->showPreview(pickingPreviewWasEnabled);
         }
     }
-    selectionSketchName.clear();
-    selectionSketchWasVisible = false;
+    pickingVisibility.reset();
+    selectionDocumentName.clear();
 }
 
 void TaskDesignProfileRegions::toggleRegionSelection(bool selecting)
@@ -179,7 +191,23 @@ void TaskDesignProfileRegions::toggleRegionSelection(bool selecting)
 
     if (selecting) {
         restoreSelectionSketchVisibility();
-        selectionSketchName = sketch->getNameInDocument();
+        pickingVisibility = std::make_unique<TaskInternal::VisibilitySnapshot>();
+        selectionDocumentName = operation->getDocument()->getName();
+        selectionOperationId = operation->getID();
+        pickingVisibility->captureObject(sketch);
+        for (auto* body : operation->getDocument()->getObjectsOfType<PartDesign::Body>()) {
+            pickingVisibility->captureObject(body);
+            if (auto* view = Gui::Application::Instance->getViewProvider(body)) {
+                view->hide();
+            }
+        }
+        pickingVisibility->captureObject(operation);
+        if (auto* view = Gui::Application::Instance->getViewProvider<PartDesignGui::ViewProvider>(operation)) {
+            view->setProfilePicking(true);
+            pickingPreviewWasEnabled = view->isPreviewEnabled();
+            view->showPreview(false);
+            view->hide();
+        }
         if (auto* sketchObject = freecad_cast<Sketcher::SketchObject*>(sketch);
             sketchObject && !sketchObject->MakeInternals.getValue()) {
             sketchObject->MakeInternals.setValue(true);
@@ -187,14 +215,15 @@ void TaskDesignProfileRegions::toggleRegionSelection(bool selecting)
         }
         if (Gui::Application::Instance) {
             if (auto* viewProvider = Gui::Application::Instance->getViewProvider(sketch)) {
-                selectionSketchWasVisible = viewProvider->isVisible();
                 viewProvider->show();
             }
         }
         Gui::Selection().clearSelection(sketch->getDocument()->getName());
+        attachSelection();
+        regionSummary->setText(tr("No areas selected"));
         selectRegions->setText(tr("Done"));
         entireSketch->setEnabled(false);
-        setError(tr("Select one or more filled sketch areas in the 3D view, then click Done."));
+        setError(tr("Bodies are temporarily hidden. Click inside a filled sketch area; use Ctrl-click for more areas, then click Done. Edges are not areas."));
         return;
     }
 
@@ -231,6 +260,29 @@ bool TaskDesignProfileRegions::applyViewportSelection()
         return false;
     }
     return setProfile(*selection.sketch, selection.regions);
+}
+
+void TaskDesignProfileRegions::onSelectionChanged(const Gui::SelectionChanges&)
+{
+    if (!selectRegions->isChecked() || !operation || !operation->getDocument()) {
+        return;
+    }
+    SketchProfileSelection selection;
+    for (auto& selected : Gui::Selection().getSelectionEx(operation->getDocument()->getName())) {
+        auto* sketch = freecad_cast<Part::Part2DObject*>(selected.getObject());
+        if (!sketch) {
+            selection.valid = false;
+            continue;
+        }
+        mergeSketchProfileSelection(selection, *sketch, selected.getSubNames());
+    }
+    regionSummary->setText(tr("%n selected area(s)", nullptr, static_cast<int>(selection.regions.size())));
+    if (!selection.valid || selection.wholeSketch) {
+        setError(tr("Click inside a filled sketch area, not an edge or a tree item."));
+    }
+    else if (!selection.regions.empty()) {
+        setError(tr("Selected areas are highlighted in the view. Ctrl-click to add/remove areas; click Done to use them."));
+    }
 }
 
 bool TaskDesignProfileRegions::setProfile(
@@ -496,6 +548,10 @@ TaskDesignOperationTargets::TaskDesignOperationTargets(App::DocumentObject* oper
         proxy
     ));
     layout->addWidget(targetBodies);
+    targetHint = new QLabel(proxy);
+    targetHint->setObjectName(QStringLiteral("DesignTargetHint"));
+    targetHint->setWordWrap(true);
+    layout->addWidget(targetHint);
     if (splitMode) {
         auto* buttons = new QHBoxLayout();
         buttons->addWidget(addSplitDefinitions);
@@ -523,7 +579,35 @@ TaskDesignOperationTargets::TaskDesignOperationTargets(App::DocumentObject* oper
         this,
         &TaskDesignOperationTargets::applySelection
     );
-    connect(targetBodies, &QListWidget::itemChanged, this, &TaskDesignOperationTargets::applySelection);
+    connect(targetBodies, &QListWidget::itemChanged, this, [this]() {
+        targetSelectionExplicit = true;
+        if (targetSearch) {
+            targetSearch->request_stop();
+        }
+        applySelection();
+    });
+    targetGeometryConnection = operation->getDocument()->signalChangedObject.connect(
+        [this](const App::DocumentObject& object, const App::Property& property) {
+            const std::string_view name = property.getName();
+            if ((&object == this->operation && name == "AddSubShape")
+                || name == "Shape" || name == "Placement") {
+                queueTargetSuggestion();
+            }
+        }
+    );
+    targetDeletionConnection = operation->getDocument()->signalDeletedObject.connect(
+        [this](const App::DocumentObject& object) {
+            if (&object == this->operation) {
+                // Cancel rolls the provisional operation back before Qt deletes
+                // its task widgets. Invalidate queued work at that boundary.
+                targetGeometryConnection.disconnect();
+                if (targetSearch) {
+                    targetSearch->request_stop();
+                }
+                this->operation = nullptr;
+            }
+        }
+    );
     if (scaleMode) {
         connect(scaleUniform, &QCheckBox::toggled, this, [this](bool uniform) {
             scaleUniformFactor->setEnabled(uniform);
@@ -619,7 +703,156 @@ TaskDesignOperationTargets::TaskDesignOperationTargets(App::DocumentObject* oper
     }
 }
 
-TaskDesignOperationTargets::~TaskDesignOperationTargets() = default;
+TaskDesignOperationTargets::~TaskDesignOperationTargets()
+{
+    if (targetSearch) {
+        targetSearch->request_stop();
+    }
+}
+
+void TaskDesignOperationTargets::queueTargetSuggestion()
+{
+    if (targetSearch) {
+        targetSearch->request_stop();
+    }
+    if (suggestionQueued) {
+        return;
+    }
+    suggestionQueued = true;
+    QTimer::singleShot(0, this, [this]() {
+        suggestionQueued = false;
+        suggestTargets();
+    });
+}
+
+void TaskDesignOperationTargets::suggestTargets()
+{
+    auto* feature = freecad_cast<PartDesign::ProfileBased*>(operation);
+    const auto mode = resultMode->currentData().toString();
+    if (!feature || fixedResultMode || fixedModifyMode
+        || (mode != QStringLiteral("Join") && mode != QStringLiteral("Cut")
+            && mode != QStringLiteral("Intersect"))) {
+        targetHint->clear();
+        return;
+    }
+    if (!selectedBodies().empty()) {
+        targetHint->setText(tr("Checked Bodies will be modified. Uncheck a Body to exclude it."));
+        return;
+    }
+    if (targetSelectionExplicit) {
+        targetHint->setText(tr("Check at least one target Body to continue."));
+        return;
+    }
+    auto* additive = freecad_cast<PartDesign::FeatureAddSub*>(feature);
+    if (!additive || additive->AddSubShape.getShape().isNull()) {
+        targetHint->setText(tr("Set a valid profile and length before choosing target Bodies."));
+        return;
+    }
+
+    struct Candidate {
+        int row;
+        TopoDS_Shape shape;
+        Base::Placement frame;
+    };
+    std::vector<Candidate> candidates;
+    for (int row = 0; row < targetBodies->count(); ++row) {
+        auto* body = bodies.at(static_cast<std::size_t>(row));
+        auto* state = freecad_cast<Part::Feature*>(PartDesign::designBodyStateBefore(
+            body, edit.provisionalOperation ? nullptr : operation
+        ));
+        if (state && !state->Shape.getShape().isNull()
+            && targetBodies->item(row)->flags().testFlag(Qt::ItemIsEnabled)) {
+            candidates.push_back({row, state->Shape.getShape().getShape(),
+                                  App::GeoFeature::getGlobalPlacement(body)});
+        }
+    }
+    targetHint->setText(tr("Finding intersecting Bodies…"));
+    auto cancellation = std::make_shared<std::stop_source>();
+    targetSearch = cancellation;
+    QPointer<TaskDesignOperationTargets> task(this);
+    const auto frame = App::GeoFeature::getGlobalPlacement(feature);
+    const auto tool = additive->AddSubShape.getShape().getShape();
+    const auto* toleranceProperty = dynamic_cast<const App::PropertyFloat*>(feature->getPropertyByName("FuzzyTolerance"));
+    const double tolerance = toleranceProperty ? toleranceProperty->getValue() : 0.0;
+    auto* runtime = &App::GetApplication().hostRuntime();
+    runtime->submitWithCompletion(
+        App::HostRuntime::Lane::Compute,
+        [candidates = std::move(candidates), tool, frame, mode, tolerance, cancellation, runtime]
+        (std::stop_token stop) {
+            std::vector<int> matches;
+            std::vector<unsigned char> contact(candidates.size(), 0);
+            runtime->parallelFor(candidates.size(), [&](std::size_t index) {
+                if (stop.stop_requested() || cancellation->stop_requested()) {
+                    cancellation->request_stop();
+                    return;
+                }
+                const auto& candidate = candidates[index];
+                auto privateTool = Part::TopoShape(tool).makeElementCopy();
+                privateTool.transformShape(frame.toMatrix(), true, true);
+                auto privateBody = Part::TopoShape(candidate.shape).makeElementCopy();
+                privateBody.transformShape(candidate.frame.toMatrix(), true, true);
+                auto bounds = privateTool.getBoundBox();
+                bounds.Enlarge(tolerance);
+                if (bounds.Intersect(privateBody.getBoundBox()) && PartDesign::designToolContactsBody(
+                        privateBody, privateTool, mode == QStringLiteral("Join"), tolerance)) {
+                    contact[index] = 1;
+                }
+            });
+            for (std::size_t index = 0; index < candidates.size(); ++index) {
+                if (contact[index]) {
+                    matches.push_back(candidates[index].row);
+                }
+            }
+            return matches;
+        },
+        [task, cancellation](std::future<std::vector<int>> future) {
+            std::vector<int> matches;
+            QString error;
+            try {
+                matches = future.get();
+            }
+            catch (const Standard_Failure& failure) {
+                error = QString::fromUtf8(failure.GetMessageString());
+            }
+            catch (const std::exception& failure) {
+                error = QString::fromUtf8(failure.what());
+            }
+            Gui::dispatchToGuiFrame([task, cancellation, matches = std::move(matches), error]() {
+                if (!task || cancellation->stop_requested()
+                    || task->targetSearch != cancellation || task->targetSelectionExplicit) {
+                    return;
+                }
+                if (!error.isEmpty()) {
+                    task->targetHint->setText(tr("Target detection failed: %1. Select Bodies manually.").arg(error));
+                    return;
+                }
+                if (matches.size() == 1) {
+                    {
+                        const QSignalBlocker blocker(task->targetBodies);
+                        task->targetBodies->item(matches.front())->setCheckState(Qt::Checked);
+                    }
+                    task->configureOperation();
+                    task->targetHint->setText(tr("Selected the only intersecting Body. Review the checked target before accepting."));
+                }
+                else {
+                    const QSignalBlocker blocker(task->targetBodies);
+                    for (int row = 0; row < task->targetBodies->count(); ++row) {
+                        auto* item = task->targetBodies->item(row);
+                        auto font = item->font();
+                        font.setBold(std::ranges::find(matches, row) != matches.end());
+                        item->setFont(font);
+                    }
+                    for (int row : matches) {
+                        task->targetBodies->item(row)->setToolTip(tr("Intersects this operation; check to include."));
+                    }
+                    task->targetHint->setText(matches.empty()
+                        ? tr("No Body intersects this operation. Adjust its length or direction, or choose New Body.")
+                        : tr("%n Bodies intersect. Check the Bodies you want to modify.", nullptr, static_cast<int>(matches.size())));
+                }
+            });
+        }
+    );
+}
 
 PartDesign::DesignOperationProperties* TaskDesignOperationTargets::operationProperties() const
 {
@@ -1312,6 +1545,7 @@ void TaskDesignOperationTargets::configureOperation()
         feature->recomputeFeature();
         feature->recomputePreview();
     }
+    queueTargetSuggestion();
 }
 
 void TaskDesignOperationTargets::configureScale()

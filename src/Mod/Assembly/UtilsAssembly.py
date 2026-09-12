@@ -22,6 +22,8 @@
 # **************************************************************************/
 
 import math
+import threading
+from contextlib import contextmanager
 
 import FreeCAD as App
 import Part
@@ -36,6 +38,35 @@ translate = App.Qt.translate
 __title__ = "Assembly utilitary functions"
 __author__ = "Ondsel"
 __url__ = "https://www.freecad.org"
+
+
+_presentation_changes = threading.local()
+
+
+@contextmanager
+def presentationPlacementChanges(document, object_ids, assembly=None):
+    """Identify exact transient placement notifications within one owner callback.
+
+    This is not a document lease or a session-wide edit exemption. Callers must
+    not pump events or yield inside the scope. Other properties, objects and
+    threads retain their normal mutation semantics.
+    """
+    previous = getattr(_presentation_changes, 'current', None)
+    native_previous = assembly.setSimulationPresentation(True) if assembly is not None else None
+    _presentation_changes.current = (document, object_ids)
+    try:
+        yield
+    finally:
+        _presentation_changes.current = previous
+        if assembly is not None:
+            assembly.setSimulationPresentation(native_previous)
+
+
+def isPresentationPlacementChange(obj, property_name):
+    if property_name not in {'Placement', 'LinkPlacement'}:
+        return False
+    current = getattr(_presentation_changes, 'current', None)
+    return bool(current is not None and obj.Document is current[0] and obj.ID in current[1])
 
 
 def activePartOrAssembly():
@@ -2206,9 +2237,11 @@ def _restoreExactAssemblyPartPlacements(
             )
         return False
 
-    for part, placement in live_parts:
-        part.Placement = App.Placement(placement)
-        part.purgeTouched()
+    with presentationPlacementChanges(document, frozenset(part.ID for part, _ in live_parts), assembly):
+        for part, placement in live_parts:
+            if not part.Placement.isSame(placement):
+                part.Placement = App.Placement(placement)
+                part.purgeTouched()
     return True
 
 
