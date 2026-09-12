@@ -54,6 +54,10 @@ from VibeCADTools import (
 from VibeCADNativeOutput import NativeOutputAuthorizer
 from VibeCADNativeInput import NativeInputAuthorizer
 import VibeCADVibeScriptDomains as vibescript_domains
+from VibeCADTokenUsage import (
+    sanitize_usage_metadata,
+    usage_metadata_for_status,
+)
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -349,6 +353,8 @@ class VibeCADResponse:
     context: dict[str, Any]
     tool_trace: list[dict[str, Any]]
     error: str | None = None
+    # Optional actual provider usage; appended to preserve positional callers.
+    usage: dict[str, Any] | None = None
 
 
 def _on_document_thread(
@@ -6095,6 +6101,16 @@ def _run_session_turn(
     )
     provider_name = active_provider.__class__.__name__
     provider_runtime = provider_execution_identity(active_provider)
+    observed_usage: dict[str, Any] | None = None
+
+    def _provider_progress(event: dict[str, Any]) -> None:
+        nonlocal observed_usage
+        if event.get("event") == "provider_usage":
+            candidate = sanitize_usage_metadata(event.get("usage"))
+            if candidate is not None:
+                observed_usage = candidate
+        _emit(progress_callback, event)
+
     tool_runner = make_provider_tool_runner(
         active_service,
         tool_trace=tool_trace,
@@ -6154,15 +6170,27 @@ def _run_session_turn(
             context,
             tool_runner,
             cancellation_check,
-            progress_callback,
+            _provider_progress,
         )
         final_output = str(result.final_output or "").strip()
+        result_usage = getattr(result, "usage", None)
+        if result_usage is None and isinstance(result.raw, Mapping):
+            result_usage = result.raw.get("usage")
+        normalized_result_usage = sanitize_usage_metadata(result_usage)
+        if normalized_result_usage is not None:
+            observed_usage = normalized_result_usage
+        completed_usage = usage_metadata_for_status(
+            observed_usage,
+            status="completed",
+        )
         if final_output:
             turn_metadata: dict[str, Any] = {
                 "provider_runtime": provider_runtime,
             }
             if session_trigger:
                 turn_metadata["session_trigger"] = session_trigger
+            if completed_usage is not None:
+                turn_metadata["usage"] = completed_usage
             _persist_session_conversation_turn(
                 active_service,
                 "assistant",
@@ -6180,6 +6208,11 @@ def _run_session_turn(
                     "provider_runtime": provider_runtime,
                     "turn": 1,
                     "text": final_output,
+                    **(
+                        {"usage": completed_usage}
+                        if completed_usage is not None
+                        else {}
+                    ),
                 },
             )
         final_context = _build_context_for_provider(
@@ -6195,6 +6228,11 @@ def _run_session_turn(
                 "provider_runtime": provider_runtime,
                 "turn": 1,
                 "tool_count": len(tool_trace),
+                **(
+                    {"usage": completed_usage}
+                    if completed_usage is not None
+                    else {}
+                ),
             },
         )
         return VibeCADResponse(
@@ -6202,10 +6240,19 @@ def _run_session_turn(
             final_output=final_output,
             context=final_context,
             tool_trace=tool_trace,
+            usage=completed_usage,
         )
     except ProviderUnavailable as exc:
         provider_error = str(exc)
         final_output = f"{provider_name} failed before returning a usable AI result: {provider_error}"
+        failed_usage = usage_metadata_for_status(
+            observed_usage,
+            status=(
+                "cancelled"
+                if cancellation_check is not None and cancellation_check()
+                else "failed"
+            ),
+        )
         _emit(
             progress_callback,
             {
@@ -6215,6 +6262,11 @@ def _run_session_turn(
                 "turn": 1,
                 "error": str(exc),
                 "tool_count": len(tool_trace),
+                **(
+                    {"usage": failed_usage}
+                    if failed_usage is not None
+                    else {}
+                ),
             },
         )
         failed_context = _build_context_for_provider(
@@ -6228,6 +6280,7 @@ def _run_session_turn(
             context=failed_context,
             tool_trace=tool_trace,
             error=str(exc),
+            usage=failed_usage,
         )
     finally:
         close_tool_runner = getattr(tool_runner, "close", None)

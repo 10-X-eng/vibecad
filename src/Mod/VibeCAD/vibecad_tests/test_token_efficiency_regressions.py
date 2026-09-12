@@ -416,3 +416,28 @@ def test_incomplete_or_malformed_history_is_not_classified_as_simple(wire, histo
         model="selected-model", api_key="fake", auth_mode="api_key", adaptive_reasoning=True,
     ).run(prompt, ctx)
     assert result.raw["effective_reasoning_effort"] == "high"
+
+
+def test_context_reuse_retains_usage_and_adaptive_reasoning_metadata(wire):
+    """Accounting and context reuse must survive the same managed turns."""
+    def report_usage(client):
+        number = sum(name == "turn/start" for name, _ in wire.requests)
+        client.notification_handler("thread/tokenUsage/updated", {
+            "threadId": "thread", "turnId": f"turn-{number}",
+            "tokenUsage": {
+                "last": {"inputTokens": 100, "outputTokens": 20, "totalTokens": 120},
+                "total": {"inputTokens": number * 100, "outputTokens": number * 20,
+                          "totalTokens": number * 120},
+            },
+        })
+
+    wire.on_turn = report_usage
+    ctx = context()
+    first, _ = run(wire, ctx, adaptive=True)
+    second, request = run(wire, ctx, adaptive=True)
+    assert reference(request)["anchor_turn_id"] == "turn-1"
+    for result, expected_effort in ((first, "medium"), (second, "high")):
+        assert result.raw["model"] == "selected-model"
+        assert result.raw["effective_reasoning_effort"] == expected_effort
+        assert result.raw["usage"] == result.usage
+        assert result.usage["turn"]["total_tokens"] == 120
