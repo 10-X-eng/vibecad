@@ -27,6 +27,7 @@
 #include <set>
 #include <vector>
 #include <string>
+#include <utility>
 
 #include <limits>
 #include <locale>
@@ -303,12 +304,66 @@ std::string Writer::addFile(const char* Name, const Base::Persistence* Object)
         temp.FileName = FileNameManager.makeUniqueName(temp.FileName);
     }
     temp.Object = Object;
+    temp.captureDispatcher = fileCaptureDispatcher;
 
     FileList.push_back(temp);
     FileNameManager.addExactName(temp.FileName);
 
     // return the unique file name
     return temp.FileName;
+}
+
+void Writer::captureOnOwner(const CaptureDispatcher& dispatch, const std::function<void()>& capture)
+{
+    if (!dispatch || CharStream) {
+        throw Base::RuntimeError("Invalid owner persistence capture state");
+    }
+    auto& output = Stream();
+    if (!output.good()) {
+        throw Base::RuntimeError("Cannot capture into a failed persistence stream");
+    }
+    // Allocate dispatcher copies before redirecting the stream: allocation
+    // failure must never leave it pointing at a destroyed temporary buffer.
+    auto nextDispatcher = dispatch;
+    std::stringbuf captured;
+    auto previousDispatcher = std::move(fileCaptureDispatcher);
+    const auto firstFile = FileList.size();
+    auto* destination = output.rdbuf(&captured);
+    fileCaptureDispatcher = std::move(nextDispatcher);
+    try {
+        dispatch([&] {
+            capture();
+            if (CharStream || !output.good()) {
+                throw Base::RuntimeError("Incomplete owner persistence capture");
+            }
+        });
+    }
+    catch (...) {
+        // A failed character encoder must release its reference to the temporary
+        // buffer before that buffer dies. Never flush partial output to disk.
+        CharStream.reset();
+        output.rdbuf(destination);
+        fileCaptureDispatcher = std::move(previousDispatcher);
+        while (FileList.size() > firstFile) {
+            FileNameManager.removeExactName(FileList.back().FileName);
+            FileList.pop_back();
+        }
+        throw;
+    }
+    output.rdbuf(destination);
+    fileCaptureDispatcher = std::move(previousDispatcher);
+    const auto bytes = captured.view();
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+void Writer::writeFile(const FileEntry& entry)
+{
+    if (entry.captureDispatcher) {
+        captureOnOwner(entry.captureDispatcher, [&] { entry.Object->SaveDocFile(*this); });
+    }
+    else {
+        entry.Object->SaveDocFile(*this);
+    }
 }
 
 void Writer::incInd()
@@ -336,6 +391,9 @@ void Writer::decInd()
 
 void Writer::putNextEntry(const char* file, const char* obj)
 {
+    if (fileCaptureDispatcher) {
+        throw Base::RuntimeError("An owner capture cannot change archive entries");
+    }
     ObjectName = obj ? obj : file;
 }
 
@@ -376,7 +434,7 @@ void ZipWriter::writeFiles()
         putNextEntry(entry.FileName.c_str());
         indent = 0;
         indBuf[0] = 0;
-        entry.Object->SaveDocFile(*this);
+        writeFile(entry);
         index++;
     }
 }
@@ -431,7 +489,7 @@ void FileWriter::writeFiles()
             putNextEntry(entry.FileName.c_str());
             indent = 0;
             indBuf[0] = 0;
-            entry.Object->SaveDocFile(*this);
+            writeFile(entry);
             this->FileStream.close();
         }
 

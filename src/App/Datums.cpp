@@ -412,6 +412,5 @@ bool LocalCoordinateSystem::extensionGetSubObject(DocumentObject*& ret,
 
 bool LocalCoordinateSystem::hasObject(const DocumentObject* obj, [[maybe_unused]] bool recursive) const
 {
-    const auto& features = OriginFeatures.getValues();
-    return std::ranges::find(features, obj) != features.end();
+    return OriginFeatures.findObject(obj) >= 0;
 }

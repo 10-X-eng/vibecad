@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 import time
 from typing import Any, Callable, Mapping
 
@@ -276,12 +277,29 @@ class NativeProviderToolRunner:
         result = self._wait_for_active_background_job(name)
         if result is None:
             result = self._document_dispatch(
-                lambda: self._execution.dispatcher.call(
+                lambda: self._execution.dispatcher.call_async(
                     name,
                     arguments_json,
                     provider_call_id,
+                    document_dispatch=self._document_dispatch,
                 )
             )
+            if isinstance(result, Future):
+                pending = result
+                while True:
+                    if self._cancelled is not None and self._cancelled():
+                        pending.cancel()
+                        result = {'ok': False, 'error_code': 'NATIVE_RUN_CANCELLED',
+                                  'error': 'VibeCAD stopped the pending Native call.'}
+                        break
+                    try:
+                        # This is a provider-thread wait, not a solver deadline
+                        # or a model-visible polling loop. Qt remains free to
+                        # finish the native job and validate its result.
+                        result = pending.result(timeout=0.1)
+                        break
+                    except FutureTimeout:
+                        continue
         if self._debug_events is not None and self._debug_capture_directory:
             events = [dict(event) for event in self._debug_events]
             self._debug_events.clear()

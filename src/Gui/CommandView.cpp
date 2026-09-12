@@ -2585,7 +2585,10 @@ VibeCADCmdSectionView::VibeCADCmdSectionView()
 void VibeCADCmdSectionView::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    doCommand(Command::Gui, "import VibeCADSectionView; VibeCADSectionView.toggle_section_view()");
+    doCommand(
+        Command::Gui,
+        "import VibeCADSectionView; VibeCADSectionView.request_section_view_toggle()"
+    );
 }
 
 bool VibeCADCmdSectionView::isActive()

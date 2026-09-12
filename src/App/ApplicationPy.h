@@ -67,6 +67,7 @@ public:
                                                (PyObject *self,PyObject *args, PyObject *kwd);
     static PyObject* sNewDocument            (PyObject *self,PyObject *args, PyObject *kwd);
     static PyObject* sCloseDocument          (PyObject *self,PyObject *args);
+    static PyObject* sRequestCloseDocument   (PyObject *self,PyObject *args);
     static PyObject* sActiveDocument         (PyObject *self,PyObject *args);
     static PyObject* sSetActiveDocument      (PyObject *self,PyObject *args);
     static PyObject* sGetDocument            (PyObject *self,PyObject *args);
@@ -88,6 +89,9 @@ public:
     static PyObject *sGetActiveTransaction   (PyObject *self,PyObject *args);
     static PyObject *sCloseActiveTransaction (PyObject *self,PyObject *args);
     static PyObject *sCheckAbort             (PyObject *self,PyObject *args);
+    static PyObject *sConfigureHostIsolationRuntime(PyObject *self, PyObject *args);
+    static PyObject *sExecuteHostIsolationRequest(PyObject *self, PyObject *args);
+    static PyObject *sHostRuntimeStatus      (PyObject *self, PyObject *args);
     static PyMethodDef    Methods[];
     // clang-format on
 };

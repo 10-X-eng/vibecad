@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import Future
 import math
 import re
 import secrets
@@ -133,6 +134,41 @@ def _open_player(simulation: Any, time_seconds: float) -> Any:
         autoplay=False,
         time_seconds=time_seconds,
     )
+
+
+def _open_player_async(simulation: Any, time_seconds: float) -> Future:
+    from CommandCreateSimulation import openSimulationAsync
+
+    return openSimulationAsync(simulation, autoplay=False, time_seconds=time_seconds)
+
+
+def _playback_completion(context, pending, transform, *, cancel_completed=None):
+    """Map a ready player result on its owner, including dispatcher failure."""
+    result = Future()
+
+    def complete():
+        if not result.set_running_or_notify_cancel():
+            return
+        try:
+            result.set_result(transform(pending.result()))
+        except Exception as error:
+            result.set_exception(error)
+
+    def ready(_done):
+        try:
+            context.document_thread_dispatch(complete)
+        except Exception as error:
+            if not result.done() and result.set_running_or_notify_cancel():
+                result.set_exception(error)
+
+    def cancelled(done):
+        if done.cancelled():
+            if not pending.cancel() and cancel_completed is not None:
+                context.document_thread_dispatch(cancel_completed)
+
+    result.add_done_callback(cancelled)
+    pending.add_done_callback(ready)
+    return result
 
 
 def _task_widgets(dialog: Any) -> tuple[Any, ...]:
@@ -459,6 +495,23 @@ def open_native_assembly_playback(
 ) -> dict[str, Any]:
     """Generate frames and open one exact read-only native player."""
 
+    return _open_native_assembly_playback(context, spec, opener=opener, event_pump=event_pump)
+
+
+def open_native_assembly_playback_async(
+    context: NativeRuntimeContext,
+    spec: AssemblyPlaybackOpenSpec,
+    *,
+    opener: Callable[[Any, float], Future] = _open_player_async,
+) -> Future:
+    """Preserve exact launch checks after nonblocking generation and display."""
+    if not callable(context.document_thread_dispatch):
+        raise NativeAssemblyPlaybackError("Asynchronous playback requires the document dispatcher.")
+    return _open_native_assembly_playback(context, spec, opener=opener, event_pump=lambda: None)
+
+
+def _open_native_assembly_playback(context, spec, *, opener, event_pump):
+
     if not isinstance(context, NativeRuntimeContext):
         raise TypeError("context must be a NativeRuntimeContext")
     state, assembly, simulation, expected_frame, exact_time = _validate_open(
@@ -472,17 +525,28 @@ def open_native_assembly_playback(
     camera_before = _active_camera(document)
     modified_before = _gui_modified(document)
     selection_before = read_current_selection(document)
-    panel = None
     dialog = None
+    launch_content = ()
     playback_id = ""
-    try:
-        panel = opener(simulation, exact_time)
+
+    def owned_dialog():
+        current = _active_task_dialog()
+        content = tuple(current.getDialogContent()) if current is not None else ()
+        if (launch_content and len(content) == len(launch_content)
+                and all(first is second for first, second in zip(content, launch_content))):
+            return current
+        return None
+
+    def finish(panel):
+        nonlocal playback_id
         event_pump()
-        dialog = _active_task_dialog()
+        current_dialog = owned_dialog()
         frame_count = int(assembly.numberOfFrames())
         if (
             panel is None
             or dialog is None
+            or current_dialog is None
+            or not any(widget is panel.form for widget in _task_widgets(current_dialog))
             or not bool(getattr(panel, "playback_only", False))
             or getattr(panel, "assembly", None) is not assembly
             or getattr(panel, "simFeaturePy", None) is not simulation
@@ -539,21 +603,43 @@ def open_native_assembly_playback(
             panel.animationTimerStartBackward()
         event_pump()
         return _status(session, "show")
-    except Exception as exc:
-        if dialog is None:
-            dialog = _active_task_dialog()
-        if dialog is not None:
+
+    def fail(exc):
+        current = owned_dialog()
+        if current is not None:
             try:
-                dialog.reject()
+                current.reject()
                 event_pump()
             except (AttributeError, ReferenceError, RuntimeError):
                 pass
         _forget_session(context.document_uid, playback_id)
         if isinstance(exc, NativeAssemblyPlaybackError):
-            raise
+            raise exc
         raise NativeAssemblyPlaybackError(
             "The exact Assembly simulation could not be opened."
         ) from exc
+
+    try:
+        pending = opener(simulation, exact_time)
+        dialog = _active_task_dialog()
+        launch_content = tuple(dialog.getDialogContent()) if dialog is not None else ()
+        if not isinstance(pending, Future):
+            return finish(pending)
+    except Exception as exc:
+        return fail(exc)
+
+    def complete(panel):
+        try:
+            return finish(panel)
+        except Exception as exc:
+            return fail(exc)
+
+    def cancel_completed():
+        current = owned_dialog()
+        if current is not None:
+            current.reject()
+
+    return _playback_completion(context, pending, complete, cancel_completed=cancel_completed)
 
 
 def _require_session(
@@ -645,6 +731,35 @@ def control_native_assembly_playback(
             "The exact Native Assembly player closed during playback control."
         )
     return _status(session, clean_operation)
+
+
+def control_native_assembly_playback_async(context, operation, spec):
+    """Wait for exact paused frames without waiting on the document owner."""
+    if operation not in {'seek', 'step', 'pause'}:
+        return control_native_assembly_playback(context, operation, spec)
+    if not callable(context.document_thread_dispatch):
+        raise NativeAssemblyPlaybackError('Asynchronous playback requires the document dispatcher.')
+    session = _require_session(context, spec)
+    panel = session.panel
+    count = int(session.assembly.numberOfFrames())
+    frame = int(panel.form.frameSlider.value())
+    if operation == 'seek':
+        frame, _ = _grid_frame(session.simulation, spec.time_seconds, frame_count=count)
+    elif operation == 'step':
+        if spec.direction not in _PLAYBACK_DIRECTIONS:
+            raise NativeAssemblyPlaybackError('direction must be forward or backward.')
+        frame += 1 if spec.direction == 'forward' else -1
+        frame = 1 if frame >= count else count - 1 if frame < 1 else frame
+    pending = panel.requestFrameAsync(frame)
+
+    def complete(applied):
+        if applied != frame or _require_session(context, spec) is not session:
+            raise NativeAssemblyPlaybackError('The requested playback frame changed before completion.')
+        if int(panel.form.frameSlider.value()) != frame:
+            raise NativeAssemblyPlaybackError('The requested playback frame was superseded.')
+        return _status(session, operation)
+
+    return _playback_completion(context, pending, complete)
 
 
 def _close_playback(

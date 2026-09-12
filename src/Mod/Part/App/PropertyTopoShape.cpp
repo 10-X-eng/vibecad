@@ -395,7 +395,11 @@ void PropertyPartShape::Save(Base::Writer& writer) const
     }
     else if (binary) {
         writer.Stream() << " binary=\"1\">\n";
-        _Shape.exportBinary(writer.beginCharStream(Base::CharStreamFormat::Base64Encoded));
+        // OCCT binary persistence queries stream positions. A base64 filter is
+        // not seekable; serialize before encoding instead of passing it to OCCT.
+        std::ostringstream binaryStream;
+        _Shape.exportBinary(binaryStream);
+        writer.beginCharStream(Base::CharStreamFormat::Base64Encoded) << binaryStream.str();
         writer.endCharStream() << writer.ind() << "</Part>\n";
     }
     else {
@@ -456,9 +460,10 @@ void PropertyPartShape::Restore(Base::XMLReader& reader)
         }
     }
     else if (reader.hasAttribute(("binary")) && reader.getAttribute<long>("binary")) {
-        TopoShape shape;
-        shape.importBinary(reader.beginCharStream());
-        shape = shape.getShape();
+        auto& decoded = reader.beginCharStream(Base::CharStreamFormat::Base64Encoded);
+        std::istringstream binaryStream(
+            std::string {std::istreambuf_iterator<char>(decoded), {}});
+        shape.importBinary(binaryStream);
     }
     else if (reader.hasAttribute("brep") && reader.getAttribute<long>("brep")) {
         shape.importBrep(reader.beginCharStream(Base::CharStreamFormat::Raw));

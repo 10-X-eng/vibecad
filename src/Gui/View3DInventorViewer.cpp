@@ -22,6 +22,7 @@
  ******************************************************************************/
 
 #include <FCConfig.h>
+#include "FrameBudget.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1267,6 +1268,7 @@ void View3DInventorViewer::init()
 
 View3DInventorViewer::~View3DInventorViewer()
 {
+    PerformanceScope closeTiming("View3DInventorViewer destruction");
     // to prevent following OpenGL error message: "Texture is not valid in the current context.
     // Texture has not been destroyed"
     aboutToDestroyGLContext();
@@ -1298,14 +1300,20 @@ View3DInventorViewer::~View3DInventorViewer()
     this->pcBackGround->unref();
     this->pcBackGround = nullptr;
 
-    setSceneGraph(nullptr);
+    {
+        PerformanceScope sceneTiming("View3DInventorViewer detach scene graph");
+        setSceneGraph(nullptr);
+    }
     this->pEventCallback->unref();
     this->pEventCallback = nullptr;
     // Note: It can happen that there is still someone who references
     // the root node but isn't destroyed when closing this viewer so
     // that it prevents all children from being deleted. To reduce this
     // likelihood we explicitly remove all child nodes now.
-    coinRemoveAllChildren(this->pcViewProviderRoot);
+    {
+        PerformanceScope graphTiming("View3DInventorViewer release provider graph");
+        coinRemoveAllChildren(this->pcViewProviderRoot);
+    }
     this->pcViewProviderRoot->unref();
     this->pcViewProviderRoot = nullptr;
     this->objectGroup->unref();
@@ -1349,7 +1357,10 @@ View3DInventorViewer::~View3DInventorViewer()
     // order to free the memory.
     SoGLRenderAction* glAction = this->getSoRenderManager()->getGLRenderAction();
     this->getSoRenderManager()->setGLRenderAction(nullptr);
-    delete glAction;
+    {
+        PerformanceScope actionTiming("View3DInventorViewer release GL render action");
+        delete glAction;
+    }
 }
 
 void View3DInventorViewer::createStandardCursors()
@@ -1365,6 +1376,7 @@ void View3DInventorViewer::createStandardCursors()
 
 void View3DInventorViewer::aboutToDestroyGLContext()
 {
+    PerformanceScope contextTiming("View3DInventorViewer release GL context resources");
     if (naviCube) {
         if (auto gl = qobject_cast<QOpenGLWidget*>(this->viewport())) {
             gl->makeCurrent();

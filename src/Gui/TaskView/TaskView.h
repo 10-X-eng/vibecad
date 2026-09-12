@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include <map>
+#include <string>
 #include <vector>
 #include <optional>
 #include <QScrollArea>
@@ -150,10 +152,20 @@ public:
 
 struct TaskInfo
 {
+    enum class PendingCompletion
+    {
+        None,
+        Accept,
+        Reject,
+    };
+
     TaskPanel* taskPanel {nullptr};
     TaskDialog* ActiveDialog {nullptr};
     TaskEditControl* ActiveCtrl {nullptr};
     App::Document* Document {nullptr};
+    Connection cooperativeMutationConnection;
+    Connection presentationUpdateConnection;
+    PendingCompletion pendingCompletion {PendingCompletion::None};
 };
 
 /** TaskView class
@@ -216,6 +228,13 @@ protected:
     void clicked(QAbstractButton* button, App::Document* doc);
 
 private:
+    struct PendingTaskRecompute
+    {
+        std::string documentUid;
+        Connection cooperativeMutationConnection;
+        Connection presentationUpdateConnection;
+    };
+
     void triggerMinimumSizeHint();
     void adjustMinimumSizeHint();
     void saveCurrentWidth();
@@ -230,6 +249,12 @@ private:
     void slotUndoDocument(const App::Document&);
     void slotRedoDocument(const App::Document&);
     void transactionChangeOnDocument(const App::Document&, bool undo);
+    void updateDocumentWorkState(App::Document* document);
+    void scheduleTaskDocumentRecompute(App::Document* document);
+    void resumeTaskDocumentRecompute(
+        const std::string& documentName,
+        const std::string& documentUid
+    );
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
@@ -252,6 +277,7 @@ protected:
 
     // First index of the stack is reserved to the active watcher
     std::vector<TaskInfo> taskInfos;
+    std::map<std::string, PendingTaskRecompute> pendingTaskRecomputes;
     bool restoreWidth = false;
     int currentWidth = 0;
     ParameterGrp::handle hGrp;

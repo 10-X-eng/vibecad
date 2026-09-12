@@ -49,6 +49,7 @@ inline void QtPreviewUpdateScheduler::schedulePreviewRecompute(App::DocumentObje
         return;
     }
 
+    scheduled = true;
     QMetaObject::invokeMethod(this, &QtPreviewUpdateScheduler::flush, Qt::QueuedConnection);
 }
 

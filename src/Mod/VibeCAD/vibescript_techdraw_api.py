@@ -76,8 +76,6 @@ _PROJECTED_ELEMENT = re.compile(r"(?:Edge|Vertex|Face)[0-9]+\Z")
 _MAX_LABEL_CHARS = 256
 _MAX_TEXT_CHARS = 4096
 _MAX_FORMAT_CHARS = 512
-_MAX_SOURCES = 32
-_MAX_CONTENTS = 128
 _MAX_ANNOTATION_LINES = 64
 _MAX_EDITABLE_TEXTS = 64
 _MAX_REFERENCES = 3
@@ -229,11 +227,11 @@ def _reference(operation: str, parameter: str, value: Any) -> dict[str, str]:
 def _references(operation: str, value: Any) -> tuple[dict[str, str], ...]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise _error(operation, "sources", "must be a sequence of document references")
-    if not 1 <= len(value) <= _MAX_SOURCES:
+    if not value:
         raise _error(
             operation,
             "sources",
-            f"must contain 1-{_MAX_SOURCES} references",
+            "must contain at least one reference",
         )
     result = tuple(
         _reference(operation, f"sources[{index}]", item)
@@ -740,11 +738,11 @@ class TechDrawDomainAPI:
         )
         if isinstance(contents, (str, bytes)) or not isinstance(contents, Sequence):
             raise _error("page", "contents", "must be a sequence of TechDraw values")
-        if not 1 <= len(contents) <= _MAX_CONTENTS:
+        if not contents:
             raise _error(
                 "page",
                 "contents",
-                f"must contain 1-{_MAX_CONTENTS} values",
+                "must contain at least one value",
             )
         clean_contents = tuple(
             _nested_value(

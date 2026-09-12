@@ -26,6 +26,8 @@
 #include "GuiApplicationNativeEventAware.h"
 #include <Base/Interpreter.h>  // For Base::SystemExitException
 #include <QList>
+#include <QElapsedTimer>
+#include <QVariantMap>
 #include <memory>
 
 class QSessionManager;
@@ -54,9 +56,19 @@ public:
 
 public Q_SLOTS:
     void commitData(QSessionManager& manager);
+    /// Drain opt-in event timings on the GUI owner; performs no filesystem I/O.
+    QVariantMap takePerformanceEvents();
+    void recordPerformancePhase(const QString& name, qint64 elapsedNanoseconds);
 
 protected:
     bool event(QEvent* event) override;
+
+private:
+    bool traceEvents {false};
+    QElapsedTimer traceClock;
+    QVariantList eventTimings;
+    quint64 droppedEventTimings {0};
+    int eventTraceDepth {0};
 };
 
 class GUISingleApplication: public GUIApplication

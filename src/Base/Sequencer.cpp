@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 #include <algorithm>
 #include <cstdio>
@@ -35,10 +36,17 @@ namespace Base
 {
 struct SequencerP
 {
+    struct ProgressPulse
+    {
+        void (*handler)(void*) {nullptr};
+        void* context {nullptr};
+    };
+
     // members
     static std::vector<SequencerBase*> _instances; /**< A vector of all created instances */
     static SequencerLauncher* _topLauncher;        /**< The outermost launcher */
     static std::recursive_mutex mutex;             /**< A mutex-locker for the launcher */
+    static std::unordered_map<SequencerBase*, ProgressPulse> progressPulses;
     /** Sets a global sequencer object.
      * Access to the last registered object is performed by @see Sequencer().
      */
@@ -48,6 +56,7 @@ struct SequencerP
     }
     static void removeInstance(SequencerBase* sb)
     {
+        progressPulses.erase(sb);
         const auto it = std::ranges::find(_instances, sb);
         _instances.erase(it);
     }
@@ -64,10 +73,12 @@ struct SequencerP
 std::vector<SequencerBase*> SequencerP::_instances;
 SequencerLauncher* SequencerP::_topLauncher = nullptr;
 std::recursive_mutex SequencerP::mutex;
+std::unordered_map<SequencerBase*, SequencerP::ProgressPulse> SequencerP::progressPulses;
 }  // namespace Base
 
 SequencerBase& SequencerBase::Instance()
 {
+    std::lock_guard<std::recursive_mutex> locker(SequencerP::mutex);
     // not initialized?
     if (SequencerP::_instances.empty()) {
         new ConsoleSequencer();
@@ -78,11 +89,13 @@ SequencerBase& SequencerBase::Instance()
 
 SequencerBase::SequencerBase()
 {
+    std::lock_guard<std::recursive_mutex> locker(SequencerP::mutex);
     SequencerP::appendInstance(this);
 }
 
 SequencerBase::~SequencerBase()
 {
+    std::lock_guard<std::recursive_mutex> locker(SequencerP::mutex);
     SequencerP::removeInstance(this);
 }
 
@@ -119,6 +132,9 @@ void SequencerBase::stopStep()
 bool SequencerBase::next(bool canAbort)
 {
     this->nProgress++;
+
+    pulse();
+
     float fDiv = this->nTotalSteps > 0 ? static_cast<float>(this->nTotalSteps) : 1000.0F;
     int perc = int((float(this->nProgress) * (100.0F / fDiv)));
 
@@ -135,8 +151,36 @@ bool SequencerBase::next(bool canAbort)
     return this->nProgress < this->nTotalSteps;
 }
 
+void SequencerBase::pulse()
+{
+    SequencerP::ProgressPulse progressPulse;
+    {
+        std::lock_guard<std::recursive_mutex> locker(SequencerP::mutex);
+        if (!this->_bLocked) {
+            const auto pulse = SequencerP::progressPulses.find(this);
+            if (pulse != SequencerP::progressPulses.end()) {
+                progressPulse = pulse->second;
+            }
+        }
+    }
+    if (progressPulse.handler) {
+        progressPulse.handler(progressPulse.context);
+    }
+}
+
 void SequencerBase::nextStep(bool /*next*/)
 {}
+
+void SequencerBase::setProgressPulseHandler(ProgressPulseHandler handler, void* context)
+{
+    std::lock_guard<std::recursive_mutex> locker(SequencerP::mutex);
+    if (handler) {
+        SequencerP::progressPulses[this] = {handler, context};
+    }
+    else {
+        SequencerP::progressPulses.erase(this);
+    }
+}
 
 void SequencerBase::setProgress(size_t /*value*/)
 {}
@@ -187,11 +231,13 @@ bool SequencerBase::wasCanceled() const
 
 void SequencerBase::tryToCancel()
 {
+    std::lock_guard<std::recursive_mutex> locker(SequencerP::mutex);
     this->_bCanceled = true;
 }
 
 void SequencerBase::rejectCancel()
 {
+    std::lock_guard<std::recursive_mutex> locker(SequencerP::mutex);
     this->_bCanceled = false;
 }
 
@@ -202,6 +248,7 @@ int SequencerBase::progressInPercent() const
 
 void SequencerBase::resetData()
 {
+    std::lock_guard<std::recursive_mutex> locker(SequencerP::mutex);
     this->_bCanceled = false;
 }
 
@@ -264,7 +311,8 @@ bool SequencerLauncher::next(bool canAbort)
 {
     std::lock_guard<std::recursive_mutex> locker(SequencerP::mutex);
     if (SequencerP::_topLauncher != this) {
-        return true;  // ignore
+        SequencerBase::Instance().pulse();
+        return true;  // percentage presentation belongs to the outer launcher
     }
     return SequencerBase::Instance().next(canAbort);
 }

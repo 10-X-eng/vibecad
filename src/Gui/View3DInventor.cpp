@@ -22,6 +22,7 @@
 
 
 #include <string>
+#include "FrameBudget.h"
 #include <QApplication>
 #include <QKeyEvent>
 #include <QEvent>
@@ -154,6 +155,7 @@ View3DInventor::View3DInventor(
 
 View3DInventor::~View3DInventor()
 {
+    PerformanceScope closeTiming("View3DInventor destruction");
     if (_pcDocument) {
         SoCamera* Cam = _viewer->getSoRenderManager()->getCamera();
         if (Cam) {
@@ -441,15 +443,15 @@ bool View3DInventor::onMsg(const char* pMsg)
         return true;
     }
     else if (strcmp("Save", pMsg) == 0) {
-        getGuiDocument()->save();
+        getGuiDocument()->saveAsync();
         return true;
     }
     else if (strcmp("SaveAs", pMsg) == 0) {
-        getGuiDocument()->saveAs();
+        getGuiDocument()->saveAsAsync();
         return true;
     }
     else if (strcmp("SaveCopy", pMsg) == 0) {
-        getGuiDocument()->saveCopy();
+        getGuiDocument()->saveCopyAsync();
         return true;
     }
     else if (strcmp("AlignToSelection", pMsg) == 0) {

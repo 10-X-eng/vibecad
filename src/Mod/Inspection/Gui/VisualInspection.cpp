@@ -56,8 +56,14 @@ constexpr int ObjectIdRole = Qt::UserRole + 1;
 
 std::vector<App::DocumentObject*> VisualInspection::candidateObjects(App::Document* document)
 {
+    return candidateObjects(document, std::numeric_limits<std::size_t>::max());
+}
+
+std::vector<App::DocumentObject*> VisualInspection::candidateObjects(
+    App::Document* document, std::size_t maximum)
+{
     std::vector<App::DocumentObject*> candidates;
-    if (!document) {
+    if (!document || maximum == 0) {
         return candidates;
     }
 
@@ -83,6 +89,9 @@ std::vector<App::DocumentObject*> VisualInspection::candidateObjects(App::Docume
         Inspection::ResolvedSource source;
         if (Inspection::resolveSource(candidate, document, source)) {
             candidates.push_back(candidate);
+            if (candidates.size() == maximum) {
+                break;
+            }
         }
     }
     return candidates;

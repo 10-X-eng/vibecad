@@ -241,9 +241,10 @@ getModelingShapeSelection(const char* documentName = nullptr);
 /**
  * Return whether a retained modeling task may own its document transaction.
  *
- * A clean document is always safe. A nested command may reuse a transaction
- * only when the outermost GUI command began transaction-free and opened that
- * transaction itself. Caller-owned transactions are never reusable.
+ * A stable document with no transaction is safe. A nested command may reuse a
+ * transaction only when the outermost GUI command began transaction-free and
+ * opened that transaction itself. Active document updates and caller-owned
+ * transactions are never reusable.
  */
 PartGuiExport bool
 canStartRetainedModelingTask(const App::Document* document);

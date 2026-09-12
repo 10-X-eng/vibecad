@@ -177,6 +177,72 @@ def test_cancel_while_waiting_for_document_thread_skips_commit() -> None:
     assert commits == []
 
 
+def test_cooperative_commit_returns_to_document_dispatcher_between_slices() -> None:
+    manager = NativeBackgroundManager()
+    dispatches = []
+    committed = []
+
+    def commit_steps(prepared):
+        committed.append(("begin", prepared))
+        yield {"progress_percent": 93, "message": "Adding first result"}
+        committed.append(("middle", prepared))
+        yield {"progress_percent": 97, "message": "Adding second result"}
+        committed.append(("end", prepared))
+        return {"created": 2}
+
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="drawing.create",
+        prepare=lambda _cancelled, _progress: {"detached": True},
+        validate_before_commit=lambda: None,
+        commit=lambda _prepared: pytest.fail("legacy commit must not run"),
+        cooperative_commit=commit_steps,
+        dispatch_to_document_thread=lambda callback: (
+            dispatches.append(callback), callback()
+        )[1],
+    )
+    completed = manager.wait(submitted.job_id, 2.0)
+
+    assert completed.phase == "completed"
+    assert completed.result == {"created": 2}
+    assert len(dispatches) == 3
+    assert [name for name, _prepared in committed] == ["begin", "middle", "end"]
+
+
+def test_cooperative_commit_observes_cancel_after_dispatch_was_queued() -> None:
+    manager = NativeBackgroundManager()
+    dispatcher_entered = threading.Event()
+    allow_dispatch = threading.Event()
+    commits = []
+
+    def dispatch(callback):
+        dispatcher_entered.set()
+        assert allow_dispatch.wait(1.0)
+        return callback()
+
+    def commit_steps(_prepared):
+        commits.append("must not run")
+        yield {"progress_percent": 95, "message": "Committing"}
+        return {"created": 1}
+
+    submitted = manager.submit(
+        document_uid="document-a",
+        capability_name="mesh.convert",
+        prepare=lambda _cancelled, _progress: {"detached": True},
+        validate_before_commit=lambda: None,
+        commit=lambda _prepared: pytest.fail("legacy commit must not run"),
+        cooperative_commit=commit_steps,
+        dispatch_to_document_thread=dispatch,
+    )
+    assert dispatcher_entered.wait(1.0)
+    assert manager.cancel(submitted.job_id) is True
+    allow_dispatch.set()
+    cancelled = manager.wait(submitted.job_id, 2.0)
+
+    assert cancelled.phase == "cancelled"
+    assert commits == []
+
+
 def test_surface_or_document_validation_failure_prevents_commit() -> None:
     class SurfaceChanged(RuntimeError):
         def failure(self):
@@ -257,6 +323,67 @@ def test_cleanup_receives_prepared_value_even_when_commit_validation_fails() -> 
 
     assert failed.phase == "failed"
     assert cleaned == [{"artifact": "detached"}]
+
+
+def test_terminal_state_is_not_visible_until_cleanup_releases_the_resource() -> None:
+    manager = NativeBackgroundManager()
+    cleanup_entered = threading.Event()
+    release_cleanup = threading.Event()
+
+    def cleanup(_prepared):
+        cleanup_entered.set()
+        assert release_cleanup.wait(1.0)
+
+    submitted = manager.submit(
+        **_callbacks(
+            prepare=lambda _cancelled, _progress: {"artifact": "detached"},
+        ),
+        cleanup=cleanup,
+    )
+    assert cleanup_entered.wait(1.0)
+
+    cleaning_up = manager.snapshot(submitted.job_id)
+    assert cleaning_up.terminal is False
+    assert cleaning_up.worker_active is True
+    with pytest.raises(NativeBackgroundError, match="already has"):
+        manager.submit(
+            **_callbacks(prepare=lambda _cancelled, _progress: {})
+        )
+
+    release_cleanup.set()
+    completed = manager.wait(submitted.job_id, 2.0)
+    assert completed.phase == "completed"
+    assert completed.worker_active is False
+
+
+def test_mutating_job_stays_active_until_the_document_update_settles() -> None:
+    update_active = threading.Event()
+    update_active.set()
+    manager = NativeBackgroundManager(
+        document_update_active=lambda uid: (
+            uid == "document-a" and update_active.is_set()
+        )
+    )
+
+    submitted = manager.submit(
+        **_callbacks(
+            prepare=lambda _cancelled, _progress: {"artifact": "detached"},
+        ),
+        changes_document=True,
+    )
+    settling = _wait_phase(manager, submitted.job_id, "settling")
+
+    assert settling.terminal is False
+    assert settling.worker_active is True
+    with pytest.raises(NativeBackgroundError, match="already has"):
+        manager.submit(
+            **_callbacks(prepare=lambda _cancelled, _progress: {})
+        )
+
+    update_active.clear()
+    completed = manager.wait(submitted.job_id, 2.0)
+    assert completed.phase == "completed"
+    assert completed.worker_active is False
 
 
 def test_frozen_turn_change_during_preparation_prevents_commit(monkeypatch) -> None:

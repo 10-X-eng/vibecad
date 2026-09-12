@@ -52,7 +52,7 @@ struct AsyncBlockerState
 {
     std::mutex mutex;
     std::condition_variable changed;
-    bool started = false;
+    std::size_t started = 0;
     bool proceed = false;
 };
 
@@ -397,7 +397,16 @@ DocumentObjectExecReturn* FeatureTestAttribute::execute()
 PROPERTY_SOURCE(App::FeatureTestAsyncBlocker, App::DocumentObject)
 
 
-FeatureTestAsyncBlocker::FeatureTestAsyncBlocker() = default;
+FeatureTestAsyncBlocker::FeatureTestAsyncBlocker()
+{
+    ADD_PROPERTY_TYPE(
+        ExecutionCount,
+        (0),
+        "Test",
+        PropertyType(Prop_Output | Prop_ReadOnly),
+        "Number of completed test executions"
+    );
+}
 
 FeatureTestAsyncBlocker::~FeatureTestAsyncBlocker() = default;
 
@@ -405,15 +414,23 @@ void FeatureTestAsyncBlocker::resetBlocker()
 {
     auto& state = getAsyncBlockerState();
     std::lock_guard<std::mutex> lock(state.mutex);
-    state.started = false;
+    state.started = 0;
     state.proceed = false;
 }
 
 bool FeatureTestAsyncBlocker::waitUntilStarted(std::chrono::milliseconds timeout)
 {
+    return waitUntilStarted(1, timeout);
+}
+
+bool FeatureTestAsyncBlocker::waitUntilStarted(
+    std::size_t count,
+    std::chrono::milliseconds timeout
+)
+{
     auto& state = getAsyncBlockerState();
     std::unique_lock<std::mutex> lock(state.mutex);
-    return state.changed.wait_for(lock, timeout, [&state] { return state.started; });
+    return state.changed.wait_for(lock, timeout, [&state, count] { return state.started >= count; });
 }
 
 void FeatureTestAsyncBlocker::releaseBlocker()
@@ -430,8 +447,10 @@ DocumentObjectExecReturn* FeatureTestAsyncBlocker::execute()
 {
     auto& state = getAsyncBlockerState();
     std::unique_lock<std::mutex> lock(state.mutex);
-    state.started = true;
+    ++state.started;
     state.changed.notify_all();
     state.changed.wait(lock, [&state] { return state.proceed; });
+    lock.unlock();
+    ExecutionCount.setValue(ExecutionCount.getValue() + 1);
     return StdReturn;
 }

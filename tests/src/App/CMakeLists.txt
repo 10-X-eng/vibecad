@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
+add_executable(HostRuntimeIsolationHelper
+        HostRuntimeIsolationHelper.cpp
+)
+
 add_executable(App_tests_run
         AsyncRecompute.cpp
         Application.cpp
@@ -24,15 +28,20 @@ add_executable(App_tests_run
         Property.h
         Property.cpp
         PropertyExpressionEngine.cpp
+        SemanticDependencyOrder.cpp
         StringHasher.cpp
         VarSet.cpp
         VRMLObject.cpp
 )
 
-target_compile_definitions(App_tests_run PRIVATE DATADIR="${CMAKE_SOURCE_DIR}/data")
+add_dependencies(App_tests_run HostRuntimeIsolationHelper)
+
+target_compile_definitions(App_tests_run PRIVATE
+    DATADIR="${CMAKE_SOURCE_DIR}/data"
+    HOST_RUNTIME_ISOLATION_HELPER="$<TARGET_FILE:HostRuntimeIsolationHelper>"
+)
 
 target_link_libraries(App_tests_run PRIVATE
-    GTest::gtest_main
     GTest::gmock_main
     ${Python3_LIBRARIES}
     FreeCADApp

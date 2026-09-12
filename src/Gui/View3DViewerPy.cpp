@@ -26,7 +26,10 @@
 #include <Base/GeometryPyCXX.h>
 #include <Base/Interpreter.h>
 #include <Base/MatrixPy.h>
+#include <App/Application.h>
 
+#include "Application.h"
+#include "AsyncImageExport.h"
 #include "PythonWrapper.h"
 #include "Navigation/NavigationStyle.h"
 #include "View3DViewerPy.h"
@@ -157,6 +160,12 @@ void View3DInventorViewerPy::init_type()
         &View3DInventorViewerPy::grabFramebuffer,
         "grabFramebuffer() -> QImage: renders and returns a 32-bit RGB image of the framebuffer."
     );
+    add_varargs_method("startFrameExport", &View3DInventorViewerPy::startFrameExport,
+        "startFrameExport(path, width, height) -> int: capture pixels and encode PNG on the native runtime.");
+    add_varargs_method("finishFrameExport", &View3DInventorViewerPy::finishFrameExport,
+        "finishFrameExport(request) -> bool: poll completion without waiting; raise on failure.");
+    add_varargs_method("cancelFrameExport", &View3DInventorViewerPy::cancelFrameExport,
+        "cancelFrameExport(request): cancel only the identified frame export.");
 
     add_varargs_method(
         "setOverrideMode",
@@ -704,6 +713,69 @@ Py::Object View3DInventorViewerPy::grabFramebuffer(const Py::Tuple& args)
 #else
     return wrap.fromQImage(img.flipped(Qt::Vertical));
 #endif
+}
+
+Py::Object View3DInventorViewerPy::startFrameExport(const Py::Tuple& args)
+{
+    Gui::requireMainThread("Viewer.startFrameExport");
+    const char* path = nullptr;
+    int width = 0;
+    int height = 0;
+    if (!PyArg_ParseTuple(args.ptr(), "sii", &path, &width, &height)) {
+        throw Py::Exception();
+    }
+    if (!_viewer || width <= 0 || height <= 0) {
+        throw Py::RuntimeError("Frame export requires a live viewer and positive dimensions");
+    }
+    // One immutable framebuffer at a time, including cancellation in flight.
+    // Callers cannot enqueue an unbounded series of image buffers.
+    if (frameExport && !frameExport->isReady()) {
+        throw Py::RuntimeError("The previous frame export has not completed");
+    }
+    try {
+        // Flush this pose to the framebuffer without pumping unrelated input.
+        // In the non-MSAA path grabFramebuffer reads existing pixels.
+        _viewer->redraw();
+        auto image = _viewer->grabFramebuffer();
+        frameExport = std::make_unique<detail::AsyncImageExport>(
+            App::GetApplication().hostRuntime(), std::move(image), QString::fromUtf8(path),
+            width, height, true);
+    }
+    catch (const std::exception& error) {
+        throw Py::RuntimeError(error.what());
+    }
+    return Py::Object(PyLong_FromUnsignedLongLong(++frameExportRequest), true);
+}
+
+Py::Object View3DInventorViewerPy::finishFrameExport(const Py::Tuple& args)
+{
+    Gui::requireMainThread("Viewer.finishFrameExport");
+    unsigned long long request = 0;
+    if (!PyArg_ParseTuple(args.ptr(), "K", &request)) {
+        throw Py::Exception();
+    }
+    if (!frameExport || request != frameExportRequest) {
+        throw Py::RuntimeError("The frame export request is no longer current");
+    }
+    try {
+        return Py::Boolean(frameExport->finish());
+    }
+    catch (const std::exception& error) {
+        throw Py::RuntimeError(error.what());
+    }
+}
+
+Py::Object View3DInventorViewerPy::cancelFrameExport(const Py::Tuple& args)
+{
+    Gui::requireMainThread("Viewer.cancelFrameExport");
+    unsigned long long request = 0;
+    if (!PyArg_ParseTuple(args.ptr(), "K", &request)) {
+        throw Py::Exception();
+    }
+    if (frameExport && request == frameExportRequest) {
+        frameExport->cancel();
+    }
+    return Py::None();
 }
 
 Py::Object View3DInventorViewerPy::setOverrideMode(const Py::Tuple& args)

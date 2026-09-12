@@ -301,6 +301,7 @@ def test_codex_supports_explicit_toolless_brief_tasks(monkeypatch) -> None:
     import VibeCADCodex as codex
     import VibeCADCodexResponses as codex_responses
     import VibeCADOllama as ollama
+    import VibeCADProvider as provider_module
     from VibeCADProvider import CodexProvider
 
     monkeypatch.setattr(
@@ -313,6 +314,11 @@ def test_codex_supports_explicit_toolless_brief_tasks(monkeypatch) -> None:
         "inspect_model",
         lambda *_args, **_kwargs: {"detected": False, "ok": True},
     )
+    def forbidden_discovery(*_args, **_kwargs):
+        raise AssertionError("Text-only brief must not discover MCP or skill tools")
+
+    monkeypatch.setattr(provider_module, "_codex_external_dynamic_tools", forbidden_discovery)
+    monkeypatch.setattr(codex, "load_codex_skill_catalog", forbidden_discovery)
     thread_requests: list[dict[str, object]] = []
 
     class Client:
@@ -354,7 +360,11 @@ def test_codex_supports_explicit_toolless_brief_tasks(monkeypatch) -> None:
                     "turn/completed",
                     {
                         "threadId": "brief-thread",
-                        "turn": {"id": "brief-turn", "status": "completed"},
+                        "turn": {
+                            "id": "brief-turn", "status": "completed",
+                            "tokenUsage": {"inputTokens": 12, "outputTokens": 4,
+                                           "totalTokens": 16},
+                        },
                     },
                 )
                 return {"turn": {"id": "brief-turn"}}
@@ -370,6 +380,8 @@ def test_codex_supports_explicit_toolless_brief_tasks(monkeypatch) -> None:
         model="gpt-test",
         api_key="test-key",
         auth_mode="api_key",
+        web_search_enabled=True,
+        skills_enabled=True,
     )
 
     result = active_provider.run(
@@ -385,6 +397,8 @@ def test_codex_supports_explicit_toolless_brief_tasks(monkeypatch) -> None:
 
     assert json.loads(result.final_output)["next_question"]
     assert thread_requests[0]["dynamicTools"] == []
+    assert "web" in thread_requests[0]["developerInstructions"]
+    assert result.usage["model"] == "gpt-test"
     assert (
         "non-mutating text-only VibeCAD task"
         in thread_requests[0]["developerInstructions"]

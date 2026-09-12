@@ -20,7 +20,6 @@ VALIDATION_SCHEMA = "vibecad-vibescript-meshpart-validation-v1"
 _EXPORTS = ("mesh_from_shape", "shape_from_mesh")
 _OUTPUT_TYPES = ("mesh", "solid", "shell", "face", "wire", "compound")
 _BREP_TYPES = frozenset(_OUTPUT_TYPES[1:])
-_MAX_DEFINITION_BYTES = 1_000_000
 _MAX_REFERENCE_COUNT = 128
 _MAX_REFERENCE_SEGMENTS = 4096
 _MAX_FACETS = 5_000_000
@@ -506,12 +505,6 @@ def _encoded(value: Any) -> bytes:
             stage="definition_contract",
             exception_type=type(exc).__name__,
         ) from exc
-    if len(result) > _MAX_DEFINITION_BYTES:
-        raise _fail(
-            f"A MeshPart definition exceeds {_MAX_DEFINITION_BYTES} JSON bytes.",
-            stage="definition_contract",
-            json_bytes=len(result),
-        )
     return result
 
 

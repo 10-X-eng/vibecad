@@ -21,6 +21,8 @@ class _EngineeringBriefSignals(QtCore.QObject):
     turn_completed = QtCore.Signal(object)
     turn_failed = QtCore.Signal(str)
     persistence_failed = QtCore.Signal(str)
+    persistence_finished = QtCore.Signal(str)
+    turn_cancelled = QtCore.Signal()
 
 
 class EngineeringBriefDialog(QtWidgets.QDialog):
@@ -54,16 +56,25 @@ class EngineeringBriefDialog(QtWidgets.QDialog):
         self._signals.turn_completed.connect(self._complete_turn)
         self._signals.turn_failed.connect(self._fail_turn)
         self._signals.persistence_failed.connect(self._show_persistence_failure)
+        self._signals.persistence_finished.connect(self._finish_persistence)
+        self._signals.turn_cancelled.connect(self._cancel_turn)
 
         self._closing = False
+        self._close_ready = False
         self._lifecycle_lock = threading.Lock()
         self._persist_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
-        self._persist_thread = threading.Thread(
-            target=self._persistence_loop,
-            name="VibeCAD-Engineering-Brief-Persistence",
-            daemon=True,
-        )
-        self._persist_thread.start()
+        # Parent destruction need not deliver closeEvent. Capture only Python
+        # synchronization objects: the Qt dialog is already invalid at that point.
+        cancel_event = self._cancel_event
+        persist_queue = self._persist_queue
+
+        def stop_workers(*_args: Any) -> None:
+            cancel_event.set()
+            persist_queue.put(None)
+
+        self.destroyed.connect(stop_workers)
+        QtWidgets.QApplication.instance().aboutToQuit.connect(self.close)
+        self._start_persistence_worker()
         self._build_ui()
         self._render_state()
         self._queue_persistence()
@@ -334,20 +345,54 @@ class EngineeringBriefDialog(QtWidgets.QDialog):
             if not self._closing:
                 self._persist_queue.put(dict(self._state))
 
+    def _start_persistence_worker(self) -> None:
+        # Keep accepted final writes alive even during application shutdown.
+        self._persist_thread = threading.Thread(
+            target=self._persistence_loop,
+            name="VibeCAD-Engineering-Brief-Persistence",
+            daemon=False,
+        )
+        self._persist_thread.start()
+
     def _persistence_loop(self) -> None:
+        last_error = ""
         while True:
             state = self._persist_queue.get()
             try:
                 if state is None:
+                    try:
+                        self._signals.persistence_finished.emit(last_error)
+                    except RuntimeError:
+                        pass  # Application shutdown may have deleted the window.
                     return
                 self._persist_callback(state)
+                last_error = ""
             except Exception as exc:
+                last_error = str(exc)
                 try:
-                    self._signals.persistence_failed.emit(str(exc))
+                    self._signals.persistence_failed.emit(last_error)
                 except RuntimeError:
-                    return
+                    pass  # Still drain the final snapshot after Qt shuts down.
             finally:
                 self._persist_queue.task_done()
+
+    @QtCore.Slot(str)
+    def _finish_persistence(self, error: str) -> None:
+        if error:
+            self._closing = False
+            self.setEnabled(True)
+            self._start_persistence_worker()
+            self.status.setText(f"Could not save the brief: {error}. Close to retry.")
+            return
+        self._close_ready = True
+        self.close()
+
+    @QtCore.Slot()
+    def _cancel_turn(self) -> None:
+        self._turn_thread = None
+        self._turn_active = False
+        if not self._closing:
+            self._set_turn_busy(False)
 
     def _show_persistence_failure(self, message: str) -> None:
         if not self._closing:
@@ -400,6 +445,12 @@ class EngineeringBriefDialog(QtWidgets.QDialog):
                 except RuntimeError:
                     pass
                 return
+            finally:
+                if self._cancel_event.is_set():
+                    try:
+                        self._signals.turn_cancelled.emit()
+                    except RuntimeError:
+                        pass
             try:
                 self._signals.turn_completed.emit(updated)
             except RuntimeError:
@@ -459,9 +510,16 @@ class EngineeringBriefDialog(QtWidgets.QDialog):
         if started:
             self.close()
 
+    def reject(self) -> None:
+        # Escape must use the same durable save/cancel path as the Close button.
+        self.close()
+
     def closeEvent(self, event: Any) -> None:  # noqa: N802 (Qt API)
-        if self._closing:
+        if self._close_ready:
             event.accept()
+            return
+        event.ignore()
+        if self._closing:
             return
         self._edit_timer.stop()
         self._cancel_event.set()
@@ -470,5 +528,5 @@ class EngineeringBriefDialog(QtWidgets.QDialog):
             self._closing = True
             self._persist_queue.put(dict(self._state))
             self._persist_queue.put(None)
-        self._persist_thread.join()
-        event.accept()
+        self.status.setText("Saving the engineering brief...")
+        self.setEnabled(False)

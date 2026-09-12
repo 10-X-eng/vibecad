@@ -44,7 +44,10 @@ def _run() -> None:
         poll_timer.stop()
         tick_timer.stop()
         if dialog is not None:
-            dialog.close()
+            try:
+                dialog.close()
+            except RuntimeError:
+                pass
         application.exit(exit_code)
 
     try:
@@ -168,6 +171,13 @@ def _run() -> None:
                     assert not dialog.primary_button.isDefault()
                     phase = 1
                     return
+                if phase == 2:
+                    if dialog._persist_thread.is_alive():
+                        return
+                    assert persisted
+                    print("VIBECAD_ENGINEERING_BRIEF_GUI_OK", flush=True)
+                    finish(0)
+                    return
                 if not dialog.state.get("ready"):
                     return
                 assert dialog.pages.currentIndex() == 2
@@ -180,10 +190,7 @@ def _run() -> None:
                 dialog.primary_button.click()
                 assert len(started) == 1
                 assert "Human review: prioritize stiffness." in started[0][1]
-                assert not dialog._persist_thread.is_alive()
-                assert persisted
-                print("VIBECAD_ENGINEERING_BRIEF_GUI_OK", flush=True)
-                finish(0)
+                phase = 2
             except Exception:
                 traceback.print_exc(file=sys.__stderr__)
                 finish(1)

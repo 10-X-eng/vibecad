@@ -583,6 +583,38 @@ def test_assembly_resource_keys_use_only_persisted_exact_identities() -> None:
     )
 
 
+@pytest.mark.parametrize("staged,old_count,new_count", [
+    (False, 0, 0), (True, 0, 0), (False, 1, 0), (False, 0, 1),
+])
+def test_assembly_occurrence_reconciles_only_actual_or_staged_resource_graphs(
+    monkeypatch, staged, old_count, new_count,
+) -> None:
+    operation = _Object("Occurrence", 1, "App::Link")
+    document = _DeletionDocument([operation])
+    captured = {"resources": [object() for _ in range(old_count)]}
+    final = [object() for _ in range(new_count)]
+    calls = []
+    retired = [object()] if old_count else []
+    monkeypatch.setattr(domain_publication, "_stage_timeline_resource_reconciliation",
+                        lambda *a, **kw: calls.append("stage"))
+    def finalize(doc, owner, snapshot, resources, **kwargs):
+        assert (doc, owner, snapshot, resources) == (document, operation, captured, final)
+        calls.append("finalize")
+        return retired
+    monkeypatch.setattr(domain_publication, "_finalize_timeline_resource_reconciliation", finalize)
+    monkeypatch.setattr(domain_publication, "_remove_reconciled_timeline_resources",
+                        lambda doc, resources, **kw: resources)
+    result = domain_publication._reconcile_assembly_occurrence_resources(
+        document, operation, captured, final, staged=staged, context="Occurrence resources",
+    )
+    if staged or old_count or new_count:
+        assert calls == (["finalize"] if staged else ["stage", "finalize"])
+        assert result == retired
+    else:
+        assert calls == []
+        assert result == []
+
+
 def test_resource_reconciliation_uses_exact_authored_keys_and_nested_owners() -> None:
     operation = _Object("Job", 1, "Path::FeaturePython")
     old_leaf = _Object("OldBit", 2, "Part::FeaturePython")
