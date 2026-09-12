@@ -588,3 +588,45 @@ __all__ = [
     "summarize_conversation_usage",
     "usage_metadata_for_status",
 ]
+
+
+def usage_graph_data(summary: Mapping[str, Any]) -> dict[str, Any]:
+    """Return conversation/model rows for the usage graph without inference."""
+
+    if not isinstance(summary, Mapping) or not summary.get("has_usage"):
+        return {"has_usage": False, "complete": False, "rows": []}
+
+    rows: list[dict[str, Any]] = []
+    totals = summary.get("totals")
+    if isinstance(totals, Mapping):
+        rows.append(
+            {
+                "label": "Conversation",
+                "scope": "conversation",
+                "counts": _normalize_counts(totals),
+            }
+        )
+    models = summary.get("models")
+    if isinstance(models, Mapping):
+        for model_name, model_counts in models.items():
+            if not isinstance(model_counts, Mapping):
+                continue
+            clean_name = str(model_name or "").strip() or "unknown model"
+            source = str(model_counts.get("model_source") or "unknown").strip() or "unknown"
+            rows.append(
+                {
+                    "label": f"{clean_name} ({source})",
+                    "scope": "model",
+                    "model": clean_name,
+                    "model_source": source,
+                    "counts": _normalize_counts(model_counts),
+                }
+            )
+    return {
+        "has_usage": bool(rows),
+        "complete": bool(summary.get("complete")),
+        "rows": rows,
+    }
+
+
+__all__.append("usage_graph_data")
