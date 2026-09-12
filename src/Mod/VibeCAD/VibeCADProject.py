@@ -28,6 +28,7 @@ from VibeCADAuthoringMode import (
     normalize_authoring_mode,
 )
 from VibeCADIntentMemory import DESIGN_DOCUMENT_NAME, read_memory, write_memory
+from VibeCADTokenUsage import sanitize_usage_metadata
 
 
 PROJECT_SCHEMA_VERSION = 2
@@ -313,6 +314,15 @@ def _validated_conversation_turns(
         seen_turn_ids.add(turn_id)
         turn["turn_id"] = turn_id
         turn["sequence"] = sequence
+        metadata = turn.get("metadata")
+        if isinstance(metadata, dict) and "usage" in metadata:
+            clean_metadata = dict(metadata)
+            clean_usage = sanitize_usage_metadata(metadata.get("usage"))
+            if clean_usage is None:
+                clean_metadata.pop("usage", None)
+            else:
+                clean_metadata["usage"] = clean_usage
+            turn["metadata"] = clean_metadata
         validated.append(turn)
     return validated
 
