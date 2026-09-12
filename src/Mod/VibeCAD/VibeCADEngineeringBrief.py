@@ -285,10 +285,14 @@ def build_engineering_brief_prompt(
         )
     clean_response = _clean_string(user_response)
     if use_best_judgment:
-        clean_response = (
-            clean_response
-            or "Use your best engineering judgment for remaining details and list every "
-            "assumption explicitly."
+        finish_instruction = (
+            "Finish the brief now using your best engineering judgment for remaining "
+            "details and list every assumption explicitly. Set ready=true and leave "
+            "next_question empty; record unresolved uncertainties as assumptions "
+            "or verification requirements in the brief."
+        )
+        clean_response = "\n\n".join(
+            part for part in (clean_response, finish_instruction) if part
         )
     response_contract = {
         "assistant_message": "string; concise explanation or the one next question",
@@ -505,10 +509,20 @@ def engineering_brief_handoff(
 
     validated = _validated_state(state)
     readable = _clean_string(approved_text) or render_engineering_brief(validated)
+    captured_context = {
+        key: validated["context"][key]
+        for key in ("workbench", "document", "selection", "units")
+        if key in validated["context"]
+    }
     return (
         "Complete the work in the active VibeCAD document using this approved "
         "engineering brief. Inspect the current CAD state before acting and verify "
-        "the acceptance criteria before claiming completion.\n\n" + readable
+        "the acceptance criteria before claiming completion. The approved brief "
+        "takes precedence wherever it revises the original request or captured context."
+        "\n\nOriginal request\n" + validated["original_request"]
+        + "\n\nApproved engineering brief\n" + readable
+        + "\n\nCaptured document and selection context\n"
+        + json.dumps(captured_context, ensure_ascii=False, indent=2, sort_keys=True)
     )
 
 

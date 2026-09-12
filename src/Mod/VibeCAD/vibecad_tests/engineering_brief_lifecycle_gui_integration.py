@@ -137,6 +137,18 @@ class EngineeringBriefLifecycleTests(unittest.TestCase):
         self.wait_until(lambda: not dialog._persist_thread.is_alive())
         self.assertEqual(persisted[-1]["original_request"], "Do not lose this edit")
 
+    def test_evolving_brief_is_visible_while_answering_questions(self):
+        dialog = self.dialog(lambda state: None)
+        state = dialog.state
+        state["next_question"] = "What load must it carry?"
+        state["brief"]["loads"] = ["Initial service load: 1 kN"]
+        state["editable_text"] = "Objective: make a bracket\nInitial service load: 1 kN"
+        dialog._complete_turn(state)
+        self.assertEqual(dialog.pages.currentIndex(), 1)
+        self.assertTrue(dialog.preview.isVisible())
+        self.assertIn("1 kN", dialog.preview.toPlainText())
+        self.assertTrue(dialog.answer_edit.isVisible())
+
     def test_parent_destruction_stops_idle_writer_and_cancels_provider(self):
         parent = QtWidgets.QWidget()
         dialog = self.dialog(lambda state: None)

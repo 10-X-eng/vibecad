@@ -142,6 +142,7 @@ class EngineeringBriefDialog(QtWidgets.QDialog):
 
         interview_page = QtWidgets.QWidget(self.pages)
         interview_layout = QtWidgets.QVBoxLayout(interview_page)
+        self._interview_layout = interview_layout
         interview_layout.setContentsMargins(0, 8, 0, 0)
         interview_layout.setSpacing(8)
         interview_title = QtWidgets.QLabel(
@@ -184,6 +185,7 @@ class EngineeringBriefDialog(QtWidgets.QDialog):
 
         review_page = QtWidgets.QWidget(self.pages)
         review_layout = QtWidgets.QVBoxLayout(review_page)
+        self._review_layout = review_layout
         review_layout.setContentsMargins(0, 8, 0, 0)
         review_layout.setSpacing(8)
         review_title = QtWidgets.QLabel("3. Review the engineering brief", review_page)
@@ -281,6 +283,11 @@ class EngineeringBriefDialog(QtWidgets.QDialog):
             self.pages.setCurrentIndex(1)
         else:
             self.pages.setCurrentIndex(0)
+        if self.pages.currentIndex() == 1:
+            self._interview_layout.insertWidget(3, self.preview, 1)
+        else:
+            self._review_layout.addWidget(self.preview, 1)
+        self.preview.show()
         self.request_edit.setReadOnly(self.pages.currentIndex() != 0)
         self.preview.setReadOnly(not bool(self._state.get("ready")))
         self.best_judgment_button.setVisible(

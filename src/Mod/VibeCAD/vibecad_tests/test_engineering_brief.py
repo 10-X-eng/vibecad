@@ -424,3 +424,23 @@ def test_assistant_composer_exposes_the_engineering_brief_window() -> None:
     assert "complete_conversation_history_read" in gui_source
     assert "VibeCADEngineeringBriefGui.py" in cmake_source
     assert "vibecad-engineering-brief.svg" in cmake_source
+
+
+def test_handoff_includes_original_request_and_captured_document_references():
+    state = new_engineering_brief("Preserve the existing motor bolt pattern", _identity(), _context())
+    approved = "Make the bracket lighter; retain the interface."
+    handoff = engineering_brief_handoff(state, approved_text=approved)
+    assert state["original_request"] in handoff
+    assert approved in handoff
+    assert "Bracket" in handoff
+    assert "Body" in handoff
+    assert "document-uid" in handoff
+    assert "PartDesignWorkbench" in handoff
+
+
+def test_finish_with_assumptions_keeps_the_answer_and_requests_a_final_brief():
+    state = new_engineering_brief("Make a bracket", _identity(), _context())
+    prompt = build_engineering_brief_prompt(state, "Use 1.5 kN", use_best_judgment=True)
+    assert "Use 1.5 kN" in prompt
+    assert "list every assumption explicitly" in prompt
+    assert "Finish the brief now" in prompt
