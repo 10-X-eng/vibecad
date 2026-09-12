@@ -124,3 +124,4 @@ jobs:
           src.Tools.tests.test_vibecad_update
           src.Tools.tests.test_macos_bundle_audit
           src.Tools.tests.test_macos_build_toolchain
+          src.Tools.tests.test_macos_bundle_identity
