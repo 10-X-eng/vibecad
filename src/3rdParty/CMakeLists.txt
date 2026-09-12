@@ -20,6 +20,23 @@ if (BUILD_ASSEMBLY AND NOT FREECAD_USE_EXTERNAL_ONDSELSOLVER)
         message(FATAL_ERROR "The OndselSolver git submodule is not available. Please run
         git submodule update --init" )
     endif()
+    # A leftover copy without .git still has CMakeLists.txt, so the existence
+    # check above succeeds and AssemblyObject.cpp fails much later.
+    file(READ
+        "${CMAKE_SOURCE_DIR}/src/3rdParty/OndselSolver/OndselSolver/ASMTAssembly.h"
+        _ondsel_asmt_header
+    )
+    if(NOT _ondsel_asmt_header MATCHES "setCancellationCheck"
+       OR NOT _ondsel_asmt_header MATCHES "setParallelExecutor")
+        message(FATAL_ERROR
+            "src/3rdParty/OndselSolver is present but is not the git submodule "
+            "this tree requires (ASMTAssembly is missing setCancellationCheck / "
+            "setParallelExecutor). Extra git worktrees often leave a non-git "
+            "directory that git submodule update --init will not replace. Run:\n"
+            "  python src/Tools/ensure_git_submodules.py\n"
+            "or remove the directory and run git submodule update --init -- "
+            "src/3rdParty/OndselSolver")
+    endif()
     add_subdirectory(OndselSolver)
 endif()
 
