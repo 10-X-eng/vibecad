@@ -6146,3 +6146,252 @@ def ensure_commands_registered() -> None:
         _warn(f"VibeCAD scripted editor registration failed: {exc}")
     _connect_workbench_activation()
     _commands_registered = True
+
+
+# Token usage graph -----------------------------------------------------------
+
+def _make_usage_graph_widget(parent: Any) -> Any:
+    """Create a compact graph for the provider-reported usage disclosure."""
+
+    from PySide import QtCore, QtGui, QtWidgets
+
+    class _UsageGraph(QtWidgets.QWidget):
+        def __init__(self, graph_parent: Any) -> None:
+            super().__init__(graph_parent)
+            self.setObjectName("VibeUsageGraph")
+            self.setAccessibleName("Provider-reported token usage graph")
+            self.setAccessibleDescription(
+                "Horizontal bars compare reported conversation and per-model totals. "
+                "Input, output, and cached input are labeled separately."
+            )
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding,
+                QtWidgets.QSizePolicy.Minimum,
+            )
+            self._graph_data: dict[str, Any] = {
+                "has_usage": False,
+                "complete": False,
+                "rows": [],
+            }
+            self._height = 34
+
+        def set_usage_data(self, graph_data: dict[str, Any]) -> None:
+            self._graph_data = graph_data if isinstance(graph_data, dict) else {}
+            rows = self._graph_data.get("rows")
+            count = len(rows) if isinstance(rows, list) else 0
+            self._height = 34 if count == 0 else 70 + count * 58
+            self.setMinimumHeight(self._height)
+            self.updateGeometry()
+            self.update()
+
+        def sizeHint(self) -> Any:
+            return QtCore.QSize(420, self._height)
+
+        @staticmethod
+        def _count(value: Any) -> int | None:
+            return value if isinstance(value, int) and value >= 0 else None
+
+        @classmethod
+        def _format_count(cls, value: Any) -> str:
+            count = cls._count(value)
+            return f"{count:,}" if count is not None else "unknown"
+
+        def _draw_text(
+            self, painter: Any, text: str, x: float, y: float, width: float,
+            *, muted: bool = False, bold: bool = False,
+        ) -> None:
+            font = painter.font()
+            font.setBold(bold)
+            painter.setFont(font)
+            role = QtGui.QPalette.Mid if muted else QtGui.QPalette.WindowText
+            painter.setPen(self.palette().color(role))
+            painter.drawText(
+                QtCore.QRectF(x, y, width, 20),
+                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                text,
+            )
+
+        def paintEvent(self, event: Any) -> None:
+            del event
+            painter = QtGui.QPainter(self)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+            rows = self._graph_data.get("rows")
+            if (
+                not self._graph_data.get("has_usage")
+                or not isinstance(rows, list)
+                or not rows
+            ):
+                self._draw_text(
+                    painter,
+                    "No actual provider-reported token usage is available.",
+                    0,
+                    0,
+                    max(240, self.width()),
+                    muted=True,
+                )
+                painter.end()
+                return
+
+            palette = self.palette()
+            total_color = palette.color(QtGui.QPalette.Highlight)
+            input_color = QtGui.QColor(total_color)
+            input_color.setAlpha(110)
+            output_color = palette.color(QtGui.QPalette.Link)
+            if output_color == total_color:
+                output_color = output_color.lighter(135)
+            cached_color = total_color.darker(135)
+            track_color = palette.color(QtGui.QPalette.AlternateBase)
+            width = max(240, self.width())
+            left = 122 if width >= 420 else 102
+            right = 82
+            bar_width = max(100, width - left - right)
+            row_height = 58
+            top = 28
+            known = []
+            for row in rows:
+                counts = row.get("counts") if isinstance(row, dict) else None
+                if isinstance(counts, dict):
+                    for field in ("total_tokens", "input_tokens"):
+                        value = self._count(counts.get(field))
+                        if value is not None:
+                            known.append(value)
+            scale_max = max(known, default=1)
+            suffix = " (incomplete totals)" if not self._graph_data.get("complete") else ""
+            self._draw_text(painter, "Reported token totals" + suffix, 0, 0, width, muted=True)
+
+            for index, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    continue
+                counts = row.get("counts")
+                counts = counts if isinstance(counts, dict) else {}
+                total = self._count(counts.get("total_tokens"))
+                input_count = self._count(counts.get("input_tokens"))
+                cached_count = self._count(counts.get("cached_input_tokens"))
+                output_count = self._count(counts.get("output_tokens"))
+                y = top + index * row_height
+                label = str(row.get("label") or "unknown model")
+                self._draw_text(painter, label, 0, y, left - 8, bold=True)
+                self._draw_text(
+                    painter,
+                    "total " + self._format_count(total),
+                    left + bar_width + 10,
+                    y,
+                    right - 10,
+                    muted=total is None,
+                )
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.setBrush(track_color)
+                painter.drawRoundedRect(QtCore.QRectF(left, y + 22, bar_width, 12), 3, 3)
+                if total is not None:
+                    total_width = bar_width * total / scale_max
+                    painter.setBrush(total_color)
+                    painter.drawRoundedRect(
+                        QtCore.QRectF(left, y + 22, max(2.0, total_width), 12),
+                        3,
+                        3,
+                    )
+                    if input_count is not None:
+                        input_width = min(total_width, bar_width * input_count / scale_max)
+                        painter.setBrush(input_color)
+                        painter.drawRoundedRect(
+                            QtCore.QRectF(left, y + 22, max(2.0, input_width), 12),
+                            3,
+                            3,
+                        )
+                        if cached_count is not None:
+                            cached_width = min(input_width, bar_width * cached_count / scale_max)
+                            painter.setBrush(cached_color)
+                            painter.drawRoundedRect(
+                                QtCore.QRectF(left, y + 25, max(1.0, cached_width), 6),
+                                2,
+                                2,
+                            )
+                    if output_count is not None:
+                        output_width = min(total_width, bar_width * output_count / scale_max)
+                        painter.setBrush(output_color)
+                        painter.drawRect(
+                            QtCore.QRectF(
+                                left + max(0.0, total_width - output_width),
+                                y + 22,
+                                max(1.0, output_width),
+                                12,
+                            )
+                        )
+                detail = (
+                    "input " + self._format_count(input_count)
+                    + " · cached " + self._format_count(cached_count)
+                    + " · output " + self._format_count(output_count)
+                    + " · reasoning " + self._format_count(counts.get("reasoning_output_tokens"))
+                )
+                self._draw_text(painter, detail, left, y + 38, bar_width + right, muted=True)
+
+            legend_y = top + len(rows) * row_height + 4
+            legend = (
+                (total_color, "reported total"),
+                (input_color, "input"),
+                (output_color, "output"),
+                (cached_color, "cached input subset"),
+            )
+            legend_x = 0.0
+            for color, label in legend:
+                painter.setBrush(color)
+                painter.drawRoundedRect(QtCore.QRectF(legend_x, legend_y, 10, 10), 2, 2)
+                self._draw_text(painter, label, legend_x + 16, legend_y - 5, 140, muted=True)
+                legend_x += 148
+            painter.end()
+
+    return _UsageGraph(parent)
+
+
+_existing_usage_summary_renderer = _render_usage_summary
+
+
+def _render_usage_summary(
+    dock: Any | None = None,
+    *,
+    conversation: list[dict[str, Any]] | None = None,
+) -> None:
+    """Refresh the text summary and keep its graph visible directly below the header."""
+
+    _existing_usage_summary_renderer(dock, conversation=conversation)
+    output = _find_child("QTextBrowser", "VibeConversation", dock)
+    details = _find_child("QLabel", "VibeUsageSummaryDetails", dock)
+    toggle = _find_child("QToolButton", "VibeUsageSummaryToggle", dock)
+    if output is None or details is None or toggle is None:
+        return
+    graph = _find_child("QWidget", "VibeUsageGraph", dock)
+    if graph is None:
+        parent = details.parentWidget()
+        graph = _make_usage_graph_widget(parent)
+        layout = parent.layout() if parent is not None else None
+        if layout is not None:
+            index = layout.indexOf(details)
+            layout.insertWidget(index if index >= 0 else layout.count(), graph)
+    entries = (
+        [dict(entry) for entry in conversation if isinstance(entry, dict)]
+        if conversation is not None
+        else _conversation_usage_entries(output)
+    )
+    active = sanitize_usage_metadata(output.property("VibeActiveTokenUsage"))
+    if active is not None:
+        entries.append(
+            {
+                "role": "assistant",
+                "content": "Active provider request",
+                "sequence": len(entries) + 1,
+                "metadata": {"usage": active},
+            }
+        )
+    summary = summarize_conversation_usage(entries)
+    from VibeCADTokenUsage import usage_graph_data
+
+    setter = getattr(graph, "set_usage_data", None)
+    if callable(setter):
+        setter(usage_graph_data(summary))
+    graph.setVisible(bool(toggle.isChecked()))
+    details.setToolTip(
+        "Provider-reported actual usage only. No quota or monetary cost is inferred."
+    )
+    toggle.setToolTip(
+        "Show actual input, cached-input, output, reasoning, and per-model usage."
+    )
