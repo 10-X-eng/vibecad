@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8" standalone="no" ?>
+<package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
+  <name>SendCutSend Presets</name>
+  <description>SendCutSend + custom bend-parameter presets for FreeCAD SheetMetal (radius, K-factor, material sheets, Unfold sync).</description>
+  <version>0.2.0</version>
+  <date>2026-09-05</date>
+  <maintainer email="rickyefaircloth@gmail.com">Ricky Faircloth / Nozzler</maintainer>
+  <license>MIT</license>
+  <url type="readme" branch="main">README.md</url>
+  <url type="repository" branch="main">https://github.com/10-X-eng/vibecad</url>
+  <content>
+    <workbench>
+      <classname>SendCutSendPresetsWorkbench</classname>
+      <subdirectory>./</subdirectory>
+      <icon>resources/icons/SCS_Presets.svg</icon>
+      <tag>sheetmetal</tag>
+      <tag>sendcutsend</tag>
+      <tag>bending</tag>
+      <tag>kfactor</tag>
+      <freecadmin>0.21.0</freecadmin>
+      <depend>SheetMetal</depend>
+    </workbench>
+  </content>
+</package>
