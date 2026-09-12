@@ -219,6 +219,12 @@ std::atomic<App::MainThreadSignalConfig::IsMainThreadFn>& mainThreadCheckHook()
     return hook;
 }
 
+std::atomic<App::MainThreadSignalConfig::CleanupFn>& mainThreadCleanupHook()
+{
+    static std::atomic<App::MainThreadSignalConfig::CleanupFn> hook {nullptr};
+    return hook;
+}
+
 std::atomic<App::MainThreadSignalConfig::InvokeFn>& mainThreadInvokeHook()
 {
     static std::atomic<App::MainThreadSignalConfig::InvokeFn> hook {nullptr};
@@ -369,6 +375,25 @@ bool App::MainThreadSignalConfig::hasHooks()
 {
     return mainThreadCheckHook().load(std::memory_order_acquire)
         && mainThreadInvokeHook().load(std::memory_order_acquire);
+}
+
+void App::MainThreadSignalConfig::setCleanupHook(CleanupFn cleanup)
+{
+    mainThreadCleanupHook().store(cleanup, std::memory_order_release);
+}
+
+bool App::MainThreadSignalConfig::hasCleanupHook()
+{
+    return mainThreadCleanupHook().load(std::memory_order_acquire) != nullptr;
+}
+
+void App::MainThreadSignalConfig::invokeCleanup(std::function<void()>&& fn)
+{
+    const auto hook = mainThreadCleanupHook().load(std::memory_order_acquire);
+    if (!hook) {
+        throw std::runtime_error("Owner cleanup dispatcher is not installed");
+    }
+    hook(std::move(fn));
 }
 
 void App::MainThreadSignalConfig::invoke(std::function<void()>&& fn, bool blocking)
@@ -530,6 +555,7 @@ Application::Application(std::map<std::string,std::string> &mConfig)
 
 Application::~Application()
 {
+    _pendingDocumentCloses.clear();
     {
         std::lock_guard<std::mutex> lock(_recomputeMutex);
         for (auto& [name, cancellation] : _recomputeCancellation) {
@@ -918,6 +944,107 @@ void Application::closeAllDocuments()
     }
 }
 
+bool Application::requestCloseDocument(const char* name)
+{
+    const std::string documentName(name ? name : "");
+    auto* document = getDocument(documentName.c_str());
+    if (!document) {
+        return false;
+    }
+    if (!(document->isCooperativeMutationActive()
+          || document->isPresentationUpdateActive())) {
+        return closeDocument(documentName.c_str());
+    }
+    if (!MainThreadSignalConfig::hasHooks() || !MainThreadSignalConfig::isMainThread()) {
+        return false;
+    }
+
+    const std::string documentUid = document->Uid.getValueStr();
+    if (auto existing = _pendingDocumentCloses.find(documentName);
+        existing != _pendingDocumentCloses.end()) {
+        return existing->second.documentUid == documentUid;
+    }
+
+    PendingDocumentClose pending;
+    pending.documentUid = documentUid;
+    const auto changed = [this, documentName, documentUid](const Document&, bool active) {
+        if (active) {
+            return;
+        }
+        queueRequestedDocumentClose(documentName, documentUid);
+    };
+    pending.cooperativeMutationConnection =
+        document->signalCooperativeMutationChanged.connect(changed);
+    pending.presentationUpdateConnection =
+        document->signalPresentationUpdateChanged.connect(changed);
+    _pendingDocumentCloses.emplace(documentName, std::move(pending));
+    return true;
+}
+
+void Application::queueRequestedDocumentClose(
+    const std::string& documentName,
+    const std::string& documentUid
+)
+{
+    const auto pending = _pendingDocumentCloses.find(documentName);
+    if (pending == _pendingDocumentCloses.end()
+        || pending->second.documentUid != documentUid
+        || pending->second.resumeQueued) {
+        return;
+    }
+
+    pending->second.resumeQueued = true;
+    MainThreadSignalConfig::invoke(
+        [this, documentName, documentUid] {
+            resumeRequestedDocumentClose(documentName, documentUid);
+        },
+        false
+    );
+}
+
+void Application::resumeRequestedDocumentClose(
+    const std::string& documentName,
+    const std::string& documentUid
+)
+{
+    const auto pending = _pendingDocumentCloses.find(documentName);
+    if (pending == _pendingDocumentCloses.end()
+        || pending->second.documentUid != documentUid) {
+        return;
+    }
+
+    auto* document = getDocument(documentName.c_str());
+    if (!document || document->Uid.getValueStr() != documentUid) {
+        _pendingDocumentCloses.erase(pending);
+        return;
+    }
+    if (document->isCooperativeMutationActive() || document->isPresentationUpdateActive()) {
+        pending->second.resumeQueued = false;
+        return;
+    }
+
+    if (closeDocument(documentName.c_str())) {
+        _pendingDocumentCloses.erase(documentName);
+        return;
+    }
+
+    document = getDocument(documentName.c_str());
+    const auto current = _pendingDocumentCloses.find(documentName);
+    if (current != _pendingDocumentCloses.end()
+        && document && document->Uid.getValueStr() == documentUid
+        && (document->isCooperativeMutationActive()
+            || document->isPresentationUpdateActive())) {
+        current->second.resumeQueued = false;
+        return;
+    }
+
+    _pendingDocumentCloses.erase(documentName);
+    Base::Console().error(
+        "Requested close failed for stable document '%s'\n",
+        documentName.c_str()
+    );
+}
+
 Document* Application::getDocument(const char *Name) const
 {
 
@@ -1101,7 +1228,7 @@ bool Application::tryQueueRecomputeRequests(std::vector<RecomputeRequest> reques
                 Document* document = request.resolveDocument();
                 return !request.documentName.empty() && document
                     && (!(document->isCooperativeMutationActive()
-                          || document->isPresentationUpdateActive())
+                          || document->isMutationBlockingPresentationUpdateActive())
                         || _recomputeDocumentsScheduled.contains(request.documentName));
             })) {
             return false;
@@ -1334,14 +1461,27 @@ void Application::startNextDocumentOpen()
         if (request.prepare) {
             request.prepare(request);
         }
-        task->work = openDocumentsWorkflow(
+        auto workflow = openDocumentsWorkflow(
             request.filenames,
             request.paths.empty() ? nullptr : &request.paths,
             request.labels.empty() ? nullptr : &request.labels,
             &task->result.errors, request.initFlags, &request.inputFlags
-        ).runAsync(hostRuntime(), [](std::function<void()> resume) {
+        );
+        auto dispatch = [](std::function<void()> resume) {
             MainThreadSignalConfig::invoke(std::move(resume), false);
-        }, [this, task] { finishDocumentOpen(task); }, request.cancellation.get_token());
+        };
+        auto finished = [this, task] { finishDocumentOpen(task); };
+        if (MainThreadSignalConfig::hasCleanupHook()) {
+            task->work = std::move(workflow).runAsyncWithCleanup(
+                hostRuntime(), dispatch,
+                [](std::function<void()> cleanup) {
+                    MainThreadSignalConfig::invokeCleanup(std::move(cleanup));
+                }, finished, request.cancellation.get_token());
+        }
+        else {
+            task->work = std::move(workflow).runAsync(
+                hostRuntime(), dispatch, finished, request.cancellation.get_token());
+        }
     }
     catch (...) {
         task->result.failure = std::current_exception();
@@ -3840,12 +3980,21 @@ void Application::drainRecomputeDocument(
         _recomputeGeneration.erase(current);
     }
 
-    if (Document* document = getDocument(documentName.c_str());
-        document && document->isCooperativeMutationActive()) {
-        document->endCooperativeMutation();
+    std::string documentUid;
+    if (Document* document = getDocument(documentName.c_str()); document) {
+        documentUid = document->Uid.getValueStr();
+        if (document->isCooperativeMutationActive()) {
+            document->endCooperativeMutation();
+        }
     }
 
-    auto notifyFinished = [this, documentName]() {
+    auto notifyFinished = [this, documentName, documentUid]() {
+        Document* document = getDocument(documentName.c_str());
+        if (documentUid.empty()
+            || !document
+            || document->Uid.getValueStr() != documentUid) {
+            return;
+        }
         signalRecomputeRequestFinished(documentName);
     };
     if (App::MainThreadSignalConfig::hasHooks()

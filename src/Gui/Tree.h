@@ -575,7 +575,9 @@ private:
     Gui::Document* pDocument;
     std::unordered_map<App::DocumentObject*, DocumentObjectDataPtr> ObjectMap;
     std::unordered_map<App::DocumentObject*, std::set<App::DocumentObject*>> _ParentMap;
-    std::vector<App::DocumentObject*> PopulateObjects;
+    // Deferred slices must not retain object pointers across event-loop turns.
+    // An edit rollback can destroy an object before its population slice runs.
+    std::vector<long> PopulateObjectIds;
     bool modelBrowserDirty {true};
     bool modelBrowserActive {false};
     bool transactionRefreshPending {false};

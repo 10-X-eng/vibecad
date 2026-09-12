@@ -26,6 +26,7 @@
 #pragma once
 
 #include <App/DocumentObject.h>
+#include <App/MainThreadSignal.h>
 #include <Gui/ViewProviderFeaturePython.h>
 #include <Gui/ViewProviderSuppressibleExtension.h>
 #include <Mod/Part/Gui/ViewProvider.h>
@@ -38,6 +39,10 @@
 
 namespace PartDesignGui
 {
+namespace TaskInternal
+{
+class VisibilitySnapshot;
+}
 
 class TaskDlgFeatureParameters;
 
@@ -92,8 +97,10 @@ public:
 
     /// Provides preview shape
     Part::TopoShape getPreviewShape() const override;
+    Part::TopoShape getRenderedShape() const override;
     /// Toggles visibility of the preview
     void showPreviousFeature(bool);
+    void setProfilePicking(bool enabled);
 
     PyObject* getPyObject() override;
 
@@ -129,6 +136,10 @@ protected:
     bool isSetTipIcon {false};
 
 private:
+    std::unique_ptr<TaskInternal::VisibilitySnapshot> finalResultVisibility;
+    fastsignals::scoped_connection finalResultRecomputeConnection;
+    bool profilePicking {false};
+    bool gizmosBeforePicking {false};
     Gui::CoinPtr<PartGui::SoPreviewShape> pcToolPreview;
 };
 

@@ -65,6 +65,12 @@ private:
 // Install the application-lifetime shutdown hook on the Qt owner before any
 // document worker can submit GUI notifications.
 GuiExport void initializeGuiFrameDispatcher();
+// Register owner-side shutdown that joins every worker using the cleanup queue.
+// Called once during owner initialization, before starting document workflows.
+GuiExport void initializeGuiFrameDispatcher(std::function<void()> finishWorkers);
+// Cleanup remains admitted while finishWorkers joins the runtime. It is drained
+// on the owner before shutdown returns, then permanently closed.
+GuiExport bool dispatchToGuiCleanup(std::function<void()> task);
 // Returns false once Qt shutdown begins. Accepted, unexecuted callbacks are
 // released on the owner at shutdown; a waiting promise then reports cancellation
 // through std::future_error instead of retaining its worker indefinitely.

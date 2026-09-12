@@ -49,12 +49,18 @@ class AppExport MainThreadSignalConfig
 public:
     using IsMainThreadFn = bool (*)();  // true iff currently on GUI/main thread
     using InvokeFn = void (*)(std::function<void()>&& fn, bool blocking);
+    using CleanupFn = void (*)(std::function<void()>&& fn);
 
     // Implemented by FreeCADApp rather than inline so Windows DLLs and PYDs
     // all observe the same process-wide hook pair.
     static void setHooks(IsMainThreadFn isMainThread, InvokeFn invoke);
     static bool isMainThread();
     static bool hasHooks();
+    // Independent cleanup delivery, kept alive until document workers join.
+    // No inline fallback: an absent hook is an error, never worker-side cleanup.
+    static void setCleanupHook(CleanupFn cleanup);
+    static bool hasCleanupHook();
+    static void invokeCleanup(std::function<void()>&& fn);
     static void invoke(std::function<void()>&& fn, bool blocking);
 };
 

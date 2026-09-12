@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+import time
 import unittest
 
 import FreeCAD as App
@@ -54,8 +55,29 @@ class TestAssemblySimulationPlayback(unittest.TestCase):
         if Gui.Control.activeTaskDialog() is not None:
             Gui.Control.closeDialog()
         if self.document.Name in App.listDocuments():
+            self._wait_for_document(self.document)
             App.closeDocument(self.document.Name)
         shutil.rmtree(self.root, ignore_errors=True)
+
+    def _wait_for_document(self, document, timeout_seconds=30.0):
+        deadline = time.monotonic() + timeout_seconds
+        idle_observations = 0
+        while time.monotonic() < deadline:
+            Gui.updateGui()
+            active = any(
+                bool(getattr(document, name, False))
+                for name in (
+                    "Recomputing",
+                    "RecomputePending",
+                    "CooperativeMutationActive",
+                    "PresentationUpdateActive",
+                )
+            )
+            idle_observations = 0 if active else idle_observations + 1
+            if idle_observations == 2:
+                return
+            time.sleep(0.01)
+        self.fail("Assembly playback document did not become stable")
 
     def _publish_simulation(self):
         pack = get_vibescript_pack("AssemblyWorkbench")
@@ -129,6 +151,7 @@ class TestAssemblySimulationPlayback(unittest.TestCase):
             prepared,
             publish_candidate(service, prepared, validated),
         )
+        self._wait_for_document(self.document)
         objects = {
             name: self.document.getObject(details["object_name"])
             for name, details in accepted["live_outputs"].items()
@@ -218,6 +241,7 @@ class TestAssemblySimulationPlayback(unittest.TestCase):
         # transient frame in the live player without dirtying the document.
         self.assertEqual(panel.form.frameSlider.value(), last_frame)
         self.assertFalse(Gui.getDocument(self.document.Name).Modified)
+        self._wait_for_document(self.document)
         closing_name = self.document.Name
         App.closeDocument(closing_name)
         Gui.updateGui()

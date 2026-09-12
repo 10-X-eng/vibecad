@@ -797,7 +797,7 @@ Document::Document(App::Document* pcDocument, Application* app)
             )
         );
     d->connectPresentationUpdateChanged =
-        pcDocument->signalPresentationUpdateChanged.connect(
+        pcDocument->signalMutationBlockingPresentationUpdateChanged.connect(
             std::bind(
                 &Gui::Document::slotPresentationUpdateChanged,
                 this,
@@ -1600,7 +1600,8 @@ bool Document::historyMutationBlocked(const App::Document* document)
 {
     return projectionRefreshBlocked(document)
         || (document
-            && (document->getBookedTransactionID() != App::NullTransaction
+            && (document->isMutationBlockingPresentationUpdateActive()
+                || document->getBookedTransactionID() != App::NullTransaction
                 || document->hasPendingTransaction()
                 || document->isTransactionLocked()));
 }
@@ -1684,33 +1685,49 @@ void Document::slotCooperativeMutationChanged(
     bool active
 )
 {
-    if (&document != d->_pcDocument || active
-        || d->bulkViewAdoptionLease
-        || d->bulkViewAdoptionFinishing
-        || !hasDeferredViewProviderWork()) {
+    if (&document != d->_pcDocument) {
         return;
     }
 
-    // Keep the document's existing cooperative-mutation contract active
-    // through GUI adoption. The originating mutation has reached depth zero,
-    // so this is a distinct GUI-owned lease, released after the last bounded
-    // slice. Tree, History, undo, close, and recompute therefore observe one
-    // coherent operation instead of the partially attached object graph.
+    // App::Document objects are mutated by the document workers. Coin may not
+    // traverse those same live shapes concurrently, so suspend only this
+    // document's canvases for the mutation lifetime. The main window, task
+    // panel and progress UI continue to process events.
+    for (auto* view : getMDIViews(true)) {
+        synchronizePresentationView(*view);
+    }
+
+    if (active
+        || d->bulkViewAdoptionLease
+        || d->bulkViewAdoptionFinishing
+        || !hasDeferredViewProviderWork()) {
+        if (!active) {
+            slotPresentationUpdateChanged(document, false);
+        }
+        return;
+    }
+
+    // Deferred view-provider work is bounded GUI presentation, not a model
+    // mutation. Keep its lifetime visible to close/save coordination without
+    // rejecting the next modeling command after recompute has completed.
     d->bulkViewAdoptionLease = true;
-    d->_pcDocument->beginCooperativeMutation();
+    d->_pcDocument->beginVisualUpdate();
     scheduleDeferredViewProviderWork();
+    slotPresentationUpdateChanged(document, false);
 }
 
 void Document::slotPresentationUpdateChanged(
     const App::Document& document,
-    bool active
+    bool /*active*/
 )
 {
     if (&document != d->_pcDocument) {
         return;
     }
 
-    if (active) {
+    const bool suspend = document.isCooperativeMutationActive()
+        || document.isMutationBlockingPresentationUpdateActive();
+    if (suspend) {
         for (auto* view : getMDIViews(true)) {
             synchronizePresentationView(*view);
         }
@@ -1729,7 +1746,9 @@ void Document::slotPresentationUpdateChanged(
 
 void Document::synchronizePresentationView(MDIView& view)
 {
-    if (!d->_pcDocument->isPresentationUpdateActive() || !view.updatesEnabled()) {
+    if (!(d->_pcDocument->isCooperativeMutationActive()
+          || d->_pcDocument->isMutationBlockingPresentationUpdateActive())
+        || !view.updatesEnabled()) {
         return;
     }
     view.setUpdatesEnabled(false);
@@ -1986,7 +2005,7 @@ void Document::drainDeferredViewProviderWork()
     if (d->bulkViewAdoptionLease) {
         d->bulkViewAdoptionFinishing = true;
         d->bulkViewAdoptionLease = false;
-        d->_pcDocument->endCooperativeMutation();
+        d->_pcDocument->endVisualUpdate();
         d->bulkViewAdoptionFinishing = false;
     }
 }
@@ -2782,8 +2801,7 @@ bool queueDocumentSave(std::vector<SaveTarget> targets, Document::SaveCallback f
     }
     for (const auto& target : targets) {
         if (App::GetApplication().getDocument(target.name.c_str()) != target.document
-            || Document::historyMutationBlocked(target.document)
-            || target.document->isPresentationUpdateActive()) {
+            || Document::historyMutationBlocked(target.document)) {
             getMainWindow()->showMessage(QObject::tr("Cannot save while document work is active"));
             return false;
         }
@@ -2796,11 +2814,16 @@ bool queueDocumentSave(std::vector<SaveTarget> targets, Document::SaveCallback f
             target.document->beginCooperativeMutation();
         }
         getMainWindow()->showMessage(QObject::tr("Saving document…"));
-        pending->result = saveDocuments(pending).runAsync(
+        pending->result = saveDocuments(pending).runAsyncWithCleanup(
             App::GetApplication().hostRuntime(),
             [](std::function<void()> resume) {
                 if (!dispatchToGuiFrame(std::move(resume))) {
                     throw Base::RuntimeError("Unable to dispatch document save completion");
+                }
+            },
+            [](std::function<void()> cleanup) {
+                if (!dispatchToGuiCleanup(std::move(cleanup))) {
+                    throw Base::RuntimeError("Document save cleanup requested after runtime shutdown");
                 }
             },
             [pending, finished = std::move(finished)] {

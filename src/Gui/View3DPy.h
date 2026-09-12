@@ -69,6 +69,7 @@ public:
     Py::Object zoomOut();
     Py::Object startAnimating(const Py::Tuple&);
     Py::Object stopAnimating();
+    Py::Object isAnimating();
     Py::Object setAnimationEnabled(const Py::Tuple&);
     Py::Object isAnimationEnabled();
     Py::Object setPopupMenuEnabled(const Py::Tuple&);
