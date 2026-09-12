@@ -186,7 +186,7 @@ freecad-debug = { cmd = [ ".pixi/envs/default/Library/bin/FreeCAD.exe" ], depend
 freecad-release = { cmd = [ ".pixi/envs/default/Library/bin/FreeCAD.exe" ], depends-on = ["install-release"]}
 
 [tasks]
-initialize = { cmd = ["git", "submodule", "update", "--init", "--recursive"]}
+initialize = { cmd = ["python", "src/Tools/ensure_git_submodules.py"]}
 # redirect to debug by default
 configure = [{ task = "configure-debug" }]
 build = [{ task = "build-debug" }]
