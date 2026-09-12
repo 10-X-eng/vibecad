@@ -260,6 +260,9 @@ def _external_tools_instruction(context: dict[str, Any]) -> str:
 def _system_instruction_sections(context: dict[str, Any]) -> list[str]:
     """Ordered system-instruction sections shared by every wire format."""
     sections = [VIBECAD_SYSTEM_INSTRUCTIONS]
+    task_instructions = context.get("_vibecad_task_instructions")
+    if isinstance(task_instructions, str) and task_instructions.strip():
+        sections.append(task_instructions.strip())
     if _vibescript_surface_active(context):
         instruction = _vibescript_authoring_instruction(context)
         if instruction:
@@ -1363,6 +1366,7 @@ class CodexProvider(BaseProvider):
         from VibeCADOllama import codex_context_limits, inspect_model
 
         live_context = dict(context)
+        tooless_task = live_context.get("_vibecad_toolless_task") is True
         ollama_model: dict[str, Any] = {}
         model_context_window: int | None = None
         model_auto_compact_token_limit: int | None = None
@@ -1379,7 +1383,7 @@ class CodexProvider(BaseProvider):
                         f"model: {ollama_model.get('error') or 'unknown error'}"
                     )
                 capabilities = set(ollama_model.get("capabilities") or [])
-                if capabilities and "tools" not in capabilities:
+                if capabilities and "tools" not in capabilities and not tooless_task:
                     raise ProviderUnavailable(
                         f"Ollama model {self.model!r} does not advertise tool calling."
                     )
@@ -1419,26 +1423,31 @@ class CodexProvider(BaseProvider):
             auth_mode=self.auth_mode,
             base_url=self.base_url,
         )
-        dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(
-            live_context,
-            namespaced=namespaced_tools,
-        )
-        if not dynamic_tools:
-            raise ProviderUnavailable(
-                "Codex mode has no declared VibeCAD tools for the current workbench."
+        external_name_map: dict[tuple[str, str], str] = {}
+        if tooless_task:
+            dynamic_tools: list[dict[str, Any]] = []
+            dynamic_name_map: dict[tuple[str, str], str] = {}
+        else:
+            dynamic_tools, dynamic_name_map = _codex_dynamic_tool_surface(
+                live_context,
+                namespaced=namespaced_tools,
             )
-        external_tools, external_name_map = _codex_external_dynamic_tools(
-            live_context,
-            namespaced=namespaced_tools,
-        )
-        for external_key in external_name_map:
-            if external_key in dynamic_name_map:
+            if not dynamic_tools:
                 raise ProviderUnavailable(
-                    "External MCP tool name collides with a VibeCAD tool: "
-                    + ".".join(part for part in external_key if part)
+                    "Codex mode has no declared VibeCAD tools for the current workbench."
                 )
-        dynamic_tools.extend(external_tools)
-        dynamic_name_map.update(external_name_map)
+            external_tools, external_name_map = _codex_external_dynamic_tools(
+                live_context,
+                namespaced=namespaced_tools,
+            )
+            for external_key in external_name_map:
+                if external_key in dynamic_name_map:
+                    raise ProviderUnavailable(
+                        "External MCP tool name collides with a VibeCAD tool: "
+                        + ".".join(part for part in external_key if part)
+                    )
+            dynamic_tools.extend(external_tools)
+            dynamic_name_map.update(external_name_map)
         skill_call_key = (
             ("skills", "read")
             if namespaced_tools
@@ -1956,7 +1965,7 @@ class CodexProvider(BaseProvider):
                     )
                 update_cached_account(account)
 
-            if self.skills_enabled:
+            if self.skills_enabled and not tooless_task:
                 skill_catalog = load_codex_skill_catalog(
                     client,
                     cwd=codex_workspace(),
@@ -1975,13 +1984,21 @@ class CodexProvider(BaseProvider):
                 "browser automation",
                 "computer-control",
             ]
-            if not self.web_search_enabled:
+            task_web_search_enabled = self.web_search_enabled and not tooless_task
+            if not task_web_search_enabled:
                 forbidden_capabilities.append("web")
-            developer_instructions = (
-                "Operate only through the supplied VibeCAD tools. Do not "
-                f"use {', '.join(forbidden_capabilities)} tools."
-            )
-            if self.skills_enabled and skill_catalog:
+            if tooless_task:
+                developer_instructions = (
+                    "Complete this non-mutating text-only VibeCAD task directly. "
+                    "Do not call tools. Do not use "
+                    f"{', '.join(forbidden_capabilities)} tools."
+                )
+            else:
+                developer_instructions = (
+                    "Operate only through the supplied VibeCAD tools. Do not "
+                    f"use {', '.join(forbidden_capabilities)} tools."
+                )
+            if self.skills_enabled and skill_catalog and not tooless_task:
                 developer_instructions += (
                     " Read selected skill instructions and referenced resources "
                     "only through skills.read."
@@ -2004,8 +2021,8 @@ class CodexProvider(BaseProvider):
                 "environments": [],
                 "dynamicTools": dynamic_tools,
                 "config": vibecad_thread_config(
-                    web_search_enabled=self.web_search_enabled,
-                    skills_enabled=self.skills_enabled,
+                    web_search_enabled=task_web_search_enabled,
+                    skills_enabled=self.skills_enabled and not tooless_task,
                     openai_base_url=(
                         (codex_base_url or "")
                         if self.auth_mode == "api_key"
@@ -2321,10 +2338,7 @@ class CodexProvider(BaseProvider):
 
             transition_interrupt_sent = False
             while not turn_completed.wait(0.05):
-                if (
-                    transition_response_sent.is_set()
-                    and not transition_interrupt_sent
-                ):
+                if transition_response_sent.is_set() and not transition_interrupt_sent:
                     transition_interrupt_sent = True
                     client.request(
                         "turn/interrupt",
@@ -2714,7 +2728,10 @@ class AnthropicProvider(BaseProvider):
             provider_context = dict(context)
             options = dict(context.get("_vibecad_provider_options") or {})
             options.update({
-                "web_search_enabled": self.web_search_enabled,
+                "web_search_enabled": (
+                    self.web_search_enabled
+                    and provider_context.get("_vibecad_toolless_task") is not True
+                ),
                 "compaction_model": self.compaction_model,
                 "model_capabilities": _anthropic_cached_capabilities(scope, models),
             })
@@ -7213,9 +7230,12 @@ def _anthropic_child_main(
     try:
         live_context = dict(context)
         web_search_enabled = _provider_option(live_context, "web_search_enabled")
-        compaction_model = str(
-            _provider_option_value(live_context, "compaction_model") or model
-        ).strip() or model
+        compaction_model = (
+            str(
+                _provider_option_value(live_context, "compaction_model") or model
+            ).strip()
+            or model
+        )
 
         def build_tool_surface(
             surface_context: dict[str, Any],
@@ -7290,8 +7310,10 @@ def _anthropic_child_main(
             "max_tokens": max_tokens,
             "cache_control": {"type": "ephemeral"},
             "system": system_blocks,
-            "tools": _anthropic_request_tools(tool_definitions, web_search_enabled),
         }
+        request_tools = _anthropic_request_tools(tool_definitions, web_search_enabled)
+        if request_tools:
+            request_kwargs["tools"] = request_tools
         if thinking is not None:
             request_kwargs["thinking"] = thinking
             request_kwargs["output_config"] = {
@@ -7316,7 +7338,7 @@ def _anthropic_child_main(
             if recovery_required:
                 sdk_request["max_tokens"] = max_tokens
                 sdk_request["tools"] = _anthropic_recovery_request_tools(
-                    list(request_kwargs["tools"])
+                    list(request_kwargs.get("tools") or [])
                 )
                 sdk_request["tool_choice"] = {"type": "auto"}
                 sdk_request["system"] = [
@@ -7348,7 +7370,7 @@ def _anthropic_child_main(
                     "attempt": attempt,
                     "model": model,
                     "message_count": len(messages),
-                    "tool_count": len(request_kwargs["tools"]),
+                    "tool_count": len(sdk_request.get("tools") or []),
                     "max_tokens": sdk_request["max_tokens"],
                     "thinking": request_kwargs.get("thinking"),
                     "output_config": sdk_request.get("output_config"),
@@ -7714,9 +7736,13 @@ def _anthropic_child_main(
                 if isinstance(updated_context, dict):
                     live_context = updated_context
                     tools_by_name, tool_definitions = build_tool_surface(live_context)
-                    request_kwargs["tools"] = _anthropic_request_tools(
+                    refreshed_tools = _anthropic_request_tools(
                         tool_definitions, web_search_enabled
                     )
+                    if refreshed_tools:
+                        request_kwargs["tools"] = refreshed_tools
+                    else:
+                        request_kwargs.pop("tools", None)
                 state_after = _provider_state_after_tool(
                     live_context,
                     result if isinstance(result, dict) else None,

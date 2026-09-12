@@ -2855,3 +2855,48 @@ def test_retry_wait_is_terminated_by_parent_stop(monkeypatch, stop) -> None:
         )
     assert context.process.terminated
     assert context.parent_conn.closed
+
+
+@pytest.mark.parametrize("text_only", [False, True])
+def test_anthropic_brief_suppresses_web_without_changing_normal_runs(monkeypatch, text_only):
+    captured = []
+
+    def run(**kwargs):
+        captured.append(kwargs["context"])
+        return provider.ProviderResult(final_output="done", raw=None)
+
+    monkeypatch.setattr(provider, "_run_provider_subprocess", run)
+    context = {"_vibecad_provider_options": {"custom": True}}
+    if text_only:
+        context["_vibecad_toolless_task"] = True
+    provider.AnthropicProvider(
+        model="primary", api_key="test-key", web_search_enabled=True,
+    ).run("Develop a brief", context)
+    options = captured[0]["_vibecad_provider_options"]
+    assert options["web_search_enabled"] is not text_only
+    assert options["custom"] is True
+    assert "model_capabilities" in options
+    assert context["_vibecad_provider_options"] == {"custom": True}
+
+
+def test_anthropic_brief_wire_request_omits_empty_tools(monkeypatch):
+    messages = _SequenceAnthropicMessages([
+        SimpleNamespace(content=[SimpleNamespace(type="text", text='{"ready":true}')],
+                        stop_reason="end_turn")
+    ])
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(
+        Anthropic=lambda **kwargs: SimpleNamespace(messages=messages),
+        BadRequestError=type("BadRequestError", (Exception,), {}),
+    ))
+    connection = _CollectingConnection()
+    provider._anthropic_child_main(
+        connection, "Develop a brief", {
+            "provider_tool_schemas": [], "_vibecad_toolless_task": True,
+            "_vibecad_task_instructions": "Return brief JSON without using tools.",
+            "_vibecad_provider_options": {"web_search_enabled": False},
+        }, "primary", "test-key", None, 1.0, 2, False,
+    )
+    assert connection.messages[-1]["type"] == "done"
+    assert connection.messages[-1]["final_output"] == '{"ready":true}'
+    assert "tools" not in messages.requests[0]
+    assert any("Return brief JSON" in block["text"] for block in messages.requests[0]["system"])
