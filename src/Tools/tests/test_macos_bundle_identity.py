@@ -60,6 +60,15 @@ class TestMacOSBundleIdentity(unittest.TestCase):
         )
         self.assertIn("vibecad", identifier.casefold())
 
+    def test_native_and_release_bundles_share_identity_and_document_contract(self) -> None:
+        native = _load(REPO_ROOT / "src/MacAppBundle/FreeCAD.app/Contents/Info.plist")
+        release = _load(BUNDLE_TEMPLATE)
+        self.assertEqual(native["CFBundleIdentifier"], release["CFBundleIdentifier"])
+        self.assertEqual(native["CFBundleDocumentTypes"], release["CFBundleDocumentTypes"])
+        self.assertEqual(native.get("UTImportedTypeDeclarations"),
+                         release.get("UTImportedTypeDeclarations"))
+        self.assertNotIn("UTExportedTypeDeclarations", native)
+
     def test_quicklook_generator_identifier_is_vibecad_owned(self) -> None:
         identifier = _load(QUICKLOOK_GENERATOR)["CFBundleIdentifier"]
         self.assertNotEqual(
