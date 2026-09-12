@@ -83,3 +83,6 @@ goals.md
 .env
 # Local model/tool-sharpening outputs
 /benchmark-artifacts/
+
+# Preserved local files from submodule repair
+/.git-submodule-backups/

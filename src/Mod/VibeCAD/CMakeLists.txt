@@ -43,6 +43,7 @@ set(VibeCAD_Scripts
     VibeCADGeometryInspection.py
     VibeCADPlacementInspection.py
     VibeCADGui.py
+    VibeCADTokenUsage.py
     VibeCADLegacyArchitecture.py
     VibeCADLiveAcceptanceOracle.py
     VibeCADIntentMemory.py
@@ -1308,6 +1309,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/assembly_simulation_playback_gui_integration.py
         vibecad_tests/grid_gui_integration.py
         vibecad_tests/section_view_gui_integration.py
+        vibecad_tests/usage_summary_gui_integration.py
         vibecad_tests/link_override_visibility_gui_integration.py
         vibecad_tests/mcp_gui_integration.py
         vibecad_tests/session_recovery_gui_integration.py
