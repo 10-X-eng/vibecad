@@ -94,3 +94,32 @@ jobs:
           src.Tools.tests.test_vibecad_update.UpdateServiceTests.test_windows_detached_helper_executes_powershell_after_parent_exits
           src.Tools.tests.test_vibecad_update.UpdateServiceTests.test_spawn_detached_helper_outlives_the_parent_process
           src.Tools.tests.test_windows_installer_version.TestWindowsInstallerVersion.test_in_app_updater_launches_normal_installer_without_flags
+
+  validate-macos-contracts:
+    name: Validate release and update contracts on macOS
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      # The macOS packaging and updater paths are only exercised here. Running
+      # the same contracts on Linux and Windows alone lets macOS-only path
+      # behaviour, such as the /var -> /private/var symlink, regress unseen.
+      - name: Run release and update contract tests
+        shell: bash
+        run: >-
+          python -m unittest
+          src.Tools.tests.test_sync_version
+          src.Tools.tests.test_release_artifact_name
+          src.Tools.tests.test_windows_installer_version
+          src.Tools.tests.test_generate_update_manifest
+          src.Tools.tests.test_release_workflow
+          src.Tools.tests.test_vibecad_update
+          src.Tools.tests.test_macos_bundle_audit
+          src.Tools.tests.test_macos_build_toolchain

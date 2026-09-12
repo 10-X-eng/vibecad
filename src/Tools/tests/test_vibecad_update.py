@@ -322,7 +322,11 @@ class UpdateServiceTests(unittest.TestCase):
         payload = b"unsigned installer fixture"
         asset = self._windows_asset(payload)
         with tempfile.TemporaryDirectory() as temp_dir:
-            update_dir = Path(temp_dir)
+            # UpdateService resolves the directories it is handed, so the
+            # expected path has to be resolved too. On macOS the per-user
+            # temporary directory sits under the /var -> /private/var
+            # symlink, where an unresolved path never compares equal.
+            update_dir = Path(temp_dir).resolve()
             downloads = update_dir / "downloads"
             downloads.mkdir()
             cached = downloads / asset.name
