@@ -92,12 +92,23 @@ runtime_spec="$({
 
 smoke_runtime() {
     local output
-    "${python_executable}" - "${runtime_root}" "${codex_version}" <<'PY'
+    "${python_executable}" - "${runtime_root}" "${codex_version}" "${archive}" "${archive_sha256}" <<'PY' || return 1
 import json
+import os
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
+runtime = json.loads((root / "runtime.json").read_text())
+expected = {
+    "schema": "vibecad-codex-runtime-v1",
+    "version": sys.argv[2],
+    "release_tag": "rust-v" + sys.argv[2],
+    "asset": sys.argv[3],
+    "sha256": sys.argv[4],
+}
+if any(runtime.get(key) != value for key, value in expected.items()):
+    raise SystemExit("Unexpected Codex runtime metadata")
 manifest = json.loads((root / "codex-package.json").read_text())
 if manifest.get("layoutVersion") != 1 or manifest.get("version") != sys.argv[2]:
     raise SystemExit("Unexpected Codex package layout or version")
@@ -112,11 +123,13 @@ if manifest.get("entrypoint") != required[0]:
 for name in required:
     if not (root / name).is_file():
         raise SystemExit(f"Missing Codex package companion: {name}")
+    if not suffix and not os.access(root / name, os.X_OK):
+        raise SystemExit(f"Codex package companion is not executable: {name}")
 PY
-    output="$("${executable}" --version)"
+    output="$("${executable}" --version)" || return 1
     if [[ "${output}" != *"${codex_version}"* ]]; then
         echo "Unexpected Codex app-server version: ${output}" >&2
-        exit 1
+        return 1
     fi
 }
 
@@ -124,8 +137,8 @@ if [[ -f "${stamp}" ]] \
   && [[ "$(tr -d '\r\n' < "${stamp}")" == "${runtime_spec}" ]] \
   && [[ -x "${executable}" ]] \
   && [[ -f "${runtime_root}/LICENSE" ]] \
-  && [[ -f "${runtime_root}/runtime.json" ]]; then
-    smoke_runtime
+  && [[ -f "${runtime_root}/runtime.json" ]] \
+  && smoke_runtime >/dev/null 2>&1; then
     echo "VibeCAD Codex app-server runtime is current"
     exit 0
 fi

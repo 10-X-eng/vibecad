@@ -1820,8 +1820,10 @@ if(UNIX AND VIBECAD_INSTALL_CODEX_RUNTIME)
         "${CMAKE_SOURCE_DIR}/package/rattler-build/scripts/install_vibecad_codex_runtime.sh")
     set(VIBECAD_CODEX_MODULE_DIR "${CMAKE_BINARY_DIR}/Mod/VibeCAD")
     set(VIBECAD_CODEX_RUNTIME_STAMP "${VIBECAD_CODEX_MODULE_DIR}/codex_runtime/runtime.json")
-    add_custom_command(
-        OUTPUT "${VIBECAD_CODEX_RUNTIME_STAMP}"
+    # The installer validates its cache cheaply. A manifest timestamp alone
+    # cannot detect removed companion binaries or stale runtime metadata.
+    add_custom_target(VibeCADCodexRuntime ALL
+        BYPRODUCTS "${VIBECAD_CODEX_RUNTIME_STAMP}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${VIBECAD_CODEX_MODULE_DIR}"
         COMMAND
             bash "${VIBECAD_CODEX_INSTALLER}"
@@ -1830,16 +1832,14 @@ if(UNIX AND VIBECAD_INSTALL_CODEX_RUNTIME)
         DEPENDS
             "${VIBECAD_CODEX_INSTALLER}"
             "${CMAKE_CURRENT_SOURCE_DIR}/VibeCADCodex.py"
-        COMMENT "Installing pinned Codex app-server into ${VIBECAD_CODEX_MODULE_DIR}"
+        COMMENT "Verifying pinned Codex app-server in ${VIBECAD_CODEX_MODULE_DIR}"
         VERBATIM
-    )
-    add_custom_target(VibeCADCodexRuntime ALL
-        DEPENDS "${VIBECAD_CODEX_RUNTIME_STAMP}"
     )
     add_dependencies(VibeCADScripts VibeCADCodexRuntime)
     install(
         DIRECTORY "${VIBECAD_CODEX_MODULE_DIR}/codex_runtime"
         DESTINATION Mod/VibeCAD
+        USE_SOURCE_PERMISSIONS
         OPTIONAL
     )
 endif()
