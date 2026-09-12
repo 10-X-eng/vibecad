@@ -25,7 +25,7 @@ endif()
 message(STATUS "Modern QuickLook: Using macOS SDK: ${MACOS_SDK_PATH}")
 
 # Bundle identifiers (inherited from parent)
-set(FREECAD_BUNDLE_ID "org.freecad.FreeCAD")
+set(FREECAD_BUNDLE_ID "org.vibecad.VibeCAD")
 set(THUMBNAIL_BUNDLE_ID "${FREECAD_BUNDLE_ID}.quicklook.thumbnail")
 set(PREVIEW_BUNDLE_ID "${FREECAD_BUNDLE_ID}.quicklook.preview")
 
