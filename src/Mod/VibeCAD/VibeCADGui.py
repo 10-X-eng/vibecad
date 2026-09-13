@@ -5115,17 +5115,22 @@ def _snapshot_active_document_conversation(doc: Any) -> None:
         }
 
 
+def _is_document_file_save(doc: Any, filepath: str) -> bool:
+    """Exclude worker/saveCopy snapshots, which do not set the document filename."""
+    current_file = str(getattr(doc, "FileName", "") or "").strip()
+    target_file = str(filepath or "").strip()
+    if not current_file or not target_file:
+        return False
+    return Path(current_file).expanduser().resolve() == Path(
+        target_file
+    ).expanduser().resolve()
+
+
 def _move_saved_document_conversation(doc: Any, filepath: str) -> None:
     document_key = _document_storage_key(doc)
     snapshot = _document_save_conversations.pop(document_key, None) or {}
     reference_snapshot = _document_save_references.pop(document_key, None) or {}
-    current_file = str(getattr(doc, "FileName", "") or "").strip()
-    target_file = str(filepath or "").strip()
-    if not current_file or not target_file:
-        return
-    if Path(current_file).expanduser().resolve() != Path(
-        target_file
-    ).expanduser().resolve():
+    if not _is_document_file_save(doc, filepath):
         return
     conversation_store_path = str(snapshot.get("store_path") or "").strip()
     temporary_project_root = str(
@@ -5401,9 +5406,10 @@ class _VibeCADDocumentObserver:
     def slotFinishSaveDocument(self, doc, filepath) -> None:
         _move_saved_document_conversation(doc, str(filepath))
         try:
-            get_service().persist_modeling_engine_after_save(
-                str(getattr(doc, "Uid", "") or "")
-            )
+            if _is_document_file_save(doc, str(filepath)):
+                get_service().persist_modeling_engine_after_save(
+                    str(getattr(doc, "Uid", "") or "")
+                )
         except Exception as exc:
             _warn(f"VibeCAD authoring mode persistence failed: {exc}")
         _schedule_assistant_document_refresh()
