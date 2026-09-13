@@ -26,7 +26,8 @@ Download the latest build from [VibeCAD Releases](https://github.com/10-X-eng/vi
 ### Linux AppImage
 
 Download the AppImage that matches this machine: `Linux-x86_64` on Intel/AMD,
-or `Linux-aarch64` on ARM64 hosts including DGX Spark. Then:
+or use a locally built `Linux-aarch64` AppImage on ARM64 hosts including DGX Spark.
+The release workflow currently publishes Linux x86_64 builds. Then:
 
 ```bash
 chmod +x VibeCAD-*-Linux-$(uname -m).AppImage

@@ -135,9 +135,9 @@ def test_codex_runtime_pins_linux_aarch64_and_x86_64() -> None:
     installer = _source("package/rattler-build/scripts/install_vibecad_codex_runtime.sh")
 
     assert "linux:aarch64|linux:arm64)" in installer
-    assert "codex-app-server-aarch64-unknown-linux-musl.tar.gz" in installer
+    assert "codex-app-server-package-aarch64-unknown-linux-musl.tar.gz" in installer
     assert "linux:x86_64|linux:amd64)" in installer
-    assert "codex-app-server-x86_64-unknown-linux-musl.tar.gz" in installer
+    assert "codex-app-server-package-x86_64-unknown-linux-musl.tar.gz" in installer
 
 
 def test_deb_builder_maps_uname_to_debian_architecture() -> None:
