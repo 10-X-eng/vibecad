@@ -67,7 +67,7 @@ if(NOT BUILD_MODERN_EXTENSIONS AND NOT BUILD_LEGACY_GENERATOR)
 endif()
 
 # Global configuration
-set(FREECAD_BUNDLE_ID "org.freecad.FreeCAD")
+set(FREECAD_BUNDLE_ID "org.vibecad.VibeCAD")
 set(TARGET_APP_BUNDLE "${CMAKE_BINARY_DIR}/src/MacAppBundle/FreeCAD.app")
 
 # Detect target architecture
