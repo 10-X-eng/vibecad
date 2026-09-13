@@ -4407,6 +4407,14 @@ def _document_render_refresh_blocked(document: Any) -> bool:
         document_uid = str(getattr(document, "Uid", "") or "").strip()
     except (ReferenceError, RuntimeError):
         return False
+    try:
+        gui_document = Gui.getDocument(str(document.Name))
+        if gui_document is not None and gui_document.getInEdit() is not None:
+            # Sketcher and feature tasks temporarily own visibility. Their
+            # preview state must not be replaced by queued history rendering.
+            return True
+    except (AttributeError, ReferenceError, RuntimeError):
+        pass
     return bool(document_uid and document_change_batch_active(document_uid))
 
 

@@ -549,6 +549,23 @@ class TestModelTreeBrowser(unittest.TestCase):
             getattr(self, "document", None) is not None
             and App.getDocument(self.document.Name) is not None
         ):
+            # Visibility and selection changes can leave a native presentation
+            # update queued after the test assertion has finished.
+            self.assertIsNotNone(
+                _wait_until(
+                    lambda: not any(
+                        bool(getattr(self.document, state, False))
+                        for state in (
+                            "RecomputePending",
+                            "CooperativeMutationActive",
+                            "PresentationUpdateActive",
+                            "Recomputing",
+                            "Restoring",
+                            "HasPendingTransaction",
+                        )
+                    )
+                )
+            )
             App.closeDocument(self.document.Name)
         self.tree_parameters.SetBool(
             "OrganizeModelByType",
@@ -2502,6 +2519,88 @@ class TestModelTreeBrowser(unittest.TestCase):
         enter_consumed_sketch()
         Gui.Control.activeTaskDialog().accept()
         assert_tip_restored()
+
+    def test_deferred_restore_does_not_override_sketch_preview(self):
+        """Issue #203: queued presentation must respect a live sketch edit."""
+
+        import VibeCADGui as vibe_gui
+
+        Gui.activateWorkbench("PartDesignWorkbench")
+        Gui.activeView().setActiveObject("pdbody", self.vibe_body)
+        document_uid = str(self.document.Uid)
+        observed_refresh_checks = []
+        original_blocked = vibe_gui._document_render_refresh_blocked
+
+        def record_blocked_check(document):
+            if document.Uid == document_uid:
+                observed_refresh_checks.append(True)
+            return original_blocked(document)
+
+        vibe_gui._document_render_refresh_blocked = record_blocked_check
+        try:
+            vibe_gui._schedule_document_render_after_restore(self.document)
+            self.assertIn(document_uid, vibe_gui._pending_document_render_refreshes)
+            Gui.activeDocument().setEdit(self.vibe_sketch.Name)
+            self.assertIsNotNone(
+                _wait_until(lambda: Gui.activeDocument().getInEdit() is not None)
+            )
+            self.assertIsNotNone(_wait_until(lambda: any(observed_refresh_checks)))
+            self.assertIsNotNone(Gui.activeDocument().getInEdit())
+            self.assertFalse(
+                self.vibe_result.Visibility,
+                "a queued restore must not undo Sketcher TempoVis during edit",
+            )
+        finally:
+            vibe_gui._document_render_refresh_blocked = original_blocked
+            if Gui.Control.activeDialog():
+                Gui.Control.activeTaskDialog().reject()
+            _wait_until(
+                lambda: (
+                    Gui.activeDocument().getInEdit() is None
+                    and document_uid not in vibe_gui._pending_document_render_refreshes
+                    and not any(
+                        bool(getattr(self.document, state, False))
+                        for state in (
+                            "RecomputePending",
+                            "CooperativeMutationActive",
+                            "PresentationUpdateActive",
+                            "Recomputing",
+                        )
+                    )
+                )
+            )
+
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: document_uid not in vibe_gui._pending_document_render_refreshes
+            )
+        )
+        self.assertTrue(self.vibe_result.Visibility)
+
+    def test_deferred_restore_keeps_newer_link_visibility(self):
+        """Issue #203: a user command after scheduling wins over stale work."""
+
+        import VibeCADGui as vibe_gui
+
+        occurrence = self.document.addObject("App::Link", "DeferredVisibilityOccurrence")
+        occurrence.LinkedObject = self.vibe_body
+        occurrence.LinkTransform = True
+        occurrence.Visibility = True
+        self.document.recompute()
+
+        document_uid = str(self.document.Uid)
+        vibe_gui._schedule_document_render_after_restore(self.document)
+        self.assertIn(document_uid, vibe_gui._pending_document_render_refreshes)
+        occurrence.Visibility = False
+        self.vibe_body.Visibility = False
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: document_uid not in vibe_gui._pending_document_render_refreshes
+            )
+        )
+        self.assertFalse(occurrence.Visibility)
+        self.assertFalse(self.vibe_body.Visibility)
+        self.assertFalse(self.vibe_result.Visibility)
 
     def test_link_occurrence_and_definition_visibility_are_independent(self):
         assembly = self.document.addObject(

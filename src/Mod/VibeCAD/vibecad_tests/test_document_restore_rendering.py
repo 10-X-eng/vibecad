@@ -422,6 +422,16 @@ def test_restore_geometry_waits_for_native_update(monkeypatch, native_state) -> 
     assert document.recompute_calls == 1
 
 
+def test_render_refresh_waits_while_target_document_is_in_edit(monkeypatch) -> None:
+    document = _Document([_Object("PreviewFeature", ["Up-to-date"])])
+    _install_gui_document(monkeypatch, document)
+    document._gui_document.getInEdit = lambda: SimpleNamespace()
+
+    assert gui._document_render_refresh_blocked(document) is True
+    document._gui_document.getInEdit = lambda: None
+    assert gui._document_render_refresh_blocked(document) is False
+
+
 def test_restore_geometry_queues_independent_pending_objects_together(monkeypatch) -> None:
     document = _Document([_Object("First", ["Touched"]), _Object("Second", ["Touched"])])
     _install_gui_document(monkeypatch, document)
