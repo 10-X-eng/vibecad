@@ -84,6 +84,7 @@ LIFECYCLE_OPERATIONS: tuple[str, ...] = (
     "describe_api",
     "inspect_program",
     "create_program",
+    "apply_patch",
     "edit_source",
     "set_inputs",
     "reconfigure_program",
@@ -98,6 +99,7 @@ UNIVERSAL_SOURCE_OPERATIONS: tuple[str, ...] = (
     "read_placement",
     "create_program",
     "build_program",
+    "apply_patch",
     "edit_source",
     "set_inputs",
     "reconfigure_program",
@@ -545,7 +547,8 @@ class VibeScriptWorkbenchPack:
             *(
                 f"vibescript.{operation}"
                 for operation in UNIVERSAL_SOURCE_OPERATIONS
-                if not (
+                if operation != "edit_source"
+                and not (
                     self.domain in {"partdesign", "assembly"}
                     and operation == "create_program"
                 )
@@ -977,7 +980,7 @@ VIBESCRIPT_WORKBENCH_PACKS: dict[str, VibeScriptWorkbenchPack] = {
         "Define native jobs, stock, tools, operations, and worker-generated "
         "toolpaths. Generated files remain project artifacts until human export.",
         ("job", "stock", "tool", "operation", "generate_toolpath", "postprocess"),
-        production_ready=True,
+        production_ready=False,
     ),
     "TechDrawWorkbench": _pack(
         "TechDrawWorkbench",
@@ -1390,6 +1393,7 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
                 "include_logs": False,
             },
             "build_tool": "vibescript.build_program",
+            "patch_tool": "vibescript.apply_patch",
             "edit_tool": "vibescript.edit_source",
             "delete_output_tool": "vibescript.delete_output",
             "delete_program_tool": "vibescript.delete_program",
@@ -1403,6 +1407,10 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
                 "expected_revision": revision,
             }
             source["edit_target_arguments"] = {
+                "program": source["program"],
+                "expected_revision": revision,
+            }
+            source["patch_target_arguments"] = {
                 "program": source["program"],
                 "expected_revision": revision,
             }
@@ -1457,6 +1465,7 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
                 )
             ),
             "build_program": "vibescript.build_program",
+            "apply_patch": "vibescript.apply_patch",
             "edit_source": "vibescript.edit_source",
             "set_inputs": "vibescript.set_inputs",
             "reconfigure_program": "vibescript.reconfigure_program",
@@ -1467,6 +1476,15 @@ def complete_editable_sources_snapshot(snapshot: Mapping[str, Any]) -> dict[str,
                 "expected_revision",
                 "source",
             ],
+            "apply_patch_arguments": [
+                "program",
+                "expected_revision",
+                "patch",
+            ],
+            "patch_argument": (
+                "Pass only Codex-style contextual update hunks for the changed source "
+                "regions; unchanged source is omitted."
+            ),
             "source_argument": (
                 "Pass the complete updated source text returned by "
                 "vibescript.read_source."
@@ -5847,7 +5865,7 @@ def migrate_program_manifest(
                 "accepted live objects remain available, but this source cannot execute "
                 "in the v2 domain runtime."
             ),
-            "migration_action": "vibescript.edit_source",
+            "migration_action": "vibescript.reconfigure_program",
         }
     else:
         raise ValueError("Unsupported VibeScript program manifest schema.")
@@ -6075,13 +6093,26 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.read_source",
             "description": (
-                "List programs when program is omitted, or read one source and state. "
+                "Search or page programs when program is omitted (query, offset, limit), "
+                "or read one exact program's source and state. "
                 "Use line bounds for a slice and include_logs only for diagnostics."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "program": program,
+                    "query": _property_schema(
+                        "Program-index search across program, domain, label and output names; omit program.",
+                        type="string",
+                    ),
+                    "offset": _property_schema(
+                        "Program-index offset; omit program. Follow next_read for further pages.",
+                        type="integer", minimum=0, default=0,
+                    ),
+                    "limit": _property_schema(
+                        "Programs per response (not a document limit); omit program.",
+                        type="integer", minimum=1, maximum=100, default=20,
+                    ),
                     "line_start": _property_schema(
                         "First source line (1-based).",
                         type="integer",
@@ -6374,6 +6405,34 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "edit_modes": ["none"],
         },
         {
+            "name": "vibescript.apply_patch",
+            "description": (
+                "Atomically apply Codex-style contextual update hunks to an existing "
+                "program, build it, then read_operation. Prefer this for localized "
+                "source changes; unchanged source is omitted."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "program": program,
+                    "expected_revision": revision,
+                    "patch": _property_schema(
+                        "One or more @@ contextual update hunks, optionally wrapped in "
+                        "a *** Begin Patch / *** Update File envelope.",
+                        type="string",
+                        minLength=1,
+                        maxLength=MAX_SOURCE_BYTES,
+                    ),
+                },
+                "required": ["program", "expected_revision", "patch"],
+                "additionalProperties": False,
+            },
+            "safety": "SAFE_WRITE",
+            "contextual": True,
+            "requires_document": True,
+            "edit_modes": ["none"],
+        },
+        {
             "name": "vibescript.edit_source",
             "description": (
                 "Replace an existing program's complete source, build it, then "
@@ -6426,7 +6485,7 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
             "name": "vibescript.reconfigure_program",
             "description": (
                 "Replace source, schema, inputs, and outputs together, then "
-                "read_operation. Prefer edit_source for new calls."
+                "read_operation. Use apply_patch for source-only changes."
             ),
             "parameters": {
                 "type": "object",
@@ -6643,8 +6702,9 @@ def domain_tool_specs(pack: VibeScriptWorkbenchPack) -> tuple[dict[str, Any], ..
             pack,
             "reconfigure_program",
             description=(
-                f"Compatibility alias for editing a {pack.title} program. New callers "
-                "should use vibescript.edit_source."
+                f"Replace a {pack.title} program's complete source, schema, inputs, "
+                "and output contract together. Use vibescript.apply_patch for "
+                "source-only changes."
             ),
             properties={
                 "program_id": program_id,

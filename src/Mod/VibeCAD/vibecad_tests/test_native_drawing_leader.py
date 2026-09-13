@@ -124,9 +124,14 @@ def test_leader_host_plan_preserves_complete_typed_state() -> None:
         "owner_transform",
         "symbols",
         "behavior",
-        "line",
     ):
         assert normalized[field] == raw[field]
+    assert normalized["line"]["line_width_mm"] == raw["line"]["line_width_mm"]
+    assert normalized["line"]["line_style"] == raw["line"]["line_style"]
+    assert normalized["line"]["color_rgb"] == {
+        channel: round(int(float(value) * 255.0 + 0.5) / 255.0, 12)
+        for channel, value in raw["line"]["color_rgb"].items()
+    }
 
 
 @pytest.mark.parametrize(

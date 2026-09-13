@@ -6,6 +6,7 @@ import json
 
 from jsonschema import Draft202012Validator
 
+from VibeCADNativeCapabilityRegistry import MAX_NATIVE_SCHEMAS_JSON_BYTES
 from VibeCADNativeSketchConstraintSchema import sketch_constraint_capability_definition
 from VibeCADNativeSketchGeometrySchema import sketch_geometry_capability_definition
 from VibeCADNativeSketchProviderSchema import (
@@ -83,7 +84,7 @@ def test_compact_sketch_provider_contract_has_no_nested_union_types_or_count_tri
             assert '"expected_constraint_count"' not in text
             assert '"expected_external_geometry_count"' not in text
             encoded_size += len(text.encode("utf-8"))
-    assert encoded_size < 48 * 1024
+    assert encoded_size <= MAX_NATIVE_SCHEMAS_JSON_BYTES
 
 
 def test_line_and_polyline_provider_branches_do_not_accept_each_others_fields() -> None:

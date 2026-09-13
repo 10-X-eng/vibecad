@@ -75,6 +75,7 @@ def _common_turn(surface_id="model"):
         "workbench": {
             "analyze": "FemWorkbench",
             "drawing": "TechDrawWorkbench",
+            "manufacture": "CAMWorkbench",
         }.get(surface_id, "PartDesignWorkbench"),
         "engine": "native",
         "domain": surface_id,
@@ -487,6 +488,46 @@ def test_drawing_session_scopes_only_drawing_calls_under_vibescript_authority(
     assert service.state.snapshot(service.document.Uid)["recent_receipts"] == []
 
 
+def test_manufacture_session_scopes_only_cam_calls_under_vibescript_authority(
+    monkeypatch,
+) -> None:
+    turn, schemas, frozen = _common_turn("manufacture")
+    monkeypatch.setattr(
+        factory_module,
+        "freeze_native_turn",
+        lambda *_args, **_kwargs: turn,
+    )
+    monkeypatch.setattr(
+        factory_module,
+        "require_frozen_native_turn",
+        lambda expected, *_args: expected,
+    )
+    service = _Service("vibescript")
+
+    execution = create_native_session_execution(
+        service=service,
+        expected_surface=frozen,
+        expected_schemas=schemas,
+        registry=build_native_capability_registry(),
+    )
+
+    assert service.modeling_engine() == "vibescript"
+    cam_ticket = service.state.begin_call(service.document.Uid, "manufacture.setup")
+    assert service.state.authorize_mutation(cam_ticket).duplicate is False
+    undo_ticket = service.state.begin_call(service.document.Uid, "document.undo")
+    assert service.state.authorize_mutation(undo_ticket).duplicate is False
+    for capability in ("model.feature", "analyze.model", "drawing.page"):
+        with pytest.raises(Exception, match="not active"):
+            service.state.authorize_mutation(
+                service.state.begin_call(service.document.Uid, capability)
+            )
+
+    service.state.cancel_mutation(undo_ticket)
+    execution.close()
+    service.state.complete_mutation(cam_ticket, {"job": "TopSetup"})
+    assert service.state.snapshot(service.document.Uid)["recent_receipts"] == []
+
+
 class _Dispatcher:
     def __init__(self, result=None) -> None:
         self.calls = []
@@ -495,6 +536,9 @@ class _Dispatcher:
     def call(self, name, arguments, call_id):
         self.calls.append((name, arguments, call_id))
         return dict(self.result)
+
+    def call_async(self, name, arguments, call_id, *, document_dispatch):
+        return self.call(name, arguments, call_id)
 
 
 class _Ledger:
@@ -533,6 +577,66 @@ class _BackgroundJobs:
             error=None,
         )
         return self.snapshot
+
+    def cancel(self, job_id):
+        self.cancelled.append(job_id)
+        return True
+
+
+class _DocumentChangingBackgroundJobs:
+    def __init__(self) -> None:
+        self.waited = []
+        self.cancelled = []
+        self.submitted = False
+        self.current = SimpleNamespace(
+            job_id="background-b",
+            document_uid="document-a",
+            capability_name="manufacture.path.mill_facing",
+            resource_scope="manufacture:Job",
+            phase="preparing",
+            terminal=False,
+            worker_active=True,
+            changes_document=True,
+            document_changed=False,
+            progress_percent=5,
+            progress_message="Generating CAM path",
+            error=None,
+            result=None,
+        )
+
+    def latest_document_snapshot(self, document_uid):
+        assert document_uid == "document-a"
+        return self.current if self.submitted else None
+
+    def snapshot(self, job_id):
+        assert job_id == "background-b"
+        self.submitted = True
+        return self.current
+
+    def wait(self, job_id, timeout=None):
+        self.waited.append((job_id, timeout))
+        self.current = SimpleNamespace(
+            job_id=job_id,
+            document_uid="document-a",
+            capability_name="manufacture.path.mill_facing",
+            resource_scope="manufacture:Job",
+            phase="completed",
+            terminal=True,
+            worker_active=False,
+            changes_document=True,
+            document_changed=True,
+            progress_percent=100,
+            progress_message="Completed",
+            error=None,
+            result={
+                "mill_facing": {"object_name": "MillFacing"},
+                "job": {
+                    "object_name": "Job",
+                    "state_sha256": "b" * 64,
+                },
+            },
+        )
+        return self.current
 
     def cancel(self, job_id):
         self.cancelled.append(job_id)
@@ -606,6 +710,34 @@ def test_provider_runner_dispatches_call_id_and_records_concise_trace() -> None:
     ]
 
 
+def test_provider_runner_waits_for_deferred_payload_outside_owner_dispatch():
+    from concurrent.futures import Future
+
+    runner, dispatcher, _ledger, _traces, _events = _provider_runner()
+    inside_owner = False
+
+    class Pending(Future):
+        def result(self, timeout=None):
+            assert not inside_owner, 'A pending tool must not wait on the GUI owner'
+            self.set_result({'ok': True, 'value': 4})
+            return super().result(timeout)
+
+    pending = Pending()
+
+    def owner(operation):
+        nonlocal inside_owner
+        inside_owner = True
+        try:
+            return operation()
+        finally:
+            inside_owner = False
+
+    runner._document_dispatch = owner
+    dispatcher.call_async = lambda *args, **kwargs: pending
+    result = runner('state.read', '{"operation":"active"}', 'deferred-owner')
+    assert result['ok'] and result['value'] == 4
+
+
 def test_provider_runner_waits_off_document_thread_before_a_dependent_call() -> None:
     jobs = _BackgroundJobs()
     runner, dispatcher, _ledger, _traces, events = _provider_runner(
@@ -646,6 +778,49 @@ def test_provider_runner_leaves_explicit_background_status_nonblocking() -> None
             '{"operation":"status","job_id":"background-a"}',
             "status",
         )
+    ]
+
+
+def test_provider_runner_waits_for_its_document_changing_background_result() -> None:
+    jobs = _DocumentChangingBackgroundJobs()
+    runner, dispatcher, _ledger, _traces, events = _provider_runner(
+        result={
+            "ok": True,
+            "job": {
+                "job_id": "background-b",
+                "capability": "manufacture.path.mill_facing",
+                "phase": "preparing",
+                "terminal": False,
+            },
+            "next": {
+                "tool": "native.job",
+                "operation": "status",
+                "job_id": "background-b",
+            },
+        },
+        background_jobs=jobs,
+    )
+
+    result = runner("manufacture.face", "{}", "facing")
+
+    assert dispatcher.calls == [("manufacture.face", "{}", "facing")]
+    assert jobs.waited == [("background-b", 0.1)]
+    assert result["ok"] is True
+    assert result["mill_facing"] == {"object_name": "MillFacing"}
+    assert result["job"] == {
+        "object_name": "Job",
+        "state_sha256": "b" * 64,
+    }
+    assert result["background_job"] == {
+        "job_id": "background-b",
+        "capability": "manufacture.path.mill_facing",
+        "document_changed": True,
+    }
+    assert "next" not in result
+    assert [event["event"] for event in events] == [
+        "native_tool_started",
+        "native_background_waiting",
+        "native_tool_completed",
     ]
 
 

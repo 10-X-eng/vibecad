@@ -235,7 +235,7 @@ def _run() -> None:
             plan.classification.human_only,
         )
         assert actual_plan == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            "manufacture.array",
             "array",
             "ExactCamJobBaseToolpathsArrayPatternAndPointSources",
             True,

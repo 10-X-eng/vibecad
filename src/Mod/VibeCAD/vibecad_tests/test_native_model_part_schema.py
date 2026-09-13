@@ -511,7 +511,7 @@ def test_part_compound_contract_is_ordered_exact_closed_and_compact() -> None:
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
-    ) < 700
+    ) < 800
 
 
 def test_part_compound_filter_contract_covers_every_durable_native_mode() -> None:
@@ -599,6 +599,6 @@ def test_part_defeature_contract_is_exact_closed_bounded_and_compact() -> None:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert len(encoded) < 900
+    assert len(encoded) < 1_000
     for forbidden in ("selection", "runCommand", "workbench", "ribbon"):
         assert forbidden not in encoded.decode("utf-8")

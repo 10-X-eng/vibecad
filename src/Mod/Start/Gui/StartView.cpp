@@ -46,6 +46,7 @@
 #include "FlowLayout.h"
 #include "NewFileButton.h"
 #include <App/DocumentObject.h>
+#include <App/Document.h>
 #include <App/Application.h>
 #include <Base/Interpreter.h>
 #include <Base/Tools.h>
@@ -399,13 +400,22 @@ void StartView::newPartDesignFile()
 
 void StartView::openExistingFile()
 {
-    auto originalDocument = Gui::Application::Instance->activeDocument();
+    const auto* original = App::GetApplication().getActiveDocument();
+    const std::string originalName = original ? original->getName() : "";
     Gui::Application::Instance->commandManager().runCommandByName("Std_Open");
-    Gui::Application::checkForRecomputes();
-    if (Gui::Application::Instance->activeDocument() != originalDocument) {
-        // Only run this if the user chose a new document to open (that is, they didn't cancel the
-        // open file dialog)
-        postStart(PostStartBehavior::switchWorkbench);
+    const auto finish = [this, originalName] {
+        openCompletion.disconnect();
+        const auto* current = App::GetApplication().getActiveDocument();
+        if (current && originalName != current->getName()) {
+            postStart(PostStartBehavior::switchWorkbench);
+        }
+    };
+    if (App::GetApplication().hasPendingDocumentOpens()) {
+        openCompletion = App::GetApplication().signalDocumentOpenQueueIdle.connect(finish);
+    }
+    else {
+        Gui::Application::checkForRecomputes();
+        finish();
     }
 }
 
@@ -467,7 +477,7 @@ void StartView::fileCardSelected(const QModelIndex& index)
 {
     try {
         auto filename = index.data(static_cast<int>(Start::DisplayedFilesModelRoles::path)).toString();
-        Gui::ModuleIO::verifyAndOpenFile(filename);
+        Gui::ModuleIO::verifyAndOpenFileFromGui(filename);
     }
     catch (Base::PyException& e) {
         Base::Console().error(e.getMessage().c_str());

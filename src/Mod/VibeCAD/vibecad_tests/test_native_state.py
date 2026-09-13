@@ -503,6 +503,514 @@ def test_document_observer_counts_create_and_delete(monkeypatch) -> None:
     assert store.current_revision("document-a") == 2
 
 
+def test_document_observer_coalesces_authority_selector_refreshes(monkeypatch) -> None:
+    import VibeCADGui as gui
+
+    scheduled = []
+    refreshed = []
+
+    class Service:
+        @staticmethod
+        def note_native_object_property_change(_obj, _property_name):
+            return None
+
+        @staticmethod
+        def native_document_state():
+            return {"native_authority": {"active": True}}
+
+    monkeypatch.setattr(gui, "get_service", lambda: Service())
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    monkeypatch.setattr(
+        gui,
+        "_queue_zero_delay_callback",
+        lambda callback: scheduled.append(callback),
+    )
+    monkeypatch.setattr(
+        gui,
+        "_refresh_authoring_mode_selector",
+        lambda: refreshed.append(True),
+    )
+    monkeypatch.setattr(gui, "_native_authority_selector_refresh_scheduled", False)
+    obj = SimpleNamespace(
+        Document=SimpleNamespace(Uid="document-a", Restoring=False),
+    )
+    observer = gui._VibeCADDocumentObserver()
+
+    observer.slotChangedObject(obj, "_LinkTouched")
+    observer.slotChangedObject(obj, "_LinkTouched")
+
+    assert len(scheduled) == 1
+    assert refreshed == []
+    scheduled.pop()()
+    assert refreshed == [True]
+
+
+def test_service_coalesces_atomic_document_change_bookkeeping(monkeypatch) -> None:
+    import threading
+
+    from VibeCADCore import VibeCADService
+
+    service = object.__new__(VibeCADService)
+    service._native_document_states = NativeDocumentStateStore()
+    service._document_change_batch_lock = threading.RLock()
+    service._deferred_document_changes = {}
+    invalidations = []
+    metadata_syncs = []
+    monkeypatch.setattr(
+        service,
+        "_invalidate_native_read_contexts",
+        lambda uid: invalidations.append(uid),
+    )
+    monkeypatch.setattr(
+        service,
+        "_sync_native_authority_metadata_if_active",
+        lambda uid: metadata_syncs.append(uid),
+    )
+    document = SimpleNamespace(Uid="document-a")
+    obj = SimpleNamespace(Document=document)
+
+    service.begin_document_change_batch("document-a")
+    for _index in range(100):
+        service.note_native_object_created(obj)
+        service.note_native_object_property_change(obj, "Shape")
+    assert service._native_document_states.current_revision("document-a") == 0
+    service.end_document_change_batch("document-a")
+
+    assert service._native_document_states.current_revision("document-a") == 1
+    assert invalidations == ["document-a"]
+    assert metadata_syncs == ["document-a"]
+
+
+def test_service_document_change_batches_are_nested_and_exception_safe(
+    monkeypatch,
+) -> None:
+    import threading
+
+    from VibeCADCore import VibeCADService
+    from VibeCADDocumentChangeBatch import document_change_batch_active
+
+    service = object.__new__(VibeCADService)
+    service._native_document_states = NativeDocumentStateStore()
+    service._document_change_batch_lock = threading.RLock()
+    service._deferred_document_changes = {}
+    monkeypatch.setattr(service, "_invalidate_native_read_contexts", lambda _uid: None)
+    monkeypatch.setattr(
+        service,
+        "_sync_native_authority_metadata_if_active",
+        lambda _uid: (_ for _ in ()).throw(RuntimeError("metadata failed")),
+    )
+    obj = SimpleNamespace(Document=SimpleNamespace(Uid="document-b"))
+
+    service.begin_document_change_batch("document-b")
+    service.begin_document_change_batch("document-b")
+    service.note_native_object_created(obj)
+    service.end_document_change_batch("document-b")
+    assert document_change_batch_active("document-b") is True
+    assert service._native_document_states.current_revision("document-b") == 0
+
+    with pytest.raises(RuntimeError, match="metadata failed"):
+        service.end_document_change_batch("document-b")
+
+    assert document_change_batch_active("document-b") is False
+    assert service.document_change_batch_active("document-b") is False
+    assert service._native_document_states.current_revision("document-b") == 1
+
+
+def test_service_discards_bookkeeping_for_rolled_back_document_batch(
+    monkeypatch,
+) -> None:
+    import threading
+
+    from VibeCADCore import VibeCADService
+    from VibeCADDocumentChangeBatch import document_change_batch_active
+
+    service = object.__new__(VibeCADService)
+    service._native_document_states = NativeDocumentStateStore()
+    service._document_change_batch_lock = threading.RLock()
+    service._deferred_document_changes = {}
+    invalidations = []
+    metadata_syncs = []
+    monkeypatch.setattr(
+        service,
+        "_invalidate_native_read_contexts",
+        lambda uid: invalidations.append(uid),
+    )
+    monkeypatch.setattr(
+        service,
+        "_sync_native_authority_metadata_if_active",
+        lambda uid: metadata_syncs.append(uid),
+    )
+    obj = SimpleNamespace(Document=SimpleNamespace(Uid="document-c"))
+
+    service.begin_document_change_batch("document-c")
+    service.note_native_object_created(obj)
+    service.note_native_object_property_change(obj, "Shape")
+    service.end_document_change_batch("document-c", commit=False)
+
+    assert document_change_batch_active("document-c") is False
+    assert service.document_change_batch_active("document-c") is False
+    assert service._native_document_states.current_revision("document-c") == 0
+    assert invalidations == []
+    assert metadata_syncs == []
+
+
+def test_document_change_batch_reports_the_outermost_commit_outcome() -> None:
+    from VibeCADDocumentChangeBatch import (
+        begin_document_change_batch,
+        end_document_change_batch,
+        register_document_change_batch_finished,
+    )
+
+    outcomes = []
+    register_document_change_batch_finished(
+        lambda uid, committed: outcomes.append((uid, committed))
+        if uid == "document-outcome"
+        else None
+    )
+
+    begin_document_change_batch("document-outcome")
+    begin_document_change_batch("document-outcome")
+    assert end_document_change_batch("document-outcome", commit=False) is False
+    assert outcomes == []
+    assert end_document_change_batch("document-outcome") is True
+
+    assert outcomes == [("document-outcome", False)]
+
+
+@pytest.mark.parametrize("commit", [True, False])
+def test_native_mutation_observer_uses_the_existing_service_batch(monkeypatch, commit):
+    import VibeCADGui as gui
+    import VibeCADVibeScriptDomainPublication as publication
+    from VibeCADCore import VibeCADService
+    from VibeCADDocumentChangeBatch import document_change_batch_active
+
+    service = object.__new__(VibeCADService)
+    service._native_document_states = NativeDocumentStateStore()
+    document = SimpleNamespace(Uid="native-mutation-batch", Restoring=False)
+    source = SimpleNamespace(Document=document, Name="Source")
+    invalidations, metadata, snapshots, scans, queued = [], [], [], [], []
+    monkeypatch.setattr(gui, "get_service", lambda: service)
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    monkeypatch.setattr(gui, "_queue_zero_delay_callback", queued.append)
+    monkeypatch.setattr(gui, "_native_authority_selector_refresh_scheduled", False)
+    monkeypatch.setattr(service, "_invalidate_native_read_contexts", invalidations.append)
+    monkeypatch.setattr(service, "_sync_native_authority_metadata_if_active", metadata.append)
+    monkeypatch.setattr(
+        service, "invalidate_vibescript_reference_snapshots_many",
+        lambda objects, **kwargs: snapshots.append(objects),
+    )
+    monkeypatch.setattr(
+        publication, "mark_programs_stale_from_sources",
+        lambda changes, **kwargs: scans.append((changes, kwargs)) or [],
+    )
+    observer = gui._VibeCADDocumentObserver()
+    observer.slotCooperativeMutationChanged(document, True)
+    # Publication nests its origin/outcome inside the native ownership epoch.
+    service.begin_document_change_batch(
+        document.Uid, origin_program_id="publisher", origin_domain="assembly",
+    )
+    try:
+        for _ in range(100):
+            observer.slotChangedObject(source, "Shape")
+        assert invalidations == metadata == snapshots == scans == queued == []
+    finally:
+        service.end_document_change_batch(document.Uid, commit=commit)
+        observer.slotCooperativeMutationChanged(document, False)
+
+    assert not document_change_batch_active(document.Uid)
+    assert not service.document_change_batch_active(document.Uid)
+    assert service._native_document_states.current_revision(document.Uid) == int(commit)
+    assert invalidations == metadata == ([document.Uid] if commit else [])
+    assert snapshots == ([(source,)] if commit else [])
+    assert scans == ([(((source, "Shape"),), {
+        "excluded_programs": frozenset({(document.Uid, "publisher", "assembly")}),
+    })] if commit else [])
+    assert len(queued) == 1
+
+
+def test_document_observer_batches_dependency_invalidation_and_stale_scans(
+    monkeypatch,
+) -> None:
+    import VibeCADGui as gui
+    import VibeCADVibeScriptDomainPublication as publication
+
+    class Source:
+        Document = SimpleNamespace(Uid="document-batched", Restoring=False)
+
+    source = Source()
+    batch_active = [True]
+    invalidated = []
+    stale_scans = []
+    refreshed = []
+
+    class Service:
+        @staticmethod
+        def note_native_object_property_change(_obj, _property_name):
+            return None
+
+        @staticmethod
+        def invalidate_vibescript_reference_snapshots_many(objects, **kwargs):
+            invalidated.append(tuple(objects))
+
+    monkeypatch.setattr(gui, "get_service", lambda: Service())
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    monkeypatch.setattr(
+        gui,
+        "document_change_batch_active",
+        lambda uid: batch_active[0] and uid == "document-batched",
+    )
+    monkeypatch.setattr(
+        publication,
+        "mark_programs_stale_from_sources",
+        lambda changes, **_kwargs: stale_scans.append(tuple(changes))
+        or ["DependentOutput"],
+    )
+    monkeypatch.setattr(
+        gui,
+        "_schedule_assistant_document_refresh",
+        lambda: refreshed.append(True),
+    )
+    gui._deferred_vibescript_dependency_changes.clear()
+    observer = gui._VibeCADDocumentObserver()
+
+    for _index in range(100):
+        observer.slotChangedObject(source, "Shape")
+
+    assert invalidated == []
+    assert stale_scans == []
+
+    batch_active[0] = False
+    gui._finish_vibescript_dependency_batch("document-batched", True)
+
+    assert invalidated == [(source,)]
+    assert stale_scans == [((source, "Shape"),)]
+    assert refreshed == [True]
+
+
+def test_document_observer_discards_dependency_work_after_rollback(
+    monkeypatch,
+) -> None:
+    import VibeCADGui as gui
+    import VibeCADVibeScriptDomainPublication as publication
+
+    class Source:
+        Document = SimpleNamespace(Uid="document-rollback", Restoring=False)
+
+    source = Source()
+    invalidated = []
+    stale_scans = []
+
+    class Service:
+        @staticmethod
+        def note_native_object_property_change(_obj, _property_name):
+            return None
+
+        @staticmethod
+        def invalidate_vibescript_reference_snapshots_many(objects, **kwargs):
+            invalidated.append(tuple(objects))
+
+    monkeypatch.setattr(gui, "get_service", lambda: Service())
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    monkeypatch.setattr(gui, "document_change_batch_active", lambda _uid: True)
+    monkeypatch.setattr(
+        publication,
+        "mark_programs_stale_from_sources",
+        lambda changes, **_kwargs: stale_scans.append(tuple(changes)) or [],
+    )
+    gui._deferred_vibescript_dependency_changes.clear()
+
+    gui._VibeCADDocumentObserver().slotChangedObject(source, "Shape")
+    gui._finish_vibescript_dependency_batch("document-rollback", False)
+
+    assert invalidated == []
+    assert stale_scans == []
+
+
+@pytest.mark.parametrize("callback", ["slotChangedObject", "slotCreatedObject", "slotDeletedObject"])
+@pytest.mark.parametrize("fail_abort", [False, True])
+def test_publication_abort_skips_only_discarded_advisory_observer_work(
+    monkeypatch, callback, fail_abort,
+):
+    import VibeCADGui as gui
+    import VibeCADVibeScriptDomainPublication as publication
+    import VibeCADDocumentChangeBatch as batches
+
+    calls = []
+    document = SimpleNamespace(Uid="discard-rollback", Restoring=False)
+    source = SimpleNamespace(Document=document)
+    other = SimpleNamespace(Document=SimpleNamespace(Uid="other-document", Restoring=False))
+    service = SimpleNamespace(
+        note_native_object_property_change=lambda *args: calls.append(args[0]),
+        note_native_object_created=lambda obj: calls.append(obj),
+        note_native_object_deleted=lambda obj: calls.append(obj))
+    monkeypatch.setattr(gui, "get_service", lambda: service)
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    observer = gui._VibeCADDocumentObserver()
+    monkeypatch.setattr(observer, "_refresh_native_authority_selector", lambda uid: None)
+    def notify(obj):
+        args = (obj, "VibeCADPublishedRevision") if callback == "slotChangedObject" else (obj,)
+        getattr(observer, callback)(*args)
+    def abort():
+        for _ in range(100):
+            notify(source)
+        notify(other)
+        if fail_abort:
+            raise RuntimeError("native rollback failure")
+    document.abortTransaction = abort
+    batches.begin_document_change_batch(document.Uid)
+    try:
+        notify(source)  # Ordinary changes within an open batch remain observed.
+        if fail_abort:
+            with pytest.raises(RuntimeError, match="native rollback failure"):
+                publication._abort_publication_transaction(document)
+        else:
+            publication._abort_publication_transaction(document)
+        notify(source)  # The rollback scope must not leak after an exception.
+        assert calls == [source, other, source]
+    finally:
+        batches.end_document_change_batch(document.Uid, commit=False)
+
+
+def test_rollback_notification_scope_is_thread_local_and_nested():
+    import threading
+    import VibeCADDocumentChangeBatch as batches
+
+    batches.begin_document_change_batch("scope-rollback")
+    try:
+        with batches.rolling_back_document_change_batch("scope-rollback"):
+            assert batches.document_change_batch_rolling_back("scope-rollback")
+            seen = []
+            thread = threading.Thread(target=lambda: seen.append(
+                batches.document_change_batch_rolling_back("scope-rollback")))
+            thread.start()
+            thread.join()
+            assert seen == [False]
+            with batches.rolling_back_document_change_batch("scope-rollback"):
+                assert batches.document_change_batch_rolling_back("scope-rollback")
+            assert batches.document_change_batch_rolling_back("scope-rollback")
+        assert not batches.document_change_batch_rolling_back("scope-rollback")
+    finally:
+        batches.end_document_change_batch("scope-rollback", commit=False)
+
+
+def test_publication_abort_without_batch_keeps_notifications():
+    import VibeCADDocumentChangeBatch as batches
+    import VibeCADVibeScriptDomainPublication as publication
+
+    calls = []
+    document = SimpleNamespace(Uid="unbatched-rollback")
+    def abort():
+        calls.append(batches.document_change_batch_rolling_back(document.Uid))
+    document.abortTransaction = abort
+    publication._abort_publication_transaction(document)
+    assert calls == [False]
+
+
+def test_dependency_batch_handles_a_source_deleted_before_flush(monkeypatch) -> None:
+    import threading
+    import VibeCADGui as gui
+    import VibeCADVibeScriptDomainPublication as publication
+    from VibeCADCore import VibeCADService
+
+    document = SimpleNamespace(Uid="deleted-batch-source")
+
+    class Source:
+        Document = document
+        alive = True
+
+        @property
+        def Name(self):
+            if not self.alive:
+                raise ReferenceError("Underlying object deleted")
+            return "Removed"
+
+    removed = Source()
+    live = SimpleNamespace(Name="Live", Document=document)
+    service = object.__new__(VibeCADService)
+    service._vibescript_reference_cache_lock = threading.RLock()
+    service._vibescript_reference_snapshots = {
+        name: {"dependencies": {(document.Uid, name)}}
+        for name in ("Removed", "Live", "Untouched")
+    }
+    scans = []
+    monkeypatch.setattr(gui, "get_service", lambda: service)
+    monkeypatch.setattr(
+        publication, "mark_programs_stale_from_sources",
+        lambda changes, **kwargs: scans.append(changes) or [],
+    )
+    gui._defer_vibescript_dependency_change(document.Uid, removed, "Shape")
+    gui._defer_vibescript_dependency_change(document.Uid, live, "Shape")
+    removed.alive = False
+    gui._finish_vibescript_dependency_batch(document.Uid, True)
+    assert set(service._vibescript_reference_snapshots) == {"Untouched"}
+    assert scans == [((live, "Shape"),)]
+
+
+def test_bulk_stale_propagation_scans_each_document_once(monkeypatch) -> None:
+    import VibeCADVibeScriptDomainPublication as publication
+
+    class Document:
+        Uid = "document-bulk-stale"
+
+        def __init__(self) -> None:
+            self.object_reads = 0
+            self.outputs = []
+
+        @property
+        def Objects(self):
+            self.object_reads += 1
+            return list(self.outputs)
+
+    document = Document()
+    first_source = SimpleNamespace(Name="SourceA", InList=[])
+    second_source = SimpleNamespace(Name="SourceB", InList=[])
+
+    class Output(SimpleNamespace):
+        input_reads = 0
+
+        @property
+        def VibeCADVibeScriptInputObjects(self):
+            self.input_reads += 1
+            return [first_source, second_source]
+
+    output = Output(
+        Name="DependentOutput",
+        TypeId="Part::Feature",
+        Document=document,
+        PropertiesList=[
+            publication.PROP_INPUT_OBJECTS,
+            publication.contracts.PROP_PROGRAM_ID,
+            publication.contracts.PROP_PROGRAM_DOMAIN,
+            publication.contracts.PROP_PROGRAM_REVISION,
+            publication.reference_contracts.PROP_DERIVED_STATE,
+        ],
+        VibeCADVibeScriptNestedInputObjects=[],
+        VibeCADVibeScriptProgramId="program-a",
+        VibeCADVibeScriptDomain="part",
+        VibeCADVibeScriptRevision="revision-a",
+        VibeCADVibeScriptDerivedState="accepted",
+    )
+    first_source.InList = [output]
+    second_source.InList = [output]
+    document.outputs = [output]
+    marked = []
+    monkeypatch.setattr(
+        publication.reference_contracts,
+        "mark_stale",
+        lambda obj, revision, reason: marked.append((obj, revision, reason)),
+    )
+
+    result = publication.mark_programs_stale_from_sources(
+        ((first_source, "Shape"), (second_source, "Placement"))
+    )
+
+    assert result == ["DependentOutput"]
+    assert document.object_reads == 1
+    assert output.input_reads == 1
+    assert len(marked) == 1
+    assert marked[0][0] is output
+
+
 def test_state_module_has_no_ui_activation_or_tool_execution_api() -> None:
     public_names = {name for name in vars(state_module) if not name.startswith("_")}
     forbidden = ("activate", "switch", "run_command", "execute")

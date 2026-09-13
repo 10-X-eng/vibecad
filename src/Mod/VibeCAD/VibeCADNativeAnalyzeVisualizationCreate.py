@@ -9,6 +9,7 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -340,7 +341,7 @@ def create_visualization(
         extractor = getattr(ObjectsFem, extractor_factory_name)(
             document, document.getUniqueObjectName(base_name + "Data")
         )
-        visualization.Label = prepared.label
+        prepared = assign_prepared_label(visualization, prepared)
         extractor.Label = prepared.extraction.series_name + " Data"
         visualization.addObject(extractor)
         prepared.analysis.analysis.addObject(visualization)

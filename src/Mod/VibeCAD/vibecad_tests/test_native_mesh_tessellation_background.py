@@ -4,6 +4,7 @@ from pathlib import Path
 
 import VibeCADNativeMeshConvertSchema as convert_schema_module
 from VibeCADMeshTessellationJob import CACHE_SCHEMA
+from VibeCADNativeMeshConvertRuntime import _focused_convert_arguments
 from VibeCADNativeMeshConvertSchema import mesh_convert_capability_definition
 
 
@@ -36,16 +37,37 @@ def test_mesh_conversion_uses_the_shared_exact_source_shape() -> None:
         assert "expected_state_sha256" not in properties
 
 
-def test_provider_mesh_to_shape_contract_names_shell_and_solid_directly() -> None:
+def test_provider_mesh_to_shape_contract_names_shell_solid_and_body_directly() -> None:
     definition = convert_schema_module.mesh_to_shape_capability_definition()
 
     assert definition.name == "mesh.to_shape"
     assert [variant.operation for variant in definition.variants] == [
         "shell",
         "solid",
+        "body",
     ]
     for variant in definition.variants:
         assert variant.parameters["required"] == ["source"]
+    body = definition.variants[-1]
+    assert body.action_ids == frozenset({"MeshPart_MeshToBody"})
+    assert body.background_required
+
+
+def test_provider_mesh_body_arguments_use_the_solid_body_runtime_path() -> None:
+    normalized = _focused_convert_arguments(
+        "mesh.to_shape",
+        {
+            "operation": "body",
+            "source": {"object_name": "ImportedMesh", "expected_state_sha256": "a" * 64},
+        },
+    )
+
+    assert normalized == {
+        "operation": "mesh_to_body",
+        "source": {"object_name": "ImportedMesh", "expected_state_sha256": "a" * 64},
+        "label": "ImportedMesh Body",
+        "tolerance_mm": 0.000001,
+    }
 
 
 def test_provider_mesh_from_shape_contract_uses_human_meshing_terms() -> None:

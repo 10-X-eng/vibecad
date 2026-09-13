@@ -18,6 +18,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     verify_native_operation,
@@ -628,16 +629,19 @@ def create_surface(
 
     if not isinstance(prepared, PreparedSurfaceCreate):
         raise TypeError("prepared must be a PreparedSurfaceCreate")
-    import Path.Op.Gui.Surface as PathSurfaceGui
     import Path.Op.Surface as PathSurface
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Surface"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Surface",
         operation_factory=PathSurface.Create,
-        provider_factory=PathSurfaceGui.PathOpGui.ViewProvider,
-        provider_resource=PathSurfaceGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )

@@ -202,6 +202,8 @@ protected:
     PyObject* pythonObject;
 
 private:
+    bool closePreparationPending {false};
+    bool closePrepared {false};
     ViewMode currentMode;
     Qt::WindowStates wstate;
     // list of active objects of this view

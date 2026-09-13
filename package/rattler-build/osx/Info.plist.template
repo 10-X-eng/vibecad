@@ -11,7 +11,7 @@
 	<key>CFBundleIconFile</key>
 	<string>vibecad.icns</string>
 	<key>CFBundleIdentifier</key>
-	<string>org.freecad.FreeCAD</string>
+	<string>org.vibecad.VibeCAD</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleLongVersionString</key>
@@ -49,8 +49,6 @@
 			</array>
 			<key>CFBundleTypeIconFile</key>
 			<string>freecad-doc.icns</string>
-			<key>LSIsAppleDefaultForType</key>
-			<true/>
 		</dict>
 		<dict>
 			<key>CFBundleTypeRole</key>
@@ -62,11 +60,9 @@
 			</array>
 			<key>CFBundleTypeIconFile</key>
 			<string>freecad-script.icns</string>
-			<key>LSIsAppleDefaultForType</key>
-			<true/>
 		</dict>
 	</array>
-	<key>UTExportedTypeDeclarations</key>
+	<key>UTImportedTypeDeclarations</key>
 	<array>
 		<dict>
 			<key>UTTypeConformsTo</key>

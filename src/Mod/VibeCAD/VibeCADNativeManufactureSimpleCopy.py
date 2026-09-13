@@ -12,10 +12,10 @@ from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureOperationSupport import clean_operation_label, exact_fields
 from VibeCADNativeManufactureState import (
     job_state,
-    operation_reference_state,
     operation_state,
     persistent_resource_state,
     resolve_job_target,
+    resolve_operation_target,
     tool_controller_state,
 )
 from VibeCADNativeMutation import NativeMutationDraft
@@ -126,23 +126,7 @@ def _resolve_source(
     index: int,
 ) -> tuple[Any, Mapping[str, Any]]:
     target = _target(value, f"source_operations[{index}]")
-    operation = document.getObject(target["object_name"])
-    if operation is None or getattr(operation, "Document", None) is not document:
-        _error(
-            f"CAM Simple Copy source {target['object_name']!r} no longer exists.",
-            "NATIVE_MANUFACTURE_TARGET_STALE",
-        )
-    current = operation_reference_state(operation)
-    if current.get("state_sha256") != target["expected_state_sha256"]:
-        _error(
-            f"CAM Simple Copy source {target['object_name']!r} changed after turn start.",
-            "NATIVE_MANUFACTURE_STATE_STALE",
-            repair={
-                "object_name": target["object_name"],
-                "current_state_sha256": current.get("state_sha256"),
-            },
-        )
-    return operation, current
+    return resolve_operation_target(document, target)
 
 
 def _gcode_sha256(lines: tuple[str, ...]) -> str:
@@ -325,7 +309,7 @@ def _assert_preflight_current(
         != prepared.job_before.get("state_sha256")
         or tool_controller_state(prepared.controller).get("state_sha256")
         != prepared.controller_before.get("state_sha256")
-        or tuple(operation_reference_state(source) for source in prepared.sources)
+        or tuple(operation_state(source) for source in prepared.sources)
         != prepared.source_reference_before
         or tuple(persistent_resource_state(source) for source in prepared.sources)
         != prepared.source_state_before

@@ -19,38 +19,43 @@ from VibeCADNativeDrawingFormatSchema import (
     register_drawing_format_capability_definition,
 )
 from VibeCADRibbonSurface import RibbonAction
+from vibecad_tests.schema_test_helpers import exact_provider_branches
 
 
 MOD_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _branch(schema: dict, operation: str) -> dict:
-    return next(
-        branch
-        for branch in schema["parameters"]["oneOf"]
-        if branch["properties"]["operation"].get("const") == operation
-    )
-
-
-def test_drawing_format_schema_has_two_closed_exact_branches() -> None:
+def test_drawing_format_schema_has_three_closed_exact_branches() -> None:
     definition = drawing_format_capability_definition()
     schema = definition.provider_schema(DRAWING_FORMAT_OPERATIONS)
 
     assert DRAWING_FORMAT_OPERATIONS == (
         "set_dimension_format",
         "set_balloon_text",
+        "apply_iso_286_fit",
     )
     assert definition.primary_classification == "mutation"
-    assert definition.preserve_operation_branches
-    assert len(schema["parameters"]["oneOf"]) == 2
-    dimension = _branch(schema, "set_dimension_format")
-    balloon = _branch(schema, "set_balloon_text")
+    assert not definition.preserve_operation_branches
+    assert "oneOf" not in schema["parameters"]
+    assert schema["parameters"]["properties"]["operation"]["enum"] == list(
+        DRAWING_FORMAT_OPERATIONS
+    )
+    branches = exact_provider_branches(definition, DRAWING_FORMAT_OPERATIONS)
+    dimension = branches["set_dimension_format"]
+    balloon = branches["set_balloon_text"]
+    iso_fit = branches["apply_iso_286_fit"]
     assert dimension["required"] == [
         "operation",
         "dimension",
         "format_spec",
     ]
     assert balloon["required"] == ["operation", "balloon", "text"]
+    assert iso_fit["required"] == [
+        "operation",
+        "dimension",
+        "tolerance_class",
+    ]
+    assert len(iso_fit["properties"]["tolerance_class"]["enum"]) == 20
     for branch, target_name, value_name in (
         (dimension, "dimension", "format_spec"),
         (balloon, "balloon", "text"),
@@ -71,6 +76,9 @@ def test_drawing_format_schema_has_two_closed_exact_branches() -> None:
     )
     assert definition.variants[1].exact_target_type == (
         "ExactDrawingBalloonAndLiteralText"
+    )
+    assert definition.variants[2].exact_target_type == (
+        "ExactDrawingDimensionAndIso286ToleranceClass"
     )
     assert not definition.variants[0].provider_supplemental
     assert definition.variants[1].provider_supplemental

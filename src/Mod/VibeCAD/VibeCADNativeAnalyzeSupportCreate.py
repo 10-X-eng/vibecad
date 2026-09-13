@@ -16,6 +16,7 @@ from VibeCADNativeAnalyzeHistory import (
     require_boundary,
     verify_operation_block,
 )
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeState import analysis_state, is_live
 from VibeCADNativeAnalyzeSupportState import (
     support_condition_kind,
@@ -131,7 +132,7 @@ def create_support_condition(
         raise NativeAnalyzeError(
             "The FEM support-condition factory returned the wrong object type."
         )
-    condition.Label = prepared.label
+    prepared = assign_prepared_label(condition, prepared)
     apply_support_values(condition, prepared.values)
     condition.References = reference_value(prepared.references)
     prepared.analysis.analysis.addObject(condition)
@@ -183,4 +184,3 @@ def verify_support_create(
         },
         "created_condition": state,
     }
-

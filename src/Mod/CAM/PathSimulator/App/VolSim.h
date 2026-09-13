@@ -244,6 +244,7 @@ public:
     cStock(float px, float py, float pz, float lx, float ly, float lz, float res);
     ~cStock();
     void Tessellate(Mesh::MeshObject& meshOuter, Mesh::MeshObject& meshInner);
+    TopoDS_Shape RemainingStockShape() const;
     void CreatePocket(float x, float y, float rad, float height);
     void ApplyLinearTool(Point3D& p1, Point3D& p2, cSimTool& tool);
     void ApplyCircularTool(Point3D& p1, Point3D& p2, Point3D& cent, cSimTool& tool, bool isCCW);

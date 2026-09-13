@@ -6,24 +6,20 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
+from VibeCADNativeAnalyzeOwnership import (
+    is_study as _is_study,
+    studies_in_document,
+)
+
 
 def _is_analysis(value: Any, document: Any) -> bool:
-    if value is None or getattr(value, "Document", None) is not document:
-        return False
-    try:
-        return bool(value.isDerivedFrom("Fem::FemAnalysis"))
-    except (AttributeError, ReferenceError, RuntimeError):
-        return False
+    return _is_study(value, document)
 
 
 def analyses_in_document(document: Any) -> tuple[Any, ...]:
     """Return every live FEM analysis in document order."""
 
-    return tuple(
-        candidate
-        for candidate in tuple(getattr(document, "Objects", ()) or ())
-        if _is_analysis(candidate, document)
-    )
+    return studies_in_document(document)
 
 
 def analysis_for_selection(document: Any, selection: Iterable[Any]) -> Any | None:
@@ -41,15 +37,45 @@ def analysis_for_selection(document: Any, selection: Iterable[Any]) -> Any | Non
         return direct[0]
     if direct:
         return None
+    ancestors = {id(value): value for value in selected}
+    pending = list(selected)
+    while pending and len(ancestors) <= 4096:
+        current = pending.pop()
+        parents = tuple(getattr(current, "InList", ()) or ())
+        timeline_owner = getattr(current, "VibeCADTimelineOwner", None)
+        if timeline_owner is not None:
+            parents += (timeline_owner,)
+        for parent in parents:
+            if getattr(parent, "Document", None) is document and id(parent) not in ancestors:
+                ancestors[id(parent)] = parent
+                pending.append(parent)
     owners = tuple(
         analysis
         for analysis in analyses_in_document(document)
         if any(
             candidate in tuple(getattr(analysis, "Group", ()) or ())
-            for candidate in selected
+            for candidate in ancestors.values()
         )
     )
     return owners[0] if len(owners) == 1 else None
+
+
+def preferred_analysis(
+    document: Any,
+    selection: Iterable[Any],
+    *,
+    previous_name: str,
+) -> Any | None:
+    """Resolve UI focus from selection, then the dock's explicit prior choice."""
+
+    selected = analysis_for_selection(document, selection)
+    if selected is not None:
+        return selected
+    previous = str(previous_name or "")
+    if not previous:
+        return None
+    candidate = document.getObject(previous)
+    return candidate if _is_analysis(candidate, document) else None
 
 
 def readiness_rows(inventory: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:

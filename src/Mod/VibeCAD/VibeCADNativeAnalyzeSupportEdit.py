@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometryCreate import references_match
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
@@ -199,7 +200,7 @@ def update_support_condition(
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     condition = prepared.target.condition
-    condition.Label = prepared.label
+    prepared = assign_prepared_label(condition, prepared)
     if prepared.values_changed:
         apply_support_values(condition, prepared.values)
     condition.References = reference_value(prepared.references)
@@ -234,4 +235,3 @@ def verify_support_update(
             "The FEM support-condition edit failed its exact postcondition."
         )
     return {"updated_condition": state}
-

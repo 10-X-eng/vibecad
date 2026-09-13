@@ -108,8 +108,7 @@ def test_complete_join_schema_uses_the_compact_closed_multi_operation_encoding()
     }
     assert join["required"] == ["refine", "tolerance_mm"]
     assert join["description"] == (
-        "Fields: all=refine,tolerance_mm; connect=sources; "
-        "embed|cutout=base,tool."
+        "Fields: connect=sources; embed|cutout=base,tool."
     )
     assert len(encoded) < 2_100
     for forbidden in ("selection", "runCommand", "workbench", "ribbon"):

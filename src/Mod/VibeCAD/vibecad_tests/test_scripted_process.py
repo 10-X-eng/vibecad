@@ -111,6 +111,63 @@ def test_worker_cancellation_reports_exact_actor_and_preserved_limit() -> None:
     assert result["memory_limit_bytes"] == 123_456
 
 
+def test_worker_activity_renews_the_inactivity_timeout(tmp_path: Path) -> None:
+    progress = tmp_path / "progress.txt"
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import sys,time\n"
+            "from pathlib import Path\n"
+            "progress=Path(sys.argv[1])\n"
+            "for value in range(12):\n"
+            "    progress.write_text(str(value), encoding='ascii')\n"
+            "    time.sleep(0.1)\n"
+        ),
+        str(progress),
+    ]
+
+    result = run_process(
+        command,
+        cwd=tmp_path,
+        environment=dict(os.environ),
+        cancellation_check=None,
+        timeout_seconds=0.5,
+        memory_limit_bytes=0,
+        activity_check=(
+            lambda: progress.read_text(encoding="ascii")
+            if progress.is_file()
+            else None
+        ),
+    )
+
+    assert result["started"] is True
+    assert result["returncode"] == 0
+    assert result["timed_out"] is False
+    assert result["elapsed_seconds"] > result["timeout_seconds"]
+    assert result["timeout_mode"] == "inactivity"
+    assert result["activity_observations"] >= 6
+
+
+def test_worker_inactivity_still_terminates_a_stalled_process(tmp_path: Path) -> None:
+    result = run_process(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        cwd=tmp_path,
+        environment=dict(os.environ),
+        cancellation_check=None,
+        timeout_seconds=0.1,
+        memory_limit_bytes=0,
+        activity_check=lambda: "unchanged",
+    )
+
+    assert result["started"] is True
+    assert result["timed_out"] is True
+    assert result["termination_reason"] == "inactivity_timeout"
+    assert result["limit_reached"] == "inactivity_seconds"
+    assert result["timeout_mode"] == "inactivity"
+    assert result["activity_observations"] == 1
+
+
 def test_worker_cpu_signal_reports_cpu_limit_instead_of_generic_exit() -> None:
     if sys.platform == "win32" or not hasattr(signal, "SIGXCPU"):
         return

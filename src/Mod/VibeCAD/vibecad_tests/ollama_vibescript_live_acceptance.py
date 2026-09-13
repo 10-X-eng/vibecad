@@ -421,10 +421,11 @@ def _run() -> None:
             "analysis",
             "drawing",
             "mesh",
+            "manufacture",
         }:
             raise RuntimeError(
                 "VIBECAD_OLLAMA_ACCEPTANCE_RESULT_KIND must be single_solid, "
-                "assembly, analysis, drawing, or mesh."
+                "assembly, analysis, drawing, mesh, or manufacture."
             )
         if expected_volume is not None and result_kind != "single_solid":
             raise RuntimeError("Expected volume applies only to a single-solid run.")
@@ -517,6 +518,20 @@ def _run() -> None:
                 "source_count": int(input_snapshot["source_count"]),
                 "page_count": int(input_snapshot["page_count"]),
             }
+        elif result_kind == "manufacture":
+            from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot
+
+            input_snapshot = build_manufacture_snapshot(document)
+            if int(input_snapshot["model_candidate_count"]) < 1:
+                raise AssertionError(
+                    "Manufacture acceptance input has no machinable model geometry."
+                )
+            result["input_evidence"] = {
+                "model_candidate_count": int(
+                    input_snapshot["model_candidate_count"]
+                ),
+                "job_count": int(input_snapshot["job_count"]),
+            }
         document.UndoMode = 1
         copied_dependencies = copy_linked_document_dependencies(
             document,
@@ -571,10 +586,8 @@ def _run() -> None:
         if output_artifact is not None:
             from VibeCADNativeOutput import authorize_native_output_path
 
-            output_authorizer = lambda request: authorize_native_output_path(
-                request,
-                output_artifact,
-            )
+            def output_authorizer(request):
+                return authorize_native_output_path(request, output_artifact)
 
         def run_provider() -> None:
             try:
@@ -651,6 +664,7 @@ def _run() -> None:
                 analysis_evidence = None
                 drawing_evidence = None
                 mesh_evidence = None
+                manufacture_evidence = None
                 if result_kind == "single_solid":
                     neutral_objects = [
                         obj
@@ -832,6 +846,64 @@ def _run() -> None:
                     if not neutral_objects:
                         raise AssertionError(
                             "Drawing acceptance has no source solid geometry to export."
+                        )
+                elif result_kind == "manufacture":
+                    from VibeCADNativeManufactureSnapshot import (
+                        build_manufacture_snapshot,
+                    )
+
+                    manufacture_snapshot = build_manufacture_snapshot(document)
+                    jobs = list(manufacture_snapshot["jobs"])
+                    if not jobs:
+                        raise AssertionError(
+                            "Manufacture acceptance produced no machining setup."
+                        )
+                    operation_count = sum(
+                        int(job["counts"]["operations"]) for job in jobs
+                    )
+                    active_operation_count = sum(
+                        int(job["counts"]["active_operations"]) for job in jobs
+                    )
+                    if operation_count < 1 or active_operation_count < 1:
+                        raise AssertionError(
+                            "Manufacture acceptance produced no active toolpath operation."
+                        )
+                    manufacture_evidence = {
+                        "job_count": int(manufacture_snapshot["job_count"]),
+                        "operation_count": operation_count,
+                        "active_operation_count": active_operation_count,
+                        "jobs": [
+                            {
+                                "object_name": job["object_name"],
+                                "state_sha256": job["state_sha256"],
+                                "counts": dict(job["counts"]),
+                                "readiness": dict(job["readiness"]),
+                                "toolpath_validity": dict(
+                                    job["toolpath_validity"]
+                                ),
+                            }
+                            for job in jobs
+                        ],
+                    }
+                    source_names = {
+                        str(model["object_name"])
+                        for job in jobs
+                        for model in job.get("models", ())
+                    }
+                    neutral_objects = [
+                        document.getObject(name) for name in sorted(source_names)
+                    ]
+                    neutral_objects = [
+                        obj
+                        for obj in neutral_objects
+                        if obj is not None
+                        and getattr(obj, "Shape", None) is not None
+                        and not obj.Shape.isNull()
+                        and len(obj.Shape.Solids) > 0
+                    ]
+                    if not neutral_objects:
+                        raise AssertionError(
+                            "Manufacture acceptance has no source solid geometry to export."
                         )
                 else:
                     import Mesh
@@ -1038,6 +1110,7 @@ def _run() -> None:
                     "analysis_evidence": analysis_evidence,
                     "drawing_evidence": drawing_evidence,
                     "mesh_evidence": mesh_evidence,
+                    "manufacture_evidence": manufacture_evidence,
                     "shape_summary": _shape_summary(document),
                 }
                 print(

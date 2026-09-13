@@ -387,6 +387,14 @@ def build_active_job_summary(
         if operation_active_state(operation)
     )
     common_issues = []
+    relationship = job_snapshot.get("relationship")
+    if isinstance(relationship, Mapping) and relationship.get("current") is not True:
+        common_issues.append(
+            {
+                "code": "REMAINING_STOCK_STALE",
+                "message": "The retained stock no longer matches its previous setup.",
+            }
+        )
     if not active_operation_count:
         common_issues.append(
             {
@@ -470,6 +478,11 @@ def build_active_job_summary(
         },
         "stock": stock_summary,
         "machine": dict(job_snapshot.get("machine") or {}),
+        **(
+            {"relationship": dict(relationship)}
+            if isinstance(relationship, Mapping)
+            else {}
+        ),
         "tools": tool_records,
         "tools_truncated": len(tools) > MAX_ACTIVE_JOB_TOOLS,
         "ordered_operations": operation_records,

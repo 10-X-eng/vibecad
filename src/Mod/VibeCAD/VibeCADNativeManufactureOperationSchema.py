@@ -42,6 +42,12 @@ _POSITIVE_DISTANCE_MM = {
     "exclusiveMinimum": 0.0,
     "maximum": 1_000_000.0,
 }
+_COOLANT_SCHEMA = {
+    "type": "string",
+    "enum": ["none", "flood", "mist"],
+}
+
+
 def _closed(properties: dict, required: tuple[str, ...]) -> dict:
     return {
         "type": "object",
@@ -136,6 +142,19 @@ _POCKET_GEOMETRY = _closed(
     },
     ("kind", "items"),
 )
+_FEATURE_SELECTION = {
+    "type": "array",
+    "items": _closed(
+        {
+            "model": _EXACT_TARGET,
+            "subelements": _SUBELEMENTS,
+        },
+        ("model", "subelements"),
+    ),
+    "minItems": 1,
+    "maxItems": 32,
+    "description": "Exact model Faces or Edges to machine.",
+}
 _PROFILE_SETTINGS = _closed(
     {
         "direction": {
@@ -972,6 +991,109 @@ _ROTARY_SURFACE_SETTINGS = _closed(
         "mesh",
     ),
 )
+_STEEP_SHALLOW_MESH = _closed(
+    {
+        "linear_deflection_mm": {
+            "type": "number",
+            "minimum": 0.001,
+            "maximum": 25.4,
+        },
+        "angular_deflection_radians": {
+            "type": "number",
+            "minimum": 0.001,
+            "maximum": 1.570796327,
+        },
+    },
+    ("linear_deflection_mm", "angular_deflection_radians"),
+)
+_STEEP_SHALLOW_SETTINGS = {
+    "oneOf": [
+        _closed(
+            {
+                "slope_threshold_degrees": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 90.0,
+                    "description": (
+                        "Slope separating steep constant-Z contours from "
+                        "shallow surface-following passes."
+                    ),
+                },
+                "stepover_mm": {
+                    "type": "number",
+                    "minimum": 0.001,
+                    "maximum": 1_000_000.0,
+                },
+                "boundary_overlap_mm": _NONNEGATIVE_DISTANCE_MM,
+                "sample_interval_mm": {
+                    "type": "number",
+                    "minimum": 0.001,
+                    "maximum": 1_000_000.0,
+                },
+                "cut_mode": {
+                    "type": "string",
+                    "enum": ["climb", "conventional"],
+                },
+                "use_rest_machining": {"type": "boolean", "const": False},
+                "mesh": _STEEP_SHALLOW_MESH,
+            },
+            (
+                "slope_threshold_degrees",
+                "stepover_mm",
+                "boundary_overlap_mm",
+                "sample_interval_mm",
+                "cut_mode",
+                "use_rest_machining",
+                "mesh",
+            ),
+        ),
+        _closed(
+            {
+                "slope_threshold_degrees": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 90.0,
+                },
+                "stepover_mm": {
+                    "type": "number",
+                    "minimum": 0.001,
+                    "maximum": 1_000_000.0,
+                },
+                "boundary_overlap_mm": _NONNEGATIVE_DISTANCE_MM,
+                "sample_interval_mm": {
+                    "type": "number",
+                    "minimum": 0.001,
+                    "maximum": 1_000_000.0,
+                },
+                "cut_mode": {
+                    "type": "string",
+                    "enum": ["climb", "conventional"],
+                },
+                "use_rest_machining": {"type": "boolean", "const": True},
+                "rest_reference_tool_diameter_mm": {
+                    "type": "number",
+                    "minimum": 0.001,
+                    "maximum": 1_000_000.0,
+                    "description": (
+                        "Diameter of the previous, larger tool; only material "
+                        "it could not reach is cut."
+                    ),
+                },
+                "mesh": _STEEP_SHALLOW_MESH,
+            },
+            (
+                "slope_threshold_degrees",
+                "stepover_mm",
+                "boundary_overlap_mm",
+                "sample_interval_mm",
+                "cut_mode",
+                "use_rest_machining",
+                "rest_reference_tool_diameter_mm",
+                "mesh",
+            ),
+        ),
+    ]
+}
 _EXTENSION_ITEM = _closed(
     {
         "model": _EXACT_TARGET,
@@ -1124,7 +1246,7 @@ _ADAPTIVE_SETTINGS = _closed(
         },
         "tolerance_mm": {
             "type": "number",
-            "minimum": 0.05,
+            "minimum": 0.001,
             "maximum": 0.15,
             "description": (
                 "Accuracy/performance tolerance exposed by the human Adaptive panel."
@@ -1353,25 +1475,86 @@ _SLOT_PATH = {
         ),
     ]
 }
-_SLOT_SETTINGS = _closed(
-    {
-        "path": _SLOT_PATH,
-        "extend_start_mm": _DISTANCE_MM,
-        "extend_end_mm": _DISTANCE_MM,
-        "layer_mode": {
-            "type": "string",
-            "enum": ["directional", "bidirectional"],
-        },
-        "reverse_direction": {"type": "boolean"},
-    },
-    (
-        "path",
-        "extend_start_mm",
-        "extend_end_mm",
-        "layer_mode",
-        "reverse_direction",
-    ),
-)
+_SLOT_LAYER_MODE = {
+    "type": "string",
+    "enum": ["directional", "bidirectional"],
+}
+_SLOT_SETTINGS = {
+    "oneOf": [
+        _closed(
+            {
+                "path": _SLOT_PATH,
+                "extend_start_mm": _DISTANCE_MM,
+                "extend_end_mm": _DISTANCE_MM,
+                "layer_mode": _SLOT_LAYER_MODE,
+                "reverse_direction": {"type": "boolean"},
+            },
+            (
+                "path",
+                "extend_start_mm",
+                "extend_end_mm",
+                "layer_mode",
+                "reverse_direction",
+            ),
+        ),
+        _closed(
+            {
+                "path": _SLOT_PATH,
+                "extend_start_mm": _DISTANCE_MM,
+                "extend_end_mm": _DISTANCE_MM,
+                "layer_mode": _SLOT_LAYER_MODE,
+                "reverse_direction": {"type": "boolean"},
+                "entry_mode": {
+                    "type": "string",
+                    "enum": ["plunge", "ramp"],
+                },
+                "ramp_angle_degrees": {
+                    "type": "number",
+                    "exclusiveMinimum": 0.0,
+                    "exclusiveMaximum": 90.0,
+                },
+            },
+            (
+                "path",
+                "extend_start_mm",
+                "extend_end_mm",
+                "layer_mode",
+                "reverse_direction",
+                "entry_mode",
+                "ramp_angle_degrees",
+            ),
+        ),
+        _closed(
+            {
+                "path": _SLOT_PATH,
+                "extend_start_mm": _DISTANCE_MM,
+                "extend_end_mm": _DISTANCE_MM,
+                "layer_mode": {"type": "string", "const": "trochoidal"},
+                "reverse_direction": {"type": "boolean"},
+                "cut_mode": {
+                    "type": "string",
+                    "enum": ["climb", "conventional"],
+                },
+                "trochoid_width_mm": _NONNEGATIVE_DISTANCE_MM,
+                "trochoid_stepover_percent": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                },
+            },
+            (
+                "path",
+                "extend_start_mm",
+                "extend_end_mm",
+                "layer_mode",
+                "reverse_direction",
+                "cut_mode",
+                "trochoid_width_mm",
+                "trochoid_stepover_percent",
+            ),
+        ),
+    ]
+}
 
 _DRILL_FEATURE = _closed(
     {
@@ -1774,6 +1957,31 @@ _VCARVE_DEPTHS = _closed(
 )
 
 
+def manufacture_adaptive_defaults_variant() -> NativeCapabilityVariant:
+    """Focused Adaptive clearing with the shipped human-operation defaults."""
+    return NativeCapabilityVariant(
+        operation="adaptive",
+        description=(
+            "Adaptively clear exact planar Faces or closed Edge loops using setup defaults."
+        ),
+        action_ids=frozenset({"CAM_Adaptive"}),
+        surface_ids=frozenset({"manufacture"}),
+        exact_target_type="ExactCamJobAdaptiveRegionsAndController",
+        transaction_behavior="background",
+        background_required=True,
+        parameters=_closed(
+            {
+                "label": LABEL_SCHEMA,
+                "job": _EXACT_TARGET,
+                "tool_controller": _EXACT_TARGET,
+                "geometry": _FEATURE_SELECTION,
+                "coolant": _COOLANT_SCHEMA,
+            },
+            ("job", "tool_controller", "geometry"),
+        ),
+    )
+
+
 def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=MANUFACTURE_OPERATION_CAPABILITY_NAME,
@@ -1786,96 +1994,70 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="profile",
                 description=(
-                    "Create one Profile toolpath for an entire Job or exact current "
-                    "Face/Edge subelements; no task panel is opened."
+                    "Machine exact Faces or Edges on the inside or outside using setup defaults."
                 ),
                 action_ids=frozenset({"CAM_Profile"}),
                 surface_ids=frozenset({"manufacture"}),
-                exact_target_type=("ExactCamJobProfileGeometryControllerAndParameters"),
-                transaction_behavior="document",
-                background_required=False,
+                exact_target_type="ExactCamJobProfileGeometryAndController",
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
-                        "geometry": _GEOMETRY,
-                        "profile": _PROFILE_SETTINGS,
-                        "depths": _DEPTHS,
-                        "heights": _HEIGHTS,
-                        "coolant": {
+                        "geometry": _FEATURE_SELECTION,
+                        "cut_side": {
                             "type": "string",
-                            "enum": ["none", "flood", "mist"],
+                            "enum": ["outside", "inside"],
                         },
+                        "coolant": _COOLANT_SCHEMA,
                     },
                     (
-                        "label",
                         "job",
                         "tool_controller",
                         "geometry",
-                        "profile",
-                        "depths",
-                        "heights",
-                        "coolant",
+                        "cut_side",
                     ),
                 ),
             ),
             NativeCapabilityVariant(
                 operation="pocket_shape",
                 description=(
-                    "Create one Pocket Shape toolpath from exact current Face/Edge "
-                    "geometry, with optional explicit edge extensions; no task panel "
-                    "is opened."
+                    "Clear exact planar Faces or closed Edge loops using the setup defaults."
                 ),
                 action_ids=frozenset({"CAM_Pocket_Shape"}),
                 surface_ids=frozenset({"manufacture"}),
-                exact_target_type=(
-                    "ExactCamJobPocketGeometryControllerExtensionsAndParameters"
-                ),
-                transaction_behavior="document",
-                background_required=False,
+                exact_target_type="ExactCamJobPocketGeometryAndController",
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
-                        "geometry": _POCKET_GEOMETRY,
-                        "pocket": _POCKET_SETTINGS,
-                        "depths": _POCKET_DEPTHS,
-                        "heights": _HEIGHTS,
-                        "extensions": _POCKET_EXTENSIONS,
-                        "coolant": {
-                            "type": "string",
-                            "enum": ["none", "flood", "mist"],
-                        },
+                        "geometry": _FEATURE_SELECTION,
+                        "coolant": _COOLANT_SCHEMA,
                     },
                     (
-                        "label",
                         "job",
                         "tool_controller",
                         "geometry",
-                        "pocket",
-                        "depths",
-                        "heights",
-                        "extensions",
-                        "coolant",
                     ),
                 ),
             ),
             NativeCapabilityVariant(
                 operation="pocket_3d",
                 description=(
-                    "Create one 3D Pocket toolpath from exact current Face or "
-                    "closed horizontal Edge-loop geometry; final depth is derived "
-                    "from the frozen model features and no task panel is opened."
+                    "Clear bounded 3D pockets from Faces or closed horizontal Edge loops."
                 ),
                 action_ids=frozenset({"CAM_Pocket3D"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type=(
                     "ExactCamJobPocket3DFeaturesControllerAndParameters"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -1905,18 +2087,14 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="surface",
                 description=(
-                    "Create one planar OpenCamLib Surface toolpath for the complete "
-                    "exact Job or ordered exact current Faces, with explicit pattern, "
-                    "layer, boundary, quality, depth, height, and cutter controls; no "
-                    "task panel is opened."
+                    "Finish 3D surfaces with planar OpenCamLib paths over a setup or "
+                    "selected Faces."
                 ),
                 action_ids=frozenset({"CAM_Surface"}),
                 surface_ids=frozenset({"manufacture"}),
-                exact_target_type=(
-                    "ExactCamJobSurfaceFacesControllerAndParameters"
-                ),
-                transaction_behavior="document",
-                background_required=False,
+                exact_target_type=("ExactCamJobSurfaceFacesControllerAndParameters"),
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -1946,18 +2124,15 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="waterline",
                 description=(
-                    "Create one bounded constant-Z Waterline toolpath for the complete "
-                    "exact Job or ordered exact current Faces. The algorithm is an "
-                    "explicit closed choice among OCL drop-cutter, OCL adaptive, and "
-                    "experimental clearing; no task panel is opened."
+                    "Machine constant-Z contours over a setup or selected Faces."
                 ),
                 action_ids=frozenset({"CAM_Waterline"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type=(
                     "ExactCamJobWaterlineFacesControllerAlgorithmAndParameters"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -1992,8 +2167,8 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 exact_target_type=(
                     "ExactCamJobMachineCylinderRotaryFacesControllerAndParameters"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2019,26 +2194,26 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                 ),
             ),
             NativeCapabilityVariant(
-                operation="mill_facing",
+                operation="steep_shallow",
                 description=(
-                    "Create one Mill Facing toolpath over the exact Job stock with "
-                    "explicit pattern, depth, height, extension, and linking values; "
-                    "no task panel is opened."
+                    "Finish steep walls with constant-Z contours and shallow "
+                    "regions with surface-following passes in one operation."
                 ),
-                action_ids=frozenset({"CAM_MillFacing"}),
+                action_ids=frozenset({"CAM_SteepShallow"}),
                 surface_ids=frozenset({"manufacture"}),
-                exact_target_type="ExactCamJobStockControllerAndFacingParameters",
-                transaction_behavior="document",
-                background_required=False,
+                exact_target_type=(
+                    "ExactCamJobModelControllerAndSteepShallowParameters"
+                ),
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
-                        "facing": _FACING_SETTINGS,
+                        "steep_shallow": _STEEP_SHALLOW_SETTINGS,
                         "depths": _DEPTHS,
                         "heights": _HEIGHTS,
-                        "linking": _LINKING_SETTINGS,
                         "coolant": {
                             "type": "string",
                             "enum": ["none", "flood", "mist"],
@@ -2048,26 +2223,44 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
                         "label",
                         "job",
                         "tool_controller",
-                        "facing",
+                        "steep_shallow",
                         "depths",
                         "heights",
-                        "linking",
                         "coolant",
                     ),
                 ),
             ),
             NativeCapabilityVariant(
-                operation="helix",
+                operation="mill_facing",
                 description=(
-                    "Create one internal Helix toolpath from exact current circular "
-                    "Face/Edge features with explicit ordering and process values; no "
-                    "task panel is opened."
+                    "Face the exact setup stock using its machining defaults."
                 ),
+                action_ids=frozenset({"CAM_MillFacing"}),
+                surface_ids=frozenset({"manufacture"}),
+                exact_target_type="ExactCamJobStockAndController",
+                transaction_behavior="background",
+                background_required=True,
+                parameters=_closed(
+                    {
+                        "label": LABEL_SCHEMA,
+                        "job": _EXACT_TARGET,
+                        "tool_controller": _EXACT_TARGET,
+                        "coolant": _COOLANT_SCHEMA,
+                    },
+                    (
+                        "job",
+                        "tool_controller",
+                    ),
+                ),
+            ),
+            NativeCapabilityVariant(
+                operation="helix",
+                description=("Helically mill selected circular Faces or Edges."),
                 action_ids=frozenset({"CAM_Helix"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobHoleFeaturesControllerAndHelixParameters",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2099,18 +2292,15 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="adaptive",
                 description=(
-                    "Create one libarea Adaptive clearing or profiling toolpath from "
-                    "exact current Face/Edge regions, with explicit helix-entry, "
-                    "extension, depth, height, and process values; no task panel is "
-                    "opened."
+                    "Adaptively clear or profile selected Face and Edge regions."
                 ),
                 action_ids=frozenset({"CAM_Adaptive"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type=(
                     "ExactCamJobAdaptiveRegionsControllerExtensionsAndParameters"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2144,15 +2334,14 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="slot",
                 description=(
-                    "Create one horizontal Slot toolpath from explicit points or one "
-                    "of the exact human-supported single-model feature forms; no task "
-                    "panel is opened."
+                    "Mill a horizontal slot from explicit points or supported model "
+                    "features."
                 ),
                 action_ids=frozenset({"CAM_Slot"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobSlotPathControllerAndParameters",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2180,60 +2369,40 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="drilling",
                 description=(
-                    "Create one Drilling or Tapping operation from exact circular "
-                    "features and explicit XY locations, with explicit ordering, "
-                    "cycle, depth, height, linking, and coolant values; no task "
-                    "panel is opened."
+                    "Drill exact circular Faces or Edges using the setup defaults."
                 ),
                 action_ids=frozenset({"CAM_Drilling"}),
                 surface_ids=frozenset({"manufacture"}),
-                exact_target_type=(
-                    "ExactCamJobHoleTargetsControllerAndDrillingParameters"
-                ),
-                transaction_behavior="document",
-                background_required=False,
+                exact_target_type="ExactCamJobDrillableGeometryAndController",
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
                         "job": _EXACT_TARGET,
                         "tool_controller": _EXACT_TARGET,
-                        "targets": _DRILL_TARGETS,
-                        "process": _DRILL_PROCESS,
-                        "depths": _DRILL_DEPTHS,
-                        "heights": _HEIGHTS,
-                        "linking": _LINKING_SETTINGS,
-                        "coolant": {
-                            "type": "string",
-                            "enum": ["none", "flood", "mist"],
-                        },
+                        "geometry": _FEATURE_SELECTION,
+                        "coolant": _COOLANT_SCHEMA,
                     },
                     (
-                        "label",
                         "job",
                         "tool_controller",
-                        "targets",
-                        "process",
-                        "depths",
-                        "heights",
-                        "linking",
-                        "coolant",
+                        "geometry",
                     ),
                 ),
             ),
             NativeCapabilityVariant(
                 operation="thread_milling",
                 description=(
-                    "Create one internal or external Thread Milling operation from "
-                    "exact circular features and either a shipped standard designation "
-                    "or explicit custom thread geometry; no task panel is opened."
+                    "Mill internal or external threads in selected circular features."
                 ),
                 action_ids=frozenset({"CAM_ThreadMilling"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type=(
                     "ExactCamJobHoleFeaturesControllerAndThreadDefinition"
                 ),
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2265,15 +2434,13 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="engrave",
                 description=(
-                    "Create one Engrave toolpath from exact Edge selections, exact "
-                    "whole zero-volume wire models, or all engravable Job models; "
-                    "no task panel is opened."
+                    "Engrave selected Edges, wire models, or engravable setup models."
                 ),
                 action_ids=frozenset({"CAM_Engrave"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobEngraveGeometryControllerAndParameters",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2304,16 +2471,12 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             ),
             NativeCapabilityVariant(
                 operation="deburr",
-                description=(
-                    "Create one Deburr chamfer toolpath from exact current Edge/Face "
-                    "features with explicit width, immersion, direction, step-down, "
-                    "height, linking, and coolant values; no task panel is opened."
-                ),
+                description=("Chamfer or deburr selected Edges and Faces."),
                 action_ids=frozenset({"CAM_Deburr"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobDeburrFeaturesControllerAndParameters",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,
@@ -2345,15 +2508,13 @@ def manufacture_operation_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="v_carve",
                 description=(
-                    "Create one Voronoi medial-line V-carve toolpath from exact "
-                    "horizontal Faces or face-bearing models with an exact V-bit; "
-                    "no task panel is opened."
+                    "V-carve horizontal Faces or face-bearing models with a V-bit."
                 ),
                 action_ids=frozenset({"CAM_Vcarve"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type="ExactCamJobVCarveFacesControllerAndParameters",
-                transaction_behavior="document",
-                background_required=False,
+                transaction_behavior="background",
+                background_required=True,
                 parameters=_closed(
                     {
                         "label": LABEL_SCHEMA,

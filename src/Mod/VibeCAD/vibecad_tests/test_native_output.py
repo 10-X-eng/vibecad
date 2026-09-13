@@ -47,10 +47,19 @@ def test_authorization_accepts_only_one_exact_regular_output_destination(
     with pytest.raises(NativeOutputError, match="regular file"):
         authorize_native_output_path(request, directory)
 
+
+def test_authorization_rejects_symlink_destination(tmp_path: Path) -> None:
+    request = _request()
+
     target = tmp_path / "Target.asmt"
     target.write_text("existing", encoding="utf-8")
     link = tmp_path / "Linked.asmt"
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     with pytest.raises(NativeOutputError, match="regular file"):
         authorize_native_output_path(request, link)
 
@@ -62,15 +71,16 @@ def test_authorized_output_is_private_atomic_bounded_and_one_shot(
     destination = tmp_path / "Assembly.asmt"
     authorization = authorize_native_output_path(request, destination)
     guards = []
+    payload = b"OndselSolver\n\x1aAssembly\n"
 
     artifact = publish_authorized_output(
         request,
         authorization,
-        writer=lambda path: Path(path).write_bytes(b"OndselSolver\nAssembly\n"),
+        writer=lambda path: Path(path).write_bytes(payload),
         guard=lambda: guards.append(True),
     )
 
-    assert destination.read_bytes() == b"OndselSolver\nAssembly\n"
+    assert destination.read_bytes() == payload
     assert artifact.file_name == destination.name
     assert artifact.size_bytes == len(destination.read_bytes())
     assert len(artifact.sha256) == 64

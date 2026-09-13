@@ -15,6 +15,7 @@ import html
 import json
 import queue
 import re
+import sys
 import tempfile
 import threading
 import uuid
@@ -26,6 +27,14 @@ import FreeCADGui as Gui
 
 from VibeCADCore import get_service
 from VibeCADDebug import list_provider_request_captures
+from VibeCADDocumentChangeBatch import (
+    document_change_batch_active,
+    document_change_batch_rolling_back,
+    document_change_batch_origins,
+    register_document_change_batch_completed,
+    register_document_change_batch_finished,
+    register_document_change_batch_flush,
+)
 from VibeCADEditState import active_edit_object, active_edit_state
 from VibeCADPromptStarters import (
     BUILTIN_PROMPT_STARTERS,
@@ -34,12 +43,19 @@ from VibeCADPromptStarters import (
 )
 from VibeCADSession import (
     _format_document_delta,
+    _recent_conversation_payload,
     prewarm_analyze_context,
     prewarm_drawing_context,
     rebuild_intent_memory,
     run_native_surface_continuation,
     run_prompt,
     run_sketch_close_continuation,
+)
+from VibeCADTokenUsage import (
+    format_usage_summary,
+    sanitize_usage_metadata,
+    summarize_conversation_usage,
+    usage_summary_presentation,
 )
 
 
@@ -54,6 +70,7 @@ ICON_STOP = "vibecad-stop.svg"
 ICON_ACTIVITY = "vibecad-activity.svg"
 ICON_NEW_CONVERSATION = "vibecad-new-conversation.svg"
 ICON_PROMPT_STARTERS = "vibecad-prompt-starters.svg"
+ICON_ENGINEERING_BRIEF = "vibecad-engineering-brief.svg"
 
 _commands_registered = False
 _preferences_registered = False
@@ -65,13 +82,21 @@ _gui_document_observer = None
 _context_debug_startup_scheduled = False
 _registered_assistant_widget = None
 _registered_context_debug_widget = None
+_engineering_brief_dialog = None
 _document_save_conversations: dict[str, dict[str, Any]] = {}
 _document_save_references: dict[str, dict[str, Any]] = {}
 _pending_question_request: list[dict[str, Any]] = []
 _conversation_persist_queue: queue.Queue[tuple[Any, dict[str, Any]]] = queue.Queue()
 _conversation_persist_thread: threading.Thread | None = None
 _conversation_persist_lock = threading.RLock()
+_session_recovery_persist_queue: queue.Queue[tuple[Any, dict[str, Any]]] = queue.Queue()
+_session_recovery_persist_thread: threading.Thread | None = None
+_session_recovery_persist_lock = threading.RLock()
+_session_recovery_instance_id = uuid.uuid4().hex
+_active_session_recovery: dict[str, str] | None = None
 _assistant_document_refresh_scheduled = False
+_native_authority_selector_refresh_scheduled = False
+_deferred_vibescript_dependency_changes: dict[str, dict[str, Any]] = {}
 _legacy_architecture_warning_documents: set[str] = set()
 _pending_document_render_refreshes: set[str] = set()
 _analyze_context_prewarm_thread: threading.Thread | None = None
@@ -233,11 +258,55 @@ def _dispatch_to_document_thread(operation: Any) -> Any:
     return request.result
 
 
+def _persist_session_recovery_before_shutdown() -> None:
+    """Synchronously capture the latest draft or active request before Qt exits."""
+
+    try:
+        dock = _find_dock()
+        if dock is None or not _assistant_panel_is_built(dock):
+            return
+        banner = _find_child("QFrame", "VibeSessionRecoveryBanner", dock)
+        # Keep an unclaimed snapshot intact when the user quits without choosing.
+        if banner is not None and banner.isVisible():
+            return
+        # The direct shutdown write must be last. Otherwise an older queued
+        # autosave could finish afterward and replace the exact final state.
+        _session_recovery_persist_queue.join()
+        # Recovery belongs to a saved CAD document. Queued snapshots above
+        # remain worth flushing, but there is no new state to capture after
+        # the final document has already closed.
+        if App.ActiveDocument is None:
+            return
+        active = _active_session_recovery
+        if active is not None:
+            phase = "running"
+            prompt_text = str(active.get("prompt") or "")
+        else:
+            prompt = _find_child("QPlainTextEdit", "VibePrompt", dock)
+            phase = "draft"
+            prompt_text = str(prompt.toPlainText() or "") if prompt is not None else ""
+        service = get_service()
+        prepared = service.prepare_session_recovery(
+            phase,
+            prompt_text,
+            instance_id=_session_recovery_instance_id,
+        )
+        service.persist_prepared_session_recovery(prepared)
+    except Exception as exc:
+        _warn(f"VibeCAD session recovery shutdown save failed: {exc}")
+
+
 def _shutdown_internal_assistant() -> None:
     """Cancel active internal work before Qt stops servicing queued calls."""
 
     if _application_shutting_down.is_set():
         return
+    _persist_session_recovery_before_shutdown()
+    if _engineering_brief_dialog is not None:
+        try:
+            _engineering_brief_dialog.close()
+        except RuntimeError:
+            pass
     _application_shutting_down.set()
     _assistant_run_controller.request_cancel()
     _intent_memory_rebuild_cancel_event.set()
@@ -249,9 +318,19 @@ def _shutdown_internal_assistant() -> None:
         shutdown_managed_codex_sessions()
     except Exception as exc:
         _warn(f"VibeCAD Codex shutdown failed: {exc}")
+    try:
+        from VibeCADMCPToolServers import shutdown_mcp_tool_servers_async
+
+        shutdown_mcp_tool_servers_async()
+    except Exception as exc:
+        _warn(f"VibeCAD MCP tool server shutdown failed: {exc}")
 
     current = threading.current_thread()
-    for worker in (_assistant_run_thread, _intent_memory_rebuild_thread):
+    for worker in (
+        _assistant_run_thread,
+        _intent_memory_rebuild_thread,
+        _analyze_context_prewarm_thread,
+    ):
         if worker is None or worker is current or not worker.is_alive():
             continue
         worker.join(timeout=_ASSISTANT_SHUTDOWN_JOIN_SECONDS)
@@ -455,7 +534,7 @@ def _find_child(widget_type: str, name: str, dock: Any | None = None):
         return None
     if dock is None:
         dock = _find_dock()
-    if dock is None:
+    if dock is None or not callable(getattr(dock, "findChild", None)):
         return None
     qt_type = getattr(QtWidgets, widget_type, None)
     if qt_type is None:
@@ -686,6 +765,7 @@ def _select_authoring_mode_from_header(index: int) -> None:
     )
     _render_saved_conversation(dock)
     _refresh_conversation_selector(dock)
+    _refresh_session_recovery(dock)
     _render_assistant_run_state(dock)
     _refresh_authoring_mode_selector(dock)
 
@@ -1322,6 +1402,170 @@ def _conversation_persist_loop() -> None:
             _conversation_persist_queue.task_done()
 
 
+def _ensure_session_recovery_persist_thread() -> None:
+    """Start the ordered recovery writer without blocking Qt."""
+
+    global _session_recovery_persist_thread
+    with _session_recovery_persist_lock:
+        if (
+            _session_recovery_persist_thread is not None
+            and _session_recovery_persist_thread.is_alive()
+        ):
+            return
+        _session_recovery_persist_thread = threading.Thread(
+            target=_session_recovery_persist_loop,
+            name="VibeCAD-session-recovery-persistence",
+            daemon=True,
+        )
+        _session_recovery_persist_thread.start()
+
+
+def _session_recovery_persist_loop() -> None:
+    while True:
+        service, prepared = _session_recovery_persist_queue.get()
+        try:
+            service.persist_prepared_session_recovery(prepared)
+        except Exception as exc:
+            message = f"VibeCAD session recovery save failed: {exc}"
+            # FreeCAD's console accepts worker-thread messages. Do not make this
+            # writer synchronously enter Qt: shutdown waits for this queue to
+            # drain on the document thread before writing the final snapshot.
+            _warn(message)
+        finally:
+            _session_recovery_persist_queue.task_done()
+
+
+def _queue_session_recovery(phase: str, prompt: str) -> None:
+    """Capture identity on Qt, then atomically persist recovery off-thread."""
+
+    try:
+        service = get_service()
+        prepared = service.prepare_session_recovery(
+            phase,
+            prompt,
+            instance_id=_session_recovery_instance_id,
+        )
+        _ensure_session_recovery_persist_thread()
+        _session_recovery_persist_queue.put((service, prepared))
+    except Exception as exc:
+        _warn(f"VibeCAD session recovery save failed: {exc}")
+
+
+def _persist_prompt_recovery(prompt: Any) -> None:
+    if _is_assistant_run_active() or not _assistant_document_state().get("enabled"):
+        return
+    dock = _find_dock()
+    banner = _find_child("QFrame", "VibeSessionRecoveryBanner", dock)
+    if banner is not None and banner.isVisible():
+        return
+    _queue_session_recovery("draft", str(prompt.toPlainText() or ""))
+
+
+def _clear_prompt_without_recovery(prompt: Any) -> None:
+    """Clear composer text without discarding another thread's saved draft."""
+
+    recovery_timer = getattr(
+        prompt,
+        "_vibecad_session_recovery_timer",
+        None,
+    )
+    if recovery_timer is not None:
+        recovery_timer.stop()
+    blocked = prompt.blockSignals(True)
+    try:
+        prompt.clear()
+    finally:
+        prompt.blockSignals(blocked)
+
+
+def _session_recovery_banner_text(snapshot: dict[str, Any]) -> str:
+    if snapshot.get("recoverable") is False:
+        return (
+            "Saved VibeCAD recovery could not be read. Discard it to continue "
+            "without the saved draft."
+        )
+    if snapshot.get("phase") == "running":
+        return (
+            "A VibeCAD CAD run was interrupted. Restore its request to review and "
+            "send again; previous CAD actions will not replay automatically."
+        )
+    return "VibeCAD recovered an unsent draft. Restore it to the composer?"
+
+
+def _session_recovery_is_current_instance(snapshot: dict[str, Any]) -> bool:
+    return str(snapshot.get("instance_id") or "") == _session_recovery_instance_id
+
+
+def _refresh_session_recovery(dock: Any | None = None) -> None:
+    if dock is None:
+        dock = _find_dock()
+    banner = _find_child("QFrame", "VibeSessionRecoveryBanner", dock)
+    if banner is None:
+        return
+    if not _assistant_document_state().get("enabled"):
+        banner.setVisible(False)
+        return
+    try:
+        snapshot = get_service().session_recovery()
+    except Exception as exc:
+        _warn(f"VibeCAD session recovery load failed: {exc}")
+        banner.setVisible(False)
+        return
+    if not snapshot.get("available") or _session_recovery_is_current_instance(snapshot):
+        banner.setVisible(False)
+        return
+    label = _find_child("QLabel", "VibeSessionRecoveryText", dock)
+    restore = _find_child("QPushButton", "VibeSessionRecoveryRestore", dock)
+    if label is not None:
+        label.setText(_session_recovery_banner_text(snapshot))
+    if restore is not None:
+        restore.setEnabled(bool(snapshot.get("recoverable")))
+    banner.setVisible(True)
+
+
+def _restore_session_recovery_from_panel(dock: Any | None = None) -> None:
+    if dock is None:
+        dock = _find_dock()
+    try:
+        snapshot = get_service().session_recovery()
+    except Exception as exc:
+        _set_status_line(f"Could not restore the VibeCAD session: {exc}", dock=dock)
+        return
+    if not snapshot.get("available") or not snapshot.get("recoverable"):
+        _set_status_line("The saved VibeCAD session cannot be restored.", dock=dock)
+        return
+    from VibeCADSessionRecovery import recovery_composer_text
+
+    text = recovery_composer_text(snapshot)
+    prompt = _find_child("QPlainTextEdit", "VibePrompt", dock)
+    banner = _find_child("QFrame", "VibeSessionRecoveryBanner", dock)
+    if prompt is None or not text:
+        _set_status_line(
+            "The saved VibeCAD session has no recoverable request.",
+            dock=dock,
+        )
+        return
+    prompt.setPlainText(text)
+    prompt.setFocus()
+    if banner is not None:
+        banner.setVisible(False)
+    _queue_session_recovery("draft", text)
+    _set_status_line(
+        "Recovered request ready for review. Press Send when it is safe to retry.",
+        dock=dock,
+    )
+
+
+def _discard_session_recovery_from_panel(dock: Any | None = None) -> None:
+    if dock is None:
+        dock = _find_dock()
+    _queue_session_recovery("draft", "")
+    banner = _find_child("QFrame", "VibeSessionRecoveryBanner", dock)
+    if banner is not None:
+        banner.setVisible(False)
+    _set_status_line("Discarded the saved VibeCAD recovery.", dock=dock)
+
+
 def _format_saved_conversation(conversation: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     labels = {
@@ -1412,6 +1656,149 @@ def _provider_runtime_tooltip(runtime: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _conversation_usage_entries(output: Any) -> list[dict[str, Any]]:
+    entries = output.property("VibeConversationEntries")
+    if not isinstance(entries, list):
+        return []
+    return [dict(entry) for entry in entries if isinstance(entry, dict)]
+
+
+def _usage_history_snapshot(output: Any) -> list[dict[str, Any]]:
+    """Own only usage metadata; retain empty positions for sequence fallbacks."""
+    snapshot = []
+    for entry in _conversation_usage_entries(output):
+        metadata = entry.get("metadata")
+        usage = sanitize_usage_metadata(metadata.get("usage")) if isinstance(metadata, dict) else None
+        snapshot.append(
+            {"sequence": entry.get("sequence"), "metadata": {"usage": usage}}
+            if usage is not None else {}
+        )
+    return snapshot
+
+
+def _request_usage_summary(dock: Any | None = None) -> None:
+    """Coalesce streamed updates without doing history calculations on the GUI."""
+    from PySide import QtCore
+    from VibeCADTokenUsage import UsageSummaryWorker
+
+    output = _find_child("QTextBrowser", "VibeConversation", dock)
+    toggle = _find_child("QToolButton", "VibeUsageSummaryToggle", dock)
+    if output is None or toggle is None:
+        return
+    if not toggle.isChecked():
+        _render_usage_summary(dock)
+        return
+    renderer = getattr(output, "_vibecad_usage_renderer", None)
+    if renderer is None:
+        class Renderer(QtCore.QObject):
+            completed = QtCore.Signal(int, object)
+
+            def __init__(self):
+                super().__init__(output)
+                self.entries = None
+                self.completed.connect(self.apply, QtCore.Qt.QueuedConnection)
+                self.worker = UsageSummaryWorker(self.completed.emit)
+                output.installEventFilter(self)
+                output.destroyed.connect(self.worker.close)
+
+            def eventFilter(self, watched, event):
+                if (event.type() == QtCore.QEvent.DynamicPropertyChange
+                        and bytes(event.propertyName()) == b"VibeConversationEntries"):
+                    self.entries = None
+                    self.worker.invalidate()
+                return False
+
+            def apply(self, generation, result):
+                if not self.worker.is_current(generation) or not toggle.isChecked():
+                    return
+                if _find_child("QTextBrowser", "VibeConversation", dock) is not output:
+                    return
+                if "error" in result:
+                    _warn("VibeCAD usage summary failed: " + result["error"])
+                    return
+                details = _find_child("QLabel", "VibeUsageSummaryDetails", dock)
+                if details is None:
+                    return
+                _apply_usage_text(dock, details, result)
+                details.show()
+                scroll = _find_child("QScrollArea", "VibeUsageSummaryScroll", dock)
+                if scroll is not None:
+                    scroll.show()
+                _render_usage_graph(dock, {}, details, graph_data=result["graph"])
+
+        renderer = Renderer()
+        output._vibecad_usage_renderer = renderer
+    if renderer.entries is None:
+        # Qt returns a detached value for the dynamic property. Reuse this owned
+        # snapshot until the property's change event invalidates it.
+        renderer.entries = _usage_history_snapshot(output)
+    renderer.worker.submit(
+        renderer.entries, sanitize_usage_metadata(output.property("VibeActiveTokenUsage"))
+    )
+
+
+def _apply_usage_text(dock: Any, details: Any, presentation: dict[str, Any]) -> None:
+    saved_turns = _find_child("QLabel", "VibeUsageTurnDetails", dock)
+    text = presentation["text"] if saved_turns is None else presentation["summary_text"]
+    if getattr(details, "text", lambda: None)() != text:
+        details.setText(text)
+    if saved_turns is not None:
+        if saved_turns.text() != presentation["turn_text"]:
+            saved_turns.setText(presentation["turn_text"])
+        saved_turns.setVisible(bool(presentation["turn_text"]))
+
+
+def _render_usage_summary(
+    dock: Any | None = None,
+    *,
+    conversation: list[dict[str, Any]] | None = None,
+) -> None:
+    """Refresh the compact provider-usage disclosure below the conversation header."""
+
+    output = _find_child("QTextBrowser", "VibeConversation", dock)
+    details = _find_child("QLabel", "VibeUsageSummaryDetails", dock)
+    toggle = _find_child("QToolButton", "VibeUsageSummaryToggle", dock)
+    if output is None or details is None or toggle is None:
+        return
+    renderer = getattr(output, "_vibecad_usage_renderer", None)
+    if renderer is not None:
+        renderer.worker.invalidate()
+    expanded = bool(toggle.isChecked())
+    details.setVisible(expanded)
+    scroll = _find_child("QScrollArea", "VibeUsageSummaryScroll", dock)
+    if scroll is not None:
+        scroll.setVisible(expanded)
+    graph = _find_child("QWidget", "VibeUsageGraph", dock)
+    if graph is not None:
+        graph.setVisible(expanded)
+    if not expanded:
+        return
+    entries = (
+        [dict(entry) for entry in conversation if isinstance(entry, dict)]
+        if conversation is not None
+        else _conversation_usage_entries(output)
+    )
+    active = sanitize_usage_metadata(output.property("VibeActiveTokenUsage"))
+    if active is not None:
+        entries.append(
+            {
+                "role": "assistant",
+                "content": "Active provider request",
+                "sequence": len(entries) + 1,
+                "metadata": {"usage": active},
+            }
+        )
+    summary = summarize_conversation_usage(entries)
+    _apply_usage_text(dock, details, usage_summary_presentation(summary, active=active))
+    _render_usage_graph(dock, summary, details)
+    details.setToolTip(
+        "Provider-reported actual usage only. No quota or monetary cost is inferred."
+    )
+    toggle.setToolTip(
+        "Show actual input, cached-input, output, reasoning, and per-model usage."
+    )
+
+
 def _render_saved_conversation(dock: Any | None = None) -> None:
     if _is_assistant_run_active():
         return
@@ -1424,9 +1811,17 @@ def _render_saved_conversation(dock: Any | None = None) -> None:
         _warn(f"VibeCAD conversation load failed: {exc}")
         return
     output.clear()
-    for block in _saved_conversation_blocks(history.get("conversation", [])):
+    conversation = [
+        dict(entry)
+        for entry in history.get("conversation", [])
+        if isinstance(entry, dict)
+    ]
+    output.setProperty("VibeConversationEntries", conversation)
+    output.setProperty("VibeActiveTokenUsage", None)
+    for block in _saved_conversation_blocks(conversation):
         _append_transcript_block(output, block)
     output.setProperty("VibeConversationPath", str(history.get("path", "")))
+    _render_usage_summary(dock)
     _scroll_to_end(output)
 
 
@@ -1509,7 +1904,7 @@ def _clear_conversation_transients(dock: Any) -> None:
     _clear_thinking(dock)
     prompt = _find_child("QPlainTextEdit", "VibePrompt", dock)
     if prompt is not None:
-        prompt.clear()
+        _clear_prompt_without_recovery(prompt)
 
 
 def _activate_conversation_from_selector(index: int) -> None:
@@ -1531,6 +1926,7 @@ def _activate_conversation_from_selector(index: int) -> None:
         _clear_conversation_transients(dock)
         _render_saved_conversation(dock)
         _refresh_conversation_selector(dock)
+        _refresh_session_recovery(dock)
         _render_assistant_run_state(dock)
     except Exception as exc:
         _warn(f"VibeCAD conversation switch failed: {exc}")
@@ -1557,6 +1953,7 @@ def _new_conversation_from_panel() -> None:
         _clear_conversation_transients(dock)
         _render_saved_conversation(dock)
         _refresh_conversation_selector(dock)
+        _refresh_session_recovery(dock)
         _render_assistant_run_state(dock)
         prompt = _find_child("QPlainTextEdit", "VibePrompt", dock)
         if prompt is not None:
@@ -1579,12 +1976,40 @@ def _append_conversation(
     if role == "AI thinking":
         _append_thinking(clean)
         return
-    image_paths = _turn_image_paths({"metadata": metadata}) if metadata else []
-    runtime = metadata.get("provider_runtime") if isinstance(metadata, dict) else None
+    clean_metadata: dict[str, Any] | None = None
+    if isinstance(metadata, dict):
+        clean_metadata = dict(metadata)
+        if "usage" in clean_metadata:
+            usage = sanitize_usage_metadata(clean_metadata.get("usage"))
+            if usage is None:
+                clean_metadata.pop("usage", None)
+            else:
+                clean_metadata["usage"] = usage
+    image_paths = _turn_image_paths({"metadata": clean_metadata}) if clean_metadata else []
+    runtime = (
+        clean_metadata.get("provider_runtime")
+        if isinstance(clean_metadata, dict)
+        else None
+    )
     tooltip = _provider_runtime_tooltip(runtime) if isinstance(runtime, dict) else ""
     _append_output(f"{role}:\n{clean}", image_paths, tooltip=tooltip)
+    output = _find_child("QTextBrowser", "VibeConversation")
+    if output is not None:
+        entries = _conversation_usage_entries(output)
+        entry: dict[str, Any] = {
+            "role": _storage_role_for_conversation(role) or "system",
+            "content": clean,
+            "sequence": len(entries) + 1,
+        }
+        if clean_metadata:
+            entry["metadata"] = clean_metadata
+        entries.append(entry)
+        output.setProperty("VibeConversationEntries", entries)
+        if clean_metadata and "usage" in clean_metadata:
+            output.setProperty("VibeActiveTokenUsage", None)
+        _render_usage_summary()
     if persist:
-        _record_conversation_turn(role, clean, metadata=metadata)
+        _record_conversation_turn(role, clean, metadata=clean_metadata)
 
 
 def _pending_questions() -> list[dict[str, Any]]:
@@ -1959,6 +2384,21 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         if delta and not delta.startswith("not available"):
             return f"{base} | {delta}"
         return base
+    if name == "provider_reasoning_effort":
+        effective = str(event.get("effective_effort") or "none")
+        if event.get("adaptive"):
+            requested = str(event.get("requested_effort") or effective)
+            return f"Reasoning effort: {effective} (adaptive; selected {requested})"
+        return f"Reasoning effort: {effective}"
+    if name == "provider_context_compacted":
+        return "Provider context was compacted; re-anchoring the next turn."
+    if name == "provider_reference_image_delivery":
+        attached = int(event.get("attached_count", 0) or 0)
+        available = int(event.get("available_count", 0) or 0)
+        reused = int(event.get("reused_count", 0) or 0)
+        if reused:
+            return f"Reference images: {attached} new, {reused} reused ({available} available)."
+        return f"Reference images: {attached} attached ({available} available)."
     if name == "provider_turn_completed":
         return "CAD step completed."
     if name == "provider_turn_output":
@@ -2013,7 +2453,7 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         return (
             f"Anthropic stream interrupted; retry "
             f"{event.get('next_attempt', '?')}/"
-            f"{event.get('max_attempts', 3)}."
+            f"{event.get('max_attempts', 6)}."
         )
     if name == "anthropic_stream_waiting":
         return f"Anthropic stream opened: waiting for turn {event.get('turn', '?')}."
@@ -2115,6 +2555,41 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         phase = str(event.get("phase") or "work").replace("_", " ")
         elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
         return f"VibeScript {phase} completed in {elapsed:.2f}s."
+    if name == "vibescript_domain_worker_progress":
+        phase = str(event.get("phase") or "work")
+        item = event.get("item_progress")
+        if (
+            phase == "simulation_collision"
+            and isinstance(item, dict)
+            and item.get("kind") == "collision_frame"
+        ):
+            completed = max(0, int(item.get("completed") or 0))
+            total = max(0, int(item.get("total") or 0))
+            percent = round(100.0 * completed / total) if total else 0
+            message = (
+                f"Checking motion collisions: frame {completed} of {total} "
+                f"({percent}%)"
+            )
+            remaining = item.get("estimated_remaining_seconds")
+            if isinstance(remaining, (int, float)) and remaining >= 0:
+                minutes = max(1, round(float(remaining) / 60.0))
+                unit = "minute" if minutes == 1 else "minutes"
+                message += f" - about {minutes} {unit} remaining"
+            return message
+        return f"VibeScript {phase.replace('_', ' ')}..."
+    if name == "vibescript_domain_publication_progress":
+        completed = max(0, int(event.get("completed") or 0))
+        total = max(0, int(event.get("total") or 0))
+        phase = str(event.get("phase") or "publishing")
+        if phase == "completed":
+            return f"Published {total} CAD objects."
+        if phase == "finalizing":
+            return "Finalizing CAD display and document history..."
+        if phase == "failed":
+            return f"VibeScript publication stopped after {completed} of {total} objects."
+        current = str(event.get("current_output") or "").strip()
+        detail = f": {current}" if current else ""
+        return f"Publishing CAD objects {completed} of {total}{detail}"
     if name == "vibescript_domain_deferred_recompute_completed":
         count = int(event.get("target_count", 0) or 0)
         elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
@@ -2132,10 +2607,25 @@ def _format_progress_event(event: dict[str, Any]) -> str:
         tool = str(event.get("tool_name") or "CAD tool")
         elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
         return f"Applied {tool} in {elapsed:.2f}s."
+    if name == "external_tool_server_ready":
+        count = int(event.get("tool_count", 0) or 0)
+        return (
+            f"External MCP server {event.get('name') or 'server'} is ready "
+            f"with {count} tools."
+        )
+    if name == "external_tool_server_failed":
+        return (
+            f"External MCP server {event.get('name') or 'server'} is unavailable: "
+            f"{event.get('error') or 'unknown error'}"
+        )
+    if name == "external_tool_servers_failed":
+        return f"External MCP servers were skipped: {event.get('error') or 'unknown error'}"
     return name.replace("_", " ")
 
 
 _PROGRESS_THINKING_EVENTS = {
+    "external_tool_server_failed",
+    "external_tool_servers_failed",
     "provider_tool_requested",
     "provider_web_search_started",
     "provider_web_search_completed",
@@ -2149,6 +2639,7 @@ _PROGRESS_THINKING_EVENTS = {
 }
 
 _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
+    "external_tool_server_ready",
     "analyze_context_cache_hit",
     "analyze_context_progress",
     "analyze_context_ready",
@@ -2165,9 +2656,14 @@ _PROGRESS_STATUS_ONLY_EVENTS: set[str] = {
     "native_tool_document_phase_completed",
     "native_tool_document_phase_started",
     "provider_turn_started",
+    "provider_reasoning_effort",
+    "provider_context_compacted",
+    "provider_reference_image_delivery",
     "vibescript_domain_deferred_recompute_completed",
     "vibescript_domain_phase_completed",
     "vibescript_domain_phase_started",
+    "vibescript_domain_publication_progress",
+    "vibescript_domain_worker_progress",
 }
 
 
@@ -2590,6 +3086,10 @@ def _apply_composer_button_presentation(
 
     is_busy = _is_assistant_run_active() if busy is None else bool(busy)
     labels = {
+        "VibeEngineeringBrief": (
+            "Engineering Brief",
+            "Turn a rough request into a reviewable engineering brief",
+        ),
         "VibeAttachView": (
             "Attach View",
             "Attach a screenshot of the current 3D view",
@@ -2774,6 +3274,205 @@ def _populate_prompt_starter_menu(menu: Any, prompt: Any) -> None:
     manage_action.triggered.connect(_show_prompt_starter_preferences)
 
 
+def _engineering_brief_context(
+    service: Any,
+) -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
+    """Capture only cheap, explicit context on the FreeCAD document thread."""
+
+    _ensure_first_conversation(service)
+    prepared = service.prepare_conversation_history_read()
+    conversation_id = str(prepared.get("conversation_id") or "").strip().lower()
+    if not conversation_id:
+        history = service.conversation_history()
+        conversation_id = str(history.get("conversation_id") or "").strip().lower()
+        prepared = service.prepare_conversation_history_read()
+        if conversation_id and not prepared.get("conversation_id"):
+            prepared = {
+                **prepared,
+                "conversation_id": conversation_id,
+                "cached_conversation": [
+                    dict(item)
+                    for item in history.get("conversation") or []
+                    if isinstance(item, dict)
+                ],
+            }
+    scope = service.project_scope_snapshot()
+    document = scope.get("document")
+    document_info = document if isinstance(document, dict) else {}
+    document_uid = str(
+        prepared.get("document_uid") or document_info.get("uid") or ""
+    ).strip()
+    project_root = str(prepared.get("project_root") or scope.get("root") or "").strip()
+    if not project_root or not document_uid or not conversation_id:
+        raise RuntimeError(
+            "VibeCAD could not resolve the active document conversation for this brief."
+        )
+    try:
+        unit_schema = int(App.Units.getSchema())
+        length_example = str(App.Units.Quantity(1.0, App.Units.Length).UserString)
+    except Exception:
+        unit_schema = int(
+            App.ParamGet("User parameter:BaseApp/Preferences/Units").GetInt(
+                "UserSchema", 0
+            )
+        )
+        length_example = ""
+    identity = {
+        "project_root": project_root,
+        "document_uid": document_uid,
+        "conversation_id": conversation_id,
+    }
+    context = {
+        "workbench": service.active_workbench_name(),
+        "units": {"schema": unit_schema, "length_example": length_example},
+        "document": {
+            **service.provider_turn_document_summary(),
+            "label": str(document_info.get("label") or scope.get("title") or ""),
+            "file_name": str(document_info.get("file_path") or ""),
+        },
+        "selection": service.provider_turn_selection_summary(),
+    }
+    return identity, context, prepared
+
+
+def _engineering_brief_dialog_destroyed(*_args: Any) -> None:
+    global _engineering_brief_dialog
+    _engineering_brief_dialog = None
+
+
+def _open_engineering_brief_from_panel() -> None:
+    """Open or raise the readable Engineering Brief interview window."""
+
+    global _engineering_brief_dialog
+    if _engineering_brief_dialog is not None:
+        try:
+            _engineering_brief_dialog.show()
+            _engineering_brief_dialog.raise_()
+            _engineering_brief_dialog.activateWindow()
+            return
+        except RuntimeError:
+            _engineering_brief_dialog = None
+    dock = _find_dock()
+    if dock is None or not _require_assistant_document(dock):
+        return
+    if not _internal_agent_allowed():
+        _render_assistant_run_state(dock)
+        return
+    if _is_assistant_run_active():
+        _set_status_line(
+            "Wait for the current CAD run to finish before developing a brief.",
+            dock=dock,
+        )
+        return
+
+    from VibeCADEngineeringBrief import (
+        add_active_conversation_context,
+        EngineeringBriefStore,
+        engineering_brief_handoff,
+        new_engineering_brief,
+        run_engineering_brief_turn,
+    )
+    from VibeCADEngineeringBriefGui import EngineeringBriefDialog
+
+    service = get_service()
+    try:
+        _ensure_document_thread_invoker()
+        identity, context, prepared_history = _engineering_brief_context(service)
+        store = EngineeringBriefStore(identity["project_root"])
+        loaded = store.load(
+            document_uid=identity["document_uid"],
+            conversation_id=identity["conversation_id"],
+        )
+    except Exception as exc:
+        _set_status_line(f"Could not open the Engineering Brief: {exc}", dock=dock)
+        return
+    prompt_box = _find_child("QPlainTextEdit", "VibePrompt", dock)
+    composer_request = (
+        str(prompt_box.toPlainText() or "").strip() if prompt_box is not None else ""
+    )
+    loaded_state = loaded.get("state") if loaded.get("recoverable") else None
+    if isinstance(loaded_state, dict) and (
+        not composer_request
+        or composer_request == str(loaded_state.get("original_request") or "").strip()
+    ):
+        initial_state = loaded_state
+    else:
+        initial_state = new_engineering_brief(
+            composer_request,
+            identity=identity,
+            context=context,
+        )
+
+    def run_turn(state: dict[str, Any], **arguments: Any) -> dict[str, Any]:
+        from VibeCADSession import choose_provider
+
+        history = service.complete_conversation_history_read(prepared_history)
+        loaded_conversation_id = str(history.get("conversation_id") or "").lower()
+        if loaded_conversation_id != str(state.get("conversation_id") or "").lower():
+            raise RuntimeError(
+                "The active conversation changed before its context could be loaded. "
+                "Close this brief and reopen it in the conversation you want to use."
+            )
+        state_with_conversation = add_active_conversation_context(
+            state,
+            _recent_conversation_payload(history.get("conversation") or []),
+        )
+        provider = _dispatch_to_document_thread(
+            lambda: choose_provider(
+                service,
+                prefer_online=service.use_online_provider_by_default(),
+            )
+        )
+        return run_engineering_brief_turn(
+            state_with_conversation,
+            provider=provider,
+            **arguments,
+        )
+
+    def start_brief(state: dict[str, Any], readable: str) -> bool:
+        current_identity, _current_context, _current_history = (
+            _engineering_brief_context(service)
+        )
+        if current_identity["document_uid"] != state.get(
+            "document_uid"
+        ) or current_identity["conversation_id"] != state.get("conversation_id"):
+            raise RuntimeError(
+                "The active document or conversation changed. Reopen the brief there "
+                "before starting CAD work."
+            )
+        if _is_assistant_run_active():
+            raise RuntimeError("Wait for the current CAD run to finish.")
+        assistant_state = service.assistant_document_state()
+        if not assistant_state.get("enabled") or not assistant_state.get(
+            "turn_enabled", True
+        ):
+            raise RuntimeError(
+                str(
+                    assistant_state.get("message")
+                    or "Choose Native or VibeScript before starting CAD work."
+                )
+            )
+        handoff = engineering_brief_handoff(state, approved_text=readable)
+        _append_conversation("User", handoff)
+        if prompt_box is not None:
+            _clear_prompt_without_recovery(prompt_box)
+        _execute_assistant_run(dock, service, prompt=handoff)
+        return True
+
+    dialog = EngineeringBriefDialog(
+        initial_state,
+        turn_runner=run_turn,
+        persist_callback=store.write,
+        start_callback=start_brief,
+        parent=Gui.getMainWindow(),
+    )
+    dialog.destroyed.connect(_engineering_brief_dialog_destroyed)
+    _engineering_brief_dialog = dialog
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
+
+
 # ---------------------------------------------------------------------------
 # Run / stop / steering
 # ---------------------------------------------------------------------------
@@ -2887,6 +3586,7 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
     prompt_box = _find_child("QPlainTextEdit", "VibePrompt", dock)
     attach_button = _find_child("QPushButton", "VibeAttachView", dock)
     attach_image_button = _find_child("QPushButton", "VibeAttachImage", dock)
+    engineering_brief_button = _find_child("QPushButton", "VibeEngineeringBrief", dock)
     reference_chips = _find_child("QWidget", "VibeReferenceChips", dock)
     conversation_selector = _find_child("QComboBox", "VibeConversationSelector", dock)
     new_conversation = _find_child("QToolButton", "VibeNewConversation", dock)
@@ -2906,6 +3606,10 @@ def _render_assistant_run_state(dock: Any, text: str | None = None) -> None:
         attach_button.setEnabled(internal_available and document_ready and not busy)
     if attach_image_button is not None:
         attach_image_button.setEnabled(
+            internal_available and document_ready and not busy
+        )
+    if engineering_brief_button is not None:
+        engineering_brief_button.setEnabled(
             internal_available and document_ready and not busy
         )
     if reference_chips is not None:
@@ -3150,7 +3854,7 @@ def _execute_assistant_run(
     prompt: str | None = None,
     continuation_event: dict[str, Any] | None = None,
 ) -> None:
-    global _assistant_run_thread
+    global _assistant_run_thread, _active_session_recovery
     if not _internal_agent_allowed():
         _render_assistant_run_state(dock)
         return
@@ -3172,6 +3876,8 @@ def _execute_assistant_run(
     _ensure_document_thread_invoker()
     prefer_online = service.use_online_provider_by_default()
     run_id = _assistant_run_controller.begin()
+    _active_session_recovery = {"phase": "running", "prompt": clean_prompt}
+    _queue_session_recovery("running", clean_prompt)
     _render_assistant_run_state(
         dock,
         text=(
@@ -3185,6 +3891,8 @@ def _execute_assistant_run(
     )
     _clear_thinking(dock)
     displayed_provider_texts: list[str] = []
+    run_usage_lock = threading.RLock()
+    latest_run_usage: dict[str, Any] | None = None
 
     def _cancelled() -> bool:
         return _assistant_run_controller.is_cancelled(run_id)
@@ -3224,58 +3932,111 @@ def _execute_assistant_run(
 
     def _progress_on_document_thread(event: dict[str, Any]) -> None:
         current_dock = _find_dock() or dock
+        if event.get("event") == "provider_usage":
+            usage = sanitize_usage_metadata(event.get("usage"))
+            output = _find_child("QTextBrowser", "VibeConversation", current_dock)
+            if usage is not None and output is not None:
+                output.setProperty("VibeActiveTokenUsage", usage)
+                _request_usage_summary(current_dock)
         if event.get("event") == "provider_turn_output":
             text = str(event.get("text") or "").strip()
             if text:
                 displayed_provider_texts.append(text)
                 runtime = event.get("provider_runtime")
+                usage = sanitize_usage_metadata(event.get("usage"))
                 _append_conversation(
                     "VibeCAD",
                     text,
                     metadata=(
-                        {"provider_runtime": dict(runtime)}
-                        if isinstance(runtime, dict)
+                        {
+                            **(
+                                {"provider_runtime": dict(runtime)}
+                                if isinstance(runtime, dict)
+                                else {}
+                            ),
+                            **({"usage": usage} if usage is not None else {}),
+                        }
+                        if isinstance(runtime, dict) or usage is not None
                         else None
                     ),
                 )
         _handle_progress_event(current_dock, event)
 
     def _progress(event: dict[str, Any]) -> None:
+        nonlocal latest_run_usage
         event_copy = dict(event)
+        if event_copy.get("event") == "provider_usage":
+            usage = sanitize_usage_metadata(event_copy.get("usage"))
+            if usage is not None:
+                with run_usage_lock:
+                    latest_run_usage = usage
         _dispatch_to_document_thread(lambda: _progress_on_document_thread(event_copy))
 
     def _complete_run(response: Any | None, failure: BaseException | None) -> None:
-        global _assistant_run_thread
+        global _assistant_run_thread, _active_session_recovery
         current_dock = _find_dock() or dock
         run_succeeded = False
         surface_continuation = None
         terminal_status = ""
         run_cancelled = _cancelled()
+        response_usage = sanitize_usage_metadata(
+            getattr(response, "usage", None) if response is not None else None
+        )
+        with run_usage_lock:
+            run_usage = response_usage or latest_run_usage
+        if run_usage is None:
+            output = _find_child("QTextBrowser", "VibeConversation", current_dock)
+            if output is not None:
+                run_usage = sanitize_usage_metadata(
+                    output.property("VibeActiveTokenUsage")
+                )
         if run_cancelled:
             terminal_status = "Stopped."
+            if run_usage is not None:
+                _append_conversation(
+                    "System",
+                    terminal_status,
+                    persist=True,
+                    metadata={"source": "provider_cancelled", "usage": run_usage},
+                )
         elif failure is not None:
             terminal_status = f"The CAD run failed: {failure}"
             _append_conversation(
                 "System",
                 terminal_status,
                 persist=True,
-                metadata={"source": "provider_runtime_error"},
+                metadata={
+                    "source": "provider_runtime_error",
+                    **({"usage": run_usage} if run_usage is not None else {}),
+                },
             )
         elif response is not None:
             final_text = str(response.final_output or "").strip()
             if response.error:
                 terminal_status = final_text or str(response.error)
-                if terminal_status and not displayed_provider_texts:
+                if terminal_status and (not displayed_provider_texts or run_usage is not None):
                     _append_conversation(
                         "System",
                         terminal_status,
                         persist=True,
-                        metadata={"source": "provider_error"},
+                        metadata={
+                            "source": "provider_error",
+                            **(
+                                {"usage": run_usage}
+                                if run_usage is not None
+                                else {}
+                            ),
+                        },
                     )
             elif final_text and not displayed_provider_texts:
                 _append_conversation(
                     "VibeCAD",
                     final_text,
+                    metadata=(
+                        {"usage": run_usage}
+                        if run_usage is not None
+                        else None
+                    ),
                 )
             memory_update = (
                 response.context.get("intent_memory_update")
@@ -3292,6 +4053,8 @@ def _execute_assistant_run(
                 surface_continuation = _native_surface_continuation_event(response)
 
         _assistant_run_controller.finish(run_id)
+        _active_session_recovery = None
+        _queue_session_recovery("draft", "")
         _cancel_question_round()
         if surface_continuation is not None:
             _sketch_close_continuation_controller.clear()
@@ -3548,7 +4311,7 @@ def _run_prompt_from_panel() -> None:
     if _is_assistant_run_active():
         result = service.queue_steering_message(prompt)
         if result.get("ok"):
-            prompt_box.clear()
+            _clear_prompt_without_recovery(prompt_box)
             _append_conversation(
                 "User", prompt, persist=True, metadata={"source": "steering"}
             )
@@ -3567,7 +4330,7 @@ def _run_prompt_from_panel() -> None:
     # The background session persists the prompt after capturing only the
     # active document identity on the GUI thread.
     _append_conversation("User", prompt)
-    prompt_box.clear()
+    _clear_prompt_without_recovery(prompt_box)
     _execute_assistant_run(
         dock,
         service,
@@ -3631,7 +4394,20 @@ def _document_recompute_active(document: Any) -> bool:
 def _document_render_refresh_blocked(document: Any) -> bool:
     """Return whether restored-document presentation work must be deferred."""
 
-    return _document_restore_active(document) or _document_recompute_active(document)
+    if _document_restore_active(document) or _document_recompute_active(document):
+        return True
+    try:
+        if any(
+            bool(getattr(document, state, False))
+            for state in (
+                "RecomputePending", "CooperativeMutationActive", "PresentationUpdateActive",
+            )
+        ):
+            return True
+        document_uid = str(getattr(document, "Uid", "") or "").strip()
+    except (ReferenceError, RuntimeError):
+        return False
+    return bool(document_uid and document_change_batch_active(document_uid))
 
 
 def _live_document_for_storage_key(
@@ -3802,9 +4578,8 @@ def _redraw_document_view(document: Any) -> None:
         gui_document = Gui.getDocument(str(document.Name))
         view = gui_document.activeView() if gui_document is not None else None
         if view is not None:
-            update_gui = getattr(Gui, "updateGui", None)
-            if callable(update_gui):
-                update_gui()
+            # A redraw schedules paint; draining the GUI here recursively runs
+            # unrelated restore/assistant callbacks inside this presentation step.
             redraw = getattr(view, "redraw", None)
             if callable(redraw):
                 redraw()
@@ -3866,12 +4641,29 @@ def _recompute_pending_document_geometry(document: Any) -> bool:
 
 def _recompute_pending_document_geometry_slice(
     document: Any,
+    attempted: set[str] | None = None,
 ) -> tuple[bool, bool]:
-    """Recompute one restored object and report whether more work remains."""
+    """Queue restored geometry together, or advance a legacy direct caller."""
 
-    if _document_recompute_active(document):
+    if _document_render_refresh_blocked(document):
         return False, True
     pending = _pending_document_objects(document)
+    if attempted is not None and callable(getattr(document, "recomputeAsync", None)):
+        targets = [obj for obj in pending if str(obj.Name) not in attempted]
+        if targets:
+            # A list produces one recursive request per object in the native
+            # API, repeating dependency walks and resetting progress. One
+            # document request evaluates dirty dependency waves together.
+            document.recomputeAsync()
+            attempted.update(str(obj.Name) for obj in targets)
+            return False, True
+        unresolved = _document_geometry_problems(document, pending)
+        if unresolved:
+            _warn(
+                "VibeCAD restored-document recompute left invalid geometry: "
+                + ", ".join(unresolved)
+            )
+        return bool(attempted) and not unresolved, False
     if not pending:
         unresolved = _document_geometry_problems(document, [])
         if unresolved:
@@ -4017,6 +4809,7 @@ def _refresh_assistant_for_document_change() -> None:
     _clear_thinking(dock)
     _render_saved_conversation(dock)
     _refresh_conversation_selector(dock)
+    _refresh_session_recovery(dock)
     _refresh_reference_chips(dock)
     _refresh_view_status(dock)
     _render_assistant_run_state(dock)
@@ -4066,7 +4859,16 @@ def _schedule_assistant_document_refresh() -> None:
 
         def refresh_when_restored() -> None:
             global _assistant_document_refresh_scheduled
-            if _document_restore_active():
+            try:
+                active_document = App.ActiveDocument
+                document_uid = str(
+                    getattr(active_document, "Uid", "") or ""
+                ).strip()
+            except (AttributeError, ReferenceError, RuntimeError):
+                document_uid = ""
+            if _document_restore_active() or (
+                document_uid and document_change_batch_active(document_uid)
+            ):
                 QtCore.QTimer.singleShot(100, refresh_when_restored)
                 return
             _assistant_document_refresh_scheduled = False
@@ -4109,6 +4911,7 @@ def _schedule_document_render_after_restore(document: Any) -> None:
         modified_state_captured = False
         geometry_recomputed_any = False
         restored_projection_names: set[str] = set()
+        recompute_attempted: set[str] = set()
         was_modified = None
 
         def finish_refresh() -> None:
@@ -4219,7 +5022,9 @@ def _schedule_document_render_after_restore(document: Any) -> None:
                 return
 
             geometry_recomputed, geometry_remaining = (
-                _recompute_pending_document_geometry_slice(live_document)
+                _recompute_pending_document_geometry_slice(
+                    live_document, recompute_attempted
+                )
             )
             geometry_recomputed_any = geometry_recomputed_any or geometry_recomputed
             if _document_recompute_active(live_document):
@@ -4355,13 +5160,136 @@ def _move_saved_document_conversation(doc: Any, filepath: str) -> None:
             _warn(f"VibeCAD saved-document project relocation failed: {exc}")
 
 
-class _VibeCADDocumentObserver:
-    @staticmethod
-    def _refresh_native_authority_selector() -> None:
+def _queue_zero_delay_callback(callback: Any) -> None:
+    """Queue one callback on the shared GUI frame dispatcher."""
+
+    try:
+        import FreeCADGui as gui_application
+    except ImportError:  # pragma: no cover - tooling outside FreeCAD
+        callback()
+        return
+    if not gui_application.deferToNextFrame(callback):
+        _warn("VibeCAD GUI callback was discarded during application shutdown.")
+
+
+def _schedule_native_authority_selector_refresh(document_uid: str = "") -> None:
+    """Coalesce document-event storms into one post-transaction UI refresh."""
+
+    uid = str(document_uid or "").strip()
+    if uid and document_change_batch_active(uid):
+        return
+    global _native_authority_selector_refresh_scheduled
+    if _native_authority_selector_refresh_scheduled:
+        return
+    _native_authority_selector_refresh_scheduled = True
+
+    def refresh() -> None:
+        global _native_authority_selector_refresh_scheduled
+        _native_authority_selector_refresh_scheduled = False
         state = get_service().native_document_state()
         authority = state.get("native_authority")
         if isinstance(authority, dict) and authority.get("active"):
             _refresh_authoring_mode_selector()
+
+    _queue_zero_delay_callback(refresh)
+
+
+def _defer_vibescript_dependency_change(
+    document_uid: str,
+    obj: Any,
+    property_name: str,
+) -> None:
+    """Record one semantic source delta without scanning dependents yet."""
+
+    uid = str(document_uid or "").strip()
+    if not uid:
+        return
+    state = _deferred_vibescript_dependency_changes.setdefault(
+        uid,
+        {"changes": {}, "identities": set(), "excluded_programs": set()},
+    )
+    name = str(getattr(obj, "Name", "") or "")
+    # Retain the cache identity before a later slice can delete the object.
+    # Python wrapper identity also distinguishes replacements with the same name.
+    if name:
+        state["identities"].add((uid, name))
+    identity = id(obj)
+    state["changes"][(identity, str(property_name or ""))] = (
+        obj,
+        str(property_name or ""),
+    )
+    state["excluded_programs"].update(
+        (uid, program_id, domain)
+        for program_id, domain in document_change_batch_origins(uid)
+    )
+
+
+def _finish_vibescript_dependency_batch(
+    document_uid: str,
+    committed: bool,
+) -> None:
+    """Apply one cache invalidation and one dependency scan after commit."""
+
+    uid = str(document_uid or "").strip()
+    state = _deferred_vibescript_dependency_changes.pop(uid, None)
+    if not state or not committed:
+        return
+    if not state["changes"]:
+        return
+    unique_objects = {}
+    changes = []
+    for obj, property_name in state["changes"].values():
+        try:
+            # Do not pass a deleted wrapper into the live dependency traversal.
+            getattr(obj, "Name", "")
+        except ReferenceError:
+            continue
+        unique_objects[id(obj)] = obj
+        changes.append((obj, property_name))
+    service = get_service()
+    invalidate_many = getattr(
+        service,
+        "invalidate_vibescript_reference_snapshots_many",
+        None,
+    )
+    if callable(invalidate_many):
+        invalidate_many(tuple(unique_objects.values()), identities=state["identities"])
+    else:
+        for obj in unique_objects.values():
+            service.invalidate_vibescript_reference_snapshots(obj)
+    try:
+        from VibeCADVibeScriptDomainPublication import (
+            mark_programs_stale_from_sources,
+        )
+
+        marked = mark_programs_stale_from_sources(
+            tuple(changes),
+            excluded_programs=frozenset(state["excluded_programs"]),
+        )
+    except Exception as exc:
+        _warn(f"VibeCAD VibeScript dependency batch failed: {exc}")
+        return
+    if marked:
+        _schedule_assistant_document_refresh()
+
+
+class _VibeCADDocumentObserver:
+    def slotCooperativeMutationChanged(self, doc, active: bool) -> None:
+        """Use the same batch for native mutations and nested Python publication."""
+
+        uid = str(doc.Uid)
+        service = get_service()
+        if active:
+            service.begin_document_change_batch(uid)
+        else:
+            # The native lease describes ownership, not transaction outcome.
+            # Nested publishers supply rollback via commit=False; native-only
+            # edits invalidate once against their final, stable document state.
+            service.end_document_change_batch(uid)
+
+    @staticmethod
+    def _refresh_native_authority_selector(document_uid: str = "") -> None:
+        _schedule_native_authority_selector_refresh(document_uid)
 
     def slotCreatedDocument(self, doc) -> None:
         get_service().ensure_native_document_state(
@@ -4382,18 +5310,29 @@ class _VibeCADDocumentObserver:
         _schedule_assistant_document_refresh()
 
     def slotChangedObject(self, obj, property_name) -> None:
+        # Playback applies temporary poses, not source edits. Test the exact
+        # synchronous application scope before authority/dependency observers;
+        # an open player alone must never exempt a user's normal CAD edits.
+        assembly_utils = sys.modules.get("UtilsAssembly")
+        if assembly_utils is not None and assembly_utils.isPresentationPlacementChange(
+            obj, property_name
+        ):
+            return
         is_restoring = getattr(App, "isRestoring", None)
         if callable(is_restoring) and bool(is_restoring()):
             return
         document = getattr(obj, "Document", None)
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
-        if str(getattr(document, "Uid", "") or "").strip():
+        document_uid = str(getattr(document, "Uid", "") or "").strip()
+        if document_change_batch_rolling_back(document_uid):
+            return
+        if document_uid:
             get_service().note_native_object_property_change(
                 obj,
                 str(property_name or ""),
             )
-            self._refresh_native_authority_selector()
+            self._refresh_native_authority_selector(document_uid)
         try:
             from VibeCADVibeScriptDomainPublication import (
                 source_property_affects_vibescript_snapshot,
@@ -4403,6 +5342,13 @@ class _VibeCADDocumentObserver:
                 return
         except Exception as exc:
             _warn(f"VibeCAD VibeScript dependency filter failed: {exc}")
+            return
+        if document_uid and document_change_batch_active(document_uid):
+            _defer_vibescript_dependency_change(
+                document_uid,
+                obj,
+                str(property_name or ""),
+            )
             return
         # Reference snapshots are valid only while the source and every native
         # dependency remain unchanged. Invalidate before stale propagation so a
@@ -4426,8 +5372,11 @@ class _VibeCADDocumentObserver:
         document = getattr(obj, "Document", None)
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
+        document_uid = str(getattr(document, "Uid", "") or "").strip()
+        if document_change_batch_rolling_back(document_uid):
+            return
         get_service().note_native_object_created(obj)
-        self._refresh_native_authority_selector()
+        self._refresh_native_authority_selector(document_uid)
 
     def slotDeletedObject(self, obj) -> None:
         is_restoring = getattr(App, "isRestoring", None)
@@ -4436,8 +5385,11 @@ class _VibeCADDocumentObserver:
         document = getattr(obj, "Document", None)
         if document is not None and bool(getattr(document, "Restoring", False)):
             return
+        document_uid = str(getattr(document, "Uid", "") or "").strip()
+        if document_change_batch_rolling_back(document_uid):
+            return
         get_service().note_native_object_deleted(obj)
-        self._refresh_native_authority_selector()
+        self._refresh_native_authority_selector(document_uid)
 
     def slotStartSaveDocument(self, doc, filepath) -> None:
         try:
@@ -4476,6 +5428,13 @@ class _VibeCADDocumentObserver:
         _document_save_conversations.pop(document_key, None)
         _document_save_references.pop(document_key, None)
         _schedule_assistant_document_refresh()
+
+
+register_document_change_batch_completed(_schedule_native_authority_selector_refresh)
+register_document_change_batch_finished(_finish_vibescript_dependency_batch)
+register_document_change_batch_flush(
+    lambda document_uid: _finish_vibescript_dependency_batch(document_uid, True)
+)
 
 
 def _schedule_sketch_close_continuation(event: dict[str, Any]) -> None:
@@ -4584,6 +5543,35 @@ def _build_panel_widget():
     layout.setContentsMargins(10, 8, 10, 10)
     layout.setSpacing(8)
 
+    recovery_banner = QtWidgets.QFrame(root)
+    recovery_banner.setObjectName("VibeSessionRecoveryBanner")
+    recovery_banner.setVisible(False)
+    recovery_layout = QtWidgets.QHBoxLayout(recovery_banner)
+    recovery_layout.setContentsMargins(8, 6, 8, 6)
+    recovery_layout.setSpacing(6)
+
+    recovery_text = QtWidgets.QLabel(recovery_banner)
+    recovery_text.setObjectName("VibeSessionRecoveryText")
+    recovery_text.setWordWrap(True)
+    recovery_layout.addWidget(recovery_text, 1)
+
+    recovery_restore = QtWidgets.QPushButton("Restore", recovery_banner)
+    recovery_restore.setObjectName("VibeSessionRecoveryRestore")
+    recovery_restore.setToolTip("Restore the saved request for review")
+    recovery_restore.clicked.connect(
+        lambda: _restore_session_recovery_from_panel(_find_dock())
+    )
+    recovery_layout.addWidget(recovery_restore)
+
+    recovery_discard = QtWidgets.QPushButton("Discard", recovery_banner)
+    recovery_discard.setObjectName("VibeSessionRecoveryDiscard")
+    recovery_discard.setToolTip("Discard this saved recovery snapshot")
+    recovery_discard.clicked.connect(
+        lambda: _discard_session_recovery_from_panel(_find_dock())
+    )
+    recovery_layout.addWidget(recovery_discard)
+    layout.addWidget(recovery_banner)
+
     splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical, root)
     splitter.setObjectName("VibeContentSplitter")
     splitter.setChildrenCollapsible(True)
@@ -4640,6 +5628,17 @@ def _build_panel_widget():
     )
     conversation_header_layout.addWidget(authoring_mode)
 
+    usage_toggle = QtWidgets.QToolButton(conversation_header)
+    usage_toggle.setObjectName("VibeUsageSummaryToggle")
+    usage_toggle.setText("Usage")
+    usage_toggle.setCheckable(True)
+    usage_toggle.setChecked(False)
+    usage_toggle.setAutoRaise(True)
+    usage_toggle.setToolTip(
+        "Show actual provider-reported token usage and per-model totals"
+    )
+    conversation_header_layout.addWidget(usage_toggle)
+
     new_conversation = QtWidgets.QToolButton(conversation_header)
     new_conversation.setObjectName("VibeNewConversation")
     new_conversation.setIcon(QtGui.QIcon(_icon_path(ICON_NEW_CONVERSATION)))
@@ -4650,6 +5649,12 @@ def _build_panel_widget():
     new_conversation.clicked.connect(_new_conversation_from_panel)
     conversation_header_layout.addWidget(new_conversation)
     conversation_layout.addWidget(conversation_header)
+
+    usage_scroll = _make_usage_summary_widget(conversation_panel)
+    conversation_layout.addWidget(usage_scroll)
+    usage_toggle.toggled.connect(
+        lambda checked: _render_usage_summary(dock=conversation_panel)
+    )
 
     conversation = QtWidgets.QTextBrowser(conversation_panel)
     conversation.setObjectName("VibeConversation")
@@ -4747,6 +5752,13 @@ def _build_panel_widget():
     )
     _install_prompt_paste_filter(prompt)
     _install_prompt_submit_filter(prompt)
+    recovery_timer = QtCore.QTimer(prompt)
+    recovery_timer.setObjectName("VibeSessionRecoveryDraftTimer")
+    recovery_timer.setSingleShot(True)
+    recovery_timer.setInterval(500)
+    recovery_timer.timeout.connect(lambda: _persist_prompt_recovery(prompt))
+    prompt.textChanged.connect(lambda: recovery_timer.start())
+    prompt._vibecad_session_recovery_timer = recovery_timer
     composer_layout.addWidget(prompt)
 
     composer_buttons = QtWidgets.QWidget(composer)
@@ -4789,6 +5801,18 @@ def _build_panel_widget():
     )
     prompt_starters.setMenu(prompt_starter_menu)
 
+    engineering_brief_button = QtWidgets.QPushButton(
+        "Engineering Brief", composer_buttons
+    )
+    engineering_brief_button.setObjectName("VibeEngineeringBrief")
+    engineering_brief_button.setIcon(QtGui.QIcon(_icon_path(ICON_ENGINEERING_BRIEF)))
+    engineering_brief_button.setIconSize(icon_size)
+    engineering_brief_button.setToolTip(
+        "Turn a rough request into a reviewable engineering brief"
+    )
+    engineering_brief_button.setEnabled(False)
+    engineering_brief_button.clicked.connect(_open_engineering_brief_from_panel)
+
     send_button = QtWidgets.QPushButton("Send", composer_buttons)
     send_button.setObjectName("VibeSend")
     send_button.setIcon(QtGui.QIcon(_icon_path(ICON_SEND)))
@@ -4807,6 +5831,7 @@ def _build_panel_widget():
     stop_button.clicked.connect(_stop_prompt_from_panel)
 
     buttons_layout.addWidget(prompt_starters)
+    buttons_layout.addWidget(engineering_brief_button)
     buttons_layout.addWidget(attach_button)
     buttons_layout.addWidget(attach_image_button)
     buttons_layout.addStretch(1)
@@ -4907,6 +5932,7 @@ def _show_panel(text: str = "") -> None:
     else:
         _render_saved_conversation(dock)
     _refresh_conversation_selector(dock)
+    _refresh_session_recovery(dock)
     _refresh_view_status(dock)
     _refresh_reference_chips(dock)
     _render_questions(dock)
@@ -4926,7 +5952,11 @@ def _schedule_analyze_context_prewarm() -> None:
     """Warm responsive Native provider state without occupying Qt."""
 
     global _analyze_context_prewarm_thread
+    if _application_shutting_down.is_set():
+        return
     with _analyze_context_prewarm_lock:
+        if _application_shutting_down.is_set():
+            return
         if (
             _analyze_context_prewarm_thread is not None
             and _analyze_context_prewarm_thread.is_alive()
@@ -4953,11 +5983,13 @@ def _schedule_analyze_context_prewarm() -> None:
                 prewarm_analyze_context(
                     get_service(),
                     _dispatch_to_document_thread,
+                    cancellation_check=_application_shutting_down.is_set,
                     progress_callback=progress,
                 )
                 prewarm_drawing_context(
                     get_service(),
                     _dispatch_to_document_thread,
+                    cancellation_check=_application_shutting_down.is_set,
                     progress_callback=progress,
                 )
             except Exception as exc:
@@ -4970,7 +6002,7 @@ def _schedule_analyze_context_prewarm() -> None:
                     DrawingContextStale,
                 )
 
-                if not isinstance(
+                if not _application_shutting_down.is_set() and not isinstance(
                     exc,
                     (
                         AnalyzeContextCancelled,
@@ -5015,6 +6047,7 @@ def _on_workbench_activated(workbench_name: str) -> None:
                         _warn(f"VibeCAD initial conversation failed: {exc}")
                 _render_saved_conversation(dock)
                 _refresh_conversation_selector(dock)
+                _refresh_session_recovery(dock)
                 _refresh_reference_chips(dock)
                 _refresh_view_status(dock)
                 _render_assistant_run_state(dock)
@@ -5476,3 +6509,262 @@ def ensure_commands_registered() -> None:
         _warn(f"VibeCAD scripted editor registration failed: {exc}")
     _connect_workbench_activation()
     _commands_registered = True
+
+
+# Token usage graph -----------------------------------------------------------
+
+def _make_usage_summary_widget(parent: Any) -> Any:
+    """Bound expanded usage so long histories leave room for the conversation."""
+    from PySide import QtCore, QtWidgets
+
+    scroll = QtWidgets.QScrollArea(parent)
+    scroll.setObjectName("VibeUsageSummaryScroll")
+    scroll.setWidgetResizable(True)
+    scroll.setMaximumHeight(280)
+    scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+    content = QtWidgets.QWidget(scroll)
+    layout = QtWidgets.QVBoxLayout(content)
+    layout.setContentsMargins(0, 0, 0, 0)
+    details = QtWidgets.QLabel(content)
+    details.setObjectName("VibeUsageSummaryDetails")
+    details.setWordWrap(True)
+    details.setTextFormat(QtCore.Qt.PlainText)
+    details.setText("No actual provider-reported token usage is available.")
+    layout.addWidget(details)
+    saved_turns = QtWidgets.QLabel(content)
+    saved_turns.setObjectName("VibeUsageTurnDetails")
+    saved_turns.setWordWrap(True)
+    saved_turns.setTextFormat(QtCore.Qt.PlainText)
+    layout.addWidget(saved_turns)
+    scroll.setWidget(content)
+    scroll.hide()
+    return scroll
+
+
+def _make_usage_graph_widget(parent: Any) -> Any:
+    """Create a compact graph for the provider-reported usage disclosure."""
+
+    from PySide import QtCore, QtGui, QtWidgets
+
+    class _UsageGraph(QtWidgets.QWidget):
+        def __init__(self, graph_parent: Any) -> None:
+            super().__init__(graph_parent)
+            self.setObjectName("VibeUsageGraph")
+            self.setAccessibleName("Provider-reported token usage graph")
+            self.setAccessibleDescription(
+                "Horizontal bars compare reported conversation and per-model totals. "
+                "Input, output, and cached input are labeled separately."
+            )
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding,
+                QtWidgets.QSizePolicy.Minimum,
+            )
+            self._graph_data: dict[str, Any] = {
+                "has_usage": False,
+                "complete": False,
+                "rows": [],
+            }
+            self._height = 34
+
+        def set_usage_data(self, graph_data: dict[str, Any]) -> None:
+            data = graph_data if isinstance(graph_data, dict) else {}
+            if data == self._graph_data:
+                return
+            self._graph_data = data
+            rows = self._graph_data.get("rows")
+            count = len(rows) if isinstance(rows, list) else 0
+            height = 34 if count == 0 else 70 + count * 58
+            if height != self._height:
+                self._height = height
+                self.setMinimumHeight(self._height)
+                self.updateGeometry()
+            self.update()
+
+        def sizeHint(self) -> Any:
+            return QtCore.QSize(420, self._height)
+
+        @staticmethod
+        def _count(value: Any) -> int | None:
+            return value if isinstance(value, int) and value >= 0 else None
+
+        @classmethod
+        def _format_count(cls, value: Any) -> str:
+            count = cls._count(value)
+            return f"{count:,}" if count is not None else "unknown"
+
+        def _draw_text(
+            self, painter: Any, text: str, x: float, y: float, width: float,
+            *, muted: bool = False, bold: bool = False,
+        ) -> None:
+            font = painter.font()
+            font.setBold(bold)
+            painter.setFont(font)
+            role = QtGui.QPalette.Mid if muted else QtGui.QPalette.WindowText
+            painter.setPen(self.palette().color(role))
+            painter.drawText(
+                QtCore.QRectF(x, y, width, 20),
+                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                text,
+            )
+
+        def paintEvent(self, event: Any) -> None:
+            del event
+            painter = QtGui.QPainter(self)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+            rows = self._graph_data.get("rows")
+            if (
+                not self._graph_data.get("has_usage")
+                or not isinstance(rows, list)
+                or not rows
+            ):
+                self._draw_text(
+                    painter,
+                    "No actual provider-reported token usage is available.",
+                    0,
+                    0,
+                    max(240, self.width()),
+                    muted=True,
+                )
+                painter.end()
+                return
+
+            palette = self.palette()
+            total_color = palette.color(QtGui.QPalette.Highlight)
+            input_color = QtGui.QColor(total_color)
+            input_color.setAlpha(110)
+            output_color = palette.color(QtGui.QPalette.Link)
+            if output_color == total_color:
+                output_color = output_color.lighter(135)
+            cached_color = total_color.darker(135)
+            track_color = palette.color(QtGui.QPalette.AlternateBase)
+            width = max(240, self.width())
+            left = 122 if width >= 420 else 102
+            right = 82
+            bar_width = max(100, width - left - right)
+            row_height = 58
+            top = 28
+            known = []
+            for row in rows:
+                counts = row.get("counts") if isinstance(row, dict) else None
+                if isinstance(counts, dict):
+                    for field in ("total_tokens", "input_tokens"):
+                        value = self._count(counts.get(field))
+                        if value is not None:
+                            known.append(value)
+            scale_max = max(known, default=1)
+            suffix = " (incomplete totals)" if not self._graph_data.get("complete") else ""
+            self._draw_text(painter, "Reported token totals" + suffix, 0, 0, width, muted=True)
+
+            for index, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    continue
+                counts = row.get("counts")
+                counts = counts if isinstance(counts, dict) else {}
+                total = self._count(counts.get("total_tokens"))
+                input_count = self._count(counts.get("input_tokens"))
+                cached_count = self._count(counts.get("cached_input_tokens"))
+                output_count = self._count(counts.get("output_tokens"))
+                y = top + index * row_height
+                label = str(row.get("label") or "unknown model")
+                self._draw_text(painter, label, 0, y, left - 8, bold=True)
+                self._draw_text(
+                    painter,
+                    "total " + self._format_count(total),
+                    left + bar_width + 10,
+                    y,
+                    right - 10,
+                    muted=total is None,
+                )
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.setBrush(track_color)
+                painter.drawRoundedRect(QtCore.QRectF(left, y + 22, bar_width, 12), 3, 3)
+                if total is not None:
+                    total_width = bar_width * total / scale_max
+                    painter.setBrush(total_color)
+                    painter.drawRoundedRect(
+                        QtCore.QRectF(left, y + 22, max(2.0, total_width), 12),
+                        3,
+                        3,
+                    )
+                    if input_count is not None:
+                        input_width = min(total_width, bar_width * input_count / scale_max)
+                        painter.setBrush(input_color)
+                        painter.drawRoundedRect(
+                            QtCore.QRectF(left, y + 22, max(2.0, input_width), 12),
+                            3,
+                            3,
+                        )
+                        if cached_count is not None:
+                            cached_width = min(input_width, bar_width * cached_count / scale_max)
+                            painter.setBrush(cached_color)
+                            painter.drawRoundedRect(
+                                QtCore.QRectF(left, y + 25, max(1.0, cached_width), 6),
+                                2,
+                                2,
+                            )
+                    if output_count is not None:
+                        output_width = min(total_width, bar_width * output_count / scale_max)
+                        painter.setBrush(output_color)
+                        painter.drawRect(
+                            QtCore.QRectF(
+                                left + max(0.0, total_width - output_width),
+                                y + 22,
+                                max(1.0, output_width),
+                                12,
+                            )
+                        )
+                detail = (
+                    "input " + self._format_count(input_count)
+                    + " · cached " + self._format_count(cached_count)
+                    + " · output " + self._format_count(output_count)
+                    + " · reasoning " + self._format_count(counts.get("reasoning_output_tokens"))
+                )
+                self._draw_text(painter, detail, left, y + 38, bar_width + right, muted=True)
+
+            legend_y = top + len(rows) * row_height + 4
+            legend = (
+                (total_color, "reported total"),
+                (input_color, "input"),
+                (output_color, "output"),
+                (cached_color, "cached input subset"),
+            )
+            legend_x = 0.0
+            for color, label in legend:
+                painter.setBrush(color)
+                painter.drawRoundedRect(QtCore.QRectF(legend_x, legend_y, 10, 10), 2, 2)
+                self._draw_text(painter, label, legend_x + 16, legend_y - 5, 140, muted=True)
+                legend_x += 148
+            painter.end()
+
+    return _UsageGraph(parent)
+
+
+_existing_usage_summary_renderer = _render_usage_summary
+
+
+def _render_usage_summary(
+    dock: Any | None = None,
+    *,
+    conversation: list[dict[str, Any]] | None = None,
+) -> None:
+    """Refresh text and graph from one summary, only while expanded."""
+    _existing_usage_summary_renderer(dock, conversation=conversation)
+
+
+def _render_usage_graph(
+    dock: Any, summary: dict[str, Any], details: Any, *, graph_data: dict[str, Any] | None = None
+) -> None:
+    graph = _find_child("QWidget", "VibeUsageGraph", dock)
+    if graph is None:
+        parent = details.parentWidget()
+        graph = _make_usage_graph_widget(parent)
+        layout = parent.layout() if parent is not None else None
+        if layout is not None:
+            index = layout.indexOf(details)
+            layout.insertWidget(index if index >= 0 else layout.count(), graph)
+    from VibeCADTokenUsage import usage_graph_data
+
+    setter = getattr(graph, "set_usage_data", None)
+    if callable(setter):
+        setter(usage_graph_data(summary) if graph_data is None else graph_data)
+    graph.setVisible(True)

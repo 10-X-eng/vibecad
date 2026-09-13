@@ -19,6 +19,7 @@ _MAX_OPERATIONS = 64
 _MAX_OUTPUTS = 64
 _MAX_OUTPUT_BYTES = 256 * 1024 * 1024
 _MAX_TOTAL_OUTPUT_BYTES = 1024 * 1024 * 1024
+_BINARY_OPEN = getattr(os, "O_BINARY", 0)
 _SAFE_EXTENSION = re.compile(r"^\.[A-Za-z0-9]{1,16}$")
 
 
@@ -56,7 +57,10 @@ def _hash(path: Path, maximum: int) -> tuple[int, str]:
     digest = hashlib.sha256()
     descriptor = -1
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY_OPEN,
+        )
         opened = os.fstat(descriptor)
         if (
             not stat.S_ISREG(opened.st_mode)
@@ -94,7 +98,10 @@ def _read_request(path: Path) -> dict[str, Any]:
     value = _regular(path)
     descriptor = -1
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY_OPEN,
+        )
         opened = os.fstat(descriptor)
         if (
             not stat.S_ISREG(opened.st_mode)
@@ -148,7 +155,10 @@ def _read_source(path: Path, maximum: int) -> tuple[bytes, str]:
     value = _regular(path)
     descriptor = -1
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY_OPEN,
+        )
         opened = os.fstat(descriptor)
         if (
             not stat.S_ISREG(opened.st_mode)
@@ -236,7 +246,7 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
     from VibeCADNativeManufactureState import (
         job_state,
         operation_active_state,
-        operation_reference_state,
+        operation_state,
     )
 
     workspace = Path(str(request["workspace"])).resolve(strict=True)
@@ -369,7 +379,7 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
                     "A selected CAM operation is not a direct member of the restored Job.",
                 )
             if (
-                operation_reference_state(operation).get("state_sha256") != expected
+                operation_state(operation).get("state_sha256") != expected
                 or not operation_active_state(operation)
                 or not tuple(
                     getattr(getattr(operation, "Path", None), "Commands", ()) or ()
@@ -488,7 +498,7 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
             private_path = output_directory / private_name
             descriptor = os.open(
                 private_path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _BINARY_OPEN,
                 0o600,
             )
             try:
@@ -548,7 +558,11 @@ def _write_result(path: Path, value: Mapping[str, Any]) -> None:
             separators=(",", ":"),
         ).encode("utf-8")
     temporary = path.with_name(f".{path.name}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | _BINARY_OPEN,
+        0o600,
+    )
     try:
         offset = 0
         while offset < len(encoded):

@@ -26,9 +26,12 @@
 
 
 #include <BRepBndLib.hxx>
+#include <BRep_Builder.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
 #include <gp_Pnt.hxx>
+#include <TopoDS_Compound.hxx>
 
 #include "VolSim.h"
 
@@ -537,6 +540,90 @@ void cStock::Tessellate(Mesh::MeshObject& meshOuter, Mesh::MeshObject& meshInner
     meshInner.addFacets(facetsInner);
     facetsOuter.clear();
     facetsInner.clear();
+}
+
+TopoDS_Shape cStock::RemainingStockShape() const
+{
+    BRep_Builder builder;
+    TopoDS_Compound compound;
+    builder.MakeCompound(compound);
+    TopoDS_Shape soleSolid;
+    std::size_t solidCount = 0;
+    std::vector<unsigned char> consumed(static_cast<std::size_t>(m_x * m_y), 0);
+
+    const auto cellExists = [this](int x, int y) {
+        return x >= 0 && y >= 0 && x < m_x && y < m_y
+            && static_cast<double>(x) * m_res < static_cast<double>(m_lx) - SIM_EPSILON
+            && static_cast<double>(y) * m_res < static_cast<double>(m_ly) - SIM_EPSILON;
+    };
+    const auto top = [this](int x, int y) {
+        return std::clamp<double>(m_stock[x][y], m_pz, m_plane);
+    };
+    const auto sameHeight = [&top](int x, int y, double height) {
+        return std::abs(top(x, y) - height) <= SIM_EPSILON;
+    };
+    const auto index = [this](int x, int y) {
+        return static_cast<std::size_t>(y * m_x + x);
+    };
+
+    for (int y = 0; y < m_y; ++y) {
+        for (int x = 0; x < m_x; ++x) {
+            if (!cellExists(x, y) || consumed[index(x, y)]) {
+                continue;
+            }
+            const double height = top(x, y);
+            if (height <= static_cast<double>(m_pz) + SIM_EPSILON) {
+                consumed[index(x, y)] = 1;
+                continue;
+            }
+
+            int width = 1;
+            while (cellExists(x + width, y)
+                   && !consumed[index(x + width, y)]
+                   && sameHeight(x + width, y, height)) {
+                ++width;
+            }
+            int depth = 1;
+            for (;; ++depth) {
+                const int nextY = y + depth;
+                bool completeRow = cellExists(x, nextY);
+                for (int offset = 0; completeRow && offset < width; ++offset) {
+                    completeRow = cellExists(x + offset, nextY)
+                        && !consumed[index(x + offset, nextY)]
+                        && sameHeight(x + offset, nextY, height);
+                }
+                if (!completeRow) {
+                    break;
+                }
+            }
+            for (int row = 0; row < depth; ++row) {
+                for (int column = 0; column < width; ++column) {
+                    consumed[index(x + column, y + row)] = 1;
+                }
+            }
+
+            const double x0 = static_cast<double>(x) * m_res;
+            const double y0 = static_cast<double>(y) * m_res;
+            const double x1 = std::min(static_cast<double>(x + width) * m_res,
+                                       static_cast<double>(m_lx));
+            const double y1 = std::min(static_cast<double>(y + depth) * m_res,
+                                       static_cast<double>(m_ly));
+            const double boxHeight = height - static_cast<double>(m_pz);
+            if (x1 <= x0 || y1 <= y0 || boxHeight <= SIM_EPSILON) {
+                continue;
+            }
+            TopoDS_Shape solid = BRepPrimAPI_MakeBox(
+                gp_Pnt(m_px + x0, m_py + y0, m_pz),
+                x1 - x0,
+                y1 - y0,
+                boxHeight
+            ).Solid();
+            builder.Add(compound, solid);
+            soleSolid = solid;
+            ++solidCount;
+        }
+    }
+    return solidCount == 1 ? soleSolid : TopoDS_Shape(compound);
 }
 
 

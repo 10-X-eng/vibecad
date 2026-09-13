@@ -296,7 +296,7 @@ def authorize_native_output_path(
 
 
 def _read_output(path: Path, maximum_bytes: int) -> tuple[int, str]:
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:

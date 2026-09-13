@@ -77,13 +77,14 @@ def _check_macos_keyring(prefix: Path) -> None:
     print(f"macOS Keychain backend priority: {priority}", flush=True)
 
 
-def _check_removed_openai_sdk(_prefix: Path) -> None:
-    for module_name in ("openai", "agents"):
-        if importlib.util.find_spec(module_name) is not None:
-            raise RuntimeError(
-                f"The retired direct OpenAI module {module_name!r} is present."
-            )
-    print("direct OpenAI SDK: absent as required", flush=True)
+def _check_gemini_sdk(prefix: Path) -> None:
+    _require_bundle_module("openai", prefix)
+    module_name = "agents"
+    if importlib.util.find_spec(module_name) is not None:
+        raise RuntimeError(
+            f"The retired OpenAI Agents module {module_name!r} is present."
+        )
+    print("Gemini OpenAI-compatible SDK: available", flush=True)
 
 
 def _check_pivy(prefix: Path) -> None:
@@ -116,9 +117,11 @@ CHECKS: dict[str, Callable[[Path], None]] = {
     "jsonschema": _check_module("jsonschema"),
     "mcp": _check_module("mcp"),
     "mcp-types": _check_module("mcp_types"),
+    "openai": _check_module("openai"),
     "tuf": _check_module("tuf"),
     "macos-keyring": _check_macos_keyring,
-    "removed-openai-sdk": _check_removed_openai_sdk,
+    "gemini-sdk": _check_gemini_sdk,
+    "removed-openai-sdk": _check_gemini_sdk,
     "pivy": _check_pivy,
     "provider-subprocess": _check_provider_subprocess,
     "codex": _check_codex,

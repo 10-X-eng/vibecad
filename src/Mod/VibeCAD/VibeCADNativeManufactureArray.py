@@ -18,11 +18,11 @@ from VibeCADNativeManufactureOperationSupport import (
 from VibeCADNativeManufactureState import (
     candidate_model_state,
     job_state,
-    operation_reference_state,
     operation_state,
     persistent_resource_state,
     resolve_job_target,
     resolve_model_target,
+    resolve_operation_target,
     tool_controller_state,
 )
 from VibeCADNativeMutation import NativeMutationDraft
@@ -362,23 +362,7 @@ def _resolve_base_target(
     index: int,
 ) -> tuple[Any, Mapping[str, Any]]:
     target = _target(value, f"base_operations[{index}]")
-    operation = document.getObject(target["object_name"])
-    if operation is None or getattr(operation, "Document", None) is not document:
-        _error(
-            f"CAM Array base {target['object_name']!r} no longer exists.",
-            "NATIVE_MANUFACTURE_TARGET_STALE",
-        )
-    current = operation_reference_state(operation)
-    if current.get("state_sha256") != target["expected_state_sha256"]:
-        _error(
-            f"CAM Array base {target['object_name']!r} changed after turn start.",
-            "NATIVE_MANUFACTURE_STATE_STALE",
-            repair={
-                "object_name": target["object_name"],
-                "current_state_sha256": current.get("state_sha256"),
-            },
-        )
-    return operation, current
+    return resolve_operation_target(document, target)
 
 
 def _point_selection(
@@ -704,7 +688,7 @@ def _assert_preflight_current(document: Any, prepared: PreparedArrayCreate) -> N
         != prepared.job_before.get("state_sha256")
         or tool_controller_state(prepared.controller).get("state_sha256")
         != prepared.controller_before.get("state_sha256")
-        or tuple(operation_reference_state(base) for base in prepared.bases)
+        or tuple(operation_state(base) for base in prepared.bases)
         != prepared.base_reference_before
         or tuple(persistent_resource_state(base) for base in prepared.bases)
         != prepared.base_state_before

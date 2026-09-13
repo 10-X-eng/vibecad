@@ -23,6 +23,22 @@ class _View:
         self.Visibility = bool(visible)
 
 
+class _MaterialObject:
+    def __init__(self, material: Any) -> None:
+        self.ViewObject = _View(True)
+        self._shape_material = material
+        self.material_assignments = 0
+
+    @property
+    def ShapeMaterial(self) -> Any:
+        return self._shape_material
+
+    @ShapeMaterial.setter
+    def ShapeMaterial(self, value: Any) -> None:
+        self.material_assignments += 1
+        self._shape_material = value
+
+
 class _Object:
     def __init__(
         self,
@@ -90,6 +106,11 @@ class _Root(_Object):
 class _Document:
     def __init__(self) -> None:
         self.Objects: list[_Object] = []
+
+    def findObjects(self, *, Property: str = "") -> list[_Object]:
+        if not Property:
+            return list(self.Objects)
+        return [obj for obj in self.Objects if Property in obj.PropertiesList]
 
     def addObject(self, type_id: str, name: str) -> _Object:
         obj = _Object(name, type_id, visible=True)
@@ -204,6 +225,23 @@ def test_configure_visible_body_renders_only_tip_and_preserves_sketch() -> None:
     )
 
 
+def test_copy_native_body_presentation_does_not_reassign_equal_material(
+    monkeypatch,
+) -> None:
+    material = object()
+    source = _MaterialObject(material)
+    body = _MaterialObject(material)
+    monkeypatch.setattr(
+        publication,
+        "_material_card_state",
+        lambda value: {"identity": id(value)},
+    )
+
+    publication._copy_native_body_presentation(source, body)
+
+    assert body.material_assignments == 0
+
+
 def test_configure_hidden_body_hides_all_results_but_not_sketch() -> None:
     (
         _document,
@@ -307,6 +345,31 @@ def test_current_contract_repairs_duplicate_results_and_hides_publication() -> N
     assert stable.LinkedObject == (root, "BladeBody.")
     assert restored["migrated_bodies"] == []
     assert restored["changed_objects"] == ["Blade", "BladeBody"]
+
+
+def test_restore_only_inspects_objects_with_publication_identity() -> None:
+    document, _root, body, _sketch, _earlier, tip, stable = _document_with_body(
+        body_visible=True,
+        publication_visible=True,
+        schema=publication.PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
+    )
+
+    class _UnrelatedObject:
+        Name = "Unrelated"
+        PropertiesList: list[str] = []
+
+        @property
+        def TypeId(self) -> str:
+            raise AssertionError("unrelated objects must not enter presentation restore")
+
+    document.Objects.insert(0, _UnrelatedObject())
+
+    restored = publication.restore_partdesign_history_presentation(document)
+
+    assert restored["changed_objects"] == ["Blade", "BladeBody"]
+    assert body.ViewObject.Visibility is True
+    assert tip.ViewObject.Visibility is True
+    assert stable.ViewObject.Visibility is False
 
 
 def test_current_contract_hides_private_publication_targets() -> None:

@@ -19,6 +19,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     validate_operation_tool_linking,
@@ -439,15 +440,18 @@ def create_helix(
     if not isinstance(prepared, PreparedHelixCreate):
         raise TypeError("prepared must be a PreparedHelixCreate")
     import Path.Op.Helix as PathHelix
-    import Path.Op.Gui.Helix as PathHelixGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Helix"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Helix",
         operation_factory=PathHelix.Create,
-        provider_factory=PathHelixGui.PathOpGui.ViewProvider,
-        provider_resource=PathHelixGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )

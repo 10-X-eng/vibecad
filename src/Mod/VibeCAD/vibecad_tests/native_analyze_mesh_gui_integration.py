@@ -246,18 +246,19 @@ def _run() -> None:
         gmsh_before = fem_mesh_definition_state(gmsh)
         assert not gmsh_before["generated"]
 
-        duplicate = call(
+        alternative_result = call(
             ANALYZE_MESH_CAPABILITY_NAME,
             {
                 "operation": "create_gmsh",
                 "analysis": _analysis_target(analysis_state(analyses[0])),
                 "source": _source_target(first),
-                "label": "Ambiguous Mesh Must Fail",
+                "label": "Alternative Gmsh Definition",
                 "settings": gmsh_before["settings"],
             },
-            succeeds=False,
         )
-        assert "already contains a mesh definition" in duplicate["error"]
+        gmsh_alternative = document.getObject(
+            alternative_result["created_mesh_definition"]["object_name"]
+        )
 
         gmsh_updated = call(
             ANALYZE_MESH_CAPABILITY_NAME,
@@ -344,7 +345,7 @@ def _run() -> None:
         }
 
         read_revision = revision_store.current_revision(str(document.Uid))
-        for mesh in (gmsh, netgen):
+        for mesh in (gmsh, gmsh_alternative, netgen):
             current = fem_mesh_definition_state(mesh)
             read = call(
                 ANALYZE_INSPECT_CAPABILITY_NAME,
@@ -357,13 +358,13 @@ def _run() -> None:
         assert revision_store.current_revision(str(document.Uid)) == read_revision
 
         snapshot = build_analyze_snapshot(document)
-        assert snapshot["mesh_definition_count"] == 2
+        assert snapshot["mesh_definition_count"] == 3
         assert not snapshot["mesh_definitions_truncated"]
         assert {item["mesher"] for item in snapshot["mesh_definitions"]} == {
             "gmsh",
             "netgen",
         }
-        assert tuple(analyses[0].Group) == (gmsh,)
+        assert tuple(analyses[0].Group) == (gmsh, gmsh_alternative)
         assert tuple(analyses[1].Group) == (netgen,)
         operation_names = tuple(obj.Name for obj in document.VibeCADTimeline.Operations)
         assert operation_names == (
@@ -372,6 +373,7 @@ def _run() -> None:
             analyses[0].Name,
             analyses[1].Name,
             gmsh.Name,
+            gmsh_alternative.Name,
             netgen.Name,
         )
 
@@ -381,7 +383,8 @@ def _run() -> None:
         assert fem_mesh_definition_state(netgen)["settings"] == netgen_updated["settings"]
 
         expected = {
-            mesh.Name: fem_mesh_definition_state(mesh) for mesh in (gmsh, netgen)
+            mesh.Name: fem_mesh_definition_state(mesh)
+            for mesh in (gmsh, gmsh_alternative, netgen)
         }
         analysis_members = {
             analysis.Name: tuple(obj.Name for obj in analysis.Group)
@@ -402,8 +405,8 @@ def _run() -> None:
             assert new_state["source"] == old_state["source"]
 
         print(
-            "VIBECAD_NATIVE_ANALYZE_MESH_GUI_OK actions=2 meshers=2 edits=2 "
-            "exact_sources=true one_mesh_per_analysis=true definitions_only=true "
+            "VIBECAD_NATIVE_ANALYZE_MESH_GUI_OK actions=2 meshers=3 edits=2 "
+            "exact_sources=true multiple_meshes_per_analysis=true definitions_only=true "
             "history=true undo_redo=true reopen=true read_revision_stable=true",
             flush=True,
         )

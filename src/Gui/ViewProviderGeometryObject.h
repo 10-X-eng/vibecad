@@ -23,6 +23,9 @@
 
 #pragma once
 
+#include <string>
+#include <memory>
+
 #include "ViewProviderDragger.h"
 #include <Inventor/lists/SoPickedPointList.h>
 
@@ -32,6 +35,11 @@ class SoSwitch;
 class SoSensor;
 class SbVec2s;
 class SoBaseColor;
+
+namespace App
+{
+class PropertyComplexGeoData;
+}
 
 namespace Gui
 {
@@ -117,6 +125,13 @@ protected:
 
 private:
     bool isSelectionEnabled() const;
+    void updateBoundingBox(const App::PropertyComplexGeoData* geometry);
+    void scheduleBoundingBox();
+    void prepareBoundingBox();
+    struct BoundingBoxRequest;
+    std::shared_ptr<BoundingBoxRequest> boundingBoxRequest;
+    bool boundingBoxDirty {true};
+    std::string boundingBoxPropertyName;
 
 protected:
     SoMaterial* pcShapeMaterial {nullptr};

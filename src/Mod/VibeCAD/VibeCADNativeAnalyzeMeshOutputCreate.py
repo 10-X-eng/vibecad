@@ -9,6 +9,7 @@ from bisect import bisect_left, bisect_right
 from typing import Any
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -211,7 +212,7 @@ def create_erased_elements(
     )
     if operation is None or result_mesh is None:
         raise NativeAnalyzeError("The FEM element-filter objects could not be created.")
-    operation.Label = prepared.label
+    prepared = assign_prepared_label(operation, prepared)
     result_mesh.Label = f"{source.Label} (filtered)"
     result_mesh.FemMesh = filtered
     operation.FemMesh = result_mesh
@@ -397,7 +398,7 @@ def create_fem_surface_conversion(
     result = document.addObject("Mesh::Feature", document.getUniqueObjectName("Mesh"))
     if result is None:
         raise NativeAnalyzeError("The converted Mesh feature could not be created.")
-    result.Label = prepared.label
+    prepared = assign_prepared_label(result, prepared)
     result.Mesh = converted_mesh
     _add_conversion_provenance(result, prepared)
     replaced = (prepared.target.mesh,) if prepared.target.source_visible else ()

@@ -19,6 +19,7 @@ from VibeCADNativeManufactureOperationSupport import (
     extend_native_operation_draft,
     finite_number,
     has_prior_cutting_operation,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     validate_operation_tool,
@@ -437,16 +438,19 @@ def create_pocket_3d(
 
     if not isinstance(prepared, PreparedPocket3DCreate):
         raise TypeError("prepared must be a PreparedPocket3DCreate")
-    import Path.Op.Gui.Pocket as PathPocketGui
     import Path.Op.Pocket as PathPocket
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Pocket"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Pocket3D",
         operation_factory=PathPocket.Create,
-        provider_factory=PathPocketGui.PathOpGui.ViewProvider,
-        provider_resource=PathPocketGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )

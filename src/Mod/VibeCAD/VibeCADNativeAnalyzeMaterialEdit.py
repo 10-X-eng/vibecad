@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -314,7 +315,7 @@ def update_material(
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     material = prepared.target.material
-    material.Label = prepared.label
+    prepared = assign_prepared_label(material, prepared)
     if prepared.target.kind != "nonlinear":
         material.Material = dict(prepared.material)
         material.UUID = prepared.material_uuid
@@ -363,4 +364,3 @@ def verify_material_update(
     ):
         raise NativeAnalyzeError("Material reference geometry changed before commit.")
     return {"updated_material": material_state(material)}
-

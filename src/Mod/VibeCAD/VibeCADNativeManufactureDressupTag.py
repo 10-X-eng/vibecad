@@ -21,8 +21,9 @@ from VibeCADNativeManufactureDressupSupport import (
 from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureOperationSupport import exact_fields, finite_number
 from VibeCADNativeManufactureState import (
-    operation_reference_state,
+    operation_state,
     persistent_resource_state,
+    resolve_operation_target,
 )
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import object_identity
@@ -176,14 +177,8 @@ def _resolve_source(document: Any, value: Any, base: PreparedDressupBase):
     import Path.Dressup.Tags as Tags
 
     target = normalize_exact_target(value, "CAM source holding-tag dress-up")
-    source = document.getObject(target["object_name"])
-    if source is None or getattr(source, "Document", None) is not document:
-        dressup_error(
-            f"CAM source holding-tag dress-up {target['object_name']!r} no longer exists.",
-            "NATIVE_MANUFACTURE_TARGET_STALE",
-        )
     try:
-        reference = operation_reference_state(source)
+        source, reference = resolve_operation_target(document, target)
     except NativeManufactureError:
         raise
     except Exception as exc:
@@ -460,7 +455,7 @@ def _assert_source_current(prepared: PreparedTagDressup) -> None:
     if prepared.source is None:
         return
     if (
-        operation_reference_state(prepared.source)
+        operation_state(prepared.source)
         != prepared.source_reference_before
         or persistent_resource_state(prepared.source) != prepared.source_state_before
     ):

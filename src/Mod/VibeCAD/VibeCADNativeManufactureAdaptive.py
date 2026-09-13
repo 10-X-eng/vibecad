@@ -26,6 +26,7 @@ from VibeCADNativeManufactureOperationSupport import (
     extend_native_operation_draft,
     finite_number,
     has_prior_cutting_operation,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     shape_sha256,
@@ -120,6 +121,25 @@ class PreparedAdaptiveCreate:
     tool_diameter_mm: float
 
 
+@dataclass(frozen=True, slots=True)
+class AdaptiveDefaultsSpec:
+    label: Any
+    job: Mapping[str, Any]
+    tool_controller: Mapping[str, Any]
+    geometry: tuple[Mapping[str, Any], ...]
+    coolant: Any
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedAdaptiveDefaults:
+    label: str
+    boundary: PreparedOperationBoundary
+    coolant: str
+    stock: Any
+    stock_shape_sha256: str
+    tool_diameter_mm: float
+
+
 def _error(message: str, code: str = "NATIVE_ARGUMENTS_INVALID") -> None:
     raise NativeManufactureError(message, error_code=code)
 
@@ -162,7 +182,7 @@ def _normalize_parameters(spec: AdaptiveCreateSpec) -> AdaptiveParameters:
     tolerance = finite_number(
         adaptive["tolerance_mm"],
         "Adaptive tolerance",
-        minimum=0.05,
+        minimum=0.001,
         maximum=0.15,
     )
     stepover = finite_number(
@@ -291,7 +311,8 @@ def _require_adaptive_engine() -> None:
 
 def _validate_adaptive_geometry(
     boundary: PreparedOperationBoundary,
-    parameters: AdaptiveParameters,
+    *,
+    use_outline: bool,
 ) -> None:
     import Part
     import Path
@@ -307,7 +328,7 @@ def _validate_adaptive_geometry(
                 try:
                     projected_source = (
                         Part.Face(element.OuterWire)
-                        if parameters.use_outline
+                        if use_outline
                         else element
                     )
                     projection = PathAdaptive.projectFacesToXY([projected_source])
@@ -342,7 +363,7 @@ def _validate_adaptive_geometry(
                 "Adaptive Edge geometry must form one or more closed horizontal wires; "
                 "add the missing connected edges or select the bounded Face instead."
             )
-    if parameters.use_outline and "Face" not in boundary.selected_types:
+    if use_outline and "Face" not in boundary.selected_types:
         _error("Adaptive use_outline requires at least one selected Face.")
 
 
@@ -400,7 +421,7 @@ def preflight_adaptive_create(
         allow_entire_job=False,
     )
     tool_diameter = validate_operation_tool(boundary)
-    _validate_adaptive_geometry(boundary, parameters)
+    _validate_adaptive_geometry(boundary, use_outline=parameters.use_outline)
     stock, stock_hash = _prepare_stock(document, boundary)
     if parameters.rest_machining and not has_prior_cutting_operation(boundary):
         _error(
@@ -418,6 +439,39 @@ def preflight_adaptive_create(
         boundary=boundary,
         parameters=parameters,
         extensions=extensions,
+        stock=stock,
+        stock_shape_sha256=stock_hash,
+        tool_diameter_mm=tool_diameter,
+    )
+
+
+def preflight_adaptive_defaults(
+    document: Any,
+    spec: AdaptiveDefaultsSpec,
+) -> PreparedAdaptiveDefaults:
+    """Freeze exact Adaptive regions while retaining the human-operation defaults."""
+    if not isinstance(spec, AdaptiveDefaultsSpec):
+        raise TypeError("spec must be an AdaptiveDefaultsSpec")
+    coolant = str(spec.coolant or "")
+    if coolant not in _COOLANT_MODES:
+        _error("Adaptive coolant must be none, flood, or mist.")
+    _require_adaptive_engine()
+    boundary = preflight_operation_boundary(
+        document,
+        noun="Adaptive",
+        job_target=spec.job,
+        tool_controller_target=spec.tool_controller,
+        geometry={"kind": "subelements", "items": list(spec.geometry)},
+        allowed_subelement_types=frozenset({"Face", "Edge"}),
+        allow_entire_job=False,
+    )
+    tool_diameter = validate_operation_tool(boundary)
+    _validate_adaptive_geometry(boundary, use_outline=False)
+    stock, stock_hash = _prepare_stock(document, boundary)
+    return PreparedAdaptiveDefaults(
+        label=clean_operation_label(spec.label, "Adaptive"),
+        boundary=boundary,
+        coolant=coolant,
         stock=stock,
         stock_shape_sha256=stock_hash,
         tool_diameter_mm=tool_diameter,
@@ -552,19 +606,57 @@ def create_adaptive(
     if not isinstance(prepared, PreparedAdaptiveCreate):
         raise TypeError("prepared must be a PreparedAdaptiveCreate")
     import Path.Op.Adaptive as PathAdaptive
-    import Path.Op.Gui.Adaptive as PathAdaptiveGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Adaptive"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Adaptive",
         operation_factory=PathAdaptive.Create,
-        provider_factory=PathAdaptiveGui.PathOpGui.ViewProvider,
-        provider_resource=PathAdaptiveGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )
     return extend_native_operation_draft(draft, adaptive_prepared=prepared)
+
+
+def _apply_adaptive_defaults(
+    operation: Any,
+    *,
+    prepared: PreparedAdaptiveDefaults,
+) -> None:
+    operation.Label = prepared.label
+    operation.CoolantMode = _COOLANT_MODES[prepared.coolant]
+
+
+def create_adaptive_defaults(
+    document: Any,
+    *,
+    prepared: PreparedAdaptiveDefaults,
+) -> NativeMutationDraft:
+    """Create Adaptive with the same defaults as the human command."""
+    if not isinstance(prepared, PreparedAdaptiveDefaults):
+        raise TypeError("prepared must be a PreparedAdaptiveDefaults")
+    import Path.Op.Adaptive as PathAdaptive
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Adaptive"
+    )
+    draft = create_native_operation(
+        document,
+        prepared=prepared.boundary,
+        internal_name="Adaptive",
+        operation_factory=PathAdaptive.Create,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
+        configure=partial(_apply_adaptive_defaults, prepared=prepared),
+        payload={"parameters": {"source": "setup_defaults"}},
+    )
+    return extend_native_operation_draft(draft, adaptive_defaults=prepared)
 
 
 def _expression(operation: Any, property_name: str) -> Any:
@@ -725,4 +817,64 @@ def verify_created_adaptive(
         assert_settings=partial(_assert_adaptive_settings, prepared=prepared),
         additional_verify=partial(_adaptive_result, prepared=prepared),
         minimum_cutting_commands=minimum_cutting,
+    )
+
+
+def _adaptive_defaults_result(
+    operation: Any,
+    _payload: Mapping[str, Any],
+    *,
+    prepared: PreparedAdaptiveDefaults,
+) -> Mapping[str, Any]:
+    stock = prepared.stock
+    document = prepared.boundary.job.Document
+    shape = getattr(stock, "Shape", None)
+    if (
+        getattr(stock, "Document", None) is not document
+        or document.getObject(str(getattr(stock, "Name", ""))) is not stock
+        or getattr(prepared.boundary.job, "Stock", None) is not stock
+        or shape is None
+        or shape_sha256(shape, "CAM Job stock") != prepared.stock_shape_sha256
+    ):
+        _error(
+            "CAM Job stock changed during Adaptive creation.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
+    return {
+        "engine": "libarea.Adaptive2d",
+        "tool_diameter_mm": prepared.tool_diameter_mm,
+        "stock": {
+            "object_name": str(stock.Name),
+            "shape_sha256": prepared.stock_shape_sha256,
+        },
+        "parameters": {
+            "source": "setup_defaults",
+            "cut_region": str(operation.Side),
+            "operation_type": str(operation.OperationType),
+            "tolerance_mm": round(float(operation.Tolerance), 9),
+            "stepover_percent": round(float(operation.StepOverPercent), 9),
+            "start_depth_mm": quantity_mm(operation, "StartDepth"),
+            "final_depth_mm": quantity_mm(operation, "FinalDepth"),
+            "step_down_mm": quantity_mm(operation, "StepDown"),
+            "safe_height_mm": quantity_mm(operation, "SafeHeight"),
+            "clearance_height_mm": quantity_mm(operation, "ClearanceHeight"),
+            "coolant": str(operation.CoolantMode),
+        },
+    }
+
+
+def verify_created_adaptive_defaults(
+    document: Any,
+    draft: NativeMutationDraft,
+) -> dict[str, Any]:
+    prepared: PreparedAdaptiveDefaults = draft.value["adaptive_defaults"]
+    return verify_native_operation(
+        document,
+        draft,
+        result_key="adaptive",
+        assert_settings=lambda _operation, _payload: None,
+        additional_verify=partial(
+            _adaptive_defaults_result,
+            prepared=prepared,
+        ),
     )

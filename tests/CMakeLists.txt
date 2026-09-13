@@ -109,6 +109,12 @@ if(WIN32)
     elseif(EXISTS "${CMAKE_PREFIX_PATH}/bin")
         list(APPEND _test_env_mod "PATH=path_list_prepend:${CMAKE_PREFIX_PATH}/bin")
     endif()
+    set(_qt_platform_plugin_path "${CMAKE_PREFIX_PATH}/lib/qt6/plugins/platforms")
+    if(EXISTS "${_qt_platform_plugin_path}")
+        list(APPEND _test_env_mod
+            "QT_QPA_PLATFORM_PLUGIN_PATH=set:${_qt_platform_plugin_path}"
+        )
+    endif()
     file(GLOB _mod_dirs LIST_DIRECTORIES true "${CMAKE_BINARY_DIR}/Mod/*")
     foreach(_mod_dir ${_mod_dirs})
         if(IS_DIRECTORY "${_mod_dir}")

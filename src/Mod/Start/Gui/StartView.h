@@ -29,6 +29,7 @@
 
 #include "../App/DisplayedFilesModel.h"
 #include "../App/RecentFilesModel.h"
+#include <fastsignals/signal.h>
 #include "../App/ExamplesModel.h"
 #include "../App/CustomFolderModel.h"
 
@@ -124,6 +125,7 @@ private:
     QCheckBox* _showOnStartupCheckBox;
 
     bool isInitialized = false;
+    fastsignals::scoped_connection openCompletion;
 
 };  // namespace StartGui
 

@@ -24,7 +24,7 @@ def test_surface_filling_contract_is_exact_closed_and_bounded() -> None:
     assert variant.action_ids == frozenset({"Surface_Filling"})
     assert variant.surface_ids == frozenset({"model"})
     assert variant.exact_target_type == "OrderedExactCurrentFillingConstraints"
-    assert branch["required"] == ["operation", "label", "definition"]
+    assert branch["required"] == ["label", "definition"]
     assert branch["additionalProperties"] is False
     assert filling["required"] == ["constraints"]
     assert filling["additionalProperties"] is False
@@ -113,11 +113,9 @@ def test_surface_extend_contract_is_exact_closed_and_bounded() -> None:
         "minimum": -0.5,
         "maximum": 10,
     }
-    assert extend["properties"]["tolerance"] == {
-        "type": "number",
-        "minimum": 0,
-        "maximum": 10,
-    }
+    tolerance = extend["properties"]["tolerance"]
+    assert tolerance["type"] == "number"
+    assert (tolerance["minimum"], tolerance["maximum"]) == (0, 10)
     assert extend["properties"]["samples_u"] == {
         "type": "integer",
         "minimum": 2,

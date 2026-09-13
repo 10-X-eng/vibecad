@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import Future
 from typing import Any
 
 
@@ -163,6 +164,35 @@ def run(
     autoplay: bool = True,
     time_seconds: float | None = None,
 ) -> dict[str, Any]:
+    return _run(service, simulation, presentation, hidden_components, camera,
+                autoplay, time_seconds, asynchronous=False)
+
+
+def run_async(
+    service: Any,
+    simulation: dict[str, Any],
+    presentation: dict[str, Any] | None = None,
+    hidden_components: list[dict[str, Any]] | None = None,
+    camera: str = "",
+    autoplay: bool = True,
+    time_seconds: float | None = None,
+):
+    """Start on the document owner; return completed evidence through a Future."""
+    return _run(service, simulation, presentation, hidden_components, camera,
+                autoplay, time_seconds, asynchronous=True)
+
+
+def _failure(exc):
+    return {
+        "ok": False,
+        "failure_code": "SIMULATION_PLAYBACK_FAILED",
+        "failure_stage": "native_call",
+        "error": str(exc),
+    }
+
+
+def _run(service, simulation, presentation, hidden_components, camera,
+         autoplay, time_seconds, *, asynchronous):
     try:
         import FreeCAD as App
 
@@ -170,7 +200,8 @@ def run(
             raise RuntimeError("Assembly simulation playback requires the GUI")
         import FreeCADGui as Gui
 
-        if Gui.Control.activeTaskDialog() is not None:
+        active_task = Gui.Control.activeTaskDialog()
+        if active_task is not None and not asynchronous:
             return {
                 "ok": False,
                 "failure_code": "NATIVE_TASK_ACTIVE",
@@ -210,61 +241,103 @@ def run(
             )
             for index, reference in enumerate(hidden_components or [])
         ]
-        from CommandCreateSimulation import _simulationFrameTime, openSimulation
+        from CommandCreateSimulation import openSimulation
 
-        panel = openSimulation(
-            obj,
-            autoplay=bool(autoplay),
-            time_seconds=time_seconds,
-            presentation=presentation_obj,
-            hidden_components=hidden_objects,
-            camera=camera,
-        )
-        assembly = obj.Proxy.getAssembly(obj)
-        frame = int(panel.form.frameSlider.value())
-        collision_summary, frame_collisions = _collision_result(obj, frame)
-        displayed_time = _simulationFrameTime(obj, frame)
-        return {
-            "ok": True,
-            "simulation": dict(simulation),
-            "assembly": {
-                "document_uid": str(getattr(obj.Document, "Uid", "") or ""),
-                "object_name": str(getattr(assembly, "Name", "") or ""),
-            },
-            "playing": bool(autoplay),
-            "frame": frame,
-            "time_seconds": displayed_time,
-            "frame_kind": "input" if displayed_time is None else "solver_output",
-            "frame_count": int(assembly.numberOfFrames()),
-            "collision_alert": (
-                None
-                if collision_summary.get("status") == "unavailable"
-                else not bool(collision_summary["collision_free"])
-            ),
-            "collision_alert_reason": (
-                None
-                if collision_summary.get("status") == "unavailable"
-                else (
-                    "analysis_incomplete"
-                    if not bool(collision_summary.get("analysis_complete", True))
-                    else (
-                        "collision_detected"
-                        if not bool(collision_summary["collision_free"])
-                        else None
-                    )
-                )
-            ),
-            "collision_summary": collision_summary,
-            "displayed_frame_collisions": frame_collisions,
-            "presentation": dict(presentation) if presentation is not None else None,
-            "hidden_component_count": len(hidden_objects),
-            "camera": str(camera or ""),
-            "temporary_state_policy": "placements_visibility_and_camera_restored_when_task_closes",
-        }
+        opener = openSimulation
+        if asynchronous and (autoplay or time_seconds is not None):
+            from CommandCreateSimulation import openSimulationAsync
+            opener = openSimulationAsync
+        if active_task is not None:
+            from CommandCreateSimulation import (
+                findSimulationPlayback, controlSimulationPlaybackAsync,
+            )
+            panel = findSimulationPlayback(
+                obj, presentation=presentation_obj,
+                hidden_components=hidden_objects, camera=camera,
+            )
+            if panel is None:
+                return {
+                    "ok": False,
+                    "failure_code": "NATIVE_TASK_ACTIVE",
+                    "failure_stage": "precondition",
+                    "error": "Close the active task before playing a different simulation or presentation.",
+                }
+            pending = controlSimulationPlaybackAsync(
+                panel, autoplay=bool(autoplay), time_seconds=time_seconds,
+            )
+        else:
+            pending = opener(
+                obj,
+                autoplay=bool(autoplay),
+                time_seconds=time_seconds,
+                presentation=presentation_obj,
+                hidden_components=hidden_objects,
+                camera=camera,
+            )
+
+        def finish(panel):
+            return _playback_result(obj, panel, simulation, presentation, hidden_objects, camera, autoplay)
+
+        if not isinstance(pending, Future):
+            return finish(pending)
+        result = Future()
+
+        def complete(_done):
+            if not result.set_running_or_notify_cancel():
+                return
+            try:
+                result.set_result(finish(pending.result()))
+            except Exception as exc:
+                result.set_result(_failure(exc))
+
+        result.add_done_callback(lambda done: pending.cancel() if done.cancelled() else None)
+        pending.add_done_callback(complete)
+        return result
     except Exception as exc:
-        return {
-            "ok": False,
-            "failure_code": "SIMULATION_PLAYBACK_FAILED",
-            "failure_stage": "native_call",
-            "error": str(exc),
-        }
+        return _failure(exc)
+
+
+def _playback_result(obj, panel, simulation, presentation, hidden_objects, camera, autoplay):
+    from CommandCreateSimulation import _simulationFrameTime
+
+    assembly = obj.Proxy.getAssembly(obj)
+    frame = int(panel.form.frameSlider.value())
+    collision_summary, frame_collisions = _collision_result(obj, frame)
+    displayed_time = _simulationFrameTime(obj, frame)
+    return {
+        "ok": True,
+        "simulation": dict(simulation),
+        "assembly": {
+            "document_uid": str(getattr(obj.Document, "Uid", "") or ""),
+            "object_name": str(getattr(assembly, "Name", "") or ""),
+        },
+        "playing": bool(autoplay),
+        "frame": frame,
+        "time_seconds": displayed_time,
+        "frame_kind": "input" if displayed_time is None else "solver_output",
+        "frame_count": int(assembly.numberOfFrames()),
+        "collision_alert": (
+            None
+            if collision_summary.get("status") == "unavailable"
+            else not bool(collision_summary["collision_free"])
+        ),
+        "collision_alert_reason": (
+            None
+            if collision_summary.get("status") == "unavailable"
+            else (
+                "analysis_incomplete"
+                if not bool(collision_summary.get("analysis_complete", True))
+                else (
+                    "collision_detected"
+                    if not bool(collision_summary["collision_free"])
+                    else None
+                )
+            )
+        ),
+        "collision_summary": collision_summary,
+        "displayed_frame_collisions": frame_collisions,
+        "presentation": dict(presentation) if presentation is not None else None,
+        "hidden_component_count": len(hidden_objects),
+        "camera": str(camera or ""),
+        "temporary_state_policy": "placements_visibility_and_camera_restored_when_task_closes",
+    }

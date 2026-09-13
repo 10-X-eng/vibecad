@@ -34,6 +34,10 @@ void ViewProviderDesignOperation::attach(App::DocumentObject* object)
         sPixmap = "PartDesign_Boolean.svg";
     }
     ViewProvider::attach(object);
+    // Design-global operations are non-rendering History controllers. Their
+    // results are the durable Bodies they own, so an eye on the controller is
+    // both ineffective and misleading.
+    setToggleVisibility(ToggleVisibilityMode::NoToggleVisibility);
 }
 
 void ViewProviderDesignOperation::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)

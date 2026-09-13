@@ -30,6 +30,7 @@ SHIPPED_COMMANDS = {
     "Convert": (
         "Mesh_FromPartShape",
         "MeshPart_ShapeFromMesh",
+        "MeshPart_MeshToBody",
         "MeshPart_CurveOnMesh",
     ),
     "Modify": (
@@ -129,6 +130,7 @@ SOURCE_PRESERVING_OPERATION_COMMANDS = {
 }
 
 REPLACEMENT_OPERATION_COMMANDS = {
+    "MeshPart_MeshToBody",
     "Mesh_HarmonizeNormals",
     "Mesh_FlipNormals",
     "Mesh_FillupHoles",
@@ -1224,7 +1226,7 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         toolbar_commands = {
             command for group in SHIPPED_COMMANDS.values() for command in group
         }
-        self.assertEqual(len(toolbar_commands), 34)
+        self.assertEqual(len(toolbar_commands), 35)
         self.assertEqual(
             set(SHIPPED_COMMANDS),
             {
@@ -4643,6 +4645,138 @@ class TestVibeCADRibbonTools(unittest.TestCase):
         self.assertAlmostEqual(result.Shape.BoundBox.YMin, 18.0, delta=1.0e-7)
         self.assertAlmostEqual(result.Shape.BoundBox.ZMin, 24.0, delta=1.0e-7)
         self.assertEqual(self.document.UndoCount, undo_before + 1)
+
+    def test_mesh_to_body_creates_one_usable_linked_body_and_one_undo(self):
+        self.mesh.Placement = App.Placement(
+            App.Vector(12.0, 18.0, 24.0),
+            App.Rotation(),
+        )
+        self.document.recompute()
+        self._select(self.mesh)
+        objects_before = tuple(self.document.Objects)
+        undo_before = self.document.UndoCount
+        self._accept_modal_dialog("MeshPart_MeshToBody")
+        Gui.runCommand("MeshPart_MeshToBody", 0)
+        self._wait_for_mesh_conversion()
+
+        created = [
+            obj
+            for obj in self.document.Objects
+            if obj not in objects_before and obj.TypeId != "App::DocumentTimeline"
+        ]
+        bodies = [obj for obj in created if obj.TypeId == "PartDesign::Body"]
+        conversions = [
+            obj for obj in created if obj.TypeId == "MeshPart::ShapeFromMesh"
+        ]
+        proxies = [obj for obj in created if obj.TypeId == "PartDesign::FeatureBase"]
+        self.assertEqual(len(bodies), 1)
+        self.assertEqual(len(conversions), 1)
+        self.assertEqual(len(proxies), 1)
+        body = bodies[0]
+        conversion = conversions[0]
+        proxy = proxies[0]
+
+        self.assertIs(conversion.Source, self.mesh)
+        self.assertEqual(body.Label, "PrimaryMesh Body")
+        self.assertEqual(conversion.Label, "PrimaryMesh Body Conversion")
+        self.assertTrue(conversion.SewShape)
+        self.assertTrue(conversion.MakeSolid)
+        self.assertFalse(conversion.UpdateFromSource)
+        self.assertEqual(conversion.Shape.ShapeType, "Solid")
+        self.assertEqual(len(conversion.Shape.Solids), 1)
+        self.assertIs(body.BaseFeature, conversion)
+        self.assertEqual(list(body.Group), [proxy])
+        self.assertIs(body.Tip, proxy)
+        self.assertIs(proxy.BaseFeature, conversion)
+        self.assertEqual(conversion.VibeCADTimelineRole, "internal")
+        self.assertEqual(proxy.VibeCADTimelineRole, "internal")
+        self.assertFalse(conversion.ViewObject.ShowInTree)
+        self.assertEqual(body.Shape.ShapeType, "Solid")
+        self.assertEqual(len(body.Shape.Solids), 1)
+        self.assertTrue(body.Shape.isValid())
+        self.assertAlmostEqual(abs(body.Shape.Volume), 56.0, delta=1.0e-6)
+        self.assertAlmostEqual(body.Shape.BoundBox.XMin, 12.0, delta=1.0e-7)
+        self.assertAlmostEqual(body.Shape.BoundBox.YMin, 18.0, delta=1.0e-7)
+        self.assertAlmostEqual(body.Shape.BoundBox.ZMin, 24.0, delta=1.0e-7)
+        self.assertEqual(body.VibeCADTimelineRole, "operation")
+        self.assertEqual(list(body.VibeCADTimelineReplacedInputs), [self.mesh])
+        self.assertFalse(self.mesh.Visibility)
+        self.assertFalse(conversion.Visibility)
+        self.assertTrue(body.Visibility)
+        self.assertEqual(Gui.Selection.getSelection(), [body])
+        self.assertEqual(self.document.UndoCount, undo_before + 1)
+
+        created_names = tuple(obj.Name for obj in created)
+        self.document.undo()
+        self._process_events(5)
+        self.assertTrue(self.mesh.Visibility)
+        self.assertTrue(
+            all(self.document.getObject(name) is None for name in created_names)
+        )
+
+    def test_mesh_to_body_batch_creates_one_history_step_and_one_undo(self):
+        self._select(self.mesh, self.second_mesh)
+        objects_before = tuple(self.document.Objects)
+        undo_before = self.document.UndoCount
+        self._accept_modal_dialog("MeshPart_MeshToBody")
+        Gui.runCommand("MeshPart_MeshToBody", 0)
+        self._wait_for_mesh_conversion()
+
+        created = [
+            obj
+            for obj in self.document.Objects
+            if obj not in objects_before and obj.TypeId != "App::DocumentTimeline"
+        ]
+        controllers = [obj for obj in created if obj.TypeId == "Mesh::OutputGroup"]
+        bodies = [obj for obj in created if obj.TypeId == "PartDesign::Body"]
+        conversions = [
+            obj for obj in created if obj.TypeId == "MeshPart::ShapeFromMesh"
+        ]
+        proxies = [obj for obj in created if obj.TypeId == "PartDesign::FeatureBase"]
+        self.assertEqual(len(controllers), 1)
+        self.assertEqual(len(bodies), 2)
+        self.assertEqual(len(conversions), 2)
+        self.assertEqual(len(proxies), 2)
+        controller = controllers[0]
+
+        self.assertEqual(controller.InputMode, "Replacement")
+        self.assertEqual(controller.OperationKind, "Convert mesh to Part Design Body")
+        self.assertEqual(list(controller.Sources), [self.mesh, self.second_mesh])
+        self.assertEqual(set(controller.Group), set(bodies))
+        self.assertEqual(
+            list(controller.VibeCADTimelineReplacedInputs),
+            [self.mesh, self.second_mesh],
+        )
+        self.assertEqual(controller.VibeCADTimelineRole, "operation")
+        for body in bodies:
+            conversion = body.BaseFeature
+            proxy = body.Tip
+            self.assertIn(conversion, conversions)
+            self.assertIn(proxy, proxies)
+            self.assertIs(proxy.BaseFeature, conversion)
+            self.assertIn(conversion.Source, (self.mesh, self.second_mesh))
+            self.assertTrue(conversion.SewShape)
+            self.assertTrue(conversion.MakeSolid)
+            self.assertEqual(conversion.VibeCADTimelineRole, "internal")
+            self.assertEqual(proxy.VibeCADTimelineRole, "internal")
+            self.assertEqual(body.VibeCADTimelineRole, "resource")
+            self.assertIs(body.VibeCADTimelineOwner, controller)
+            self.assertEqual(body.Shape.ShapeType, "Solid")
+            self.assertTrue(body.Shape.isValid())
+            self.assertFalse(conversion.Visibility)
+            self.assertTrue(body.Visibility)
+        self.assertFalse(self.mesh.Visibility)
+        self.assertFalse(self.second_mesh.Visibility)
+        self.assertEqual(self.document.UndoCount, undo_before + 1)
+
+        created_names = tuple(obj.Name for obj in created)
+        self.document.undo()
+        self._process_events(5)
+        self.assertTrue(self.mesh.Visibility)
+        self.assertTrue(self.second_mesh.Visibility)
+        self.assertTrue(
+            all(self.document.getObject(name) is None for name in created_names)
+        )
 
     def test_shape_from_mesh_batch_is_one_durable_history_step(self):
         objects_before = tuple(self.document.Objects)

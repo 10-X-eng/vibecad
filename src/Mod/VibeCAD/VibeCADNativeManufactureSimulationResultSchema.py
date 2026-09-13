@@ -48,20 +48,12 @@ def manufacture_simulation_result_capability_definition() -> (
 ):
     return NativeCapabilityDefinition(
         name=MANUFACTURE_SIMULATION_RESULT_CAPABILITY_NAME,
-        description=(
-            "Create one durable, undoable material-removal Mesh from an exact CAM "
-            "Job and ordered active operations. Native cutting and tessellation run "
-            "in the background without blocking the UI."
-        ),
+        description="Simulate a CAM setup and retain its remaining stock.",
         primary_classification="mutation",
         variants=(
             NativeCapabilityVariant(
                 operation="native",
-                description=(
-                    "Simulate an explicit ordered subset of one exact Job using the "
-                    "human CAM simulator's quality scale, then retain one source-preserving "
-                    "CutMaterial result at the current History marker."
-                ),
+                description="Retain the stock left by ordered operations in one setup.",
                 action_ids=frozenset({"CAM_Simulator"}),
                 surface_ids=frozenset({"manufacture"}),
                 exact_target_type=(

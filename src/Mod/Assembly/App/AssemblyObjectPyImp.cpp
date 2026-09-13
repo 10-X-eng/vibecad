@@ -29,6 +29,7 @@
 #include <algorithm>
 
 #include <App/PropertyLinks.h>
+#include <Base/PlacementPy.h>
 
 using namespace Assembly;
 
@@ -88,6 +89,129 @@ PyObject* AssemblyObjectPy::ensureIdentityPlacements(PyObject* args) const
         return nullptr;
     }
     this->getAssemblyObjectPtr()->ensureIdentityPlacements();
+    Py_Return;
+}
+
+PyObject* AssemblyObjectPy::startSimulation(PyObject* args) const
+{
+    PyObject* object;
+    if (!PyArg_ParseTuple(args, "O!", &App::DocumentObjectPy::Type, &object)) {
+        return nullptr;
+    }
+    PY_TRY {
+        return PyLong_FromUnsignedLongLong(getAssemblyObjectPtr()->startSimulation(
+            static_cast<App::DocumentObjectPy*>(object)->getDocumentObjectPtr()));
+    } PY_CATCH;
+    Py_Return;
+}
+
+PyObject* AssemblyObjectPy::startSimulationPlayback(PyObject* args) const
+{
+    PyObject* object;
+    if (!PyArg_ParseTuple(args, "O!", &App::DocumentObjectPy::Type, &object)) { return nullptr; }
+    PY_TRY {
+        return PyLong_FromUnsignedLongLong(getAssemblyObjectPtr()->startSimulationPlayback(
+            static_cast<App::DocumentObjectPy*>(object)->getDocumentObjectPtr()));
+    } PY_CATCH;
+    return nullptr;
+}
+
+PyObject* AssemblyObjectPy::finishSimulation(PyObject* args) const
+{
+    unsigned long long request = 0;
+    if (!PyArg_ParseTuple(args, "|K", &request)) { return nullptr; }
+    PY_TRY {
+        return PyBool_FromLong(getAssemblyObjectPtr()->finishSimulation(request));
+    } PY_CATCH;
+    return nullptr;
+}
+
+PyObject* AssemblyObjectPy::cancelSimulation(PyObject* args) const
+{
+    unsigned long long request = 0;
+    if (!PyArg_ParseTuple(args, "|K", &request)) { return nullptr; }
+    PY_TRY { getAssemblyObjectPtr()->cancelSimulation(request); } PY_CATCH;
+    Py_Return;
+}
+
+PyObject* AssemblyObjectPy::requestSimulationFrame(PyObject* args) const
+{
+    unsigned long index = 0;
+    if (!PyArg_ParseTuple(args, "k", &index)) { return nullptr; }
+    PY_TRY {
+        return PyLong_FromUnsignedLongLong(getAssemblyObjectPtr()->requestSimulationFrame(index));
+    } PY_CATCH;
+    return nullptr;
+}
+
+PyObject* AssemblyObjectPy::getSimulationFrame(PyObject* args) const
+{
+    unsigned long index = 0;
+    if (!PyArg_ParseTuple(args, "k", &index)) { return nullptr; }
+    PY_TRY {
+        Py::List result;
+        for (const auto& [name, placement] :
+             getAssemblyObjectPtr()->getSimulationFrame(index)) {
+            Py::Tuple item(2);
+            item.setItem(0, Py::String(name));
+            item.setItem(
+                1,
+                Py::asObject(new Base::PlacementPy(new Base::Placement(placement)))
+            );
+            result.append(item);
+        }
+        return Py::new_reference_to(result);
+    } PY_CATCH;
+    return nullptr;
+}
+
+PyObject* AssemblyObjectPy::setSimulationPresentation(PyObject* args) const
+{
+    int active = 0;
+    if (!PyArg_ParseTuple(args, "p", &active)) { return nullptr; }
+    PY_TRY {
+        return PyBool_FromLong(getAssemblyObjectPtr()->setSimulationPresentation(active != 0));
+    } PY_CATCH;
+    return nullptr;
+}
+
+PyObject* AssemblyObjectPy::finishSimulationFrame(PyObject* args) const
+{
+    unsigned long long request = 0;
+    if (!PyArg_ParseTuple(args, "K", &request)) { return nullptr; }
+    PY_TRY {
+        return PyBool_FromLong(getAssemblyObjectPtr()->finishSimulationFrame(request));
+    } PY_CATCH;
+    return nullptr;
+}
+
+PyObject* AssemblyObjectPy::takeSimulationFrame(PyObject* args) const
+{
+    unsigned long long request = 0;
+    if (!PyArg_ParseTuple(args, "K", &request)) { return nullptr; }
+    PY_TRY {
+        auto frame = getAssemblyObjectPtr()->takeSimulationFrame(request);
+        if (!frame) { Py_Return; }
+        Py::List result;
+        for (const auto& [name, placement] : *frame) {
+            Py::Tuple item(2);
+            item.setItem(0, Py::String(name));
+            item.setItem(
+                1,
+                Py::asObject(new Base::PlacementPy(new Base::Placement(placement)))
+            );
+            result.append(item);
+        }
+        return Py::new_reference_to(result);
+    } PY_CATCH;
+    return nullptr;
+}
+
+PyObject* AssemblyObjectPy::cancelSimulationFrame(PyObject* args) const
+{
+    unsigned long long request = 0;
+    if (!PyArg_ParseTuple(args, "|K", &request)) { return nullptr; }
+    PY_TRY { getAssemblyObjectPtr()->cancelSimulationFrame(request); } PY_CATCH;
     Py_Return;
 }
 

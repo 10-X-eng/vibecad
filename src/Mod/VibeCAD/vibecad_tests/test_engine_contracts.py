@@ -56,12 +56,12 @@ def test_linux_bundle_smokes_python_dependencies_independently() -> None:
         "jsonschema",
         "mcp",
         "mcp_types",
+        "openai",
         "secretstorage",
         "keyring.backends.SecretService",
     ):
         assert dependency in linux_bundle
     assert "importlib.import_module('${dependency}')" in linux_bundle
-    assert "importlib.util.find_spec('openai') is None" in linux_bundle
     assert "importlib.util.find_spec('agents') is None" in linux_bundle
 
 
@@ -254,6 +254,29 @@ class TestAnalyzeContextStatusRendering:
         ]
 
 
+class TestVibeScriptWorkerStatusRendering:
+    def test_collision_progress_reports_frames_percent_and_eta(self) -> None:
+        import VibeCADGui as gui
+
+        event = {
+            "event": "vibescript_domain_worker_progress",
+            "domain": "assembly",
+            "phase": "simulation_collision",
+            "item_progress": {
+                "kind": "collision_frame",
+                "completed": 60,
+                "total": 141,
+                "estimated_remaining_seconds": 1086.0,
+            },
+        }
+
+        assert gui._format_progress_event(event) == (
+            "Checking motion collisions: frame 60 of 141 (43%) - "
+            "about 18 minutes remaining"
+        )
+        assert gui._progress_event_should_update_status(event) is True
+
+
 def test_private_vibescript_carriers_are_not_provider_document_objects() -> None:
     from VibeCADCore import VibeCADService
 
@@ -371,6 +394,29 @@ class TestAuthoringModeDefaults:
         settings = prefs.VibeCADSettings()
         assert not hasattr(settings, "vibescript_enabled")
         assert settings.new_document_authoring_mode == "ask"
+
+    def test_legacy_scripted_timeout_becomes_the_long_progress_lease(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import VibeCADPreferences as prefs
+
+        class LegacyPreferences(_UnsetPreferences):
+            def GetFloat(self, name: str, default: float = 0.0) -> float:
+                return 300.0 if name == "ScriptedTimeoutSeconds" else default
+
+        monkeypatch.setattr(prefs, "preferences", lambda: LegacyPreferences())
+        assert (
+            prefs.load_settings().scripted_timeout_seconds
+            == prefs.DEFAULT_SCRIPTED_TIMEOUT_SECONDS
+            == 3600.0
+        )
+
+        class CustomizedPreferences(_UnsetPreferences):
+            def GetFloat(self, name: str, default: float = 0.0) -> float:
+                return 7200.0 if name == "ScriptedTimeoutSeconds" else default
+
+        monkeypatch.setattr(prefs, "preferences", lambda: CustomizedPreferences())
+        assert prefs.load_settings().scripted_timeout_seconds == 7200.0
 
     def test_removed_vibescript_toggle_is_not_written_or_reset(
         self, monkeypatch: pytest.MonkeyPatch

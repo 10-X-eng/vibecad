@@ -6,5 +6,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+VIBECAD_ROOT = ROOT.parent / "VibeCAD"
+
+for module_root in (VIBECAD_ROOT, ROOT):
+    if str(module_root) not in sys.path:
+        sys.path.insert(0, str(module_root))

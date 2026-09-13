@@ -1,5 +1,5 @@
 context:
-  version: "26.3.1RC5"
+  version: "26.3.1RC6"
 
 package:
   name: vibecad
@@ -10,7 +10,7 @@ source:
   use_gitignore: true
 
 build:
-  number: 7
+  number: 3
   script:
     env:
       # rattler-build runs the build in a sandbox that does not inherit shell
@@ -23,12 +23,20 @@ build:
       # Hash compiler *content* rather than mtime so cached objects survive the
       # fresh conda extraction on each CI run (where compiler mtimes change).
       CCACHE_COMPILERCHECK: ${{ env.get("CCACHE_COMPILERCHECK", default="content") }}
+      # Compiler activation does not consistently define HOST. Forward the
+      # rattler target explicitly so build.sh always selects the right preset.
+      VIBECAD_TARGET_PLATFORM: ${{ target_platform }}
 
 requirements:
   build:
     - ccache
     - cmake
-    - compilers>=1.10,<1.11
+    - if: osx
+      then:
+        - compilers>=2,<3
+        - libcxx>=21,<22
+      else:
+        - compilers>=1.10,<1.11
     - doxygen
     - gtest
     - ninja
@@ -138,6 +146,10 @@ requirements:
     - yaml-cpp
     - zlib
 
+    - if: osx
+      then:
+        - libcxx>=21,<22
+
     - if: win
       then:
         - winpthreads-devel
@@ -154,6 +166,13 @@ requirements:
 
   run:
     - blas * openblas*
+    - if: win
+      then:
+        # pthread builds honor OPENBLAS_NUM_THREADS independently of other
+        # OpenMP users. Paired with job-scoped CPU/RAM scratch admission.
+        - libopenblas ==0.3.30 pthreads_*
+        - psutil
+        - threadpoolctl >=3.6,<4
     - blinker
     - calculix
     - casadi ==3.7.2

@@ -10,6 +10,7 @@ import re
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -522,7 +523,7 @@ def create_post_calculator(
             "Fem::FemPostCalculatorFilter",
             document.getUniqueObjectName("Calculator"),
         )
-        calculator.Label = prepared.label
+        prepared = assign_prepared_label(calculator, prepared)
         prepared.parent_group.addObject(calculator)
         calculator.FieldName = prepared.result_field
         calculator.Function = prepared.expression

@@ -45,6 +45,9 @@ SOURCE_GROUP("Module" FILES ${Module_SRCS})
 SET(Assembly_SRCS
     AssemblyObject.cpp
     AssemblyObject.h
+    SimulationFrameSnapshot.h
+    SimulationPlaybackCache.cpp
+    SimulationPlaybackCache.h
     AssemblyLink.cpp
     AssemblyLink.h
     AssemblyUtils.cpp
@@ -64,6 +67,7 @@ SET(Assembly_SRCS
 )
 
 add_library(Assembly SHARED ${Assembly_SRCS})
+target_compile_definitions(Assembly PRIVATE _USE_MATH_DEFINES)
 target_include_directories(
     Assembly
     PRIVATE

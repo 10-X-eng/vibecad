@@ -539,7 +539,7 @@ bool ViewProviderAssembly::mouseMove(const SbVec2s& cursorPos, Gui::View3DInvent
 
 bool ViewProviderAssembly::tryMouseMove(const SbVec2s& cursorPos, Gui::View3DInventorViewer* viewer)
 {
-    if (!isInEditMode()) {
+    if (!isInEditMode() && !partMoving) {
         return false;
     }
 
@@ -691,6 +691,52 @@ bool ViewProviderAssembly::tryMouseMove(const SbVec2s& cursorPos, Gui::View3DInv
         }
     }
     return false;
+}
+
+bool ViewProviderAssembly::prepareDirectManipulation()
+{
+    if (isInEditMode() || partMoving || moveTransactionId != App::NullTransaction
+        || !enableMovement) {
+        return false;
+    }
+    canStartDragging = false;
+    return getSelectedObjectsWithinAssembly(true);
+}
+
+bool ViewProviderAssembly::beginDirectManipulation(
+    const SbVec2s& cursorPos,
+    Gui::View3DInventorViewer* viewer
+)
+{
+    if (isInEditMode() || docsToMove.empty() || partMoving
+        || moveTransactionId != App::NullTransaction) {
+        return false;
+    }
+    initMove(cursorPos, viewer);
+    return partMoving;
+}
+
+bool ViewProviderAssembly::updateDirectManipulation(
+    const SbVec2s& cursorPos,
+    Gui::View3DInventorViewer* viewer
+)
+{
+    if (!partMoving) {
+        return false;
+    }
+    mouseMove(cursorPos, viewer);
+    return partMoving;
+}
+
+void ViewProviderAssembly::finishDirectManipulation(bool commit)
+{
+    if (partMoving || moveTransactionId != App::NullTransaction) {
+        finishMove(commit);
+    }
+    else {
+        canStartDragging = false;
+        docsToMove.clear();
+    }
 }
 
 bool ViewProviderAssembly::mouseButtonPressed(

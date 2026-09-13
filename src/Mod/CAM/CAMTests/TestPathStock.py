@@ -50,7 +50,7 @@ class TestPathStock(PathTestBase):
         self.job.Proxy = FakeJobProxy()
 
     def tearDown(self):
-        FreeCAD.closeDocument("TestPathStock")
+        self.assertTrue(FreeCAD.requestCloseDocument("TestPathStock"))
 
     def test00(self):
         """Test CreateBox"""
@@ -94,6 +94,19 @@ class TestPathStock(PathTestBase):
         self.assertEqual(1, stock.Radius)
         self.assertEqual(88, stock.Height)
         self.assertPlacement(placement, stock.Placement)
+
+    def test02(self):
+        """Invalid or still-empty group members do not poison stock bounds."""
+
+        empty = self.doc.addObject("Part::Feature", "EmptyShape")
+        self.job.Model.addObject(empty)
+
+        bounds = PathStock.shapeBoundBox(self.job.Model.Group)
+
+        self.assertTrue(bounds.isValid())
+        self.assertEqual(100, bounds.XLength)
+        self.assertEqual(200, bounds.YLength)
+        self.assertEqual(300, bounds.ZLength)
 
     def test10(self):
         """Verify FromTemplate box creation."""

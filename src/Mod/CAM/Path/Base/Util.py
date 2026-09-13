@@ -92,6 +92,9 @@ NotValidBaseTypeIds = []
 
 def isValidBaseObject(obj):
     """isValidBaseObject(obj) ... returns true if the object can be used as a base for a job."""
+    timeline_role = str(getattr(obj, "VibeCADTimelineRole", "") or "")
+    if timeline_role in {"internal", "resource"} and obj.TypeId != "PartDesign::Body":
+        return False
     if hasattr(obj, "getParentGeoFeatureGroup") and obj.getParentGeoFeatureGroup():
         # Can't link to anything inside a geo feature group anymore
         Path.Log.debug("%s is inside a geo feature group" % obj.Label)
@@ -1035,11 +1038,37 @@ def recordTimelineResourceGraphReplacement(
 ):
     """Record one exact old-to-new resource identity mapping."""
 
-    document = _validateTimelineResourceGraphEdit(owner, token)
     old_identity = (
         str(getattr(old_resource, "Name", "")),
         int(getattr(old_resource, "ID", -1)),
     )
+    return _recordTimelineResourceGraphReplacementIdentity(
+        owner,
+        token,
+        old_identity,
+        new_resource,
+    )
+
+
+def _recordTimelineResourceGraphReplacementIdentity(
+    owner,
+    token,
+    old_identity,
+    new_resource,
+):
+    """Record a replacement after its exact old identity was retired."""
+
+    _validateTimelineResourceGraphEdit(owner, token)
+    if (
+        not isinstance(old_identity, tuple)
+        or len(old_identity) != 2
+        or not isinstance(old_identity[0], str)
+        or not old_identity[0]
+        or isinstance(old_identity[1], bool)
+        or not isinstance(old_identity[1], int)
+        or old_identity[1] < 0
+    ):
+        raise ValueError("An exact retired CAM resource identity is required")
     old_index = None
     if old_identity in token.old_resource_identities:
         old_index = token.old_resource_identities.index(old_identity)

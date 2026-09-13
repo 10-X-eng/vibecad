@@ -9,6 +9,7 @@ import math
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -258,7 +259,7 @@ def create_post_function(
             _FUNCTION_TYPES[prepared.kind],
             document.getUniqueObjectName(prepared.kind.title()),
         )
-        function.Label = prepared.label
+        prepared = assign_prepared_label(function, prepared)
         provider.addObject(function)
         for property_name, value in prepared.parameters:
             setattr(function, property_name, value)

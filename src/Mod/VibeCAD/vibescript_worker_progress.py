@@ -5,9 +5,15 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import time
 from typing import Any
+
+from VibeCADVibeScriptFileIO import (
+    TELEMETRY_IO_TIMEOUT_SECONDS,
+    atomic_write_text,
+)
 
 
 _SCHEMA = "vibecad-vibescript-worker-progress-v1"
@@ -22,18 +28,25 @@ _state: dict[str, Any] = {}
 def _write() -> None:
     if _path is None:
         return
+    payload = snapshot()
+    atomic_write_text(
+        _path,
+        json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+        replace_timeout_seconds=TELEMETRY_IO_TIMEOUT_SECONDS,
+        best_effort=True,
+    )
+
+
+def snapshot() -> dict[str, Any]:
+    """Return current progress without depending on the status file."""
+
     payload = dict(_state)
     payload["elapsed_seconds"] = round(time.monotonic() - _started, 6)
     payload["phase_elapsed_seconds"] = round(
         time.monotonic() - _phase_started,
         6,
     )
-    temporary = _path.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    temporary.replace(_path)
+    return payload
 
 
 def configure(path: str | Path, domain: str) -> None:
@@ -86,6 +99,8 @@ def set_item_progress(
     completed: int,
     total: int,
     current: str = "",
+    rate_per_second: float | None = None,
+    estimated_remaining_seconds: float | None = None,
 ) -> None:
     """Publish bounded counters for the current native worker subphase."""
 
@@ -93,11 +108,30 @@ def set_item_progress(
     clean_total = max(0, int(total))
     if clean_completed > clean_total:
         clean_completed = clean_total
+    metrics: dict[str, float] = {}
+    if (
+        isinstance(rate_per_second, (int, float))
+        and not isinstance(rate_per_second, bool)
+        and math.isfinite(float(rate_per_second))
+        and float(rate_per_second) >= 0.0
+    ):
+        metrics["rate_per_second"] = round(float(rate_per_second), 6)
+    if (
+        isinstance(estimated_remaining_seconds, (int, float))
+        and not isinstance(estimated_remaining_seconds, bool)
+        and math.isfinite(float(estimated_remaining_seconds))
+        and float(estimated_remaining_seconds) >= 0.0
+    ):
+        metrics["estimated_remaining_seconds"] = round(
+            float(estimated_remaining_seconds),
+            3,
+        )
     _state["item_progress"] = {
         "kind": str(item_kind),
         "completed": clean_completed,
         "total": clean_total,
         **({"current": str(current)} if str(current) else {}),
+        **metrics,
     }
     _write()
 

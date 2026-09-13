@@ -64,10 +64,17 @@ def execute(request: Mapping[str, Any]) -> dict[str, Any]:
     tolerance = float(request.get("tolerance_mm", 0.0))
     sew = bool(request.get("sew_adjacent_faces", False))
     make_solid = bool(request.get("make_solid", False))
+    source_topology = str(request.get("source_topology") or "closed")
+    if source_topology not in {"closed", "sewable"}:
+        raise ConversionFailure(
+            "NATIVE_MESH_CONVERSION_REQUEST_INVALID",
+            "source_topology must be closed or sewable.",
+        )
 
     import FreeCAD as App
     import Mesh
     import MeshPart  # noqa: F401 - registers MeshPart::ShapeFromMesh
+    import Part
 
     document = App.newDocument("VibeCADMeshConversionWorker")
     try:
@@ -77,7 +84,7 @@ def execute(request: Mapping[str, Any]) -> dict[str, Any]:
                 "NATIVE_MESH_CONVERSION_SOURCE_EMPTY",
                 "The detached Mesh conversion source contains no facets.",
             )
-        if make_solid:
+        if make_solid and source_topology == "closed":
             if not bool(mesh.isSolid()):
                 raise ConversionFailure(
                     "NATIVE_MESH_SOLID_REQUIRED",
@@ -94,7 +101,7 @@ def execute(request: Mapping[str, Any]) -> dict[str, Any]:
         result.Source = source
         result.Tolerance = tolerance
         result.SewShape = sew
-        result.MakeSolid = make_solid
+        result.MakeSolid = make_solid and source_topology == "closed"
         result.UpdateFromSource = True
         if document.recompute([result], True, True) is False or not result.isValid():
             raise ConversionFailure(
@@ -107,6 +114,20 @@ def execute(request: Mapping[str, Any]) -> dict[str, Any]:
                 "NATIVE_MESH_CONVERSION_FAILED",
                 "The detached Mesh conversion produced an invalid BREP.",
             )
+        if make_solid and source_topology == "sewable":
+            shells = tuple(shape.Shells)
+            if not shells or any(not bool(shell.isClosed()) for shell in shells):
+                raise ConversionFailure(
+                    "NATIVE_MESH_SOLID_REQUIRED",
+                    "The sewn retained-stock Mesh did not form closed volumes.",
+                )
+            solids = tuple(Part.makeSolid(shell) for shell in shells)
+            if any(solid.isNull() or not solid.isValid() for solid in solids):
+                raise ConversionFailure(
+                    "NATIVE_MESH_CONVERSION_FAILED",
+                    "The sewn retained-stock Mesh produced an invalid solid volume.",
+                )
+            shape = solids[0] if len(solids) == 1 else Part.makeCompound(solids)
         shape = shape.removeSplitter()
         if shape.isNull() or not shape.isValid():
             raise ConversionFailure(
@@ -115,10 +136,26 @@ def execute(request: Mapping[str, Any]) -> dict[str, Any]:
             )
         topology = _topology(shape)
         shape_type = str(shape.ShapeType)
-        if make_solid and (shape_type != "Solid" or topology["solids"] != 1):
+        if make_solid and topology["solids"] < 1:
+            raise ConversionFailure(
+                "NATIVE_MESH_SINGLE_SOLID_REQUIRED",
+                "mesh_to_solid requires at least one solid volume.",
+            )
+        if make_solid and source_topology == "closed" and (
+            shape_type != "Solid" or topology["solids"] != 1
+        ):
             raise ConversionFailure(
                 "NATIVE_MESH_SINGLE_SOLID_REQUIRED",
                 "mesh_to_solid requires exactly one solid volume; separate disconnected components first.",
+            )
+        if make_solid and source_topology == "sewable" and shape_type not in {
+            "Solid",
+            "CompSolid",
+            "Compound",
+        }:
+            raise ConversionFailure(
+                "NATIVE_MESH_CONVERSION_FAILED",
+                "The sewn retained-stock Mesh did not produce solid volumes.",
             )
         shape.exportBrep(str(output_path))
         if not output_path.is_file() or output_path.stat().st_size < 1:

@@ -505,9 +505,9 @@ def manufacture_surface_variants(
             ("CAM_Simulator", "CAM_SimulatorGL")
             if legacy
             else ("CAM_SimulatorGL", "CAM_Simulator")
-        )
+        ) + ("CAM_RetainSimulationResult",)
         simulator_index = tools.index("CAM_SimTools")
-        tools[simulator_index + 1 : simulator_index + 3] = simulator_children
+        tools[simulator_index + 1 : simulator_index + 4] = simulator_children
         if camotics_available:
             tools.insert(tools.index("CAM_ToolBitDock") + 1, "CAM_Camotics")
         groups = _replace_group(groups, "Tools", tools)
@@ -521,6 +521,7 @@ def manufacture_surface_variants(
                 "CAM_Pocket3D",
                 "CAM_Surface",
                 "CAM_Waterline",
+                "CAM_SteepShallow",
             ]
             if experimental:
                 advanced_children.append("CAM_RotarySurface")

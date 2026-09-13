@@ -10,7 +10,7 @@ VibeCAD is an AI-native parametric CAD platform for designing real 3D parts thro
 
 ## Before You Start
 
-You need a **ChatGPT subscription**, a **Grok / X (xAI) login**, or an **API key** for the provider you select. VibeCAD runs ChatGPT-subscription, Grok OAuth, and OpenAI-API-key requests through its bundled Codex runtime, connects directly to Anthropic, and can still route Codex through OpenAI-compatible endpoints such as an xAI API key, Ollama, and other local model servers.
+You need a **ChatGPT subscription**, a **Grok / X (xAI) login**, or an **API key** for the provider you select. VibeCAD runs ChatGPT-subscription, Grok OAuth, and OpenAI-API-key requests through its bundled Codex runtime, connects directly to Anthropic and Google Gemini, and can still route Codex through OpenAI-compatible endpoints such as an xAI API key, Ollama, and other local model servers.
 
 Store the key in one of these places:
 
@@ -68,7 +68,7 @@ SHA256 files are published beside release artifacts so downloads can be verified
 Open **Preferences**, then select **VibeCAD > VibeCAD**.
 
 1. Enable **Use online provider**.
-2. Select **ChatGPT subscription**, **Grok (X / xAI)**, **OpenAI API key (Codex)**, or **Anthropic** under **Provider**.
+2. Select **ChatGPT subscription**, **Grok (X / xAI)**, **OpenAI API key (Codex)**, **Anthropic**, or **Google Gemini** under **Provider**.
 3. For ChatGPT or Grok, use the account sign-in controls described below. For an API provider, configure its key and leave the base URL blank unless you use a compatible or local endpoint.
 4. Configure the selected provider's authentication.
 5. Click **Fetch models**, then select a returned model.
@@ -97,16 +97,61 @@ Grok OAuth tokens are stored only under the private VibeCAD Grok credential dire
 
 If OAuth login succeeds but model calls return HTTP 403, xAI may be gating the OAuth API surface by subscription tier. Use the API-key fallback below in that case.
 
-ChatGPT subscription, Grok OAuth, OpenAI-compatible, Anthropic, and offline/debug turns all
+### Configure Google Gemini
+
+1. Obtain a Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey).
+2. Select **Google Gemini** as the provider.
+3. Paste the key into **API key**, click **Save Key**, and then click **Validate**.
+4. Click **Fetch models** and select a compatible Gemini model, or keep the default `gemini-flash-latest` alias.
+5. Choose a reasoning effort supported by the model, then click **Apply** or **OK**.
+
+Gemini requests use Google's OpenAI-compatible Chat Completions endpoint at `https://generativelanguage.googleapis.com/v1beta/openai/`. This endpoint is fixed for the Gemini provider; VibeCAD does not reuse the OpenAI base-URL override. Gemini supports VibeCAD tool calls, reference images, Design Review, and Intent Memory. Web research is hidden while Gemini is selected because Google Search grounding is not enabled by this integration.
+
+ChatGPT subscription, Grok OAuth, OpenAI-compatible, Anthropic, Gemini, and offline/debug turns all
 use the same frozen authoring-surface resolver. The human chooses either
 **VibeScript** or **Native** in the Assistant header. VibeScript exposes the
 active workbench's exact source-backed API. Native exposes only the complete
 tool families belonging to the human-selected VibeCAD ribbon. A provider can
 never select or switch a workbench, ribbon, or authoring mode for itself.
 
+
+### Anthropic and Gemini conversation budgets
+
+Long tool loops use a 512 KiB serialized request target for automatic reduction.
+Above 75% of that target,
+older bulky successful observations can become explicit references to data that
+must be read again when needed. The latest two tool batches, original user
+instructions, tool arguments/signatures, exact source/API reads, failures,
+pending jobs and critical state are retained. A current state snapshot accompanies
+reduced history. Requests continue if protected content exceeds that target;
+there is no default hard stop on productive work. An explicitly configured byte
+or context-window limit stops generation if protected content cannot fit and
+explains how to continue; completed CAD work remains available.
+
+Integrators can pass these options in the provider run context (these are Python
+integration settings, not GUI preferences):
+
+```python
+context["_vibecad_provider_options"] = {
+    # "history_budget_bytes": 512 * 1024,  # opt into a hard byte limit
+    # "history_budget_bytes": 0,          # disable automatic byte reduction
+    # "context_window_tokens": 200_000,  # optional, set for the selected model
+    # "output_reserve_tokens": 8192,    # Gemini estimate; not an API output cap
+}
+```
+
+The optional context-window check reserves Anthropic's requested maximum output
+or Gemini's configured reserve, then estimates input from serialized JSON bytes
+divided by four. Tools, system text and encoded images count toward the byte
+budget. This estimate is not a tokenizer or a guarantee for image-token charges.
+A configured context-window check remains enabled even with a zero byte limit.
+Large exact reads may require a narrower read or a larger budget. History
+management adds no summarization API call. Diagnostic events separate estimated
+input from provider-reported usage when available.
+
 ### Save a Key in the OS Keyring
 
-1. Select the provider first. Keys are stored separately for OpenAI and Anthropic.
+1. Select the provider first. Keys are stored separately for OpenAI, Anthropic, and Gemini.
 2. Paste the provider key into **API key**.
 3. Click **Save Key**. The field clears after VibeCAD hands the key to the operating system's credential store.
 4. Click **Validate**. A successful check reports `verified` in **Auth status**.
@@ -124,6 +169,9 @@ OPENAI_API_KEY=your-key-here
 
 # Anthropic
 ANTHROPIC_API_KEY=your-key-here
+
+# Google Gemini
+GEMINI_API_KEY=your-key-here
 ```
 
 In VibeCAD Preferences:
@@ -321,6 +369,26 @@ for current platform-specific details.
 - **The assistant input is disabled:** save the active CAD document.
 - **The assistant panel was closed:** reopen it from **View > Panels > VibeCAD Assistant**.
 
+## Developer Testing
+
+On Windows, double-click `RUN-VIBECAD-DEV.cmd` to build and launch the exact
+current checkout in its repo-local Pixi environment. The visible development
+identity, checkout-scoped authenticated control channel, native file
+round-trip commands, screenshots, and plain-cyan independent-cursor tour are
+documented in
+[docs/developer-launch-windows.md](docs/developer-launch-windows.md). The tour
+does not move or click the user's physical mouse.
+
+Run the standalone Aero and 3D-printing component suites with one command:
+
+```bash
+python3 tools/run_vibecad_component_tests.py
+```
+
+The runner uses a separate pytest process for each component so their installed
+`tests` packages cannot collide. Use `--suite aero` or `--suite print` to run
+one component, and put additional pytest arguments after `--`.
+
 ## Project Status
 
 VibeCAD is under active development. The current focus is reliable, readable AI-assisted part design with explicit human control over the document, workbench, and design direction.
@@ -331,11 +399,21 @@ clicking menus. That loopback CLI / HTTP channel is documented in
 [docs/vibecad-agent-control.md](docs/vibecad-agent-control.md). It does not
 disable the in-app Assistant and it is not MCP.
 
+The in-app Assistant can also call tools from MCP servers you register, such as
+[Cua Driver](https://cua.ai/cua-driver) for desktop automation, a Playwright
+browser for finding and downloading models, or a project folder of datasheets.
+Registration, presets, and the download-and-import flow are documented in
+[docs/vibecad-mcp-tool-servers.md](docs/vibecad-mcp-tool-servers.md).
+
 Release packaging details are documented in [docs/vibecad-release-packaging.md](docs/vibecad-release-packaging.md).
 
 The single-workbench Part and Part Design model, compatibility boundary, and
 Body/tree behavior are documented in
 [docs/part-design-consolidation.md](docs/part-design-consolidation.md).
+
+The human and Native manufacturing workflow, multi-setup model, simulation,
+verification, and current CAM scope are documented in
+[CAM-README.md](CAM-README.md).
 
 The removed BIM and architectural surface, existing-document behavior, and
 rollback path are documented in

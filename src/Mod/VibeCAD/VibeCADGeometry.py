@@ -16,6 +16,8 @@ import tempfile
 import time
 from typing import Any, Callable, Mapping, Sequence
 
+from VibeCADScriptedProcess import terminate_process_tree
+
 
 DEFAULT_DEADLINE_SECONDS = 30.0
 BREP_VALIDATION_CACHE_SCHEMA = "vibecad-brep-validation-cache-v1"
@@ -651,19 +653,4 @@ def _execute_job_command(
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        if sys.platform == "win32":
-            process.terminate()
-        else:
-            os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=1.5)
-    except Exception:
-        try:
-            if sys.platform == "win32":
-                process.kill()
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
-        except Exception:
-            pass
+    terminate_process_tree(process)

@@ -85,11 +85,8 @@ MeshObject::MeshObject(const MeshObject& mesh)
 }
 
 MeshObject::MeshObject(MeshObject&& mesh)
-    : _Mtrx(mesh._Mtrx)
-    , _kernel(mesh._kernel)
 {
-    // copy the mesh structure
-    copySegments(mesh);
+    *this = std::move(mesh);
 }
 
 MeshObject::~MeshObject() = default;
@@ -246,10 +243,13 @@ MeshObject& MeshObject::operator=(const MeshObject& mesh)
 MeshObject& MeshObject::operator=(MeshObject&& mesh)
 {
     if (this != &mesh) {
-        // copy the mesh structure
         setTransform(mesh._Mtrx);
-        this->_kernel = mesh._kernel;
-        copySegments(mesh);
+        this->_kernel = std::move(mesh._kernel);
+        this->_segments = std::move(mesh._segments);
+        // Segment iterators resolve geometry through their owning MeshObject.
+        for (auto& segment : this->_segments) {
+            segment._mesh = this;
+        }
     }
 
     return *this;

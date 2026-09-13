@@ -39,6 +39,7 @@ from VibeCADNativeTargets import (
     object_reference,
     resolve_object,
 )
+from VibeCADSurfaceAuthority import enter_edit_mode
 
 
 def _label(value: Any) -> str:
@@ -385,7 +386,7 @@ class NativeModelStructureRuntime:
                     or self._context.active_document() is not document
                 ):
                     raise NativeModelError("The Sketch document is no longer active.")
-                if not bool(gui_document.setEdit(str(sketch.Name))):
+                if not enter_edit_mode(gui_document, sketch.Name):
                     raise NativeModelError("Sketcher could not open the exact Sketch.")
                 for _index in range(8):
                     Gui.updateGui()

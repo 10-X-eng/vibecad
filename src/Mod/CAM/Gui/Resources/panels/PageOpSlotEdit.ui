@@ -368,6 +368,11 @@
           <string>Bidirectional</string>
          </property>
         </item>
+        <item>
+         <property name="text">
+          <string>Trochoidal</string>
+         </property>
+        </item>
        </widget>
       </item>
       <item row="1" column="0">
@@ -394,17 +399,116 @@
         </item>
        </widget>
       </item>
-      <item row="2" column="1">
-       <widget class="QCheckBox" name="reverseDirection">
+       <item row="2" column="1">
+        <widget class="QCheckBox" name="reverseDirection">
         <property name="toolTip">
          <string>Enable to reverse the cut direction of the slot path</string>
         </property>
         <property name="text">
          <string>Reverse cut direction</string>
         </property>
-       </widget>
-      </item>
-     </layout>
+        </widget>
+       </item>
+       <item row="3" column="0">
+        <widget class="QLabel" name="cutMode_label">
+         <property name="text">
+          <string>Cut mode</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="1">
+        <widget class="QComboBox" name="cutMode">
+         <property name="toolTip">
+          <string>Choose climb or conventional milling for trochoidal loops</string>
+         </property>
+         <item>
+          <property name="text">
+           <string>Climb</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Conventional</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="4" column="0">
+        <widget class="QLabel" name="trochoidWidth_label">
+         <property name="text">
+          <string>Trochoid width</string>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="1">
+        <widget class="Gui::InputField" name="trochoidWidth">
+         <property name="toolTip">
+          <string>Total machined width; use 0 for twice the tool diameter</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="0">
+        <widget class="QLabel" name="trochoidStepover_label">
+         <property name="text">
+          <string>Trochoid stepover</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="1">
+        <widget class="QSpinBox" name="trochoidStepover">
+         <property name="toolTip">
+          <string>Advance per loop as a percentage of tool diameter</string>
+         </property>
+         <property name="suffix">
+          <string>%</string>
+         </property>
+         <property name="minimum">
+          <number>1</number>
+         </property>
+         <property name="maximum">
+          <number>100</number>
+         </property>
+        </widget>
+       </item>
+       <item row="6" column="0">
+        <widget class="QLabel" name="entryMode_label">
+         <property name="text">
+          <string>Entry mode</string>
+         </property>
+        </widget>
+       </item>
+       <item row="6" column="1">
+        <widget class="QComboBox" name="entryMode">
+         <property name="toolTip">
+          <string>Enter each depth pass by plunging or ramping along the slot</string>
+         </property>
+         <item>
+          <property name="text">
+           <string>Plunge</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Ramp</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="7" column="0">
+        <widget class="QLabel" name="rampAngle_label">
+         <property name="text">
+          <string>Ramp angle</string>
+         </property>
+        </widget>
+       </item>
+       <item row="7" column="1">
+        <widget class="Gui::InputField" name="rampAngle">
+         <property name="toolTip">
+          <string>Maximum descent angle measured from horizontal</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
     </widget>
    </item>
    <item>
@@ -437,6 +541,11 @@
   <tabstop>geo1Extension</tabstop>
   <tabstop>geo2Extension</tabstop>
   <tabstop>cutPattern</tabstop>
+  <tabstop>cutMode</tabstop>
+  <tabstop>trochoidWidth</tabstop>
+  <tabstop>trochoidStepover</tabstop>
+  <tabstop>entryMode</tabstop>
+  <tabstop>rampAngle</tabstop>
   <tabstop>pathOrientation</tabstop>
   <tabstop>reverseDirection</tabstop>
  </tabstops>

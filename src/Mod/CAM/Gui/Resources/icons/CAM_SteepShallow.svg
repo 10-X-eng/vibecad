@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" version="1.1">
+  <title>CAM Steep and Shallow</title>
+  <defs>
+    <linearGradient id="hill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9ec5ff"/>
+      <stop offset="0.5" stop-color="#3674d8"/>
+      <stop offset="1" stop-color="#1a3a78"/>
+    </linearGradient>
+  </defs>
+  <!-- Part profile: steep wall on the left, shallow dome on the right -->
+  <path d="M8 56 L8 20 L20 20 Q34 20 44 28 Q56 38 56 56 Z"
+        fill="url(#hill)" stroke="#0a1a3a" stroke-width="1.5"/>
+  <!-- Steep region: constant-Z contour passes (horizontal levels on the wall) -->
+  <line x1="8" y1="26" x2="19" y2="26" stroke="#ff7a00" stroke-width="2" stroke-linecap="round"/>
+  <line x1="8" y1="33" x2="21" y2="33" stroke="#ff7a00" stroke-width="2" stroke-linecap="round"/>
+  <line x1="8" y1="40" x2="24" y2="40" stroke="#ff7a00" stroke-width="2" stroke-linecap="round"/>
+  <line x1="8" y1="47" x2="28" y2="47" stroke="#ff7a00" stroke-width="2" stroke-linecap="round"/>
+  <!-- Shallow region: surface-following passes over the dome -->
+  <path d="M24 22 Q36 23 45 31" fill="none" stroke="#7dff7a" stroke-width="2" stroke-linecap="round"/>
+  <path d="M28 24 Q40 27 49 37" fill="none" stroke="#7dff7a" stroke-width="2" stroke-linecap="round"/>
+  <path d="M33 27 Q45 32 52 44" fill="none" stroke="#7dff7a" stroke-width="2" stroke-linecap="round"/>
+  <!-- Tool tip indicator -->
+  <rect x="30" y="4" width="4" height="10" fill="#444"/>
+  <polygon points="28,14 36,14 32,20" fill="#888"/>
+</svg>

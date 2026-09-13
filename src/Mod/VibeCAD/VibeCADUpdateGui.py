@@ -283,12 +283,16 @@ def _launch_windows_install_helper(plan: InstallPlan) -> None:
     helper_dir = default_update_directory() / "install-helper"
     helper_dir.mkdir(parents=True, exist_ok=True)
     helper = helper_dir / "install-windows-update.ps1"
+    started = helper_dir / "install-helper.started"
+    started.unlink(missing_ok=True)
     helper.write_text(
         """param(
     [Parameter(Mandatory=$true)][string]$Installer,
-    [Parameter(Mandatory=$true)][int]$VibeCADProcessId
+    [Parameter(Mandatory=$true)][int]$VibeCADProcessId,
+    [Parameter(Mandatory=$true)][string]$Started
 )
 $ErrorActionPreference = 'Stop'
+[IO.File]::WriteAllText($Started, "$PID")
 $vibecad = Get-Process -Id $VibeCADProcessId -ErrorAction SilentlyContinue
 if ($null -ne $vibecad) {
     $vibecad | Wait-Process
@@ -310,9 +314,12 @@ Start-Process -FilePath $Installer
             str(helper),
             str(plan.package),
             str(os.getpid()),
+            str(started),
         ],
         log_path=helper_dir / "install-helper.log",
     )
+    if not wait_for_install_helper_start(started):
+        raise RuntimeError("The Windows install helper did not start.")
 
 
 def _launch_appimage_install_helper(plan: InstallPlan) -> None:

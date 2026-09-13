@@ -26,8 +26,10 @@ from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureSnapshot import build_manufacture_snapshot
 from VibeCADNativeManufactureState import job_state, tool_controller_state
 from VibeCADNativeManufactureToolSchema import (
-    MANUFACTURE_TOOL_CAPABILITY_NAME,
     MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
+)
+from VibeCADNativeManufactureFocusedToolSchema import (
+    MANUFACTURE_FOCUSED_TOOL_CAPABILITIES,
 )
 from VibeCADNativeManufactureToolOutputSchema import (
     MANUFACTURE_TOOL_OUTPUT_CAPABILITY_NAME,
@@ -40,6 +42,11 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+ADD_TOOL = MANUFACTURE_FOCUSED_TOOL_CAPABILITIES["create_controller"]
+SET_CONTROLLER = MANUFACTURE_FOCUSED_TOOL_CAPABILITIES["update_controller"]
+UPDATE_TOOL = MANUFACTURE_FOCUSED_TOOL_CAPABILITIES["update_tool_bit"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -111,13 +118,16 @@ def _selection() -> tuple:
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
     catalog = registry.definition(MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME)
-    mutation = registry.definition(MANUFACTURE_TOOL_CAPABILITY_NAME)
+    mutations = tuple(
+        registry.definition(name) for name in (ADD_TOOL, SET_CONTROLLER, UPDATE_TOOL)
+    )
     output = registry.definition(MANUFACTURE_TOOL_OUTPUT_CAPABILITY_NAME)
-    assert catalog is not None and mutation is not None and output is not None
+    assert catalog is not None and all(mutations) and output is not None
     schemas = (
         catalog.provider_schema(("list_tools", "read_tool")),
-        mutation.provider_schema(
-            ("create_controller", "update_controller", "update_tool_bit")
+        *(
+            definition.provider_schema((definition.variants[0].operation,))
+            for definition in mutations
         ),
         output.provider_schema(("save", "save_as")),
     )
@@ -128,7 +138,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
         "expected_content_sha256",
         "horizontal_feed_mm_per_minute",
         "property_changes",
-        '"const":"choice"',
+        '"choice"',
     ):
         assert field in encoded
     return NativeTurnSnapshot.from_provider_surface(
@@ -138,7 +148,9 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             unavailable_reason="",
             tool_names=(
                 MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
-                MANUFACTURE_TOOL_CAPABILITY_NAME,
+                ADD_TOOL,
+                SET_CONTROLLER,
+                UPDATE_TOOL,
                 MANUFACTURE_TOOL_OUTPUT_CAPABILITY_NAME,
             ),
             schemas=schemas,
@@ -150,7 +162,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     )
 
 
-def _controller_settings(label: str, tool_number: dict, feed: float) -> dict:
+def _controller_settings(label: str, tool_number: int | dict, feed: float) -> dict:
     return {
         "label": label,
         "tool_number": tool_number,
@@ -223,7 +235,7 @@ def _run() -> None:
             plans["CAM_ToolBitDock"].classification.mutation,
             plans["CAM_ToolBitDock"].classification.human_only,
         ) == (
-            MANUFACTURE_TOOL_CAPABILITY_NAME,
+            ADD_TOOL,
             "create_controller",
             "ExactCamJobAndCatalogTool",
             True,
@@ -280,6 +292,19 @@ def _run() -> None:
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
+
+        def refresh_dispatcher() -> None:
+            nonlocal dispatcher
+            dispatcher = NativeTurnDispatcher(
+                document=document,
+                state=state_store,
+                registry=registry,
+                turn=turn,
+                runtimes=build_native_runtime_bindings(context, turn.tool_names),
+                reauthorize_turn=reauthorize,
+                active_document=lambda: App.ActiveDocument,
+            )
+
         call_index = 0
 
         def call(capability: str, arguments: dict, *, succeeds: bool = True) -> dict:
@@ -296,25 +321,29 @@ def _run() -> None:
         catalog_snapshot = snapshot["tool_catalog"]
         revision_before_reads = state_store.current_revision(context.document_uid)
         undo_before_reads = int(document.UndoCount)
-        stale_page = call(
-            MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
-            {
-                "operation": "list_tools",
-                "expected_catalog_state_sha256": "0" * 64,
-                "offset": 0,
-                "page_size": 64,
-            },
-            succeeds=False,
-        )
-        assert stale_page["error_code"] == "NATIVE_MANUFACTURE_TOOL_CATALOG_STALE"
         listing = call(
             MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
             {
                 "operation": "list_tools",
-                "expected_catalog_state_sha256": catalog_snapshot["state_sha256"],
                 "offset": 0,
-                "page_size": 64,
+                "page_size": 128,
             },
+        )
+        assert listing["state_sha256"] == catalog_snapshot["state_sha256"]
+        searched = call(
+            MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
+            {
+                "operation": "list_tools",
+                "query": "drill",
+                "offset": 0,
+                "page_size": 8,
+            },
+        )
+        assert searched["count"] >= 1
+        assert searched["query"] == "drill"
+        assert all(
+            "drill" in f"{item['label']} {item['shape_type']}".casefold()
+            for item in searched["items"]
         )
         selected = next(
             (item for item in listing["items"] if item["shape_type"].lower() == "bullnose"),
@@ -339,11 +368,11 @@ def _run() -> None:
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(model, "Face1")
         selection_before = _selection()
+
         job_before_create = job_state(job)
         names_before_create = tuple(obj.Name for obj in document.Objects)
         resources_before_create = _job_resource_names(document, job)
         create_arguments = {
-            "operation": "create_controller",
             "job_target": _target(job_before_create),
             "catalog_tool": exact_catalog,
             "tool_label": "Native bullnose",
@@ -365,19 +394,39 @@ def _run() -> None:
             "kind": "explicit",
             "value": int(job.Tools.Group[0].ToolNumber),
         }
-        failed = call(MANUFACTURE_TOOL_CAPABILITY_NAME, conflict, succeeds=False)
-        assert failed["error_code"] == "NATIVE_MANUFACTURE_TOOL_NUMBER_CONFLICT"
+        failed = call(ADD_TOOL, conflict, succeeds=False)
+        assert failed["error_code"] == "NATIVE_MANUFACTURE_TOOL_NUMBER_CONFLICT", failed
         assert tuple(obj.Name for obj in document.Objects) == names_before_create
         assert int(document.UndoCount) == undo_before_reads
 
-        created = call(MANUFACTURE_TOOL_CAPABILITY_NAME, create_arguments)
+        created = call(ADD_TOOL, create_arguments)
+        revision_after_create = state_store.current_revision(context.document_uid)
+        created_tool = document.getObject(created["controller"]["tool"]["object_name"])
+        assert created_tool is not None
+        assert not bool(getattr(created_tool.Proxy, "_visual_update_queued", False))
+        assert not hasattr(created_tool.Proxy, "_recompute_observer")
+        assert not bool(document.RecomputePending)
+        touched_after_create = [
+            obj.Name for obj in document.Objects if "Touched" in obj.State
+        ]
+        assert not touched_after_create, touched_after_create
         _events(12)
+        assert state_store.current_revision(context.document_uid) == revision_after_create
         controller_name = created["controller"]["object_name"]
         tool_name = created["controller"]["tool"]["object_name"]
         tool_controller = document.getObject(controller_name)
         assert tool_controller is not None
         assert tool_controller in tuple(job.Tools.Group)
         created_state = tool_controller_state(tool_controller)
+        shape_volume_created = float(tool_controller.Tool.Shape.Volume)
+        shape_bounds_created = tuple(
+            float(value)
+            for value in (
+                tool_controller.Tool.Shape.BoundBox.XLength,
+                tool_controller.Tool.Shape.BoundBox.YLength,
+                tool_controller.Tool.Shape.BoundBox.ZLength,
+            )
+        )
         assert created_state["label"] == "Native roughing controller"
         assert created_state["tool"]["label"] == "Native bullnose"
         created_properties = {
@@ -409,23 +458,29 @@ def _run() -> None:
         assert job is not None and tool_controller is not None
         assert tuple(obj.Name for obj in document.Objects) == names_after_create
         assert tool_controller_state(tool_controller)["state_sha256"] == created_state["state_sha256"]
+        refresh_dispatcher()
 
         update_controller_arguments = {
-            "operation": "update_controller",
             "target": _target(tool_controller_state(tool_controller)),
             "controller": _controller_settings(
                 "Native finishing controller",
-                {"kind": "explicit", "value": 9},
+                9,
                 600.0,
             ),
         }
         updated_controller = call(
-            MANUFACTURE_TOOL_CAPABILITY_NAME,
+            SET_CONTROLLER,
             update_controller_arguments,
         )
         _events(8)
         controller_after = tool_controller_state(tool_controller)
         assert controller_after == updated_controller["controller"]
+        job_after_controller = job_state(job)
+        assert updated_controller["job"] == {
+            "object_name": job_after_controller["object_name"],
+            "state_sha256": job_after_controller["state_sha256"],
+            "tool_count": job_after_controller["counts"]["tools"],
+        }
         assert controller_after["tool_number"] == 9
         assert controller_after["horizontal_feed_mm_per_minute"] == 600.0
         document.undo()
@@ -436,31 +491,55 @@ def _run() -> None:
         _events(8)
         tool_controller = document.getObject(controller_name)
         assert tool_controller_state(tool_controller)["state_sha256"] == controller_after["state_sha256"]
+        refresh_dispatcher()
 
         tool_before_update = tool_controller_state(tool_controller)["tool"]
         shape_volume_before = float(tool_controller.Tool.Shape.Volume)
         visual_before = _job_resource_names(document, job)
+        controller_as_tool = call(
+            UPDATE_TOOL,
+            {
+                "target": _target(tool_controller_state(tool_controller)),
+                "label": "Wrong target",
+                "property_changes": [
+                    {
+                        "property_name": "Diameter",
+                        "value": 7.5,
+                    }
+                ],
+            },
+            succeeds=False,
+        )
+        assert controller_as_tool["error_code"] == "NATIVE_MANUFACTURE_TARGET_TYPE_INVALID"
+        assert controller_as_tool["repair"]["target"] == _target(tool_before_update)
         update_tool_arguments = {
-            "operation": "update_tool_bit",
             "target": _target(tool_before_update),
             "label": "Native 7.5 mm bullnose",
             "property_changes": [
                 {
                     "property_name": "Diameter",
-                    "value": {"kind": "length_mm", "value": 7.5},
+                    "value": 7.5,
                 },
                 {
                     "property_name": "Material",
-                    "value": {"kind": "choice", "value": "Carbide"},
+                    "value": "Carbide",
                 },
             ],
         }
-        updated_tool = call(MANUFACTURE_TOOL_CAPABILITY_NAME, update_tool_arguments)
+        updated_tool = call(UPDATE_TOOL, update_tool_arguments)
         _events(12)
         job = document.getObject(job_name)
         tool_controller = document.getObject(controller_name)
         tool_after = tool_controller_state(tool_controller)["tool"]
         assert tool_after == updated_tool["tool"]
+        job_after_tool = job_state(job)
+        assert updated_tool["jobs"] == [
+            {
+                "object_name": job_after_tool["object_name"],
+                "state_sha256": job_after_tool["state_sha256"],
+                "tool_count": job_after_tool["counts"]["tools"],
+            }
+        ]
         assert tool_after["label"] == "Native 7.5 mm bullnose"
         after_properties = {
             item["property_name"]: item for item in tool_after["editable_properties"]
@@ -469,7 +548,20 @@ def _run() -> None:
         assert after_properties["Material"]["value"] == "Carbide"
         final_controller_state = tool_controller_state(tool_controller)
         shape_volume_after = float(tool_controller.Tool.Shape.Volume)
-        assert shape_volume_after < shape_volume_before
+        assert shape_volume_after < shape_volume_before, (
+            shape_volume_created,
+            shape_volume_before,
+            shape_volume_after,
+            shape_bounds_created,
+            tuple(
+                float(value)
+                for value in (
+                    tool_controller.Tool.Shape.BoundBox.XLength,
+                    tool_controller.Tool.Shape.BoundBox.YLength,
+                    tool_controller.Tool.Shape.BoundBox.ZLength,
+                )
+            ),
+        )
         visual_after = _job_resource_names(document, job)
         assert controller_name in visual_after and tool_name in visual_after
         assert visual_after == visual_before
@@ -495,6 +587,7 @@ def _run() -> None:
             shape_volume_after,
             rel_tol=1.0e-9,
         )
+        refresh_dispatcher()
 
         from Path.Tool.toolbit.serializers.fctb import FCTBSerializer
         from Path.Tool.toolbit.serializers.yaml import YamlToolBitSerializer
@@ -593,23 +686,51 @@ def _run() -> None:
             == raw_tool_state_before_output
         )
 
+        minimal_created = call(
+            ADD_TOOL,
+            {
+                "job_target": _target(job_state(job)),
+                "catalog_tool": exact_catalog,
+            },
+        )
+        _events(8)
+        minimal_controller = document.getObject(
+            minimal_created["controller"]["object_name"]
+        )
+        assert minimal_controller is not None
+        assert minimal_controller.Label == f"TC: {selected['label']}"
+        assert minimal_controller.Tool.Label == selected["label"]
+        assert int(minimal_controller.ToolNumber) >= 1
+        assert float(minimal_controller.SpindleSpeed) == 0.0
+        assert float(minimal_controller.HorizFeed) == 0.0
+        default_expressions = dict(minimal_controller.ExpressionEngine)
+        assert default_expressions["RampFeed"] == "HorizFeed"
+        assert default_expressions["LeadInFeed"] == "HorizFeed"
+        assert default_expressions["LeadOutFeed"] == "HorizFeed"
+        assert _selection() == selection_before
+        minimal_controller_name = str(minimal_controller.Name)
+        final_resources = _job_resource_names(document, job)
+
         document.saveAs(str(save_path))
         document_name = document.Name
         App.closeDocument(document_name)
         document = App.openDocument(str(save_path))
         job = document.getObject(job_name)
         tool_controller = document.getObject(controller_name)
+        minimal_controller = document.getObject(minimal_controller_name)
         assert job is not None and tool_controller is not None
+        assert minimal_controller is not None
         reopened = tool_controller_state(tool_controller)
         assert reopened["state_sha256"] == final_controller_state["state_sha256"]
         assert reopened["tool"]["state_sha256"] == tool_after["state_sha256"]
         assert reopened["tool_number"] == 9
-        assert _job_resource_names(document, job) == visual_after
+        assert _job_resource_names(document, job) == final_resources
         assert not Gui.Control.activeDialog()
 
         print(
             "VIBECAD_NATIVE_MANUFACTURE_TOOL_GUI_OK "
-            "catalog=true exact_targets=true controller_create=true "
+            "catalog=true catalog_search=true paging_128=true exact_targets=true "
+            "human_default_create=true controller_create=true "
             "controller_update=true tool_properties=true stable_resource_graph=true "
             "save=true save_as=true path_private=true output_read_only=true "
             "rollback=true undo=true redo=true reopen=true",

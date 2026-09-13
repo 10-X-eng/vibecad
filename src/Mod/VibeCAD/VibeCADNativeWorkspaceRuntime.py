@@ -11,6 +11,7 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeWorkspaceSchema import (
     NATIVE_SURFACE_BY_WORKSPACE,
 )
+from VibeCADSurfaceAuthority import activate_workbench
 
 
 WORKBENCH_BY_NATIVE_WORKSPACE = {
@@ -71,7 +72,7 @@ class NativeWorkspaceRuntime:
         import FreeCADGui as Gui
         from PySide import QtCore, QtWidgets
 
-        Gui.activateWorkbench(workbench)
+        activate_workbench(workbench)
         for _index in range(8):
             Gui.updateGui()
             QtWidgets.QApplication.processEvents(

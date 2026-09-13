@@ -28,6 +28,8 @@ set(Assembly_Scripts
     CommandEditHistoryOperation.py
     CommandCreateView.py
     CommandCreateSimulation.py
+    AnimationExport.py
+    AnimationEncoder.py
     CommandExportASMT.py
     TestAssemblyWorkbench.py
     JointObject.py

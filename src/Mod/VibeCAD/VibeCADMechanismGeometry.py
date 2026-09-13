@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 import os
+from queue import SimpleQueue
 import re
+from threading import local
 from typing import Any, Callable
 
 STATIC_PAIR_EVIDENCE_SCHEMA = "vibecad-mechanism-static-pair-evidence-v1"
@@ -19,12 +21,11 @@ _COMPONENT_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _DECLARATION_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _INTERFACE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _SUBELEMENT = re.compile(r"^(Face|Edge|Vertex)([1-9][0-9]*)$")
-_MAX_COMPONENTS = 256
-_MAX_PAIRS = (_MAX_COMPONENTS * (_MAX_COMPONENTS - 1)) // 2
 _MAX_WITNESSES_PER_PAIR = 8
 _MAX_CONTACT_WITNESSES = 4096
 _COLLISION_MESH_LINEAR_DEFLECTION_MM = 0.05
 _COLLISION_MESH_ANGULAR_DEFLECTION_RADIANS = 0.5
+_COLLISION_PROXIMITY_TOLERANCE_MM = 1.0e-7
 
 
 class MechanismGeometryError(ValueError):
@@ -138,11 +139,11 @@ class DynamicCollisionEvaluator:
     ) -> None:
         if (
             not isinstance(components, Mapping)
-            or not 1 <= len(components) <= _MAX_COMPONENTS
+            or not components
         ):
             raise _error(
                 "components",
-                f"must contain 1-{_MAX_COMPONENTS} named solid shapes",
+                "must contain at least one named solid shape",
             )
         if definition_keys is not None and (
             not isinstance(definition_keys, Mapping)
@@ -245,11 +246,9 @@ class DynamicCollisionEvaluator:
             for _source, _shape, triangle_count in mesh_definitions
         )
         self._component_names = list(self._shapes)
-        self._pairs = [
-            (first, second)
-            for index, first in enumerate(self._component_names)
-            for second in self._component_names[index + 1 :]
-        ]
+        self._component_order = {
+            name: index for index, name in enumerate(self._component_names)
+        }
 
     @property
     def component_names(self) -> list[str]:
@@ -257,7 +256,8 @@ class DynamicCollisionEvaluator:
 
     @property
     def pair_count(self) -> int:
-        return len(self._pairs)
+        count = len(self._component_names)
+        return count * (count - 1) // 2
 
     @property
     def collision_mesh_statistics(self) -> dict[str, int | float]:
@@ -270,6 +270,33 @@ class DynamicCollisionEvaluator:
                 _COLLISION_MESH_ANGULAR_DEFLECTION_RADIANS
             ),
         }
+
+    def fork(self) -> "DynamicCollisionEvaluator":
+        """Return an evaluator with independently owned OCCT topology and mesh.
+
+        Frame workers change top-level placements while proximity reads the
+        triangulation attached to each shape.  A deep geometry-and-mesh copy is
+        therefore required: sharing a ``TopoDS_TShape`` across workers would
+        reintroduce the same unsafe concurrent access avoided by disjoint pair
+        batching inside one evaluator.
+        """
+
+        duplicate = object.__new__(DynamicCollisionEvaluator)
+        duplicate._shapes = {
+            name: shape.copy(True, True) for name, shape in self._shapes.items()
+        }
+        duplicate._local_bounds = {
+            name: {
+                axis: list(values)
+                for axis, values in bounds.items()
+            }
+            for name, bounds in self._local_bounds.items()
+        }
+        duplicate._unique_mesh_definition_count = self._unique_mesh_definition_count
+        duplicate._unique_mesh_triangle_count = self._unique_mesh_triangle_count
+        duplicate._component_names = list(self._component_names)
+        duplicate._component_order = dict(self._component_order)
+        return duplicate
 
     def precompute_strict_containment(
         self,
@@ -326,22 +353,18 @@ class DynamicCollisionEvaluator:
             frame_placements.append(exact_placements)
             frame_bounds.append(exact_bounds)
 
-        jobs: list[tuple[str, str, list[int]]] = []
-        for first_name, second_name in self._pairs:
-            if (first_name, second_name) in excluded_pairs:
-                continue
-            candidate_frames = [
-                frame_offset
-                for frame_offset, bounds in enumerate(frame_bounds, start=1)
-                if bool(
-                    _aabb_evidence(
-                        bounds[first_name],
-                        bounds[second_name],
-                    )["overlaps_or_touches"]
-                )
-            ]
-            if candidate_frames:
-                jobs.append((first_name, second_name, candidate_frames))
+        frames_by_pair: dict[tuple[str, str], list[int]] = {}
+        for frame_offset, bounds in enumerate(frame_bounds, start=1):
+            for pair in _overlapping_component_pairs(bounds):
+                if pair not in excluded_pairs:
+                    frames_by_pair.setdefault(pair, []).append(frame_offset)
+        jobs = [
+            (first, second, frames_by_pair[(first, second)])
+            for first, second in sorted(
+                frames_by_pair,
+                key=lambda pair: tuple(self._component_order[name] for name in pair),
+            )
+        ]
 
         contained: set[tuple[int, tuple[str, str]]] = set()
         for pair_index, (first_name, second_name, candidate_frames) in enumerate(
@@ -448,6 +471,7 @@ class DynamicCollisionEvaluator:
             [str, str, str, int, int], None
         ]
         | None = None,
+        surface_worker_limit: int | None = None,
     ) -> dict[str, Any]:
         """Evaluate one pose with explicit reuse and exclusion semantics."""
 
@@ -480,20 +504,21 @@ class DynamicCollisionEvaluator:
             bounds[name] = _bounds(shape, path=f"placements.{name}.bounds")
 
         collision_results: dict[tuple[str, str], dict[str, Any]] = {}
-        candidates: list[tuple[str, str]] = []
-        for first_name, second_name in self._pairs:
-            pair = (first_name, second_name)
-            if pair in excluded_pairs:
-                continue
-            if pair in known_pair_results:
-                known = known_pair_results[pair]
-                if known is not None:
-                    collision_results[pair] = dict(known)
-                continue
-            broad_phase = _aabb_evidence(bounds[first_name], bounds[second_name])
-            if not bool(broad_phase["overlaps_or_touches"]):
-                continue
-            candidates.append(pair)
+        for pair, known in known_pair_results.items():
+            first_name, second_name = pair
+            if (
+                known is not None
+                and pair not in excluded_pairs
+                and first_name in self._component_order
+                and second_name in self._component_order
+                and self._component_order[first_name] < self._component_order[second_name]
+            ):
+                collision_results[pair] = dict(known)
+        candidates = sorted(
+            (pair for pair in _overlapping_component_pairs(bounds)
+             if pair not in excluded_pairs and pair not in known_pair_results),
+            key=lambda pair: tuple(self._component_order[name] for name in pair),
+        )
 
         candidate_count = len(candidates)
         exact_common_count = 0
@@ -554,7 +579,11 @@ class DynamicCollisionEvaluator:
             )
 
         surface_results = []
-        maximum_workers = max(1, min(4, os.cpu_count() or 1))
+        maximum_workers = (
+            max(1, min(4, os.cpu_count() or 1))
+            if surface_worker_limit is None
+            else max(1, int(surface_worker_limit))
+        )
         for batch in _disjoint_surface_job_batches(surface_jobs):
             worker_count = min(len(batch), maximum_workers)
             if worker_count > 1:
@@ -598,11 +627,13 @@ class DynamicCollisionEvaluator:
             }
         collisions = [
             collision_results[pair]
-            for pair in self._pairs
-            if pair in collision_results
+            for pair in sorted(
+                collision_results,
+                key=lambda pair: tuple(self._component_order[name] for name in pair),
+            )
         ]
         return {
-            "possible_pair_count": len(self._pairs),
+            "possible_pair_count": self.pair_count,
             "excluded_pair_count": len(excluded_pairs),
             "broad_phase_candidate_count": candidate_count,
             "exact_common_count": exact_common_count,
@@ -611,6 +642,29 @@ class DynamicCollisionEvaluator:
             "collision_count": len(collisions),
             "collisions": collisions,
         }
+
+
+def recommended_collision_frame_workers(
+    frame_count: int,
+    *,
+    cpu_count: int | None = None,
+) -> int:
+    """Balance independent-frame concurrency with evaluator-copy setup cost.
+
+    Each worker owns a deep copy of every collision BREP and triangulation.
+    The square-root bound keeps that one-time setup proportional to the useful
+    frame work while the CPU bound leaves a quarter of logical CPUs available
+    to VibeCAD and the rest of the system.
+    """
+
+    if isinstance(frame_count, bool) or not isinstance(frame_count, int) or frame_count < 1:
+        raise ValueError("frame_count must be a positive integer")
+    available = os.cpu_count() if cpu_count is None else cpu_count
+    if isinstance(available, bool) or not isinstance(available, int) or available < 1:
+        available = 1
+    cpu_target = max(1, math.floor(available * 0.75))
+    setup_target = max(1, math.ceil(math.sqrt(frame_count)))
+    return min(frame_count, cpu_target, setup_target)
 
 
 def evaluate_dynamic_collisions(
@@ -625,6 +679,8 @@ def evaluate_dynamic_collisions(
         [str, int, int, str, str, int, int], None
     ]
     | None = None,
+    frame_workers: int | None = None,
+    aggregate_progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Evaluate and compact deterministic collisions over a motion trace.
 
@@ -696,17 +752,35 @@ def evaluate_dynamic_collisions(
     for frame_index, pair in containment_witnesses:
         containment_pairs_by_frame.setdefault(frame_index, set()).add(pair)
 
-    frame_results: list[dict[str, Any]] = []
-    broad_phase_candidates = 0
-    exact_common_evaluations = 0
-    surface_proximity_evaluations = 0
-    containment_collisions = 0
-    for expected_index, frame in enumerate(solver_frames, start=1):
+    total_frames = len(solver_frames)
+    if frame_workers is None:
+        worker_count = recommended_collision_frame_workers(total_frames)
+    elif (
+        isinstance(frame_workers, bool)
+        or not isinstance(frame_workers, int)
+        or frame_workers < 1
+    ):
+        raise ValueError("frame_workers must be a positive integer or None")
+    else:
+        worker_count = min(total_frames, frame_workers)
+
+    if aggregate_progress_callback is not None:
+        aggregate_progress_callback(0, total_frames)
+
+    def evaluate_frame(
+        frame_evaluator: DynamicCollisionEvaluator,
+        expected_index: int,
+        frame: Mapping[str, Any],
+        *,
+        known_pairs: Mapping[tuple[str, str], Mapping[str, Any] | None],
+        parallel: bool,
+    ) -> tuple[int, dict[str, Any]]:
         if progress_callback is not None:
-            progress_callback("started", expected_index, len(frames) - 1)
-        evaluated = evaluator.evaluate_with_known_pairs(
+            if not parallel:
+                progress_callback("started", expected_index, total_frames)
+        evaluated = frame_evaluator.evaluate_with_known_pairs(
             frame.get("component_placements"),
-            known_pair_results=known_rigid_results,
+            known_pair_results=known_pairs,
             excluded_pairs=normalized_excluded_pairs,
             containment_pairs=containment_pairs_by_frame.get(
                 expected_index,
@@ -714,12 +788,12 @@ def evaluate_dynamic_collisions(
             ),
             pair_progress_callback=(
                 None
-                if pair_progress_callback is None
+                if parallel or pair_progress_callback is None
                 else lambda event, first, second, pair_index, pair_total: (
                     pair_progress_callback(
                         event,
                         expected_index,
-                        len(frames) - 1,
+                        total_frames,
                         first,
                         second,
                         pair_index,
@@ -727,35 +801,133 @@ def evaluate_dynamic_collisions(
                     )
                 )
             ),
+            surface_worker_limit=1 if parallel else None,
         )
-        broad_phase_candidates += int(evaluated["broad_phase_candidate_count"])
-        exact_common_evaluations += int(evaluated["exact_common_count"])
-        surface_proximity_evaluations += int(
-            evaluated["surface_proximity_count"]
-        )
-        containment_collisions += int(evaluated["containment_collision_count"])
-        collisions = list(evaluated["collisions"])
-        if expected_index == 1:
-            collisions_by_pair = {
-                (
-                    str(item["first_component"]),
-                    str(item["second_component"]),
-                ): item
-                for item in collisions
-            }
-            known_rigid_results = {
-                pair: collisions_by_pair.get(pair)
-                for pair in normalized_rigid_pairs
-            }
-        frame_results.append(
+        return (
+            expected_index,
             {
                 "frame_index": expected_index,
                 "nominal_time_s": nominal_times[expected_index],
-                "collisions": collisions,
-            }
+                "collisions": list(evaluated["collisions"]),
+                "evaluation": evaluated,
+            },
         )
-        if progress_callback is not None:
-            progress_callback("completed", expected_index, len(frames) - 1)
+
+    completed = 0
+    indexed_results: dict[int, dict[str, Any]] = {}
+    pending_frames = list(enumerate(solver_frames, start=1))
+
+    # A rigid pair's first-frame verdict is reused at every subsequent frame.
+    # Establish that verdict before independent frame workers begin.
+    if normalized_rigid_pairs:
+        first_index, first_frame = pending_frames.pop(0)
+        _index, first_result = evaluate_frame(
+            evaluator,
+            first_index,
+            first_frame,
+            known_pairs={},
+            parallel=worker_count > 1,
+        )
+        indexed_results[first_index] = first_result
+        collisions_by_pair = {
+            (
+                str(item["first_component"]),
+                str(item["second_component"]),
+            ): item
+            for item in first_result["collisions"]
+        }
+        known_rigid_results = {
+            pair: collisions_by_pair.get(pair)
+            for pair in normalized_rigid_pairs
+        }
+        completed = 1
+        if aggregate_progress_callback is not None:
+            aggregate_progress_callback(completed, total_frames)
+
+    if worker_count == 1:
+        for expected_index, frame in pending_frames:
+            _index, frame_result = evaluate_frame(
+                evaluator,
+                expected_index,
+                frame,
+                known_pairs=known_rigid_results,
+                parallel=False,
+            )
+            indexed_results[expected_index] = frame_result
+            completed += 1
+            if progress_callback is not None:
+                progress_callback("completed", expected_index, total_frames)
+            if aggregate_progress_callback is not None:
+                aggregate_progress_callback(completed, total_frames)
+    elif pending_frames:
+        active_workers = min(worker_count, len(pending_frames))
+        evaluators = [evaluator]
+        evaluators.extend(evaluator.fork() for _index in range(1, active_workers))
+        available_evaluators: SimpleQueue[DynamicCollisionEvaluator] = SimpleQueue()
+        for frame_evaluator in evaluators:
+            available_evaluators.put(frame_evaluator)
+        worker_state = local()
+
+        def initialize_frame_worker() -> None:
+            worker_state.evaluator = available_evaluators.get()
+
+        def evaluate_owned_frame(
+            expected_index: int,
+            frame: Mapping[str, Any],
+        ) -> tuple[int, dict[str, Any]]:
+            return evaluate_frame(
+                worker_state.evaluator,
+                expected_index,
+                frame,
+                known_pairs=known_rigid_results,
+                parallel=True,
+            )
+
+        futures = {}
+        with ThreadPoolExecutor(
+            max_workers=active_workers,
+            thread_name_prefix="vibecad-collision-frame",
+            initializer=initialize_frame_worker,
+        ) as executor:
+            for expected_index, frame in pending_frames:
+                future = executor.submit(
+                    evaluate_owned_frame,
+                    expected_index,
+                    frame,
+                )
+                futures[future] = expected_index
+            for future in as_completed(futures):
+                expected_index, frame_result = future.result()
+                indexed_results[expected_index] = frame_result
+                completed += 1
+                if aggregate_progress_callback is not None:
+                    aggregate_progress_callback(completed, total_frames)
+
+    ordered_results = [indexed_results[index] for index in range(1, total_frames + 1)]
+    frame_results = [
+        {
+            "frame_index": item["frame_index"],
+            "nominal_time_s": item["nominal_time_s"],
+            "collisions": item["collisions"],
+        }
+        for item in ordered_results
+    ]
+    broad_phase_candidates = sum(
+        int(item["evaluation"]["broad_phase_candidate_count"])
+        for item in ordered_results
+    )
+    exact_common_evaluations = sum(
+        int(item["evaluation"]["exact_common_count"])
+        for item in ordered_results
+    )
+    surface_proximity_evaluations = sum(
+        int(item["evaluation"]["surface_proximity_count"])
+        for item in ordered_results
+    )
+    containment_collisions = sum(
+        int(item["evaluation"]["containment_collision_count"])
+        for item in ordered_results
+    )
 
     return {
         "summary": summarize_dynamic_collision_frames(
@@ -837,21 +1009,23 @@ def summarize_dynamic_collision_frames(
     if (
         not isinstance(component_names, Sequence)
         or isinstance(component_names, (str, bytes))
-        or not 1 <= len(component_names) <= _MAX_COMPONENTS
+        or not component_names
     ):
         raise _error(
             "component_names",
-            f"must contain 1-{_MAX_COMPONENTS} stable identifiers",
+            "must contain at least one stable identifier",
         )
     names: list[str] = []
+    seen_names: set[str] = set()
     for index, name in enumerate(component_names):
         if not isinstance(name, str) or not _COMPONENT_ID.fullmatch(name):
             raise _error(
                 f"component_names[{index}]",
                 "must be a stable identifier",
             )
-        if name in names:
+        if name in seen_names:
             raise _error("component_names", f"contains duplicate {name!r}")
+        seen_names.add(name)
         names.append(name)
     if (
         not isinstance(frames, Sequence)
@@ -1122,6 +1296,7 @@ def summarize_dynamic_collision_frames(
     )
     summary = {
         "schema": DYNAMIC_COLLISION_TRACE_SCHEMA,
+        "evaluation_mode": "full",
         "status": "complete" if not warnings else "incomplete",
         "analysis_complete": not warnings,
         "geometry_authority": (
@@ -1138,6 +1313,7 @@ def summarize_dynamic_collision_frames(
         ),
         "component_count": len(names),
         "possible_pair_count": (len(names) * (len(names) - 1)) // 2,
+        "requested_frame_count": len(frames),
         "evaluated_frame_count": len(frames),
         # True means the entire requested trace was evaluated and no collision
         # was found. An interrupted geometry check is deliberately not reported
@@ -1152,6 +1328,51 @@ def summarize_dynamic_collision_frames(
         "warning_count": len(warnings),
         "warnings": warnings,
     }
+    return summary
+
+
+def skipped_dynamic_collision_summary(
+    component_names: Sequence[str],
+    *,
+    requested_frame_count: int,
+    warning: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Describe an explicit collision opt-out without inventing safe evidence."""
+
+    if (
+        isinstance(requested_frame_count, bool)
+        or not isinstance(requested_frame_count, int)
+        or requested_frame_count < 1
+    ):
+        raise _error("requested_frame_count", "must be a positive integer")
+    empty_frames = [
+        {
+            "frame_index": index,
+            "nominal_time_s": None,
+            "collisions": [],
+        }
+        for index in range(1, requested_frame_count + 1)
+    ]
+    summary = summarize_dynamic_collision_frames(component_names, empty_frames)
+    normalized_warnings = summarize_dynamic_collision_frames(
+        component_names,
+        empty_frames,
+        evaluation_warnings=[warning],
+    )["warnings"]
+    summary.update(
+        {
+            "evaluation_mode": "off",
+            "status": "not_checked",
+            "analysis_complete": False,
+            "geometry_authority": "not_evaluated",
+            "collision_definition": "not_evaluated",
+            "evaluated_frame_count": 0,
+            "collision_free": False,
+            "interference_volume_complete": False,
+            "warning_count": 1,
+            "warnings": normalized_warnings,
+        }
+    )
     return summary
 
 
@@ -1292,6 +1513,33 @@ def _transformed_bounds(
     }
 
 
+def _overlapping_component_pairs(
+    bounds: Mapping[str, Mapping[str, Sequence[float]]],
+):
+    """Yield all touching/overlapping boxes without allocating all possible pairs.
+
+    Sweep along the widest scene axis; retain original component ordering in
+    each pair. Exact containment and surface tests still decide collisions.
+    Dense scenes can genuinely contain quadratic candidate counts, but sparse
+    assemblies need only their active sweep interval and actual candidates.
+    """
+    if len(bounds) < 2:
+        return
+    order = {name: index for index, name in enumerate(bounds)}
+    axis = max(range(3), key=lambda index:
+        max(box['maximum_mm'][index] for box in bounds.values())
+        - min(box['minimum_mm'][index] for box in bounds.values()))
+    active: list[str] = []
+    for name in sorted(bounds, key=lambda name: bounds[name]['minimum_mm'][axis]):
+        minimum = bounds[name]['minimum_mm'][axis]
+        active = [other for other in active
+                  if bounds[other]['maximum_mm'][axis] >= minimum]
+        for other in active:
+            if _aabb_evidence(bounds[other], bounds[name])['overlaps_or_touches']:
+                yield (other, name) if order[other] < order[name] else (name, other)
+        active.append(name)
+
+
 def _aabb_evidence(
     first: Mapping[str, Sequence[float]],
     second: Mapping[str, Sequence[float]],
@@ -1351,11 +1599,11 @@ def _prepared_components(
 ) -> tuple[dict[str, Any], dict[str, dict[str, list[float]]]]:
     if (
         not isinstance(components, Mapping)
-        or not 1 <= len(components) <= _MAX_COMPONENTS
+        or not components
     ):
         raise _error(
             "components",
-            f"must contain 1-{_MAX_COMPONENTS} named solid shapes",
+            "must contain at least one named solid shape",
         )
     placed: dict[str, Any] = {}
     bounds: dict[str, dict[str, list[float]]] = {}
@@ -1382,11 +1630,11 @@ def _component_pairs(
     if (
         not isinstance(pairs, Sequence)
         or isinstance(pairs, (str, bytes))
-        or not 1 <= len(pairs) <= _MAX_PAIRS
+        or not pairs
     ):
         raise _error(
             "pairs",
-            f"must contain 1-{_MAX_PAIRS} explicit component pairs",
+            "must contain at least one explicit component pair",
         )
     clean_pairs: list[tuple[str, str]] = []
     seen_pairs: set[tuple[str, str]] = set()
@@ -1524,7 +1772,13 @@ def _surface_collision_evidence(
     """
 
     try:
-        result = first_shape.proximity(second_shape, 0.0)
+        # The FreeCAD wrapper only calls OCCT's SetTolerance when this value is
+        # positive. Passing zero leaves a backend-dependent default that can
+        # return empty overlap maps even for intersecting closed solids.
+        result = first_shape.proximity(
+            second_shape,
+            _COLLISION_PROXIMITY_TOLERANCE_MM,
+        )
         if (
             not isinstance(result, tuple)
             or len(result) != 2

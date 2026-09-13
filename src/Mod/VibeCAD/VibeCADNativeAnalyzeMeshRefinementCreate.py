@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -223,7 +224,7 @@ def create_mesh_refinement(
             f"The FEM mesh-refinement factory failed: {exc}",
             error_code="NATIVE_ANALYZE_FACTORY_FAILED",
         ) from exc
-    refinement.Label = prepared.label
+    prepared = assign_prepared_label(refinement, prepared)
     if prepared.references:
         refinement.References = reference_value(prepared.references)
     apply_refinement_values(refinement, prepared.values)

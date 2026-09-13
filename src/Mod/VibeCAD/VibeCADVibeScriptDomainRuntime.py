@@ -36,6 +36,8 @@ from VibeCADDocumentReferences import (
     normalize_document_reference,
     resolve_reference_target,
 )
+from VibeCADCooperativeExecution import run_document_thread_steps
+from VibeCADPublicationProgress import PublicationProgress
 from VibeCADMechanismEngine import (
     MECHANISM_SCENARIO_SCHEMA,
     MECHANISM_SOLVE_REPORT_SCHEMA,
@@ -46,26 +48,30 @@ from VibeCADMechanismEngine import (
     normalize_mechanism_solve_report,
     normalize_mechanism_static_check,
     normalize_mechanism_verification_report,
+    quaternion_rotation_distance_degrees,
     solver_validation_scope,
 )
 from VibeCADMechanismGeometry import (
     measure_static_mechanism_pairs,
+    skipped_dynamic_collision_summary,
     summarize_dynamic_collision_frames,
 )
 from VibeCADTools import tool_failure
 import VibeCADVibeScriptDomains as contracts
+from VibeCADVibeScriptFileIO import (
+    TELEMETRY_IO_TIMEOUT_SECONDS,
+    atomic_write_text,
+    read_text_shared,
+)
 from vibescript_domain_api import create_domain_api
 
 WORKER_SCHEMA = "vibecad-vibescript-domain-worker-v2"
 _PROGRAM_ID = re.compile(r"^[0-9a-f]{32}$")
 _PROGRAM_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9 ._-]{0,119}$")
 _ASYNC_PUBLICATION_KEY = "_vibecad_domain_publication"
-_STRUCTURED_DEFINITION_LIMIT = 1_000_000
-_MAX_REFERENCE_SHAPES = 128
 _MAX_REFERENCE_BREP_BYTES = 256 * 1024 * 1024
 _PARTDESIGN_NATIVE_HISTORY_SCHEMA = "vibecad-partdesign-native-history-v1"
 _MAX_PARTDESIGN_NATIVE_HISTORY_BYTES = 256 * 1024 * 1024
-_MAX_PARTDESIGN_NATIVE_HISTORY_OBJECTS = 16_384
 _PARTDESIGN_NATIVE_HISTORY_TYPES = frozenset(
     {
         "Sketcher::SketchObject",
@@ -108,7 +114,6 @@ _SKETCHER_PROFILE_ENDPOINT_MATCH_TOLERANCE_MM = 1.0e-6
 _ASSEMBLY_SIMULATION_TRACE_SCHEMA = "vibecad-assembly-simulation-trace-v1"
 _MAX_ASSEMBLY_SIMULATION_TRACE_BYTES = 64 * 1024 * 1024
 _ASSEMBLY_EXPLODED_VIEW_SCHEMA = "vibecad-assembly-exploded-view-v1"
-_MAX_ASSEMBLY_HIERARCHY_JSON_BYTES = 8 * 1024 * 1024
 _PLACEMENT_MATRIX_FIELDS = (
     "A11",
     "A12",
@@ -319,30 +324,34 @@ def _raise(
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    atomic_write_text(
+        path,
+        json.dumps(
+            dict(payload),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ),
+    )
+
+
+def _read_json(
+    path: Path,
+    label: str,
+    *,
+    retry_timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     try:
-        temporary.write_text(
-            json.dumps(
-                dict(payload),
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ),
-            encoding="utf-8",
+        text = (
+            read_text_shared(path)
+            if retry_timeout_seconds is None
+            else read_text_shared(
+                path,
+                retry_timeout_seconds=retry_timeout_seconds,
+            )
         )
-        temporary.replace(path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _read_json(path: Path, label: str) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(text)
     except (OSError, ValueError) as exc:
         raise ValueError(f"Could not read {label} at {path}: {exc}") from exc
     if not isinstance(value, dict):
@@ -362,6 +371,7 @@ def _stage_worker_bundle(
             f"VibeScript domain {clean_domain!r} has no isolated worker bundle."
         )
     filenames = (
+        "VibeCADVibeScriptFileIO.py",
         "vibescript_domain_api.py",
         "vibescript_worker_progress.py",
         *domain_files,
@@ -1028,10 +1038,6 @@ def _input_references(value: Any) -> list[dict[str, str]]:
             walk(child)
 
     walk(value)
-    if len(result) > _MAX_REFERENCE_SHAPES:
-        raise ValueError(
-            f"A program may reference at most {_MAX_REFERENCE_SHAPES} document objects."
-        )
     return result
 
 
@@ -1800,18 +1806,7 @@ def _finalize_assembly_hierarchy(
         if key not in {"nodes", "_detached_shapes"}
     }
     descriptor["nodes"] = nodes
-    encoded = json.dumps(
-        descriptor,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    if len(encoded) > _MAX_ASSEMBLY_HIERARCHY_JSON_BYTES:
-        raise ValueError(
-            "The authenticated Assembly source hierarchy exceeds the 8 MiB metadata limit. "
-            "Remove unrelated scalar properties or split the source into smaller modules."
-        )
+    _validate_json_serializable(descriptor)
     return descriptor, total_bytes
 
 
@@ -2410,6 +2405,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
     arguments = dict(captured["arguments"])
     project_root = Path(str(captured["project_root"]))
     staging: Path | None = None
+    patch_summary: dict[str, Any] | None = None
     try:
         if operation == "create_program":
             label = str(arguments.get("program_name") or "").strip()
@@ -2487,7 +2483,7 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                 )
             )
             if manifest.get("migration_required") and not complete_contract_replacement:
-                action = "vibescript.edit_source"
+                action = "vibescript.reconfigure_program"
                 _raise(
                     tool_name,
                     "PROGRAM_RECONFIGURATION_REQUIRED",
@@ -2554,6 +2550,37 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
                         "migration_action",
                     ):
                         manifest.pop(key, None)
+            elif operation == "apply_patch":
+                from VibeCADVibeScriptPatch import (
+                    SourcePatchError,
+                    apply_source_patch,
+                )
+
+                try:
+                    patched = apply_source_patch(
+                        previous_source,
+                        arguments.get("patch"),
+                    )
+                except SourcePatchError as exc:
+                    _raise(
+                        tool_name,
+                        exc.code,
+                        "precondition",
+                        str(exc),
+                        requested={
+                            "program_id": program_id,
+                            "expected_revision": base_revision,
+                        },
+                        observed=exc.details,
+                        required_changes=[
+                            {
+                                "tool": "vibescript.read_source",
+                                "arguments": {"source_id": program_id},
+                            }
+                        ],
+                    )
+                source = str(patched["source"])
+                patch_summary = dict(patched["summary"])
             elif operation == "set_inputs":
                 inputs = _merge_patch(dict(inputs or {}), arguments.get("patch"))
             elif operation == "reconfigure_program":
@@ -2719,10 +2746,15 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "api_exports": list(pack.api_exports),
             "output_types": list(pack.output_types),
             "compatibility_methods": list(compatibility_methods),
-            "max_operations": 200_000,
+            # Source line/call counts are not a measure of model validity or
+            # resource use. Large generated programs must not hit a size quota.
+            "max_operations": 0,
             "max_seconds": float(captured["timeout_seconds"]),
             "memory_limit_bytes": int(captured["memory_limit_bytes"]),
-            "cpu_limit_seconds": max(1, int(float(captured["timeout_seconds"]))),
+            # Source-authored Python retains the configured source-time limit.
+            # RLIMIT_CPU covers trusted CAD kernels too,
+            # so applying that same deadline would kill healthy native work.
+            "cpu_limit_seconds": 0,
             "output_limit_bytes": 256 * 1024 * 1024,
             "point_artifacts": worker_point_artifacts,
         }
@@ -2764,6 +2796,8 @@ def prepare_candidate(captured: Mapping[str, Any]) -> dict[str, Any]:
             "allow_unchanged_revision": bool(captured.get("allow_unchanged_revision")),
             "finalized": False,
         }
+        if patch_summary is not None:
+            prepared["patch_summary"] = patch_summary
         return prepared if reference_requirements else finalize_candidate(prepared, [])
     except DomainRuntimeFailure:
         raise
@@ -2823,7 +2857,11 @@ def _worker_progress(prepared: Mapping[str, Any]) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
-        value = _read_json(path, "domain worker progress")
+        value = _read_json(
+            path,
+            "domain worker progress",
+            retry_timeout_seconds=TELEMETRY_IO_TIMEOUT_SECONDS,
+        )
     except ValueError as exc:
         return {"unavailable": True, "error": str(exc)}
     return value
@@ -2834,20 +2872,23 @@ def execute_candidate(
     *,
     cancellation_check: Callable[[], bool] | None,
 ) -> dict[str, Any]:
-    from VibeCADScriptedProcess import run_process
+    from VibeCADHostIsolation import execute_staged_script
 
-    code = (
-        "import os,runpy,sys;"
-        "sys.path.insert(0,os.getcwd());"
-        "runpy.run_path('worker.py',run_name='__main__')"
+    domain = str(getattr(prepared.get("pack"), "domain", "") or "")
+    cpu_slots = (
+        max(1, ((os.cpu_count() or 1) * 3) // 4)
+        if domain == "assembly"
+        else 1
     )
-    process = run_process(
-        [str(prepared["freecadcmd_executable"]), "--safe-mode", "-c", code],
-        cwd=str(prepared["staging"]),
+    process = execute_staged_script(
+        executable=str(prepared["freecadcmd_executable"]),
+        module_root=Path(__file__).resolve().parent,
+        staging=str(prepared["staging"]),
+        script="worker.py",
         environment=_worker_environment(prepared),
         cancellation_check=cancellation_check,
-        timeout_seconds=float(prepared["timeout_seconds"]),
         memory_limit_bytes=int(prepared["memory_limit_bytes"]),
+        cpu_slots=cpu_slots,
     )
     progress = _worker_progress(prepared)
     if progress is not None:
@@ -2876,11 +2917,18 @@ def execute_candidate(
             cancelled=True,
         )
     if process.get("timed_out"):
+        timeout_error = (
+            f"VibeScript domain execution made no observable progress for "
+            f"{prepared['timeout_seconds']:g} seconds."
+            if process.get("timeout_mode") == "inactivity"
+            else f"VibeScript domain execution exceeded "
+            f"{prepared['timeout_seconds']:g} seconds."
+        )
         return _failure(
             str(prepared["tool_name"]),
             "DOMAIN_EXECUTION_TIMEOUT",
             "external_process",
-            f"VibeScript domain execution exceeded {prepared['timeout_seconds']:g} seconds.",
+            timeout_error,
             observed={
                 **process,
                 "accepted_live_outputs_preserved": bool(
@@ -3035,10 +3083,12 @@ def _validate_shape_class(output_type: str, facts: Mapping[str, Any]) -> None:
         )
 
 
-def _detached_shape_facts(shape: Any, *, max_subelements: int) -> dict[str, Any]:
+def _detached_shape_facts(
+    shape: Any, *, max_subelements: int, assume_valid: bool = False,
+) -> dict[str, Any]:
     from vibescript_part_worker import part_shape_facts
 
-    return part_shape_facts(shape, max_subelements=max_subelements)
+    return part_shape_facts(shape, max_subelements=max_subelements, assume_valid=assume_valid)
 
 
 def _finite_vector(value: Any, label: str) -> list[float]:
@@ -3243,15 +3293,7 @@ def _validate_spreadsheet_execution(
             prepared,
             f"outputs.{name}.definition",
         )
-        encoded_definition = json.dumps(
-            definition,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if len(encoded_definition) > _STRUCTURED_DEFINITION_LIMIT:
-            raise ValueError(f"Spreadsheet output {name!r} definition is too large.")
+        _validate_json_serializable(definition)
 
         validation = item.get("sheet_validation")
         if not isinstance(validation, dict) or set(validation) != validation_fields:
@@ -3501,17 +3543,7 @@ def _validate_spreadsheet_execution(
                 )
             _validate_definition_value(sample["value"], prepared, f"{path}.value")
 
-        encoded_validation = json.dumps(
-            validation,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if len(encoded_validation) > _STRUCTURED_DEFINITION_LIMIT:
-            raise ValueError(
-                f"Spreadsheet output {name!r} native validation is too large."
-            )
+        _validate_json_serializable(validation)
         expected_global_item = {
             "name": name,
             "type": "sheet",
@@ -3672,15 +3704,7 @@ def _validate_material_execution(
             context=f"outputs.{name}.definition",
         )
         _validate_definition_value(definition, prepared, f"outputs.{name}.definition")
-        encoded_definition = json.dumps(
-            definition,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if len(encoded_definition) > _STRUCTURED_DEFINITION_LIMIT:
-            raise ValueError(f"Material output {name!r} definition is too large.")
+        _validate_json_serializable(definition)
 
         validation = item.get("material_validation")
         specific_fields = (
@@ -3839,15 +3863,7 @@ def _validate_material_execution(
             raise ValueError(f"The Material worker reported inconsistent {field}.")
     if global_validation.get("outputs") != expected_summaries:
         raise ValueError("The Material worker global output summary is inconsistent.")
-    encoded_validation = json.dumps(
-        global_validation,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    if len(encoded_validation) > _STRUCTURED_DEFINITION_LIMIT:
-        raise ValueError("The Material worker validation summary is too large.")
+    _validate_json_serializable(global_validation)
     return dict(global_validation)
 
 
@@ -4493,15 +4509,7 @@ def _validate_mesh_execution(
             prepared,
             f"outputs.{name}.mesh_data",
         )
-        encoded_data = json.dumps(
-            data,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if len(encoded_data) > _STRUCTURED_DEFINITION_LIMIT:
-            raise ValueError(f"Mesh output {name!r} native readback is too large.")
+        _validate_json_serializable(data)
         item["definition"] = definition
         item["mesh_data"] = data
         item["facts"] = observed
@@ -5010,17 +5018,7 @@ def _validate_meshpart_execution(
             prepared,
             f"outputs.{name}.meshpart_data",
         )
-        encoded = json.dumps(
-            data,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
-            raise ValueError(
-                f"MeshPart output {name!r} native conversion data is too large."
-            )
+        _validate_json_serializable(data)
         item["definition"] = definition
         expected_summaries.append(expected_summary)
     expected_counts = {
@@ -6756,11 +6754,14 @@ def _assembly_placement_delta(
         "translation_distance_mm",
         "rotation_degrees",
     }
-    if not isinstance(value, dict) or set(value) != fields:
+    if not isinstance(value, dict) or set(value) not in (fields, fields | {"rotation_metric"}):
         raise ValueError(
             f"{label} must contain exactly translation_mm, "
-            "translation_distance_mm, and rotation_degrees."
+            "translation_distance_mm, and rotation_degrees, with optional rotation_metric."
         )
+    metric = value.get("rotation_metric")
+    if "rotation_metric" in value and metric != "quaternion_chord_v1":
+        raise ValueError(f"{label}.rotation_metric is unsupported.")
     initial_native = _assembly_native_placement_from_matrix(
         initial["matrix"], f"{label} initial matrix"
     )
@@ -6784,24 +6785,28 @@ def _assembly_placement_delta(
     )[0]
     initial_quaternion = [float(number) for number in initial_native.Rotation.Q]
     solved_quaternion = [float(number) for number in solved_native.Rotation.Q]
-    dot = abs(
-        sum(
-            initial_quaternion[index] * solved_quaternion[index]
-            for index in range(4)
-        )
+    expected_rotation = quaternion_rotation_distance_degrees(initial_quaternion, solved_quaternion)
+    # Older workers used 2*acos(dot(q1,q2)). Near identity, roundoff in
+    # quaternion normalization and the four-term dot product is amplified by
+    # acos. Allow a conservative 16-ulp dot-product error for stored results;
+    # new chord-metric results retain the tighter angular check.
+    rotation_tolerance = (
+        1.0e-7 if metric else math.degrees(2.0 * math.acos(1.0 - 16 * math.ulp(1.0)))
     )
-    expected_rotation = math.degrees(2.0 * math.acos(max(-1.0, min(1.0, dot))))
     rotation = _assembly_close_numbers(
         [value.get("rotation_degrees")],
         [expected_rotation],
         f"{label}.rotation_degrees",
-        absolute_tolerance=1.0e-7,
+        absolute_tolerance=rotation_tolerance,
     )[0]
-    return {
+    result = {
         "translation_mm": translation,
         "translation_distance_mm": distance,
         "rotation_degrees": rotation,
     }
+    if metric:
+        result["rotation_metric"] = metric
+    return result
 
 
 def _assembly_validate_placement_fact(
@@ -9541,7 +9546,11 @@ def _validate_assembly_execution(
             "frames_per_second",
             "estimated_frame_limit",
         }
-        optional_simulation_properties = {"label", "motion_names"}
+        optional_simulation_properties = {
+            "label",
+            "motion_names",
+            "collision_mode",
+        }
         if (
             not isinstance(simulation_properties, dict)
             or not required_simulation_properties <= set(simulation_properties)
@@ -9592,14 +9601,17 @@ def _validate_assembly_execution(
             )
         frames_per_second = simulation_properties["frames_per_second"]
         estimated_frame_limit = simulation_properties["estimated_frame_limit"]
+        collision_mode = str(
+            simulation_properties.get("collision_mode") or "full"
+        )
         if (
             type(frames_per_second) is not int
             or not 1 <= frames_per_second <= 240
             or type(estimated_frame_limit) is not int
             or estimated_frame_limit
             != math.ceil((end_time - start_time) / time_step) + 2
-            or not 2 <= estimated_frame_limit <= 10_000
-            or estimated_frame_limit * len(components) > 100_000
+            or estimated_frame_limit < 2
+            or collision_mode not in {"full", "off"}
         ):
             raise ValueError(
                 f"Simulation output {simulation_name!r} changed its bounded frame "
@@ -9742,7 +9754,6 @@ def _validate_assembly_execution(
         if (
             not isinstance(raw_frames, list)
             or not 2 <= len(raw_frames) <= estimated_frame_limit
-            or len(raw_frames) * len(component_names) > 100_000
         ):
             raise ValueError(f"{context} has an invalid frame or pose count.")
         frames: list[dict[str, Any]] = []
@@ -9799,18 +9810,35 @@ def _validate_assembly_execution(
         # operations away from the GUI thread. The host authenticates its trace
         # artifact and component inputs, validates every pair record below, and
         # independently derives the complete summary from those frame records.
-        expected_collision_summary = summarize_dynamic_collision_frames(
-            component_names,
-            [
-                {
-                    "frame_index": int(frame["frame_index"]),
-                    "nominal_time_s": frame["nominal_time_s"],
-                    "collisions": list(frame["collisions"]),
-                }
-                for frame in frames[1:]
-            ],
-            evaluation_warnings=trace.get("collision_warnings"),
-        )
+        collision_evidence_frames = [
+            {
+                "frame_index": int(frame["frame_index"]),
+                "nominal_time_s": frame["nominal_time_s"],
+                "collisions": list(frame["collisions"]),
+            }
+            for frame in frames[1:]
+        ]
+        if collision_mode == "off":
+            raw_warnings = trace.get("collision_warnings")
+            if not isinstance(raw_warnings, list) or len(raw_warnings) != 1:
+                raise ValueError(
+                    f"{context} must identify its skipped collision analysis."
+                )
+            expected_collision_summary = skipped_dynamic_collision_summary(
+                component_names,
+                requested_frame_count=len(collision_evidence_frames),
+                warning=raw_warnings[0],
+            )
+            if any(frame["collisions"] for frame in collision_evidence_frames):
+                raise ValueError(
+                    f"{context} invented collision evidence while analysis was off."
+                )
+        else:
+            expected_collision_summary = summarize_dynamic_collision_frames(
+                component_names,
+                collision_evidence_frames,
+                evaluation_warnings=trace.get("collision_warnings"),
+            )
         if (
             trace.get("collision_summary") != expected_collision_summary
             or frames[0]["collisions"] != []
@@ -10092,15 +10120,7 @@ def _validate_assembly_execution(
             prepared,
             f"outputs.{item['name']}.assembly_data",
         )
-        encoded = json.dumps(
-            data,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
-            raise ValueError(f"Output {item['name']!r} assembly metadata is too large.")
+        _validate_json_serializable(data)
     return dict(validation)
 
 
@@ -10516,10 +10536,10 @@ def _validate_sketcher_execution(
         raise ValueError("api.sketch must serialize exactly geometry and constraints.")
     geometry = arguments[0]
     constraints = arguments[1]
-    if not isinstance(geometry, list) or not 1 <= len(geometry) <= 4096:
-        raise ValueError("A Sketcher definition must contain 1-4096 geometry values.")
-    if not isinstance(constraints, list) or len(constraints) > 16384:
-        raise ValueError("A Sketcher definition may contain at most 16384 constraints.")
+    if not isinstance(geometry, list) or not geometry:
+        raise ValueError("A Sketcher definition must contain geometry values.")
+    if not isinstance(constraints, list):
+        raise ValueError("A Sketcher definition must contain a constraint list.")
     _exact_mapping(
         properties,
         path="api.sketch.properties",
@@ -11168,15 +11188,7 @@ def _validate_sketcher_execution(
     )
     if any(constraint_issues.values()):
         raise ValueError("An accepted Sketcher candidate reports constraint issues.")
-    encoded = json.dumps(
-        validation,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
-        raise ValueError("The Sketcher native validation is too large.")
+    _validate_json_serializable(validation)
     item["sketch_validation"] = dict(validation)
     return dict(validation)
 
@@ -11769,15 +11781,7 @@ def _validate_draft_execution(
             prepared,
             f"outputs.{name}.draft_data",
         )
-        encoded = json.dumps(
-            data,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
-            raise ValueError(f"Draft output {name!r} native readback is too large.")
+        _validate_json_serializable(data)
 
     expected_summary = [
         {
@@ -12472,15 +12476,7 @@ def _validate_surface_execution(
             prepared,
             f"outputs.{name}.surface_data",
         )
-        encoded_data = json.dumps(
-            data,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if len(encoded_data) > _STRUCTURED_DEFINITION_LIMIT:
-            raise ValueError(f"Surface output {name!r} native readback is too large.")
+        _validate_json_serializable(data)
 
         for reference_payload, reference_path in _surface_definition_references(
             definition,
@@ -12597,6 +12593,51 @@ def _validate_surface_execution(
     return dict(validation)
 
 
+def _validate_json_serializable(value: Any) -> None:
+    """Check strict JSON values without formatting and discarding their text."""
+    active: set[int] = set()
+
+    def check(item: Any) -> None:
+        if item is None or isinstance(item, (str, bool)):
+            return
+        if isinstance(item, int):
+            # Preserve the interpreter's integer-conversion contract, including
+            # IntEnum handling and its configured large-integer digit policy.
+            int.__repr__(item)
+            return
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("Out of range float values are not JSON compliant")
+            return
+        if not isinstance(item, (dict, list, tuple)):
+            raise TypeError(
+                f"Object of type {type(item).__name__} is not JSON serializable"
+            )
+        identity = id(item)
+        if identity in active:
+            raise ValueError("Circular reference detected")
+        active.add(identity)
+        try:
+            if isinstance(item, dict):
+                # Keep sort_keys=True's mixed-key rejection as well as JSON's
+                # key-type and finite-number rules. No encoded payload is built.
+                for key, child in sorted(item.items()):
+                    if key is not None and not isinstance(key, (str, int, float)):
+                        raise TypeError(
+                            "keys must be str, int, float, bool or None, "
+                            f"not {type(key).__name__}"
+                        )
+                    check(key)
+                    check(child)
+            else:
+                for child in item:
+                    check(child)
+        finally:
+            active.remove(identity)
+
+    check(value)
+
+
 def _validate_definition_value(
     value: Any,
     prepared: Mapping[str, Any],
@@ -12628,7 +12669,9 @@ def _validate_definition_value(
     if isinstance(value, str):
         if value.startswith(("/", "\\")) or _DRIVE_PATH.match(value):
             raise ValueError(f"{path} cannot contain a raw filesystem path.")
-        if ".." in Path(value.replace("\\", "/")).parts:
+        # Most definition strings are identifiers, not paths. Only parse when
+        # a parent segment is possible; retain the exact platform path check.
+        if ".." in value and ".." in Path(value.replace("\\", "/")).parts:
             raise ValueError(f"{path} cannot traverse a filesystem path.")
         return
     if isinstance(value, list):
@@ -12769,15 +12812,7 @@ def _validate_robot_execution(
             raise ValueError(
                 f"Robot output {name!r} native readback disagrees with its definition."
             )
-        encoded = json.dumps(
-            data,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
-            raise ValueError(f"Robot output {name!r} native readback is too large.")
+        _validate_json_serializable(data)
         if str(item["type"]) != "simulation":
             continue
         if (
@@ -15141,15 +15176,11 @@ def _techdraw_projection_state(
         "TechDraw::DrawProjGroupItem",
     }:
         raise ValueError(f"{path} has an unsupported projection contract.")
-    for count_field, maximum in (
-        ("edge_count", 200_000),
-        ("face_count", 50_000),
-        ("vertex_count", 250_000),
-    ):
+    for count_field in ("edge_count", "face_count", "vertex_count"):
         value = data.get(count_field)
         minimum = 1 if count_field == "edge_count" else 0
-        if type(value) is not int or not minimum <= int(value) <= maximum:
-            raise ValueError(f"{path}.{count_field} is outside its bounded range.")
+        if type(value) is not int or value < minimum:
+            raise ValueError(f"{path}.{count_field} is below its required minimum.")
     edge_count = int(data["edge_count"])
     face_count = int(data["face_count"])
     classes = data.get("edge_classes")
@@ -16051,7 +16082,6 @@ def _validate_partdesign_native_history(
     }
     body_names: set[str] = set()
     document_object_names: set[str] = set()
-    total_objects = 0
     total_content_bytes = 0
     for history_index, history in enumerate(histories):
         path = f"partdesign_native_history.outputs[{history_index}]"
@@ -16082,9 +16112,6 @@ def _validate_partdesign_native_history(
         raw_objects = history.get("objects")
         if not isinstance(raw_objects, list):
             raise ValueError(f"{path}.objects must be an array.")
-        total_objects += len(raw_objects)
-        if total_objects > _MAX_PARTDESIGN_NATIVE_HISTORY_OBJECTS:
-            raise ValueError("Part Design native history contains too many objects.")
 
         if any(not isinstance(item, Mapping) for item in raw_objects):
             raise ValueError(f"{path}.objects contains a malformed entry.")
@@ -16174,6 +16201,26 @@ def _validate_partdesign_native_history(
     }
 
 
+def _prepare_brep_outputs(outputs: list[Any], staging: Path) -> dict[int, Any]:
+    """Import independent artifacts once on the native application compute pool."""
+    paths = {}
+    for index, item in enumerate(outputs):
+        if not isinstance(item, dict):
+            raise ValueError(f"Worker output {index} is malformed.")
+        if item.get("artifact_kind") != "brep":
+            continue
+        path = (staging / str(item.get("artifact_path") or "")).resolve()
+        if staging not in path.parents or not path.is_file():
+            raise ValueError(f"BREP output {item.get('name')!r} is missing.")
+        paths[index] = str(path)
+    if not paths:
+        return {}
+    import Part
+
+    shapes = Part.readBrepShapes(list(paths.values()))
+    return dict(zip(paths, shapes, strict=True))
+
+
 def validate_candidate(
     prepared: Mapping[str, Any], execution: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -16198,13 +16245,14 @@ def validate_candidate(
             "Worker outputs do not exactly match the declared output order."
         )
     staging = Path(str(prepared["staging"])).resolve()
+    detached_breps = _prepare_brep_outputs(outputs, staging)
     validated: list[dict[str, Any]] = []
     partdesign_material_resolver = None
     if pack.domain == "partdesign":
         from vibescript_partdesign_worker import PartDesignMaterialResolver
 
         partdesign_material_resolver = PartDesignMaterialResolver()
-    for declaration, raw in zip(expected, outputs):
+    for output_index, (declaration, raw) in enumerate(zip(expected, outputs)):
         if not isinstance(raw, dict) or raw.get("type") != declaration["type"]:
             raise ValueError(f"Output {declaration['name']!r} has the wrong type.")
         item = dict(raw)
@@ -16223,15 +16271,7 @@ def validate_candidate(
                 prepared,
                 f"outputs.{declaration['name']}.operation_diagnostics",
             )
-        encoded = json.dumps(
-            definition,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
-            raise ValueError(f"Output {declaration['name']!r} definition is too large.")
+        _validate_json_serializable(definition)
         output_type = str(item["type"])
         if item.get("artifact_kind") == "brep":
             import Part
@@ -16239,10 +16279,7 @@ def validate_candidate(
             path = (staging / str(item.get("artifact_path") or "")).resolve()
             if staging not in path.parents or not path.is_file():
                 raise ValueError(f"BREP output {declaration['name']!r} is missing.")
-            shape = Part.Shape()
-            shape.importBrep(str(path))
-            if shape.isNull() or not shape.isValid():
-                raise ValueError(f"BREP output {declaration['name']!r} is invalid.")
+            shape = detached_breps[output_index]
             reported_facts = dict(item.get("facts") or {})
             detail_limit = int(reported_facts.get("subelement_detail_limit", -1))
             if not 0 <= detail_limit <= 256:
@@ -16250,7 +16287,9 @@ def validate_candidate(
                     f"BREP output {declaration['name']!r} reported an invalid topology "
                     "detail limit."
                 )
-            facts = _detached_shape_facts(shape, max_subelements=detail_limit)
+            facts = _detached_shape_facts(
+                shape, max_subelements=detail_limit, assume_valid=True
+            )
             for key in ("solids", "shells", "faces", "wires", "edges", "vertices"):
                 if int(reported_facts.get(key, -1)) != int(facts[key]):
                     raise ValueError(
@@ -16516,7 +16555,7 @@ def validate_candidate(
         )
     elif pack.domain == "assembly":
         raw_members = execution.get("assembly_members", [])
-        if not isinstance(raw_members, list) or len(raw_members) > 8192:
+        if not isinstance(raw_members, list):
             raise ValueError("The Assembly worker returned malformed owned members.")
         public_names = {str(item["name"]) for item in validated}
         member_names: set[str] = set()
@@ -16577,17 +16616,7 @@ def validate_candidate(
                 raise ValueError(
                     f"Assembly-owned member {name!r} has the wrong definition type."
                 )
-            encoded = json.dumps(
-                definition,
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode("utf-8")
-            if len(encoded) > _STRUCTURED_DEFINITION_LIMIT:
-                raise ValueError(
-                    f"Assembly-owned member {name!r} definition is too large."
-                )
+            _validate_json_serializable(definition)
             member_names.add(name)
             assembly_members.append(member)
         assembly_validation = _validate_assembly_execution(
@@ -16825,7 +16854,7 @@ def accept_candidate(
     domain = prepared["pack"].domain
     program_id = str(prepared["program_id"])
     revision = str(prepared["revision"])
-    return {
+    result = {
         "ok": True,
         "program_id": program_id,
         "program_name": str(prepared["program_name"]),
@@ -16844,6 +16873,9 @@ def accept_candidate(
             "next_write_expected_revision": revision,
         },
     }
+    if prepared.get("patch_summary"):
+        result["patch_summary"] = dict(prepared["patch_summary"])
+    return result
 
 
 def describe_api(pack: contracts.VibeScriptWorkbenchPack) -> dict[str, Any]:
@@ -17261,16 +17293,17 @@ class DeclarativeDomainAdapter:
                     "Never invent IDs, revisions, or API calls."
                 ),
                 "mutation_selection": {
-                    "edit_source": (
-                        "Use for code edits. Include changed inputs, input_schema, or "
-                        "expected_outputs in the same call."
+                    "apply_patch": (
+                        "Use for source-code edits. Supply only exact contextual update "
+                        "hunks and omit unchanged source."
                     ),
                     "set_inputs": (
                         "Use only for an RFC 7396 value patch while source, input_schema, "
                         "and expected_outputs stay unchanged."
                     ),
                     "reconfigure_program": (
-                        "Alias: edit_source."
+                        "Use only when replacing source, input_schema, inputs, and "
+                        "expected_outputs together."
                     ),
                 },
                 "revision_rule": (
@@ -17322,6 +17355,85 @@ class DeclarativeDomainAdapter:
         validated: dict[str, Any],
     ) -> dict[str, Any]:
         return publish_candidate(service, prepared, validated)
+
+    def publish_with_progress(
+        self,
+        service: Any,
+        prepared: dict[str, Any],
+        validated: dict[str, Any],
+        *,
+        progress_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        """Publish with item progress while preserving the legacy entry point."""
+
+        return publish_candidate(
+            service,
+            prepared,
+            validated,
+            progress_callback=progress_callback,
+        )
+
+    def publish_cooperatively(
+        self,
+        service: Any,
+        prepared: dict[str, Any],
+        validated: dict[str, Any],
+        *,
+        document_thread_dispatch: Callable[[Callable[[], Any]], Any] | None,
+        cancellation_check: Callable[[], bool] | None,
+        progress_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        """Publish in bounded document slices while preserving legacy APIs."""
+
+        progress = PublicationProgress(
+            domain=str(self.pack.domain or ""),
+            total=publication_item_count(prepared, validated),
+            callback=progress_callback,
+        )
+        result = run_document_thread_steps(
+            iter_publish_candidate(
+                service,
+                prepared,
+                validated,
+                progress_callback=progress_callback,
+                complete_progress=False,
+            ),
+            dispatch=document_thread_dispatch,
+            cancellation_check=cancellation_check,
+            progress_callback=progress_callback,
+        )
+
+        document_name = str(prepared.get("document_name") or "")
+        document_uid = str(prepared.get("document_uid") or "")
+        if document_name and document_uid:
+            try:
+                progress.finalizing()
+                invoke = document_thread_dispatch or (lambda operation: operation())
+
+                def capture_completion_waiter() -> Callable[[], None]:
+                    document = service._active_document()
+                    if (
+                        document is None
+                        or str(getattr(document, "Name", "") or "") != document_name
+                        or str(getattr(document, "Uid", "") or "") != document_uid
+                    ):
+                        raise RuntimeError(
+                            "The publication document changed before presentation completed."
+                        )
+                    waiter = getattr(document, "waitForPresentationReady", None)
+                    if not callable(waiter):
+                        raise RuntimeError(
+                            "The VibeCAD native presentation completion API is unavailable."
+                        )
+                    return waiter
+
+                completion_waiter = invoke(capture_completion_waiter)
+                completion_waiter()
+            except BaseException:
+                progress.fail()
+                raise
+        progress.finish()
+        return result
 
     def inspect(
         self, captured: dict[str, Any], contract: dict[str, Any]
@@ -17384,12 +17496,14 @@ class DeclarativeDomainAdapter:
                 **({"migration_required": True} if migration_required else {}),
                 "next_write_expected_revision": working_revision,
                 "mutation_selection": {
-                    "source_only": "vibescript.edit_source",
+                    "source_only": "vibescript.apply_patch",
+                    "localized_source": "vibescript.apply_patch",
                     "input_values_only": f"vibescript.{self.pack.domain}.set_inputs",
-                    "contract_or_outputs": "vibescript.edit_source",
+                    "contract_or_outputs": "vibescript.reconfigure_program",
                 },
                 "instruction": (
-                    "Replace the complete program contract with vibescript.edit_source, "
+                    "Replace the complete program contract with "
+                    "vibescript.reconfigure_program, "
                     "including input_schema, inputs, and expected_outputs in the same call. "
                     "The prior accepted live objects remain available until a valid v2 "
                     "candidate is accepted."
@@ -22878,7 +22992,7 @@ class TechDrawDomainAdapter(DeclarativeDomainAdapter):
                     "Create each independent view or orthographic projection group once; use a projection group for related front/top/side views and view for one orientation such as isometric.",
                     "When projected EdgeN/VertexN/FaceN names are not already known, first accept a template + view/projection + page discovery revision without dimensions.",
                     "Inspect the accepted view's dimension_reference_inventory, including the exact projection direction, geometry type, visibility, 2D coordinates, and source mapping.",
-                    "Use edit_source to add dimensions and their expected_outputs atomically, copying exact inventory names; never guess a projected index on complex geometry.",
+                    "Use reconfigure_program to add dimensions and their expected_outputs atomically, copying exact inventory names; never guess a projected index on complex geometry.",
                     "Add bounded annotations, compose every returned non-page value into exactly one page, and keep projection/page conventions identical.",
                     "After acceptance, inspect raw_value/display_text and page membership, then use a screenshot for overlap, clipping, title-block, and human drafting review.",
                 ],
@@ -23144,11 +23258,113 @@ class TechDrawDomainAdapter(DeclarativeDomainAdapter):
         return description
 
 
+def _run_assembly_validation_job() -> None:
+    """Trusted entry point run by the existing persistent isolation worker."""
+    request = _read_json(Path("host-validation-input.json"), "Assembly validation request")
+    prepared = dict(request["prepared"])
+    prepared["pack"] = contracts.get_vibescript_pack(prepared.pop("workbench"))
+    response: dict[str, Any] = {"request_id": request["request_id"]}
+    try:
+        if prepared["pack"] is None or prepared["pack"].domain != "assembly":
+            raise ValueError("The isolated validator requires the Assembly contract.")
+        response["result"] = validate_candidate(prepared, request["execution"])
+    except Exception as exc:
+        import traceback
+
+        response["error"] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+        if isinstance(exc, DomainRuntimeFailure):
+            response["error"]["payload"] = exc.payload
+    _atomic_json(Path("host-validation-result.json"), response)
+
+
+def _validate_assembly_candidate_isolated(
+    prepared: Mapping[str, Any], execution: Mapping[str, Any],
+    *, cancellation_check: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Keep CPU-heavy Assembly reauthorization off the GUI interpreter's GIL."""
+    from VibeCADHostIsolation import execute_staged_script
+
+    if execution.get("ok") is not True:
+        raise DomainRuntimeFailure(dict(execution))
+    staging = Path(str(prepared["staging"])).resolve()
+    request_id = uuid.uuid4().hex
+    detached = {
+        key: prepared[key]
+        for key in ("expected_outputs", "worker_request", "resolved_references")
+        if key in prepared
+    }
+    detached.update(workbench=prepared["pack"].workbench, staging=str(staging))
+    # Input remains untrusted, including JSON's non-finite extension. The exact
+    # validator in the worker rejects it with the same domain-specific rules.
+    atomic_write_text(staging / "host-validation-input.json", json.dumps({
+        "request_id": request_id, "prepared": detached, "execution": dict(execution),
+    }, ensure_ascii=True, separators=(",", ":")))
+    # Load this installed validator, not a candidate's staged Python module.
+    atomic_write_text(staging / "host-validation.py", (
+        "import runpy\n"
+        f"runpy.run_path({str(Path(__file__).resolve())!r}, "
+        "run_name='__vibecad_validation__')['_run_assembly_validation_job']()\n"
+    ))
+    process = execute_staged_script(
+        staging=staging,
+        script="host-validation.py",
+        environment=_worker_environment(prepared),
+        cancellation_check=cancellation_check,
+        memory_limit_bytes=int(prepared.get("memory_limit_bytes") or 0),
+        executable=prepared.get("freecadcmd_executable"),
+        cpu_slots=1,
+    )
+    if process.get("cancelled"):
+        raise DomainRuntimeFailure(_failure(
+            str(prepared.get("tool_name") or "vibescript.build_program"),
+            "RUN_CANCELLED", "external_process",
+            "VibeScript result validation was cancelled.",
+            observed=process, cancelled=True,
+        ))
+    if not process.get("started") or process.get("returncode") != 0:
+        raise RuntimeError(
+            "Assembly result validation worker failed: "
+            + str(process.get("error") or process.get("stderr") or process)
+        )
+    response = _read_json(staging / "host-validation-result.json", "Assembly validation result")
+    if response.get("request_id") != request_id:
+        raise ValueError("The Assembly validation result belongs to a different request.")
+    error = response.get("error")
+    if isinstance(error, dict):
+        if error.get("type") == "DomainRuntimeFailure":
+            raise DomainRuntimeFailure(error["payload"])
+        exception = {
+            "ValueError": ValueError, "TypeError": TypeError,
+            "OverflowError": OverflowError, "RecursionError": RecursionError,
+        }.get(error.get("type"), RuntimeError)
+        raise exception(str(error.get("message") or "Assembly validation failed."))
+    result = response.get("result")
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise ValueError("The Assembly validation worker returned no validated result.")
+    return result
+
+
 @dataclass
 class AssemblyDomainAdapter(DeclarativeDomainAdapter):
     """Dedicated adapter for native linked-component Assembly programs."""
 
     production_ready: bool = True
+
+    def validate_result(
+        self, prepared: dict[str, Any], execution: dict[str, Any]
+    ) -> dict[str, Any]:
+        return _validate_assembly_candidate_isolated(prepared, execution)
+
+    def validate_result_with_cancellation(
+        self, prepared: dict[str, Any], execution: dict[str, Any],
+        *, cancellation_check: Callable[[], bool] | None,
+    ) -> dict[str, Any]:
+        return _validate_assembly_candidate_isolated(
+            prepared, execution, cancellation_check=cancellation_check)
 
     def describe_api(self) -> dict[str, Any]:
         from vibescript_assembly_api import (
@@ -24155,5 +24371,7 @@ def install_builtin_adapters() -> None:
 # Publication helpers are imported late to keep worker-side imports FreeCADGui-free.
 from VibeCADVibeScriptDomainPublication import (  # noqa: E402
     delete_live_program,
+    iter_publish_candidate,
+    publication_item_count,
     publish_candidate,
 )

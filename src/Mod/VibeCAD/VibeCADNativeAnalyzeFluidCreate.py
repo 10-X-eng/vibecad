@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeFluidState import fluid_constraint_kind, fluid_constraint_state
 from VibeCADNativeAnalyzeFluidValues import (
     PreparedFluidValues,
@@ -212,7 +213,7 @@ def create_fluid_constraint(
         raise NativeAnalyzeError(
             "The FEM fluid factory returned the wrong object type."
         )
-    constraint.Label = prepared.label
+    prepared = assign_prepared_label(constraint, prepared)
     apply_fluid_values(constraint, prepared.values)
     constraint.References = reference_value(prepared.references)
     prepared.analysis.analysis.addObject(constraint)

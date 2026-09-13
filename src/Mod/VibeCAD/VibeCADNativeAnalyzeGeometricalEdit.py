@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometricalCreate import feature_label
 from VibeCADNativeAnalyzeGeometricalState import geometrical_feature_state
 from VibeCADNativeAnalyzeGeometricalValues import (
@@ -233,7 +234,7 @@ def update_geometrical_feature(
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     feature = prepared.target.feature
-    feature.Label = prepared.label
+    prepared = assign_prepared_label(feature, prepared)
     if prepared.values_changed:
         apply_geometrical_values(feature, prepared.values)
     feature.References = reference_value((prepared.face,))

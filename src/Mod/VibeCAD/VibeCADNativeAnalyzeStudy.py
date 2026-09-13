@@ -9,6 +9,7 @@ import json
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeOwnership import is_study, studies_in_document
 
 
 STUDY_SCHEMA_VERSION = 1
@@ -34,6 +35,7 @@ STUDY_INTENT_SCHEMA = {
 _PHYSICS_PROPERTY = "StudyPhysics"
 _REGIME_PROPERTY = "StudyRegime"
 _VERSION_PROPERTY = "StudySchemaVersion"
+_DEPENDENCIES_PROPERTY = "StudyDependencies"
 _PROPERTY_GROUP = "Study"
 
 
@@ -132,6 +134,96 @@ def study_intent_state(analysis: Any) -> dict[str, Any]:
     return result
 
 
+def _study_dependencies(analysis: Any) -> tuple[Any, ...]:
+    properties = set(getattr(analysis, "PropertiesList", ()) or ())
+    if _DEPENDENCIES_PROPERTY not in properties:
+        return ()
+    if str(analysis.getTypeIdOfProperty(_DEPENDENCIES_PROPERTY)) != "App::PropertyLinkList":
+        raise NativeAnalyzeError(
+            "Existing analysis property StudyDependencies has an incompatible type."
+        )
+    document = getattr(analysis, "Document", None)
+    dependencies = tuple(getattr(analysis, _DEPENDENCIES_PROPERTY, ()) or ())
+    if (
+        len({id(value) for value in dependencies}) != len(dependencies)
+        or any(not is_study(value, document) for value in dependencies)
+        or analysis in dependencies
+    ):
+        raise NativeAnalyzeError("The FEM study dependency graph is invalid.")
+    return dependencies
+
+
+def _validate_dependency_graph(
+    analysis: Any,
+    dependencies: tuple[Any, ...],
+) -> None:
+    document = getattr(analysis, "Document", None)
+    studies = studies_in_document(document)
+    if analysis not in studies:
+        raise NativeAnalyzeError("The FEM study is no longer live in its document.")
+    complete: set[int] = set()
+    visiting: set[int] = set()
+
+    def visit(study: Any) -> None:
+        identity = id(study)
+        if identity in visiting:
+            raise NativeAnalyzeError(
+                "The FEM study dependency graph contains a cycle.",
+                error_code="NATIVE_ANALYZE_DEPENDENCY_CYCLE",
+            )
+        if identity in complete:
+            return
+        visiting.add(identity)
+        children = dependencies if study is analysis else _study_dependencies(study)
+        for child in children:
+            visit(child)
+        visiting.remove(identity)
+        complete.add(identity)
+
+    for study in studies:
+        visit(study)
+
+
+def configure_study_dependencies(
+    analysis: Any,
+    dependencies: Any,
+) -> dict[str, Any]:
+    """Persist an exact directed acyclic list of prerequisite studies."""
+
+    if isinstance(dependencies, (str, bytes, bytearray)) or not isinstance(
+        dependencies, (list, tuple)
+    ):
+        raise NativeAnalyzeError("depends_on must be an array of FEM studies.")
+    values = tuple(dependencies)
+    document = getattr(analysis, "Document", None)
+    if (
+        len(values) > 64
+        or len({id(value) for value in values}) != len(values)
+        or any(not is_study(value, document) for value in values)
+        or analysis in values
+    ):
+        raise NativeAnalyzeError(
+            "depends_on must contain up to 64 unique studies from the same document."
+        )
+    _validate_dependency_graph(analysis, values)
+    _ensure_property(
+        analysis,
+        "App::PropertyLinkList",
+        _DEPENDENCIES_PROPERTY,
+        "Studies whose results precede this study.",
+    )
+    setattr(analysis, _DEPENDENCIES_PROPERTY, list(values))
+    return study_dependency_state(analysis)
+
+
+def study_dependency_state(analysis: Any) -> dict[str, Any]:
+    """Return explicit prerequisite study names; absence means an independent root."""
+
+    return {
+        "depends_on": [str(value.Name) for value in _study_dependencies(analysis)]
+    }
+
+
 def solver_configuration_blockers(
     intent: Mapping[str, Any],
     solver_states: list[Mapping[str, Any]],
@@ -175,6 +267,8 @@ def evaluate_study_readiness(
     blockers: list[str] = []
     physics = tuple(intent.get("physics") or ()) if intent.get("declared") else ()
     regime = str(intent.get("regime") or "")
+    solver_kinds = tuple(dict.fromkeys(inventory.get("solver_kinds") or ()))
+    elmer_only = set(solver_kinds) == {"elmer"}
 
     if not physics:
         blockers.append("missing_study_intent")
@@ -189,7 +283,7 @@ def evaluate_study_readiness(
                 blockers.append("missing_support")
             if int(inventory.get("load_count", 0) or 0) < 1:
                 blockers.append("missing_mechanical_load")
-        if "elmer" in set(inventory.get("solver_kinds") or ()) and not {
+        if elmer_only and not {
             "elasticity",
             "deformation",
         }.intersection(set(inventory.get("equation_kinds") or ())):
@@ -211,7 +305,7 @@ def evaluate_study_readiness(
             or "calculix" in set(inventory.get("solver_kinds") or ())
         ) and "initial_temperature" not in thermal_families:
             blockers.append("missing_initial_temperature")
-        if "elmer" in set(inventory.get("solver_kinds") or ()) and "heat" not in set(
+        if elmer_only and "heat" not in set(
             inventory.get("equation_kinds") or ()
         ):
             blockers.append("missing_heat_equation")
@@ -226,7 +320,7 @@ def evaluate_study_readiness(
             {"initial_flow_velocity", "initial_pressure"}
         ):
             blockers.append("missing_initial_fluid_state")
-        if "elmer" in set(inventory.get("solver_kinds") or ()) and "flow" not in set(
+        if elmer_only and "flow" not in set(
             inventory.get("equation_kinds") or ()
         ):
             blockers.append("missing_flow_equation")
@@ -258,22 +352,49 @@ def evaluate_study_readiness(
         mesh_blockers.append("missing_generated_mesh")
     blockers.extend(mesh_blockers)
 
-    solver_kinds = tuple(dict.fromkeys(inventory.get("solver_kinds") or ()))
     if not solver_kinds:
         blockers.append("missing_solver")
-    elif len(solver_kinds) > 1:
-        blockers.append("multiple_active_solvers")
     else:
-        solver = solver_kinds[0]
-        status = runtimes.get(solver)
-        if status is None or status.get("engine_ready") is not True:
-            blockers.append(f"solver_runtime_unavailable:{solver}")
-
-    blockers.extend(
-        blocker
-        for blocker in inventory.get("solver_configuration_blockers", ())
-        if isinstance(blocker, str)
-    )
+        raw_configurations = inventory.get("solver_configurations")
+        configurations = (
+            [
+                value
+                for value in raw_configurations
+                if isinstance(value, Mapping)
+                and str(value.get("solver_kind") or "") in solver_kinds
+            ]
+            if isinstance(raw_configurations, list)
+            else []
+        )
+        if not configurations:
+            shared_blockers = [
+                blocker
+                for blocker in inventory.get("solver_configuration_blockers", ())
+                if isinstance(blocker, str)
+            ]
+            configurations = [
+                {"solver_kind": solver, "blockers": shared_blockers}
+                for solver in solver_kinds
+            ]
+        usable_solver = False
+        solver_blockers: list[str] = []
+        for configuration in configurations:
+            solver = str(configuration.get("solver_kind") or "")
+            configuration_blockers = [
+                value
+                for value in list(configuration.get("blockers") or ())
+                if isinstance(value, str)
+            ]
+            if configuration_blockers:
+                solver_blockers.extend(configuration_blockers)
+                continue
+            status = runtimes.get(solver)
+            if status is not None and status.get("engine_ready") is True:
+                usable_solver = True
+                break
+            solver_blockers.append(f"solver_runtime_unavailable:{solver}")
+        if not usable_solver:
+            blockers.extend(dict.fromkeys(solver_blockers))
 
     ready_to_mesh_blockers = {
         "missing_study_intent",

@@ -30,11 +30,14 @@ from VibeCADNativeBackground import NativeBackgroundManager
 from VibeCADNativeBackgroundSchema import NATIVE_BACKGROUND_CAPABILITY_NAME
 from VibeCADNativeCapabilityRegistry import (
     NativeProviderSurface,
+    provider_visible_native_schema,
     resolve_native_provider_surface,
 )
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeManufacturePostSchema import MANUFACTURE_POST_CAPABILITY_NAME
-from VibeCADNativeManufactureState import job_state, operation_reference_state
+from VibeCADNativeManufactureFocusedPostSchema import (
+    MANUFACTURE_FOCUSED_POST_CAPABILITIES,
+)
+from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeOutput import authorize_native_output_path
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -44,6 +47,12 @@ from VibeCADNativeTargets import document_uid
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+POST_JOB_CAPABILITY_NAME = MANUFACTURE_FOCUSED_POST_CAPABILITIES["complete_job"]
+POST_SELECTED_CAPABILITY_NAME = MANUFACTURE_FOCUSED_POST_CAPABILITIES[
+    "selected_operations"
+]
 
 
 def _events(rounds: int = 12) -> None:
@@ -165,7 +174,7 @@ def _surface_and_turn():
         plan.classification.export,
         plan.background_required,
     ) == (
-        MANUFACTURE_POST_CAPABILITY_NAME,
+        POST_JOB_CAPABILITY_NAME,
         "complete_job",
         "ExactCamJobAndHumanAuthorizedPostOutputs",
         True,
@@ -179,7 +188,7 @@ def _surface_and_turn():
         selected_plan.classification.export,
         selected_plan.background_required,
     ) == (
-        MANUFACTURE_POST_CAPABILITY_NAME,
+        POST_SELECTED_CAPABILITY_NAME,
         "selected_operations",
         "ExactCamJobOrderedOperationsAndHumanAuthorizedPostOutputs",
         True,
@@ -187,37 +196,51 @@ def _surface_and_turn():
     )
     registry = build_native_capability_registry()
     full_provider = resolve_native_provider_surface(surface, registry)
-    assert MANUFACTURE_POST_CAPABILITY_NAME not in {
-        *full_provider.missing_definition_names,
-        *full_provider.missing_implementation_names,
-        *full_provider.incomplete_definition_names,
-    }
-    definition = registry.definition(MANUFACTURE_POST_CAPABILITY_NAME)
+    for capability_name in (POST_JOB_CAPABILITY_NAME, POST_SELECTED_CAPABILITY_NAME):
+        assert capability_name not in {
+            *full_provider.missing_definition_names,
+            *full_provider.missing_implementation_names,
+            *full_provider.incomplete_definition_names,
+        }
+    job_definition = registry.definition(POST_JOB_CAPABILITY_NAME)
+    selected_definition = registry.definition(POST_SELECTED_CAPABILITY_NAME)
     background = registry.definition(NATIVE_BACKGROUND_CAPABILITY_NAME)
-    schema = definition.provider_schema(("complete_job", "selected_operations"))
-    parameters = schema["parameters"]
-    assert parameters["required"] == ["operation", "job"]
-    assert parameters["additionalProperties"] is False
-    assert parameters["properties"]["operation"]["enum"] == [
-        "complete_job",
-        "selected_operations",
-    ]
-    assert "selected_operations=job,operations" in (
-        parameters["properties"]["operation"]["description"]
+    job_schema = provider_visible_native_schema(
+        job_definition.provider_schema(("complete_job",))
     )
-    operations_schema = parameters["properties"]["operations"]
+    selected_schema = provider_visible_native_schema(
+        selected_definition.provider_schema(("selected_operations",))
+    )
+    job_parameters = job_schema["parameters"]["oneOf"][0]
+    assert job_parameters["required"] == ["job"]
+    assert set(job_parameters["properties"]) == {"job"}
+    selected_parameters = selected_schema["parameters"]["oneOf"][0]
+    assert selected_parameters["required"] == ["job", "operations"]
+    operations_schema = selected_parameters["properties"]["operations"]
     assert operations_schema["minItems"] == 1
     assert operations_schema["maxItems"] == 64
     assert operations_schema["uniqueItems"] is True
-    encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(
+        (job_schema, selected_schema),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     assert not any(value in encoded for value in ('"path"', '"processor"', '"executable"'))
     turn = NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_POST_CAPABILITY_NAME, NATIVE_BACKGROUND_CAPABILITY_NAME),
-            schemas=(schema, background.provider_schema(("status", "cancel"))),
+            tool_names=(
+                POST_JOB_CAPABILITY_NAME,
+                POST_SELECTED_CAPABILITY_NAME,
+                NATIVE_BACKGROUND_CAPABILITY_NAME,
+            ),
+            schemas=(
+                job_schema,
+                selected_schema,
+                background.provider_schema(("status", "cancel")),
+            ),
             human_only_action_ids=(),
             missing_definition_names=(),
             missing_implementation_names=(),
@@ -236,7 +259,7 @@ def _target(job) -> dict[str, str]:
 
 
 def _operation_target(operation) -> dict[str, str]:
-    state = operation_reference_state(operation)
+    state = operation_state(operation)
     return {
         "object_name": str(state["object_name"]),
         "expected_state_sha256": str(state["state_sha256"]),
@@ -445,13 +468,9 @@ def _run() -> None:
 
         dispatcher = make_dispatcher(document, turn)
 
-        invalid = {
-            "operation": "complete_job",
-            "job": _target(job),
-            "processor": "provider_choice",
-        }
+        invalid = {"job": _target(job), "processor": "provider_choice"}
         invalid_result = dispatcher.call(
-            MANUFACTURE_POST_CAPABILITY_NAME,
+            POST_JOB_CAPABILITY_NAME,
             json.dumps(invalid, separators=(",", ":")),
             "native-post-invalid",
         )
@@ -467,17 +486,17 @@ def _run() -> None:
         timer.setInterval(10)
         timer.timeout.connect(lambda: heartbeat.__setitem__("count", heartbeat["count"] + 1))
         timer.start()
-        payload = {"operation": "complete_job", "job": _target(job)}
+        payload = {"job": _target(job)}
         started_at = time.monotonic()
         started = dispatcher.call(
-            MANUFACTURE_POST_CAPABILITY_NAME,
+            POST_JOB_CAPABILITY_NAME,
             json.dumps(payload, separators=(",", ":")),
             "native-post-success",
         )
         launch_elapsed = time.monotonic() - started_at
         assert started["ok"] is True and launch_elapsed < 1.5
         duplicate = dispatcher.call(
-            MANUFACTURE_POST_CAPABILITY_NAME,
+            POST_JOB_CAPABILITY_NAME,
             json.dumps(payload, separators=(",", ":")),
             "native-post-success",
         )
@@ -515,10 +534,9 @@ def _run() -> None:
         )
 
         reversed_selection = dispatcher.call(
-            MANUFACTURE_POST_CAPABILITY_NAME,
+            POST_SELECTED_CAPABILITY_NAME,
             json.dumps(
                 {
-                    "operation": "selected_operations",
                     "job": _target(job),
                     "operations": [
                         _operation_target(second_operation),
@@ -532,12 +550,11 @@ def _run() -> None:
         assert reversed_selection["ok"] is False
         assert reversed_selection["error_code"] == "NATIVE_ARGUMENTS_INVALID"
         selected_payload = {
-            "operation": "selected_operations",
             "job": _target(job),
             "operations": [_operation_target(operation)],
         }
         selected_started = dispatcher.call(
-            MANUFACTURE_POST_CAPABILITY_NAME,
+            POST_SELECTED_CAPABILITY_NAME,
             json.dumps(selected_payload, separators=(",", ":")),
             "native-post-selected-success",
         )
@@ -568,9 +585,9 @@ def _run() -> None:
 
         def begin_post(target_dispatcher, target_job, call_id: str) -> str:
             value = target_dispatcher.call(
-                MANUFACTURE_POST_CAPABILITY_NAME,
+                POST_JOB_CAPABILITY_NAME,
                 json.dumps(
-                    {"operation": "complete_job", "job": _target(target_job)},
+                    {"job": _target(target_job)},
                     separators=(",", ":"),
                 ),
                 call_id,
@@ -676,9 +693,9 @@ def _run() -> None:
 
         configure_processor("legacy_gate")
         legacy = dispatcher.call(
-            MANUFACTURE_POST_CAPABILITY_NAME,
+            POST_JOB_CAPABILITY_NAME,
             json.dumps(
-                {"operation": "complete_job", "job": _target(job)},
+                {"job": _target(job)},
                 separators=(",", ":"),
             ),
             "native-post-legacy-rejected",

@@ -29,9 +29,11 @@ def _job_summary(snapshot: Any) -> dict[str, Any]:
     return {
         "job_id": str(snapshot.job_id),
         "capability": str(snapshot.capability_name),
+        "resource_scope": str(snapshot.resource_scope),
         "phase": str(snapshot.phase),
         "progress_percent": int(snapshot.progress_percent),
         "progress_message": str(snapshot.progress_message),
+        "terminal": bool(snapshot.terminal),
     }
 
 
@@ -101,6 +103,8 @@ class NativeManufactureSimulationResultRuntime:
                 commit=commit,
                 dispatch_to_document_thread=dispatcher,
                 finalize_message="Committing retained CAM material result",
+                changes_document=True,
+                resource_scope=f"manufacture:{frozen.job.Name}",
             )
         except NativeBackgroundError as exc:
             raise NativeManufactureError(

@@ -17,6 +17,7 @@ from VibeCADNativeAnalyzeConstraintValues import (
     prepare_constraint_values,
 )
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometryCreate import references_match
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
@@ -180,7 +181,7 @@ def create_constraint(
         raise NativeAnalyzeError(
             "The FEM constraint factory returned the wrong object type."
         )
-    constraint.Label = prepared.label
+    prepared = assign_prepared_label(constraint, prepared)
     apply_constraint_values(constraint, prepared.values)
     constraint.References = reference_value(prepared.references)
     prepared.analysis.analysis.addObject(constraint)

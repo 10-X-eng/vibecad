@@ -30,6 +30,7 @@ def _job_summary(snapshot: Any) -> dict[str, Any]:
     return {
         "job_id": str(snapshot.job_id),
         "capability": str(snapshot.capability_name),
+        "resource_scope": str(snapshot.resource_scope),
         "phase": str(snapshot.phase),
         "progress_percent": int(snapshot.progress_percent),
         "progress_message": str(snapshot.progress_message),
@@ -166,6 +167,7 @@ class NativeManufacturePostRuntime:
                 dispatch_to_document_thread=dispatcher,
                 finalize_message="Requesting human CAM output destinations",
                 cleanup=lambda _prepared: cleanup_post(frozen),
+                resource_scope=f"manufacture:{frozen.job_name}",
             )
         except NativeBackgroundError as exc:
             cleanup_post(frozen)

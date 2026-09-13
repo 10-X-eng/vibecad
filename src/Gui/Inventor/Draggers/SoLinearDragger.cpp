@@ -74,6 +74,9 @@ SoLinearDragger::SoLinearDragger()
     FC_ADD_CATALOG_ENTRY(secondaryColor, SoBaseColor, activeSwitch);
     FC_ADD_CATALOG_ENTRY(labelSwitch, SoToggleSwitch, geomSeparator);
     FC_ADD_CATALOG_ENTRY(labelSeparator, SoSeparator, labelSwitch);
+    // Optional world-sized pick surface, translated by the same motion matrix
+    // as the arrow. Keep it before the arrow's screen-size scaling.
+    FC_ADD_CATALOG_ENTRY(dragSurface, SoSeparator, geomSeparator);
     FC_ADD_CATALOG_ENTRY(scale, SoScale, geomSeparator);
     SO_KIT_ADD_CATALOG_ABSTRACT_ENTRY(
         arrow,

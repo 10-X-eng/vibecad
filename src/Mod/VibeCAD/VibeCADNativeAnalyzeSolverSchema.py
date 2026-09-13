@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from VibeCADNativeAnalyzeModelSchema import _ANALYSIS_TARGET
+from VibeCADNativeAnalyzeModelSchema import _ANALYSIS_TARGET, _OBJECT_NAME
 from VibeCADNativeCapabilityRegistry import (
     NativeCapabilityDefinition,
     NativeCapabilityRegistry,
@@ -41,7 +41,13 @@ def _variant(
     purpose: str,
 ) -> NativeCapabilityVariant:
     properties = {
-        "analysis": _ANALYSIS_TARGET,
+        "analysis": {
+            "anyOf": [
+                {**_OBJECT_NAME, "description": "Study analysis_name."},
+                _ANALYSIS_TARGET,
+            ],
+            "description": "Study analysis_name or exact target.",
+        },
         "label": {"type": "string", "minLength": 1, "maxLength": 160},
     }
     if operation == "create_openfoam":
@@ -52,9 +58,7 @@ def _variant(
         }
     return NativeCapabilityVariant(
         operation=operation,
-        description=(
-            f"Add one {backend} solver for {purpose} to an exact analysis."
-        ),
+        description=f"Add one {backend} solver for {purpose}.",
         action_ids=frozenset({action_id}),
         surface_ids=frozenset({"analyze"}),
         exact_target_type="ExactFemAnalysisAndHistory",
@@ -73,8 +77,7 @@ def analyze_solver_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ANALYZE_SOLVER_CAPABILITY_NAME,
         description=(
-            "Add one explicitly selected FEM solver to one exact analysis using the same "
-            "factories and preference defaults as the human Analyze ribbon."
+            "Add one selected FEM solver to a study."
         ),
         primary_classification="mutation",
         variants=(

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeMeshState import mesh_object_state
 from VibeCADNativeMutation import NativeMutationDraft
 from VibeCADNativeTargets import NativeObjectRef, object_identity, object_reference, resolve_object
@@ -193,7 +194,7 @@ def create_solid_domain(
         if prepared.interface_mode == "separate"
         else _create_shared_domain(document, prepared)
     )
-    domain.Label = prepared.label
+    prepared = assign_prepared_label(domain, prepared)
     _add_identity(domain, prepared)
     recomputed = document.recompute([domain], True, True)
     shape = getattr(domain, "Shape", None)

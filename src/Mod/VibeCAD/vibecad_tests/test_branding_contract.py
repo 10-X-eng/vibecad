@@ -87,6 +87,46 @@ class TestVibeCADNativePanelStartup(unittest.TestCase):
 class TestVibeCADResponsiveAssistant(unittest.TestCase):
     """Exercise the compact composer against the real Qt layout engine."""
 
+    def test_crash_recovery_is_non_modal_and_draft_autosave_is_debounced(
+        self,
+    ) -> None:
+        import FreeCAD as App
+
+        if not App.GuiUp:
+            self.skipTest("FreeCAD GUI mode is required")
+
+        from PySide import QtCore, QtWidgets
+
+        import VibeCADGui
+
+        application = QtWidgets.QApplication.instance()
+        self.assertIsNotNone(application)
+        root = VibeCADGui._build_panel_widget()
+        try:
+            banner = root.findChild(QtWidgets.QFrame, "VibeSessionRecoveryBanner")
+            label = root.findChild(QtWidgets.QLabel, "VibeSessionRecoveryText")
+            restore = root.findChild(
+                QtWidgets.QPushButton, "VibeSessionRecoveryRestore"
+            )
+            discard = root.findChild(
+                QtWidgets.QPushButton, "VibeSessionRecoveryDiscard"
+            )
+            timer = root.findChild(
+                QtCore.QTimer, "VibeSessionRecoveryDraftTimer"
+            )
+
+            self.assertIsNotNone(banner)
+            self.assertFalse(banner.isVisible())
+            self.assertIsNotNone(label)
+            self.assertEqual(restore.text(), "Restore")
+            self.assertEqual(discard.text(), "Discard")
+            self.assertTrue(timer.isSingleShot())
+            self.assertEqual(timer.interval(), 500)
+        finally:
+            root.close()
+            root.deleteLater()
+            application.processEvents()
+
     def test_ctrl_enter_sends_while_plain_enter_edits(self) -> None:
         import FreeCAD as App
 
@@ -1222,6 +1262,7 @@ def test_vibecad_ribbon_has_explicit_domains_and_legacy_fallback() -> None:
     assert '("InspectionGui", "MeshPartGui", "PartGui")' in vibecad_gui_startup
     assert 'convert->setCommand("Mesh Convert")' in mesh_workbench
     assert '<< "MeshPart_ShapeFromMesh"' in mesh_workbench
+    assert '<< "MeshPart_MeshToBody"' in mesh_workbench
     assert '<< "MeshPart_CurveOnMesh"' in mesh_workbench
     assert 'QStringLiteral("VibeCAD_OpenPreferences")' in ribbon
     assert 'QStringLiteral("VibeCAD_CheckForUpdates")' in ribbon
@@ -1278,11 +1319,17 @@ def test_vibecad_bootstrap_repairs_only_vibecad_disabled_lists(monkeypatch) -> N
     monkeypatch.setitem(sys.modules, "FreeCAD", app)
     monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
     monkeypatch.setitem(sys.modules, "VibeCADGui", gui)
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
+    )
 
     namespace = runpy.run_path(str(ROOT / "src/Mod/VibeCAD/InitGui.py"))
     assert preferences.disabled == "TestWorkbench,NoneWorkbench"
     assert startup_events == [
         "commands",
+        "scheduled:_setup_development_identity",
         "scheduled:_setup_always_on_grid",
         "scheduled:_setup_agent_control",
         "scheduled:_setup_aero_ribbon",
@@ -1346,6 +1393,11 @@ def test_vibecad_bootstrap_helpers_survive_freecad_exec_namespace(monkeypatch) -
     )
     monkeypatch.setitem(
         sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
         "VibeCADFasteners",
         fasteners,
     )
@@ -1382,6 +1434,103 @@ def test_vibecad_bootstrap_helpers_survive_freecad_exec_namespace(monkeypatch) -
     assert any("catalog unavailable" in warning for warning in warnings)
 
 
+def test_vibecad_bootstrap_isolates_optional_command_registration_failures(
+    monkeypatch,
+) -> None:
+    """One optional command must not suppress unrelated startup services."""
+
+    class ParameterGroup:
+        def GetString(self, _name: str, default: str) -> str:
+            return default
+
+        def SetString(self, _name: str, _value: str) -> None:
+            pass
+
+        def GetBool(self, _name: str, default: bool) -> bool:
+            return default
+
+        def SetBool(self, _name: str, _value: bool) -> None:
+            pass
+
+    warnings: list[str] = []
+    startup_events: list[str] = []
+    app = SimpleNamespace(
+        Console=SimpleNamespace(PrintWarning=warnings.append),
+        ParamGet=lambda _path: ParameterGroup(),
+    )
+    qt_core = SimpleNamespace(
+        QTimer=SimpleNamespace(
+            singleShot=lambda _delay, callback: startup_events.append(
+                f"scheduled:{callback.__name__}"
+            )
+        )
+    )
+
+    def fail_follow_up() -> None:
+        startup_events.append("follow-up-attempted")
+        raise RuntimeError("follow-up unavailable")
+
+    monkeypatch.setitem(sys.modules, "FreeCAD", app)
+    monkeypatch.setitem(sys.modules, "PySide", SimpleNamespace(QtCore=qt_core))
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADGui",
+        SimpleNamespace(
+            ensure_commands_registered=lambda: startup_events.append("assistant")
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(
+            ensure_command_registered=lambda: startup_events.append("analyze")
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADManufactureFollowUpGui",
+        SimpleNamespace(ensure_command_registered=fail_follow_up),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADManufactureSimulationResultGui",
+        SimpleNamespace(
+            ensure_command_registered=lambda: startup_events.append("simulation")
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADFasteners",
+        SimpleNamespace(require_available=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADFastenersGui",
+        SimpleNamespace(
+            ensure_commands_registered=lambda: startup_events.append("fasteners")
+        ),
+    )
+
+    runpy.run_path(str(ROOT / "src/Mod/VibeCAD/InitGui.py"))
+
+    assert startup_events == [
+        "assistant",
+        "analyze",
+        "follow-up-attempted",
+        "simulation",
+        "fasteners",
+        "scheduled:_setup_development_identity",
+        "scheduled:_setup_always_on_grid",
+        "scheduled:_setup_agent_control",
+        "scheduled:_setup_aero_ribbon",
+    ]
+    assert any(
+        "retained-stock follow-up command failed to register: follow-up unavailable"
+        in warning
+        for warning in warnings
+    )
+
+
 def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> None:
     """The deferred callback must import VibeCADGui in its own body.
 
@@ -1404,6 +1553,7 @@ def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> Non
             pass
 
     started: list[dict] = []
+    fail_closed_started: list[dict] = []
     warnings: list[str] = []
     dispatch = object()
     app = SimpleNamespace(
@@ -1432,11 +1582,24 @@ def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> Non
     )
     monkeypatch.setitem(
         sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
         "VibeCADAgentControl",
         SimpleNamespace(
             ensure_server_started=lambda **kwargs: started.append(kwargs),
+            ensure_fail_closed_server_started=lambda **kwargs: fail_closed_started.append(
+                kwargs
+            ),
             shutdown_server=lambda **_kwargs: None,
         ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "VibeCADAnalyzeStudyGui",
+        SimpleNamespace(ensure_command_registered=lambda: None),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -1458,10 +1621,28 @@ def test_setup_agent_control_invokes_local_vibecadgui_import(monkeypatch) -> Non
         loader_locals,
     )
 
+    monkeypatch.delenv("VIBECAD_DEV_MODE", raising=False)
     loader_locals["_setup_agent_control"]()
 
     assert started == [{"document_thread_dispatch": dispatch}]
+    assert fail_closed_started == []
     assert not any("failed to start" in warning for warning in warnings)
+
+    monkeypatch.setenv("VIBECAD_DEV_MODE", "true")
+    loader_locals["_setup_agent_control"]()
+    assert started == [
+        {"document_thread_dispatch": dispatch},
+        {"document_thread_dispatch": dispatch},
+    ]
+    assert fail_closed_started == []
+
+    monkeypatch.setenv("VIBECAD_DEV_MODE", "1")
+    loader_locals["_setup_agent_control"]()
+    assert started == [
+        {"document_thread_dispatch": dispatch},
+        {"document_thread_dispatch": dispatch},
+    ]
+    assert fail_closed_started == [{"document_thread_dispatch": dispatch}]
 
 
 def test_vibecad_bootstrap_migrates_removed_bim_preferences(monkeypatch) -> None:

@@ -187,13 +187,20 @@ from VibeCADNativeModelTransformRuntime import NativeModelTransformRuntime
 from VibeCADNativeManufactureInspectBindings import (
     manufacture_inspect_runtime_bindings,
 )
+from VibeCADNativeManufactureFocusedInspectBindings import (
+    manufacture_focused_inspect_runtime_bindings,
+)
 from VibeCADNativeManufactureInspectRuntime import NativeManufactureInspectRuntime
 from VibeCADNativeManufactureJobBindings import manufacture_job_runtime_bindings
 from VibeCADNativeManufactureJobRuntime import NativeManufactureJobRuntime
+from VibeCADNativeManufactureJobSchema import MANUFACTURE_JOB_CAPABILITY_NAME
 from VibeCADNativeManufactureAreaBindings import manufacture_area_runtime_bindings
 from VibeCADNativeManufactureAreaRuntime import NativeManufactureAreaRuntime
 from VibeCADNativeManufactureModifyBindings import (
     manufacture_modify_runtime_bindings,
+)
+from VibeCADNativeManufactureFocusedModifyBindings import (
+    manufacture_focused_modify_runtime_bindings,
 )
 from VibeCADNativeManufactureModifyRuntime import NativeManufactureModifyRuntime
 from VibeCADNativeManufactureProgramBindings import (
@@ -211,8 +218,14 @@ from VibeCADNativeManufacturePropertyBagRuntime import (
 from VibeCADNativeManufactureOperationBindings import (
     manufacture_operation_runtime_bindings,
 )
+from VibeCADNativeManufactureFocusedOperationBindings import (
+    manufacture_focused_operation_runtime_bindings,
+)
 from VibeCADNativeManufactureOperationRuntime import (
     NativeManufactureOperationRuntime,
+)
+from VibeCADNativeManufactureOperationGeneration import (
+    start_background_operation_mutation,
 )
 from VibeCADNativeManufactureCamoticsBindings import (
     manufacture_camotics_runtime_bindings,
@@ -221,6 +234,9 @@ from VibeCADNativeManufactureCamoticsRuntime import (
     NativeManufactureCamoticsRuntime,
 )
 from VibeCADNativeManufacturePostBindings import manufacture_post_runtime_bindings
+from VibeCADNativeManufactureFocusedPostBindings import (
+    manufacture_focused_post_runtime_bindings,
+)
 from VibeCADNativeManufacturePostRuntime import NativeManufacturePostRuntime
 from VibeCADNativeManufactureTemplateBindings import (
     manufacture_template_runtime_bindings,
@@ -231,6 +247,9 @@ from VibeCADNativeManufactureTemplateRuntime import (
 from VibeCADNativeManufactureSimulationBindings import (
     manufacture_simulation_runtime_bindings,
 )
+from VibeCADNativeManufactureSimulationControlBindings import (
+    manufacture_simulation_control_runtime_bindings,
+)
 from VibeCADNativeManufactureSimulationRuntime import (
     NativeManufactureSimulationRuntime,
 )
@@ -240,10 +259,26 @@ from VibeCADNativeManufactureSimulationResultBindings import (
 from VibeCADNativeManufactureSimulationResultRuntime import (
     NativeManufactureSimulationResultRuntime,
 )
+from VibeCADNativeManufactureFollowUpBindings import (
+    manufacture_follow_up_runtime_bindings,
+)
+from VibeCADNativeManufactureFollowUpRuntime import (
+    NativeManufactureFollowUpRuntime,
+)
+from VibeCADNativeManufactureFollowUpSchema import (
+    MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME,
+)
 from VibeCADNativeManufactureToolBindings import manufacture_tool_runtime_bindings
+from VibeCADNativeManufactureFocusedToolBindings import (
+    manufacture_focused_tool_runtime_bindings,
+)
 from VibeCADNativeManufactureToolRuntime import (
     NativeManufactureToolCatalogRuntime,
     NativeManufactureToolRuntime,
+)
+from VibeCADNativeManufactureToolSchema import (
+    MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME,
+    MANUFACTURE_TOOL_CAPABILITY_NAME,
 )
 from VibeCADNativeManufactureToolOutputBindings import (
     manufacture_tool_output_runtime_bindings,
@@ -436,6 +471,10 @@ from VibeCADNativeMeshPointsBindings import mesh_points_runtime_bindings
 from VibeCADNativeMeshPointsRuntime import NativeMeshPointsRuntime
 from VibeCADNativeReverseBindings import reverse_runtime_bindings
 from VibeCADNativeReverseRuntime import NativeReverseRuntime
+from VibeCADNativeReconstructParametricBindings import (
+    reconstruct_parametric_runtime_bindings,
+)
+from VibeCADNativeReconstructParametricRuntime import NativeReconstructParametricRuntime
 from VibeCADNativeMeshExportBindings import mesh_export_runtime_bindings
 from VibeCADNativeMeshExportRuntime import NativeMeshExportRuntime
 from VibeCADNativeBackgroundBindings import native_background_runtime_bindings
@@ -493,6 +532,7 @@ def build_native_runtime_bindings(
     mesh_points = NativeMeshPointsRuntime(context)
     mesh_rebuild = NativeReverseRuntime(context, "mesh.rebuild")
     mesh_approximate = NativeReverseRuntime(context, "mesh.approximate")
+    mesh_reconstruct_parametric = NativeReconstructParametricRuntime(context)
     assembly_diagnosis = NativeAssemblyDiagnosisRuntime(context)
     assembly_bom = NativeAssemblyBomRuntime(context)
     assembly_fastener = NativeAssemblyFastenerRuntime(context)
@@ -516,19 +556,35 @@ def build_native_runtime_bindings(
     sketch_setup = NativeSketchSetupRuntime(context)
     model_transform = NativeModelTransformRuntime(context)
     manufacture_inspect = NativeManufactureInspectRuntime(context)
-    manufacture_job = NativeManufactureJobRuntime(context)
+    manufacture_job = (
+        NativeManufactureJobRuntime(context)
+        if MANUFACTURE_JOB_CAPABILITY_NAME in tool_names
+        else None
+    )
     manufacture_area = NativeManufactureAreaRuntime(context)
     manufacture_modify = NativeManufactureModifyRuntime(context)
     manufacture_program = NativeManufactureProgramRuntime(context)
     manufacture_probe = NativeManufactureProbeRuntime(context)
     manufacture_property_bag = NativeManufacturePropertyBagRuntime(context)
-    manufacture_operation = NativeManufactureOperationRuntime(context)
+    manufacture_operation = NativeManufactureOperationRuntime(
+        context,
+        mutation_executor=start_background_operation_mutation,
+    )
     manufacture_camotics = NativeManufactureCamoticsRuntime(context)
     manufacture_post = NativeManufacturePostRuntime(context)
     manufacture_template = NativeManufactureTemplateRuntime(context)
     manufacture_simulation = NativeManufactureSimulationRuntime(context)
     manufacture_simulation_result = NativeManufactureSimulationResultRuntime(context)
-    manufacture_tool_catalog = NativeManufactureToolCatalogRuntime(context)
+    manufacture_follow_up = (
+        NativeManufactureFollowUpRuntime(context)
+        if MANUFACTURE_FOLLOW_UP_CAPABILITY_NAME in tool_names
+        else None
+    )
+    manufacture_tool_catalog = (
+        NativeManufactureToolCatalogRuntime(context)
+        if MANUFACTURE_TOOL_CATALOG_CAPABILITY_NAME in tool_names
+        else None
+    )
     manufacture_tool = NativeManufactureToolRuntime(context)
     manufacture_tool_output = NativeManufactureToolOutputRuntime(context)
     drawing_page = NativeDrawingPageRuntime(context)
@@ -637,6 +693,7 @@ def build_native_runtime_bindings(
         **mesh_segment_runtime_bindings(mesh_segment),
         **mesh_points_runtime_bindings(mesh_points),
         **reverse_runtime_bindings(mesh_rebuild, mesh_approximate),
+        **reconstruct_parametric_runtime_bindings(mesh_reconstruct_parametric),
         **assembly_diagnosis_runtime_bindings(assembly_diagnosis),
         **assembly_bom_runtime_bindings(assembly_bom),
         **assembly_fastener_runtime_bindings(assembly_fastener),
@@ -660,24 +717,43 @@ def build_native_runtime_bindings(
         **sketch_setup_runtime_bindings(sketch_setup),
         **model_transform_runtime_bindings(model_transform),
         **manufacture_inspect_runtime_bindings(manufacture_inspect),
-        **manufacture_job_runtime_bindings(manufacture_job),
+        **manufacture_focused_inspect_runtime_bindings(manufacture_inspect),
+        **(
+            manufacture_job_runtime_bindings(manufacture_job)
+            if manufacture_job is not None
+            else {}
+        ),
         **manufacture_area_runtime_bindings(manufacture_area),
         **manufacture_modify_runtime_bindings(manufacture_modify),
+        **manufacture_focused_modify_runtime_bindings(manufacture_modify),
         **manufacture_program_runtime_bindings(manufacture_program),
         **manufacture_probe_runtime_bindings(manufacture_probe),
         **manufacture_property_bag_runtime_bindings(manufacture_property_bag),
         **manufacture_operation_runtime_bindings(manufacture_operation),
+        **manufacture_focused_operation_runtime_bindings(manufacture_operation),
         **manufacture_camotics_runtime_bindings(manufacture_camotics),
         **manufacture_post_runtime_bindings(manufacture_post),
+        **manufacture_focused_post_runtime_bindings(manufacture_post),
         **manufacture_template_runtime_bindings(manufacture_template),
         **manufacture_simulation_runtime_bindings(manufacture_simulation),
+        **manufacture_simulation_control_runtime_bindings(manufacture_simulation),
         **manufacture_simulation_result_runtime_bindings(
             manufacture_simulation_result
         ),
-        **manufacture_tool_runtime_bindings(
-            manufacture_tool_catalog,
-            manufacture_tool,
+        **(
+            manufacture_follow_up_runtime_bindings(manufacture_follow_up)
+            if manufacture_follow_up is not None
+            else {}
         ),
+        **(
+            manufacture_tool_runtime_bindings(
+                manufacture_tool_catalog,
+                manufacture_tool,
+            )
+            if manufacture_tool_catalog is not None
+            else {MANUFACTURE_TOOL_CAPABILITY_NAME: manufacture_tool}
+        ),
+        **manufacture_focused_tool_runtime_bindings(manufacture_tool),
         **manufacture_tool_output_runtime_bindings(manufacture_tool_output),
         **drawing_page_runtime_bindings(drawing_page),
         **drawing_active_view_runtime_bindings(drawing_active_view),

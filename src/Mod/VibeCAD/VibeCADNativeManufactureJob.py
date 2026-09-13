@@ -69,6 +69,15 @@ class PreparedJobCreate:
     timeline_before: _TimelineState
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedJobStock:
+    shape: Any
+    source: Any
+    artifact_sha256: str
+    shape_type: str
+    topology: Mapping[str, int]
+
+
 def _label(value: Any) -> str:
     clean = str(value or "").strip()
     if not clean or len(clean) > 160:
@@ -90,9 +99,9 @@ def _digest(value: Any, noun: str) -> str:
 
 
 def _job_count(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 128:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise NativeManufactureError(
-            "expected_job_count must be an integer from 0 through 128.",
+            "expected_job_count must be a nonnegative integer.",
             error_code="NATIVE_ARGUMENTS_INVALID",
         )
     return value
@@ -291,9 +300,39 @@ def _assert_preflight_current(document: Any, prepared: PreparedJobCreate) -> Non
             )
 
 
-def _create_core_job(document: Any, prepared: PreparedJobCreate) -> Any:
+def validate_prepared_job_create(
+    document: Any,
+    prepared: PreparedJobCreate,
+) -> None:
+    """Validate an already-frozen Job creation request without mutating it."""
+
+    if not isinstance(prepared, PreparedJobCreate):
+        raise TypeError("prepared must be a PreparedJobCreate")
+    _assert_preflight_current(document, prepared)
+
+
+def _create_core_job(
+    document: Any,
+    prepared: PreparedJobCreate,
+    initial_stock: PreparedJobStock | None,
+) -> Any:
     import Path.Main.Job as PathJob
 
+    if initial_stock is not None:
+        if prepared.template.content is not None:
+            raise NativeManufactureError(
+                "A retained-stock setup cannot also load template stock.",
+                error_code="NATIVE_ARGUMENTS_INVALID",
+            )
+        return PathJob.CreateWithPreparedStock(
+            "Job",
+            list(prepared.sources),
+            shape=initial_stock.shape,
+            source=initial_stock.source,
+            artifact_sha256=initial_stock.artifact_sha256,
+            shape_type=initial_stock.shape_type,
+            topology=initial_stock.topology,
+        )
     if prepared.template.content is None:
         return PathJob.Create("Job", list(prepared.sources), templateFile=None)
     with tempfile.TemporaryDirectory(prefix="vibecad-native-cam-job-") as directory:
@@ -315,6 +354,7 @@ def create_job(
     document: Any,
     *,
     prepared: PreparedJobCreate,
+    initial_stock: PreparedJobStock | None = None,
 ) -> NativeMutationDraft:
     """Create the complete Job graph and publish accepted replacements atomically."""
 
@@ -324,7 +364,12 @@ def create_job(
     try:
         import Path.Main.Gui.Job as PathJobGui
 
-        job = _create_core_job(document, prepared)
+        if initial_stock is not None and not isinstance(
+            initial_stock,
+            PreparedJobStock,
+        ):
+            raise TypeError("initial_stock must be a PreparedJobStock or None")
+        job = _create_core_job(document, prepared, initial_stock)
         if job is None or not is_job(job):
             raise NativeManufactureError(
                 "The CAM Job factory returned no valid Job.",
@@ -485,6 +530,21 @@ def _verify_timeline(
             error_code="NATIVE_MANUFACTURE_HISTORY_INVALID",
         )
     replaced = set(prepared.replacements)
+    try:
+        import PartGui
+
+        for source in prepared.replacements:
+            state = PartGui.resolveModelingObject(source)
+            if state is not None:
+                replaced.add(state)
+                operation = getattr(state, "Operation", None)
+                if operation is not None:
+                    replaced.add(operation)
+    except ImportError as exc:
+        raise NativeManufactureError(
+            "The CAM modeling-state resolver is unavailable.",
+            error_code="NATIVE_MANUFACTURE_ENVIRONMENT_UNAVAILABLE",
+        ) from exc
     for index, operation in enumerate(before.operations):
         if operation not in replaced and after.visibility[index] != before.visibility[index]:
             raise NativeManufactureError(

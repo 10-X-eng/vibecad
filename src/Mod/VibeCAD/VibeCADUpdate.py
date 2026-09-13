@@ -493,10 +493,12 @@ def spawn_detached_install_helper(
             "close_fds": True,
         }
         if os.name == "nt":
+            # Keep the proven Windows launcher contract.  Adding
+            # DETACHED_PROCESS prevents the PowerShell update helper from
+            # reaching its script body on the supported Windows runtime.
             kwargs["creationflags"] = (
                 getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                | getattr(subprocess, "DETACHED_PROCESS", 0)
             )
         else:
             kwargs["start_new_session"] = True

@@ -9,6 +9,7 @@ import math
 from typing import Any
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -220,7 +221,7 @@ def create_post_scalar_clip(
             "Fem::FemPostScalarClipFilter",
             document.getUniqueObjectName("ScalarClip"),
         )
-        clip.Label = prepared.label
+        prepared = assign_prepared_label(clip, prepared)
         parent_group.addObject(clip)
         clip.ViewObject.DisplayMode = "Surface"
         clip.ViewObject.SelectionStyle = "BoundBox"
@@ -441,7 +442,7 @@ def create_post_implicit_filter(
             type_id,
             document.getUniqueObjectName(name),
         )
-        post_filter.Label = prepared.label
+        prepared = assign_prepared_label(post_filter, prepared)
         parent_group.addObject(post_filter)
         post_filter.Function = function
         if prepared.kind == "region_clip":
@@ -684,7 +685,7 @@ def create_post_contours(
             "Fem::FemPostContoursFilter",
             document.getUniqueObjectName("Contours"),
         )
-        contours.Label = prepared.label
+        prepared = assign_prepared_label(contours, prepared)
         parent_group.addObject(contours)
         contours.ViewObject.DisplayMode = "Surface"
         contours.ViewObject.SelectionStyle = "BoundBox"

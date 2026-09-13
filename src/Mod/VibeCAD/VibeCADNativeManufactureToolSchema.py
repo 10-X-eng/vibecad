@@ -43,6 +43,15 @@ _TARGET = _closed(
     },
     ("object_name", "expected_state_sha256"),
 )
+_JOB_TARGET = {**_TARGET, "description": "Exact setup from read_setup job."}
+_CONTROLLER_TARGET = {
+    **_TARGET,
+    "description": "Exact controller from read_setup tools[].",
+}
+_TOOL_BIT_TARGET = {
+    **_TARGET,
+    "description": "Exact ToolBit from read_setup tools[].tool.",
+}
 _CATALOG_TARGET = _closed(
     {
         "catalog_id": {
@@ -107,6 +116,7 @@ _TOOL_PROPERTY_CHANGES = {
     "items": _TOOL_PROPERTY_CHANGE,
     "minItems": 0,
     "maxItems": 64,
+    "default": [],
 }
 _CONTROLLER = _closed(
     {
@@ -166,19 +176,26 @@ def manufacture_tool_catalog_capability_definition() -> NativeCapabilityDefiniti
                 background_required=False,
                 parameters=_closed(
                     {
-                        "expected_catalog_state_sha256": _SHA256,
                         "offset": {
                             "type": "integer",
                             "minimum": 0,
                             "maximum": 100_000_000,
+                            "default": 0,
+                        },
+                        "query": {
+                            "type": "string",
+                            "maxLength": 80,
+                            "default": "",
+                            "description": "Case-insensitive tool label or type; spaces and punctuation are ignored.",
                         },
                         "page_size": {
                             "type": "integer",
                             "minimum": 1,
-                            "maximum": 64,
+                            "maximum": 128,
+                            "default": 32,
                         },
                     },
-                    ("expected_catalog_state_sha256", "offset", "page_size"),
+                    (),
                 ),
             ),
             NativeCapabilityVariant(
@@ -209,8 +226,8 @@ def manufacture_tool_capability_definition() -> NativeCapabilityDefinition:
             NativeCapabilityVariant(
                 operation="create_controller",
                 description=(
-                    "Clone one exact catalog tool into one Job and add its fully "
-                    "specified controller as a contiguous History resource extension."
+                    "Add one exact catalog tool to one Job. Omitted labels, tool number, "
+                    "and controller values use the same defaults as the human command."
                 ),
                 action_ids=frozenset({"CAM_ToolBitDock"}),
                 surface_ids=frozenset({"manufacture"}),
@@ -219,7 +236,7 @@ def manufacture_tool_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=_closed(
                     {
-                        "job_target": _TARGET,
+                        "job_target": _JOB_TARGET,
                         "catalog_tool": _CATALOG_TARGET,
                         "tool_label": LABEL_SCHEMA,
                         "tool_property_changes": _TOOL_PROPERTY_CHANGES,
@@ -228,9 +245,6 @@ def manufacture_tool_capability_definition() -> NativeCapabilityDefinition:
                     (
                         "job_target",
                         "catalog_tool",
-                        "tool_label",
-                        "tool_property_changes",
-                        "controller",
                     ),
                 ),
             ),
@@ -243,7 +257,7 @@ def manufacture_tool_capability_definition() -> NativeCapabilityDefinition:
                 transaction_behavior="document",
                 background_required=False,
                 parameters=_closed(
-                    {"target": _TARGET, "controller": _CONTROLLER},
+                    {"target": _CONTROLLER_TARGET, "controller": _CONTROLLER},
                     ("target", "controller"),
                 ),
             ),
@@ -260,7 +274,7 @@ def manufacture_tool_capability_definition() -> NativeCapabilityDefinition:
                 background_required=False,
                 parameters=_closed(
                     {
-                        "target": _TARGET,
+                        "target": _TOOL_BIT_TARGET,
                         "label": LABEL_SCHEMA,
                         "property_changes": {
                             **_TOOL_PROPERTY_CHANGES,

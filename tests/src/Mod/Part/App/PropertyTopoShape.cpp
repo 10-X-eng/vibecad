@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <gtest/gtest.h>
+#include <sstream>
+
+#include <Base/Reader.h>
+#include <Base/Writer.h>
+#include <Base/Base64Filter.h>
 
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include "Mod/Part/App/FeaturePartCommon.h"
@@ -119,6 +124,77 @@ TEST_F(PropertyTopoShapeTest, testPropertyPartShapeTopoShape)
     EXPECT_TRUE(topoDsShapeOut.IsSame(topoDsShapeIn));
     EXPECT_EQ(getVolume(topoDsShapeOut), 3);
     EXPECT_EQ(topoShapeOut.getElementMapSize(), 26);
+}
+
+TEST_F(PropertyTopoShapeTest, geometryValuePreservesStructureRevisionButSchemaDoesNot)
+{
+    auto* object = _doc->addObject<App::DocumentObject>();
+    auto* shape = static_cast<Part::PropertyPartShape*>(
+        object->addDynamicProperty("Part::PropertyPartShape", "Shape"));
+    ASSERT_NE(shape, nullptr);
+    const auto structure = _doc->getObjectStructureGeneration();
+    const auto values = _doc->getObjectChangeGeneration();
+    shape->setValue(_common->Shape.getValue());
+    EXPECT_EQ(_doc->getObjectStructureGeneration(), structure);
+    EXPECT_GT(_doc->getObjectChangeGeneration(), values);
+    EXPECT_TRUE(object->removeDynamicProperty("Shape"));
+    EXPECT_GT(_doc->getObjectStructureGeneration(), structure);
+}
+
+TEST_F(PropertyTopoShapeTest, inlineShapeRoundTripPreservesGeometry)
+{
+    Part::PropertyPartShape original;
+    original.setValue(_common->Shape.getValue());
+    for (const bool binary : {false, true}) {
+        SCOPED_TRACE(binary ? "inline binary BREP" : "inline text BREP");
+        Base::StringWriter writer;
+        writer.setForceXML(true);
+        if (binary) {
+            writer.setMode("BinaryBrep");
+        }
+        writer.Stream() << "<?xml version='1.0'?><Document>";
+        original.Save(writer);
+        writer.Stream() << "</Document>";
+
+        if (binary) {
+            std::ostringstream expected;
+            original.getShape().exportBinary(expected);
+            const auto saved = writer.getString();
+            const auto contentStart = saved.find('>', saved.find("<Part ")) + 1;
+            std::istringstream encoded(saved.substr(contentStart,
+                                                    saved.find("</Part>") - contentStart));
+            auto decoder = Base::create_base64_decoder(encoded);
+            const std::string written {std::istreambuf_iterator<char>(*decoder), {}};
+            ASSERT_EQ(written.size(), expected.str().size()) << "binary writer";
+            ASSERT_TRUE(written == expected.str()) << "binary writer";
+            std::istringstream xml(writer.getString());
+            Base::XMLReader decodedReader("binary-shape.xml", xml);
+            decodedReader.readElement("Part");
+            auto& decodedStream = decodedReader.beginCharStream(Base::CharStreamFormat::Base64Encoded);
+            const std::string decoded {std::istreambuf_iterator<char>(decodedStream), {}};
+            ASSERT_EQ(decoded.size(), expected.str().size());
+            ASSERT_TRUE(decoded == expected.str());
+        }
+
+        std::istringstream stream(writer.getString());
+        Base::XMLReader reader("inline-shape.xml", stream);
+        Part::PropertyPartShape restored;
+        try {
+            restored.Restore(reader);
+        }
+        catch (const Base::Exception& error) {
+            FAIL() << error.what();
+        }
+        catch (const Standard_Failure& error) {
+            FAIL() << error.GetMessageString();
+        }
+        ASSERT_FALSE(restored.getValue().IsNull());
+        EXPECT_DOUBLE_EQ(getVolume(restored.getValue()), getVolume(original.getValue()));
+        EXPECT_EQ(restored.getShape().countSubShapes(TopAbs_FACE),
+                  original.getShape().countSubShapes(TopAbs_FACE));
+        EXPECT_EQ(restored.getShape().countSubShapes(TopAbs_SOLID),
+                  original.getShape().countSubShapes(TopAbs_SOLID));
+    }
 }
 
 TEST_F(PropertyTopoShapeTest, testPropertyPartShapeTopoDSShape)

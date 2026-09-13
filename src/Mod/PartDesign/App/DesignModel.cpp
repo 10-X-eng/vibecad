@@ -2004,7 +2004,8 @@ std::vector<Body*> DesignModel::finalizeScriptOperation(DesignOperationEdit& edi
 
 std::vector<Body*> DesignModel::finalizeOperationImpl(
     DesignOperationEdit& edit,
-    bool affectedBodiesOnly
+    bool affectedBodiesOnly,
+    bool adoptAcceptedState
 )
 {
     auto* operation = edit.operation;
@@ -2030,7 +2031,7 @@ std::vector<Body*> DesignModel::finalizeOperationImpl(
     // the persistent state graph. A full document recompute here would also
     // execute old state resources whose output slots are intentionally being
     // added or removed by this edit, producing transient false errors.
-    document->recomputeFeature(operation, true);
+    document->recomputeFeature(operation, !adoptAcceptedState);
     if (!operation->isValid()) {
         throw Base::RuntimeError(operation->getStatusString());
     }
@@ -2057,7 +2058,7 @@ std::vector<Body*> DesignModel::finalizeOperationImpl(
         finalizeNewOperation(edit, targets);
     }
     else {
-        finalizeExistingOperation(edit, targets);
+        finalizeExistingOperation(edit, targets, adoptAcceptedState);
     }
     if (const auto* script = freecad_cast<const DesignScriptOperation*>(operation)) {
         const auto labels = script->ScriptOutputLabels.getValues();
@@ -2077,7 +2078,25 @@ std::vector<Body*> DesignModel::finalizeOperationImpl(
         }
         targets.front()->Label.setValue(generated->OutputLabel.getValue());
     }
-    if (affectedBodiesOnly) {
+    if (adoptAcceptedState) {
+        // AcceptedShapes already contains the detached worker result. These
+        // three nodes only expose that state; traversing the dependency graph
+        // here both duplicates compute and conflicts with publication's lease.
+        // Later consumers remain touched for the asynchronous recompute phase.
+        for (auto* state : designBodyStatesForOperation(operation)) {
+            if (!document->recomputeFeature(state, false)) {
+                throw Base::RuntimeError("Could not adopt an accepted VibeScript Body state");
+            }
+        }
+        for (auto* body : targets) {
+            auto* publication = ensurePublication(*document, *body);
+            if (!document->recomputeFeature(publication, false)
+                || !document->recomputeFeature(body, false)) {
+                throw Base::RuntimeError("Could not expose an accepted VibeScript Body state");
+            }
+        }
+    }
+    else if (affectedBodiesOnly) {
         std::vector<App::DocumentObject*> affectedBodies;
         affectedBodies.reserve(targets.size());
         for (auto* body : targets) {
@@ -2099,6 +2118,14 @@ std::vector<Body*> DesignModel::finalizeOperationImpl(
     }
     validateDesign(*document);
     return targets;
+}
+
+std::vector<Body*> DesignModel::adoptScriptOperation(DesignOperationEdit& edit)
+{
+    if (!freecad_cast<DesignScriptOperation*>(edit.operation)) {
+        throw Base::TypeError("Only a DesignScriptOperation has accepted outputs to adopt");
+    }
+    return finalizeOperationImpl(edit, true, true);
 }
 
 std::vector<std::string> DesignModel::removeOperationResources(App::DocumentObject& operation)
@@ -2654,7 +2681,8 @@ void DesignModel::finalizeNewOperation(DesignOperationEdit& edit, std::vector<Bo
     edit.resourcesStaged = false;
 }
 
-void DesignModel::finalizeExistingOperation(DesignOperationEdit& edit, std::vector<Body*>& targets)
+void DesignModel::finalizeExistingOperation(
+    DesignOperationEdit& edit, std::vector<Body*>& targets, bool adoptAcceptedState)
 {
     auto* operation = edit.operation;
     auto* document = operation->getDocument();
@@ -2885,8 +2913,10 @@ void DesignModel::finalizeExistingOperation(DesignOperationEdit& edit, std::vect
         // operation port so timeline filtering cannot clear an otherwise
         // anonymous force-recompute request.
         state->Operation.touch();
-        document->recomputeFeature(state, true);
-        if (!state->isValid()) {
+        if (!adoptAcceptedState) {
+            document->recomputeFeature(state, true);
+        }
+        if (!adoptAcceptedState && !state->isValid()) {
             throw Base::RuntimeError(
                 state->getStatusString() && *state->getStatusString()
                     ? state->getStatusString()

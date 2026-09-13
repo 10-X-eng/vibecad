@@ -623,6 +623,77 @@ class TestDesignModeling(unittest.TestCase):
         self.assertEqual(len(reopened_body.Shape.Solids), 18)
         PartDesign.validateDesign(reopened_operation)
 
+    def test_extrude_join_accepts_face_contact_with_target_body(self):
+        _, body, initial = self._component_body("FaceContactJoin", 0)
+        sketch = self._rectangle_sketch("FaceContactJoinProfile", 2, 6, 2, 6)
+        sketch.Placement.Base.z = 10
+
+        self.document.openTransaction("Join outward extrusion to target face")
+        operation = self.document.addObject(
+            "PartDesign::DesignExtrude",
+            "FaceContactJoinOperation",
+        )
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Profile = sketch
+        operation.Length = 5
+        PartDesign.setDesignOperationTargets(edit, "Join", [body])
+        self.document.recompute()
+
+        self.assertTrue(operation.isValid(), operation.getStatusString())
+        self.assertEqual(len(operation.OutputShapes), 1)
+        self.assertEqual(len(operation.OutputShapes[0].Solids), 1)
+        self.assertAlmostEqual(
+            operation.OutputShapes[0].Volume,
+            initial.Shape.Volume + 80.0,
+            places=6,
+        )
+
+        outputs = PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+        self.assertEqual(outputs, [body])
+        self.assertAlmostEqual(body.Shape.Volume, 1080.0, places=6)
+        PartDesign.validateDesign(operation)
+
+    def test_extrude_contact_modes_preserve_boolean_and_compound_contracts(self):
+        for mode, x, y, z, accepted, expected_volume in (
+            ("Join", 2, 2, 10, True, 1080),  # shared face
+            ("Join", 2, 2, 9, True, 1064),  # volume overlap
+            ("Join", 2, 2, 10.01, False, None),  # gap
+            ("Join", 10, 2, 10, False, None),  # shared edge
+            ("Join", 10, 10, 10, False, None),  # shared vertex
+            ("Cut", 2, 2, 10, False, None),
+            ("Intersect", 2, 2, 10, False, None),
+            ("Cut", 2, 2, 9, True, 984),
+            ("Intersect", 2, 2, 9, True, 16),
+        ):
+            for compound in (False, True):
+                with self.subTest(mode=mode, x=x, y=y, z=z, compound=compound):
+                    self.document.openTransaction("Check extrusion contact")
+                    body, initial = self._compound_body(
+                        "ContactTarget", [(0, 0, 0), (30, 0, 0)] if compound else [(0, 0, 0)]
+                    )
+                    body.AllowCompound = compound
+                    sketch = self.document.addObject("Sketcher::SketchObject", "ContactProfile")
+                    for a, b in (((x, y), (x + 4, y)), ((x + 4, y), (x + 4, y + 4)),
+                                 ((x + 4, y + 4), (x, y + 4)), ((x, y + 4), (x, y))):
+                        sketch.addGeometry(Part.LineSegment(App.Vector(*a, 0), App.Vector(*b, 0)), False)
+                    sketch.Placement.Base.z = z
+                    operation = self.document.addObject("PartDesign::DesignExtrude", "ContactExtrude")
+                    edit = PartDesign.beginDesignOperationEdit(operation)
+                    operation.Profile = sketch
+                    operation.Length = 5
+                    PartDesign.setDesignOperationTargets(edit, mode, [body])
+                    self.document.recompute()
+                    self.assertEqual(operation.isValid(), accepted, operation.getStatusString())
+                    if accepted:
+                        output = operation.OutputShapes[0]
+                        self.assertTrue(output.isValid())
+                        extra_volume = 1000 if compound and mode != "Intersect" else 0
+                        self.assertAlmostEqual(output.Volume, expected_volume + extra_volume, places=6)
+                        self.assertEqual(len(output.Solids), 2 if extra_volume else 1)
+                    self.assertAlmostEqual(initial.Shape.Volume, 2000 if compound else 1000)
+                    self.document.abortTransaction()
+
     def test_new_body_accepts_disconnected_profile_regions_when_compounds_are_allowed(self):
         sketch, _ = self._master_circle_sketch("CompoundNewBodyProfile")
         operation, body = self._new_body_operation(
@@ -4097,6 +4168,46 @@ class TestDesignModeling(unittest.TestCase):
         )
         self.assertAlmostEqual(target.Shape.Volume, 640.0)
         PartDesign.validateDesign(operation)
+        self._assert_dependency_graph_acyclic(self.document)
+
+    def test_vibescript_adoption_under_publication_lease_preserves_body_identity(self):
+        program = self.document.addObject("App::Part", "ScriptProgram")
+        unrelated = self.document.addObject("PartDesign::Body", "Unrelated")
+        unrelated.touch()
+        identities = None
+        operation = None
+        self.document.beginCooperativeMutation()
+        try:
+            for count, height in ((50, 3), (50, 4), (49, 5), (51, 6)):
+                keys = [f"Part{index}" for index in range(count)]
+                self.document.openTransaction("Adopt validated outputs")
+                if operation is None:
+                    operation = self.document.addObject(
+                        "PartDesign::DesignScriptOperation", "ScriptOperation"
+                    )
+                edit = PartDesign.beginDesignOperationEdit(operation)
+                PartDesign.setDesignScriptOutputs(
+                    edit, program.Name, "program-batch", f"revision-{height}",
+                    keys, keys, [Part.makeBox(i + 1, 2, height) for i in range(count)],
+                    [None] * count,
+                )
+                bodies = PartDesign.adoptDesignScriptOperationEdit(edit)
+                self.assertEqual(len(bodies), count)
+                current = [body.Name for body in bodies]
+                if identities is not None:
+                    retained = min(len(current), len(identities))
+                    self.assertEqual(current[:retained], identities[:retained])
+                identities = current
+                for index, body in enumerate(bodies):
+                    self.assertTrue(body.isValid())
+                    self.assertAlmostEqual(body.Shape.Volume, (index + 1) * 2 * height)
+                    self.assertIs(body.Tip.CurrentState.Operation, operation)
+                self.assertIn("Touched", unrelated.State)
+                PartDesign.validateDesign(operation)
+                self.document.commitTransaction()
+        finally:
+            self.document.abortTransaction()
+            self.document.endCooperativeMutation()
         self._assert_dependency_graph_acyclic(self.document)
 
     def test_vibescript_program_is_one_global_multi_body_operation(self):

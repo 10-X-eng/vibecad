@@ -34,6 +34,7 @@ def analyze_run_solver_capability_definition() -> NativeCapabilityDefinition:
                     "type": "object",
                     "properties": {
                         "solver_name": _OBJECT_NAME,
+                        "mesh_name": _OBJECT_NAME,
                         "timeout_seconds": {
                             "type": "integer",
                             "minimum": 1,

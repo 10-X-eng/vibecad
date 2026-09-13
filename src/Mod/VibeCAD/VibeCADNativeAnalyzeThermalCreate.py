@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometryCreate import references_match
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
@@ -170,7 +171,7 @@ def create_thermal_condition(
     condition = _factory(document, prepared.family)
     if condition is None or thermal_condition_family(condition) != prepared.family:
         raise NativeAnalyzeError("The FEM thermal factory returned the wrong object type.")
-    condition.Label = prepared.label
+    prepared = assign_prepared_label(condition, prepared)
     apply_thermal_values(condition, prepared.values)
     if prepared.family != "initial_temperature":
         condition.References = reference_value(prepared.references)

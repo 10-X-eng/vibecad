@@ -18,17 +18,24 @@ set(VibeCAD_Scripts
     VibeCADCodex.py
     VibeCADCodexResponses.py
     VibeCADComponentCatalog.py
+    VibeCADCooperativeExecution.py
     VibeCADCore.py
     VibeCADDebug.py
     VibeCADDesignReview.py
+    VibeCADDocumentChangeBatch.py
     VibeCADDocumentReferences.py
     VibeCADEditState.py
+    VibeCADEngineeringBrief.py
+    VibeCADEngineeringBriefGui.py
     VibeCADFasteners.py
     VibeCADFastenersGui.py
     VibeCADFastenerModel.py
     VibeCADFastenerAttachment.py
     VibeCADFastenerAssembly.py
     VibeCADGrid.py
+    VibeCADHostIsolation.py
+    VibeCADIsolationWorker.py
+    VibeCADNumericalRuntime.py
     VibeCADSectionView.py
     VibeCADSectionViewGui.py
     VibeCADGrokAuth.py
@@ -38,6 +45,7 @@ set(VibeCAD_Scripts
     VibeCADGeometryInspection.py
     VibeCADPlacementInspection.py
     VibeCADGui.py
+    VibeCADTokenUsage.py
     VibeCADLegacyArchitecture.py
     VibeCADLiveAcceptanceOracle.py
     VibeCADIntentMemory.py
@@ -50,6 +58,7 @@ set(VibeCAD_Scripts
     VibeCADMCP.py
     VibeCADMCPStdio.py
     VibeCADMCPToolNames.py
+    VibeCADMCPToolServers.py
     VibeCADModelingSurface.py
     VibeCADNativeActionManifest.py
     VibeCADNativeArguments.py
@@ -230,6 +239,7 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeInspectBindings.py
     VibeCADNativeAnalyzeInspectRuntime.py
     VibeCADNativeAnalyzeInspectSchema.py
+    VibeCADNativeAnalyzeLabels.py
     VibeCADNativeAnalyzeMaterialCreate.py
     VibeCADNativeAnalyzeMaterialEdit.py
     VibeCADNativeAnalyzeMaterials.py
@@ -241,6 +251,8 @@ set(VibeCAD_Scripts
     VibeCADNativeAnalyzeSolidDomainSchema.py
     VibeCADNativeAnalyzeSnapshot.py
     VibeCADNativeAnalyzeStudy.py
+    VibeCADNativeAnalyzeOwnership.py
+    VibeCADNativeAnalyzeStudyDependencies.py
     VibeCADNativeAnalyzeStudyEdit.py
     VibeCADNativeAnalyzeStudyState.py
     VibeCADNativeAeroSnapshot.py
@@ -627,6 +639,8 @@ set(VibeCAD_Scripts
     VibeCADNativeManufactureExtensions.py
     VibeCADNativeManufactureInspect.py
     VibeCADNativeManufactureInspectBindings.py
+    VibeCADNativeManufactureGeometryChild.py
+    VibeCADNativeManufactureGeometryRead.py
     VibeCADNativeManufactureInspectRuntime.py
     VibeCADNativeManufactureInspectSchema.py
     VibeCADNativeManufactureArea.py
@@ -661,7 +675,17 @@ set(VibeCAD_Scripts
     VibeCADNativeManufactureModifyBindings.py
     VibeCADNativeManufactureModifyRuntime.py
     VibeCADNativeManufactureModifySchema.py
+    VibeCADNativeManufactureFocusedModifyBindings.py
+    VibeCADNativeManufactureFocusedModifySchema.py
+    VibeCADNativeManufactureFocusedOperationBindings.py
+    VibeCADNativeManufactureFocusedOperationSchema.py
+    VibeCADNativeManufactureFocusedInspectBindings.py
+    VibeCADNativeManufactureFocusedInspectSchema.py
+    VibeCADNativeManufactureFocusedToolBindings.py
+    VibeCADNativeManufactureFocusedToolSchema.py
     VibeCADNativeManufactureOperationBindings.py
+    VibeCADNativeManufactureOperationGeneration.py
+    VibeCADNativeManufactureOperationGenerationChild.py
     VibeCADNativeManufactureOperationRuntime.py
     VibeCADNativeManufactureOperationSchema.py
     VibeCADNativeManufactureOperationSupport.py
@@ -671,10 +695,16 @@ set(VibeCAD_Scripts
     VibeCADNativeManufacturePocket3D.py
     VibeCADNativeManufactureProfile.py
     VibeCADNativeManufactureRotarySurface.py
+    VibeCADNativeManufactureSteepShallow.py
     VibeCADNativeManufactureSurface.py
     VibeCADNativeManufactureWaterline.py
     VibeCADNativeManufactureReadiness.py
+    VibeCADNativeManufactureProviderScope.py
+    VibeCADNativeManufactureProviderState.py
     VibeCADNativeManufactureSnapshot.py
+    VibeCADNativeManufactureSetupEdit.py
+    VibeCADNativeManufactureStockEdit.py
+    VibeCADNativeManufactureWorkCoordinateEdit.py
     VibeCADNativeManufactureSlot.py
     VibeCADNativeManufactureSimpleCopy.py
     VibeCADNativeManufactureStartPoint.py
@@ -684,6 +714,8 @@ set(VibeCAD_Scripts
     VibeCADNativeManufactureCamoticsSchema.py
     VibeCADNativeManufactureCamoticsWorker.py
     VibeCADNativeManufacturePostBindings.py
+    VibeCADNativeManufactureFocusedPostBindings.py
+    VibeCADNativeManufactureFocusedPostSchema.py
     VibeCADNativeManufacturePostChild.py
     VibeCADNativeManufacturePostConfiguration.py
     VibeCADNativeManufacturePostInput.py
@@ -696,6 +728,8 @@ set(VibeCAD_Scripts
     VibeCADNativeManufactureTemplateSchema.py
     VibeCADNativeManufactureSimulation.py
     VibeCADNativeManufactureSimulationBindings.py
+    VibeCADNativeManufactureSimulationControlBindings.py
+    VibeCADNativeManufactureSimulationControlSchema.py
     VibeCADNativeManufactureSimulationRuntime.py
     VibeCADNativeManufactureSimulationSchema.py
     VibeCADNativeManufactureSimulationResult.py
@@ -704,6 +738,13 @@ set(VibeCAD_Scripts
     VibeCADNativeManufactureSimulationResultRuntime.py
     VibeCADNativeManufactureSimulationResultSchema.py
     VibeCADNativeManufactureSimulationResultWorker.py
+    VibeCADNativeManufactureFollowUp.py
+    VibeCADNativeManufactureFollowUpBindings.py
+    VibeCADNativeManufactureFollowUpRuntime.py
+    VibeCADNativeManufactureFollowUpSchema.py
+    VibeCADNativeManufactureFollowUpState.py
+    VibeCADManufactureFollowUpGui.py
+    VibeCADManufactureSimulationResultGui.py
     VibeCADNativeManufactureState.py
     VibeCADNativeManufactureTool.py
     VibeCADNativeManufactureToolBindings.py
@@ -730,6 +771,7 @@ set(VibeCAD_Scripts
     VibeCADNativeMeshBooleanRuntime.py
     VibeCADNativeMeshBooleanSchema.py
     VibeCADIsolatedMeshWorker.py
+    VibeCADMeshCacheAtomic.py
     VibeCADMeshBooleanChild.py
     VibeCADMeshBooleanGui.py
     VibeCADMeshBooleanJob.py
@@ -792,6 +834,9 @@ set(VibeCAD_Scripts
     VibeCADNativeMeshPointsSchema.py
     VibeCADNativeMeshApproximateSchema.py
     VibeCADNativeMeshRebuildSchema.py
+    VibeCADNativeMeshReconstructParametricSchema.py
+    VibeCADNativeReconstructParametricBindings.py
+    VibeCADNativeReconstructParametricRuntime.py
     VibeCADNativeMeshRegularSolid.py
     VibeCADNativeMeshSegment.py
     VibeCADNativeMeshSegmentBindings.py
@@ -1173,17 +1218,22 @@ set(VibeCAD_Scripts
     VibeCADReferenceSelection.py
     VibeCADRibbonSurface.py
     VibeCADProject.py
+    VibeCADPublicationProgress.py
     VibeCADSession.py
+    VibeCADSessionRecovery.py
     VibeCADScriptedEditor.py
     VibeCADScriptedOwnership.py
     VibeCADScriptedProcess.py
     VibeCADScriptedPublication.py
+    VibeCADSurfaceAuthority.py
     VibeCADTools.py
     VibeCADTransactions.py
     VibeCADUpdate.py
     VibeCADUpdateGui.py
     VibeCADVibeScriptDomains.py
     VibeCADVibeScriptDomainRuntime.py
+    VibeCADVibeScriptFileIO.py
+    VibeCADVibeScriptPatch.py
     VibeCADVibeScriptDomainPublication.py
     VibeCADVibeScriptCAM.py
     vibescript_assembly_api.py
@@ -1245,6 +1295,7 @@ set(VibeCAD_Resources
     vibecad-activity.svg
     vibecad-new-conversation.svg
     vibecad-prompt-starters.svg
+    vibecad-engineering-brief.svg
 )
 
 set(VibeCAD_UpdateTrustFiles)
@@ -1256,13 +1307,21 @@ set(VibeCAD_TestScripts)
 if(BUILD_TEST AND BUILD_GUI)
     list(APPEND VibeCAD_TestScripts
         vibecad_tests/__init__.py
+        vibecad_tests/schema_test_helpers.py
         vibecad_tests/authoring_mode_gui_integration.py
         vibecad_tests/authoring_mode_persistence_gui_integration.py
         vibecad_tests/assembly_simulation_playback_gui_integration.py
         vibecad_tests/grid_gui_integration.py
         vibecad_tests/section_view_gui_integration.py
+        vibecad_tests/usage_summary_gui_integration.py
         vibecad_tests/link_override_visibility_gui_integration.py
         vibecad_tests/mcp_gui_integration.py
+        vibecad_tests/session_recovery_gui_integration.py
+        vibecad_tests/engineering_brief_gui_integration.py
+        vibecad_tests/engineering_brief_lifecycle_gui_integration.py
+        vibecad_tests/engineering_brief_panel_gui_integration.py
+        vibecad_tests/test_engineering_brief.py
+        vibecad_tests/test_session_recovery.py
     vibecad_tests/native_background_gui_integration.py
     vibecad_tests/native_analyze_context_responsiveness_gui_integration.py
     vibecad_tests/native_analyze_model_gui_integration.py
@@ -1312,16 +1371,27 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/native_manufacture_surface_gui_integration.py
     vibecad_tests/native_manufacture_waterline_gui_integration.py
     vibecad_tests/native_manufacture_rotary_surface_gui_integration.py
+    vibecad_tests/native_manufacture_steep_shallow_gui_integration.py
     vibecad_tests/native_manufacture_operation_active_gui_integration.py
     vibecad_tests/native_manufacture_start_point_gui_integration.py
     vibecad_tests/native_manufacture_gl_simulation_gui_integration.py
     vibecad_tests/native_manufacture_simulation_result_gui_integration.py
+    vibecad_tests/native_manufacture_verification_gui_integration.py
+    vibecad_tests/native_manufacture_human_simulation_gui_integration.py
+    vibecad_tests/native_path_simulator_solid_mesh_gui_integration.py
         vibecad_tests/native_manufacture_camotics_gui_support.py
         vibecad_tests/native_manufacture_camotics_gui_integration.py
-        vibecad_tests/native_manufacture_post_gui_integration.py
-        vibecad_tests/native_manufacture_template_gui_integration.py
+    vibecad_tests/native_manufacture_post_gui_integration.py
+    vibecad_tests/native_manufacture_bracket_fixture.py
+    vibecad_tests/native_manufacture_multi_setup_fixture.py
+    vibecad_tests/native_manufacture_template_gui_integration.py
         vibecad_tests/test_native_manufacture_camotics.py
         vibecad_tests/test_native_manufacture_post.py
+    vibecad_tests/test_native_manufacture_provider_scope.py
+    vibecad_tests/test_native_manufacture_multi_setup_state.py
+    vibecad_tests/test_path_job_setup_service.py
+    vibecad_tests/test_path_job_stock_service.py
+    vibecad_tests/test_path_job_work_coordinate_service.py
         vibecad_tests/test_native_manufacture_template.py
     vibecad_tests/native_manufacture_operation_array_gui_integration.py
     vibecad_tests/native_manufacture_array_dressup_gui_integration.py
@@ -1438,6 +1508,7 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/test_mesh_acceptance.py
     vibecad_tests/test_native_mesh_boolean_background.py
     vibecad_tests/test_native_mesh_io.py
+    vibecad_tests/test_native_mesh_reconstruct_parametric.py
     vibecad_tests/test_native_mesh_tessellation_background.py
     vibecad_tests/gui_api_thread_guard_integration.py
     vibecad_tests/native_provider_thread_gui_integration.py
@@ -1529,9 +1600,12 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_native_assembly_export.py
         vibecad_tests/test_native_assembly_fastener.py
         vibecad_tests/test_native_input.py
+        vibecad_tests/test_gemini_provider.py
         vibecad_tests/test_grok_oauth.py
         vibecad_tests/test_agent_control.py
         vibecad_tests/test_agent_control_grok_bot.py
+        vibecad_tests/test_dev_launcher_contract.py
+        vibecad_tests/test_visible_operator_contract.py
         vibecad_tests/test_reference_image_downscale.py
         vibecad_tests/test_ollama_inspect.py
         vibecad_tests/test_live_acceptance_oracle.py
@@ -1695,6 +1769,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/native_sketch_radius_gui_case.py
         vibecad_tests/native_sketch_geometry_gui_integration.py
         vibecad_tests/native_sketch_geometry_catalog_gui_case.py
+        vibecad_tests/native_viewprovider_observer_gui_integration.py
         vibecad_tests/native_model_structure_gui_integration.py
         vibecad_tests/native_mutation_gui_integration.py
         vibecad_tests/native_component_interface_integration.py
@@ -1702,6 +1777,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/qt_ribbon_theme_integration.py
         vibecad_tests/read_geometry_integration.py
         vibecad_tests/test_geometry_worker_fallback.py
+        vibecad_tests/test_source_checkout_bootstrap.py
         vibecad_tests/ribbon_surface_gui_integration.py
         vibecad_tests/test_aero_ribbon_and_context.py
         vibecad_tests/test_aero_ribbon_install.py
@@ -1738,6 +1814,41 @@ if(VibeCAD_UpdateTrustFiles)
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_BINARY_DIR}/Mod/VibeCAD
         ${VibeCAD_UpdateTrustFiles}
+    )
+endif()
+
+# Native cmake --build does not go through rattler create_bundle.sh, so pin
+# Codex here or the module keeps a leftover runtime from an older tree.
+option(VIBECAD_INSTALL_CODEX_RUNTIME "Install the pinned Codex app-server into the build module" ON)
+if(UNIX AND VIBECAD_INSTALL_CODEX_RUNTIME)
+    if(NOT Python3_EXECUTABLE)
+        message(FATAL_ERROR "Python3_EXECUTABLE is required to install the Codex app-server runtime")
+    endif()
+    set(VIBECAD_CODEX_INSTALLER
+        "${CMAKE_SOURCE_DIR}/package/rattler-build/scripts/install_vibecad_codex_runtime.sh")
+    set(VIBECAD_CODEX_MODULE_DIR "${CMAKE_BINARY_DIR}/Mod/VibeCAD")
+    set(VIBECAD_CODEX_RUNTIME_STAMP "${VIBECAD_CODEX_MODULE_DIR}/codex_runtime/runtime.json")
+    # The installer validates its cache cheaply. A manifest timestamp alone
+    # cannot detect removed companion binaries or stale runtime metadata.
+    add_custom_target(VibeCADCodexRuntime ALL
+        BYPRODUCTS "${VIBECAD_CODEX_RUNTIME_STAMP}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${VIBECAD_CODEX_MODULE_DIR}"
+        COMMAND
+            bash "${VIBECAD_CODEX_INSTALLER}"
+            "${Python3_EXECUTABLE}"
+            "${VIBECAD_CODEX_MODULE_DIR}"
+        DEPENDS
+            "${VIBECAD_CODEX_INSTALLER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/VibeCADCodex.py"
+        COMMENT "Verifying pinned Codex app-server in ${VIBECAD_CODEX_MODULE_DIR}"
+        VERBATIM
+    )
+    add_dependencies(VibeCADScripts VibeCADCodexRuntime)
+    install(
+        DIRECTORY "${VIBECAD_CODEX_MODULE_DIR}/codex_runtime"
+        DESTINATION Mod/VibeCAD
+        USE_SOURCE_PERMISSIONS
+        OPTIONAL
     )
 endif()
 

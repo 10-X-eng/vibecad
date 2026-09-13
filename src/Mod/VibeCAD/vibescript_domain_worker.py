@@ -17,6 +17,7 @@ from types import MappingProxyType
 from typing import Any
 
 from VibeCADAssemblySolverPolicy import set_joint_connectors_without_auto_solve
+from VibeCADVibeScriptFileIO import atomic_write_text, read_text_shared
 from vibescript_domain_api import DomainValue, create_domain_api
 import vibescript_worker_progress as worker_progress
 
@@ -24,7 +25,6 @@ REQUEST_ENV = "VIBECAD_VIBESCRIPT_DOMAIN_REQUEST"
 RESULT_ENV = "VIBECAD_VIBESCRIPT_DOMAIN_RESULT"
 SCHEMA = "vibecad-vibescript-domain-worker-v2"
 MAX_STDOUT_CHARS = 16_000
-MAX_DEFINITION_BYTES = 1_000_000
 MAX_PART_OUTPUT_SUBELEMENT_DETAILS = 256
 PART_OUTPUT_SUBELEMENT_DETAIL_BUDGET = 2_048
 
@@ -93,12 +93,10 @@ def _immutable_input(value: Any) -> Any:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    temporary = path.with_name(f"{path.name}.tmp")
-    temporary.write_text(
+    atomic_write_text(
+        path,
         json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
-        encoding="utf-8",
     )
-    temporary.replace(path)
 
 
 def _resource_limits(request: dict[str, Any]) -> None:
@@ -220,18 +218,28 @@ def _execute_source(
     started = time.monotonic()
     operations = 0
     source_filename = "<vibecad-domain-vibescript>"
+    source_elapsed = 0.0
+    last_trace_at = started
+    source_active = False
 
     def trace(frame: Any, event: str, _arg: Any):
-        nonlocal operations
-        if frame.f_code.co_filename == source_filename and event in {"line", "call"}:
+        nonlocal last_trace_at, operations, source_active, source_elapsed
+        now = time.monotonic()
+        if source_active:
+            source_elapsed += max(0.0, now - last_trace_at)
+        last_trace_at = now
+        source_active = frame.f_code.co_filename == source_filename
+        if source_active and source_elapsed > max_seconds:
+            raise TimeoutError(
+                f"VibeScript exceeded its {max_seconds:g} second source budget."
+            )
+        if source_active and event in {"line", "call"}:
             operations += 1
-            if operations > max_operations:
+            # Zero disables the count ceiling; explicit positive limits remain
+            # supported for callers that deliberately request bounded execution.
+            if max_operations > 0 and operations > max_operations:
                 raise RuntimeError(
                     f"VibeScript exceeded its {max_operations} operation budget."
-                )
-            if time.monotonic() - started > max_seconds:
-                raise TimeoutError(
-                    f"VibeScript exceeded its {max_seconds:g} second source budget."
                 )
         return trace
 
@@ -268,6 +276,9 @@ def _execute_source(
             setattr(exc, "vibescript_stdout", output.getvalue()[-MAX_STDOUT_CHARS:])
             raise
     finally:
+        now = time.monotonic()
+        if source_active:
+            source_elapsed += max(0.0, now - last_trace_at)
         sys.settrace(previous_trace)
     result = namespace.get("result")
     if not isinstance(result, dict):
@@ -286,6 +297,7 @@ def _execute_source(
             "operations": operations,
             "max_operations": max_operations,
             "elapsed_seconds": time.monotonic() - started,
+            "source_elapsed_seconds": source_elapsed,
             "max_seconds": max_seconds,
         },
     )
@@ -454,17 +466,13 @@ def _payload(value: Any, *, serialized: bool = False) -> dict[str, Any]:
         payload = dict(value)
     else:
         raise TypeError("Every result value must come from the active domain api.")
-    encoded = json.dumps(
+    json.dumps(
         payload,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
-    ).encode("utf-8")
-    if len(encoded) > MAX_DEFINITION_BYTES:
-        raise ValueError(
-            f"One VibeScript output definition exceeds {MAX_DEFINITION_BYTES} bytes."
-        )
+    )
     return payload
 
 
@@ -1081,7 +1089,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
             inputs=inputs,
             api=api,
             expected_output_names=expected_names,
-            max_operations=int(request.get("max_operations") or 200_000),
+            max_operations=int(request.get("max_operations") or 0),
             max_seconds=float(request.get("max_seconds") or 300.0),
         )
         (root / "source-stdout.txt").write_text(
@@ -1339,9 +1347,7 @@ def _run(request: dict[str, Any], root: Path) -> dict[str, Any]:
         elif domain == "techdraw":
             response["techdraw_validation"] = techdraw_validation
         worker_progress.finish()
-        response["worker_progress"] = json.loads(
-            (root / "progress.json").read_text(encoding="utf-8")
-        )
+        response["worker_progress"] = worker_progress.snapshot()
         return response
     finally:
         App.closeDocument(document.Name)
@@ -1353,7 +1359,7 @@ def main() -> int:
     try:
         request_path = Path(os.environ[REQUEST_ENV]).resolve()
         root = request_path.parent
-        request = json.loads(request_path.read_text(encoding="utf-8"))
+        request = json.loads(read_text_shared(request_path))
         if not isinstance(request, dict):
             raise TypeError("Domain worker request must be an object.")
         _resource_limits(request)

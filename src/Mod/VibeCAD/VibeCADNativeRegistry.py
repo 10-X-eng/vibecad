@@ -315,7 +315,13 @@ from VibeCADNativeMeshApproximateSchema import (
     register_mesh_approximate_capability_definition,
 )
 from VibeCADNativeMeshRebuildSchema import register_mesh_rebuild_capability_definition
+from VibeCADNativeMeshReconstructParametricSchema import (
+    register_mesh_reconstruct_parametric_capability_definition,
+)
 from VibeCADNativeReverseBindings import register_reverse_capability_implementations
+from VibeCADNativeReconstructParametricBindings import (
+    register_mesh_reconstruct_parametric_capability_implementation,
+)
 from VibeCADNativeMeshExportBindings import (
     register_mesh_export_capability_implementation,
 )
@@ -430,6 +436,12 @@ from VibeCADNativeManufactureInspectBindings import (
 from VibeCADNativeManufactureInspectSchema import (
     register_manufacture_inspect_capability_definition,
 )
+from VibeCADNativeManufactureFocusedInspectBindings import (
+    register_manufacture_focused_inspect_capability_implementations,
+)
+from VibeCADNativeManufactureFocusedInspectSchema import (
+    register_manufacture_focused_inspect_capability_definitions,
+)
 from VibeCADNativeManufactureJobBindings import (
     register_manufacture_job_capability_implementation,
 )
@@ -447,6 +459,12 @@ from VibeCADNativeManufactureModifyBindings import (
 )
 from VibeCADNativeManufactureModifySchema import (
     register_manufacture_modify_capability_definition,
+)
+from VibeCADNativeManufactureFocusedModifyBindings import (
+    register_manufacture_focused_modify_capability_implementations,
+)
+from VibeCADNativeManufactureFocusedModifySchema import (
+    register_manufacture_focused_modify_capability_definitions,
 )
 from VibeCADNativeManufactureProgramBindings import (
     register_manufacture_program_capability_implementation,
@@ -472,6 +490,12 @@ from VibeCADNativeManufactureOperationBindings import (
 from VibeCADNativeManufactureOperationSchema import (
     register_manufacture_operation_capability_definition,
 )
+from VibeCADNativeManufactureFocusedOperationBindings import (
+    register_manufacture_focused_operation_capability_implementations,
+)
+from VibeCADNativeManufactureFocusedOperationSchema import (
+    register_manufacture_focused_operation_capability_definitions,
+)
 from VibeCADNativeManufactureCamoticsBindings import (
     register_manufacture_camotics_capability_implementation,
 )
@@ -483,6 +507,12 @@ from VibeCADNativeManufacturePostBindings import (
 )
 from VibeCADNativeManufacturePostSchema import (
     register_manufacture_post_capability_definition,
+)
+from VibeCADNativeManufactureFocusedPostBindings import (
+    register_manufacture_focused_post_capability_implementations,
+)
+from VibeCADNativeManufactureFocusedPostSchema import (
+    register_manufacture_focused_post_capability_definitions,
 )
 from VibeCADNativeManufactureTemplateBindings import (
     register_manufacture_template_capability_implementation,
@@ -496,14 +526,32 @@ from VibeCADNativeManufactureSimulationBindings import (
 from VibeCADNativeManufactureSimulationSchema import (
     register_manufacture_simulation_capability_definition,
 )
+from VibeCADNativeManufactureSimulationControlBindings import (
+    register_manufacture_simulation_control_capability_implementation,
+)
+from VibeCADNativeManufactureSimulationControlSchema import (
+    register_manufacture_simulation_control_capability_definition,
+)
 from VibeCADNativeManufactureSimulationResultBindings import (
     register_manufacture_simulation_result_capability_implementation,
 )
 from VibeCADNativeManufactureSimulationResultSchema import (
     register_manufacture_simulation_result_capability_definition,
 )
+from VibeCADNativeManufactureFollowUpBindings import (
+    register_manufacture_follow_up_capability_implementation,
+)
+from VibeCADNativeManufactureFollowUpSchema import (
+    register_manufacture_follow_up_capability_definition,
+)
 from VibeCADNativeManufactureToolBindings import (
     register_manufacture_tool_capability_implementations,
+)
+from VibeCADNativeManufactureFocusedToolBindings import (
+    register_manufacture_focused_tool_capability_implementations,
+)
+from VibeCADNativeManufactureFocusedToolSchema import (
+    register_manufacture_focused_tool_capability_definitions,
 )
 from VibeCADNativeManufactureToolSchema import (
     register_manufacture_tool_capability_definitions,
@@ -860,7 +908,9 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_mesh_points_capability_implementation(registry)
     register_mesh_rebuild_capability_definition(registry)
     register_mesh_approximate_capability_definition(registry)
+    register_mesh_reconstruct_parametric_capability_definition(registry)
     register_reverse_capability_implementations(registry)
+    register_mesh_reconstruct_parametric_capability_implementation(registry)
     register_common_capability_definitions(registry)
     register_common_capability_implementations(registry)
     register_inspection_compare_capability_definition(registry)
@@ -919,12 +969,16 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_model_transform_capability_implementation(registry)
     register_manufacture_inspect_capability_definition(registry)
     register_manufacture_inspect_capability_implementation(registry)
+    register_manufacture_focused_inspect_capability_definitions(registry)
+    register_manufacture_focused_inspect_capability_implementations(registry)
     register_manufacture_job_capability_definition(registry)
     register_manufacture_job_capability_implementation(registry)
     register_manufacture_area_capability_definition(registry)
     register_manufacture_area_capability_implementation(registry)
     register_manufacture_modify_capability_definition(registry)
     register_manufacture_modify_capability_implementation(registry)
+    register_manufacture_focused_modify_capability_definitions(registry)
+    register_manufacture_focused_modify_capability_implementations(registry)
     register_manufacture_program_capability_definition(registry)
     register_manufacture_program_capability_implementation(registry)
     register_manufacture_probe_capability_definition(registry)
@@ -933,18 +987,28 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_manufacture_property_bag_capability_implementation(registry)
     register_manufacture_operation_capability_definition(registry)
     register_manufacture_operation_capability_implementation(registry)
+    register_manufacture_focused_operation_capability_definitions(registry)
+    register_manufacture_focused_operation_capability_implementations(registry)
     register_manufacture_camotics_capability_definition(registry)
     register_manufacture_camotics_capability_implementation(registry)
     register_manufacture_post_capability_definition(registry)
     register_manufacture_post_capability_implementation(registry)
+    register_manufacture_focused_post_capability_definitions(registry)
+    register_manufacture_focused_post_capability_implementations(registry)
     register_manufacture_template_capability_definition(registry)
     register_manufacture_template_capability_implementation(registry)
     register_manufacture_simulation_capability_definition(registry)
     register_manufacture_simulation_capability_implementation(registry)
+    register_manufacture_simulation_control_capability_definition(registry)
+    register_manufacture_simulation_control_capability_implementation(registry)
     register_manufacture_simulation_result_capability_definition(registry)
     register_manufacture_simulation_result_capability_implementation(registry)
+    register_manufacture_follow_up_capability_definition(registry)
+    register_manufacture_follow_up_capability_implementation(registry)
     register_manufacture_tool_capability_definitions(registry)
     register_manufacture_tool_capability_implementations(registry)
+    register_manufacture_focused_tool_capability_definitions(registry)
+    register_manufacture_focused_tool_capability_implementations(registry)
     register_manufacture_tool_output_capability_definition(registry)
     register_manufacture_tool_output_capability_implementation(registry)
     register_drawing_page_capability_definition(registry)

@@ -84,6 +84,12 @@ class Document(PropertyContainer):
     Transacting: Final[bool] = False
     """Indicate whether the document is undoing/redoing"""
 
+    CooperativeMutationActive: Final[bool] = False
+    """Indicate whether a resumable document-thread mutation is active."""
+
+    PresentationUpdateActive: Final[bool] = False
+    """Indicate whether asynchronous document presentation is still updating."""
+
     OldLabel: Final[str] = ""
     """Contains the old label before change"""
 
@@ -198,6 +204,18 @@ class Document(PropertyContainer):
         """
         Commit an Undo/Redo transaction
         """
+        ...
+
+    def beginCooperativeMutation(self) -> None:
+        """Begin a nested resumable document-thread mutation."""
+        ...
+
+    def endCooperativeMutation(self) -> None:
+        """End a nested resumable document-thread mutation."""
+        ...
+
+    def waitForPresentationReady(self) -> None:
+        """Wait off the GUI thread for document mutation and presentation to finish."""
         ...
 
     @overload
@@ -442,6 +460,22 @@ class Document(PropertyContainer):
         """
         ...
 
+    def getObjectStructureGeneration(self) -> int:
+        """Return the structural invalidation token for owner-thread caches.
+
+        Placements, geometry values and built-in visibility do not change it.
+        This token is not a lock and does not authorize off-thread document reads.
+        """
+        ...
+
+    def getObjectRemovalGeneration(self) -> int:
+        """Return an owner-thread identity-cache token changed by removal/clear.
+
+        Additions and property changes do not advance it. It is not a lock and
+        does not authorize off-thread document reads.
+        """
+        ...
+
     def getRecomputeDiagnostics(self) -> dict:
         """
         Return the generation and structured diagnostics from the latest recompute.
@@ -485,6 +519,7 @@ class Document(PropertyContainer):
         Type: str = None,
         Name: str = None,
         Label: str = None,
+        Property: str = None,
     ) -> list[DocumentObject]:
         """
         Return a list of objects that match the specified type, name or label.
@@ -495,6 +530,7 @@ class Document(PropertyContainer):
             Type: Type of the feature.
             Name: Name
             Label: Label
+            Property: Require this named native property, without reading its value.
         """
         ...
 
@@ -598,6 +634,20 @@ class Document(PropertyContainer):
 
         Returns:
             True when the order changed, or False when it already matched.
+        """
+        ...
+
+    def reorderTimelineOperationDependentClosuresAfter(
+        self,
+        operations: Sequence[DocumentObject],
+        target: DocumentObject,
+        /,
+    ) -> bool:
+        """Move several operations and their shared downstream closure once.
+
+        Requires the same owned transaction and full-history boundary as the
+        single-operation entry. Complete semantic blocks and state are retained;
+        duplicate roots, cycles and invalid chronology are rejected atomically.
         """
         ...
 

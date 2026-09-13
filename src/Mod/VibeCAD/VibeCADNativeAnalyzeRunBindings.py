@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeCurrentTargets import current_target
+from VibeCADNativeAnalyzeMeshState import fem_mesh_definition_context_state
 from VibeCADNativeAnalyzeRunSchema import ANALYZE_RUN_SOLVER
 from VibeCADNativeAnalyzeSolverExecutionRuntime import (
     NativeAnalyzeSolverExecutionRuntime,
@@ -34,6 +35,13 @@ def _run(call: Any) -> Mapping[str, Any]:
         solver_state,
     )
     values["target"] = target
+    mesh_name = values.pop("mesh_name", None)
+    if mesh_name is not None:
+        values["mesh"] = current_target(
+            runtime,
+            mesh_name,
+            fem_mesh_definition_context_state,
+        )
     values.setdefault("timeout_seconds", 3600)
     result = dict(
         runtime.execute(

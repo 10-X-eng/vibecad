@@ -36,7 +36,7 @@ from VibeCADModelingSurface import resolve_modeling_surface
 from VibeCADNativeBackground import NativeBackgroundManager
 from VibeCADNativeAnalyzeContext import AnalyzeContextCoordinator
 from VibeCADNativeDrawingContext import DrawingSourceCatalogCoordinator
-from VibeCADNativeState import NativeDocumentStateStore
+from VibeCADNativeState import NativeDocumentStateStore, is_structural_property
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADNativeStatePersistence import (
     native_state_path,
@@ -81,6 +81,31 @@ _PRIVATE_SCRIPTED_ROLES = frozenset(
 _CONVERSATION_WRITE_LOCK = threading.RLock()
 _MAX_VIBESCRIPT_REFERENCE_CACHE_ENTRIES = 8
 _MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES = 256 * 1024 * 1024
+
+
+def _native_document_update_active(document_uid: str) -> bool:
+    """Read one document's asynchronous update state on its owning thread."""
+
+    import FreeCAD as App
+
+    uid = str(document_uid or "").strip()
+    document = next(
+        (
+            candidate
+            for candidate in App.listDocuments().values()
+            if str(getattr(candidate, "Uid", "") or "") == uid
+        ),
+        None,
+    )
+    return bool(
+        document is not None
+        and (
+            bool(getattr(document, "Recomputing", False))
+            or bool(getattr(document, "RecomputePending", False))
+            or bool(getattr(document, "CooperativeMutationActive", False))
+            or bool(getattr(document, "PresentationUpdateActive", False))
+        )
+    )
 
 
 def _slug_filename(value: str) -> str:
@@ -225,7 +250,9 @@ class VibeCADService:
         self._project_store = VibeCADProjectStore(self._local_session_id)
         self._native_document_states = NativeDocumentStateStore()
         self._native_assistant_undo = NativeAssistantUndoLedger()
-        self._native_background_jobs = NativeBackgroundManager()
+        self._native_background_jobs = NativeBackgroundManager(
+            document_update_active=_native_document_update_active,
+        )
         self._native_analyze_contexts = AnalyzeContextCoordinator()
         self._native_drawing_source_contexts = DrawingSourceCatalogCoordinator()
         self._native_state_restores: set[tuple[str, str]] = set()
@@ -237,6 +264,8 @@ class VibeCADService:
         self._vibescript_reference_snapshots: dict[
             tuple[str, str], dict[str, Any]
         ] = {}
+        self._document_change_batch_lock = threading.RLock()
+        self._deferred_document_changes: dict[str, dict[str, Any]] = {}
         self._register_core_tools()
 
     @staticmethod
@@ -374,14 +403,31 @@ class VibeCADService:
     def invalidate_vibescript_reference_snapshots(self, obj: Any) -> None:
         """Invalidate every cached source that depends on ``obj`` exactly."""
 
-        identity = self._vibescript_object_identity(obj)
-        if not all(identity):
+        self.invalidate_vibescript_reference_snapshots_many((obj,))
+
+    def invalidate_vibescript_reference_snapshots_many(
+        self,
+        objects: Any,
+        *,
+        identities: Any = (),
+    ) -> None:
+        """Invalidate changed sources, including identities captured before deletion."""
+
+        identities = set(identities) | {
+            identity
+            for identity in (
+                self._vibescript_object_identity(obj)
+                for obj in tuple(objects or ())
+            )
+            if all(identity)
+        }
+        if not identities:
             return
         with self._vibescript_reference_cache_lock:
             stale = [
                 key
                 for key, entry in self._vibescript_reference_snapshots.items()
-                if identity in entry.get("dependencies", ())
+                if identities.intersection(entry.get("dependencies", ()))
             ]
             for key in stale:
                 self._vibescript_reference_snapshots.pop(key, None)
@@ -431,6 +477,9 @@ class VibeCADService:
 
     def provider_reasoning_effort(self) -> str:
         return load_settings().reasoning_effort
+
+    def provider_adaptive_reasoning(self) -> bool:
+        return bool(load_settings().adaptive_reasoning)
 
     def web_search_enabled(self) -> bool:
         return bool(load_settings().web_search_enabled)
@@ -698,6 +747,13 @@ class VibeCADService:
 
     def note_native_object_created(self, obj: Any) -> int | None:
         uid = self._object_document_uid(obj)
+        deferred, revision = self._defer_document_change(
+            uid,
+            structural=True,
+            invalidate=True,
+        )
+        if deferred:
+            return revision
         revision = (
             self._native_document_states.note_structural_change(uid) if uid else None
         )
@@ -708,6 +764,13 @@ class VibeCADService:
 
     def note_native_object_deleted(self, obj: Any) -> int | None:
         uid = self._object_document_uid(obj)
+        deferred, revision = self._defer_document_change(
+            uid,
+            structural=True,
+            invalidate=True,
+        )
+        if deferred:
+            return revision
         revision = (
             self._native_document_states.note_structural_change(uid) if uid else None
         )
@@ -737,6 +800,14 @@ class VibeCADService:
                     return self._native_document_states.current_revision(uid)
             except (ImportError, AttributeError, ReferenceError, RuntimeError, TypeError):
                 pass
+        structural = is_structural_property(property_name)
+        deferred, revision = self._defer_document_change(
+            uid,
+            structural=structural,
+            invalidate=(str(property_name or "") == "Visibility" or structural),
+        )
+        if deferred:
+            return revision
         previous_revision = self._native_document_states.current_revision(uid)
         revision = self._native_document_states.note_object_property_change(
             uid,
@@ -748,6 +819,125 @@ class VibeCADService:
         if revision_changed:
             self._sync_native_authority_metadata_if_active(uid)
         return revision
+
+    def begin_document_change_batch(
+        self,
+        document_uid: str,
+        *,
+        origin_program_id: str = "",
+        origin_domain: str = "",
+    ) -> None:
+        """Coalesce observer bookkeeping for one atomic document operation."""
+
+        from VibeCADDocumentChangeBatch import begin_document_change_batch
+
+        uid = str(document_uid or "").strip()
+        if not uid:
+            raise ValueError("A document change batch requires a document UID.")
+        begin_document_change_batch(
+            uid,
+            origin_program_id=origin_program_id,
+            origin_domain=origin_domain,
+        )
+        lock, changes = self._document_change_batch_storage()
+        with lock:
+            state = changes.setdefault(
+                uid,
+                {
+                    "depth": 0,
+                    "structural": False,
+                    "invalidate": False,
+                    "commit": True,
+                },
+            )
+            state["depth"] = int(state["depth"]) + 1
+
+    def end_document_change_batch(
+        self,
+        document_uid: str,
+        *,
+        commit: bool = True,
+    ) -> int | None:
+        """Flush one outer atomic operation as one structural revision."""
+
+        from VibeCADDocumentChangeBatch import end_document_change_batch
+
+        uid = str(document_uid or "").strip()
+        if type(commit) is not bool:
+            raise TypeError("commit must be a boolean")
+        lock, changes = self._document_change_batch_storage()
+        with lock:
+            state = changes.get(uid)
+            if state is None or int(state.get("depth") or 0) < 1:
+                raise RuntimeError(f"Document {uid!r} has no active change batch.")
+            state["commit"] = bool(state.get("commit", True)) and commit
+            state["depth"] = int(state["depth"]) - 1
+            outermost = int(state["depth"]) == 0
+            structural = bool(state.get("structural"))
+            invalidate = bool(state.get("invalidate"))
+            committed = bool(state.get("commit", True))
+            if outermost:
+                # Keep the record active while metadata synchronization emits
+                # its own FreeCAD property notification.
+                state["depth"] = 1
+        revision = self._native_document_states.current_revision(uid)
+        try:
+            if outermost and committed:
+                if structural:
+                    revision = self._native_document_states.note_structural_change(uid)
+                if invalidate:
+                    self._invalidate_native_read_contexts(uid)
+                if structural:
+                    self._sync_native_authority_metadata_if_active(uid)
+        finally:
+            if outermost:
+                with lock:
+                    changes.pop(uid, None)
+            end_document_change_batch(uid, commit=committed)
+        return revision
+
+    def document_change_batch_active(self, document_uid: str) -> bool:
+        """Return whether this service is coalescing one document's changes."""
+
+        uid = str(document_uid or "").strip()
+        lock, changes = self._document_change_batch_storage()
+        with lock:
+            state = changes.get(uid)
+            return bool(state and int(state.get("depth") or 0) > 0)
+
+    def _document_change_batch_storage(
+        self,
+    ) -> tuple[Any, dict[str, dict[str, Any]]]:
+        """Lazily support lightweight services constructed by integrations."""
+
+        lock = getattr(self, "_document_change_batch_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._document_change_batch_lock = lock
+        changes = getattr(self, "_deferred_document_changes", None)
+        if changes is None:
+            changes = {}
+            self._deferred_document_changes = changes
+        return lock, changes
+
+    def _defer_document_change(
+        self,
+        document_uid: str,
+        *,
+        structural: bool,
+        invalidate: bool,
+    ) -> tuple[bool, int | None]:
+        uid = str(document_uid or "").strip()
+        if not uid:
+            return False, None
+        lock, changes = self._document_change_batch_storage()
+        with lock:
+            state = changes.get(uid)
+            if state is None or int(state.get("depth") or 0) < 1:
+                return False, None
+            state["structural"] = bool(state.get("structural")) or structural
+            state["invalidate"] = bool(state.get("invalidate")) or invalidate
+        return True, self._native_document_states.current_revision(uid)
 
     def _invalidate_native_read_contexts(self, document_uid: str) -> None:
         """Invalidate revision-scoped detached read state for one document."""
@@ -798,9 +988,16 @@ class VibeCADService:
             raise RuntimeError("The active ribbon has no Native provider surface.")
         background_job = None
         if surface.surface_id == "analyze":
-            background_job = self._native_background_jobs.latest_document_snapshot(
+            background_job = self._native_background_jobs.document_snapshots(
                 str(document.Uid),
                 capability_prefix="analyze.",
+                active_only=True,
+            )
+        elif surface.surface_id == "manufacture":
+            background_job = self._native_background_jobs.document_snapshots(
+                str(document.Uid),
+                capability_prefix="manufacture.",
+                active_only=True,
             )
         return build_active_snapshot(
             document,
@@ -832,9 +1029,10 @@ class VibeCADService:
         ) != "native":
             return None
         native_state = self.native_document_state()
-        background_job = self._native_background_jobs.latest_document_snapshot(
+        background_job = self._native_background_jobs.document_snapshots(
             str(document.Uid),
             capability_prefix="analyze.",
+            active_only=True,
         )
         analysis_artifacts = drawing_analysis_artifact_names(document)
         base = capture_active_snapshot_base(
@@ -846,19 +1044,18 @@ class VibeCADService:
         details = begin_analyze_snapshot_capture(
             document,
             background_job=background_job,
+            selection=base.get("_selection"),
             validate_brep=False,
             analysis_artifact_names=analysis_artifacts,
         )
         revision = int(native_state.get("structural_revision", 0) or 0)
-        cacheable = bool(
-            background_job is None or bool(getattr(background_job, "terminal", False))
-        )
+        cacheable = not bool(background_job)
         cache_hit = bool(
             cacheable
             and self._native_analyze_contexts.has_cached(
                 str(document.Uid),
                 revision,
-                variant=str(details.get("active_analysis_name") or ""),
+                variant=str(details.get("focused_analysis_name") or ""),
             )
         )
         detached_clipping = capture_analyze_clipping(document, details)
@@ -4911,6 +5108,94 @@ class VibeCADService:
         self._set_conversation_cache(result)
         return result
 
+    def prepare_session_recovery(
+        self,
+        phase: str,
+        prompt: str,
+        *,
+        instance_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Capture recovery identity on the document thread without artifact I/O."""
+
+        scope = self.project_scope_snapshot()
+        project_root = str(scope.get("root") or "").strip()
+        document = scope.get("document")
+        document_info = document if isinstance(document, dict) else {}
+        document_uid = str(
+            document_info.get("uid") or self._active_document_uid() or ""
+        ).strip()
+        if not project_root or not document_uid:
+            raise RuntimeError("Open a CAD document before saving VibeCAD recovery.")
+
+        conversation_id: str | None = None
+        cache_key = str(self._conversation_cache_key or "").strip()
+        if cache_key:
+            cached_path = Path(cache_key)
+            candidate = cached_path.stem.lower()
+            if (
+                cached_path.parent.parent == Path(project_root)
+                and re.fullmatch(r"[0-9a-f]{32}", candidate)
+            ):
+                conversation_id = candidate
+        prepared = {
+            "project_root": project_root,
+            "phase": str(phase or "").strip().lower(),
+            "prompt": str(prompt or ""),
+            "document_uid": document_uid,
+            "document_name": str(document_info.get("document") or "").strip(),
+            "file_path": str(document_info.get("file_path") or "").strip(),
+            "conversation_id": conversation_id,
+        }
+        clean_instance_id = str(instance_id or "").strip()
+        if clean_instance_id:
+            prepared["instance_id"] = clean_instance_id
+        return prepared
+
+    @staticmethod
+    def persist_prepared_session_recovery(
+        prepared: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically persist one document-thread recovery capture."""
+
+        from VibeCADSessionRecovery import SessionRecoveryStore
+
+        project_root = str(prepared.get("project_root") or "").strip()
+        if not project_root:
+            raise RuntimeError("Prepared VibeCAD recovery has no project root.")
+        return SessionRecoveryStore(project_root).write(prepared)
+
+    def session_recovery(self) -> dict[str, Any]:
+        """Load a recovery snapshot only for the active document and thread."""
+
+        from VibeCADSessionRecovery import SessionRecoveryStore
+
+        scope = self.project_scope_snapshot()
+        project_root = str(scope.get("root") or "").strip()
+        conversation_id: str | None = None
+        cache_key = str(self._conversation_cache_key or "").strip()
+        if cache_key:
+            cached_path = Path(cache_key)
+            candidate = cached_path.stem.lower()
+            if (
+                cached_path.parent.parent == Path(project_root)
+                and re.fullmatch(r"[0-9a-f]{32}", candidate)
+            ):
+                conversation_id = candidate
+        return SessionRecoveryStore(project_root).load(
+            document_uid=str(self._active_document_uid() or ""),
+            conversation_id=conversation_id,
+        )
+
+    def discard_session_recovery(self) -> dict[str, Any]:
+        """Discard only the active project's crash-recovery snapshot."""
+
+        from VibeCADSessionRecovery import SessionRecoveryStore
+
+        project_root = str(self.project_scope_snapshot().get("root") or "").strip()
+        if not project_root:
+            return {"written": False, "discarded": False, "path": ""}
+        return SessionRecoveryStore(project_root).discard()
+
     def relocate_conversation_store_for_document_file(
         self,
         file_path: str | Path,
@@ -5707,6 +5992,7 @@ class VibeCADService:
             "provider": {
                 "model": self.provider_model(),
                 "reasoning_effort": self.provider_reasoning_effort(),
+                "adaptive_reasoning": self.provider_adaptive_reasoning(),
                 "use_online_by_default": self.use_online_provider_by_default(),
             },
             "workbench": self.active_workbench_name(),

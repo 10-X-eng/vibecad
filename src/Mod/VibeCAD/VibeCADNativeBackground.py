@@ -12,6 +12,11 @@ import threading
 import time
 from typing import Any, Callable, Mapping
 
+from VibeCADCooperativeExecution import (
+    CooperativeExecutionCancelled,
+    run_document_thread_steps,
+)
+
 
 MAX_BACKGROUND_JOBS = 32
 MAX_BACKGROUND_RESULT_BYTES = 32 * 1024
@@ -33,6 +38,7 @@ class NativeBackgroundSnapshot:
     job_id: str
     document_uid: str
     capability_name: str
+    resource_scope: str
     phase: str
     progress_percent: int
     progress_message: str
@@ -58,6 +64,7 @@ class _Job:
     job_id: str
     document_uid: str
     capability_name: str
+    resource_scope: str = "document"
     phase: str = "queued"
     progress_percent: int = 0
     progress_message: str = "Queued"
@@ -73,11 +80,13 @@ class _Job:
 ProgressReporter = Callable[[int, str], None]
 PrepareHandler = Callable[[Callable[[], bool], ProgressReporter], Any]
 CommitHandler = Callable[[Any], Mapping[str, Any]]
+CooperativeCommitHandler = Callable[[Any], Any]
 DocumentThreadDispatcher = Callable[[Callable[[], Any]], Any]
 CommitValidator = Callable[[], Any]
 DiagnosticSink = Callable[[str, Exception], str | None]
 CleanupHandler = Callable[[Any | None], None]
 DocumentChangeResolver = Callable[[Mapping[str, Any]], bool]
+DocumentUpdateProbe = Callable[[str], bool]
 
 
 def _canonical_result(result: Mapping[str, Any]) -> str:
@@ -154,12 +163,20 @@ def _error_summary(exc: Exception, diagnostic_id: str | None) -> dict[str, Any]:
 class NativeBackgroundManager:
     """Prepare detached work off-thread and commit through the document thread."""
 
-    def __init__(self, *, diagnostic_sink: DiagnosticSink | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        diagnostic_sink: DiagnosticSink | None = None,
+        document_update_active: DocumentUpdateProbe | None = None,
+    ) -> None:
         if diagnostic_sink is not None and not callable(diagnostic_sink):
             raise TypeError("diagnostic_sink must be callable")
+        if document_update_active is not None and not callable(document_update_active):
+            raise TypeError("document_update_active must be callable")
         self._diagnostic_sink = diagnostic_sink
+        self._document_update_active = document_update_active
         self._jobs: OrderedDict[str, _Job] = OrderedDict()
-        self._active_documents: dict[str, str] = {}
+        self._active_resources: dict[tuple[str, str], str] = {}
         self._lock = threading.RLock()
 
     def submit(
@@ -175,12 +192,19 @@ class NativeBackgroundManager:
         cleanup: CleanupHandler | None = None,
         changes_document: bool = False,
         document_change_resolver: DocumentChangeResolver | None = None,
+        resource_scope: str = "document",
+        cooperative_commit: CooperativeCommitHandler | None = None,
     ) -> NativeBackgroundSnapshot:
         uid = str(document_uid or "").strip()
         capability = str(capability_name or "").strip()
         if not uid or not capability:
             raise NativeBackgroundError(
                 "A background Native job needs exact document and capability IDs."
+            )
+        scope = str(resource_scope or "document").strip()
+        if not scope or len(scope) > 160 or any(ord(value) < 32 for value in scope):
+            raise NativeBackgroundError(
+                "A background Native resource scope must be 1 through 160 printable characters."
             )
         if not all(
             callable(callback)
@@ -194,6 +218,8 @@ class NativeBackgroundManager:
             raise TypeError("Native background callbacks must be callable")
         if cleanup is not None and not callable(cleanup):
             raise TypeError("Native background cleanup must be callable")
+        if cooperative_commit is not None and not callable(cooperative_commit):
+            raise TypeError("cooperative_commit must be callable or None")
         if type(changes_document) is not bool:
             raise TypeError("changes_document must be a boolean")
         if document_change_resolver is not None and not callable(document_change_resolver):
@@ -204,15 +230,29 @@ class NativeBackgroundManager:
                 "A background Native finalization message exceeds its bound."
             )
         with self._lock:
-            active_job_id = self._active_documents.get(uid)
-            if active_job_id is not None:
+            active_key = (uid, scope)
+            conflict_keys = (
+                tuple(
+                    key for key in self._active_resources if key[0] == uid
+                )
+                if scope == "document"
+                else ((uid, "document"), active_key)
+            )
+            for conflict_key in conflict_keys:
+                active_job_id = self._active_resources.get(conflict_key)
+                if active_job_id is None:
+                    continue
                 active_job = self._jobs.get(active_job_id)
                 if active_job is not None and active_job.phase in _TERMINAL_PHASES:
-                    self._active_documents.pop(uid, None)
-                else:
-                    raise NativeBackgroundError(
+                    self._active_resources.pop(conflict_key, None)
+                    continue
+                raise NativeBackgroundError(
+                    (
                         "The exact document already has a background Native operation."
+                        if scope == "document" or conflict_key[1] == "document"
+                        else "The exact document resource already has a background Native operation."
                     )
+                )
             if len(self._jobs) >= MAX_BACKGROUND_JOBS:
                 removable = next(
                     (
@@ -232,10 +272,11 @@ class NativeBackgroundManager:
                 secrets.token_hex(16),
                 uid,
                 capability,
+                scope,
                 changes_document=changes_document,
             )
             self._jobs[job.job_id] = job
-            self._active_documents[uid] = job.job_id
+            self._active_resources[active_key] = job.job_id
             self._trim_jobs_locked()
         thread = threading.Thread(
             target=self._run,
@@ -248,6 +289,7 @@ class NativeBackgroundManager:
                 clean_finalize_message,
                 cleanup,
                 document_change_resolver,
+                cooperative_commit,
             ),
             name=f"VibeCADNative-{job.job_id[:8]}",
             daemon=True,
@@ -265,8 +307,12 @@ class NativeBackgroundManager:
         finalize_message: str,
         cleanup: CleanupHandler | None,
         document_change_resolver: DocumentChangeResolver | None,
+        cooperative_commit: CooperativeCommitHandler | None,
     ) -> None:
         prepared = None
+        terminal_phase = "failed"
+        terminal_percent = 0
+        terminal_message = "Failed"
         try:
             self._set_progress(job, "preparing", 1, "Preparing detached data")
 
@@ -303,7 +349,48 @@ class NativeBackgroundManager:
                 )
                 return commit(prepared)
 
-            result = dispatch_to_document_thread(apply)
+            if cooperative_commit is None:
+                result = dispatch_to_document_thread(apply)
+            else:
+                def commit_steps():
+                    if job.cancellation.is_set():
+                        raise NativeBackgroundCancelled()
+                    validate_before_commit()
+                    if job.cancellation.is_set():
+                        raise NativeBackgroundCancelled()
+                    self._set_progress(
+                        job,
+                        "finalizing" if finalize_message else "committing",
+                        91,
+                        finalize_message or "Committing document change",
+                    )
+                    return (yield from cooperative_commit(prepared))
+
+                def report_commit_progress(event: Mapping[str, Any]) -> None:
+                    raw_percent = event.get("progress_percent", 95)
+                    percent = (
+                        raw_percent
+                        if type(raw_percent) is int and 91 <= raw_percent <= 99
+                        else 95
+                    )
+                    with self._lock:
+                        percent = max(job.progress_percent, percent)
+                    self._set_progress(
+                        job,
+                        "finalizing" if finalize_message else "committing",
+                        percent,
+                        str(event.get("message") or finalize_message or "Committing document change"),
+                    )
+
+                try:
+                    result = run_document_thread_steps(
+                        commit_steps(),
+                        dispatch=dispatch_to_document_thread,
+                        cancellation_check=job.cancellation.is_set,
+                        progress_callback=report_commit_progress,
+                    )
+                except CooperativeExecutionCancelled as exc:
+                    raise NativeBackgroundCancelled() from exc
             if document_change_resolver is not None:
                 resolved_change = document_change_resolver(result)
                 if type(resolved_change) is not bool:
@@ -312,10 +399,30 @@ class NativeBackgroundManager:
                     )
                 with self._lock:
                     job.changes_document = resolved_change
+            with self._lock:
+                changes_document = job.changes_document
+            if changes_document and self._document_update_active is not None:
+                self._set_progress(
+                    job,
+                    "settling",
+                    99,
+                    "Waiting for document update",
+                )
+                idle_observations = 0
+                while idle_observations < 2:
+                    update_active = dispatch_to_document_thread(
+                        lambda: self._document_update_active(job.document_uid)
+                    )
+                    idle_observations = 0 if update_active else idle_observations + 1
+                    if idle_observations == 2:
+                        break
+                    time.sleep(0.05)
             encoded = _canonical_result(result)
             with self._lock:
                 job.result_json = encoded
-            self._set_progress(job, "completed", 100, "Completed")
+            terminal_phase = "completed"
+            terminal_percent = 100
+            terminal_message = "Completed"
         except Exception as exc:
             diagnostic_id = None
             if self._diagnostic_sink is not None:
@@ -330,12 +437,9 @@ class NativeBackgroundManager:
             )
             with self._lock:
                 job.error = _error_summary(exc, diagnostic_id)
-            self._set_progress(
-                job,
-                phase,
-                job.progress_percent,
-                "Cancelled" if phase == "cancelled" else "Failed",
-            )
+                terminal_percent = job.progress_percent
+            terminal_phase = phase
+            terminal_message = "Cancelled" if phase == "cancelled" else "Failed"
         finally:
             if cleanup is not None:
                 try:
@@ -347,7 +451,13 @@ class NativeBackgroundManager:
                         except Exception:
                             pass
             with self._lock:
-                self._active_documents.pop(job.document_uid, None)
+                job.phase = terminal_phase
+                job.progress_percent = terminal_percent
+                job.progress_message = terminal_message
+                job.progress_at = time.monotonic()
+                active_key = (job.document_uid, job.resource_scope)
+                if self._active_resources.get(active_key) == job.job_id:
+                    self._active_resources.pop(active_key, None)
                 job.completed.set()
                 self._trim_jobs_locked()
 
@@ -378,8 +488,15 @@ class NativeBackgroundManager:
     def cancel_document(self, document_uid: str) -> bool:
         uid = str(document_uid or "").strip()
         with self._lock:
-            job_id = self._active_documents.get(uid)
-        return self.cancel(job_id) if job_id else False
+            job_ids = tuple(
+                job_id
+                for (document, _scope), job_id in self._active_resources.items()
+                if document == uid
+            )
+        accepted = False
+        for job_id in job_ids:
+            accepted = self.cancel(job_id) or accepted
+        return accepted
 
     def snapshot(self, job_id: str) -> NativeBackgroundSnapshot:
         with self._lock:
@@ -413,6 +530,36 @@ class NativeBackgroundManager:
             )
             return self._snapshot_locked(job) if job is not None else None
 
+    def document_snapshots(
+        self,
+        document_uid: str,
+        *,
+        capability_prefix: str = "",
+        active_only: bool = False,
+        limit: int = MAX_BACKGROUND_JOBS,
+    ) -> tuple[NativeBackgroundSnapshot, ...]:
+        """Return newest bounded jobs for one document without collapsing scopes."""
+
+        uid = str(document_uid or "").strip()
+        prefix = str(capability_prefix or "").strip()
+        if not uid:
+            raise NativeBackgroundError("A background job lookup needs a document UID.")
+        if type(active_only) is not bool:
+            raise TypeError("active_only must be a boolean")
+        if type(limit) is not int or not 1 <= limit <= MAX_BACKGROUND_JOBS:
+            raise NativeBackgroundError(
+                f"A background job catalog limit must be 1 through {MAX_BACKGROUND_JOBS}."
+            )
+        with self._lock:
+            jobs = tuple(
+                candidate
+                for candidate in reversed(tuple(self._jobs.values()))
+                if candidate.document_uid == uid
+                and (not prefix or candidate.capability_name.startswith(prefix))
+                and (not active_only or candidate.phase not in _TERMINAL_PHASES)
+            )[:limit]
+            return tuple(self._snapshot_locked(job) for job in jobs)
+
     @staticmethod
     def _snapshot_locked(job: _Job) -> NativeBackgroundSnapshot:
         now = time.monotonic()
@@ -421,6 +568,7 @@ class NativeBackgroundManager:
             job_id=job.job_id,
             document_uid=job.document_uid,
             capability_name=job.capability_name,
+            resource_scope=job.resource_scope,
             phase=job.phase,
             progress_percent=job.progress_percent,
             progress_message=job.progress_message,

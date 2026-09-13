@@ -10,6 +10,7 @@ from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
 from VibeCADNativeAnalyzeStudy import (
     evaluate_study_readiness,
     solver_configuration_blockers,
+    study_dependency_state,
     study_intent_state,
 )
 from VibeCADNativeSnapshot import concise_object
@@ -49,9 +50,11 @@ def study_inventory(
     from VibeCADNativeAnalyzeConstraintState import electromagnetic_constraint_state
     from VibeCADNativeAnalyzeElementState import element_definition_state
     from VibeCADNativeAnalyzeFluidState import fluid_constraint_state
+    from VibeCADNativeAnalyzeGeometricalState import geometrical_feature_state
     from VibeCADNativeAnalyzeLoadState import load_state
     from VibeCADNativeAnalyzeState import material_state
     from VibeCADNativeAnalyzeMeshState import fem_mesh_definition_state
+    from VibeCADNativeAnalyzeMeshRefinementState import mesh_refinement_state
     from VibeCADNativeAnalyzeSolverState import solver_state
     from VibeCADNativeAnalyzeSupportState import support_condition_state
     from VibeCADNativeAnalyzeThermalState import thermal_condition_state
@@ -63,11 +66,13 @@ def study_inventory(
         ("element", element_definition_state),
         ("electromagnetic", electromagnetic_constraint_state),
         ("fluid", fluid_constraint_state),
+        ("geometrical", geometrical_feature_state),
         ("support", support_condition_state),
         ("connection", connection_state),
         ("load", load_state),
         ("thermal", thermal_condition_state),
         ("mesh", mesh_reader),
+        ("mesh_refinement", mesh_refinement_state),
         ("solver", solver_state),
     )
     states: dict[str, list[dict[str, Any]]] = {
@@ -105,6 +110,15 @@ def study_inventory(
                 equations.append(state)
 
     material_kinds = [str(state["material_kind"]) for state in states["material"]]
+
+    def kinds(category: str, field: str) -> list[str]:
+        return list(
+            dict.fromkeys(
+                str(state[field])
+                for state in states[category]
+                if str(state.get(field) or "")
+            )
+        )
     mechanical_material_count = 0
     thermal_material_count = 0
     transient_thermal_material_count = 0
@@ -132,8 +146,21 @@ def study_inventory(
     active_solver_states = [
         state for state in states["solver"] if not bool(state.get("suppressed"))
     ]
-    configuration_blockers = solver_configuration_blockers(
-        study_intent_state(analysis), active_solver_states
+    intent = study_intent_state(analysis)
+    solver_configurations = [
+        {
+            "object_name": str(state["object_name"]),
+            "solver_kind": str(state["solver_kind"]),
+            "blockers": solver_configuration_blockers(intent, [state]),
+        }
+        for state in active_solver_states
+    ]
+    configuration_blockers = list(
+        dict.fromkeys(
+            blocker
+            for configuration in solver_configurations
+            for blocker in configuration["blockers"]
+        )
     )
     assignment_validation = validate_assignments(analysis)
     mesh_coverage = assignment_validation.get("mesh_coverage")
@@ -149,9 +176,13 @@ def study_inventory(
         "equation_count": len(equations),
         "equation_kinds": [str(state["equation_kind"]) for state in equations],
         "element_definition_count": len(states["element"]),
+        "element_definition_kinds": kinds("element", "element_definition_kind"),
         "support_count": len(states["support"]),
+        "support_condition_kinds": kinds("support", "condition_kind"),
         "connection_count": len(states["connection"]),
+        "connection_kinds": kinds("connection", "connection_kind"),
         "load_count": len(states["load"]),
+        "load_kinds": kinds("load", "load_kind"),
         "thermal_condition_count": len(states["thermal"]),
         "thermal_condition_families": [
             str(state["thermal_mode"]) for state in states["thermal"]
@@ -161,12 +192,23 @@ def study_inventory(
             str(state["constraint_kind"]) for state in states["fluid"]
         ],
         "electromagnetic_constraint_count": len(states["electromagnetic"]),
+        "electromagnetic_constraint_kinds": kinds(
+            "electromagnetic", "constraint_kind"
+        ),
+        "geometrical_feature_count": len(states["geometrical"]),
+        "geometrical_feature_kinds": kinds("geometrical", "feature_kind"),
         "mesh_definition_count": len(states["mesh"]),
+        "mesh_kinds": kinds("mesh", "mesher"),
         "generated_mesh_count": sum(
             bool(state.get("generated")) for state in states["mesh"]
         ),
+        "mesh_refinement_count": len(states["mesh_refinement"]),
+        "mesh_refinement_kinds": kinds(
+            "mesh_refinement", "refinement_mode"
+        ),
         "solver_count": len(states["solver"]),
         "solver_kinds": [str(state["solver_kind"]) for state in active_solver_states],
+        "solver_configurations": solver_configurations,
         "solver_configuration_blockers": configuration_blockers,
         "assignment_validation_issue_count": int(
             assignment_validation.get("issue_count", 0) or 0
@@ -200,6 +242,7 @@ def study_state(
     return {
         "analysis": concise_object(analysis),
         "intent": intent,
+        "dependencies": study_dependency_state(analysis),
         "inventory": inventory,
         "solver_runtimes": list(statuses),
         "readiness": evaluate_study_readiness(intent, inventory, runtimes),

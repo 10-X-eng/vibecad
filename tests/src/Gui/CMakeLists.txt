@@ -5,8 +5,10 @@ add_subdirectory(propertyeditor)
 
 # Standard C++ GTest tests
 add_executable(Gui_tests_run
+        AsyncImageExport.cpp
         Assistant.cpp
         Camera.cpp
+        DocumentProjection.cpp
         ExactTransaction.cpp
         FileDialog.cpp
         StyleParameters/StyleParametersApplicationTest.cpp
@@ -22,12 +24,21 @@ add_executable(Gui_tests_run
 
 # Qt tests
 setup_qt_test(DockLayoutState)
+setup_qt_test(DocumentBulkMutation)
+setup_qt_test(FrameBudget)
 setup_qt_test(MacroTaskAcceptance)
 setup_qt_test(QuantitySpinBox)
+set(RenderMeshController_LIBS PartGui Part)
+setup_qt_test(RenderMeshController)
+setup_qt_test(UnitSettings)
+
+target_sources(UnitSettings_Tests_run PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/Gui/PreferencePages/DlgSettingsGeneral.cpp
+)
 
 target_link_libraries(Gui_tests_run PRIVATE
-    GTest::gtest_main
     GTest::gmock_main
+    ${Python3_LIBRARIES}
     FreeCADApp
     FreeCADGui
 )

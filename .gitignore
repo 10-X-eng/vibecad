@@ -81,3 +81,8 @@ tsupdate_stdout.log
 goals.md
 #explicitly ignore local env
 .env
+# Local model/tool-sharpening outputs
+/benchmark-artifacts/
+
+# Preserved local files from submodule repair
+/.git-submodule-backups/

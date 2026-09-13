@@ -138,6 +138,8 @@ Notification = NotificationClass()
 
 
 class ObjectJob:
+    TREE_ROLE = "manufacture_setup"
+
     def __init__(
         self,
         obj,
@@ -156,6 +158,7 @@ class ObjectJob:
         self._initialTimelineResources = []
         obj.Proxy = self
         PathUtil.markTimelineOperation(obj)
+        self.setupTreePresentation(obj)
 
         obj.addProperty(
             "App::PropertyFile",
@@ -308,6 +311,22 @@ class ObjectJob:
         if createDefaultStock:
             self.setupStock(obj)
         self.setupTimelineTracking(obj)
+
+    def setupTreePresentation(self, obj):
+        """Publish the Job as the authoritative Manufacture tree root."""
+
+        if not hasattr(obj, "VibeCADTreeRole"):
+            obj.addProperty(
+                "App::PropertyString",
+                "VibeCADTreeRole",
+                "Tree",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Application tree presentation role",
+                ),
+            )
+        obj.VibeCADTreeRole = self.TREE_ROLE
+        obj.setEditorMode("VibeCADTreeRole", 2)
 
     def _captureInitialTimelineOperation(self, operation):
         """Defer initial Job role mutation to the atomic core publisher."""
@@ -669,6 +688,7 @@ class ObjectJob:
         # setup helper restores resource metadata.
         self._deferTimelinePublication = False
         self._initialTimelineResources = []
+        self.setupTreePresentation(obj)
         self.setupBaseModel(obj)
         self.fixupOperations(obj)
         self.setupSetupSheet(obj)
@@ -1230,12 +1250,13 @@ def Instances():
     return []
 
 
-def Create(
+def _Create(
     name,
     base,
     templateFile=None,
     createDefaultToolController=True,
     createDefaultStock=True,
+    preparedStock=None,
 ):
     """Create(name, base, templateFile=None) ... creates a new job and all it's resources.
     If a template file is specified the new job is initialized with the values from the template."""
@@ -1268,10 +1289,27 @@ def Create(
             models,
             templateFile,
             createDefaultToolController=createDefaultToolController,
-            createDefaultStock=createDefaultStock,
+            createDefaultStock=createDefaultStock and preparedStock is None,
             deferTimelinePublication=atomic_publication,
         )
         obj.Proxy = proxy
+        if preparedStock is not None:
+            if set(preparedStock) != {
+                "shape",
+                "source",
+                "artifact_sha256",
+                "shape_type",
+                "topology",
+            }:
+                raise RuntimeError("A prepared CAM stock request is incomplete")
+            obj.Stock = PathStock.CreateFromPreparedShape(
+                obj,
+                preparedStock["shape"],
+                preparedStock["source"],
+                preparedStock["artifact_sha256"],
+                preparedStock["shape_type"],
+                preparedStock["topology"],
+            )
     except BaseException as creation_error:
         if atomic_publication and document.getObject(obj.Name) is obj:
             try:
@@ -1298,3 +1336,50 @@ def Create(
         )
         proxy._deferTimelinePublication = False
     return obj
+
+
+def Create(
+    name,
+    base,
+    templateFile=None,
+    createDefaultToolController=True,
+    createDefaultStock=True,
+):
+    """Create a Job with the established default/template stock behavior."""
+
+    return _Create(
+        name,
+        base,
+        templateFile=templateFile,
+        createDefaultToolController=createDefaultToolController,
+        createDefaultStock=createDefaultStock,
+    )
+
+
+def CreateWithPreparedStock(
+    name,
+    base,
+    *,
+    shape,
+    source,
+    artifact_sha256,
+    shape_type,
+    topology,
+    createDefaultToolController=True,
+):
+    """Create a Job whose initial stock is one verified solid snapshot."""
+
+    return _Create(
+        name,
+        base,
+        templateFile=None,
+        createDefaultToolController=createDefaultToolController,
+        createDefaultStock=False,
+        preparedStock={
+            "shape": shape,
+            "source": source,
+            "artifact_sha256": artifact_sha256,
+            "shape_type": shape_type,
+            "topology": topology,
+        },
+    )

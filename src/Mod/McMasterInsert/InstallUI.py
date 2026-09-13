@@ -30,15 +30,6 @@ BUTTONS = (
 )
 
 
-def _log(message: str) -> None:
-    try:
-        import FreeCAD as App
-
-        App.Console.PrintMessage(f"McMaster-Carr: {message}\n")
-    except Exception:
-        pass
-
-
 def _warn(message: str) -> None:
     try:
         import FreeCAD as App
@@ -101,7 +92,6 @@ def install_toolbar(gui: Any, qt_widgets: Any, qt_gui: Any) -> bool:
         action.setToolTip(command_id)
         action.triggered.connect(_run_command(gui, command_id))
     bar.show()
-    _log("toolbar installed")
     return True
 
 
@@ -119,7 +109,6 @@ def install_menu(gui: Any, qt_widgets: Any) -> bool:
     if menu is None:
         menu = bar.addMenu(MENU_NAME)
     have = {(action.text() or "") for action in menu.actions()}
-    added = False
     for label, command_id in (
         ("Browse Catalog", "McMaster_BrowseCatalog"),
         ("Import CAD File", "McMaster_ImportFile"),
@@ -129,9 +118,6 @@ def install_menu(gui: Any, qt_widgets: Any) -> bool:
             continue
         action = menu.addAction(label)
         action.triggered.connect(_run_command(gui, command_id))
-        added = True
-    if added:
-        _log("Tools/menu installed")
     return True
 
 
@@ -162,7 +148,6 @@ def install_ribbon_tab(gui: Any, qt_widgets: Any) -> bool:
     finally:
         if callable(blocker):
             blocker(False)
-    _log("ribbon tab installed")
     return True
 
 
@@ -331,7 +316,6 @@ def install_ribbon_group(gui: Any, qt_widgets: Any, qt_gui: Any, page: Any) -> b
         except Exception:
             pass
     group.show()
-    _log("native-style ribbon group installed")
     return True
 
 
@@ -371,7 +355,6 @@ def hook_ribbon_tab_changes(gui: Any, qt_widgets: Any, qt_gui: Any, qt_core: Any
             setattr(tabs, "_mcmasterTabHooked", True)
         except Exception:
             pass
-        _log("ribbon tab change hooked")
     if _is_mcmaster_tab(tabs, tabs.currentIndex()):
         _on_tab_changed(tabs.currentIndex(), tabs, gui, qt_widgets, qt_gui, qt_core)
     else:
@@ -414,7 +397,6 @@ def install_with_retry(max_tries: int = 40, interval_ms: int = 500) -> None:
         if result.get("ribbon_hook") and result.get("ribbon_tab") and result.get("menu"):
             if _timer is not None:
                 _timer.stop()
-            _log("UI ready")
             return
         if _retry_count >= max_tries:
             if _timer is not None:

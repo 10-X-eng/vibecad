@@ -29,6 +29,15 @@ import tempfile
 import os
 
 
+def _run_on_document_owner(function, *args):
+    """Run document-registry and restore work on FreeCAD's owning thread."""
+    if FreeCAD.GuiUp:
+        import FreeCADGui
+
+        return FreeCADGui.runOnMainThread(function, *args)
+    return function(*args)
+
+
 def find_shape_object(doc: "FreeCAD.Document") -> Optional["FreeCAD.DocumentObject"]:
     """
     Find the primary object representing the shape in a document.
@@ -171,6 +180,7 @@ class ShapeDocFromBytes:
         self._doc = None
         self._temp_file = None
         self._old_state = None
+        self._owner_doc = None
 
     def __enter__(self) -> "FreeCAD.Document":
         """Creates a new temporary FreeCAD document or loads cache if provided."""
@@ -183,34 +193,62 @@ class ShapeDocFromBytes:
         # document (i.e. current selection), even if the newly opened document
         # is a hidden one.
         # So we need to restore the active document state at the end.
-        self._old_state = get_doc_state()
+        def open_shape_document():
+            self._old_state = get_doc_state()
+            self._owner_doc = FreeCAD.ActiveDocument
+            if self._owner_doc:
+                self._owner_doc.beginCooperativeMutation()
 
-        # Open the document from the temporary file
-        # Use a specific name to avoid clashes if multiple docs are open
-        # Open the document from the temporary file
-        self._doc = FreeCAD.openDocument(
-            self._temp_file,
-            hidden=True,
-            temporary=True,
-        )
+            try:
+                # Document registration and object restoration mutate global
+                # FreeCAD state. Keep that bounded phase on its owner; callers
+                # may continue consuming the immutable tool shape off-owner.
+                self._doc = FreeCAD.openDocument(
+                    self._temp_file,
+                    hidden=True,
+                    temporary=True,
+                )
+            except BaseException:
+                if self._owner_doc:
+                    self._owner_doc.endCooperativeMutation()
+                    self._owner_doc = None
+                raise
+
+        _run_on_document_owner(open_shape_document)
         if not self._doc:
+            def release_owner_document():
+                if self._owner_doc:
+                    self._owner_doc.endCooperativeMutation()
+                    self._owner_doc = None
+
+            _run_on_document_owner(release_owner_document)
             raise RuntimeError(f"Failed to open document from {self._temp_file}")
         return self._doc
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """Closes the temporary FreeCAD document and cleans up the temp file."""
-        if self._doc:
-            # Note that .closeDocument() is extremely slow; it takes
-            # almost 400ms per document - much longer than opening!
-            FreeCAD.closeDocument(self._doc.Name)
-            self._doc = None
-
-        # Restore the original active document
-        restore_doc_state(self._old_state)
-
-        # Clean up the temporary file if it was created
-        if self._temp_file and os.path.exists(self._temp_file):
+        def close_shape_document():
             try:
-                os.remove(self._temp_file)
-            except Exception as e:
-                Path.Log.warning(f"Failed to remove temporary file {self._temp_file}: {e}")
+                if self._doc:
+                    if not FreeCAD.requestCloseDocument(self._doc.Name):
+                        raise RuntimeError(
+                            f"Failed to request cleanup for temporary document "
+                            f"'{self._doc.Name}'"
+                        )
+                    self._doc = None
+
+                restore_doc_state(self._old_state)
+            finally:
+                if self._owner_doc:
+                    self._owner_doc.endCooperativeMutation()
+                    self._owner_doc = None
+
+        try:
+            _run_on_document_owner(close_shape_document)
+        finally:
+
+            if self._temp_file and os.path.exists(self._temp_file):
+                try:
+                    os.remove(self._temp_file)
+                except Exception as e:
+                    Path.Log.warning(f"Failed to remove temporary file {self._temp_file}: {e}")

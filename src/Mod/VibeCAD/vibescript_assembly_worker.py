@@ -10,6 +10,7 @@ import json
 import math
 from pathlib import Path
 import re
+import time
 from types import MappingProxyType
 from typing import Any
 
@@ -27,11 +28,13 @@ from VibeCADMechanismEngine import (
     mechanism_scenario_sha256,
     normalize_mechanism_static_check,
     normalize_mechanism_scenario,
+    quaternion_rotation_distance_degrees,
     solver_validation_scope,
 )
 from VibeCADMechanismGeometry import (
     evaluate_dynamic_collisions,
     measure_static_mechanism_pairs,
+    skipped_dynamic_collision_summary,
     summarize_dynamic_collision_frames,
 )
 import vibescript_worker_progress as worker_progress
@@ -75,6 +78,8 @@ _MAX_SIMULATION_TRACE_BYTES = 64 * 1024 * 1024
 _EXPLODED_VIEW_SCHEMA = "vibecad-assembly-exploded-view-v1"
 _ASSEMBLY_BOM_SCHEMA = "vibecad-assembly-bom-v1"
 _ASSEMBLY_HIERARCHY_SCHEMA = "vibecad-assembly-source-hierarchy-v1"
+# Former producer limits are retained only to authenticate existing contracts.
+# They are not execution limits for the current worker.
 _MAX_HIERARCHY_NODES = 512
 _MAX_HIERARCHY_OCCURRENCES = 2048
 _MAX_HIERARCHY_JOINTS = 1024
@@ -403,8 +408,8 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
     }:
         raise ValueError(f"{context} has malformed top-level fields.")
     nodes_raw = value.get("nodes")
-    if not isinstance(nodes_raw, list) or not 1 <= len(nodes_raw) <= _MAX_HIERARCHY_NODES:
-        raise ValueError(f"{context}.nodes must contain 1-{_MAX_HIERARCHY_NODES} nodes.")
+    if not isinstance(nodes_raw, list) or not nodes_raw:
+        raise ValueError(f"{context}.nodes must contain at least one node.")
     nodes: list[dict[str, Any]] = []
     node_by_id: dict[str, dict[str, Any]] = {}
     occurrence_ids: set[str] = set()
@@ -444,7 +449,7 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
         )
         object_name = identity.get("object_name") if isinstance(identity, dict) else None
         if (
-            not re.fullmatch(r"n[0-9]{4}", node_id)
+            not re.fullmatch(r"n[0-9]{4,}", node_id)
             or node_id in node_by_id
             or kind not in {"assembly", "part", "shape"}
             or not isinstance(identity, dict)
@@ -498,7 +503,7 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
             name = str(occurrence_raw.get("name") or "")
             link_mode = str(occurrence_raw.get("link_mode") or "")
             if (
-                not re.fullmatch(r"o[0-9]{5}", occurrence_id)
+                not re.fullmatch(r"o[0-9]{5,}", occurrence_id)
                 or occurrence_id in occurrence_ids
                 or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
                 or name in occurrence_names
@@ -510,7 +515,7 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
                 or len(occurrence_raw["type_id"]) > 256
                 or not isinstance(occurrence_raw.get("source_node_id"), str)
                 or not re.fullmatch(
-                    r"n[0-9]{4}", str(occurrence_raw.get("source_node_id") or "")
+                    r"n[0-9]{4,}", str(occurrence_raw.get("source_node_id") or "")
                 )
             ):
                 raise ValueError(f"{occurrence_context} has invalid occurrence identity.")
@@ -530,10 +535,6 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
             occurrence_ids.add(occurrence_id)
             occurrence_names.add(name)
             occurrence_count += 1
-            if occurrence_count > _MAX_HIERARCHY_OCCURRENCES:
-                raise ValueError(
-                    f"{context} exceeds {_MAX_HIERARCHY_OCCURRENCES} occurrences."
-                )
         clean = dict(raw)
         clean["bom_properties"] = properties
         clean["occurrences"] = occurrences
@@ -576,8 +577,6 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
                 raise ValueError(f"{node_context} BREP changed shape type during transfer.")
             loaded_shapes[node_id] = shape
             shape_count += 1
-            if shape_count > _MAX_HIERARCHY_SHAPES:
-                raise ValueError(f"{context} exceeds {_MAX_HIERARCHY_SHAPES} shapes.")
         elif kind == "shape":
             raise ValueError(f"{node_context} is a shape leaf without a BREP artifact.")
         grounded = raw.get("grounded_occurrence_paths", [])
@@ -590,8 +589,6 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
             if not isinstance(joints, list):
                 raise ValueError(f"{node_context}.joints must be a list.")
             joint_count += len(joints)
-            if joint_count > _MAX_HIERARCHY_JOINTS:
-                raise ValueError(f"{context} exceeds {_MAX_HIERARCHY_JOINTS} joints.")
         elif grounded or joints:
             raise ValueError(f"{node_context} is not an Assembly but contains joint state.")
         nodes.append(clean)
@@ -648,11 +645,6 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
                     "depth": depth + 1,
                 }
             )
-            if len(paths) > _MAX_HIERARCHY_OCCURRENCES:
-                raise ValueError(
-                    f"{context} expands beyond {_MAX_HIERARCHY_OCCURRENCES} stable "
-                    "occurrence paths."
-                )
             if source["kind"] in {"assembly", "part"}:
                 flatten(str(source["node_id"]), path, depth + 1)
         active.remove(node_id)
@@ -719,7 +711,11 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
         "shape_artifacts": shape_count,
         "maximum_depth": max((int(item["depth"]) for item in paths), default=0),
     }
-    if counts != expected_counts or limits != _EXPECTED_HIERARCHY_LIMITS:
+    # Older saved contracts carry the former capacity ceilings. They describe
+    # the producer, not the capacity of this worker. Accept either generation.
+    current_limits = dict.fromkeys(_EXPECTED_HIERARCHY_LIMITS, 0)
+    current_limits['maximum_depth'] = _MAX_HIERARCHY_DEPTH
+    if counts != expected_counts or limits not in (_EXPECTED_HIERARCHY_LIMITS, current_limits):
         raise ValueError(f"{context}.counts or limits is inconsistent.")
     return {
         "descriptor": {
@@ -1608,21 +1604,14 @@ def _placement_delta(initial: Any, solved: Any) -> dict[str, Any]:
             "The native Assembly solver returned a zero-length placement quaternion.",
             details={"stage": "native_solver_placement_delta"},
         )
-    dot = abs(
-        sum(
-            initial_quaternion[index]
-            * solved_quaternion[index]
-            / (initial_magnitude * solved_magnitude)
-            for index in range(4)
-        )
-    )
-    rotation_degrees = math.degrees(2.0 * math.acos(max(-1.0, min(1.0, dot))))
+    rotation_degrees = quaternion_rotation_distance_degrees(initial_quaternion, solved_quaternion)
     return {
         "translation_mm": translation,
         "translation_distance_mm": math.sqrt(
             sum(value * value for value in translation)
         ),
         "rotation_degrees": rotation_degrees,
+        "rotation_metric": "quaternion_chord_v1",
     }
 
 
@@ -2561,6 +2550,9 @@ def _mechanism_scenario_contract(
             "frames_per_second": simulation_properties.get(
                 "frames_per_second"
             ),
+            "collision_mode": str(
+                simulation_properties.get("collision_mode") or "full"
+            ),
         }
 
     return normalize_mechanism_scenario(
@@ -3386,8 +3378,6 @@ def _execute_native_simulation(
         if (
             frame_count < 2
             or frame_count > estimated_limit
-            or frame_count > 10_000
-            or pose_count > 100_000
         ):
             raise AssemblyCandidateError(
                 f"Native Assembly simulation {simulation_output!r} returned "
@@ -3477,94 +3467,21 @@ def _execute_native_simulation(
                 },
             )
 
-    worker_progress.set_phase(
-        "simulation_collision",
-        output=simulation_output,
-    )
+    collision_mode = str(properties.get("collision_mode") or "full")
     collision_warnings: list[dict[str, str]] = []
-    try:
-        collision_shapes = {}
-        collision_definition_keys = {}
-        for name, component in components.items():
-            source = getattr(component, "LinkedObject", None)
-            shape = getattr(source, "Shape", None)
-            if shape is None:
-                raise RuntimeError(
-                    f"Simulation component {name!r} has no source shape for "
-                    "collision evaluation"
-                )
-            collision_shapes[name] = shape
-            metadata = component_source_metadata.get(name)
-            definition_key = _collision_definition_key(
-                metadata,
-                component_data.get(name),
-            )
-            if len(definition_key) != 64:
-                raise RuntimeError(
-                    f"Simulation component {name!r} has no authenticated shape "
-                    "identity for collision evaluation"
-                )
-            collision_definition_keys[name] = definition_key
-        # Components in the same exact fixed-joint closure are one rigid unit
-        # for motion analysis. Their intentional mating geometry cannot develop
-        # a new dynamic interference, so do not repeat that pair at every frame.
-        # Every pair across distinct rigid units remains eligible, including
-        # imported geometry and modeled fasteners.
-        fixed_group_pairs = _fixed_collision_pairs(components, joint_data)
-
-        def report_collision_progress(event: str, frame_index: int, total: int) -> None:
-            graph_id = f"frame-{frame_index}-of-{total}"
-            if event == "started":
-                worker_progress.graph_started("collision", graph_id)
-            else:
-                worker_progress.graph_completed("collision", graph_id)
-
-        def report_collision_pair_progress(
-            event: str,
-            frame_index: int,
-            frame_total: int,
-            first: str,
-            second: str,
-            pair_index: int,
-            pair_total: int,
-        ) -> None:
-            if frame_index == 0:
-                graph_type = "collision_containment"
-                graph_id = (
-                    f"all-{frame_total}-frames:"
-                    f"pair-{pair_index}-of-{pair_total}:"
-                    f"{first}--{second}"
-                )
-            else:
-                graph_type = "collision_surface"
-                graph_id = (
-                    f"frame-{frame_index}-of-{frame_total}:"
-                    f"pair-{pair_index}-of-{pair_total}:"
-                    f"{first}--{second}"
-                )
-            if event == "started":
-                worker_progress.graph_started(graph_type, graph_id)
-            else:
-                worker_progress.graph_completed(graph_type, graph_id)
-
-        collision_trace = evaluate_dynamic_collisions(
-            collision_shapes,
-            frames,
-            definition_keys=collision_definition_keys,
-            excluded_pairs=fixed_group_pairs,
-            progress_callback=report_collision_progress,
-            pair_progress_callback=report_collision_pair_progress,
+    if collision_mode == "off":
+        worker_progress.set_phase(
+            "simulation_collision_skipped",
+            output=simulation_output,
         )
-    except Exception as exc:
-        collision_warnings.append(
-            {
-                "code": "COLLISION_ANALYSIS_INCOMPLETE",
-                "stage": "simulation_collision",
-                "message": (
-                    f"{type(exc).__name__}: {exc}"
-                )[:2048],
-            }
-        )
+        skipped_warning = {
+            "code": "COLLISION_ANALYSIS_SKIPPED",
+            "stage": "simulation_collision",
+            "message": (
+                "Collision analysis was explicitly disabled for this simulation."
+            ),
+        }
+        collision_warnings.append(skipped_warning)
         unevaluated_frames = [
             {
                 "frame_index": frame_index,
@@ -3574,17 +3491,148 @@ def _execute_native_simulation(
             for frame_index, frame in enumerate(frames[1:], start=1)
         ]
         collision_trace = {
-            "summary": summarize_dynamic_collision_frames(
+            "summary": skipped_dynamic_collision_summary(
                 list(components),
-                unevaluated_frames,
-                evaluation_warnings=collision_warnings,
+                requested_frame_count=len(unevaluated_frames),
+                warning=skipped_warning,
             ),
             "frames": unevaluated_frames,
             "evaluation": {
                 "analysis_complete": False,
-                "warning_count": len(collision_warnings),
+                "evaluation_mode": "off",
+                "warning_count": 1,
             },
         }
+    else:
+        worker_progress.set_phase(
+            "simulation_collision",
+            output=simulation_output,
+        )
+        try:
+            collision_shapes = {}
+            collision_definition_keys = {}
+            for name, component in components.items():
+                source = getattr(component, "LinkedObject", None)
+                shape = getattr(source, "Shape", None)
+                if shape is None:
+                    raise RuntimeError(
+                        f"Simulation component {name!r} has no source shape for "
+                        "collision evaluation"
+                    )
+                collision_shapes[name] = shape
+                metadata = component_source_metadata.get(name)
+                definition_key = _collision_definition_key(
+                    metadata,
+                    component_data.get(name),
+                )
+                if len(definition_key) != 64:
+                    raise RuntimeError(
+                        f"Simulation component {name!r} has no authenticated shape "
+                        "identity for collision evaluation"
+                    )
+                collision_definition_keys[name] = definition_key
+            # Components in the same exact fixed-joint closure are one rigid
+            # unit. Their intentional mating geometry cannot develop a new
+            # dynamic interference, so do not repeat those pairs every frame.
+            fixed_group_pairs = _fixed_collision_pairs(components, joint_data)
+
+            def report_collision_progress(
+                event: str, frame_index: int, total: int
+            ) -> None:
+                graph_id = f"frame-{frame_index}-of-{total}"
+                if event == "started":
+                    worker_progress.graph_started("collision", graph_id)
+                else:
+                    worker_progress.graph_completed("collision", graph_id)
+
+            def report_collision_pair_progress(
+                event: str,
+                frame_index: int,
+                frame_total: int,
+                first: str,
+                second: str,
+                pair_index: int,
+                pair_total: int,
+            ) -> None:
+                if frame_index == 0:
+                    graph_type = "collision_containment"
+                    graph_id = (
+                        f"all-{frame_total}-frames:"
+                        f"pair-{pair_index}-of-{pair_total}:"
+                        f"{first}--{second}"
+                    )
+                else:
+                    graph_type = "collision_surface"
+                    graph_id = (
+                        f"frame-{frame_index}-of-{frame_total}:"
+                        f"pair-{pair_index}-of-{pair_total}:"
+                        f"{first}--{second}"
+                    )
+                if event == "started":
+                    worker_progress.graph_started(graph_type, graph_id)
+                else:
+                    worker_progress.graph_completed(graph_type, graph_id)
+
+            collision_started = time.monotonic()
+
+            def report_collision_aggregate(completed: int, total: int) -> None:
+                elapsed = max(0.0, time.monotonic() - collision_started)
+                rate = (
+                    float(completed) / elapsed
+                    if completed > 0 and elapsed > 0
+                    else None
+                )
+                remaining = (
+                    float(total - completed) / rate
+                    if rate is not None and rate > 0.0
+                    else None
+                )
+                worker_progress.set_item_progress(
+                    "collision_frame",
+                    completed=completed,
+                    total=total,
+                    current=str(completed),
+                    rate_per_second=rate,
+                    estimated_remaining_seconds=remaining,
+                )
+
+            collision_trace = evaluate_dynamic_collisions(
+                collision_shapes,
+                frames,
+                definition_keys=collision_definition_keys,
+                excluded_pairs=fixed_group_pairs,
+                progress_callback=report_collision_progress,
+                pair_progress_callback=report_collision_pair_progress,
+                aggregate_progress_callback=report_collision_aggregate,
+            )
+        except Exception as exc:
+            collision_warnings.append(
+                {
+                    "code": "COLLISION_ANALYSIS_INCOMPLETE",
+                    "stage": "simulation_collision",
+                    "message": (f"{type(exc).__name__}: {exc}")[:2048],
+                }
+            )
+            unevaluated_frames = [
+                {
+                    "frame_index": frame_index,
+                    "nominal_time_s": frame.get("nominal_time_s"),
+                    "collisions": [],
+                }
+                for frame_index, frame in enumerate(frames[1:], start=1)
+            ]
+            collision_trace = {
+                "summary": summarize_dynamic_collision_frames(
+                    list(components),
+                    unevaluated_frames,
+                    evaluation_warnings=collision_warnings,
+                ),
+                "frames": unevaluated_frames,
+                "evaluation": {
+                    "analysis_complete": False,
+                    "warning_count": len(collision_warnings),
+                },
+            }
     worker_progress.set_phase("simulation_serialization", output=simulation_output)
     collision_frames = {
         int(item["frame_index"]): list(item["collisions"])

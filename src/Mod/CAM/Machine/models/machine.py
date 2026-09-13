@@ -2082,18 +2082,22 @@ class MachineFactory:
 
     @classmethod
     def list_configurations(cls) -> list[str]:
-        """Get list of available machines from the asset directory.
+        """Get built-in, user, and add-on machine names.
 
-        Scans the Machine subdirectory of the asset path for .fcm files
-        and extracts machine names. Returns ["<any>"] plus discovered machine names.
+        Returns ``["<any>"]`` followed by distinct display names. User machines
+        retain precedence when a built-in or add-on uses the same name.
 
         Returns:
             list: List of machine names starting with "<any>"
         """
         machines = cls.list_configuration_files()
         names = [name for name, path in machines]
+        existing_lower = {name.lower() for name in names}
+        for display_name, _path in cls.list_builtin_templates():
+            if display_name.lower() not in existing_lower:
+                names.append(display_name)
+                existing_lower.add(display_name.lower())
         # Add addon machine names that aren't already in the user store
-        existing_lower = {n.lower() for n in names}
         for _namespace, display_name, _path in cls.list_addon_templates():
             if display_name.lower() not in existing_lower:
                 names.append(display_name)
@@ -2206,6 +2210,12 @@ class MachineFactory:
                 break
 
         if target_path is None:
+            for display_name, full_path in cls.list_builtin_templates():
+                if display_name.lower() == machine_name_lower:
+                    target_path = full_path
+                    break
+
+        if target_path is None:
             # Fall back to addon templates
             machine_name_lower = machine_name.lower()
             for _namespace, display_name, full_path in cls.list_addon_templates():
@@ -2215,6 +2225,7 @@ class MachineFactory:
 
         if target_path is None:
             available = [name for name, path in machine_files if path is not None]
+            available += [name for name, _path in cls.list_builtin_templates()]
             available += [dn for _ns, dn, _p in cls.list_addon_templates()]
             raise FileNotFoundError(
                 f"Machine '{machine_name}' not found. Available machines: {available}"

@@ -1086,6 +1086,7 @@ public:
     friend class Document;
     friend class Transaction;
     friend class ObjectExecution;
+    friend class PropertyLinkBase;
 
     /**
      * @brief The standard return object for document object execution.
@@ -1524,6 +1525,10 @@ private:
     mutable std::unordered_map<const char*, App::DocumentObject*, CStringHasher, CStringHasher> _outListMap;
     mutable bool _outListCached = false;
     mutable bool _outListCachedProp = false;
+    // Owner-confined deletion query; unlike the DAG cache, includes hidden links.
+    bool hasPropertyLinkTo(const DocumentObject* target) const;
+    mutable std::vector<App::DocumentObject*> _propertyLinkTargets;
+    mutable bool _propertyLinkTargetsCached = false;
 
 public:
     /**

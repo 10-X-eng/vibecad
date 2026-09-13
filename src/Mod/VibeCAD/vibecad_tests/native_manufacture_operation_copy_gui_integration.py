@@ -25,9 +25,10 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeManufactureModifySchema import (
-    MANUFACTURE_MODIFY_CAPABILITY_NAME,
+from VibeCADNativeManufactureFocusedModifySchema import (
+    MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES,
 )
+
 from VibeCADNativeManufactureState import job_state, persistent_resource_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
@@ -36,6 +37,9 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CAPABILITY_NAME = MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES["copy_operations"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -92,7 +96,7 @@ def _arguments(job, operation_names: tuple[str, ...]) -> dict:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_MODIFY_CAPABILITY_NAME)
+    definition = registry.definition(CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(("copy_operations",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
@@ -113,7 +117,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_MODIFY_CAPABILITY_NAME,),
+            tool_names=(CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -192,7 +196,7 @@ def _run() -> None:
             plan.classification.human_only,
         )
         assert actual_plan == (
-            MANUFACTURE_MODIFY_CAPABILITY_NAME,
+            CAPABILITY_NAME,
             "copy_operations",
             "ExactCamOperationCopySet",
             True,
@@ -251,7 +255,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_MODIFY_CAPABILITY_NAME,
+                CAPABILITY_NAME,
                 json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-copy-{call_index}",
             )
@@ -295,7 +299,12 @@ def _run() -> None:
         assert int(document.UndoCount) == 0
 
         single = call(single_payload)
+        revision_after_single = state_store.current_revision(context.document_uid)
         _events(16)
+        assert (
+            state_store.current_revision(context.document_uid)
+            == revision_after_single
+        )
         assert single["history"]["grouped"] is False
         assert single["history"]["closure_object_count"] == 2, single
         assert single["assistant_undo_available"] is True
@@ -335,10 +344,27 @@ def _run() -> None:
         assert copied_finishing.Base is copied_base
         _assert_copy_resource(copied_base, copied_finishing)
 
+        # Undo/redo is a human history action, so subsequent assistant work must
+        # begin from a fresh turn rather than bypassing the revision guard.
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        ledger.begin_run("native-manufacture-operation-copy-gui-after-redo")
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
+
         multi_payload = _arguments(job, (finishing.Name, roughing.Name))
         before_multi = tuple(document.Objects)
         multi = call(multi_payload)
+        revision_after_multi = state_store.current_revision(context.document_uid)
         _events(16)
+        assert state_store.current_revision(context.document_uid) == revision_after_multi
         assert multi["history"]["grouped"] is True
         assert multi["history"]["copied_operation_count"] == 2
         assert multi["history"]["closure_object_count"] == 3

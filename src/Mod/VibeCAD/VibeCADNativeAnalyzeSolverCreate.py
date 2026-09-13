@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
     creation_boundary,
@@ -116,7 +117,7 @@ def create_solver(
     if solver_kind(solver) != prepared.kind:
         raise NativeAnalyzeError("The FEM solver factory returned the wrong solver kind.")
 
-    solver.Label = prepared.label
+    prepared = assign_prepared_label(solver, prepared)
     if prepared.kind == "openfoam":
         solver.TurbulenceModel = (
             "kOmegaSST"

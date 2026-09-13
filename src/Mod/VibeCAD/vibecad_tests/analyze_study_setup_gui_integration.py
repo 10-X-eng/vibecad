@@ -17,7 +17,13 @@ from PySide import QtCore, QtWidgets
 
 import VibeCADGui as VibeGui
 from VibeCADAnalyzeStudyGui import DOCK_NAME, StudySetupWidget
-from VibeCADAnalyzeStudySetup import analyses_in_document
+from VibeCADAnalyzeStudySetup import analyses_in_document, apply_study
+from VibeCADNativeAnalyzeStudy import study_dependency_state
+from VibeCADNativeAnalyzeStudyDependencies import (
+    prepare_study_dependency_update,
+    update_study_dependencies,
+    verify_study_dependency_update,
+)
 from VibeCADNativeAnalyzeMaterialCreate import (
     create_material,
     prepare_material_create,
@@ -320,7 +326,61 @@ def _run() -> None:
         widget._validate_assignments()
         assert widget.assignment_validation.text() == "2 assignments valid"
 
+        thermal_study, _ = apply_study(
+            document,
+            analysis=None,
+            label="Thermal Prerequisite",
+            physics=("thermal", "fluid"),
+            regime="steady",
+        )
+        modal_study, _ = apply_study(
+            document,
+            analysis=None,
+            label="Independent Modal",
+            physics=("mechanical",),
+            regime="modal",
+        )
+        thermal_material = _create_fluid_material(
+            document,
+            thermal_study,
+            first_source,
+            "Inlet Air",
+        )
+        assert thermal_material in tuple(thermal_study.Group)
+        assert thermal_material not in tuple(analysis.Group)
+        assert str(first_material.Label) == "Inlet Air"
+        assert str(thermal_material.Label) == "Inlet Air001"
+        dependency = prepare_study_dependency_update(
+            document,
+            str(document.Uid),
+            target=_analysis_target(analysis),
+            depends_on=[_analysis_target(thermal_study)],
+        )
+        run_human_mutation(
+            document=document,
+            transaction_name="Link FEM Studies",
+            mutate=lambda current: update_study_dependencies(current, dependency),
+            verify=verify_study_dependency_update,
+        )
+        assert len(analyses_in_document(document)) == 3
+        assert study_dependency_state(analysis) == {
+            "depends_on": [thermal_study.Name]
+        }
+        assert study_dependency_state(modal_study) == {"depends_on": []}
+        document.undo()
+        assert study_dependency_state(analysis) == {"depends_on": []}
+        document.redo()
+        assert study_dependency_state(analysis) == {
+            "depends_on": [thermal_study.Name]
+        }
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(thermal_material)
+        widget.refresh()
+        assert widget.analysis_combo.currentData() == thermal_study.Name
+
         analysis_name = str(analysis.Name)
+        thermal_name = str(thermal_study.Name)
+        modal_name = str(modal_study.Name)
         document.save()
         App.closeDocument(document.Name)
         document = App.openDocument(str(save_path))
@@ -330,10 +390,16 @@ def _run() -> None:
         assert reopened is not None
         assert list(reopened.StudyPhysics) == ["thermal", "fluid"]
         assert str(reopened.StudyRegime) == "transient"
+        assert len(analyses_in_document(document)) == 3
+        assert study_dependency_state(reopened) == {"depends_on": [thermal_name]}
+        assert study_dependency_state(document.getObject(modal_name)) == {
+            "depends_on": []
+        }
         print(
             "VIBECAD_ANALYZE_STUDY_SETUP_GUI_OK "
             "ribbon=true create=true update=true exact_operations=true "
-            "undo_redo=true reopen=true controls_visible=true "
+            "undo_redo=true reopen=true multi_study=true dependencies=true "
+            "selection_focus=true controls_visible=true "
             "geometry_faces=true face_highlight=true face_isolate_restore=true "
             "assignments=true highlight=true isolate_restore=true validation=true",
             "results=true comparison=true",

@@ -37,7 +37,9 @@
 
 #include <FCConfig.h>
 
+#include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentObject.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Gui/ActionFunction.h>
@@ -349,6 +351,11 @@ TaskView::~TaskView()
     connectApplicationResetEdit.disconnect();
     connectApplicationFinishEdit.disconnect();
     connectShowTaskWatcherSetting.disconnect();
+    for (auto& [name, pending] : pendingTaskRecomputes) {
+        pending.cooperativeMutationConnection.disconnect();
+        pending.presentationUpdateConnection.disconnect();
+    }
+    pendingTaskRecomputes.clear();
     Gui::Selection().Detach(this);
 
     // if well behaved, we should not have nay taskInfo at this point
@@ -604,6 +611,7 @@ void TaskView::slotFinishEdit(const Gui::Document& guiDocument, bool cancelled, 
         TaskDialog::restoreCommandInteractionState(interactionState);
     }
     updateWatcher();
+    scheduleTaskDocumentRecompute(doc);
 }
 
 void TaskView::slotBeforeCloseDocument(const App::Document& doc)
@@ -634,6 +642,12 @@ void TaskView::slotBeforeCloseDocument(const App::Document& doc)
 
 void TaskView::slotDeletedDocument(const App::Document& doc)
 {
+    if (auto pending = pendingTaskRecomputes.find(doc.getName());
+        pending != pendingTaskRecomputes.end()) {
+        pending->second.cooperativeMutationConnection.disconnect();
+        pending->second.presentationUpdateConnection.disconnect();
+        pendingTaskRecomputes.erase(pending);
+    }
     auto foundTaskInfo = std::ranges::find(taskInfos, &doc, &TaskInfo::Document);
     bool hasDialog = foundTaskInfo != taskInfos.end();
     if (hasDialog && foundTaskInfo->ActiveDialog->isAutoCloseOnDeletedDocument()) {
@@ -752,7 +766,8 @@ bool TaskView::showDialog(TaskDialog* dlg, App::Document* doc)
 
     dlg->adoptCommandInteractionState(doc);
 
-    TaskInfo outInfo {.Document = doc};
+    TaskInfo outInfo {};
+    outInfo.Document = doc;
     // first create the control element, set it up and wire it:
     outInfo.ActiveCtrl = new TaskEditControl(this);
     outInfo.ActiveCtrl->buttonBox->setStandardButtons(dlg->getStandardButtons());
@@ -789,6 +804,14 @@ bool TaskView::showDialog(TaskDialog* dlg, App::Document* doc)
     outInfo.ActiveDialog = dlg;
     outInfo.ActiveDialog->open();
 
+    const auto documentWorkChanged = [this, doc](const App::Document&, bool) {
+        updateDocumentWorkState(doc);
+    };
+    outInfo.cooperativeMutationConnection
+        = doc->signalCooperativeMutationChanged.connect(documentWorkChanged);
+    outInfo.presentationUpdateConnection
+        = doc->signalMutationBlockingPresentationUpdateChanged.connect(documentWorkChanged);
+
     // clang-format off
     // make connection to the needed signals
     connect(outInfo.ActiveCtrl->buttonBox, &QDialogButtonBox::accepted,
@@ -805,6 +828,7 @@ bool TaskView::showDialog(TaskDialog* dlg, App::Document* doc)
     taskInfos.push_back(outInfo);
     addWidget(outInfo.taskPanel);
     setShownTaskInfo(taskInfos.size() - 1);
+    updateDocumentWorkState(doc);
 
     saveCurrentWidth();
     getMainWindow()->updateActions();
@@ -843,6 +867,8 @@ void TaskView::removeDialog(std::vector<TaskInfo>::iterator infoIt)
         const bool finalizing = infoIt->ActiveDialog->property("taskview_accept_or_reject").toBool()
             || infoIt->ActiveDialog->property("taskview_common_finalization").toBool();
         if (!finalizing) {
+            infoIt->cooperativeMutationConnection.disconnect();
+            infoIt->presentationUpdateConnection.disconnect();
             const std::vector<QWidget*>& cont = infoIt->ActiveDialog->getDialogContent();
             for (const auto& it : cont) {
                 infoIt->taskPanel->actionPanel->removeWidget(it);
@@ -1122,6 +1148,16 @@ void TaskView::accept(App::Document* doc)
         return;
     }
 
+    if (doc->isCooperativeMutationActive()
+        || doc->isMutationBlockingPresentationUpdateActive()) {
+        foundTaskInfo->pendingCompletion = TaskInfo::PendingCompletion::Accept;
+        foundTaskInfo->ActiveCtrl->buttonBox->setEnabled(false);
+        getMainWindow()->showMessage(
+            tr("Finishing the current document update before applying this task...")
+        );
+        return;
+    }
+
     // Make sure that if 'accept' calls 'closeDialog' the deletion is postponed until
     // the dialog leaves the 'accept' method
     foundTaskInfo->ActiveDialog->setProperty("taskview_accept_or_reject", true);
@@ -1211,6 +1247,7 @@ void TaskView::accept(App::Document* doc)
     if ((success && foundTaskInfo->ActiveDialog->acceptClosesDialog()) || removeRequested) {
         removeDialog(doc);
     }
+    scheduleTaskDocumentRecompute(doc);
 }
 
 void TaskView::reject(App::Document* doc)
@@ -1218,6 +1255,16 @@ void TaskView::reject(App::Document* doc)
     auto foundTaskInfo = std::ranges::find(taskInfos, doc, &TaskInfo::Document);
     if (foundTaskInfo == taskInfos.end()) {  // Protect against segfaults due to out-of-order deletions
         Base::Console().warning("ActiveDialog was null in call to TaskView::reject()\n");
+        return;
+    }
+
+    if (doc->isCooperativeMutationActive()
+        || doc->isMutationBlockingPresentationUpdateActive()) {
+        foundTaskInfo->pendingCompletion = TaskInfo::PendingCompletion::Reject;
+        foundTaskInfo->ActiveCtrl->buttonBox->setEnabled(false);
+        getMainWindow()->showMessage(
+            tr("Finishing the current document update before cancelling this task...")
+        );
         return;
     }
 
@@ -1305,6 +1352,7 @@ void TaskView::reject(App::Document* doc)
         TaskDialog::resumeCommandMacroCapture(foundTaskInfo->ActiveDialog);
     }
     rejectTrace.reset();
+    scheduleTaskDocumentRecompute(doc);
 }
 
 void TaskView::helpRequested(App::Document* doc)
@@ -1318,9 +1366,135 @@ void TaskView::helpRequested(App::Document* doc)
 void TaskView::clicked(QAbstractButton* button, App::Document* doc)
 {
     auto foundTaskInfo = std::ranges::find(taskInfos, doc, &TaskInfo::Document);
-    if (foundTaskInfo != taskInfos.end()) {
-        int id = foundTaskInfo->ActiveCtrl->buttonBox->standardButton(button);
-        foundTaskInfo->ActiveDialog->clicked(id);
+    if (foundTaskInfo == taskInfos.end()) {
+        return;
+    }
+    if (doc->isCooperativeMutationActive()
+        || doc->isMutationBlockingPresentationUpdateActive()) {
+        getMainWindow()->showMessage(
+            tr("Finishing the current document update before accepting more task input...")
+        );
+        return;
+    }
+    int id = foundTaskInfo->ActiveCtrl->buttonBox->standardButton(button);
+    foundTaskInfo->ActiveDialog->clicked(id);
+}
+
+void TaskView::updateDocumentWorkState(App::Document* document)
+{
+    auto foundTaskInfo = std::ranges::find(taskInfos, document, &TaskInfo::Document);
+    if (foundTaskInfo == taskInfos.end()) {
+        return;
+    }
+
+    const bool active = document->isCooperativeMutationActive()
+        || document->isMutationBlockingPresentationUpdateActive();
+    foundTaskInfo->taskPanel->actionPanel->setEnabled(!active);
+    if (active || foundTaskInfo->pendingCompletion == TaskInfo::PendingCompletion::None) {
+        return;
+    }
+
+    const auto completion = foundTaskInfo->pendingCompletion;
+    foundTaskInfo->pendingCompletion = TaskInfo::PendingCompletion::None;
+    foundTaskInfo->ActiveCtrl->buttonBox->setEnabled(true);
+    const std::string documentName = document->getName();
+    const std::string documentUid = document->Uid.getValueStr();
+    QMetaObject::invokeMethod(
+        this,
+        [this, documentName, documentUid, completion] {
+            auto* document = App::GetApplication().getDocument(documentName.c_str());
+            if (!document || document->Uid.getValueStr() != documentUid) {
+                return;
+            }
+            if (completion == TaskInfo::PendingCompletion::Accept) {
+                accept(document);
+            }
+            else {
+                reject(document);
+            }
+        },
+        Qt::QueuedConnection
+    );
+}
+
+void TaskView::scheduleTaskDocumentRecompute(App::Document* document)
+{
+    if (!document) {
+        return;
+    }
+
+    const std::string documentName = document->getName();
+    const std::string documentUid = document->Uid.getValueStr();
+    auto pending = pendingTaskRecomputes.find(documentName);
+    if (pending != pendingTaskRecomputes.end()
+        && pending->second.documentUid != documentUid) {
+        pending->second.cooperativeMutationConnection.disconnect();
+        pending->second.presentationUpdateConnection.disconnect();
+        pendingTaskRecomputes.erase(pending);
+        pending = pendingTaskRecomputes.end();
+    }
+    if (pending == pendingTaskRecomputes.end()) {
+        PendingTaskRecompute state;
+        state.documentUid = documentUid;
+        const auto becameStable = [this, documentName, documentUid](const App::Document&, bool active) {
+            if (!active) {
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, documentName, documentUid] {
+                        resumeTaskDocumentRecompute(documentName, documentUid);
+                    },
+                    Qt::QueuedConnection
+                );
+            }
+        };
+        state.cooperativeMutationConnection =
+            document->signalCooperativeMutationChanged.connect(becameStable);
+        state.presentationUpdateConnection =
+            document->signalMutationBlockingPresentationUpdateChanged.connect(becameStable);
+        pendingTaskRecomputes.emplace(documentName, std::move(state));
+    }
+
+    QMetaObject::invokeMethod(
+        this,
+        [this, documentName, documentUid] {
+            resumeTaskDocumentRecompute(documentName, documentUid);
+        },
+        Qt::QueuedConnection
+    );
+}
+
+void TaskView::resumeTaskDocumentRecompute(
+    const std::string& documentName,
+    const std::string& documentUid
+)
+{
+    auto pending = pendingTaskRecomputes.find(documentName);
+    if (pending == pendingTaskRecomputes.end()
+        || pending->second.documentUid != documentUid) {
+        return;
+    }
+
+    auto* document = App::GetApplication().getDocument(documentName.c_str());
+    if (!document || document->Uid.getValueStr() != documentUid) {
+        pending->second.cooperativeMutationConnection.disconnect();
+        pending->second.presentationUpdateConnection.disconnect();
+        pendingTaskRecomputes.erase(pending);
+        return;
+    }
+    if (document->isCooperativeMutationActive()
+        || document->isMutationBlockingPresentationUpdateActive()) {
+        return;
+    }
+
+    const bool workRemains = std::ranges::any_of(
+        document->getObjects(),
+        [](const App::DocumentObject* object) { return object && object->isTouched(); }
+    );
+    pending->second.cooperativeMutationConnection.disconnect();
+    pending->second.presentationUpdateConnection.disconnect();
+    pendingTaskRecomputes.erase(pending);
+    if (workRemains) {
+        document->recompute();
     }
 }
 

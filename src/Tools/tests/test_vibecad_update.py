@@ -322,7 +322,11 @@ class UpdateServiceTests(unittest.TestCase):
         payload = b"unsigned installer fixture"
         asset = self._windows_asset(payload)
         with tempfile.TemporaryDirectory() as temp_dir:
-            update_dir = Path(temp_dir)
+            # UpdateService resolves the directories it is handed, so the
+            # expected path has to be resolved too. On macOS the per-user
+            # temporary directory sits under the /var -> /private/var
+            # symlink, where an unresolved path never compares equal.
+            update_dir = Path(temp_dir).resolve()
             downloads = update_dir / "downloads"
             downloads.mkdir()
             cached = downloads / asset.name
@@ -1057,6 +1061,59 @@ class UpdateServiceTests(unittest.TestCase):
                 f"stdout={completed.stdout}\nstderr={completed.stderr}",
             )
             deadline = time.time() + 5
+            while time.time() < deadline and not marker.is_file():
+                time.sleep(0.05)
+            self.assertTrue(
+                marker.is_file(),
+                f"stderr={completed.stderr}\nlog={log.read_text(encoding='utf-8') if log.is_file() else ''}",
+            )
+
+    def test_windows_detached_helper_executes_powershell_after_parent_exits(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Requires the Windows process-launch runtime")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            root = Path(temp_dir)
+            marker = root / "powershell-alive"
+            log = root / "helper.log"
+            escaped_marker = str(marker).replace("'", "''")
+            helper_command = [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                (
+                    "Start-Sleep -Milliseconds 400; "
+                    f"[IO.File]::WriteAllText('{escaped_marker}', 'ready')"
+                ),
+            ]
+            launcher = (
+                "from pathlib import Path\n"
+                "from VibeCADUpdate import spawn_detached_install_helper\n"
+                "spawn_detached_install_helper(\n"
+                f"    {helper_command!r},\n"
+                f"    log_path=Path({str(log)!r}),\n"
+                ")\n"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", launcher],
+                check=False,
+                cwd=str(VIBECAD_MODULE_DIR),
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PYTHONPATH": str(VIBECAD_MODULE_DIR)},
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                f"stdout={completed.stdout}\nstderr={completed.stderr}",
+            )
+            # Cold powershell.exe startup can exceed five seconds on hosted
+            # Windows runners while antivirus scans a newly checked-out tree.
+            # This verifies process survival, not PowerShell startup latency.
+            deadline = time.time() + 30
             while time.time() < deadline and not marker.is_file():
                 time.sleep(0.05)
             self.assertTrue(

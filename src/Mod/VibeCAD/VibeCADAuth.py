@@ -25,6 +25,9 @@ KEYRING_USERNAME = "openai-api-key"
 
 DEFAULT_PROVIDER = "openai"
 ANTHROPIC_API_VERSION = "2023-06-01"
+DEFAULT_GEMINI_API_BASE = (
+    "https://generativelanguage.googleapis.com/v1beta/openai/"
+)
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,16 @@ PROVIDERS: dict[str, ProviderSpec] = {
         env_var="",
         keyring_username="",
         models_url="https://api.x.ai/v1/models",
+    ),
+    "gemini": ProviderSpec(
+        provider_id="gemini",
+        display_name="Google Gemini",
+        auth_kind="api_key",
+        env_var="GEMINI_API_KEY",
+        keyring_username="gemini-api-key",
+        models_url=(
+            "https://generativelanguage.googleapis.com/v1beta/openai/models"
+        ),
     ),
 }
 

@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from VibeCADNativeAnalyzeInspect import (
     inspect_analysis,
+    list_studies,
     inspect_assignments,
     inspect_assignment_validation,
     inspect_study,
@@ -35,6 +36,7 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 
 
 _VARIANTS = {
+    "studies": frozenset({"offset", "page_size"}),
     "study": frozenset({"target"}),
     "analysis": frozenset({"target"}),
     "geometry_source": frozenset({"target", "offset", "page_size"}),
@@ -79,7 +81,10 @@ class NativeAnalyzeInspectRuntime:
                     "Material catalog arguments require query and category."
                 )
             values.setdefault("limit", 25)
-        elif isinstance(arguments, Mapping) and arguments.get("operation") == "fem_mesh_elements":
+        elif isinstance(arguments, Mapping) and arguments.get("operation") in {
+            "studies",
+            "fem_mesh_elements",
+        }:
             normalized = dict(arguments)
             normalized.setdefault("offset", 0)
             normalized.setdefault("page_size", 64)
@@ -88,7 +93,9 @@ class NativeAnalyzeInspectRuntime:
             operation, values = strict_variant_arguments(arguments, _VARIANTS)
         context = self._context
         context.guard()
-        if operation == "study":
+        if operation == "studies":
+            result = list_studies(context.document, **values)
+        elif operation == "study":
             result = inspect_study(
                 context.document,
                 context.document_uid,

@@ -14,6 +14,7 @@ from VibeCADNativeAnalyzeConnectionValues import (
     prepare_connection_values,
 )
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometryCreate import references_match
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
@@ -163,7 +164,7 @@ def create_connection(
     connection = _factory(document, prepared.kind)
     if connection is None or connection_kind(connection) != prepared.kind:
         raise NativeAnalyzeError("The FEM connection factory returned the wrong type.")
-    connection.Label = prepared.label
+    prepared = assign_prepared_label(connection, prepared)
     if prepared.kind == "contact":
         connection.SurfaceBehavior = "Linear"
         connection.EnableThermalContact = False

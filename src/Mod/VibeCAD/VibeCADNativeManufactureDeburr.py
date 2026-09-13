@@ -19,6 +19,7 @@ from VibeCADNativeManufactureOperationSupport import (
     exact_fields,
     extend_native_operation_draft,
     finite_number,
+    native_operation_presentation,
     preflight_operation_boundary,
     quantity_mm,
     validate_operation_tool_linking,
@@ -480,15 +481,18 @@ def create_deburr(
     if not isinstance(prepared, PreparedDeburrCreate):
         raise TypeError("prepared must be a PreparedDeburrCreate")
     import Path.Op.Deburr as PathDeburr
-    import Path.Op.Gui.Deburr as PathDeburrGui
+
+    provider_factory, provider_resource = native_operation_presentation(
+        "Path.Op.Gui.Deburr"
+    )
 
     draft = create_native_operation(
         document,
         prepared=prepared.boundary,
         internal_name="Deburr",
         operation_factory=PathDeburr.Create,
-        provider_factory=PathDeburrGui.PathOpGui.ViewProvider,
-        provider_resource=PathDeburrGui.Command.res,
+        provider_factory=provider_factory,
+        provider_resource=provider_resource,
         configure=partial(_apply_settings, prepared=prepared),
         payload={"parameters": _parameter_payload(prepared)},
     )

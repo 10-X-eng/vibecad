@@ -1064,7 +1064,7 @@ void RecentFilesAction::activateFile(int id)
         save();
     }
     else {
-        ModuleIO::openFile(filename);
+        ModuleIO::openFileFromGui(filename);
     }
 }
 

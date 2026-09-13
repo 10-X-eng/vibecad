@@ -12,9 +12,12 @@ from typing import Any, Callable, Mapping
 from VibeCADNativeBackground import NativeBackgroundCancelled
 from VibeCADNativeManufactureErrors import NativeManufactureError
 from VibeCADNativeManufactureState import (
+    capture_other_job_states,
     job_state,
     operation_active_state,
-    operation_reference_state,
+    operation_state,
+    other_job_states_are_current,
+    resolve_operation_target,
     resolve_job_target,
 )
 
@@ -44,12 +47,17 @@ class FrozenSimulationRun:
     tool_shape: Any
     tool_number: int
     diameter_mm: float
+    tool_shape_id: str = ""
+    tool_parameters: tuple[tuple[str, float], ...] = ()
+    cycle_time_seconds: float | None = None
+    cycle_time_rapid_fallback: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class FrozenGlSimulation:
     job: Any
     expected_job_state_sha256: str
+    other_job_states: tuple[tuple[Any, str], ...]
     quality: int
     stock_shape: Any
     base_shapes: tuple[Any, ...]
@@ -216,24 +224,8 @@ def _operation_target(
     document: Any,
     value: Mapping[str, Any],
 ) -> tuple[Any, Mapping[str, Any]]:
-    name, expected = _exact_target(value, "CAM operation")
-    operation = document.getObject(name)
-    if operation is None or getattr(operation, "Document", None) is not document:
-        _error(
-            f"Exact CAM operation {name!r} no longer exists.",
-            "NATIVE_MANUFACTURE_TARGET_STALE",
-        )
-    current = operation_reference_state(operation)
-    if current.get("state_sha256") != expected:
-        _error(
-            f"Exact CAM operation {name!r} changed after turn start.",
-            "NATIVE_MANUFACTURE_STATE_STALE",
-            repair={
-                "object_name": name,
-                "current_state_sha256": current.get("state_sha256"),
-            },
-        )
-    return operation, current
+    _exact_target(value, "CAM operation")
+    return resolve_operation_target(document, value)
 
 
 def resolve_simulation_operation_target(
@@ -265,6 +257,7 @@ def preflight_gl_simulation(
         _error("GL simulation requires one through 64 exact operations.")
 
     exact_job, job_before = resolve_job_target(document, job)
+    other_job_states = capture_other_job_states(document, (exact_job,))
     group = tuple(getattr(getattr(exact_job, "Operations", None), "Group", ()) or ())
     group_positions = {id(operation): index for index, operation in enumerate(group)}
     if len(group_positions) != len(group):
@@ -388,8 +381,13 @@ def preflight_gl_simulation(
             "The exact CAM Job changed while simulation inputs were frozen.",
             "NATIVE_MANUFACTURE_STATE_STALE",
         )
+    if not other_job_states_are_current(document, other_job_states):
+        _error(
+            "Another CAM setup changed while simulation inputs were frozen.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
     for run in runs:
-        current = operation_reference_state(run.operation)
+        current = operation_state(run.operation)
         if current.get("state_sha256") != run.expected_state_sha256:
             _error(
                 f"CAM operation {run.operation_name!r} changed while simulation inputs "
@@ -399,6 +397,7 @@ def preflight_gl_simulation(
     return FrozenGlSimulation(
         job=exact_job,
         expected_job_state_sha256=str(job_before["state_sha256"]),
+        other_job_states=other_job_states,
         quality=quality,
         stock_shape=stock_shape.copy(),
         base_shapes=tuple(base_shapes),
@@ -518,12 +517,17 @@ def validate_gl_simulation(document: Any, frozen: FrozenGlSimulation) -> None:
                 "current_state_sha256": current_job.get("state_sha256"),
             },
         )
+    if not other_job_states_are_current(document, frozen.other_job_states):
+        _error(
+            "Another CAM setup changed during background simulation preparation.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
     group = tuple(getattr(frozen.job.Operations, "Group", ()) or ())
     positions = {id(operation): index for index, operation in enumerate(group)}
     previous = -1
     for run in frozen.runs:
         position = positions.get(id(run.operation), -1)
-        current = operation_reference_state(run.operation)
+        current = operation_state(run.operation)
         if position <= previous or current.get("state_sha256") != run.expected_state_sha256:
             _error(
                 f"CAM operation {run.operation_name!r} changed during background "
@@ -566,7 +570,7 @@ def present_gl_simulation(
     try:
         from Path.Main.Gui import SimulatorGL
 
-        SimulatorGL.activate_prepared_simulation(
+        simulation = SimulatorGL.activate_prepared_simulation(
             job=prepared.frozen.job,
             operations=tuple(run.operation for run in prepared.frozen.runs),
             quality=prepared.frozen.quality,
@@ -606,9 +610,16 @@ def present_gl_simulation(
             error_code="NATIVE_MANUFACTURE_GL_PRESENTATION_SIDE_EFFECT",
         )
     names = [run.operation_name for run in prepared.frozen.runs]
+    simulation_id = str(simulation.nativeSimulationId or "")
+    if len(simulation_id) != 32:
+        raise NativeManufactureError(
+            "The prepared GL simulation has no stable task identity.",
+            error_code="NATIVE_MANUFACTURE_GL_PRESENTATION_FAILED",
+        )
     return {
         "simulation": {
             "mode": "gl",
+            "simulation_id": simulation_id,
             "job": str(prepared.frozen.job.Name),
             "operations": names,
             "operation_count": len(names),
@@ -617,6 +628,83 @@ def present_gl_simulation(
             "quality": prepared.frozen.quality,
             "program_sha256": prepared.program_sha256,
             "task_active": SimulatorGL.owns_active_prepared_simulation(document),
+            "document_changed": False,
+        },
+        "next": {
+            "tool": "manufacture.close_simulation",
+            "simulation_id": simulation_id,
+        },
+    }
+
+
+def close_gl_simulation(document: Any, simulation_id: str) -> dict[str, Any]:
+    """Close only the exact Native-owned simulation for this document."""
+
+    from Path.Main.Gui import SimulatorGL
+    from VibeCADNativeTargets import read_current_selection
+
+    simulation = SimulatorGL.active_prepared_simulation()
+    if simulation is None or not SimulatorGL.owns_active_prepared_simulation(document):
+        _error(
+            "This document has no active Native CAM simulation.",
+            "NATIVE_MANUFACTURE_GL_SIMULATION_NOT_ACTIVE",
+        )
+    observed_id = str(getattr(simulation, "nativeSimulationId", "") or "")
+    if str(simulation_id or "") != observed_id:
+        _error(
+            "The active Native CAM simulation changed after it was opened.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+            repair={"current_simulation_id": observed_id},
+        )
+
+    objects_before = tuple(document.Objects)
+    visibility_before = tuple(
+        (obj, bool(obj.ViewObject.Visibility))
+        for obj in objects_before
+        if getattr(obj, "ViewObject", None) is not None
+    )
+    selection_before = read_current_selection(document)
+    timeline = document.getObject("VibeCADTimeline")
+    timeline_before = (
+        tuple(getattr(timeline, "Operations", ()) or ()),
+        tuple(bool(value) for value in getattr(timeline, "VisibilityAtEnd", ()) or ()),
+        tuple(bool(value) for value in getattr(timeline, "SuppressionAtEnd", ()) or ()),
+        int(getattr(timeline, "Position", 0) or 0),
+    )
+    undo_before = int(getattr(document, "UndoCount", 0) or 0)
+    simulation.taskForm.reject()
+    if (
+        SimulatorGL.active_prepared_simulation() is not None
+        or tuple(document.Objects) != objects_before
+        or any(
+            bool(obj.ViewObject.Visibility) is not visible
+            for obj, visible in visibility_before
+        )
+        or read_current_selection(document) != selection_before
+        or (
+            tuple(getattr(timeline, "Operations", ()) or ()),
+            tuple(
+                bool(value)
+                for value in getattr(timeline, "VisibilityAtEnd", ()) or ()
+            ),
+            tuple(
+                bool(value)
+                for value in getattr(timeline, "SuppressionAtEnd", ()) or ()
+            ),
+            int(getattr(timeline, "Position", 0) or 0),
+        )
+        != timeline_before
+        or int(getattr(document, "UndoCount", 0) or 0) != undo_before
+    ):
+        raise NativeManufactureError(
+            "Closing GL simulation did not restore its exact presentation state.",
+            error_code="NATIVE_MANUFACTURE_GL_PRESENTATION_SIDE_EFFECT",
+        )
+    return {
+        "simulation": {
+            "mode": "gl",
+            "simulation_id": observed_id,
+            "closed": True,
             "document_changed": False,
         }
     }

@@ -17,6 +17,7 @@ from VibeCADNativeAnalyzeHistory import (
     require_boundary,
     verify_operation_block,
 )
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeLoadState import load_kind, load_state
 from VibeCADNativeAnalyzeLoadValues import (
     PreparedLoadValues,
@@ -446,7 +447,7 @@ def create_load(document: Any, prepared: PreparedLoadCreate) -> NativeMutationDr
     load = _factory(document, prepared.kind)
     if load is None or load_kind(load) != prepared.kind:
         raise NativeAnalyzeError("The FEM load factory returned the wrong object type.")
-    load.Label = prepared.label
+    prepared = assign_prepared_label(load, prepared)
     apply_load_values(load, prepared.values)
     load.References = reference_value(prepared.references)
     if prepared.kind == "force":

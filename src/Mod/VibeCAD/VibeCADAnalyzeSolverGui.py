@@ -12,6 +12,7 @@ from PySide import QtCore, QtWidgets
 
 from VibeCADCore import get_service
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeOwnership import owning_study, study_resource_scope
 from VibeCADNativeAnalyzeSolverExecution import (
     capture_solver_execution_request,
     commit_solver_execution,
@@ -114,6 +115,7 @@ class _SolverRunUi:
         document = self.document
         captured = self.captured
         workspace = self.workspace
+        scope = study_resource_scope(owning_study(document, captured.target.solver))
 
         def prepare(cancelled: Any, progress: Any) -> Any:
             progress(3, "Capturing exact FEM document")
@@ -149,6 +151,8 @@ class _SolverRunUi:
             dispatch_to_document_thread=VibeCADGui._dispatch_to_document_thread,
             finalize_message=f"Importing verified {self.backend} results",
             cleanup=lambda _prepared: workspace.cleanup(),
+            changes_document=True,
+            resource_scope=scope,
         )
         self.job_id = str(snapshot.job_id)
         _ACTIVE_RUNS[self.job_id] = self

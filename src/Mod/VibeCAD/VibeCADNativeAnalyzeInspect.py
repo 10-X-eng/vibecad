@@ -23,6 +23,7 @@ from VibeCADNativeAnalyzeEquationState import prepare_equation_target, equation_
 from VibeCADNativeAnalyzeResultState import prepare_result_target, result_state
 from VibeCADNativeAnalyzeResults import result_purge_state
 from VibeCADNativeAnalyzeStudyState import study_state
+from VibeCADNativeAnalyzeOwnership import studies_in_document
 from VibeCADNativeAnalyzeMeshOutputState import (
     inspect_fem_mesh_elements as _inspect_fem_mesh_elements,
 )
@@ -52,6 +53,47 @@ def inspect_analysis(
     return {
         "analysis": analysis_state(prepared.analysis),
         "result_graph": result_purge_state(prepared.analysis),
+    }
+
+
+def list_studies(
+    document: Any,
+    *,
+    offset: Any = 0,
+    page_size: Any = 64,
+) -> dict[str, Any]:
+    """Return one bounded document-order page with exact study targets."""
+
+    if type(offset) is not int or offset < 0:
+        raise NativeAnalyzeError("offset must be a non-negative integer.")
+    if type(page_size) is not int or not 1 <= page_size <= 64:
+        raise NativeAnalyzeError("page_size must be an integer from 1 to 64.")
+    studies = studies_in_document(document)
+    selected = studies[offset : offset + page_size]
+    values = []
+    for study in selected:
+        state = analysis_state(study)
+        values.append(
+            {
+                "analysis_name": state["object_name"],
+                "label": state.get("label", state["object_name"]),
+                "intent": state["study"],
+                "dependencies": state["dependencies"],
+                "member_count": state["member_count"],
+                "analysis_target": {
+                    "object_name": state["object_name"],
+                    "expected_state_sha256": state["state_sha256"],
+                    "expected_member_count": state["member_count"],
+                },
+            }
+        )
+    next_offset = offset + len(values)
+    return {
+        "study_count": len(studies),
+        "offset": offset,
+        "returned_count": len(values),
+        "studies": values,
+        "next_offset": next_offset if next_offset < len(studies) else None,
     }
 
 

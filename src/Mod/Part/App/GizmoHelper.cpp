@@ -136,7 +136,9 @@ std::pair<TopoDS_Face, TopoDS_Face> getAdjacentFacesFromEdge(
     assert(faces.Extent() >= 2 && "This is probably a bug so please report it to the issue tracker");
 
     TopoDS_Face face1 = TopoDS::Face(faces.First());
-    TopoDS_Face face2 = TopoDS::Face(*(++faces.begin()));
+    TopTools_ListOfShape::Iterator faceIterator(faces);
+    faceIterator.Next();
+    TopoDS_Face face2 = TopoDS::Face(faceIterator.Value());
 
     return {face1, face2};
 }

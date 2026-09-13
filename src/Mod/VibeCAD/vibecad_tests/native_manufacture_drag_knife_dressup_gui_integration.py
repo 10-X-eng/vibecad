@@ -23,7 +23,10 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeManufactureModifySchema import MANUFACTURE_MODIFY_CAPABILITY_NAME
+from VibeCADNativeManufactureFocusedModifySchema import (
+    MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES,
+)
+
 from VibeCADNativeManufactureState import (
     copy_configuration_state,
     job_state,
@@ -37,6 +40,9 @@ from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_su
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CAPABILITY_NAME = MANUFACTURE_FOCUSED_MODIFY_CAPABILITIES["drag_knife_dressup"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -101,7 +107,7 @@ def _arguments(
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_MODIFY_CAPABILITY_NAME)
+    definition = registry.definition(CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(("drag_knife_dressup",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
@@ -126,7 +132,7 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_MODIFY_CAPABILITY_NAME,),
+            tool_names=(CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -264,7 +270,7 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_MODIFY_CAPABILITY_NAME,
+            CAPABILITY_NAME,
             "drag_knife_dressup",
             "ExactCamJobOperationAndDragKnifeCompensation",
             True,
@@ -329,7 +335,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_MODIFY_CAPABILITY_NAME,
+                CAPABILITY_NAME,
                 json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-drag-knife-{call_index}",
             )
@@ -433,6 +439,19 @@ def _run() -> None:
         line_output = document.getObject(line_output_name)
         assert line_output.Base is line
 
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        ledger.begin_run("native-manufacture-drag-knife-gui-after-redo")
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
+
         arc_result = call(
             _arguments(
                 job,
@@ -457,6 +476,18 @@ def _run() -> None:
         future_index = tuple(timeline.Operations).index(no_compensation)
         _move_timeline_to(document, future_index)
         marker_before = int(timeline.Position)
+        turn = _turn(surface, registry)
+        frozen = turn.surface
+        ledger.begin_run("native-manufacture-drag-knife-gui-at-marker")
+        dispatcher = NativeTurnDispatcher(
+            document=document,
+            state=state_store,
+            registry=registry,
+            turn=turn,
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize,
+            active_document=lambda: App.ActiveDocument,
+        )
         filtered_result = call(
             _arguments(
                 job,

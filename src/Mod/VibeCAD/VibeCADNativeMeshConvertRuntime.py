@@ -14,8 +14,10 @@ from VibeCADNativeMeshConvert import (
     capture_shape_tessellation,
     capture_mesh_conversion,
     commit_mesh_conversion,
+    commit_mesh_conversion_to_body,
     commit_shape_tessellation,
     shape_tessellation_source_still_exact,
+    verify_committed_mesh_body,
     verify_committed_mesh_conversion,
     verify_shape_tessellation,
 )
@@ -55,6 +57,13 @@ _VARIANTS = {
         }
     ),
     "mesh_to_solid": frozenset(
+        {
+            "source",
+            "label",
+            "tolerance_mm",
+        }
+    ),
+    "mesh_to_body": frozenset(
         {
             "source",
             "label",
@@ -141,10 +150,12 @@ def _focused_convert_arguments(
     values["operation"] = {
         "shell": "mesh_to_shape",
         "solid": "mesh_to_solid",
+        "body": "mesh_to_body",
     }.get(operation, operation)
+    result_kind = {"solid": "Solid", "body": "Body"}.get(operation, "Shell")
     values["label"] = str(
         values.pop("result_label", "")
-        or f"{source_name} {'Solid' if operation == 'solid' else 'Shell'}"
+        or f"{source_name} {result_kind}"
     )
     values.setdefault("tolerance_mm", 0.000001)
     if operation == "shell":
@@ -200,7 +211,7 @@ class NativeMeshConvertRuntime:
                 },
             )
             return self._start_shape_tessellation(captured, ticket)
-        if operation in {"mesh_to_shape", "mesh_to_solid"}:
+        if operation in {"mesh_to_shape", "mesh_to_solid", "mesh_to_body"}:
             conversion_values = dict(values)
             source_value = conversion_values.pop("source")
             if not isinstance(source_value, Mapping) or set(source_value) != {
@@ -218,10 +229,13 @@ class NativeMeshConvertRuntime:
             )
             conversion_values["sew_adjacent_faces"] = (
                 True
-                if operation == "mesh_to_solid"
+                if operation in {"mesh_to_solid", "mesh_to_body"}
                 else values["sew_adjacent_faces"]
             )
-            conversion_values["make_solid"] = operation == "mesh_to_solid"
+            conversion_values["make_solid"] = operation in {
+                "mesh_to_solid",
+                "mesh_to_body",
+            }
             captured = capture_mesh_conversion(
                 context.document,
                 context.document_uid,
@@ -347,16 +361,30 @@ class NativeMeshConvertRuntime:
                 )
 
         def commit(prepared: Any) -> Mapping[str, Any]:
+            creates_body = operation == "mesh_to_body"
+            mutation = (
+                commit_mesh_conversion_to_body
+                if creates_body
+                else commit_mesh_conversion
+            )
             return run_immediate_mutation(
                 context,
                 ticket=ticket,
                 transaction_name=(
-                    "Convert Mesh to Solid"
-                    if operation == "mesh_to_solid"
-                    else "Convert Mesh to Shape"
+                    "Convert Mesh to Part Design Body"
+                    if creates_body
+                    else (
+                        "Convert Mesh to Solid"
+                        if operation == "mesh_to_solid"
+                        else "Convert Mesh to Shape"
+                    )
                 ),
-                mutate=lambda document: commit_mesh_conversion(document, prepared),
-                verify=verify_committed_mesh_conversion,
+                mutate=lambda document: mutation(document, prepared),
+                verify=(
+                    verify_committed_mesh_body
+                    if creates_body
+                    else verify_committed_mesh_conversion
+                ),
             )
 
         def cleanup(_prepared: Any) -> None:

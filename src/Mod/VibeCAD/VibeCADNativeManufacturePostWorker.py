@@ -38,6 +38,7 @@ MAX_POST_TOTAL_OUTPUT_BYTES = 1024 * 1024 * 1024
 MAX_POST_RESULT_BYTES = 64 * 1024
 POST_TIMEOUT_SECONDS = 600.0
 POST_MEMORY_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+_BINARY_OPEN = getattr(os, "O_BINARY", 0)
 _SAFE_SUFFIX = re.compile(r"^\.[a-z0-9]{1,16}$")
 
 
@@ -80,7 +81,7 @@ def _hash_file(path: Path, maximum: int) -> tuple[int, str]:
             "An isolated postprocessor output is not a regular file.",
             "NATIVE_MANUFACTURE_POST_OUTPUT_INVALID",
         )
-    flags = os.O_RDONLY | (getattr(os, "O_NOFOLLOW", 0))
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY_OPEN
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
@@ -123,7 +124,11 @@ def _hash_file(path: Path, maximum: int) -> tuple[int, str]:
 
 
 def _write_private(path: Path, data: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | _BINARY_OPEN,
+        0o600,
+    )
     try:
         offset = 0
         while offset < len(data):
@@ -180,7 +185,10 @@ def _read_result(path: Path) -> dict[str, Any]:
         value = path.lstat()
         if not stat.S_ISREG(value.st_mode):
             raise OSError("result is not a regular file")
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY_OPEN,
+        )
         try:
             opened = os.fstat(descriptor)
             if (
@@ -231,7 +239,9 @@ def _validate_frozen_files(frozen: FrozenPostInput) -> None:
     size, digest = _hash_file(frozen.snapshot_path, MAX_POST_SNAPSHOT_BYTES)
     if size != frozen.snapshot_size or digest != frozen.snapshot_sha256:
         _error(
-            "The private CAM snapshot changed before isolated execution.",
+            "The private CAM snapshot changed before isolated execution "
+            f"(expected {frozen.snapshot_size} bytes/"
+            f"{frozen.snapshot_sha256[:12]}, read {size} bytes/{digest[:12]}).",
             "NATIVE_MANUFACTURE_POST_SNAPSHOT_INVALID",
         )
     if frozen.machine_config_path is not None:
@@ -428,9 +438,12 @@ def _copy_exact(source: PreparedPostFile, destination: str) -> None:
         )
     input_descriptor = os.open(
         source.path,
-        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY_OPEN,
     )
-    output_descriptor = os.open(destination, os.O_WRONLY | os.O_TRUNC)
+    output_descriptor = os.open(
+        destination,
+        os.O_WRONLY | os.O_TRUNC | _BINARY_OPEN,
+    )
     try:
         while True:
             chunk = os.read(input_descriptor, 1024 * 1024)

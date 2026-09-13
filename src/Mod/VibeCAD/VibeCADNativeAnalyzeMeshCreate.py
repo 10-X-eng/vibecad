@@ -15,6 +15,7 @@ from VibeCADNativeAnalyzeHistory import (
     require_boundary,
     verify_operation_block,
 )
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeMeshState import (
     fem_mesh_definition_state,
     fem_mesher_kind,
@@ -133,18 +134,6 @@ def mesh_source_still_exact(source: PreparedMeshSource) -> bool:
         return False
 
 
-def _analysis_has_mesh(analysis: Any, *, excluding: Any = None) -> bool:
-    for member in tuple(analysis.Group or ()):
-        if member is excluding:
-            continue
-        try:
-            fem_mesher_kind(member)
-            return True
-        except NativeAnalyzeError:
-            continue
-    return False
-
-
 def prepare_mesh_definition_create(
     document: Any,
     document_uid: str,
@@ -156,11 +145,6 @@ def prepare_mesh_definition_create(
     settings: Any,
 ) -> PreparedMeshDefinitionCreate:
     target = prepare_analysis_target(document, document_uid, analysis)
-    if _analysis_has_mesh(target.analysis):
-        raise NativeAnalyzeError(
-            "This FEM analysis already contains a mesh definition; update or generate it "
-            "instead of creating an ambiguous second solver mesh."
-        )
     return PreparedMeshDefinitionCreate(
         creation_boundary(document),
         target,
@@ -205,12 +189,10 @@ def create_mesh_definition(
             "The FEM mesh source changed after preflight.",
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
-    if _analysis_has_mesh(prepared.analysis.analysis):
-        raise NativeAnalyzeError("The FEM analysis acquired another mesh after preflight.")
     mesh = _factory(document, prepared.kind)
     if mesh is None or fem_mesher_kind(mesh) != prepared.kind:
         raise NativeAnalyzeError("The FEM mesher factory returned the wrong object type.")
-    mesh.Label = prepared.label
+    prepared = assign_prepared_label(mesh, prepared)
     mesh.Shape = prepared.source.source
     apply_mesher_values(mesh, prepared.values)
     prepared.analysis.analysis.addObject(mesh)

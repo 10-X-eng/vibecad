@@ -23,17 +23,21 @@ from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
-from VibeCADNativeManufactureOperationSchema import (
-    MANUFACTURE_OPERATION_CAPABILITY_NAME,
+from VibeCADNativeManufactureFocusedOperationSchema import (
+    MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES,
 )
 from VibeCADNativeManufactureState import job_state, operation_state
 from VibeCADNativeRegistry import build_native_capability_registry
 from VibeCADNativeRuntimeContext import NativeRuntimeContext
+from VibeCADNativeManufactureOperationRuntime import NativeManufactureOperationRuntime
 from VibeCADNativeRuntimeRegistry import build_native_runtime_bindings
 from VibeCADNativeSurface import NativeSurfaceSnapshot, require_frozen_native_surface
 from VibeCADNativeTurn import NativeTurnSnapshot
 from VibeCADNativeUndo import NativeAssistantUndoLedger
 from VibeCADRibbonSurface import read_active_ribbon_surface
+
+
+CAPABILITY_NAME = MANUFACTURE_FOCUSED_OPERATION_CAPABILITIES["mill_facing"]
 
 
 def _events(rounds: int = 16) -> None:
@@ -111,32 +115,24 @@ def _target(state: dict) -> dict:
 
 
 def _turn(surface, registry) -> NativeTurnSnapshot:
-    definition = registry.definition(MANUFACTURE_OPERATION_CAPABILITY_NAME)
+    definition = registry.definition(CAPABILITY_NAME)
     assert definition is not None
     schema = definition.provider_schema(("mill_facing",))
     encoded = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     assert "unknown" not in encoded.lower()
-    for field in (
+    branch = schema["parameters"]["oneOf"][0]
+    assert set(branch["properties"]) == {
+        "operation",
+        "job",
         "tool_controller",
-        "cut_mode",
-        "pattern",
-        "angle_degrees",
-        "reverse",
-        "stepover_percent",
-        "axial_stock_to_leave_mm",
-        "pass_extension_mm",
-        "stock_extension_mm",
-        "linking",
-        "collision_clearance_mm",
-    ):
-        assert field in encoded
-    assert "geometry" not in schema["parameters"]["oneOf"][0]["properties"]
+    }
+    assert set(branch["required"]) == {"job", "tool_controller"}
     return NativeTurnSnapshot.from_provider_surface(
         NativeProviderSurface(
             snapshot=NativeSurfaceSnapshot.from_surface(surface),
             available=True,
             unavailable_reason="",
-            tool_names=(MANUFACTURE_OPERATION_CAPABILITY_NAME,),
+            tool_names=(CAPABILITY_NAME,),
             schemas=(schema,),
             human_only_action_ids=(),
             missing_definition_names=(),
@@ -146,41 +142,12 @@ def _turn(surface, registry) -> NativeTurnSnapshot:
     )
 
 
-def _arguments(model, job) -> dict:
+def _arguments(job) -> dict:
     state = job_state(job)
     controller = state["tools"][0]
-    stock_top = round(float(job.Stock.Shape.BoundBox.ZMax), 9)
-    model_top = round(float(model.Shape.BoundBox.ZMax), 9)
-    assert stock_top > model_top
     return {
-        "operation": "mill_facing",
-        "label": "Native stock facing",
         "job": _target(state),
         "tool_controller": _target(controller),
-        "facing": {
-            "cut_mode": "conventional",
-            "pattern": "directional",
-            "angle_degrees": 25.0,
-            "reverse": True,
-            "stepover_percent": 40,
-            "axial_stock_to_leave_mm": 0.2,
-            "pass_extension_mm": 3.0,
-            "stock_extension_mm": 1.0,
-        },
-        "depths": {
-            "start_depth_mm": stock_top,
-            "final_depth_mm": model_top,
-            "step_down_mm": 0.5,
-        },
-        "heights": {
-            "safe_height_mm": stock_top + 2.0,
-            "clearance_height_mm": stock_top + 5.0,
-        },
-        "linking": {
-            "strategy": "tool_diameter",
-            "collision_clearance_mm": 0.5,
-        },
-        "coolant": "flood",
     }
 
 
@@ -201,18 +168,22 @@ def _assert_facing_graph(
         assert operation.ViewObject.Proxy.deleteOnReject is False
     assert tuple(getattr(operation, "Base", ()) or ()) == ()
     assert job.Proxy.baseObject(job, job.Model.Group[0]) is model
-    assert operation.Label == "Native stock facing"
-    assert operation.CutMode == "Conventional"
-    assert operation.ClearingPattern == "Directional"
-    assert round(float(operation.Angle.Value), 9) == 25.0
-    assert operation.Reverse is True
-    assert int(operation.StepOver) == 40
-    assert round(operation.AxialStockToLeave.getValueAs("mm"), 9) == 0.2
-    assert round(operation.PassExtension.getValueAs("mm"), 9) == 3.0
-    assert round(operation.StockExtension.getValueAs("mm"), 9) == 1.0
-    assert operation.CollisionAvoidanceStrategy == "Tool Diameter"
-    assert round(operation.CollisionClearance.getValueAs("mm"), 9) == 0.5
-    assert operation.CoolantMode == "Flood"
+    assert operation.Label
+    assert operation.CutMode in {"Climb", "Conventional"}
+    assert operation.ClearingPattern in {
+        "ZigZag",
+        "Bidirectional",
+        "Directional",
+        "Spiral",
+    }
+    assert 1 <= int(operation.StepOver) <= 100
+    expressions = {str(name) for name, _expression in operation.ExpressionEngine}
+    assert {
+        "StartDepth",
+        "FinalDepth",
+        "SafeHeight",
+        "ClearanceHeight",
+    } <= expressions
     assert tuple(document.VibeCADTimeline.Operations)[-1] is operation
     commands = tuple(operation.Path.Commands)
     assert any(command.Name in {"G1", "G2", "G3"} for command in commands)
@@ -247,9 +218,9 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            CAPABILITY_NAME,
             "mill_facing",
-            "ExactCamJobStockControllerAndFacingParameters",
+            "ExactCamJobStockAndController",
             True,
             False,
         )
@@ -258,7 +229,7 @@ def _run() -> None:
         initial_names = tuple(obj.Name for obj in document.Objects)
         initial_operations = tuple(job.Operations.Group)
         initial_timeline = tuple(document.VibeCADTimeline.Operations)
-        arguments = _arguments(model, job)
+        arguments = _arguments(job)
 
         registry = build_native_capability_registry()
         turn = _turn(surface, registry)
@@ -282,12 +253,14 @@ def _run() -> None:
             active_surface_id=lambda: read_active_ribbon_surface(controller).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
         )
+        runtimes = build_native_runtime_bindings(context, turn.tool_names)
+        runtimes[CAPABILITY_NAME] = NativeManufactureOperationRuntime(context)
         dispatcher = NativeTurnDispatcher(
             document=document,
             state=state_store,
             registry=registry,
             turn=turn,
-            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            runtimes=runtimes,
             reauthorize_turn=reauthorize,
             active_document=lambda: App.ActiveDocument,
         )
@@ -297,7 +270,7 @@ def _run() -> None:
             nonlocal call_index
             call_index += 1
             response = dispatcher.call(
-                MANUFACTURE_OPERATION_CAPABILITY_NAME,
+                CAPABILITY_NAME,
                 json.dumps(payload, separators=(",", ":")),
                 f"native-manufacture-facing-{call_index}",
             )
@@ -319,17 +292,6 @@ def _run() -> None:
         assert tuple(document.VibeCADTimeline.Operations) == initial_timeline
         assert int(document.UndoCount) == undo_before
 
-        invalid = json.loads(json.dumps(arguments))
-        invalid["facing"]["axial_stock_to_leave_mm"] = (
-            invalid["depths"]["start_depth_mm"] - invalid["depths"]["final_depth_mm"]
-        )
-        invalid_result = call(invalid, succeeds=False)
-        assert invalid_result["error_code"] == "NATIVE_ARGUMENTS_INVALID"
-        assert "plus axial_stock_to_leave_mm" in invalid_result["error"]
-        assert tuple(obj.Name for obj in document.Objects) == initial_names
-        assert tuple(job.Operations.Group) == initial_operations
-        assert int(document.UndoCount) == undo_before
-
         result = call(arguments)
         _events(12)
         operation_name = result["mill_facing"]["object_name"]
@@ -342,13 +304,10 @@ def _run() -> None:
         }
         assert result["mill_facing"]["stock"]["object_name"] == job.Stock.Name
         assert len(result["mill_facing"]["stock"]["shape_sha256"]) == 64
-        assert result["mill_facing"]["parameters"] == {
-            "facing": arguments["facing"],
-            "depths": arguments["depths"],
-            "heights": arguments["heights"],
-            "linking": arguments["linking"],
-            "coolant": arguments["coolant"],
-        }
+        assert result["mill_facing"]["parameters"]["source"] == "setup_defaults"
+        assert result["mill_facing"]["parameters"]["cut_mode"] == str(
+            operation.CutMode
+        )
         assert result["mill_facing"]["cutting_command_count"] >= 1
         assert result["job"]["operation_count"] == len(initial_operations) + 1
         assert [item["object_name"] for item in result["receipt"]["created"]] == [

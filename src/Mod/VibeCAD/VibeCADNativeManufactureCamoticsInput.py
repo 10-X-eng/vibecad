@@ -21,9 +21,11 @@ from VibeCADNativeManufactureSimulation import (
     valid_simulation_shape,
 )
 from VibeCADNativeManufactureState import (
+    capture_other_job_states,
     job_state,
     operation_active_state,
-    operation_reference_state,
+    operation_state,
+    other_job_states_are_current,
     resolve_job_target,
 )
 from VibeCADNativeTargets import read_current_selection
@@ -105,6 +107,10 @@ class FrozenCamoticsRun:
 class FrozenCamoticsInput:
     job: Any = field(repr=False, compare=False)
     expected_job_state_sha256: str
+    other_job_states: tuple[tuple[Any, str], ...] = field(
+        repr=False,
+        compare=False,
+    )
     job_operations: tuple[Any, ...] = field(repr=False)
     stock: Any = field(repr=False, compare=False)
     objects_before: tuple[Any, ...] = field(repr=False)
@@ -401,6 +407,7 @@ def preflight_camotics(
     if not isinstance(operations, list) or not 1 <= len(operations) <= 64:
         _error("CAMotics requires one through 64 exact operations.")
     exact_job, job_before = resolve_job_target(document, job)
+    other_job_states = capture_other_job_states(document, (exact_job,))
     _usable(document, exact_job, "CAM Job")
     group = tuple(getattr(getattr(exact_job, "Operations", None), "Group", ()) or ())
     positions = {id(operation): index for index, operation in enumerate(group)}
@@ -488,8 +495,13 @@ def preflight_camotics(
             "The exact CAM Job changed while CAMotics inputs were frozen.",
             "NATIVE_MANUFACTURE_STATE_STALE",
         )
+    if not other_job_states_are_current(document, other_job_states):
+        _error(
+            "Another CAM setup changed while CAMotics inputs were frozen.",
+            "NATIVE_MANUFACTURE_STATE_STALE",
+        )
     for run in runs:
-        if operation_reference_state(run.operation).get("state_sha256") != (
+        if operation_state(run.operation).get("state_sha256") != (
             run.expected_state_sha256
         ):
             _error(
@@ -501,6 +513,7 @@ def preflight_camotics(
     return FrozenCamoticsInput(
         job=exact_job,
         expected_job_state_sha256=str(job_before["state_sha256"]),
+        other_job_states=other_job_states,
         job_operations=group,
         stock=stock,
         objects_before=tuple(document.Objects),
@@ -534,6 +547,7 @@ def validate_camotics(document: Any, frozen: FrozenCamoticsInput) -> None:
         or getattr(frozen.job, "Stock", None) is not frozen.stock
         or job_state(frozen.job).get("state_sha256")
         != frozen.expected_job_state_sha256
+        or not other_job_states_are_current(document, frozen.other_job_states)
         or _timeline_state(document) != frozen.timeline_before
     ):
         _error(
@@ -549,7 +563,7 @@ def validate_camotics(document: Any, frozen: FrozenCamoticsInput) -> None:
     previous_position = -1
     for run in frozen.runs:
         position = positions.get(id(run.operation), -1)
-        current = operation_reference_state(run.operation)
+        current = operation_state(run.operation)
         if (
             position <= previous_position
             or current.get("state_sha256") != run.expected_state_sha256

@@ -95,6 +95,47 @@ def test_analyze_capture_schedules_only_effectively_available_objects(
     assert request["analysis_names"] == ["Analysis"]
 
 
+def test_analyze_capture_keeps_a_late_selected_study_in_bounded_detail(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeAnalyzeSnapshot as analyze_snapshot
+
+    analyses = [
+        SimpleNamespace(
+            ID=index,
+            Name=f"Analysis{index}",
+            Label=f"Study {index}",
+            TypeId="Fem::FemAnalysis",
+            PropertiesList=(),
+            ViewObject=SimpleNamespace(Visibility=False),
+            getParentGroup=lambda: None,
+            getParentGeoFeatureGroup=lambda: None,
+        )
+        for index in range(1, 131)
+    ]
+    document = SimpleNamespace(
+        Uid="document-a",
+        Objects=tuple(analyses),
+        isObjectUsableAtCurrentTimelinePosition=lambda _candidate: True,
+    )
+    monkeypatch.setattr(analyze_snapshot, "_active_analysis", lambda _document: None)
+    monkeypatch.setattr(
+        analyze_snapshot,
+        "_focused_analysis",
+        lambda _document, _selection: analyses[-1],
+    )
+
+    request = begin_analyze_snapshot_capture(
+        document,
+        selection={"items": []},
+        validate_brep=False,
+    )
+
+    assert len(request["analysis_names"]) == 130
+    assert len(request["detailed_analysis_names"]) == 16
+    assert request["detailed_analysis_names"][-1] == "Analysis130"
+
+
 def test_context_coordinator_coalesces_callers_and_reuses_the_revision() -> None:
     coordinator = AnalyzeContextCoordinator()
     entered = threading.Event()

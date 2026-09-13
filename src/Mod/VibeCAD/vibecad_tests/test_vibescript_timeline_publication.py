@@ -51,12 +51,15 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
     assert universal_writes == {
         "vibescript.create_program",
         "vibescript.build_program",
+        "vibescript.apply_patch",
         "vibescript.edit_source",
         "vibescript.set_inputs",
         "vibescript.reconfigure_program",
         "vibescript.delete_output",
         "vibescript.delete_program",
         "vibescript.delete_object",
+        "vibescript.create_part",
+        "vibescript.create_assembly",
     }
 
     expected_operations = {
@@ -69,12 +72,15 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
     contracts: dict[str, str] = {
         "vibescript.create_program": "delegated_domain_strategy",
         "vibescript.build_program": "exact_regeneration",
+        "vibescript.apply_patch": "exact_regeneration",
         "vibescript.edit_source": "exact_regeneration",
         "vibescript.set_inputs": "exact_regeneration",
         "vibescript.reconfigure_program": "exact_regeneration",
         "vibescript.delete_output": "semantic_deletion",
         "vibescript.delete_program": "semantic_deletion",
         "vibescript.delete_object": "semantic_deletion",
+        "vibescript.create_part": "delegated_domain_strategy",
+        "vibescript.create_assembly": "delegated_domain_strategy",
     }
     for pack in packs:
         domain_specs = {
@@ -95,8 +101,8 @@ def test_every_runner_owned_write_has_an_explicit_history_lifecycle() -> None:
         )
         contracts[f"vibescript.{pack.domain}.delete_program"] = "semantic_deletion"
 
-    # Eight canonical writes plus four callable compatibility aliases per shipped pack.
-    assert len(registered_writes) == 8 + 4 * len(packs) == 76
+    # Ten canonical writes plus four callable compatibility aliases per shipped pack.
+    assert len(registered_writes) == 11 + 4 * len(packs) == 79
     assert set(contracts) == registered_writes
     assert set(contracts.values()) <= {
         *domain_publication._TIMELINE_PUBLICATION_STRATEGY_BY_DOMAIN.values(),
@@ -575,6 +581,38 @@ def test_assembly_resource_keys_use_only_persisted_exact_identities() -> None:
         )
         == "vibescript:Bolt.__fastener_source"
     )
+
+
+@pytest.mark.parametrize("staged,old_count,new_count", [
+    (False, 0, 0), (True, 0, 0), (False, 1, 0), (False, 0, 1),
+])
+def test_assembly_occurrence_reconciles_only_actual_or_staged_resource_graphs(
+    monkeypatch, staged, old_count, new_count,
+) -> None:
+    operation = _Object("Occurrence", 1, "App::Link")
+    document = _DeletionDocument([operation])
+    captured = {"resources": [object() for _ in range(old_count)]}
+    final = [object() for _ in range(new_count)]
+    calls = []
+    retired = [object()] if old_count else []
+    monkeypatch.setattr(domain_publication, "_stage_timeline_resource_reconciliation",
+                        lambda *a, **kw: calls.append("stage"))
+    def finalize(doc, owner, snapshot, resources, **kwargs):
+        assert (doc, owner, snapshot, resources) == (document, operation, captured, final)
+        calls.append("finalize")
+        return retired
+    monkeypatch.setattr(domain_publication, "_finalize_timeline_resource_reconciliation", finalize)
+    monkeypatch.setattr(domain_publication, "_remove_reconciled_timeline_resources",
+                        lambda doc, resources, **kw: resources)
+    result = domain_publication._reconcile_assembly_occurrence_resources(
+        document, operation, captured, final, staged=staged, context="Occurrence resources",
+    )
+    if staged or old_count or new_count:
+        assert calls == (["finalize"] if staged else ["stage", "finalize"])
+        assert result == retired
+    else:
+        assert calls == []
+        assert result == []
 
 
 def test_resource_reconciliation_uses_exact_authored_keys_and_nested_owners() -> None:

@@ -42,6 +42,8 @@ namespace PartGui
 bool canStartRetainedModelingTask(const App::Document* document)
 {
     return document
+        && !document->isCooperativeMutationActive()
+        && !document->isMutationBlockingPresentationUpdateActive()
         && (document->getBookedTransactionID() == App::NullTransaction
             || Gui::TaskView::TaskDialog::hasOwnedEnclosingTransaction(document));
 }

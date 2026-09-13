@@ -18,8 +18,10 @@ from vibecad_tests.test_ribbon_surface import _manifest
         ("vibescript", "model", "vibescript"),
         ("vibescript", "analyze", "native"),
         ("vibescript", "drawing", "native"),
+        ("vibescript", "manufacture", "native"),
         ("native", "analyze", "native"),
         ("native", "drawing", "native"),
+        ("native", "manufacture", "native"),
         ("native", "model", "native"),
     ),
 )
@@ -193,6 +195,58 @@ def test_drawing_ribbon_selects_native_schemas_for_vibescript_geometry(
 
     assert session.provider_tool_schemas(service, "TechDrawWorkbench") == schemas
     assert service.modeling_engine() == "vibescript"
+
+
+def test_manufacture_ribbon_selects_native_schemas_for_vibescript_geometry(
+    monkeypatch,
+) -> None:
+    import VibeCADNativeProviderContext as provider_context
+    import VibeCADSession as session
+
+    schemas = [
+        {
+            "name": "manufacture.setup",
+            "description": "Create or update a machining setup.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        }
+    ]
+    monkeypatch.setattr(
+        ribbon_module,
+        "read_active_ribbon_surface",
+        lambda: SimpleNamespace(surface_id="manufacture"),
+    )
+    monkeypatch.setattr(
+        provider_context,
+        "native_provider_tool_schemas",
+        lambda: schemas,
+    )
+    service = SimpleNamespace(modeling_engine=lambda: "vibescript")
+
+    assert session.provider_tool_schemas(service, "CAMWorkbench") == schemas
+    assert service.modeling_engine() == "vibescript"
+
+
+def test_legacy_vibescript_cam_remains_installed_but_is_not_available() -> None:
+    from VibeCADVibeScriptDomains import (
+        domain_availability,
+        get_domain_adapter,
+        get_vibescript_pack,
+    )
+
+    pack = get_vibescript_pack("CAMWorkbench")
+    adapter = get_domain_adapter("cam")
+
+    assert pack is not None
+    assert adapter is not None
+    assert pack.production_ready is False
+    assert adapter.production_ready is True
+    available, reason = domain_availability("CAMWorkbench")
+    assert available is False
+    assert "production-readiness gate" in reason
 
 
 def test_native_availability_queries_use_the_manifest_surface(

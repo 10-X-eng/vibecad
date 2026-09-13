@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import traceback
 
 import FreeCAD as App
@@ -22,6 +23,7 @@ import Path.Preferences as PathPreferences
 import VibeCADGui as VibeGui
 from VibeCADCore import get_service
 from VibeCADNativeActionManifest import resolve_native_action_inventory
+from VibeCADNativeBackground import NativeBackgroundManager
 from VibeCADNativeCapabilityRegistry import NativeProviderSurface
 from VibeCADNativeDispatch import NativeTurnDispatcher
 from VibeCADNativeManufactureOperationSchema import (
@@ -45,6 +47,19 @@ def _events(rounds: int = 16) -> None:
     for _index in range(rounds):
         Gui.updateGui()
         QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 25)
+
+
+def _await_job(manager: NativeBackgroundManager, job_id: str) -> dict:
+    deadline = time.monotonic() + 300.0
+    while time.monotonic() < deadline:
+        _events(1)
+        snapshot = manager.snapshot(job_id)
+        if snapshot.terminal:
+            assert snapshot.phase == "completed", snapshot
+            assert snapshot.result is not None
+            return snapshot.result
+        time.sleep(0.01)
+    raise AssertionError("The isolated Surface path gate timed out")
 
 
 def _commit(document, label: str, action):
@@ -367,6 +382,7 @@ def _run() -> None:
         save_path = Path(temporary.name) / "native-manufacture-surface.FCStd"
         document = App.newDocument("NativeManufactureSurfaceGate")
         document.UndoMode = 1
+        VibeGui._ensure_document_thread_invoker()
         VibeGui._connect_document_observer()
         ribbon_controller, surface = _surface()
         plan = {
@@ -380,7 +396,7 @@ def _run() -> None:
             plan.classification.mutation,
             plan.classification.human_only,
         ) == (
-            MANUFACTURE_OPERATION_CAPABILITY_NAME,
+            "manufacture.surface",
             "surface",
             "ExactCamJobSurfaceFacesControllerAndParameters",
             True,
@@ -405,6 +421,7 @@ def _run() -> None:
         service = get_service()
         service.select_modeling_engine("native")
         state_store = service.native_document_state_store()
+        background = service.native_background_manager()
         undo_ledger = NativeAssistantUndoLedger()
         undo_ledger.begin_run("native-manufacture-surface-gui")
 
@@ -422,6 +439,8 @@ def _run() -> None:
                 ribbon_controller
             ).surface_id,
             edit_or_task_active=lambda: bool(Gui.Control.activeDialog()),
+            background_manager=background,
+            document_thread_dispatch=VibeGui._dispatch_to_document_thread,
         )
         dispatcher = NativeTurnDispatcher(
             document=document,
@@ -443,6 +462,20 @@ def _run() -> None:
                 f"native-manufacture-surface-{call_index}",
             )
             assert response.get("ok") is succeeds, response
+            if succeeds and response.get("next", {}).get("tool") == "native.job":
+                assert response["job"]["resource_scope"] == (
+                    f"manufacture:{payload['job']['object_name']}"
+                )
+                active_jobs = service.native_active_snapshot()["domain"][
+                    "background_jobs"
+                ]
+                assert any(
+                    item["job_id"] == response["job"]["job_id"]
+                    and item["resource_scope"] == response["job"]["resource_scope"]
+                    and item["terminal"] is False
+                    for item in active_jobs
+                )
+                return _await_job(background, response["job"]["job_id"])
             return response
 
         Gui.Selection.clearSelection()

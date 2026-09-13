@@ -18,6 +18,7 @@ from VibeCADNativeAnalyzeConnectionValues import (
     prepare_connection_values,
 )
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometryCreate import references_match
 from VibeCADNativeAnalyzeHistory import (
     AnalyzeCreationBoundary,
@@ -198,7 +199,7 @@ def update_connection(
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     connection = prepared.target.connection
-    connection.Label = prepared.label
+    prepared = assign_prepared_label(connection, prepared)
     if prepared.values_changed:
         apply_connection_values(connection, prepared.values)
     connection.References = reference_value(prepared.endpoints)

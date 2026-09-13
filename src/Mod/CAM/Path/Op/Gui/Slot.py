@@ -69,6 +69,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.geo2Extension = PathGuiUtil.QuantitySpinBox(
             self.form.geo2Extension, obj, "ExtendPathEnd"
         )
+        self.trochoidWidth = PathGuiUtil.QuantitySpinBox(
+            self.form.trochoidWidth, obj, "TrochoidWidth"
+        )
+        self.rampAngle = PathGuiUtil.QuantitySpinBox(self.form.rampAngle, obj, "RampAngle")
 
     def setFields(self, obj):
         """setFields(obj) ... transfers obj's property values to UI"""
@@ -100,16 +104,22 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.geo2Reference.setCurrentIndex(idx)
 
         self.selectInComboBox(obj.CutPattern, self.form.cutPattern)
+        self.selectInComboBox(obj.CutMode, self.form.cutMode)
+        self.form.trochoidStepover.setValue(int(obj.TrochoidStepover))
+        self.selectInComboBox(obj.EntryMode, self.form.entryMode)
         self.selectInComboBox(obj.PathOrientation, self.form.pathOrientation)
 
         if obj.ReverseDirection:
             self.form.reverseDirection.setCheckState(QtCore.Qt.Checked)
         else:
             self.form.reverseDirection.setCheckState(QtCore.Qt.Unchecked)
+        self.updateAdvancedVisibility()
 
     def updateQuantitySpinBoxes(self):
         self.geo1Extension.updateWidget()
         self.geo2Extension.updateWidget()
+        self.trochoidWidth.updateWidget()
+        self.rampAngle.updateWidget()
 
     def getFields(self, obj):
         """getFields(obj) ... transfers values from UI to obj's properties"""
@@ -128,6 +138,15 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         val = self.propEnums["CutPattern"][self.form.cutPattern.currentIndex()][1]
         obj.CutPattern = val
 
+        val = self.propEnums["CutMode"][self.form.cutMode.currentIndex()][1]
+        obj.CutMode = val
+        self.trochoidWidth.updateProperty()
+        obj.TrochoidStepover = self.form.trochoidStepover.value()
+
+        val = self.propEnums["EntryMode"][self.form.entryMode.currentIndex()][1]
+        obj.EntryMode = val
+        self.rampAngle.updateProperty()
+
         val = self.propEnums["PathOrientation"][self.form.pathOrientation.currentIndex()][1]
         obj.PathOrientation = val
 
@@ -144,6 +163,11 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         signals.append(self.form.geo2Extension.editingFinished)
         signals.append(self.form.geo2Reference.currentIndexChanged)
         signals.append(self.form.cutPattern.currentIndexChanged)
+        signals.append(self.form.cutMode.currentIndexChanged)
+        signals.append(self.form.trochoidWidth.editingFinished)
+        signals.append(self.form.trochoidStepover.valueChanged)
+        signals.append(self.form.entryMode.currentIndexChanged)
+        signals.append(self.form.rampAngle.editingFinished)
         signals.append(self.form.pathOrientation.currentIndexChanged)
         if hasattr(self.form.reverseDirection, "checkStateChanged"):  # Qt version >= 6.7.0
             signals.append(self.form.reverseDirection.checkStateChanged)
@@ -209,6 +233,34 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             self.form.featureReferences.hide()
             self.form.customPoints.show()
 
+        self.updateAdvancedVisibility()
+
+    def _enumValue(self, propertyName, combo):
+        index = combo.currentIndex()
+        values = self.propEnums[propertyName]
+        if 0 <= index < len(values):
+            return values[index][1]
+        return ""
+
+    def updateAdvancedVisibility(self, sentObj=None):
+        """Show only the controls used by the selected Slot strategy."""
+
+        trochoidal = self._enumValue("CutPattern", self.form.cutPattern) == "Trochoidal"
+        ramp = not trochoidal and self._enumValue("EntryMode", self.form.entryMode) == "Ramp"
+        for name in (
+            "cutMode_label",
+            "cutMode",
+            "trochoidWidth_label",
+            "trochoidWidth",
+            "trochoidStepover_label",
+            "trochoidStepover",
+        ):
+            getattr(self.form, name).setVisible(trochoidal)
+        for name in ("entryMode_label", "entryMode"):
+            getattr(self.form, name).setVisible(not trochoidal)
+        for name in ("rampAngle_label", "rampAngle"):
+            getattr(self.form, name).setVisible(ramp)
+
     def customizeReference_1(self, sub, single=False):
         debugMsg("customizeReference_1()")
         # Customize Reference1 combobox options
@@ -240,9 +292,14 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             self._updateComboBox(self.form.geo2Reference, enumTups)
 
     def registerSignalHandlers(self, obj):
-        # debugMsg('registerSignalHandlers()')
-        # self.form.pathOrientation.currentIndexChanged.connect(self.updateVisibility)
-        pass
+        self.connectSignal(
+            self.form.cutPattern.currentIndexChanged,
+            self.updateAdvancedVisibility,
+        )
+        self.connectSignal(
+            self.form.entryMode.currentIndexChanged,
+            self.updateAdvancedVisibility,
+        )
 
     def _updateComboBox(self, cBox, enumTups):
         cBox.blockSignals(True)

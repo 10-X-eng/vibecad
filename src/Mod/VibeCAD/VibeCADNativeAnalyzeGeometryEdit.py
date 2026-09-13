@@ -13,6 +13,7 @@ from VibeCADNativeAnalyzeElementValues import (
     apply_element_values,
 )
 from VibeCADNativeAnalyzeErrors import NativeAnalyzeError
+from VibeCADNativeAnalyzeLabels import assign_prepared_label
 from VibeCADNativeAnalyzeGeometryCreate import (
     _REFERENCE_KINDS,
     element_label,
@@ -207,7 +208,7 @@ def update_element_definition(
             error_code="NATIVE_ANALYZE_STATE_STALE",
         )
     element = prepared.target.element
-    element.Label = prepared.label
+    prepared = assign_prepared_label(element, prepared)
     element.References = list(prepared.references)
     if prepared.values is not None:
         apply_element_values(element, prepared.values)
