@@ -602,6 +602,50 @@ def test_open_scheduler_redraws_restored_partdesign_history(monkeypatch) -> None
     assert document.Uid not in gui._pending_document_render_refreshes
 
 
+def test_open_scheduler_preserves_user_visibility_change_before_deferred_redraw(
+    monkeypatch,
+) -> None:
+    document = _Document([_Object("CleanFeature", ["Up-to-date"])])
+    _install_gui_document(monkeypatch, document)
+    callbacks: list[tuple[int, object]] = []
+
+    class _Timer:
+        @staticmethod
+        def singleShot(delay: int, callback) -> None:
+            callbacks.append((delay, callback))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(QtCore=SimpleNamespace(QTimer=_Timer)),
+    )
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    monkeypatch.setattr(
+        gui.App,
+        "listDocuments",
+        lambda: {document.Name: document},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        gui,
+        "_restore_partdesign_history_rendering",
+        lambda _doc: True,
+    )
+    gui._pending_document_render_refreshes.discard(document.Uid)
+
+    gui._schedule_document_render_after_restore(document)
+    callbacks.pop(0)[1]()
+    assert document._gui_document.Modified is False
+    assert callbacks[0][0] == 0
+
+    # The real ViewObject toggle marks an opened document dirty between timers.
+    document._gui_document.Modified = True
+    callbacks.pop(0)[1]()
+
+    assert document._gui_document.Modified is True
+    assert document.Uid not in gui._pending_document_render_refreshes
+
+
 def test_open_scheduler_rechecks_recompute_after_presentation(monkeypatch) -> None:
     document = _Document([_Object("PendingFeature", ["Touched"])])
     view = _install_gui_document(monkeypatch, document)

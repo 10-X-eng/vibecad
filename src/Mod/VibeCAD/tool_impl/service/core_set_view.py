@@ -1460,7 +1460,62 @@ def _resolve_visibility(
             if getattr(obj, "ViewObject", None) is None:
                 return _invalid(f"Object {obj.Name} has no GUI ViewObject.")
             changes.append((obj, visible))
+    shown_names = {obj.Name for obj, visible in changes if visible}
+    hidden_ancestors = {}
+    try:
+        for obj, visible in changes:
+            if visible:
+                blockers = _hidden_visibility_ancestors(obj, shown_names)
+                if blockers:
+                    hidden_ancestors[obj.Name] = blockers
+    except Exception as exc:
+        return _invalid(f"Could not inspect visibility parents: {exc}")
+    if hidden_ancestors:
+        return _invalid(
+            "Cannot show an object inside a hidden container; include its "
+            "hidden parent in show_objects explicitly.",
+            hidden_ancestors=hidden_ancestors,
+        )
     return {"ok": True, "changes": changes}
+
+
+def _hidden_visibility_ancestors(obj: Any, shown_names: set[str]) -> list[str]:
+    """Find scene-gating parents, without treating a Body's own tip as gated."""
+
+    hidden = []
+    visited = {id(obj)}
+    while True:
+        parent = None
+        for method_name in ("getParentGeoFeatureGroup", "getParentGroup"):
+            method = getattr(obj, method_name, None)
+            if callable(method):
+                parent = method()
+                if parent is not None:
+                    break
+        if parent is None or id(parent) in visited:
+            break
+        visited.add(id(parent))
+        name = str(getattr(parent, "Name", "") or "")
+        type_id = str(getattr(parent, "TypeId", "") or "")
+        is_container = type_id in {
+            "App::Part",
+            "PartDesign::Component",
+            "Assembly::AssemblyObject",
+        }
+        if not is_container:
+            is_derived = getattr(parent, "isDerivedFrom", None)
+            if callable(is_derived):
+                is_container = bool(is_derived("App::Part"))
+        view = getattr(parent, "ViewObject", None)
+        if (
+            is_container
+            and view is not None
+            and not bool(view.Visibility)
+            and name not in shown_names
+        ):
+            hidden.append(name)
+        obj = parent
+    return hidden
 
 
 def _resolve_object_references(

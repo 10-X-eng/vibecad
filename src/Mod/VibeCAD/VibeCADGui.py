@@ -4916,7 +4916,6 @@ def _schedule_document_render_after_restore(document: Any) -> None:
         presentation_complete = False
         presentation_changed = False
         resource_migration_complete = False
-        modified_state_captured = False
         geometry_recomputed_any = False
         restored_projection_names: set[str] = set()
         recompute_attempted: set[str] = set()
@@ -4929,10 +4928,7 @@ def _schedule_document_render_after_restore(document: Any) -> None:
             QtCore.QTimer.singleShot(100, callback)
 
         def capture_modified_state(live_document: Any) -> None:
-            nonlocal modified_state_captured, was_modified
-            if modified_state_captured:
-                return
-            modified_state_captured = True
+            nonlocal was_modified
             try:
                 gui_document = Gui.getDocument(str(live_document.Name))
                 was_modified = (
@@ -4964,7 +4960,6 @@ def _schedule_document_render_after_restore(document: Any) -> None:
                 return
             try:
                 _redraw_document_view(live_document)
-                restore_modified_state(live_document)
             finally:
                 finish_refresh()
 

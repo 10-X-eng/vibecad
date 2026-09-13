@@ -2602,6 +2602,99 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertFalse(self.vibe_body.Visibility)
         self.assertFalse(self.vibe_result.Visibility)
 
+    def test_deferred_restore_keeps_newer_visibility_edit_modified(self):
+        """Issue #203: an opened document must still offer to save a later edit."""
+
+        import VibeCADGui as vibe_gui
+
+        with tempfile.TemporaryDirectory(prefix="vibecad_deferred_visibility_") as directory:
+            self.vibe_output.Visibility = True
+            path = os.path.join(directory, "deferred_visibility.FCStd")
+            self.document.saveAs(path)
+            gui_document = Gui.getDocument(self.document.Name)
+            gui_document.Modified = False
+            self.assertFalse(self.reference.Visibility)
+
+            observed = {}
+            document_uid = str(self.document.Uid)
+            original_redraw = vibe_gui._redraw_document_view
+
+            def change_visibility():
+                observed["before"] = bool(gui_document.Modified)
+                self.reference.Visibility = True
+                observed["after"] = bool(gui_document.Modified)
+
+            def redraw_then_queue_edit(document):
+                original_redraw(document)
+                if document.Uid == document_uid and not observed:
+                    QtCore.QTimer.singleShot(0, change_visibility)
+
+            vibe_gui._redraw_document_view = redraw_then_queue_edit
+            try:
+                vibe_gui._schedule_document_render_after_restore(self.document)
+                self.assertIsNotNone(
+                    _wait_until(
+                        lambda: (
+                            "after" in observed
+                            and document_uid
+                            not in vibe_gui._pending_document_render_refreshes
+                        )
+                    )
+                )
+            finally:
+                vibe_gui._redraw_document_view = original_redraw
+
+            self.assertFalse(observed["before"])
+            self.assertTrue(observed["after"])
+            self.assertTrue(gui_document.Modified)
+            self.assertTrue(self.reference.Visibility)
+            self.document.save()
+            App.closeDocument(self.document.Name)
+            self.document = App.openDocument(path)
+            self.reference = self.document.getObject("BladeReference")
+            self.assertIsNotNone(_wait_until(self._browser_ready))
+            self.assertTrue(self.reference.Visibility)
+
+    def test_view_command_rejects_child_of_hidden_part_until_parent_is_shown(self):
+        """A raw child eye cannot prove that geometry is in the viewport."""
+
+        from tool_impl.service import core_set_view
+
+        parent = self.document.addObject("App::Part", "HiddenViewParent")
+        child = parent.newObject("Part::Feature", "HiddenViewChild")
+        child.Shape = Part.makeBox(2, 3, 4)
+        self.document.recompute()
+        parent.Visibility = False
+        child.Visibility = False
+        view = Gui.activeDocument().activeView()
+
+        def viewport_triangles():
+            counts = coin.SoGetPrimitiveCountAction()
+            counts.setCanApproximate(True)
+            counts.apply(view.getSceneGraph())
+            return counts.getTriangleCount()
+
+        before = viewport_triangles()
+        blocked = core_set_view.run(
+            object(), camera="unchanged", show_objects=[child.Name]
+        )
+        self.assertFalse(blocked["ok"])
+        self.assertEqual(blocked["observed"]["hidden_ancestors"], {
+            child.Name: [parent.Name]
+        })
+        self.assertFalse(parent.Visibility)
+        self.assertFalse(child.Visibility)
+        self.assertEqual(viewport_triangles(), before)
+
+        shown = core_set_view.run(
+            object(), camera="unchanged", show_objects=[child.Name, parent.Name]
+        )
+        self.assertTrue(shown["ok"], shown)
+        self.assertEqual(shown["shown"], [child.Name, parent.Name])
+        self.assertTrue(parent.Visibility)
+        self.assertTrue(child.Visibility)
+        self.assertGreater(viewport_triangles(), before)
+
     def test_link_occurrence_and_definition_visibility_are_independent(self):
         assembly = self.document.addObject(
             "App::Part",
