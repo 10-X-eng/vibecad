@@ -28,8 +28,8 @@ EXTENSIONS_DIR="${FREECAD_APP}/Contents/PlugIns"
 THUMBNAIL_EXT="${EXTENSIONS_DIR}/FreeCADThumbnailExtension.appex"
 PREVIEW_EXT="${EXTENSIONS_DIR}/FreeCADPreviewExtension.appex"
 
-THUMBNAIL_BUNDLE_ID="org.freecad.FreeCAD.quicklook.thumbnail"
-PREVIEW_BUNDLE_ID="org.freecad.FreeCAD.quicklook.preview"
+THUMBNAIL_BUNDLE_ID="org.vibecad.VibeCAD.quicklook.thumbnail"
+PREVIEW_BUNDLE_ID="org.vibecad.VibeCAD.quicklook.preview"
 
 # Function to print colored output
 print_status() {
