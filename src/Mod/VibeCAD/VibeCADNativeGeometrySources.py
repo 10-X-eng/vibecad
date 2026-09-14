@@ -320,19 +320,27 @@ def is_potential_design_geometry_source(
     obj: Any,
     *,
     analysis_artifact_names: frozenset[str] | None = None,
+    include_hidden: bool = False,
 ) -> bool:
-    """Identify a Drawing candidate without reading its potentially huge Shape."""
+    """Identify a public geometry candidate without reading its Shape.
+
+    Analyze may include hidden study inputs; Drawing keeps visible-only discovery.
+    History eligibility and suppression checks apply in both cases.
+    """
 
     if (
         obj is None
         or _is_body_member(obj)
         or _is_internal_resource(obj)
-        or drawing_source_exclusion_reason(
-            document,
-            obj,
-            analysis_artifact_names=analysis_artifact_names,
+        or bool(getattr(obj, "Suppressed", False))
+        or (
+            not include_hidden
+            and drawing_source_exclusion_reason(
+                document,
+                obj,
+                analysis_artifact_names=analysis_artifact_names,
+            ) is not None
         )
-        is not None
     ):
         return False
     try:
@@ -359,7 +367,7 @@ def is_analyze_context_object(
     *,
     analysis_artifact_names: frozenset[str] | None = None,
 ) -> bool:
-    """Keep the non-rendering FEM graph plus visible public model geometry."""
+    """Keep the FEM graph, its hidden geometry inputs, and visible model geometry."""
 
     artifact_names = (
         drawing_analysis_artifact_names(document)
@@ -373,6 +381,10 @@ def is_analyze_context_object(
         document,
         obj,
         analysis_artifact_names=artifact_names,
+        include_hidden=any(
+            str(getattr(parent, "Name", "") or "") in artifact_names
+            for parent in tuple(getattr(obj, "InList", ()) or ())
+        ),
     )
 
 

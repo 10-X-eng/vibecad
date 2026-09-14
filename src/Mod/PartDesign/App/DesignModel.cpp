@@ -2820,13 +2820,25 @@ void DesignModel::finalizeExistingOperation(
         if (old != oldByBody.end()) {
             state = old->second;
             oldByBody.erase(old);
+            auto* publication = ensurePublication(*document, *body);
+            if (!previous) {
+                // A later feature may own the published tip. Editing the Body's
+                // creator must retain that tip and its exact predecessor chain.
+                auto* current = freecad_cast<DesignBodyState*>(publication->CurrentState.getValue());
+                std::unordered_set<DesignBodyState*> visited;
+                while (current != state) {
+                    if (!current || current->BodyId.getValueStr() != bodyIds[index]
+                        || !visited.insert(current).second) {
+                        throw Base::RuntimeError(
+                            "An operation-created Body publication no longer points "
+                            "to this operation's exact state"
+                        );
+                    }
+                    current = freecad_cast<DesignBodyState*>(current->PreviousState.getValue());
+                }
+            }
             state->OutputIndex.setValue(static_cast<int>(index));
             state->PreviousState.setValue(previous);
-            auto* publication = ensurePublication(*document, *body);
-            if (!previous && publication->CurrentState.getValue() != state) {
-                throw Base::RuntimeError("An operation-created Body publication no longer points "
-                                         "to this operation's exact state");
-            }
         }
         else {
             auto* publication = ensurePublication(*document, *body);

@@ -3648,6 +3648,121 @@ class TestDesignModeling(unittest.TestCase):
         self.assertAlmostEqual(body.Shape.Volume, 500.0)
         PartDesign.validateDesign(operation)
 
+    def test_editing_pad_before_fillet_preserves_published_history(self):
+        profile = self._rectangle_sketch("Profile", 0, 10, 0, 10)
+        pad, body = self._new_body_operation(
+            "PartDesign::DesignExtrude",
+            "Pad",
+            lambda feature: (
+                setattr(feature, "Profile", profile),
+                setattr(feature, "Length", 10),
+            ),
+        )
+        publication = body.Tip
+        pad_state = publication.CurrentState
+        self.document.openTransaction("Fillet Pad")
+        fillet = self.document.addObject("PartDesign::DesignFillet", "Fillet")
+        edit = PartDesign.beginDesignOperationEdit(fillet)
+        PartDesign.setDesignOperationTargets(edit, "Modify", [body])
+        fillet.TargetElementOffsets = [0, 1]
+        fillet.TargetElements = ["Edge1"]
+        fillet.Radius = 1
+        PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+        fillet_state = publication.CurrentState
+        original_volume = body.Shape.Volume
+        identities = (body.VibeCADBodyId, pad_state.BodyStateId, fillet_state.BodyStateId)
+
+        def assert_history():
+            self.assertIs(body.Tip, publication)
+            self.assertIs(publication.CurrentState, fillet_state)
+            self.assertIs(fillet_state.PreviousState, pad_state)
+            self.assertEqual(fillet.InputStates, [pad_state])
+            self.assertEqual(
+                (body.VibeCADBodyId, pad_state.BodyStateId, fillet_state.BodyStateId),
+                identities,
+            )
+            PartDesign.validateDesign(pad)
+            PartDesign.validateDesign(fillet)
+            self._assert_dependency_graph_acyclic(self.document)
+
+        assert_history()
+        self.document.openTransaction("Change Pad beneath Fillet")
+        edit = PartDesign.beginDesignOperationEdit(pad)
+        pad.Length = 5
+        PartDesign.setDesignOperationTargets(edit, "New Body", [])
+        self.assertEqual(PartDesign.finalizeDesignOperationEdit(edit), [body])
+        self.document.commitTransaction()
+        assert_history()
+        self.assertAlmostEqual(pad_state.Shape.Volume, 500)
+        self.assertTrue(fillet.isValid(), fillet.getStatusString())
+        expected = pad_state.Shape.makeFillet(1, [pad_state.Shape.Edges[0]])
+        self.assertAlmostEqual(body.Shape.Volume, expected.Volume)
+        self.assertLess(body.Shape.Volume, original_volume)
+        edited_volume = body.Shape.Volume
+
+        self.document.undo()
+        self.document.recompute()
+        assert_history()
+        self.assertEqual(pad.Length.Value, 10)
+        self.assertAlmostEqual(body.Shape.Volume, original_volume)
+        self.document.redo()
+        self.document.recompute()
+        assert_history()
+        self.assertEqual(pad.Length.Value, 5)
+        self.assertAlmostEqual(body.Shape.Volume, edited_volume)
+
+    def test_upstream_edits_preserve_a_multi_step_primitive_history(self):
+        box, body = self._new_body_operation(
+            "PartDesign::DesignBox", "Box", lambda feature: None,
+        )
+        publication = body.Tip
+        box_state = publication.CurrentState
+        self.document.openTransaction("Chamfer Box")
+        chamfer = self.document.addObject("PartDesign::DesignChamfer", "Chamfer")
+        edit = PartDesign.beginDesignOperationEdit(chamfer)
+        PartDesign.setDesignOperationTargets(edit, "Modify", [body])
+        chamfer.TargetElementOffsets = [0, 1]
+        chamfer.TargetElements = ["Edge1"]
+        chamfer.Size = 1
+        PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+        chamfer_state = publication.CurrentState
+
+        self.document.openTransaction("Scale chamfered Box")
+        scale = self.document.addObject("PartDesign::DesignScale", "Scale")
+        edit = PartDesign.beginDesignOperationEdit(scale)
+        PartDesign.setDesignOperationTargets(edit, "Modify", [body])
+        scale.Uniform = True
+        scale.UniformScale = 1.5
+        PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+        scale_state = publication.CurrentState
+
+        for operation, parameter, value, mode, targets in (
+            (box, "Length", 12, "New Body", []),
+            (chamfer, "Size", 0.5, "Modify", [body]),
+        ):
+            with self.subTest(operation=operation.Name):
+                previous_volume = body.Shape.Volume
+                self.document.openTransaction("Edit upstream operation")
+                edit = PartDesign.beginDesignOperationEdit(operation)
+                setattr(operation, parameter, value)
+                PartDesign.setDesignOperationTargets(edit, mode, targets)
+                self.assertEqual(PartDesign.finalizeDesignOperationEdit(edit), [body])
+                self.document.commitTransaction()
+                self.assertIs(body.Tip, publication)
+                self.assertIs(publication.CurrentState, scale_state)
+                self.assertIs(scale_state.PreviousState, chamfer_state)
+                self.assertIs(chamfer_state.PreviousState, box_state)
+                self.assertEqual(chamfer.InputStates, [box_state])
+                self.assertEqual(scale.InputStates, [chamfer_state])
+                self.assertAlmostEqual(box_state.Shape.Volume, 1200)
+                self.assertAlmostEqual(body.Shape.Volume, chamfer_state.Shape.Volume * 1.5**3)
+                self.assertNotAlmostEqual(body.Shape.Volume, previous_volume)
+                PartDesign.validateDesign(operation)
+                self._assert_dependency_graph_acyclic(self.document)
+
     def test_modification_can_become_a_new_body_without_damaging_target(self):
         _, target, initial = self._component_body("Target", 0)
         profile = self._rectangle_sketch("Profile", 2, 8, 2, 8)

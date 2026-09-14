@@ -293,6 +293,16 @@ class NativeDocumentStateStore:
             record.revision += 1
             return record.revision
 
+    def note_observed_structural_change(self, document_uid: str) -> bool:
+        """Attribute a change to an active call observation, without a later batch bump."""
+        uid = _required_text(document_uid, "document UID")
+        with self._lock:
+            record = self._records.setdefault(uid, _DocumentRecord())
+            if record.mutation_observer_token is None:
+                return False
+            record.mutation_observer_events += 1
+            return True
+
     def begin_native_authority(self, document_uid: str) -> dict[str, Any]:
         uid = _required_text(document_uid, "document UID")
         with self._lock:

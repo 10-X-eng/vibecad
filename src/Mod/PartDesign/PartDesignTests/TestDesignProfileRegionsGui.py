@@ -238,6 +238,66 @@ class TestDesignProfileRegionsGui(unittest.TestCase):
         )
         PartDesign.validateDesign(operation)
 
+    def test_history_edit_of_extrude_keeps_later_fillet(self):
+        sketch = self.document.addObject("Sketcher::SketchObject", "Profile")
+        corners = [App.Vector(x, y, 0) for x, y in ((0, 0), (10, 0), (10, 10), (0, 10))]
+        for index in range(4):
+            sketch.addGeometry(Part.LineSegment(corners[index], corners[(index + 1) % 4]), False)
+        self.document.recompute()
+        PartDesign.finalizeDesignDefinition(sketch)
+        self.document.recompute()
+        Gui.Selection.addSelection(sketch, "InternalFace1")
+        Gui.runCommand("PartDesign_DesignExtrude", 0)
+        self.assertTrue(self._wait_until(lambda: Gui.Control.activeDialog()))
+        pad = Gui.activeDocument().getInEdit().Object
+        length = Gui.getMainWindow().findChild(QtGui.QWidget, "lengthEdit")
+        self.assertTrue(length.setProperty("rawValue", 10.0))
+        self._close_task(QtGui.QDialogButtonBox.Ok)
+        body = next(obj for obj in self.document.Objects if obj.TypeId == "PartDesign::Body")
+        publication = body.Tip
+        pad_state = publication.CurrentState
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(body, "Edge1")
+        self.assertTrue(
+            self._wait_until(lambda: Gui.isCommandActive("PartDesign_Fillet")),
+            f"Fillet unavailable: Body={body.Name}, volume={body.Shape.Volume}, "
+            f"state={body.State}, selection={Gui.Selection.getSelectionEx()}",
+        )
+        Gui.runCommand("PartDesign_Fillet", 0)
+        self.assertTrue(self._wait_until(lambda: Gui.Control.activeDialog()))
+        fillet = Gui.activeDocument().getInEdit().Object
+        self._close_task(QtGui.QDialogButtonBox.Ok)
+        fillet_state = publication.CurrentState
+        original_volume = body.Shape.Volume
+
+        Gui.Selection.clearSelection()
+        self._begin_edit(pad)
+        length = Gui.getMainWindow().findChild(QtGui.QWidget, "lengthEdit")
+        self.assertTrue(length.setProperty("rawValue", 5.0))
+        self._close_task(QtGui.QDialogButtonBox.Ok)
+        self.assertTrue(self._wait_until(lambda: body.Shape.Volume < original_volume))
+        self.assertEqual(pad.Length.Value, 5)
+        self.assertIs(body.Tip, publication)
+        self.assertIs(publication.CurrentState, fillet_state)
+        self.assertIs(fillet_state.PreviousState, pad_state)
+        self.assertEqual(fillet.InputStates, [pad_state])
+        self.assertTrue(fillet.isValid(), fillet.getStatusString())
+        self.assertGreater(body.Shape.Volume, 0)
+        PartDesign.validateDesign(pad)
+        PartDesign.validateDesign(fillet)
+
+        # Cancelling another upstream edit must retain the accepted result too.
+        accepted_volume = body.Shape.Volume
+        self._begin_edit(pad)
+        length = Gui.getMainWindow().findChild(QtGui.QWidget, "lengthEdit")
+        self.assertTrue(length.setProperty("rawValue", 7.0))
+        self._close_task(QtGui.QDialogButtonBox.Cancel)
+        self.assertTrue(self._wait_until(lambda: pad.Length.Value == 5))
+        self.assertAlmostEqual(body.Shape.Volume, accepted_volume)
+        self.assertIs(publication.CurrentState, fillet_state)
+        PartDesign.validateDesign(fillet)
+
     def test_final_result_checkbox_renders_unpublished_design_output(self):
         from pivy import coin
 
