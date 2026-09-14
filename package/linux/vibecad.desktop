@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=VibeCAD
+GenericName=AI-native CAD
+Comment=Design 3D parts with VibeCAD
+Exec=vibecad %F
+Icon=vibecad
+Terminal=false
+Categories=Graphics;Engineering;Science;
+MimeType=application/x-extension-fcstd;application/x-extension-fcstd1;model/obj;image/vnd.dwg;image/vnd.dxf;model/vnd.collada+xml;application/iges;model/iges;model/step;model/step+zip;model/stl;application/vnd.shp;model/vrml;
+StartupNotify=true
+StartupWMClass=VibeCAD

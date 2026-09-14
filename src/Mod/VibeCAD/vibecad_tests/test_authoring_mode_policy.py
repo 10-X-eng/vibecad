@@ -97,6 +97,8 @@ def test_native_changes_block_silent_vibescript_return() -> None:
     assert state.selector_enabled is False
     assert state.native_enabled is True
     assert state.vibescript_enabled is False
+    assert "overwrite" in state.vibescript_reason
+    assert "epoch" not in state.vibescript_reason
     with pytest.raises(RuntimeError, match="not represented"):
         validate_human_mode_request(state, "vibescript")
 
