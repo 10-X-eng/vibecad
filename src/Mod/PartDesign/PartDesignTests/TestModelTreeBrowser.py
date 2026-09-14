@@ -2807,6 +2807,48 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertTrue(self.vibe_body.Visibility)
         self.assertTrue(self.vibe_result.Visibility)
 
+    def test_hidden_source_and_mixed_assembly_occurrences_survive_save_reopen(self):
+        assembly = self.document.addObject("App::Part", "VisibilityAssembly")
+        shown = assembly.newObject("App::Link", "ShownOccurrence")
+        hidden = assembly.newObject("App::Link", "HiddenOccurrence")
+        for occurrence in (shown, hidden):
+            occurrence.LinkedObject = self.vibe_body
+            occurrence.LinkTransform = True
+        self.document.recompute()
+        self.vibe_component.Visibility = False
+        self.vibe_body.Visibility = False
+        self.vibe_sketch.Visibility = False
+        assembly.Visibility = True
+        shown.Visibility = True
+        hidden.Visibility = False
+
+        def visible_state():
+            return tuple(bool(self.document.getObject(name).Visibility) for name in (
+                "VisibilityAssembly", "ShownOccurrence", "HiddenOccurrence",
+                "VibeProgram", "VibeCandidateBody", "VibeResult", "VibeBladeProfile"))
+
+        expected = (True, True, False, False, False, False, False)
+        self.assertIsNotNone(_wait_until(lambda: visible_state() == expected))
+        self.assertIsNotNone(_wait_until(lambda: _primitive_counts(shown)[0] > 0))
+        with tempfile.TemporaryDirectory(prefix="vibecad_assembly_visibility_") as directory:
+            path = os.path.join(directory, "assembly.FCStd")
+            self.document.saveAs(path)
+            App.closeDocument(self.document.Name)
+            self.document = App.openDocument(path)
+            from VibeCADGui import _pending_document_render_refreshes
+            self.assertIsNotNone(_wait_until(lambda: (
+                not self.document.Restoring
+                and not self.document.Recomputing
+                and not self.document.RecomputePending
+                and not self.document.PresentationUpdateActive
+                and str(self.document.Uid) not in _pending_document_render_refreshes)))
+            self.assertEqual(visible_state(), expected)
+            shown = self.document.getObject("ShownOccurrence")
+            hidden = self.document.getObject("HiddenOccurrence")
+            self.assertIsNotNone(_wait_until(lambda: (
+                _primitive_counts(shown)[0] > 0 and _is_in_active_scene(shown))))
+            self.assertFalse(hidden.Visibility)
+
     def test_component_and_owned_body_visibility_stay_together(self):
         component = self.document.addObject(
             "PartDesign::Component",
