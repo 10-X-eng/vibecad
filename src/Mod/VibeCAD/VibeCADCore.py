@@ -874,6 +874,7 @@ class VibeCADService:
             state["depth"] = int(state["depth"]) - 1
             outermost = int(state["depth"]) == 0
             structural = bool(state.get("structural"))
+            observed_structural = bool(state.get("observed_structural"))
             invalidate = bool(state.get("invalidate"))
             committed = bool(state.get("commit", True))
             if outermost:
@@ -887,7 +888,7 @@ class VibeCADService:
                     revision = self._native_document_states.note_structural_change(uid)
                 if invalidate:
                     self._invalidate_native_read_contexts(uid)
-                if structural:
+                if structural or observed_structural:
                     self._sync_native_authority_metadata_if_active(uid)
         finally:
             if outermost:
@@ -935,7 +936,11 @@ class VibeCADService:
             state = changes.get(uid)
             if state is None or int(state.get("depth") or 0) < 1:
                 return False, None
-            state["structural"] = bool(state.get("structural")) or structural
+            # The call must own its changes before returning its receipt. The
+            # GUI lease can close later, after the next call captured a revision.
+            observed = structural and self._native_document_states.note_observed_structural_change(uid)
+            state["structural"] = bool(state.get("structural")) or (structural and not observed)
+            state["observed_structural"] = bool(state.get("observed_structural")) or observed
             state["invalidate"] = bool(state.get("invalidate")) or invalidate
         return True, self._native_document_states.current_revision(uid)
 
