@@ -3371,46 +3371,68 @@ class TestModelTreeBrowser(unittest.TestCase):
         """Feature preview state cannot consume independent browser objects."""
 
         Gui.activateWorkbench("PartDesignWorkbench")
-        Gui.activeView().setActiveObject("pdbody", self.feature_body)
-        datum = self.feature_body.newObject(
+        body = self.document.addObject("PartDesign::Body", "ChamferTaskBody")
+        body.Label = "Chamfer Task Body"
+        self.component.addObject(body)
+        feature = body.newObject("PartDesign::Feature", "ChamferTaskFeature")
+        feature.Label = "Chamfer Task Feature"
+        feature.Shape = Part.makeBox(3, 4, 5)
+        body.Tip = feature
+        profile = self.document.addObject(
+            "Sketcher::SketchObject",
+            "IndependentTaskSketch",
+        )
+        profile.Label = "Independent Task Sketch"
+        profile.addGeometry(
+            Part.LineSegment(App.Vector(0, 0, 0), App.Vector(3, 0, 0)),
+            False,
+        )
+        datum = self.document.addObject(
             "PartDesign::Plane",
             "IndependentTaskPlane",
         )
         datum.Label = "Independent Task Plane"
-        self.feature_body.Tip = self.feature
-        self.feature_body.Visibility = True
-        self.profile_beta.Visibility = True
+        self.assertNotIn(profile, body.Group)
+        self.assertNotIn(datum, body.Group)
+        Gui.activeView().setActiveObject("pdbody", body)
+        body.Visibility = True
+        profile.Visibility = True
         datum.Visibility = True
         self.document.recompute()
 
         independent_visibility = (
-            self.profile_beta.Visibility,
+            profile.Visibility,
             datum.Visibility,
         )
         self.assertEqual(independent_visibility, (True, True))
-        original_tip = self.feature_body.Tip
+        self.assertEqual(tuple(body.Group), (feature,))
+        original_tip = body.Tip
 
         def open_chamfer_task():
             Gui.Selection.clearSelection()
             Gui.Selection.addSelection(
                 self.document.Name,
-                self.feature.Name,
+                feature.Name,
                 "Edge1",
             )
             Gui.runCommand("PartDesign_Chamfer", 0)
             self.assertTrue(Gui.Control.activeDialog())
-            operation = self.document.ActiveObject
-            self.assertEqual(operation.TypeId, "PartDesign::DesignChamfer")
-            self.assertNotIn(operation, self.feature_body.Group)
+            operations = [
+                obj for obj in self.document.Objects
+                if obj.TypeId == "PartDesign::DesignChamfer"
+            ]
+            self.assertEqual(len(operations), 1)
+            operation = operations[0]
+            self.assertNotIn(operation, body.Group)
 
         open_chamfer_task()
         Gui.Control.activeTaskDialog().reject()
         self.assertIsNotNone(
             _wait_until(lambda: not Gui.Control.activeDialog())
         )
-        self.assertIs(self.feature_body.Tip, original_tip)
+        self.assertIs(body.Tip, original_tip)
         self.assertEqual(
-            (self.profile_beta.Visibility, datum.Visibility),
+            (profile.Visibility, datum.Visibility),
             independent_visibility,
         )
         self.assertFalse(self.document.HasPendingTransaction)
@@ -3420,7 +3442,7 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertIsNotNone(
             _wait_until(lambda: not Gui.Control.activeDialog())
         )
-        publication = self.feature_body.Tip
+        publication = body.Tip
         self.assertIsNotNone(publication)
         self.assertIsNot(publication, original_tip)
         self.assertEqual(
@@ -3437,41 +3459,42 @@ class TestModelTreeBrowser(unittest.TestCase):
             accepted_operation.TypeId,
             "PartDesign::DesignChamfer",
         )
-        self.assertNotIn(accepted_operation, self.feature_body.Group)
+        self.assertNotIn(accepted_operation, body.Group)
         self.assertEqual(
-            (self.profile_beta.Visibility, datum.Visibility),
+            (profile.Visibility, datum.Visibility),
             independent_visibility,
         )
-        self.assertTrue(self.feature_body.Visibility)
+        self.assertTrue(body.Visibility)
         self.assertTrue(publication.Visibility)
         self.assertFalse(self.document.HasPendingTransaction)
+        self.assertIsNotNone(_wait_until(self.document.isClosable))
 
     def test_chamfer_requires_selection_and_cancel_is_safe(self):
         Gui.activateWorkbench("PartDesignWorkbench")
-        Gui.activeView().setActiveObject("pdbody", self.feature_body)
+        body = self.document.addObject("PartDesign::Body", "ChamferCancelBody")
+        self.component.addObject(body)
+        feature = body.newObject("PartDesign::Feature", "ChamferCancelFeature")
+        feature.Shape = Part.makeBox(3, 4, 5)
+        body.Tip = feature
+        Gui.activeView().setActiveObject("pdbody", body)
         Gui.Selection.clearSelection()
 
-        original_tip = self.feature_body.Tip
-        original_group = tuple(self.feature_body.Group)
+        original_tip = body.Tip
+        original_group = tuple(body.Group)
+        self.assertEqual(original_group, (feature,))
         original_names = tuple(obj.Name for obj in self.document.Objects)
+        original_visibility = (body.Visibility, feature.Visibility)
 
-        # No selection is rejected before a transaction or temporary feature
-        # exists. Dismiss the synchronous native warning in the test event loop.
-        def dismiss_warning():
-            for widget in QtGui.QApplication.topLevelWidgets():
-                if isinstance(widget, QtGui.QMessageBox) and widget.isVisible():
-                    widget.accept()
-
-        warning_timer = QtCore.QTimer()
-        warning_timer.timeout.connect(dismiss_warning)
-        warning_timer.start(10)
-        try:
-            Gui.runCommand("PartDesign_Chamfer", 0)
-        finally:
-            warning_timer.stop()
-        self.assertFalse(Gui.Control.activeDialog())
-        self.assertEqual(self.feature_body.Tip, original_tip)
-        self.assertEqual(tuple(self.feature_body.Group), original_group)
+        # With a valid active Body, starting without a selection opens the
+        # task so its edge picker can receive the selection.
+        Gui.runCommand("PartDesign_Chamfer", 0)
+        self.assertTrue(Gui.Control.activeDialog())
+        Gui.Control.activeTaskDialog().reject()
+        self.assertIsNotNone(
+            _wait_until(lambda: not Gui.Control.activeDialog())
+        )
+        self.assertEqual(body.Tip, original_tip)
+        self.assertEqual(tuple(body.Group), original_group)
         self.assertEqual(
             tuple(obj.Name for obj in self.document.Objects),
             original_names,
@@ -3484,15 +3507,18 @@ class TestModelTreeBrowser(unittest.TestCase):
             Gui.Selection.clearSelection()
             Gui.Selection.addSelection(
                 self.document.Name,
-                self.feature.Name,
+                feature.Name,
                 "Edge1",
             )
             Gui.runCommand("PartDesign_Chamfer", 0)
             self.assertTrue(Gui.Control.activeDialog())
-            temporary = self.document.ActiveObject
-            self.assertIsNotNone(temporary)
-            self.assertEqual(temporary.TypeId, "PartDesign::DesignChamfer")
-            self.assertNotIn(temporary, self.feature_body.Group)
+            operations = [
+                obj for obj in self.document.Objects
+                if obj.TypeId == "PartDesign::DesignChamfer"
+            ]
+            self.assertEqual(len(operations), 1)
+            temporary = operations[0]
+            self.assertNotIn(temporary, body.Group)
             self.assertFalse(
                 _snapshot_has_label(self._snapshot(), temporary.Label),
                 self._snapshot(),
@@ -3504,47 +3530,51 @@ class TestModelTreeBrowser(unittest.TestCase):
             self.assertIsNotNone(
                 _wait_until(lambda: not Gui.Control.activeDialog())
             )
-            self.assertEqual(self.feature_body.Tip, original_tip)
-            self.assertEqual(tuple(self.feature_body.Group), original_group)
+            self.assertEqual(body.Tip, original_tip)
+            self.assertEqual(tuple(body.Group), original_group)
             self.assertEqual(
                 tuple(obj.Name for obj in self.document.Objects),
                 original_names,
             )
 
         # The transaction abort must leave the native visibility contract
-        # usable; this was the exact path that previously crashed TreeWidget.
-        self.feature_body.Visibility = False
+        # usable on the Body that the task edited, not an unrelated fixture.
+        self.assertEqual((body.Visibility, feature.Visibility), original_visibility)
+        self.assertFalse(self.document.HasPendingTransaction)
+        body.Visibility = False
         self.profile_beta.Visibility = True
         self.assertIsNotNone(
             _wait_until(
                 lambda: (
-                    not self.feature_body.Visibility
-                    and not self.feature.Visibility
+                    not body.Visibility
+                    and not feature.Visibility
                     and self.profile_beta.Visibility
-                    and _primitive_counts(self.feature)[0] == 0
+                    and _primitive_counts(feature)[0] == 0
                     and _primitive_counts(self.profile_beta)[1] > 0
                     and _is_in_active_scene(self.profile_beta)
                 )
             ),
             (
-                self.feature_body.Visibility,
-                self.feature.Visibility,
+                body.Visibility,
+                feature.Visibility,
                 self.profile_beta.Visibility,
-                _primitive_counts(self.feature_body),
+                _primitive_counts(body),
                 _primitive_counts(self.profile_beta),
                 _is_in_active_scene(self.profile_beta),
             ),
         )
-        self.feature_body.Visibility = True
+        body.Visibility = True
         self.assertIsNotNone(
             _wait_until(
                 lambda: (
-                    self.feature.Visibility
+                    feature.Visibility
                     and self.profile_beta.Visibility
-                    and _primitive_counts(self.feature_body)[0] > 0
+                    and _primitive_counts(body)[0] > 0
+                    and _is_in_active_scene(feature)
                 )
             )
         )
+        self.assertIsNotNone(_wait_until(self.document.isClosable))
 
 
 @unittest.skipIf(Mesh is None, "Requires Mesh")
