@@ -14208,6 +14208,16 @@ def _copy_native_body_presentation(source: Any, body: Any) -> None:
 
 
 def _partdesign_presentation_identity(obj: Any, role: str) -> tuple[str, str] | None:
+    # App::Link forwards attribute lookups (and findObjects' Property filter)
+    # to its source. Presentation identity must belong to this occurrence,
+    # not to the private implementation geometry it happens to reference.
+    if not {
+        scripted_publication.PROP_ROLE,
+        scripted_publication.PROP_ENGINE,
+        scripted_publication.PROP_MODEL_ID,
+        scripted_publication.PROP_OUTPUT_KEY,
+    }.issubset(_properties(obj)):
+        return None
     if (
         str(getattr(obj, scripted_publication.PROP_ROLE, "") or "") != role
         or str(getattr(obj, scripted_publication.PROP_ENGINE, "") or "")
