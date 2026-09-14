@@ -6236,6 +6236,13 @@ void DocumentItem::applyModelBrowserState()
         }
         else if (item->type() == TreeWidget::ObjectType) {
             auto* objectItem = static_cast<DocumentObjectItem*>(item);
+            // Nested objects may have no legacy root icon to copy. They also
+            // need not be in this incremental pass's changed-object list.
+            // Initialize their presentation now that the item is attached.
+            if (objectItem->icon(0).isNull()) {
+                objectItem->testStatus(true);
+                if (!modelBrowserStatePending) { return; }
+            }
             const auto id = objectItem->object()->getObject()->getID();
             if (const auto found = modelBrowserObjectOverrides.find(id);
                 found != modelBrowserObjectOverrides.end()) {

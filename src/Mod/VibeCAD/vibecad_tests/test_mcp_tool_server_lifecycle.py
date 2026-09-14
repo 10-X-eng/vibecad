@@ -158,6 +158,7 @@ def test_gui_shutdown_uses_nonblocking_cleanup(monkeypatch):
     monkeypatch.setitem(sys.modules, "VibeCADCodex", SimpleNamespace(
         shutdown_managed_codex_sessions=lambda: None))
     namespace = dict(threading=threading,
+        _engineering_brief_dialog=None,
         _application_shutting_down=threading.Event(),
         _persist_session_recovery_before_shutdown=lambda: None,
         _assistant_run_controller=SimpleNamespace(request_cancel=lambda: None),

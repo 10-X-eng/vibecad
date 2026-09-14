@@ -77,7 +77,9 @@ def analyze_solver_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name=ANALYZE_SOLVER_CAPABILITY_NAME,
         description=(
-            "Add one selected FEM solver to a study."
+            "Add a FEM solver to the named study, even during setup. "
+            "Resolve that study's readiness blockers; analyze.run_solver "
+            "becomes available when it is ready to solve."
         ),
         primary_classification="mutation",
         variants=(

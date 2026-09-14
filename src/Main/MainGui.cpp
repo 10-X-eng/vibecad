@@ -250,7 +250,7 @@ int main(int argc, char** argv)
     App::Application::Config()["SplashInfoColor"] = "#74c0fc";
     App::Application::Config()["SplashInfoExeName"] = "";
     App::Application::Config()["SplashInfoPosition"] = "250,280";
-    App::Application::Config()["DesktopFileName"] = "org.freecad.FreeCAD";
+    App::Application::Config()["DesktopFileName"] = "vibecad";
 
     try {
         // Init phase ===========================================================
