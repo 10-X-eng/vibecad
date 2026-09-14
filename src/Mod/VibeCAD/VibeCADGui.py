@@ -63,6 +63,11 @@ DOCK_NAME = "VibeCADAssistantPanel"
 CONTEXT_DEBUG_DOCK_NAME = "VibeCADContextDebugPanel"
 MODEL_CODE_DOCK_NAME = "VibeCADScriptedModelPanel"
 
+_AUTHORING_MODE_HELP = {
+    "native": "Native: you and the AI edit the model directly with CAD tools.",
+    "vibescript": "VibeScript: the AI writes reusable code to generate and rebuild the model.",
+}
+
 ICON_MARK = "preferences-vibecad.svg"
 ICON_OPEN_ASSISTANT = "vibecad-open-assistant.svg"
 ICON_SEND = "vibecad-send.svg"
@@ -637,13 +642,13 @@ def _refresh_authoring_mode_selector(dock: Any | None = None) -> None:
             if not mode:
                 if item is not None:
                     item.setEnabled(False)
-                    item.setToolTip("Choose Native or VibeScript to begin.")
+                    item.setToolTip("\n".join(_AUTHORING_MODE_HELP.values()))
                 if choice_required:
                     selector.setCurrentIndex(index)
                 continue
             if item is not None:
                 item.setEnabled(state.target_enabled(mode))
-                item.setToolTip(state.target_reason(mode))
+                item.setToolTip(state.target_reason(mode) or _AUTHORING_MODE_HELP[mode])
             if not choice_required and mode == state.current_mode:
                 selector.setCurrentIndex(index)
         if choice_required:
@@ -655,10 +660,10 @@ def _refresh_authoring_mode_selector(dock: Any | None = None) -> None:
         else:
             selector.setEnabled(state.selector_enabled)
         selector.setToolTip(
-            "Choose Native or VibeScript to begin."
+            "Choose how to edit this document.\n" + "\n".join(_AUTHORING_MODE_HELP.values())
             if choice_required and selector.isEnabled()
             else state.selector_reason
-            or "Choose whether VibeCAD authors through source or direct ribbon tools"
+            or "\n".join(_AUTHORING_MODE_HELP.values())
         )
         selector.setProperty(
             "VibeAuthoringMode",
@@ -674,18 +679,23 @@ def _confirm_take_manual_control() -> bool:
 
     message = QtWidgets.QMessageBox(Gui.getMainWindow())
     message.setIcon(QtWidgets.QMessageBox.Warning)
-    message.setWindowTitle("Take manual control?")
-    message.setText("Switch this document from VibeScript to Native authority?")
+    message.setWindowTitle("Switch editing mode?")
+    message.setText("Switch to direct CAD editing (Native)?")
     message.setInformativeText(
-        "VibeScript source will remain unchanged, but it will no longer regenerate "
-        "the document. Native changes are not backpropagated into source. Returning "
-        "to VibeScript requires discarding the Native epoch or creating a new source."
+        "Your current model stays in place. You and the AI can edit it with CAD tools.\n\n"
+        "Your VibeScript code is kept, but direct edits are not written back to it. "
+        "Rebuilding from that code would lose those edits.\n\n"
+        "You can switch back before making changes. After direct edits, switching "
+        "back is blocked to protect them. Save a copy first if you want to keep "
+        "both workflows."
     )
     take_control = message.addButton(
-        "Take manual control",
+        "Switch to Native",
         QtWidgets.QMessageBox.AcceptRole,
     )
     message.addButton(QtWidgets.QMessageBox.Cancel)
+    message.setDefaultButton(QtWidgets.QMessageBox.Cancel)
+    message.setEscapeButton(QtWidgets.QMessageBox.Cancel)
     message.exec()
     return message.clickedButton() is take_control
 
