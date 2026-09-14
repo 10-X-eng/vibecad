@@ -440,6 +440,7 @@ def test_document_observer_filters_presentation_before_revision(
 
     monkeypatch.setattr(gui, "get_service", lambda: Service())
     monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    monkeypatch.setattr(gui, "_schedule_native_authority_selector_refresh", lambda uid: None)
     obj = SimpleNamespace(
         Document=SimpleNamespace(Uid="document-a", Restoring=False),
     )
@@ -478,6 +479,7 @@ def test_gui_document_observer_forwards_visibility_changes(monkeypatch) -> None:
 def test_document_observer_counts_create_and_delete(monkeypatch) -> None:
     import VibeCADGui as gui
 
+    monkeypatch.setattr(gui, "_schedule_native_authority_selector_refresh", lambda uid: None)
     store = NativeDocumentStateStore()
 
     class Service:
@@ -579,6 +581,47 @@ def test_service_coalesces_atomic_document_change_bookkeeping(monkeypatch) -> No
     assert service._native_document_states.current_revision("document-a") == 1
     assert invalidations == ["document-a"]
     assert metadata_syncs == ["document-a"]
+
+
+@pytest.mark.parametrize("outcome", ["mutation", "rollback", "read", "failed_read"])
+def test_delayed_ui_batch_cannot_stale_the_next_native_call(monkeypatch, outcome):
+    from VibeCADCore import VibeCADService
+
+    service = object.__new__(VibeCADService)
+    state = service._native_document_states = NativeDocumentStateStore()
+    monkeypatch.setattr(service, "_invalidate_native_read_contexts", lambda uid: None)
+    monkeypatch.setattr(service, "_sync_native_authority_metadata_if_active", lambda uid: None)
+    uid = "observed-batch-" + outcome
+    obj = SimpleNamespace(Document=SimpleNamespace(Uid=uid))
+    state.begin_native_authority(uid)
+    ticket = state.begin_call(uid, "analyze.solver")
+    state.authorize_mutation(ticket)
+    service.begin_document_change_batch(uid)
+    if outcome in {"read", "failed_read"}:
+        state.begin_read_observation(ticket)
+    else:
+        state.begin_mutation_observation(ticket)
+    service.note_native_object_property_change(obj, "Shape")
+    service.note_native_object_created(obj)
+    if outcome == "mutation":
+        state.commit_mutation_observation(ticket)
+    elif outcome == "rollback":
+        state.cancel_mutation(ticket)
+    elif outcome == "read":
+        state.complete_read_observation(ticket)
+    else:
+        state.fail_read_observation(ticket)
+    expected = 1 if outcome in {"mutation", "failed_read"} else 0
+    revision_at_completion = state.current_revision(uid)
+    next_call = state.begin_call(uid, "analyze.run_solver")
+    service.end_document_change_batch(uid, commit=outcome != "rollback")
+    assert revision_at_completion == expected
+    assert state.current_revision(uid) == expected
+    state.authorize_mutation(next_call)
+    # A genuine later edit must still invalidate a frozen call.
+    service.note_native_object_property_change(obj, "Shape")
+    with pytest.raises(NativeRevisionConflict):
+        state.authorize_mutation(next_call)
 
 
 def test_service_document_change_batches_are_nested_and_exception_safe(

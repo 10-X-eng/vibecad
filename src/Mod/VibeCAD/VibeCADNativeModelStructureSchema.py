@@ -195,7 +195,7 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
     )
     sketch = NativeCapabilityDefinition(
         name="model.sketch",
-        description="Create a planar Sketch.",
+        description="Create a planar Sketch; then use sketch.open to edit its geometry.",
         primary_classification="mutation",
         variants=(
             _variant(
@@ -258,7 +258,10 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
     )
     open_sketch = NativeCapabilityDefinition(
         name="sketch.open",
-        description="Open a Sketch.",
+        description=(
+            "Enter Sketch edit mode; drawing, dimension and constraint tools become "
+            "available next turn. Use sketch.control to finish and return to modeling."
+        ),
         primary_classification="mutation",
         variants=(
             _variant(

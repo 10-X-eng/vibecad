@@ -20,9 +20,23 @@ install(
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/metainfo
 )
 
+# Keep native installs and portable packages on the same desktop identity.
+# Native builds retain their existing executable name and single-instance flags.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../package/linux/vibecad.desktop" VIBECAD_DESKTOP_ENTRY)
+string(REPLACE "Exec=vibecad " "Exec=FreeCAD - --single-instance "
+    VIBECAD_DESKTOP_ENTRY "${VIBECAD_DESKTOP_ENTRY}")
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/vibecad.desktop" CONTENT "${VIBECAD_DESKTOP_ENTRY}")
+# Preserve existing pinned launchers and the upstream AppStream launchable ID,
+# without adding a second application-menu entry.
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/org.freecad.FreeCAD.desktop"
+    CONTENT "${VIBECAD_DESKTOP_ENTRY}NoDisplay=true\n")
 install(
-    FILES org.freecad.FreeCAD.desktop
+    FILES "${CMAKE_BINARY_DIR}/vibecad.desktop" "${CMAKE_BINARY_DIR}/org.freecad.FreeCAD.desktop"
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications
+)
+install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Icons/vibecad.svg"
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
 )
 
 install(
