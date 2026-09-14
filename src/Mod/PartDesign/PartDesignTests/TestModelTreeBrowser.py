@@ -3483,6 +3483,7 @@ class TestModelTreeBrowser(unittest.TestCase):
         original_group = tuple(body.Group)
         self.assertEqual(original_group, (feature,))
         original_names = tuple(obj.Name for obj in self.document.Objects)
+        original_visibility = (body.Visibility, feature.Visibility)
 
         # With a valid active Body, starting without a selection opens the
         # task so its edge picker can receive the selection.
@@ -3537,36 +3538,39 @@ class TestModelTreeBrowser(unittest.TestCase):
             )
 
         # The transaction abort must leave the native visibility contract
-        # usable; this was the exact path that previously crashed TreeWidget.
-        self.feature_body.Visibility = False
+        # usable on the Body that the task edited, not an unrelated fixture.
+        self.assertEqual((body.Visibility, feature.Visibility), original_visibility)
+        self.assertFalse(self.document.HasPendingTransaction)
+        body.Visibility = False
         self.profile_beta.Visibility = True
         self.assertIsNotNone(
             _wait_until(
                 lambda: (
-                    not self.feature_body.Visibility
-                    and not self.feature.Visibility
+                    not body.Visibility
+                    and not feature.Visibility
                     and self.profile_beta.Visibility
-                    and _primitive_counts(self.feature)[0] == 0
+                    and _primitive_counts(feature)[0] == 0
                     and _primitive_counts(self.profile_beta)[1] > 0
                     and _is_in_active_scene(self.profile_beta)
                 )
             ),
             (
-                self.feature_body.Visibility,
-                self.feature.Visibility,
+                body.Visibility,
+                feature.Visibility,
                 self.profile_beta.Visibility,
-                _primitive_counts(self.feature_body),
+                _primitive_counts(body),
                 _primitive_counts(self.profile_beta),
                 _is_in_active_scene(self.profile_beta),
             ),
         )
-        self.feature_body.Visibility = True
+        body.Visibility = True
         self.assertIsNotNone(
             _wait_until(
                 lambda: (
-                    self.feature.Visibility
+                    feature.Visibility
                     and self.profile_beta.Visibility
-                    and _primitive_counts(self.feature_body)[0] > 0
+                    and _primitive_counts(body)[0] > 0
+                    and _is_in_active_scene(feature)
                 )
             )
         )
