@@ -2849,6 +2849,72 @@ class TestModelTreeBrowser(unittest.TestCase):
                 _primitive_counts(shown)[0] > 0 and _is_in_active_scene(shown))))
             self.assertFalse(hidden.Visibility)
 
+    def test_assembly_occurrences_do_not_inherit_private_source_presentation(self):
+        import VibeCADScriptedPublication as scripted_publication
+        from VibeCADVibeScriptDomainPublication import restore_partdesign_history_presentation
+
+        source = self.document.addObject("Part::Feature", "PrivateSource")
+        source.Shape = Part.makeBox(10, 10, 10)
+        scripted_publication.tag_object(
+            source,
+            role=scripted_publication.ROLE_PUBLICATION_TARGET,
+            engine="vibescript:partdesign",
+            model_id="visibility-source",
+            output_key="Box",
+        )
+        assembly = self.document.addObject("App::Part", "LinkedAssembly")
+        direct = assembly.newObject("App::Link", "DirectOccurrence")
+        direct.LinkedObject = source
+        nested = assembly.newObject("App::Link", "NestedOccurrence")
+        nested.LinkedObject = direct
+        hidden = assembly.newObject("App::Link", "HiddenOccurrence")
+        hidden.LinkedObject = source
+        self.document.recompute()
+        source.Visibility = False
+        direct.Visibility = True
+        nested.Visibility = True
+        hidden.Visibility = False
+        assembly.Visibility = True
+        for occurrence in (direct, nested, hidden):
+            self.assertNotIn(scripted_publication.PROP_ROLE, occurrence.PropertiesList)
+            self.assertEqual(
+                getattr(occurrence, scripted_publication.PROP_ROLE),
+                scripted_publication.ROLE_PUBLICATION_TARGET,
+            )
+
+        def visible_state():
+            return tuple(bool(self.document.getObject(name).Visibility) for name in (
+                "PrivateSource", "DirectOccurrence", "NestedOccurrence",
+                "HiddenOccurrence", "LinkedAssembly"))
+
+        expected = (False, True, True, False, True)
+        restored = restore_partdesign_history_presentation(self.document)
+        self.assertEqual(visible_state(), expected)
+        self.assertTrue(set(restored["changed_objects"]).isdisjoint(
+            {"DirectOccurrence", "NestedOccurrence", "HiddenOccurrence"}))
+        with tempfile.TemporaryDirectory(prefix="vibecad_link_visibility_") as directory:
+            path = os.path.join(directory, "assembly.FCStd")
+            self.document.saveAs(path)
+            self.assertIsNotNone(_wait_until(lambda: not any((
+                self.document.Recomputing, self.document.RecomputePending,
+                self.document.CooperativeMutationActive,
+                self.document.PresentationUpdateActive))))
+            App.closeDocument(self.document.Name)
+            self.document = App.openDocument(path)
+            from VibeCADGui import _pending_document_render_refreshes
+            self.assertIsNotNone(_wait_until(lambda: (
+                not self.document.Restoring
+                and not self.document.Recomputing
+                and not self.document.RecomputePending
+                and not self.document.PresentationUpdateActive
+                and str(self.document.Uid) not in _pending_document_render_refreshes)))
+            self.assertEqual(visible_state(), expected)
+            for name in ("DirectOccurrence", "NestedOccurrence"):
+                occurrence = self.document.getObject(name)
+                self.assertIsNotNone(_wait_until(lambda: (
+                    _primitive_counts(occurrence)[0] > 0
+                    and _is_in_active_scene(occurrence))))
+
     def test_component_and_owned_body_visibility_stay_together(self):
         component = self.document.addObject(
             "PartDesign::Component",
