@@ -169,6 +169,7 @@ add_subdirectory(VibeCAD)
 add_subdirectory(VibeCADAero)
 add_subdirectory(VibeCADPrint)
 add_subdirectory(McMasterInsert)
+add_subdirectory(SendCutSendPresets)
 
 #add_subdirectory(TemplatePyMod)
 
