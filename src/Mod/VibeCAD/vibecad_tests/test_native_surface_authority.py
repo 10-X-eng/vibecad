@@ -105,6 +105,56 @@ def test_only_session_assembly_can_import_the_complete_registry() -> None:
     assert violations == []
 
 
+def test_workspace_deactivation_only_leaves_the_exact_active_assembly(monkeypatch):
+    from VibeCADSurfaceAuthority import deactivate_assembly
+    from VibeCADEditState import ActiveEditState
+    import VibeCADEditState
+    import pytest
+
+    document = SimpleNamespace(HasPendingTransaction=False)
+    assembly = SimpleNamespace(TypeId="Assembly::AssemblyObject", Document=document)
+    state = {"edit": ActiveEditState(True, assembly), "assembly": assembly}
+    calls = []
+    def reset():
+        calls.append("deactivate")
+        state.update(edit=ActiveEditState(False), assembly=None)
+        return True
+    assembly.ViewObject = SimpleNamespace(doubleClicked=reset)
+    gui_document = SimpleNamespace(Document=document, resetEdit=reset,
+        activeView=lambda: SimpleNamespace(getActiveObject=lambda key: state["assembly"]))
+    monkeypatch.setattr(VibeCADEditState, "active_edit_state", lambda gui: state["edit"])
+    control = SimpleNamespace(activeDialog=lambda: False)
+    monkeypatch.setitem(sys.modules, "FreeCADGui", SimpleNamespace(Control=control))
+
+    assert deactivate_assembly(gui_document) is True
+    assert calls == ["deactivate"]
+    assert deactivate_assembly(gui_document) is False
+    for edit in (ActiveEditState(True),
+                 ActiveEditState(True, SimpleNamespace(TypeId="Sketcher::SketchObject"))):
+        state["edit"] = edit
+        assert deactivate_assembly(gui_document) is False
+    assert calls == ["deactivate"]
+
+    state.update(edit=ActiveEditState(True, assembly), assembly=assembly)
+    assembly.Document = object()
+    with pytest.raises(RuntimeError, match="document"):
+        deactivate_assembly(gui_document)
+    assembly.Document = document
+    control.activeDialog = lambda: True
+    with pytest.raises(RuntimeError, match="task"):
+        deactivate_assembly(gui_document)
+    control.activeDialog = lambda: False
+    document.HasPendingTransaction = True
+    with pytest.raises(RuntimeError, match="transaction"):
+        deactivate_assembly(gui_document)
+    document.HasPendingTransaction = False
+    assert calls == ["deactivate"]
+
+    assembly.ViewObject.doubleClicked = lambda: True
+    with pytest.raises(RuntimeError, match="deactivate"):
+        deactivate_assembly(gui_document)
+
+
 def test_only_registry_assembly_can_import_runtime_binding_modules() -> None:
     violations = []
     for path in _native_modules():

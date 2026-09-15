@@ -51,16 +51,12 @@ def provider_authorized_native_surface(
     *,
     registry: NativeCapabilityRegistry | None = None,
 ) -> NativeProviderSurface:
-    """Keep ribbon choice human-owned, then apply exact document scope."""
+    """Allow workspace navigation while retaining exact document tool scope."""
 
     if not isinstance(surface, NativeProviderSurface):
         raise TypeError("surface must be a NativeProviderSurface")
     if not surface.available:
         return surface
-    surface = project_native_provider_surface(
-        surface,
-        tuple(name for name in surface.tool_names if name != "workspace.switch"),
-    )
     if active_state is not None and surface.snapshot.surface_id == "analyze":
         from VibeCADNativeAnalyzeProviderScope import scope_analyze_provider_surface
 
@@ -121,15 +117,28 @@ def provider_visible_native_state(state: dict[str, Any]) -> dict[str, Any]:
     if state.get("surface_id") == "analyze":
         from VibeCADNativeAnalyzeProviderState import compact_analyze_provider_state
 
-        return compact_analyze_provider_state(state)
+        return _with_workspace_navigation(compact_analyze_provider_state(state))
     if state.get("surface_id") == "drawing":
         from VibeCADNativeDrawingProviderState import compact_drawing_provider_state
 
-        return compact_drawing_provider_state(state)
+        return _with_workspace_navigation(compact_drawing_provider_state(state))
     if state.get("surface_id") == "manufacture":
         from VibeCADNativeManufactureProviderState import (
             compact_manufacture_provider_state,
         )
 
-        return compact_manufacture_provider_state(state)
-    return state
+        return _with_workspace_navigation(compact_manufacture_provider_state(state))
+    return _with_workspace_navigation(state)
+
+
+def _with_workspace_navigation(state: dict[str, Any]) -> dict[str, Any]:
+    from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_SURFACES
+
+    if state.get("surface_id") not in NATIVE_WORKSPACE_SURFACES:
+        return state
+    return {**state, "workspace_navigation": {
+        "tool": "workspace.switch",
+        "message": ("If the current ribbon lacks tools for the requested work, switch ribbons. "
+                    "An active assembly is deactivated automatically. End this turn after switching; "
+                    "VibeCAD continues automatically next turn with the destination's tools."),
+    }}

@@ -15,12 +15,14 @@ NATIVE_SURFACE_BY_WORKSPACE = {
     "modeling": "model",
     "sketching": "sketch.setup",
     "assembly": "assemble",
+    "sheet_metal": "sheet_metal",
     "mesh": "mesh",
     "analysis": "analyze",
     "manufacturing": "manufacture",
     "drawing": "drawing",
     "parameters": "parameters",
     "aerodynamics": "aero",
+    "printing": "print",
 }
 NATIVE_WORKSPACES = tuple(NATIVE_SURFACE_BY_WORKSPACE)
 NATIVE_WORKSPACE_SURFACES = tuple(NATIVE_SURFACE_BY_WORKSPACE.values())
@@ -34,12 +36,13 @@ NATIVE_WORKSPACE_BY_SURFACE["sketch.edit"] = "sketching"
 def workspace_capability_definition() -> NativeCapabilityDefinition:
     return NativeCapabilityDefinition(
         name="workspace.switch",
-        description="Change CAD work.",
+        description="Switch tools.",
         primary_classification="view",
         variants=(
             NativeCapabilityVariant(
                 operation="switch",
-                description="Switch to the requested CAD work for the next turn.",
+                description=("Switch ribbons; deactivate the active assembly. Tools become available after the switch, "
+                             "on your next turn. End this turn; VibeCAD continues automatically."),
                 action_ids=frozenset({"VibeCAD_NativeSwitchWorkspace"}),
                 surface_ids=frozenset(NATIVE_WORKSPACE_SURFACES),
                 exact_target_type=None,

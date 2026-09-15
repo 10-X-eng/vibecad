@@ -1567,6 +1567,14 @@ void Document::onChangedProperty(const DocumentObject* Who, const Property* What
             }
         }
     }
+    // Only a provenance observer pays for the extra owner-thread notification.
+    // Capture on the authoring thread, before callbacks can make nested edits.
+    auto& originSignal = GetApplication().signalChangedObjectWithOrigin;
+    if (!originSignal.empty()) {
+        const auto origin = RecomputeOriginScope::current();
+        originSignal(*Who, *What,
+                     origin && origin->documentName == getName() ? origin->token : std::string {});
+    }
     signalChangedObject(*Who, *What);
 }
 

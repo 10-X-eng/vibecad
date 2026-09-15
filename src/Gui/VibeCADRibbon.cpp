@@ -77,12 +77,13 @@ struct DomainDefinition
     const char* surface;
 };
 
-constexpr std::array<DomainDefinition, 9> domains = {{
+constexpr std::array<DomainDefinition, 10> domains = {{
     {"Model", "PartDesignWorkbench", "model"},
     {"Assemble", "AssemblyWorkbench", "assemble"},
     {"Mesh", "MeshWorkbench", "mesh"},
     {"Analyze", "FemWorkbench", "analyze"},
     {"Manufacture", "CAMWorkbench", "manufacture"},
+    {"Sheet Metal", "SMWorkbench", "sheet_metal"},
     {"Drawing", "TechDrawWorkbench", "drawing"},
     {"Parameters", "SpreadsheetWorkbench", "parameters"},
     {"Aero", "VibeCADAeroWorkbench", "aero"},
@@ -832,6 +833,20 @@ const std::vector<GroupDefinition>& reverseEngineeringGroups()
     return groups;
 }
 
+const std::vector<GroupDefinition>& sheetMetalGroups()
+{
+    static const std::vector<GroupDefinition> groups = {
+        {"Create", {"SheetMetal_CreateBaseShape", "SheetMetal_CreateFromSketch", "SheetMetal_CreateFromSolid",
+                    "SheetMetal_CreateEditable"}},
+        {"Bend/Form", {"SheetMetal_CreateFlange", "SheetMetal_CreateFold", "SheetMetal_EditParameters"}},
+        {"Cut/Relief", {"SheetMetal_EditCuts"}},
+        {"Materials", {"SheetMetal_EditMaterial"}},
+        {"Folded/Flat", {"SheetMetal_ViewFolded", "SheetMetal_ViewFlat"}},
+        {"RMFG", {"SheetMetal_RMFGConnection", "SheetMetal_RMFGManufacture"}},
+    };
+    return groups;
+}
+
 const std::vector<GroupDefinition>& spreadsheetGroups()
 {
     static const std::vector<GroupDefinition> groups = {
@@ -1268,6 +1283,9 @@ struct Gui::VibeCADRibbon::Private
         }
         if (activeWorkbench == "SpreadsheetWorkbench") {
             return spreadsheetGroups();
+        }
+        if (activeWorkbench == "SMWorkbench") {
+            return sheetMetalGroups();
         }
 
         std::vector<GroupDefinition> groups = currentWorkbenchGroups();

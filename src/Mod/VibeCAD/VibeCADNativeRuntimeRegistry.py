@@ -172,6 +172,18 @@ from VibeCADNativeModelHoleBindings import model_hole_runtime_bindings
 from VibeCADNativeModelHoleRuntime import NativeModelHoleRuntime
 from VibeCADNativeModelHistoryBindings import model_history_runtime_bindings
 from VibeCADNativeModelHistoryRuntime import NativeModelHistoryRuntime
+from VibeCADNativeSheetMetalInspectBindings import sheetmetal_inspect_runtime_bindings
+from VibeCADNativeSheetMetalInspectRuntime import NativeSheetMetalInspectRuntime
+from VibeCADNativeSheetMetalViewBindings import sheetmetal_view_runtime_bindings
+from VibeCADNativeSheetMetalViewRuntime import NativeSheetMetalViewRuntime
+from VibeCADNativeSheetMetalEditBindings import sheetmetal_edit_runtime_bindings
+from VibeCADNativeSheetMetalEditRuntime import NativeSheetMetalEditRuntime
+from VibeCADNativeSheetMetalCreateBindings import sheetmetal_create_runtime_bindings
+from VibeCADNativeSheetMetalCreateRuntime import NativeSheetMetalCreateRuntime
+from VibeCADNativeSheetMetalConnectionBindings import sheetmetal_connection_runtime_bindings
+from VibeCADNativeSheetMetalConnectionRuntime import NativeSheetMetalConnectionRuntime
+from VibeCADNativeSheetMetalManufacturingBindings import sheetmetal_manufacturing_runtime_bindings
+from VibeCADNativeSheetMetalManufacturingRuntime import NativeSheetMetalManufacturingRuntime
 from VibeCADNativeModelJoinBindings import model_join_runtime_bindings
 from VibeCADNativeModelJoinRuntime import NativeModelJoinRuntime
 from VibeCADNativeModelPartBindings import model_part_runtime_bindings
@@ -549,6 +561,12 @@ def build_native_runtime_bindings(
     model_dressup = NativeModelDressupRuntime(context)
     model_hole = NativeModelHoleRuntime(context)
     model_history = NativeModelHistoryRuntime(context)
+    sheetmetal_inspect = NativeSheetMetalInspectRuntime(context)
+    sheetmetal_view = NativeSheetMetalViewRuntime(context)
+    sheetmetal_edit = NativeSheetMetalEditRuntime(context)
+    sheetmetal_create = NativeSheetMetalCreateRuntime(context)
+    sheetmetal_connection = NativeSheetMetalConnectionRuntime(context)
+    sheetmetal_manufacturing = NativeSheetMetalManufacturingRuntime(context)
     model_join = NativeModelJoinRuntime(context)
     model_part = NativeModelPartRuntime(context)
     model_surface = NativeModelSurfaceRuntime(context)
@@ -710,6 +728,12 @@ def build_native_runtime_bindings(
         **model_dressup_runtime_bindings(model_dressup),
         **model_hole_runtime_bindings(model_hole),
         **model_history_runtime_bindings(model_history),
+        **sheetmetal_inspect_runtime_bindings(sheetmetal_inspect),
+        **sheetmetal_view_runtime_bindings(sheetmetal_view),
+        **sheetmetal_edit_runtime_bindings(sheetmetal_edit),
+        **sheetmetal_create_runtime_bindings(sheetmetal_create),
+        **sheetmetal_connection_runtime_bindings(sheetmetal_connection),
+        **sheetmetal_manufacturing_runtime_bindings(sheetmetal_manufacturing),
         **model_join_runtime_bindings(model_join),
         **model_part_runtime_bindings(model_part),
         **model_surface_runtime_bindings(model_surface),

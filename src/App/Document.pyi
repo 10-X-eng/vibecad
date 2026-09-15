@@ -460,6 +460,30 @@ class Document(PropertyContainer):
         """
         ...
 
+    def recomputeAsyncTracked(
+        self,
+        objs: Sequence[DocumentObject] = None,
+        recursive: bool = False,
+        /,
+    ) -> dict:
+        """Queue worker-safe recompute with an opaque origin ID.
+
+        Return origin and request_count. An optional document observer's
+        slotChangedObjectWithOrigin(object, property_name, origin) receives the
+        ID for property changes made by this request's geometry workers. GUI
+        edits and ordinary untracked recomputes carry an empty origin. The ID
+        describes event provenance, not completion, success, or Undo permission.
+        """
+        ...
+
+    def getCurrentRecomputeOrigin(self) -> str:
+        """Read this thread's executing recompute origin for this document.
+
+        GUI callbacks should use slotChangedObjectWithOrigin's explicit origin
+        argument. The worker's origin is never installed as GUI thread state.
+        """
+        ...
+
     def getObjectStructureGeneration(self) -> int:
         """Return the structural invalidation token for owner-thread caches.
 

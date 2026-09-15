@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
+import time
 import traceback
 
 import FreeCAD as App
@@ -47,6 +48,16 @@ def _process_events(rounds: int = 20) -> None:
     for _index in range(rounds):
         Gui.updateGui()
         QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 25)
+
+
+def _close_document(document) -> None:
+    for _index in range(10000):
+        _process_events(1)
+        if document.isClosable():
+            App.closeDocument(document.Name)
+            return
+        time.sleep(0.001)
+    raise AssertionError("Private BOM document did not release its background ownership")
 
 
 def _select_assemble_ribbon(main_window) -> None:
@@ -331,6 +342,13 @@ def _run() -> None:
         assert not first_bom.onlyParts and first_bom.autoGenerate
         _timeline_accepts(document, first_bom)
         first_table = read_bom_table(first_bom)
+        from VibeCADNativeParametersSnapshot import build_parameters_snapshot
+        parameter_context = build_parameters_snapshot(document)
+        bom_context = next(item for item in parameter_context["spreadsheets"]
+                           if item["object_name"] == first_bom.Name)
+        assert bom_context["type_id"] == "Assembly::BomObject"
+        assert bom_context["parameters_editable"] is False
+        assert read_bom_table(first_bom) == first_table
         assert first_table["headers"] == first_arguments["columns"]
         assert first_table["row_count"] == 3
         rows = first_table["row_preview"]
@@ -423,7 +441,7 @@ def _run() -> None:
         Gui.activeDocument().resetEdit()
         _process_events(16)
         document.save()
-        App.closeDocument(document.Name)
+        _close_document(document)
         document = App.openDocument(str(path))
         App.setActiveDocument(document.Name)
         _process_events(24)
@@ -470,7 +488,7 @@ def _run() -> None:
                 Gui.activeDocument().resetEdit()
             except (AttributeError, RuntimeError):
                 pass
-            App.closeDocument(document.Name)
+            _close_document(document)
         if temporary is not None:
             temporary.cleanup()
         application.exit(exit_code)

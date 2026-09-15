@@ -4,7 +4,7 @@ The VibeCAD assistant has two explicit, human-selected authoring modes:
 
 - **VibeScript** owns source-backed programs and publishes validated outputs.
 - **Native** edits ordinary CAD state through the exact complete tool families
-  on the current human-selected VibeCAD ribbon.
+  on the current VibeCAD ribbon.
 
 Neither the built-in provider nor an external MCP client can switch the active
 workbench, ribbon, or authoring mode. A human change invalidates the frozen

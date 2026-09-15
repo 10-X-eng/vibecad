@@ -2,5 +2,6 @@ anthropic==0.116.0
 keyring==25.7.0
 jsonschema==4.25.1
 mcp==2.0.0
+networkx==3.6.1
 openai==3.5.0
 tuf==7.0.0

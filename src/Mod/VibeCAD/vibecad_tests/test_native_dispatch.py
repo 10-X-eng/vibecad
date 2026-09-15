@@ -15,11 +15,164 @@ from VibeCADNativeCapabilityRegistry import (
     NativeProviderSurface,
     provider_visible_native_schema,
 )
-from VibeCADNativeDispatch import NativeTurnDispatcher
+from VibeCADNativeDispatch import NativeDispatchError, NativeTurnDispatcher
 from VibeCADNativeState import NativeDocumentStateStore
 from VibeCADNativeSurface import NativeSurfaceSnapshot
 from VibeCADNativeTargets import NativeTargetError
 from VibeCADNativeTurn import NativeTurnSnapshot
+
+
+def test_missing_fold_fields_are_reported_together_before_execution():
+    from jsonschema import Draft202012Validator
+    from VibeCADNativeSheetMetalCreateSchema import sheetmetal_create_capability_definition
+
+    fold = next(variant for variant in sheetmetal_create_capability_definition().variants
+                if variant.operation == "fold_from_sketch")
+    definition = NativeCapabilityDefinition(
+        name="test.execute", description="Validate the real fold input contract.",
+        primary_classification="read", variants=(NativeCapabilityVariant(
+            operation="fold_from_sketch", description="Validate fold parameters.",
+            action_ids=frozenset({"VibeCAD_Test"}), surface_ids=frozenset({"model"}),
+            exact_target_type=None, transaction_behavior="none", background_required=False,
+            parameters=fold.parameters,
+        ),),
+    )
+    dispatcher, _state, _debug = _dispatcher(
+        lambda _call: pytest.fail("Invalid arguments must not execute"), definition=definition)
+    result = dispatcher.call("test.execute", json.dumps({
+        "operation": "fold_from_sketch", "object_name": "SheetProfileCut",
+        "sketch_name": "BendLine", "bend_angle": 90, "bend_radius": 2, "position": "middle",
+    }), "missing-fold-fields")
+    assert result["error_code"] == "NATIVE_ARGUMENTS_INVALID"
+    detail = result["argument_error"]
+    assert detail["required_field"] == "invert"
+    assert detail["required_fields"] == ["invert", "invert_bend", "k_factor", "subelements"]
+    assert detail["path"] == ["invert"]
+    assert result["error"].startswith("Native tool arguments are invalid: 'invert' is a required property")
+    for field in detail["required_fields"]:
+        assert field in result["error"]
+    assert "No operation was executed" in result["error"]
+    Draft202012Validator(fold.provider_parameters()).validate(detail["valid_example"])
+
+
+@pytest.mark.parametrize("operation,fields", [
+    ("create_line", {"start_mm": {"x": 0, "y": 0}, "end_mm": {"x": 10, "y": 0}}),
+    ("create_polyline", {"vertices_mm": [{"x": 0, "y": 0}, {"x": 10, "y": 0}], "closed": False}),
+])
+def test_compact_sketch_operation_choices_reach_exact_validation(operation, fields):
+    from VibeCADNativeSketchProviderSchema import sketch_provider_capability_definitions
+
+    definition = next(item for item in sketch_provider_capability_definitions()
+                      if item.name == "sketch.draw_line")
+    dispatcher, _state, _debug = _dispatcher(
+        lambda _call: pytest.fail("Validation does not execute geometry"),
+        definition=definition, provider_visible=True)
+    arguments = {"operation": operation, "revision": "sketch-v1:" + "0"*64, **fields}
+    variant, normalized = dispatcher._validate_arguments(definition.name, arguments)
+    assert variant.operation == operation
+    assert normalized == arguments
+    wrong_fields = {**arguments, "unexpected": True}
+    with pytest.raises(NativeDispatchError) as caught:
+        dispatcher._validate_arguments(definition.name, wrong_fields)
+    assert caught.value.code == "NATIVE_ARGUMENTS_INVALID"
+    assert caught.value.details["argument_error"]["rule"] == "additionalProperties"
+
+
+def test_compact_sketch_choices_do_not_authorize_an_unfrozen_operation():
+    from VibeCADNativeSketchProviderSchema import sketch_provider_capability_definitions
+
+    definition = next(item for item in sketch_provider_capability_definitions()
+                      if item.name == "sketch.draw_line")
+    dispatcher, _state, _debug = _dispatcher(
+        lambda _call: pytest.fail("An unfrozen operation must not execute"),
+        definition=definition, operations=("create_line",), provider_visible=True)
+    with pytest.raises(NativeDispatchError) as caught:
+        dispatcher._validate_arguments(definition.name, {
+            "operation": "create_polyline", "revision": "sketch-v1:" + "0"*64,
+            "vertices_mm": [{"x": 0, "y": 0}, {"x": 10, "y": 0}], "closed": False})
+    assert caught.value.details["argument_error"]["expected"] == ["create_line"]
+
+
+def test_mixed_line_fields_report_the_selected_polyline_contract():
+    from VibeCADNativeSketchProviderSchema import sketch_provider_capability_definitions
+
+    definition = next(item for item in sketch_provider_capability_definitions()
+                      if item.name == "sketch.draw_line")
+    dispatcher, _state, _debug = _dispatcher(
+        lambda _call: pytest.fail("Invalid fields must not execute"),
+        definition=definition, provider_visible=True)
+    with pytest.raises(NativeDispatchError) as caught:
+        dispatcher._validate_arguments(definition.name, {
+            "operation": "create_polyline", "revision": "sketch-v1:" + "0"*64,
+            "start_mm": {"x": 0, "y": 0}, "end_mm": {"x": 10, "y": 0}, "closed": False})
+    detail = caught.value.details["argument_error"]
+    assert detail["rule"] == "additionalProperties"
+    assert detail["expected"] is False
+    assert detail["path"] == []
+    assert set(detail["allowed_fields"]) == {"operation", "revision", "vertices_mm", "closed"}
+    assert detail["missing_required_fields"] == ["vertices_mm"]
+    assert "Allowed fields: " in str(caught.value)
+    assert "vertices_mm" in str(caught.value)
+    assert "Missing required fields: vertices_mm" in str(caught.value)
+
+
+def test_pattern_properties_do_not_publish_an_incomplete_allowed_fields_list():
+    from jsonschema import Draft202012Validator
+    from VibeCADNativeDispatch import _schema_expectation
+
+    validator = Draft202012Validator({"type": "object", "properties": {"fixed": {}},
+        "patternProperties": {"^custom_": {}}, "additionalProperties": False})
+    error = next(validator.iter_errors({"wrong": True}))
+    assert "allowed_fields" not in _schema_expectation(error)
+
+
+def test_allowed_and_missing_fields_are_bounded_with_explicit_omission_counts():
+    from jsonschema import Draft202012Validator
+    from VibeCADNativeDispatch import _schema_expectation
+
+    names = [f"field_{index}" for index in range(12)]
+    validator = Draft202012Validator({
+        "type": "object", "properties": {name: {} for name in names},
+        "additionalProperties": False, "required": names,
+    })
+    error = next(validator.iter_errors({"wrong": True}))
+    detail = _schema_expectation(error)
+    assert detail["allowed_fields"] == names[:8]
+    assert detail["omitted_allowed_field_count"] == 4
+    assert detail["missing_required_fields"] == names[:8]
+    assert detail["omitted_missing_required_field_count"] == 4
+
+
+def test_element_inspection_repair_example_satisfies_its_exact_schema():
+    from jsonschema import Draft202012Validator
+    from VibeCADNativeCommonSchema import common_capability_definitions
+
+    definition = next(item for item in common_capability_definitions()
+                      if item.name == "inspect.query")
+    dispatcher, _state, _debug = _dispatcher(
+        lambda _call: pytest.fail("Invalid inspection arguments must not execute"),
+        definition=definition, provider_visible=True)
+    with pytest.raises(NativeDispatchError) as caught:
+        dispatcher._validate_arguments(definition.name, {
+            "operation": "element",
+            "targets": [{"object_name": "Sheet", "subelement": ""}],
+        })
+    detail = caught.value.details["argument_error"]
+    assert detail["path"] == ["targets", "0", "subelement"]
+    assert detail["rule"] == "pattern"
+    variant = next(item for item in definition.variants if item.operation == "element")
+    Draft202012Validator(variant.provider_parameters()).validate(detail["valid_example"])
+
+
+@pytest.mark.parametrize("element", ["Face", "Edge", "Vertex"])
+def test_subelement_examples_follow_the_requested_kind(element):
+    from jsonschema import Draft202012Validator
+    from VibeCADNativeDispatch import _schema_example
+
+    schema = {"type": "string", "pattern": f"^{element}[1-9][0-9]*$"}
+    example = _schema_example(schema)
+    assert example == element + "1"
+    Draft202012Validator(schema).validate(example)
 
 
 class _Document:
@@ -152,6 +305,23 @@ def test_async_dispatch_cancellation_reaches_pending_handler():
                                      document_dispatch=lambda work: work())
     assert response.cancel()
     assert completion.cancelled()
+
+
+def test_async_failure_preserves_the_retained_edit_identity_for_repair():
+    class EditIncomplete(RuntimeError):
+        def failure(self):
+            return {"error_code": "NATIVE_SHEETMETAL_EDIT_INCOMPLETE", "message": "Geometry changed",
+                    "parameters_committed": True, "object_name": "SheetCut", "internal_detail": "omit"}
+    completion = Future()
+    dispatcher, _state, _debug = _dispatcher(lambda call: {}, async_handler=lambda call: completion)
+    response = dispatcher.call_async('test.execute', _arguments(2), 'failed-edit',
+                                     document_dispatch=lambda work: work())
+    completion.set_exception(EditIncomplete())
+    result = response.result()
+    assert result['ok'] is False
+    assert result['parameters_committed'] is True
+    assert result['object_name'] == 'SheetCut'
+    assert 'internal_detail' not in result
 
 
 def _mutation_definition() -> NativeCapabilityDefinition:

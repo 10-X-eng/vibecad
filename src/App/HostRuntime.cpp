@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "HostRuntime.h"
+#include "MainThreadSignal.h"
 #include "private/CpuBudget.h"
 
 #include <algorithm>
@@ -1051,6 +1052,7 @@ std::size_t HostRuntime::isolationWorkerBudget(std::size_t logicalProcessors)
 
 void HostRuntime::Work::operator()(std::stop_token stop) const noexcept
 {
+    const RecomputeOriginScope context(origin);
     try { execute(stop); }
     catch (const std::exception& error) {
         Base::Console().error("HostRuntime completion failed: %s\n", error.what());
@@ -1060,6 +1062,7 @@ void HostRuntime::Work::operator()(std::stop_token stop) const noexcept
 
 void HostRuntime::Work::abandon() const noexcept
 {
+    const RecomputeOriginScope context({});
     try { if (cancelled) { cancelled(); } }
     catch (const std::exception& error) {
         Base::Console().error("HostRuntime cancellation completion failed: %s\n", error.what());
@@ -1069,6 +1072,7 @@ void HostRuntime::Work::abandon() const noexcept
 
 void HostRuntime::enqueue(Lane lane, Work work)
 {
+    work.origin = RecomputeOriginScope::current();
     d->enqueue(lane, std::move(work));
 }
 

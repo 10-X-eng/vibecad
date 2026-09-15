@@ -81,6 +81,7 @@ from VibeCADNativeCapabilityRegistry import (
 
 _SHARED = frozenset(
     {
+        "workspace.switch",
         "core.capture_view_screenshot",
         "document.query",
         "document.save",

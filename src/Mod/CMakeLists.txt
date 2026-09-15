@@ -169,6 +169,10 @@ add_subdirectory(VibeCAD)
 add_subdirectory(VibeCADAero)
 add_subdirectory(VibeCADPrint)
 add_subdirectory(McMasterInsert)
+if(BUILD_SHEETMETAL)
+  add_subdirectory(SheetMetal)
+endif()
+
 add_subdirectory(SendCutSendPresets)
 
 #add_subdirectory(TemplatePyMod)

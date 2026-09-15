@@ -277,7 +277,7 @@ def _set_kfactor_on_obj(obj, k):
     return False, None, "; ".join(errors) if errors else "no KFactor property"
 
 
-def sync_unfold_features(mat_sheet_label, k, log=None):
+def sync_unfold_features(mat_sheet_label, k, log=None, *, document=None, objects=None, recompute=True):
     """Push K-factor (+ material sheet) onto Unfold feature(s).
 
     SheetMetal grays out Manual K-Factor when a Material Sheet is selected;
@@ -294,13 +294,15 @@ def sync_unfold_features(mat_sheet_label, k, log=None):
             except Exception:
                 pass
 
-    doc = App.ActiveDocument
+    doc = document if document is not None else App.ActiveDocument
     if doc is None:
         _emit("sync_unfold: no active document")
         return 0
 
     k = float(k)
-    names = _object_names(doc)
+    names = _object_names(doc) if objects is None else [
+        obj.Name for obj in objects if obj.Document is doc
+    ]
     _emit("sync scan names(%s): %s" % (len(names), ", ".join(names)))
 
     updated = 0
@@ -360,7 +362,7 @@ def sync_unfold_features(mat_sheet_label, k, log=None):
             _emit("Failed KFactor on %s: %s" % (label, err))
 
     # Absolute fallback: known Unfold names + labels
-    if updated == 0:
+    if updated == 0 and objects is None:
         fallback_names = []
         for n in names:
             if "unfold" in n.lower():
@@ -400,7 +402,7 @@ def sync_unfold_features(mat_sheet_label, k, log=None):
             else:
                 _emit("Fallback failed %s: %s" % (name, err))
 
-    if updated and doc is not None:
+    if updated and doc is not None and recompute:
         try:
             doc.recompute()
         except Exception:
@@ -414,7 +416,7 @@ def sync_unfold_features(mat_sheet_label, k, log=None):
         # Apply-before-Unfold: stash for auto-sync when Unfold is created
         try:
             from pending_unfold import remember_pending_unfold_sync
-            remember_pending_unfold_sync(k, mat_sheet_label)
+            remember_pending_unfold_sync(k, mat_sheet_label, doc_name=doc.Name)
             _emit(
                 "No Unfold yet — will auto-apply K=%s / %s when you create Unfold."
                 % (k, mat_sheet_label or "(sheet)")
@@ -430,7 +432,8 @@ def sync_unfold_features(mat_sheet_label, k, log=None):
     return updated
 
 
-def apply_entry_to_bends(entry, log=None, mat_name=None, sheet_prefix="SCS"):
+def apply_entry_to_bends(entry, log=None, mat_name=None, sheet_prefix="SCS", *,
+                         document=None, targets=None, recompute=True, warn_dialog=True):
     if not entry:
         return "No thickness/entry selected."
 
@@ -439,7 +442,8 @@ def apply_entry_to_bends(entry, log=None, mat_name=None, sheet_prefix="SCS"):
     updated = 0
     skipped = []
 
-    targets = collect_bend_targets()
+    doc = document if document is not None else App.ActiveDocument
+    targets = collect_bend_targets() if targets is None else list(targets)
     if not targets:
         return (
             "Nothing to update. Select a SheetMetal Bend/Wall (or its Body), "
@@ -473,11 +477,11 @@ def apply_entry_to_bends(entry, log=None, mat_name=None, sheet_prefix="SCS"):
         else:
             skipped.append("%s: no radius/kfactor properties" % obj.Label)
 
-    if updated and App.ActiveDocument is not None:
-        App.ActiveDocument.recompute()
+    if updated and doc is not None and recompute:
+        doc.recompute()
 
     _ok, flange_warnings = check_min_flange_lengths(
-        entry, targets=targets, log=log, warn_dialog=True
+        entry, targets=targets, log=log, warn_dialog=warn_dialog
     )
 
     prefs_ok = False
@@ -497,7 +501,7 @@ def apply_entry_to_bends(entry, log=None, mat_name=None, sheet_prefix="SCS"):
         short = material_short_name(mat_name)
         thou = thickness_thou(entry["t"])
         sheet_label = "material_%s_%s_%s" % (sheet_prefix, short, thou)
-        unfold_n = sync_unfold_features(sheet_label, k, log=log)
+        unfold_n = sync_unfold_features(sheet_label, k, log=log, document=doc, recompute=recompute)
 
     msg = "Applied radius=%s in, k=%s to %s object(s)." % (entry["r"], k, updated)
     if prefs_ok:
@@ -514,11 +518,12 @@ def apply_entry_to_bends(entry, log=None, mat_name=None, sheet_prefix="SCS"):
 
 
 def create_material_sheet_for_entry(
-    mat_name, entry, prefix="SCS", source="SendCutSend bending calculator", log=None
+    mat_name, entry, prefix="SCS", source="SendCutSend bending calculator", log=None, *,
+    document=None, recompute=True
 ):
     if not entry:
         return "No thickness/entry selected."
-    doc = App.ActiveDocument
+    doc = document if document is not None else App.ActiveDocument
     if doc is None:
         return "No active document. Create or open a document first."
 
@@ -556,8 +561,9 @@ def create_material_sheet_for_entry(
     sheet.set("A12", "Source")
     sheet.set("B12", source)
 
-    doc.recompute()
-    n = sync_unfold_features(sheet_name, k, log=log)
+    if recompute:
+        doc.recompute()
+    n = sync_unfold_features(sheet_name, k, log=log, document=doc, recompute=recompute)
     if n:
         msg = (
             "Created/updated '%s'. Synced K=%s onto %s Unfold object(s). "
@@ -597,3 +603,37 @@ def set_sheetmetal_defaults_for_entry(entry, log=None):
     if log:
         log(msg)
     return msg
+
+
+def apply_preset(entry, *, mat_name=None, sheet_prefix="SCS",
+                 source="SendCutSend bending calculator", apply_bends=True,
+                 create_sheet=True, log=None):
+    """Apply one dialog action with one captured document and recompute boundary."""
+    if not entry:
+        return "No thickness/entry selected."
+    document = App.ActiveDocument
+    if document is None:
+        return "No active document. Create or open a document first."
+    targets = collect_bend_targets() if apply_bends else []
+    if any(obj.Document is not document for obj in targets):
+        return "Select bend objects in the active document before applying a preset."
+    if not create_sheet and not targets:
+        return "Nothing to update. Select a SheetMetal Bend/Wall (or its Body)."
+
+    def apply():
+        messages = []
+        if create_sheet:
+            messages.append(create_material_sheet_for_entry(
+                mat_name, entry, prefix=sheet_prefix, source=source, log=log,
+                document=document, recompute=False,
+            ))
+        if apply_bends:
+            messages.append(apply_entry_to_bends(
+                entry, log=log, mat_name=None if create_sheet else mat_name,
+                sheet_prefix=sheet_prefix, document=document, targets=targets,
+                recompute=False, warn_dialog=False,
+            ))
+        return "\n".join(messages)
+
+    from preset_update import run_document_update
+    return run_document_update(document, apply)

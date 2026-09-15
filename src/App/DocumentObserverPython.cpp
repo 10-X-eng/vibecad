@@ -133,6 +133,12 @@ DocumentObserverPython::DocumentObserverPython(const Py::Object& obj)
     FC_PY_ELEMENT_ARG1(DeletedObject, DeletedObject)
     FC_PY_ELEMENT_ARG2(BeforeChangeObject, BeforeChangeObject)
     FC_PY_ELEMENT_ARG2(ChangedObject, ChangedObject)
+    FC_PY_GetCallable(obj.ptr(), "slotChangedObjectWithOrigin", pyChangedObjectWithOrigin.py);
+    if (!pyChangedObjectWithOrigin.py.isNone()) {
+        pyChangedObjectWithOrigin.slot = App::GetApplication().signalChangedObjectWithOrigin.connect(
+            std::bind(&DocumentObserverPython::slotChangedObjectWithOrigin,
+                      this, sp::_1, sp::_2, sp::_3));
+    }
     FC_PY_ELEMENT_ARG1(RecomputedObject, ObjectRecomputed)
     FC_PY_ELEMENT_ARG1(BeforeRecomputeDocument, BeforeRecomputeDocument)
     FC_PY_ELEMENT_ARG1(RecomputedDocument, Recomputed)
@@ -403,6 +409,27 @@ void DocumentObserverPython::slotChangedObject(const App::DocumentObject& Obj,
     catch (Py::Exception&) {
         Base::PyException e;  // extract the Python error text
         e.reportException();
+    }
+}
+
+void DocumentObserverPython::slotChangedObjectWithOrigin(
+    const App::DocumentObject& Obj, const App::Property& Prop, const std::string& origin)
+{
+    Base::PyGILStateLocker lock;
+    PendingPythonErrorScope pendingError;
+    try {
+        const char* name = Obj.getPropertyName(&Prop);
+        if (name) {
+            Py::Tuple args(3);
+            args.setItem(0, Py::asObject(const_cast<App::DocumentObject&>(Obj).getPyObject()));
+            args.setItem(1, Py::String(name));
+            args.setItem(2, Py::String(origin));
+            Base::pyCall(pyChangedObjectWithOrigin.ptr(), args.ptr());
+        }
+    }
+    catch (Py::Exception&) {
+        Base::PyException error;
+        error.reportException();
     }
 }
 
