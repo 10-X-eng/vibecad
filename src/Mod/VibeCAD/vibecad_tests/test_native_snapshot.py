@@ -364,6 +364,70 @@ def test_concise_object_preserves_a_preexisting_touch() -> None:
     assert obj.State == ["Touched"]
 
 
+def test_sheet_metal_context_is_bounded_and_keeps_exact_selected_history_state(monkeypatch):
+    class PreparedSheetState:
+        pass
+
+    monkeypatch.setitem(sys.modules, "SheetMetalEditable",
+                        SimpleNamespace(PreparedSheetState=PreparedSheetState))
+    document = _Document()
+    document.isObjectUsableAtCurrentTimelinePosition = lambda obj: not obj.Suppressed
+    document.findObjects = lambda type_id: []
+    for index in range(80):
+        obj = document.add(f"Sheet{index}", "Part::FeaturePython")
+        obj.Proxy = PreparedSheetState()
+        obj.Suppressed = index == 79
+        obj.VibeCADTimelineEditCommand = "SheetMetal_EditHistoryCut"
+        obj.ViewObject.Proxy = SimpleNamespace(mode="flat")
+    selected = document.Objects[-1]
+    selection = {"document_uid": document.Uid, "selected_count": 1,
+                 "items": [{"object": {"document_uid": document.Uid,
+                                       "object_name": selected.Name}}]}
+    result = build_active_snapshot(document, "sheet_metal", _state(), selection=selection)
+    domain = result["domain"]
+    assert domain["kind"] == "sheet_metal"
+    assert domain["total_objects"] == 80
+    assert domain["truncated"] is True
+    assert len(domain["objects"]) <= 12
+    first = domain["objects"][0]
+    assert first["object_name"] == selected.Name
+    assert first["category"] == "shared_sheet"
+    assert first["editor_command"] == "SheetMetal_EditHistoryCut"
+    assert first["suppressed"] is True
+    assert first["active"] is False
+    assert first["representation"] == "flat"
+    assert len(json.dumps(result).encode()) < 16384
+
+
+def test_empty_sheet_metal_document_can_supply_native_prompt_context(monkeypatch):
+    monkeypatch.setitem(sys.modules, "SheetMetalEditable",
+                        SimpleNamespace(PreparedSheetState=type("PreparedSheetState", (), {})))
+    document = _Document()
+    document.findObjects = lambda type_id: []
+    result = build_active_snapshot(document, "sheet_metal", _state(), selection={
+        "document_uid": document.Uid, "selected_count": 0, "items": []})
+    assert result["domain"]["kind"] == "sheet_metal"
+    assert result["domain"]["objects"] == []
+    assert result["domain"]["total_objects"] == 0
+
+
+def test_sheet_metal_context_distinguishes_source_sketch_and_body_inputs(monkeypatch):
+    monkeypatch.setitem(sys.modules, "SheetMetalEditable",
+                        SimpleNamespace(PreparedSheetState=type("PreparedSheetState", (), {})))
+    document = _Document()
+    document.findObjects = lambda type_id: []
+    document.isObjectUsableAtCurrentTimelinePosition = lambda obj: True
+    source = document.add("Source", "Part::FeaturePython")
+    source.VibeCADTimelineEditCommand = "SheetMetal_EditSource"
+    document.add("Profile", "Sketcher::SketchObject")
+    body = document.add("SheetBody", "PartDesign::Body")
+    body.isDerivedFrom = lambda type_id: type_id in ("Part::Feature", "PartDesign::Body")
+    result = build_active_snapshot(document, "sheet_metal", _state(), selection={
+        "document_uid": document.Uid, "selected_count": 0, "items": []})
+    assert {item["object_name"]: item["category"] for item in result["domain"]["objects"]} == {
+        "Source": "sheet_source", "Profile": "sketch", "SheetBody": "container"}
+
+
 @pytest.mark.parametrize(
     ("surface_id", "kind"),
     (

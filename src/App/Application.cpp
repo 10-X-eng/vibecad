@@ -281,6 +281,7 @@ void reportRecomputeException(const Base::Exception& exception)
 RecomputeResult processRecomputeRequest(RecomputeRequest& request, std::stop_token stopToken)
 {
     RecomputeResult result;
+    const RecomputeOriginScope origin(request.origin);
 
     try {
         if (stopToken.stop_requested()) {
@@ -356,6 +357,25 @@ RecomputeResult processRecomputeRequest(RecomputeRequest& request, std::stop_tok
 }
 
 }  // namespace
+
+namespace
+{
+thread_local App::RecomputeOriginScope::Origin executingRecomputeOrigin;
+}
+
+App::RecomputeOriginScope::RecomputeOriginScope(Origin origin)
+    : previous(std::exchange(executingRecomputeOrigin, std::move(origin)))
+{}
+
+App::RecomputeOriginScope::~RecomputeOriginScope()
+{
+    executingRecomputeOrigin.swap(previous);
+}
+
+App::RecomputeOriginScope::Origin App::RecomputeOriginScope::current()
+{
+    return executingRecomputeOrigin;
+}
 
 void App::MainThreadSignalConfig::setHooks(IsMainThreadFn isMainThread, InvokeFn invoke)
 {

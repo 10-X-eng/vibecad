@@ -123,6 +123,18 @@ class TopoShape(ComplexGeoData):
         ...
 
     @constmethod
+    def exportBrepDetached(self, filename: str, /) -> None:
+        """
+        Export an independent geometry snapshot to a BREP file.
+        exportBrepDetached(filename)
+        --
+        Copies topology and geometry while holding Python's GIL, then releases
+        the GIL during file serialization. Does not modify the source shape.
+        This does not capture or validate a document revision.
+        """
+        ...
+
+    @constmethod
     def exportBinary(self, filename: str, /) -> None:
         """
         Export the content of this shape in binary format to a file.
@@ -131,12 +143,15 @@ class TopoShape(ComplexGeoData):
         ...
 
     @constmethod
-    def exportBrepToString(self) -> str:
+    def exportBrepToString(self, persistencePrecision: bool = False, /) -> str:
         """
         Export the content of this shape to a string in BREP format.
-        exportBrepToString() -> string
+        exportBrepToString(persistencePrecision=False) -> string
         --
         BREP is an OpenCasCade native format.
+        With persistencePrecision=True, use the numeric formatting of a document's
+        text BREP entries. This does not include element maps or triangulations,
+        and is not a canonical geometry hash. The default export is unchanged.
         """
         ...
 
@@ -843,6 +858,16 @@ class TopoShape(ComplexGeoData):
         """
         Tessellate the shape and return a list of vertices and face indices
         tessellate() -> (vertex,facets)
+        """
+        ...
+
+    @constmethod
+    def tessellateDetached(self, deflection: float, /) -> Tuple[List[Vector], List]:
+        """Mesh a private copy, releasing the Python lock during meshing.
+
+        The source geometry and its existing triangulations are unchanged.
+        deflection must be finite and positive. Return vertices and triangle
+        indices in the same format as tessellate().
         """
         ...
 

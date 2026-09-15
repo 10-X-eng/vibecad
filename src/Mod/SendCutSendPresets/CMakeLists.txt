@@ -10,6 +10,7 @@ set(SendCutSendPresets_SRCS
     bend_actions.py
     bend_common.py
     pending_unfold.py
+    preset_update.py
     sheetmetal_integration.py
     ui_theme.py
     package.xml
@@ -32,6 +33,12 @@ set(SendCutSendPresets_Icons
 set(SendCutSendPresets_Tests
     tests/__init__.py
     tests/test_smoke.py
+    tests/test_document_update.py
+    tests/test_installed_paths.py
+    tests/test_pending_unfold.py
+    tests/test_preset_actions.py
+    tests/test_sheetmetal_integration.py
+    tests/gui_preset_update.py
 )
 
 set(SendCutSendPresets_All

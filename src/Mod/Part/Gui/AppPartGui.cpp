@@ -26,6 +26,8 @@
 #include <algorithm>
 #include <QApplication>
 #include <QThread>
+#include <Inventor/SoPickedPoint.h>
+#include <Inventor/details/SoFaceDetail.h>
 #include <Gui/FrameBudget.h>
 #include <Base/Console.h>
 #include <Base/MatrixPy.h>
@@ -77,6 +79,7 @@
 #include "ViewProviderHelixParametric.h"
 #include "ViewProviderPrimitive.h"
 #include "ViewProviderPython.h"
+#include "ViewProviderCachedDetails.h"
 #include "ViewProviderImport.h"
 #include "ViewProviderLineParametric.h"
 #include "ViewProviderMirror.h"
@@ -192,10 +195,42 @@ public:
                            "readSectionDisplay(handle, kind, first, count) -> tuple\nRead at most 256 primitives.");
         add_varargs_method("_deferSectionDisplay", &Module::deferSectionDisplay,
                            "Queue a section presentation step through the GUI frame dispatcher.");
+        add_varargs_method(
+            "getPickedFaceIndex",
+            &Module::getPickedFaceIndex,
+            "getPickedFaceIndex(picked_point) -> int\n\n"
+            "Read the zero-based polygon index of a live Coin face pick on the GUI thread. "
+            "The caller must retain the owning pick action for this call. "
+            "No Coin object is copied or retained."
+        );
         initialize("This module is the PartGui module.");  // register with Python
     }
 
 private:
+    Py::Object getPickedFaceIndex(const Py::Tuple& args)
+    {
+        PyObject* object;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &object)) {
+            throw Py::Exception();
+        }
+        if (!qApp || QThread::currentThread() != qApp->thread()) {
+            throw Py::RuntimeError("Coin picks must be read on the GUI thread");
+        }
+        void* pointer = nullptr;
+        Base::Interpreter().convertSWIGPointerObj(
+            "pivy.coin", "_p_SoPickedPoint", object, &pointer, 0
+        );
+        const auto* point = static_cast<const SoPickedPoint*>(pointer);
+        if (!point) {
+            throw Py::TypeError("Expected a live Coin picked point");
+        }
+        const SoDetail* detail = point->getDetail();
+        if (!detail || !detail->isOfType(SoFaceDetail::getClassTypeId())) {
+            throw Py::ValueError("The picked primitive is not a face");
+        }
+        return Py::Long(static_cast<const SoFaceDetail*>(detail)->getFaceIndex());
+    }
+
     using GeometryOwner = std::shared_ptr<const Part::SectionDisplayGeometry>;
 
     static const GeometryOwner& sectionGeometry(PyObject* object)
@@ -663,6 +698,10 @@ PyMOD_INIT_FUNC(PartGui)
     PartGui::ViewProviderPrimitive                  ::init();
     PartGui::ViewProviderEllipsoid                  ::init();
     PartGui::ViewProviderPython                     ::init();
+    PartGui::ViewProviderCached                     ::init();
+    PartGui::ViewProviderCachedPython               ::init();
+    PartGui::ViewProviderCachedDetails              ::init();
+    PartGui::ViewProviderCachedDetailsPython        ::init();
     PartGui::ViewProviderBox                        ::init();
     PartGui::ViewProviderPrism                      ::init();
     PartGui::ViewProviderRegularPolygon             ::init();

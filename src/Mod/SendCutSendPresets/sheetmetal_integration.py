@@ -14,6 +14,8 @@ _CMD = "SCS_ShowCustomPresets"
 _TOOLBAR = "Bend Presets"
 _installed = False
 _hooked = False
+_setup_queued = False
+_attachments = []
 
 
 def _log(msg):
@@ -57,23 +59,27 @@ def _sheetmetal_workbench_keys():
 
 def _try_append(wb):
     """Append toolbar + menu entries if the workbench proxy supports it."""
-    ok = False
-    try:
-        wb.appendToolbar(_TOOLBAR, [_CMD])
-        ok = True
-    except Exception:
-        # Common while SMWorkbench proxy is not fully live yet; retry quietly.
-        pass
-    try:
-        wb.appendMenu("&Sheet Metal", [_CMD])
-        ok = True
-    except Exception:
+    parts = next((parts for owner, parts in _attachments if owner is wb), None)
+    if parts is None:
+        parts = set()
+        _attachments.append((wb, parts))
+    if "toolbar" not in parts:
         try:
-            wb.appendMenu("Sheet Metal", [_CMD])
-            ok = True
+            wb.appendToolbar(_TOOLBAR, [_CMD])
+            parts.add("toolbar")
         except Exception:
             pass
-    return ok
+    if "menu" not in parts:
+        try:
+            wb.appendMenu("&Sheet Metal", [_CMD])
+            parts.add("menu")
+        except Exception:
+            try:
+                wb.appendMenu("Sheet Metal", [_CMD])
+                parts.add("menu")
+            except Exception:
+                pass
+    return parts == {"toolbar", "menu"}
 
 
 def install_into_sheetmetal():
@@ -81,6 +87,8 @@ def install_into_sheetmetal():
     global _installed
     if not App.GuiUp:
         return False
+    if _installed:
+        return True
     try:
         _ensure_command_registered()
     except Exception as exc:
@@ -142,21 +150,17 @@ def hook_workbench_activation():
 
 def setup():
     """Call from SendCutSendPresets InitGui after our own workbench registers."""
+    global _setup_queued
     hook_workbench_activation()
-    # Deferred install: SheetMetal InitGui may run after us alphabetically
-    try:
-        from PySide6.QtCore import QTimer  # type: ignore
-    except ImportError:
-        try:
-            from PySide2.QtCore import QTimer  # type: ignore
-        except ImportError:
-            try:
-                from PySide.QtCore import QTimer  # type: ignore
-            except ImportError:
-                QTimer = None
-    if QTimer is not None:
-        # a few retries while other workbenches finish loading
-        for delay in (0, 500, 1500, 3000):
-            QTimer.singleShot(delay, install_into_sheetmetal)
-    else:
+    if _installed or _setup_queued:
+        return
+    _setup_queued = True
+
+    def install_after_startup():
+        global _setup_queued
+        _setup_queued = False
         install_into_sheetmetal()
+
+    # One queued startup attempt; workbench activation covers later loading.
+    from pending_unfold import _post_apply
+    _post_apply(install_after_startup)

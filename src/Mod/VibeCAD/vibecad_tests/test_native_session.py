@@ -857,6 +857,33 @@ def test_provider_runner_starts_a_fresh_turn_after_human_ribbon_change() -> None
     assert runner.turn_transition_requested() is True
 
 
+def test_revision_conflict_requests_fresh_state_without_claiming_the_edit() -> None:
+    failure = {"ok": False, "error_code": "NATIVE_REVISION_CONFLICT",
+               "error": "Document revision changed", "current_revision": 5,
+               "repair": {"next_turn_required": True}}
+    runner, _dispatcher, _ledger, traces, _events = _provider_runner(result=failure)
+    runner._execution.document_uid = "document-a"
+    result = runner("state.read", '{"operation":"active"}', "read-conflict")
+    assert result["ok"] is False
+    assert result["error_code"] == "NATIVE_REVISION_CONFLICT"
+    assert "receipt" not in result
+    assert result["document_state_changed"] is True
+    assert result["document_uid"] == "document-a"
+    assert result["next_surface"] == "model"
+    assert result["next_turn_required"] is True
+    assert traces[-1]["result"]["next_turn_required"] is True
+    assert runner.turn_transition_requested() is True
+
+
+def test_revision_conflict_without_exact_document_owner_does_not_continue() -> None:
+    runner, *_rest = _provider_runner(result={
+        "ok": False, "error_code": "NATIVE_REVISION_CONFLICT",
+        "repair": {"next_turn_required": True}})
+    result = runner("state.read", '{"operation":"active"}', "unowned-conflict")
+    assert "next_turn_required" not in result
+    assert runner.turn_transition_requested() is False
+
+
 def test_provider_runner_starts_a_new_loop_when_same_ribbon_scope_changes() -> None:
     runner, _dispatcher, _ledger, traces, _events = _provider_runner(
         scope_changed=True,

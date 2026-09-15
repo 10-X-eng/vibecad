@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""One fail-closed transaction runner for immediate Native mutations."""
+"""Owned transactions for immediate and deferred Native mutations."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from VibeCADNativeState import (
     NativeDocumentStateStore,
     NativeObjectIdentity,
     NativeOperationReceipt,
+    PreparedNativeMutation,
 )
 
 
@@ -57,6 +58,23 @@ class NativeMutationDraft:
 class NativeMutationExecution:
     result: dict[str, Any]
     receipt: NativeOperationReceipt | None
+    duplicate: bool
+    committed_undo_entry: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class NativeDeferredMutationExecution:
+    """Committed intent awaiting domain-owned asynchronous completion proof.
+
+    No document transaction or mutation observation remains open. The caller
+    must verify geometry, revision ownership, and liveness before completing
+    ``prepared``; this value alone does not authorize later document changes.
+    Cancel the ticket if completion cannot be proven.
+    """
+
+    result: dict[str, Any]
+    prepared: PreparedNativeMutation | None
+    commit_revision: int
     duplicate: bool
     committed_undo_entry: bool = True
 
@@ -317,6 +335,47 @@ class NativeMutationRunner:
         verify: PostconditionHandler,
         after_abort: AbortStabilizer | None = None,
     ) -> NativeMutationExecution:
+        return self._run(
+            ticket=ticket, document=document, transaction_name=transaction_name,
+            reauthorize_turn=reauthorize_turn, mutate=mutate, verify=verify,
+            after_abort=after_abort, deferred=False,
+        )
+
+    def start_deferred(
+        self,
+        *,
+        ticket: NativeCallTicket,
+        document: Any,
+        transaction_name: str,
+        reauthorize_turn: TurnReauthorizer,
+        mutate: MutationHandler,
+        verify: PostconditionHandler,
+        after_abort: AbortStabilizer | None = None,
+    ) -> NativeDeferredMutationExecution:
+        """Commit verified parameters without recomputing or issuing a receipt.
+
+        ``verify`` proves only the persisted intent. The domain adapter owns
+        asynchronous geometry and must reject unrelated changes before final
+        receipt completion. Drafts with synchronous geometry work are rejected.
+        """
+        return self._run(
+            ticket=ticket, document=document, transaction_name=transaction_name,
+            reauthorize_turn=reauthorize_turn, mutate=mutate, verify=verify,
+            after_abort=after_abort, deferred=True,
+        )
+
+    def _run(
+        self,
+        *,
+        ticket: NativeCallTicket,
+        document: Any,
+        transaction_name: str,
+        reauthorize_turn: TurnReauthorizer,
+        mutate: MutationHandler,
+        verify: PostconditionHandler,
+        after_abort: AbortStabilizer | None,
+        deferred: bool,
+    ) -> NativeMutationExecution | NativeDeferredMutationExecution:
         if not isinstance(ticket, NativeCallTicket):
             raise TypeError("ticket must be a NativeCallTicket")
         if not all(callable(item) for item in (reauthorize_turn, mutate, verify)):
@@ -349,6 +408,14 @@ class NativeMutationRunner:
 
         authorization = self._state.authorize_mutation(ticket)
         if authorization.duplicate:
+            if deferred:
+                return NativeDeferredMutationExecution(
+                    result=dict(authorization.prior_verified_result or {}),
+                    prepared=None,
+                    commit_revision=self._state.completed_mutation_receipt(ticket).revision_after,
+                    duplicate=True,
+                    committed_undo_entry=False,
+                )
             return NativeMutationExecution(
                 result=dict(authorization.prior_verified_result or {}),
                 receipt=None,
@@ -369,6 +436,11 @@ class NativeMutationRunner:
             draft = mutate(document)
             if not isinstance(draft, NativeMutationDraft):
                 raise TypeError("Native mutation handler returned an invalid draft.")
+            if deferred and (draft.recompute_targets or draft.after_recompute is not None):
+                raise NativeMutationError(
+                    NATIVE_RECOMPUTE_FAILED,
+                    "A deferred Native transaction must only change parameters.",
+                )
             if not self._document_is_live(document):
                 raise NativeMutationError(
                     NATIVE_DOCUMENT_UNAVAILABLE,
@@ -405,7 +477,15 @@ class NativeMutationRunner:
             stage = NATIVE_TRANSACTION_FAILED
             transaction.commit()
             transaction = None
-            self._state.commit_mutation_observation(ticket)
+            commit_revision = self._state.commit_mutation_observation(ticket)
+            if deferred:
+                return NativeDeferredMutationExecution(
+                    result=json.loads(prepared.verified_result_json),
+                    prepared=prepared,
+                    commit_revision=commit_revision,
+                    duplicate=False,
+                    committed_undo_entry=committed_undo_entry,
+                )
             receipt = self._state.complete_prepared_mutation(prepared)
             return NativeMutationExecution(
                 result=json.loads(prepared.verified_result_json),

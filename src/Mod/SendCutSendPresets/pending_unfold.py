@@ -7,6 +7,10 @@ import FreeCAD as App
 
 _pending = None  # dict | None
 _observer = None
+_dispatcher = None
+_queued = set()
+_waiting = {}
+_applying = False
 _PARAM = "User parameter:BaseApp/Preferences/Mod/SendCutSendPresets"
 
 
@@ -38,7 +42,13 @@ def remember_pending_unfold_sync(k, sheet_label, doc_name=None, source_note=None
             doc_name = doc.Name if doc else ""
         except Exception:
             doc_name = ""
+    try:
+        owner = App.getDocument(doc_name) if doc_name else None
+        doc_uid = str(getattr(owner, "Uid", "") or "")
+    except Exception:
+        doc_uid = ""
     _pending = {
+        "doc_uid": doc_uid,
         "k": k,
         "sheet": sheet_label,
         "doc": doc_name or "",
@@ -50,6 +60,7 @@ def remember_pending_unfold_sync(k, sheet_label, doc_name=None, source_note=None
             p.SetFloat("pendingK", k)
             p.SetString("pendingSheet", sheet_label)
             p.SetString("pendingDoc", doc_name or "")
+            p.SetString("pendingDocUid", doc_uid)
             p.SetBool("pendingActive", True)
         except Exception:
             pass
@@ -61,8 +72,15 @@ def remember_pending_unfold_sync(k, sheet_label, doc_name=None, source_note=None
 
 
 def clear_pending_unfold_sync():
-    global _pending
+    global _pending, _observer
     _pending = None
+    _waiting.clear()
+    if _observer is not None:
+        try:
+            App.removeDocumentObserver(_observer)
+        except Exception:
+            pass
+        _observer = None
     p = _param()
     if p is not None:
         try:
@@ -85,10 +103,19 @@ def get_pending():
             "k": float(p.GetFloat("pendingK", 0.0)),
             "sheet": p.GetString("pendingSheet", ""),
             "doc": p.GetString("pendingDoc", ""),
+            "doc_uid": p.GetString("pendingDocUid", ""),
             "note": "prefs",
         }
     except Exception:
         return None
+
+
+def _pending_matches_document(pending, doc):
+    if doc is None:
+        return False
+    if pending.get("doc") and pending["doc"] != doc.Name:
+        return False
+    return not pending.get("doc_uid") or pending["doc_uid"] == str(getattr(doc, "Uid", ""))
 
 
 def _looks_like_unfold_obj(obj):
@@ -123,18 +150,28 @@ def apply_pending_to_object(obj):
         return False
     try:
         doc = obj.Document
-        if pending.get("doc") and doc and pending["doc"] not in (doc.Name, ""):
-            # Still allow if pending doc was Unnamed / changed — only skip if both set and differ
-            # Soft filter: prefer same doc but don't block if user renamed
-            pass
+        if doc is None or App.getDocument(doc.Name) is not doc:
+            return False
+        if not _pending_matches_document(pending, doc):
+            return False
     except Exception:
-        pass
+        return False
 
     from bend_actions import sync_unfold_features
 
     k = pending.get("k")
     sheet = pending.get("sheet") or ""
-    n = sync_unfold_features(sheet, k, log=_log)
+    global _applying
+    if _applying:
+        return False
+    _applying = True
+    try:
+        from preset_update import run_document_update
+        n = run_document_update(doc, lambda: sync_unfold_features(
+            sheet, k, log=_log, document=doc, objects=[obj], recompute=False,
+        ))
+    finally:
+        _applying = False
     if n:
         _log(
             "Auto-synced new Unfold from earlier Apply: K=%s sheet=%s (%s object(s))"
@@ -146,32 +183,71 @@ def apply_pending_to_object(obj):
 
 
 def _defer_apply(obj):
-    """Unfold props are often added *after* slotCreatedObject — retry shortly."""
+    """Queue one owner-thread apply; later property events handle late setup."""
+    if _applying:
+        return
+    pending = get_pending()
+    if not pending:
+        return
     try:
         name = obj.Name
-        doc_name = obj.Document.Name if obj.Document else None
+        doc = obj.Document
+        doc_name = doc.Name if doc else None
+        if not name or not doc_name or not _pending_matches_document(pending, doc):
+            return
+        blob = (name + " " + getattr(obj, "Label", "")).lower()
+        if "sketch" in blob or ("unfold" not in blob and not _looks_like_unfold_obj(obj)):
+            return
     except Exception:
         return
-    if not name or not doc_name:
+    key = (doc_name, name, id(obj))
+    if key in _queued:
         return
+    _queued.add(key)
 
-    def _try(attempt=0):
+    def apply():
+        _queued.discard(key)
         try:
-            doc = App.getDocument(doc_name)
-            if doc is None:
+            current_doc = App.getDocument(doc_name)
+            if current_doc is not doc or current_doc.getObject(name) is not obj:
                 return
-            o = doc.getObject(name)
-            if o is None:
+            if any(getattr(doc, flag, False) for flag in
+                   ("Recomputing", "RecomputePending", "CooperativeMutationActive")):
+                _waiting[key] = (doc, obj)
                 return
-            if apply_pending_to_object(o):
-                return
-            # Not ready yet (no KFactor) or not an Unfold — retry a few times
-            if attempt < 6:
-                _schedule(lambda: _try(attempt + 1), 150)
+            _waiting.pop(key, None)
+            apply_pending_to_object(obj)
         except Exception as exc:
             _log("deferred Unfold sync error: %s" % exc)
 
-    _schedule(lambda: _try(0), 50)
+    _post_apply(apply)
+
+
+def _post_apply(callback):
+    """Post to the GUI event queue without polling or delayed retry timers."""
+    global _dispatcher
+    try:
+        from PySide import QtCore
+    except ImportError:
+        callback()
+        return
+    application = QtCore.QCoreApplication.instance()
+    if application is None:
+        callback()
+        return
+    if _dispatcher is None:
+        class Dispatcher(QtCore.QObject):
+            requested = QtCore.Signal(object)
+
+            def __init__(self):
+                super().__init__(application)
+                self.requested.connect(self.run, QtCore.Qt.QueuedConnection)
+
+            def run(self, fn):
+                fn()
+
+        _dispatcher = Dispatcher()
+    _dispatcher.requested.emit(callback)
 
 
 def _schedule(fn, delay_ms):
@@ -209,6 +285,41 @@ class _UnfoldPendingObserver(object):
         except Exception:
             pass
 
+    def slotChangedObject(self, obj, prop):
+        if prop in ("KFactor", "MaterialSheet", "Label"):
+            _defer_apply(obj)
+
+    def _retry_waiting(self, document=None):
+        for key, (doc, obj) in tuple(_waiting.items()):
+            if document is None or doc is document:
+                _waiting.pop(key, None)
+                _defer_apply(obj)
+
+    def slotRecomputedDocument(self, document):
+        self._retry_waiting(document)
+
+    def slotCooperativeMutationChanged(self, document, active):
+        if not active:
+            self._retry_waiting(document)
+
+    def slotFinishRestoreDocument(self, document):
+        self._retry_waiting(document)
+
+    def slotCloseTransaction(self, aborted):
+        self._retry_waiting()
+
+    def slotUndoDocument(self, document):
+        pending = get_pending()
+        if pending and _pending_matches_document(pending, document):
+            # Preferences are outside the document's undo journal. Never
+            # replay a remembered preset after the user undoes model edits.
+            clear_pending_unfold_sync()
+
+    def slotDeletedDocument(self, document):
+        for key, (doc, obj) in tuple(_waiting.items()):
+            if doc is document:
+                _waiting.pop(key, None)
+
 
 def ensure_observer():
     global _observer
@@ -225,8 +336,9 @@ def ensure_observer():
 
 def setup():
     """Call from InitGui — restore pending flag from prefs and start observer."""
-    ensure_observer()
     pending = get_pending()
+    if pending:
+        ensure_observer()
     if pending and pending.get("k"):
         _log(
             "Pending Unfold preset restored: K=%s sheet=%s"

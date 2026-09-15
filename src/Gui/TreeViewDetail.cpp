@@ -4,3 +4,4 @@
 
 
 Gui::TreeViewDetailProvider::~TreeViewDetailProvider() = default;
+Gui::TreeViewDetailActionProvider::~TreeViewDetailActionProvider() = default;

@@ -34,6 +34,12 @@ def test_production_registry_has_every_finished_contract_and_binding() -> None:
         "model.catalog",
         "model.revolution_sketch",
         *MODEL_HISTORY_CAPABILITY_NAMES,
+        "sheet_metal.inspect",
+        "sheet_metal.view",
+        "sheet_metal.edit",
+        "sheet_metal.create",
+        "sheet_metal.connection",
+        "sheet_metal.manufacturing",
         *(
             MANUFACTURE_FOCUSED_INSPECT_CAPABILITIES[operation]
             for operation in (

@@ -3731,7 +3731,11 @@ def _model_visible_native_context(context: Mapping[str, Any]) -> dict[str, Any]:
         else ""
     )
     state = {
-        name: _without_native_internal_ids(snapshot[name])
+        name: (
+            _json_safe(snapshot[name])
+            if surface_id == "sheet_metal"
+            else _without_native_internal_ids(snapshot[name])
+        )
         for name in ("revision", "domain", "working_set", "selection")
         if name in snapshot and snapshot[name] not in (None, "", [], {})
     }
@@ -4098,15 +4102,18 @@ def _provider_compact_native_mutation_value(
     value: Any,
     *,
     expose_state_hashes: bool,
+    expose_document_ids: bool = False,
 ) -> Any:
     if isinstance(value, dict):
         visible = {
             key: _provider_compact_native_mutation_value(
                 item,
                 expose_state_hashes=expose_state_hashes,
+                expose_document_ids=expose_document_ids,
             )
             for key, item in value.items()
-            if key not in {"document_uid", "object_id", "receipt"}
+            if key not in {"object_id", "receipt"}
+            and (key != "document_uid" or expose_document_ids)
             and (
                 (
                     expose_state_hashes
@@ -4143,6 +4150,7 @@ def _provider_compact_native_mutation_value(
             _provider_compact_native_mutation_value(
                 item,
                 expose_state_hashes=expose_state_hashes,
+                expose_document_ids=expose_document_ids,
             )
             for item in value
         ]
@@ -4154,9 +4162,16 @@ def _provider_visible_native_mutation_result(
     *,
     capability: str,
 ) -> dict[str, Any]:
+    # Sheet inspection and linked-profile contracts require document_uid in
+    # exact references. Keep those returned targets usable by the next call.
+    state = result.get("state")
+    sheet_context = result.get("surface_id") == "sheet_metal" or (
+        isinstance(state, Mapping) and state.get("surface_id") == "sheet_metal"
+    )
     visible = _provider_compact_native_mutation_value(
         result,
         expose_state_hashes=not str(capability).startswith("drawing."),
+        expose_document_ids=str(capability).startswith("sheet_metal.") or sheet_context,
     )
     feature = visible.get("feature")
     if isinstance(feature, dict) and visible.get("sources") == feature.get("sources"):

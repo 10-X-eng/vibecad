@@ -185,166 +185,32 @@ class SCSPresetsPanel(QWidget):
         App.Console.PrintMessage(f"[SCS Presets] {text}\n")
 
 
-    def apply_to_selection(self):
-        entry = self._current_entry()
-        if not entry:
-            self._set_status("No thickness selected.")
+    def _apply_preset_action(self, *, apply_bends=True, create_sheet=True):
+        from bend_actions import apply_preset
+        name, entry = self.material_combo.currentText(), self._current_entry()
+        if not entry or (create_sheet and not name):
+            self._set_status("Select a material preset before applying it.")
             return
-
-        radius_q = inch_quantity(entry["r"])
-        k = float(entry["k"])
-        updated = 0
-        skipped = []
-
-        from bend_actions import collect_bend_targets, check_min_flange_lengths
-        targets = collect_bend_targets()
-
-        if not targets:
-            self._set_status(
-                "Nothing to update. Select a SheetMetal Bend/Wall (or its Body), "
-                "or create one first."
-            )
-            return
-
-        for obj in targets:
-            r_prop = find_property(obj, RADIUS_PROP_NAMES)
-            k_prop = find_property(obj, KFACTOR_PROP_NAMES)
-            changed = False
-            try:
-                if r_prop:
-                    setattr(obj, r_prop, radius_q)
-                    changed = True
-                if k_prop:
-                    # SheetMetal uses App::PropertyFloat "kfactor"
-                    try:
-                        setattr(obj, k_prop, float(k))
-                    except Exception:
-                        try:
-                            obj.setExpression(k_prop, None)
-                        except Exception:
-                            pass
-                        setattr(obj, k_prop, float(k))
-                    changed = True
-            except Exception as exc:
-                skipped.append(f"{obj.Label}: {exc}")
-                continue
-            if changed:
-                updated += 1
-                obj.touch()
-            else:
-                skipped.append(f"{obj.Label}: no radius/kfactor properties")
-
-        if updated and App.ActiveDocument is not None:
-            App.ActiveDocument.recompute()
-
-        from bend_actions import check_min_flange_lengths
-        _ok, flange_warnings = check_min_flange_lengths(
-            entry, targets=targets, warn_dialog=True
-        )
-
-        # Also push unfold + new-feature defaults so flat pattern matches
-        # (set silently then report one combined status)
         try:
-            param = App.ParamGet("User parameter:BaseApp/Preferences/Mod/SheetMetal")
-            param.SetString("defaultRadius", f'{entry["r"]} in')
-            param.SetFloat("defaultKFactor", k)
-            param.SetFloat("manualKFactor", k)
-            param.SetString("kFactorStandard", "ansi")
-            prefs_ok = True
-        except Exception:
-            prefs_ok = False
-
-        mat_name = self.material_combo.currentText()
-        short = material_short_name(mat_name)
-        thou = thickness_thou(entry["t"])
-        sheet_name = f"material_SCS_{short}_{thou}"
-        from bend_actions import sync_unfold_features
-        unfold_n = sync_unfold_features(sheet_name, k)
-
-        msg = f"Applied radius={entry['r']} in, k={k} to {updated} object(s)."
-        if prefs_ok:
-            msg += f" Prefs: defaultKFactor/manualKFactor={k}."
-        if unfold_n:
-            msg += f" Updated {unfold_n} Unfold feature(s) to K={k} / {sheet_name}."
-        elif App.ActiveDocument and not any(
-            hasattr(o, "MaterialSheet") for o in App.ActiveDocument.Objects
-        ):
-            msg += (
-                f" Create material sheet '{sheet_name}' then re-apply to sync Unfold."
+            message = apply_preset(
+                entry, mat_name=name or None,
+                sheet_prefix="SCS", source="SendCutSend bending calculator",
+                apply_bends=apply_bends, create_sheet=create_sheet,
             )
-        if flange_warnings:
-            msg += " MIN FLANGE WARN: " + "; ".join(flange_warnings)
-        if skipped:
-            msg += " Warnings: " + "; ".join(skipped)
-        self._set_status(msg)
+        except RuntimeError as exc:
+            message = str(exc)
+        self._set_status(message)
+
+    def apply_to_selection(self):
+        self._apply_preset_action(create_sheet=False)
 
     def create_material_sheet(self):
-        entry = self._current_entry()
-        mat_name = self.material_combo.currentText()
-        if not entry:
-            self._set_status("No thickness selected.")
-            return
-        doc = App.ActiveDocument
-        if doc is None:
-            self._set_status("No active document. Create or open a document first.")
-            return
-
-        short = material_short_name(mat_name)
-        thou = thickness_thou(entry["t"])
-        sheet_name = f"material_SCS_{short}_{thou}"
-
-        # Reuse existing object with same name if present
-        existing = doc.getObject(sheet_name)
-        if existing is not None:
-            sheet = existing
-        else:
-            sheet = doc.addObject("Spreadsheet::Sheet", sheet_name)
-        sheet.Label = sheet_name
-
-        r_over_t = entry["r"] / entry["t"] if entry["t"] else 0.0
-        k = float(entry["k"])
-
-        # SheetMetal material sheet convention:
-        # A1/B1 headers, A2/B2 r/t and k, A3/B3 fallback angle/k, options block
-        sheet.set("A1", "Radius / Thickness")
-        sheet.set("B1", "K-factor (ANSI)")
-        sheet.set("A2", f"{r_over_t:.6f}")
-        sheet.set("B2", f"{k:.6f}")
-        sheet.set("A3", "99")
-        sheet.set("B3", "0.5")
-        sheet.set("A5", "Options")
-        sheet.set("A6", "K-factor standard")
-        sheet.set("B6", "ansi")
-        # Extra reference cells for the chosen SCS preset
-        sheet.set("A8", "Material")
-        sheet.set("B8", mat_name)
-        sheet.set("A9", "Thickness (in)")
-        sheet.set("B9", f'{entry["t"]:.4f}')
-        sheet.set("A10", "Bend radius (in)")
-        sheet.set("B10", f'{entry["r"]:.4f}')
-        sheet.set("A11", "Bend deduction (in)")
-        sheet.set("B11", f'{entry["bd"]:.4f}')
-        sheet.set("A12", "Source")
-        sheet.set("B12", "SendCutSend bending calculator")
-
-        doc.recompute()
-        from bend_actions import sync_unfold_features
-        n = sync_unfold_features(sheet_name, k)
-        self._set_status(
-            f"Created/updated '{sheet_name}'. Synced K={k} onto {n} Unfold object(s). "
-            f"Material Definition Sheet should be '{sheet_name}' (not Manual)."
-        )
+        self._apply_preset_action(apply_bends=False)
 
 
 
     def apply_all(self):
-        """One-shot: bends + material sheet + prefs (including Unfold manual K)."""
-        self.apply_to_selection()
-        self.create_material_sheet()
-        self._set_status(
-            self.status.text()
-            + " Tip: reopen the Unfold task panel so the material list refreshes."
-        )
+        self._apply_preset_action()
 
     def set_sheetmetal_defaults(self):
         entry = self._current_entry()

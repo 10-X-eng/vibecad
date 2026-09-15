@@ -395,32 +395,27 @@ class CustomPresetsPanel(QWidget):
         entry = self._current_entry()
         return name, entry
 
-    def apply_to_selection(self):
+    def _apply_preset_action(self, *, apply_bends=True, create_sheet=True):
+        from bend_actions import apply_preset
         name, entry = self._active_mat_and_entry()
-        if not entry:
-            self._set_status("Select a saved preset or fill the editor.")
+        if not entry or (create_sheet and not name):
+            self._set_status("Select a material preset before applying it.")
             return
-        msg = apply_entry_to_bends(
-            entry,
-            mat_name=name or None,
-            sheet_prefix=self._sheet_prefix(),
-            log=self._set_status,
-        )
-        self._set_status(msg)
+        try:
+            message = apply_preset(
+                entry, mat_name=name or None,
+                sheet_prefix=self._sheet_prefix(), source=self._source_note(),
+                apply_bends=apply_bends, create_sheet=create_sheet,
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+        self._set_status(message)
+
+    def apply_to_selection(self):
+        self._apply_preset_action(create_sheet=False)
 
     def create_material_sheet(self):
-        name, entry = self._active_mat_and_entry()
-        if not name or not entry:
-            self._set_status("Select a saved preset or fill the editor (with name).")
-            return
-        msg = create_material_sheet_for_entry(
-            name,
-            entry,
-            prefix=self._sheet_prefix(),
-            source=self._source_note(),
-            log=self._set_status,
-        )
-        self._set_status(msg)
+        self._apply_preset_action(apply_bends=False)
 
     def set_sheetmetal_defaults(self):
         _name, entry = self._active_mat_and_entry()
@@ -430,13 +425,7 @@ class CustomPresetsPanel(QWidget):
         self._set_status(set_sheetmetal_defaults_for_entry(entry))
 
     def apply_all(self):
-        # Sheet first so Unfold features can be pointed at it, then bends + sync
-        self.create_material_sheet()
-        self.apply_to_selection()
-        self._set_status(
-            self.status.text()
-            + " Tip: recompute Unfold (or tweak & recompute) if the flat pattern is stale."
-        )
+        self._apply_preset_action()
 
 
 class CustomPresetsDialog:

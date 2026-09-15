@@ -1029,6 +1029,25 @@ set(VibeCAD_Scripts
     VibeCADNativeSketchConstraintSelection.py
     VibeCADNativeSketchElementSelection.py
     VibeCADNativeSketchInspectBindings.py
+    VibeCADNativeSheetMetalInspectBindings.py
+    VibeCADNativeSheetMetalInspectRuntime.py
+    VibeCADNativeSheetMetalInspectSchema.py
+    VibeCADNativeSheetMetalSnapshot.py
+    VibeCADNativeSheetMetalConnectionSchema.py
+    VibeCADNativeSheetMetalConnectionRuntime.py
+    VibeCADNativeSheetMetalConnectionBindings.py
+    VibeCADNativeSheetMetalManufacturingSchema.py
+    VibeCADNativeSheetMetalManufacturingRuntime.py
+    VibeCADNativeSheetMetalManufacturingBindings.py
+    VibeCADNativeSheetMetalViewBindings.py
+    VibeCADNativeSheetMetalViewRuntime.py
+    VibeCADNativeSheetMetalViewSchema.py
+    VibeCADNativeSheetMetalEditBindings.py
+    VibeCADNativeSheetMetalEditRuntime.py
+    VibeCADNativeSheetMetalEditSchema.py
+    VibeCADNativeSheetMetalCreateBindings.py
+    VibeCADNativeSheetMetalCreateRuntime.py
+    VibeCADNativeSheetMetalCreateSchema.py
     VibeCADNativeSketchInspectRuntime.py
     VibeCADNativeSketchInspectSchema.py
     VibeCADNativeSketchInspectTarget.py
@@ -1706,6 +1725,11 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/test_native_sketch_inspect.py
     vibecad_tests/test_native_sketch_inspect_elements.py
     vibecad_tests/test_native_sketch_inspect_schema.py
+    vibecad_tests/test_native_sheetmetal_inspect_schema.py
+    vibecad_tests/test_native_sheetmetal_view.py
+    vibecad_tests/test_native_sheetmetal_edit.py
+    vibecad_tests/test_native_sheetmetal_create.py
+    vibecad_tests/test_native_sheetmetal_surface.py
     vibecad_tests/test_native_sketch_internal_alignment.py
     vibecad_tests/test_native_sketch_internal_alignment_schema.py
     vibecad_tests/test_native_sketch_virtual_space.py

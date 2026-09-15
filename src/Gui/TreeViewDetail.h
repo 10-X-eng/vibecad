@@ -39,4 +39,23 @@ public:
     virtual std::vector<TreeViewDetail> getTreeViewDetails() const = 0;
 };
 
+/** Optional activation for detail rows. Existing providers remain read-only.
+ * The tree passes only the stable row key and opens no model transaction.
+ * Implementations must revalidate the owning object and key, and may switch
+ * presentation or open an editor using its own ordinary transaction path.
+ */
+class GuiExport TreeViewDetailActionProvider
+{
+public:
+    virtual ~TreeViewDetailActionProvider();
+    virtual bool activateTreeViewDetail(const std::string& key) = 0;
+    /// Opt in only properties which change these rows; ordinary geometry and
+    /// playback property updates must not force browser reconstruction.
+    virtual bool treeViewDetailsAffectedBy(const std::string& propertyName) const
+    {
+        (void)propertyName;
+        return false;
+    }
+};
+
 }  // namespace Gui
