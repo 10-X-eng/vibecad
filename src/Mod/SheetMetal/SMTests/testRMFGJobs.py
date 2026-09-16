@@ -2,6 +2,7 @@
 """Manufacturing writes retain immutable inputs and remote IDs across restarts."""
 
 from pathlib import Path
+from contextlib import closing
 import os
 import sqlite3
 import subprocess
@@ -98,7 +99,7 @@ class TestRMFGJobs(unittest.TestCase):
 
     def test_damaged_export_is_reported_without_discarding_the_job(self):
         key = self.record().operation_key
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute("UPDATE exports SET step=?", (b"damaged",))
         with self.assertRaisesRegex(RuntimeError, "integrity"):
             self.store.get(key)
