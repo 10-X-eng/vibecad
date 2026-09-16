@@ -301,7 +301,7 @@ def _run() -> None:
         assert "analyze.inspect" not in initial_names
         assert "analyze.fluid" not in initial_names
         assert "analyze.mesh" not in initial_names
-        assert "workspace.switch" not in initial_names
+        assert "workspace.switch" in initial_names
         initial_domain = service.native_active_snapshot()["domain"]
         geometry_names = {
             value["object_name"] for value in initial_domain["geometry_sources"]

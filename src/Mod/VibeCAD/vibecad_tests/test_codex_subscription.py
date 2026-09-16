@@ -1235,6 +1235,246 @@ def test_codex_resends_the_same_reference_as_image_input_each_turn(
     }
 
 
+def test_codex_reference_image_identity_uses_content_and_labels(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "blade.png"
+    reference.write_bytes(b"version-one")
+    context = {
+        "reference_images": {
+            "count": 1,
+            "images": [
+                {
+                    "id": "blade",
+                    "name": "blade.png",
+                    "label": "front view",
+                    "path": str(reference),
+                }
+            ],
+        }
+    }
+
+    first, safe = provider._codex_reference_image_fingerprints(context)
+    assert safe is True
+    assert set(first) == {"blade"}
+
+    reference.write_bytes(b"version-two")
+    changed, safe = provider._codex_reference_image_fingerprints(context)
+    assert safe is True
+    assert changed["blade"] != first["blade"]
+
+    context["reference_images"]["images"][0]["label"] = "rear view"
+    relabeled, safe = provider._codex_reference_image_fingerprints(context)
+    assert safe is True
+    assert relabeled["blade"] != changed["blade"]
+
+    omitted = provider._codex_turn_input(
+        "Continue.", context, reference_image_keys=set()
+    )
+    assert not [item for item in omitted if item.get("type") == "localImage"]
+
+
+def test_codex_reuse_state_is_invalidated_by_compaction_and_thread_replacement() -> None:
+    runtime = codex._ManagedCodexRuntime(
+        lease_lock=threading.RLock(), state_lock=threading.RLock()
+    )
+    lease = codex.ManagedCodexSession(
+        client=SimpleNamespace(alive=True),
+        thread_id="thread-a",
+        _runtime=runtime,
+        _thread_key="conversation-a",
+    )
+    lease.remember_prompt_section_digests({"active_state": "a" * 64})
+    lease.remember_reference_image_deliveries({"blade": "b" * 64})
+    generation = lease.context_reuse_generation
+    assert lease.previous_prompt_section_digests == {"active_state": "a" * 64}
+    assert lease.previous_reference_image_deliveries == {"blade": "b" * 64}
+
+    lease.invalidate_context_reuse()
+    assert lease.context_reuse_generation > generation
+    assert lease.previous_prompt_section_digests == {}
+    assert lease.previous_reference_image_deliveries == {}
+
+    lease.remember_prompt_section_digests({"active_state": "c" * 64})
+    lease.remember_reference_image_deliveries({"blade": "d" * 64})
+    lease.remember_thread("thread-b")
+    assert lease.previous_prompt_section_digests == {}
+    assert lease.previous_reference_image_deliveries == {}
+
+
+def test_codex_prompt_reuse_retains_last_full_anchor_across_followups() -> None:
+    context = _part_vibescript_context()
+    context["document"] = {
+        "name": "Bracket",
+        "revision": 7,
+        "notes": "stable-context-" + "x" * 2048,
+    }
+    prompt = session._provider_prompt("Inspect.", context)
+    previous = provider._codex_prompt_section_digests(prompt)
+    full = dict(previous)
+
+    for index in range(4):
+        optimized, current, reuse = provider._codex_prompt_with_reused_context(
+            session._provider_prompt(f"Follow up {index}.", context),
+            full,
+            context=context,
+        )
+        assert current == previous
+        assert set(reuse["reused_sections"]) == set(previous)
+        assert '"__vibecad_context_reference__"' in optimized
+
+
+def test_adaptive_reasoning_is_opt_in_and_respects_capabilities() -> None:
+    assert provider._codex_reasoning_effort_for_prompt(
+        "Show the current status.",
+        {},
+        "high",
+        adaptive=False,
+        supported_efforts=("low", "medium", "high"),
+    )["effective_effort"] == "high"
+    assert provider._codex_reasoning_effort_for_prompt(
+        "Show the current status.",
+        {},
+        "high",
+        adaptive=True,
+        supported_efforts=("low", "medium", "high"),
+    )["effective_effort"] == "medium"
+    assert provider._codex_reasoning_effort_for_prompt(
+        "Show the current status.",
+        {},
+        "high",
+        adaptive=True,
+        supported_efforts=("high",),
+    )["effective_effort"] == "high"
+    assert provider._codex_reasoning_effort_for_prompt(
+        "Build a dimensioned bracket and verify the mounting interface.",
+        {},
+        "high",
+        adaptive=True,
+        supported_efforts=("low", "medium", "high"),
+    )["effective_effort"] == "high"
+
+
+def test_adaptive_reasoning_falls_back_for_ongoing_or_uncertain_context() -> None:
+    ongoing_prompt = (
+        "RECENT_CONVERSATION_JSON\n"
+        '{"turns":[{"role":"user","content":"Build the bracket."}]}'
+        "\nEND_RECENT_CONVERSATION_JSON\n\nCURRENT_SESSION_EVENT\n"
+        "Show the current status."
+    )
+    decision = provider._codex_reasoning_effort_for_prompt(
+        ongoing_prompt,
+        {"unresolved": True},
+        "high",
+        adaptive=True,
+        supported_efforts=("low", "medium", "high"),
+    )
+    assert decision["effective_effort"] == "high"
+    assert decision["classification"] in {"complex", "uncertain"}
+
+
+def test_codex_reasoning_capability_lookup_matches_the_selected_model() -> None:
+    class _Client:
+        def __init__(self, result):
+            self.result = result
+            self.requests = []
+
+        def request(self, method, params, timeout):
+            self.requests.append((method, params, timeout))
+            return self.result
+
+    catalog = {
+        "data": [
+            {
+                "id": "default-model",
+                "isDefault": True,
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "low"},
+                ],
+            },
+            {
+                "id": "selected-model",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "medium"},
+                    {"reasoningEffort": "high"},
+                ],
+            },
+        ]
+    }
+    client = _Client(catalog)
+    assert provider._codex_model_supported_reasoning_efforts(
+        client,
+        "selected-model",
+        live_context={},
+        provider="openai",
+        base_url=None,
+    ) == ("medium", "high")
+    assert provider._codex_model_supported_reasoning_efforts(
+        _Client(catalog),
+        "missing-model",
+        live_context={},
+        provider="openai",
+        base_url=None,
+    ) == ()
+
+
+def test_adaptive_reasoning_setting_defaults_off_and_persists(monkeypatch) -> None:
+    class _Preferences:
+        def __init__(self, value=False):
+            self.value = value
+            self.writes = {}
+
+        def GetBool(self, name, default):
+            return self.value if name == "AdaptiveReasoningEnabled" else default
+
+        def GetString(self, _name, default):
+            return default
+
+        def GetFloat(self, _name, default):
+            return default
+
+        def GetInt(self, _name, default):
+            return default
+
+        def SetBool(self, name, value):
+            self.writes[name] = value
+
+        def SetString(self, _name, _value):
+            pass
+
+        def SetFloat(self, _name, _value):
+            pass
+
+        def SetInt(self, _name, _value):
+            pass
+
+    unset = _Preferences()
+    monkeypatch.setattr(preferences, "preferences", lambda: unset)
+    assert preferences.load_settings().adaptive_reasoning is False
+
+    opted_in = _Preferences(True)
+    monkeypatch.setattr(preferences, "preferences", lambda: opted_in)
+    assert preferences.load_settings().adaptive_reasoning is True
+
+    preferences.save_settings(preferences.VibeCADSettings(adaptive_reasoning=True))
+    assert opted_in.writes["AdaptiveReasoningEnabled"] is True
+
+
+def test_complete_source_results_keep_exact_content_with_the_large_read_budget() -> None:
+    source = "source-line\n" * 5000
+    visible = provider._provider_visible_tool_result(
+        {
+            "ok": True,
+            "source": source,
+            "_vibecad_complete_source_result": True,
+        },
+        tool_name="vibescript.read_source",
+    )
+
+    assert visible["source"] == source
+    assert "vibecad_result_boundary" not in visible
+
+
 def test_codex_thread_config_disables_non_vibecad_tool_surfaces() -> None:
     config = codex.vibecad_thread_config()
     assert config["orchestrator.mcp.enabled"] is False
@@ -1459,11 +1699,59 @@ def test_choose_provider_carries_codex_capability_preferences() -> None:
         def codex_skills_enabled(self) -> bool:
             return True
 
+        def provider_adaptive_reasoning(self) -> bool:
+            return True
+
     selected = session.choose_provider(_Service())
     assert isinstance(selected, provider.CodexProvider)
     assert selected.auth_mode == "chatgpt"
     assert selected.web_search_enabled is True
     assert selected.skills_enabled is True
+    assert selected.adaptive_reasoning is True
+
+
+@pytest.mark.parametrize(
+    "provider_name", ["openai", "chatgpt", "grok", "anthropic", "gemini"]
+)
+def test_choose_provider_propagates_adaptive_reasoning_to_every_online_provider(
+    provider_name: str,
+) -> None:
+    class _Auth:
+        can_call_provider = True
+
+    class _Service:
+        def provider_name(self) -> str:
+            return provider_name
+
+        def auth_state(self):
+            return _Auth()
+
+        def provider_model(self) -> str:
+            return "test-model"
+
+        def provider_api_key(self) -> str:
+            return "test-key"
+
+        def provider_reasoning_effort(self) -> str:
+            return "high"
+
+        def provider_adaptive_reasoning(self) -> bool:
+            return True
+
+        def provider_base_url(self):
+            return None
+
+        def web_search_enabled(self) -> bool:
+            return False
+
+        def codex_skills_enabled(self) -> bool:
+            return False
+
+        def intent_memory_model(self) -> str:
+            return "memory-model"
+
+    selected = session.choose_provider(_Service())
+    assert selected.adaptive_reasoning is True
 
 
 def test_subscription_provider_identity_is_explicit_and_disables_fallback() -> None:
@@ -1632,6 +1920,7 @@ def test_natural_plan_request_uses_the_normal_codex_turn(
 
 def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     class _Client:
         instance = None
@@ -1709,6 +1998,19 @@ def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
     codex.reset_managed_codex_sessions()
     monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
     context = _surface_context("core.set_view")
+    reference = tmp_path / "blade.png"
+    reference.write_bytes(b"stable-reference-image")
+    context["reference_images"] = {
+        "count": 1,
+        "images": [
+            {
+                "id": "blade",
+                "name": "blade.png",
+                "label": "front view",
+                "path": str(reference),
+            }
+        ],
+    }
     context["document"] = {
         "name": "Bracket",
         "revision": 7,
@@ -1733,6 +2035,11 @@ def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
         api_key="test-key",
         auth_mode="api_key",
     )
+    fourth_provider = provider.CodexProvider(
+        model="gpt-test",
+        api_key="test-key",
+        auth_mode="api_key",
+    )
     first_prompt = session._provider_prompt("Make a plan.", context)
     second_prompt = session._provider_prompt(
         "Build it.",
@@ -1743,12 +2050,14 @@ def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
         ],
     )
     third_prompt = session._provider_prompt("Double-check it.", context)
+    fourth_prompt = session._provider_prompt("Report the result.", context)
 
     requests_before_cleanup: list[tuple[str, dict]] = []
     try:
         planned = first_provider.run(first_prompt, context)
         built = second_provider.run(second_prompt, context)
         checked = third_provider.run(third_prompt, context)
+        reported = fourth_provider.run(fourth_prompt, context)
     finally:
         if _Client.instance is not None:
             requests_before_cleanup = list(_Client.instance.requests)
@@ -1759,15 +2068,20 @@ def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
     assert planned.final_output == "Plan saved."
     assert built.final_output == "Plan used."
     assert checked.final_output == "Plan used."
+    assert reported.final_output == "Plan used."
     methods = [method for method, _params in requests_before_cleanup]
     assert methods.count("thread/start") == 1
-    assert methods.count("thread/resume") == 2
-    assert methods.count("turn/start") == 3
+    assert methods.count("thread/resume") == 3
+    assert methods.count("turn/start") == 4
     assert "thread/delete" not in methods
     turns = [
         params for method, params in requests_before_cleanup if method == "turn/start"
     ]
     assert all("collaborationMode" not in turn for turn in turns)
+    assert [
+        sum(item.get("type") == "localImage" for item in turn["input"])
+        for turn in turns
+    ] == [1, 0, 0, 0]
     first_text_input = next(
         item["text"] for item in turns[0]["input"] if item["type"] == "text"
     )
@@ -1783,8 +2097,157 @@ def test_codex_plan_then_build_reuses_one_normal_conversation_thread(
     third_text_input = next(
         item["text"] for item in turns[2]["input"] if item["type"] == "text"
     )
-    assert '"__vibecad_context_reference__"' not in third_text_input
-    assert "stable-context-" in third_text_input
+    assert '"__vibecad_context_reference__"' in third_text_input
+    fourth_text_input = next(
+        item["text"] for item in turns[3]["input"] if item["type"] == "text"
+    )
+    assert '"__vibecad_context_reference__"' in fourth_text_input
+
+
+@pytest.mark.parametrize("break_mode", ("compacted", "failed", "cancelled"))
+def test_codex_context_reuse_reanchors_after_turn_lifecycle_break(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    break_mode: str,
+) -> None:
+    class _Client:
+        instance = None
+
+        def __init__(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+            environment=None,
+        ) -> None:
+            del server_request_handler, environment
+            self.notification_handler = notification_handler
+            self.requests: list[tuple[str, dict]] = []
+            self.alive = True
+            self.turn_number = 0
+            _Client.instance = self
+
+        @property
+        def stderr_tail(self) -> list[str]:
+            return []
+
+        def start(self) -> None:
+            return None
+
+        def set_handlers(
+            self,
+            *,
+            notification_handler,
+            server_request_handler,
+        ) -> None:
+            del server_request_handler
+            self.notification_handler = notification_handler
+
+        def request(self, method: str, params: dict, timeout: float) -> dict:
+            del timeout
+            self.requests.append((method, dict(params)))
+            if method == "thread/start":
+                return {"thread": {"id": "lifecycle-thread"}, "model": "gpt-test"}
+            if method == "thread/resume":
+                return {"thread": {"id": "lifecycle-thread"}, "model": "gpt-test"}
+            if method == "turn/interrupt":
+                return {}
+            if method == "turn/start":
+                self.turn_number += 1
+                if self.turn_number == 2 and break_mode == "failed":
+                    raise codex.CodexAppServerError("simulated turn failure")
+                turn_id = f"lifecycle-turn-{self.turn_number}"
+                if self.turn_number == 2 and break_mode == "cancelled":
+                    return {"turn": {"id": turn_id}}
+                if self.turn_number == 2 and break_mode == "compacted":
+                    self.notification_handler(
+                        "thread/compacted",
+                        {"threadId": "lifecycle-thread"},
+                    )
+                self.notification_handler(
+                    "item/completed",
+                    {
+                        "threadId": "lifecycle-thread",
+                        "turnId": turn_id,
+                        "item": {"type": "agentMessage", "text": "done"},
+                    },
+                )
+                self.notification_handler(
+                    "turn/completed",
+                    {
+                        "threadId": "lifecycle-thread",
+                        "turnId": turn_id,
+                        "turn": {"id": turn_id, "status": "completed"},
+                    },
+                )
+                return {"turn": {"id": turn_id}}
+            raise AssertionError(method)
+
+        def close(self) -> None:
+            self.alive = False
+
+    codex.reset_managed_codex_sessions()
+    monkeypatch.setattr(codex, "CodexAppServerClient", _Client)
+    reference = tmp_path / "lifecycle.png"
+    reference.write_bytes(b"lifecycle-reference")
+    context = _surface_context("core.set_view")
+    context["document"] = {
+        "name": "Lifecycle",
+        "revision": 9,
+        "notes": "stable-context-" + "x" * 1024,
+    }
+    context["reference_images"] = {
+        "count": 1,
+        "images": [
+            {
+                "id": "lifecycle",
+                "name": "lifecycle.png",
+                "path": str(reference),
+            }
+        ],
+    }
+    context["_vibecad_codex_session"] = {
+        "conversation_id": "b" * 32,
+        "conversation_path": "/project/conversations/" + "b" * 32 + ".json",
+    }
+    prompts = [
+        session._provider_prompt(text, context)
+        for text in ("Inspect.", "Continue.", "Inspect again.")
+    ]
+    providers = [
+        provider.CodexProvider(model="gpt-test", api_key="test-key", auth_mode="api_key")
+        for _ in prompts
+    ]
+
+    requests_before_cleanup: list[tuple[str, dict]] = []
+    try:
+        providers[0].run(prompts[0], context)
+        if break_mode == "cancelled":
+            with pytest.raises(provider.ProviderUnavailable):
+                providers[1].run(prompts[1], context, cancellation_check=lambda: True)
+        elif break_mode == "failed":
+            with pytest.raises(provider.ProviderUnavailable):
+                providers[1].run(prompts[1], context)
+        else:
+            providers[1].run(prompts[1], context)
+        providers[2].run(prompts[2], context)
+    finally:
+        if _Client.instance is not None:
+            requests_before_cleanup = list(_Client.instance.requests)
+        codex.reset_managed_codex_sessions()
+
+    turns = [
+        params for method, params in requests_before_cleanup if method == "turn/start"
+    ]
+    assert [
+        sum(item.get("type") == "localImage" for item in turn["input"])
+        for turn in turns
+    ] == [1, 0, 1]
+    third_text = next(
+        item["text"] for item in turns[2]["input"] if item["type"] == "text"
+    )
+    assert '"__vibecad_context_reference__"' not in third_text
+    assert "stable-context-" in third_text
 
 
 def test_system_instructions_do_not_forbid_requested_planning() -> None:

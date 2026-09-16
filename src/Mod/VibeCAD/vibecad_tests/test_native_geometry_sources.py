@@ -15,8 +15,35 @@ from VibeCADNativeDrawingViewState import drawing_source_catalog_identity_state
 from VibeCADNativeGeometrySources import (
     active_design_geometry_sources,
     drawing_source_exclusion_reason,
+    is_analyze_context_object,
     is_potential_design_geometry_source,
 )
+
+
+@pytest.mark.parametrize("history_active", [True, False])
+def test_hidden_study_geometry_remains_discoverable_without_exposing_hidden_designs(
+    monkeypatch, history_active,
+) -> None:
+    source = _Source(1)
+    source.ViewObject.Visibility = False
+    source.InList = [SimpleNamespace(Name="Fixed")]
+    unrelated = _Source(2)
+    unrelated.ViewObject.Visibility = False
+    document = SimpleNamespace(Uid="study-document", Objects=[source, unrelated])
+    monkeypatch.setitem(sys.modules, "PartGui", SimpleNamespace(
+        isModelingObjectActive=lambda obj: history_active,
+    ))
+    artifacts = frozenset({"Analysis", "Fixed"})
+
+    assert is_analyze_context_object(
+        document, source, analysis_artifact_names=artifacts,
+    ) is history_active
+    assert not is_analyze_context_object(
+        document, unrelated, analysis_artifact_names=artifacts,
+    )
+    assert drawing_source_exclusion_reason(
+        document, source, analysis_artifact_names=artifacts,
+    ) == "hidden"
 
 
 class _Shape:

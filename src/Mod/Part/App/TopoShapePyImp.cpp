@@ -22,6 +22,7 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <cmath>
 #include <limits>
 #include <sstream>
 #include <boost/regex.hpp>
@@ -462,6 +463,38 @@ PyObject* TopoShapePy::exportBrep(PyObject* args) const
     return nullptr;
 }
 
+PyObject* TopoShapePy::exportBrepDetached(PyObject* args) const
+{
+    char* name;
+    if (!PyArg_ParseTuple(args, "et", "utf-8", &name)) {
+        return nullptr;
+    }
+    const std::string filename(name);
+    PyMem_Free(name);
+    try {
+        // Own topology and geometry before releasing Python. Serialization may
+        // then run on a worker without modifying the caller's shape or using
+        // STEP's process-wide configuration in the live application.
+        BRepBuilderAPI_Copy copy(getTopoShapePtr()->getShape(), true, false);
+        TopoShape snapshot(copy.Shape());
+        {
+            Base::PyGILStateRelease release;
+            snapshot.exportBrep(filename.c_str());
+        }
+        Py_Return;
+    }
+    catch (const Base::Exception& error) {
+        PyErr_SetString(PartExceptionOCCError, error.what());
+    }
+    catch (const Standard_Failure& error) {
+        PyErr_SetString(PartExceptionOCCError, error.GetMessageString());
+    }
+    catch (const std::exception& error) {
+        PyErr_SetString(PartExceptionOCCError, error.what());
+    }
+    return nullptr;
+}
+
 PyObject* TopoShapePy::exportBinary(PyObject* args) const
 {
     char* input;
@@ -512,13 +545,21 @@ PyObject* TopoShapePy::dumpToString(PyObject* args) const
 
 PyObject* TopoShapePy::exportBrepToString(PyObject* args) const
 {
-    if (!PyArg_ParseTuple(args, "")) {
+    PyObject* persistencePrecision = Py_False;
+    if (!PyArg_ParseTuple(args, "|O!", &PyBool_Type, &persistencePrecision)) {
         return nullptr;
     }
 
     try {
         // write brep file
         std::stringstream str;
+        if (Base::asBoolean(persistencePrecision)) {
+            // Match Base::ZipWriter without changing legacy BREP exports. OCCT
+            // chooses precision per record and inherits the stream floatfield.
+            str.imbue(std::locale::classic());
+            str.precision(std::numeric_limits<double>::digits10 + 1);
+            str.setf(std::ios::fixed, std::ios::floatfield);
+        }
         getTopoShapePtr()->exportBrep(str);
         return Py::new_reference_to(Py::String(str.str()));
     }
@@ -1793,6 +1834,50 @@ PyObject* TopoShapePy::tessellate(PyObject* args) const
     }
     catch (Standard_Failure& e) {
         PyErr_SetString(PartExceptionOCCError, e.GetMessageString());
+        return nullptr;
+    }
+}
+
+PyObject* TopoShapePy::tessellateDetached(PyObject* args) const
+{
+    double tolerance;
+    if (!PyArg_ParseTuple(args, "d", &tolerance)) {
+        return nullptr;
+    }
+    if (!std::isfinite(tolerance) || tolerance <= 0.0) {
+        PyErr_SetString(PyExc_ValueError, "Mesh deflection must be finite and positive");
+        return nullptr;
+    }
+    try {
+        // Snapshot while holding the GIL. Meshing owns both the topology and
+        // geometry, and cannot attach triangulations to the caller's shape.
+        BRepBuilderAPI_Copy copy(getTopoShapePtr()->getShape(), true, false);
+        TopoShape snapshot(copy.Shape());
+        std::vector<Base::Vector3d> points;
+        std::vector<Data::ComplexGeoData::Facet> facets;
+        {
+            Base::PyGILStateRelease release;
+            snapshot.getFaces(points, facets, tolerance);
+        }
+        Py::List vertices;
+        for (const auto& point : points) {
+            vertices.append(Py::asObject(new Base::VectorPy(point)));
+        }
+        Py::List triangles;
+        for (const auto& facet : facets) {
+            Py::Tuple indices(3);
+            indices.setItem(0, Py::Long(static_cast<long>(facet.I1)));
+            indices.setItem(1, Py::Long(static_cast<long>(facet.I2)));
+            indices.setItem(2, Py::Long(static_cast<long>(facet.I3)));
+            triangles.append(indices);
+        }
+        Py::Tuple result(2);
+        result.setItem(0, vertices);
+        result.setItem(1, triangles);
+        return Py::new_reference_to(result);
+    }
+    catch (Standard_Failure& error) {
+        PyErr_SetString(PartExceptionOCCError, error.GetMessageString());
         return nullptr;
     }
 }

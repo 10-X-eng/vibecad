@@ -504,6 +504,23 @@ KNOWN_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "Surface_BlendCurve",
         "VibeCAD_PublishInterface",
     ),
+    "print": (
+        "Std_ViewFitAll", "Std_ViewIsometric", "VibeCAD_ToggleGrid", "VibeCAD_SectionView",
+        "Std_Measure", "Std_MassProperties", "Inspection_InspectElement",
+        "Part_CheckGeometry", "Inspection_VisualInspection",
+        "VibeCADPrint_OpenInPrusaSlicer", "VibeCADPrint_Save3MF", "VibeCADPrint_Setup",
+    ),
+    "sheet_metal": (
+        "Std_ViewFitAll", "Std_ViewIsometric", "VibeCAD_ToggleGrid", "VibeCAD_SectionView",
+        "Std_Measure", "Std_MassProperties", "Inspection_InspectElement",
+        "Part_CheckGeometry", "Inspection_VisualInspection",
+        "SheetMetal_CreateBaseShape", "SheetMetal_CreateFromSketch", "SheetMetal_CreateFromSolid",
+        "SheetMetal_CreateEditable",
+        "SheetMetal_CreateFlange", "SheetMetal_CreateFold",
+        "SheetMetal_EditParameters", "SheetMetal_EditCuts", "SheetMetal_EditMaterial",
+        "SheetMetal_ViewFolded", "SheetMetal_ViewFlat",
+        "SheetMetal_RMFGConnection", "SheetMetal_RMFGManufacture",
+    ),
     "parameters": (
         "Std_ViewFitAll",
         "Std_ViewIsometric",
@@ -716,6 +733,8 @@ OPTIONAL_ACTIONS_BY_SURFACE: dict[str, tuple[str, ...]] = {
         "VibeCADAero_FlightCard",
     ),
     "parameters": (),
+    "sheet_metal": (),
+    "print": (),
     "aero": (),
     "sketch.edit": (),
     "sketch.setup": (),
@@ -827,6 +846,9 @@ DEFAULT_UNIQUE_ACTION_COUNT = len(
 
 _HUMAN_ONLY_COMMAND_IDS = frozenset(
     {
+        "VibeCADPrint_OpenInPrusaSlicer",
+        "VibeCADPrint_Save3MF",
+        "VibeCADPrint_Setup",
         "Assembly_ActivateAssembly",
         "VibeCAD_AnalyzeStudySetup",
         "CAM_RetainSimulationResult",
@@ -837,6 +859,8 @@ _HUMAN_ONLY_COMMAND_IDS = frozenset(
 
 _VIEW_COMMAND_IDS = frozenset(
     {
+        "SheetMetal_ViewFolded",
+        "SheetMetal_ViewFlat",
         "Std_ViewFitAll",
         "Std_ViewIsometric",
         "VibeCAD_ToggleGrid",
@@ -862,6 +886,7 @@ _VIEW_COMMAND_IDS = frozenset(
 
 _READ_COMMAND_IDS = frozenset(
     {
+        "SheetMetal_RMFGConnection",
         "Std_Measure",
         "Std_MassProperties",
         "Inspection_InspectElement",
@@ -890,6 +915,7 @@ _READ_COMMAND_IDS = frozenset(
 
 _EXPORT_COMMAND_IDS = frozenset(
     {
+        "SheetMetal_RMFGManufacture",
         "Mesh_Export",
         "Points_Export",
         "Spreadsheet_Export",
@@ -906,6 +932,10 @@ _EXPORT_COMMAND_IDS = frozenset(
 
 _BACKGROUND_COMMAND_IDS = frozenset(
     {
+        "SheetMetal_BaseShape", "SheetMetal_AddBase", "SheetMetal_FromSolid", "SheetMetal_CreateEditable",
+        "SheetMetal_CreateBaseShape", "SheetMetal_CreateFromSketch", "SheetMetal_CreateFromSolid",
+        "SheetMetal_CreateFlange", "SheetMetal_CreateFold",
+        "SheetMetal_EditParameters", "SheetMetal_EditCuts", "SheetMetal_EditMaterial",
         "Inspection_VisualInspection",
         "Spreadsheet_Import",
         "Spreadsheet_Export",
@@ -1006,6 +1036,7 @@ _SESSION_COMMAND_IDS = frozenset(
 _INTERACTIVE_COMMAND_IDS = (
     frozenset(
         {
+            "SheetMetal_RMFGConnection", "SheetMetal_RMFGManufacture",
             "CAM_Camotics",
             "CAM_SimulatorGL",
             "CAM_Simulator",
@@ -1015,6 +1046,9 @@ _INTERACTIVE_COMMAND_IDS = (
 )
 
 _CAPABILITY_OVERRIDES = {
+    "SheetMetal_CreateFlange": "sheet_metal.create",
+    "SheetMetal_CreateFold": "sheet_metal.create",
+    "SheetMetal_RMFGManufacture": "sheet_metal.manufacturing",
     "Std_ViewFitAll": "view.control",
     "Std_ViewIsometric": "view.control",
     "VibeCAD_ToggleGrid": "view.control",
@@ -1530,6 +1564,22 @@ _CAPABILITY_OVERRIDES.update(
 )
 
 _OPERATION_VARIANT_OVERRIDES = {
+    "SheetMetal_CreateFlange": "add_flange",
+    "SheetMetal_CreateFold": "fold_from_sketch",
+    "SheetMetal_CreateBaseShape": "base_shape",
+    "SheetMetal_CreateFromSketch": "base_from_sketch",
+    "SheetMetal_CreateFromSolid": "from_solid",
+    "SheetMetal_BaseShape": "base_shape",
+    "SheetMetal_AddBase": "base_from_sketch",
+    "SheetMetal_FromSolid": "from_solid",
+    "SheetMetal_CreateEditable": "from_source",
+    "SheetMetal_EditParameters": "set_parameters",
+    "SheetMetal_EditCuts": "add_circle",
+    "SheetMetal_EditMaterial": "set_material",
+    "SheetMetal_ViewFolded": "set_representation",
+    "SheetMetal_ViewFlat": "set_representation",
+    "SheetMetal_RMFGConnection": "show_connection",
+    "SheetMetal_RMFGManufacture": "show_panel",
     "Mesh_HarmonizeNormals": "repair",
     "VibeCADAero_VLM": "vlm",
     "VibeCADAero_ExportJSBSim": "export_jsbsim",
@@ -1906,6 +1956,21 @@ _OPERATION_VARIANT_OVERRIDES = {
 }
 
 _EXACT_TARGET_TYPE_OVERRIDES = {
+    "SheetMetal_CreateFlange": "ExactSheetFlangeSource",
+    "SheetMetal_CreateFold": "ExactSheetFoldSource",
+    "SheetMetal_RMFGManufacture": "ExactSharedSheetState",
+    "SheetMetal_CreateBaseShape": "NewSheetBaseShape",
+    "SheetMetal_CreateFromSketch": "ExactSheetSourceSketch",
+    "SheetMetal_CreateFromSolid": "ExactSheetSourceSolid",
+    "SheetMetal_BaseShape": "NewSheetBaseShape",
+    "SheetMetal_AddBase": "ExactSheetSourceSketch",
+    "SheetMetal_FromSolid": "ExactSheetSourceSolid",
+    "SheetMetal_CreateEditable": "ExactSheetSourceFace",
+    "SheetMetal_EditParameters": "ExactSharedSheetState",
+    "SheetMetal_EditCuts": "ExactSharedSheetState",
+    "SheetMetal_EditMaterial": "ExactSharedSheetState",
+    "SheetMetal_ViewFolded": "ExactSharedSheetState",
+    "SheetMetal_ViewFlat": "ExactSharedSheetState",
     "Spreadsheet_CreateSheet": "NewParametersSheet",
     "Spreadsheet_Import": "HumanAuthorizedParametersCsv",
     "Spreadsheet_Export": "ExactParametersSheetAndHumanAuthorizedOutput",
@@ -2204,6 +2269,14 @@ _SURFACE_CAPABILITY_OVERRIDES = {
 }
 
 _GROUP_CAPABILITY_FAMILIES = {
+    ("print", "Send"): "print.handoff",
+    ("print", "Setup"): "print.setup",
+    ("sheet_metal", "Create"): "sheet_metal.create",
+    ("sheet_metal", "Bend/Form"): "sheet_metal.edit",
+    ("sheet_metal", "Cut/Relief"): "sheet_metal.edit",
+    ("sheet_metal", "Materials"): "sheet_metal.edit",
+    ("sheet_metal", "Folded/Flat"): "sheet_metal.view",
+    ("sheet_metal", "RMFG"): "sheet_metal.connection",
     ("model", "Structure"): "model.structure",
     ("model", "Solids"): "model.feature",
     ("model", "Finish"): "model.dressup",

@@ -48,6 +48,11 @@ _POINT_POSITIONS = {
     "arc": frozenset({"start", "end", "center"}),
 }
 _CIRCULAR_KINDS = frozenset({"circle", "arc"})
+_POINT_REF_GUIDANCE = (
+    'Use {"geometry_ref":"your_geometry_ref","position":"start"} with a ref '
+    'from this batch\'s geometry, or {"origin":true}. '
+    'Positions: line=start|end; arc=start|end|center; circle=center; point=point.'
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,7 +213,10 @@ def _point_ref(value: Any, label: str) -> SketchBatchPointRef:
     ):
         return SketchBatchPointRef(None, "origin")
     if fields != {"geometry_ref", "position"}:
-        raise NativeSketchError(f"Sketch batch {label} has incorrect fields.")
+        raise NativeSketchError(
+            f"Sketch batch {label} has incorrect fields. {_POINT_REF_GUIDANCE} "
+            "No batch geometry or constraints were created; correct the call and retry."
+        )
     position = value["position"]
     if not isinstance(position, str) or position not in {
         "point",
@@ -244,6 +252,7 @@ def _constraint_spec(value: Any, offset: int) -> SketchBatchConstraintSpec:
     kind = str(value.get("kind", "") or "")
     local_ref = _local_ref(value.get("ref"), f"constraint {offset} ref")
     prefix = f"constraint {local_ref}"
+    expected = {"ref", "kind", "first", "second"} if kind == "coincident" else None
     if kind == "coincident" and set(value) == {"ref", "kind", "first", "second"}:
         return SketchBatchConstraintSpec(
             local_ref,
@@ -292,13 +301,9 @@ def _constraint_spec(value: Any, offset: int) -> SketchBatchConstraintSpec:
                     else None
                 ),
             )
-    if kind in {"distance_x", "distance_y", "distance"} and set(value) == {
-        "ref",
-        "kind",
-        "first",
-        "second",
-        "value_mm",
-    }:
+    if kind in {"distance_x", "distance_y", "distance"}:
+        expected = {"ref", "kind", "first", "second", "value_mm"}
+    if kind in {"distance_x", "distance_y", "distance"} and set(value) == expected:
         return SketchBatchConstraintSpec(
             local_ref,
             kind,
@@ -310,9 +315,25 @@ def _constraint_spec(value: Any, offset: int) -> SketchBatchConstraintSpec:
                 else _signed_mm(value["value_mm"], f"{prefix} value_mm")
             ),
         )
-    raise NativeSketchError(
-        f"Sketch batch constraint {local_ref} has unsupported or inconsistent fields."
-    )
+    details = [f"Sketch batch constraint {local_ref} has unsupported or inconsistent fields."]
+    if expected is None:
+        details.append(
+            f"Unsupported kind {kind!r}. Supported kinds: coincident, horizontal, vertical, "
+            "parallel, perpendicular, equal, distance_x, distance_y, distance, radius, diameter, angle."
+        )
+    else:
+        details.append(f"Required fields for {kind}: {', '.join(sorted(expected))}.")
+        missing, extra = expected - set(value), set(value) - expected
+        if missing:
+            details.append(f"Missing: {', '.join(sorted(missing))}.")
+        if extra:
+            details.append(f"Unexpected: {', '.join(sorted(str(field) for field in extra))}.")
+        if "first" in expected:
+            details.append(f"first and second each select a point. {_POINT_REF_GUIDANCE}")
+        else:
+            details.append("Geometry references must use refs from this batch's geometry.")
+    details.append("No batch geometry or constraints were created; correct the call and retry.")
+    raise NativeSketchError(" ".join(details))
 
 
 def _unique_refs(values: tuple[Any, ...], label: str) -> None:

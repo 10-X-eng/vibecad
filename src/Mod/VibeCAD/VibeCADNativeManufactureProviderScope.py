@@ -17,6 +17,7 @@ from VibeCADNativeCapabilityRegistry import (
 
 _SHARED = frozenset(
     {
+        "workspace.switch",
         "state.read",
         "view.control",
         "inspect.query",

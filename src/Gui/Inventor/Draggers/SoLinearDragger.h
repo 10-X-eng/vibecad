@@ -60,6 +60,7 @@ class GuiExport SoLinearDragger: public SoDragger
     SO_KIT_CATALOG_ENTRY_HEADER(labelSwitch);
     SO_KIT_CATALOG_ENTRY_HEADER(labelSeparator);
     SO_KIT_CATALOG_ENTRY_HEADER(scale);
+    SO_KIT_CATALOG_ENTRY_HEADER(dragSurface);
     SO_KIT_CATALOG_ENTRY_HEADER(arrow);
 
 public:

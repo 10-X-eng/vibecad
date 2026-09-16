@@ -6,6 +6,7 @@ import json
 
 from jsonschema import Draft202012Validator
 
+from VibeCADNativeCapabilityRegistry import provider_visible_native_schema
 from VibeCADNativeModelStructureSchema import (
     model_revolution_sketch_capability_definition,
     model_structure_capability_definitions,
@@ -134,6 +135,26 @@ def test_open_sketch_has_one_target_and_no_creation_fields() -> None:
     assert set(branch["required"]) == {"sketch"}
     assert set(branch["properties"]) == {"operation", "sketch"}
     assert branch["additionalProperties"] is False
+
+
+def test_provider_sketch_creation_points_to_editing_without_listing_tools() -> None:
+    schema = provider_visible_native_schema(_schemas()["model.sketch"])
+
+    assert "sketch.open" in schema["description"]
+    assert "edit" in schema["description"]
+    assert len(schema["description"].split()) <= 20
+
+
+def test_provider_sketch_open_explains_tool_transition_and_return() -> None:
+    schema = provider_visible_native_schema(_schemas()["sketch.open"])
+    description = schema["description"]
+
+    for detail in ("edit mode", "drawing", "dimension", "constraint", "next turn",
+                   "sketch.finish", "workspace"):
+        assert detail in description
+    assert "sketch.control" not in description
+    assert len(description.split()) <= 35
+    assert "sketch.draw_" not in description
 
 
 def test_revolution_sketch_is_a_focused_axis_aware_tool() -> None:

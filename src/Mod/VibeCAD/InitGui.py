@@ -352,6 +352,21 @@ try:
             except Exception:
                 pass
 
+    def _setup_host_isolation() -> None:
+        try:
+            import VibeCADHostIsolation
+
+            VibeCADHostIsolation.ensure_started()
+        except Exception as exc:
+            try:
+                import FreeCAD as _App
+
+                _App.Console.PrintError(
+                    f"VibeCAD native worker pool failed to start: {exc}\n"
+                )
+            except Exception:
+                pass
+
     def _setup_agent_control() -> None:
         try:
             import os
@@ -395,6 +410,7 @@ try:
                 pass
 
     QtCore.QTimer.singleShot(0, _setup_development_identity)
+    QtCore.QTimer.singleShot(0, _setup_host_isolation)
     QtCore.QTimer.singleShot(0, _setup_always_on_grid)
     QtCore.QTimer.singleShot(0, _setup_agent_control)
     QtCore.QTimer.singleShot(0, _setup_aero_ribbon)

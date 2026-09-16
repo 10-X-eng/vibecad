@@ -165,11 +165,11 @@ bool SheetView::onMsg(const char* pMsg)
         return true;
     }
     else if (strcmp("Save", pMsg) == 0) {
-        getGuiDocument()->save();
+        getGuiDocument()->saveAsync();
         return true;
     }
     else if (strcmp("SaveAs", pMsg) == 0) {
-        getGuiDocument()->saveAs();
+        getGuiDocument()->saveAsAsync();
         return true;
     }
     else if (strcmp("Std_Delete", pMsg) == 0) {

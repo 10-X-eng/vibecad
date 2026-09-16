@@ -348,11 +348,12 @@ public:
 
     bool canRecomputeOnWorker() const override
     {
-        if (!FeatureT::canRecomputeOnWorker()) {
-            return false;
-        }
-
-        return imp->supportsAsyncRecompute() == FeaturePythonImp::Accepted;
+        // Python-backed model execution acquires the interpreter lock inside
+        // FeaturePythonImp. Missing declarations use the worker runtime by
+        // default; an explicit rejection remains authoritative. GUI APIs
+        // separately enforce GUI-thread affinity.
+        return FeatureT::canRecomputeOnWorker()
+            && imp->supportsAsyncRecompute() != FeaturePythonImp::Rejected;
     }
 
     /**

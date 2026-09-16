@@ -21,8 +21,6 @@ _COMPONENT_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _DECLARATION_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _INTERFACE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _SUBELEMENT = re.compile(r"^(Face|Edge|Vertex)([1-9][0-9]*)$")
-_MAX_COMPONENTS = 256
-_MAX_PAIRS = (_MAX_COMPONENTS * (_MAX_COMPONENTS - 1)) // 2
 _MAX_WITNESSES_PER_PAIR = 8
 _MAX_CONTACT_WITNESSES = 4096
 _COLLISION_MESH_LINEAR_DEFLECTION_MM = 0.05
@@ -141,11 +139,11 @@ class DynamicCollisionEvaluator:
     ) -> None:
         if (
             not isinstance(components, Mapping)
-            or not 1 <= len(components) <= _MAX_COMPONENTS
+            or not components
         ):
             raise _error(
                 "components",
-                f"must contain 1-{_MAX_COMPONENTS} named solid shapes",
+                "must contain at least one named solid shape",
             )
         if definition_keys is not None and (
             not isinstance(definition_keys, Mapping)
@@ -248,11 +246,9 @@ class DynamicCollisionEvaluator:
             for _source, _shape, triangle_count in mesh_definitions
         )
         self._component_names = list(self._shapes)
-        self._pairs = [
-            (first, second)
-            for index, first in enumerate(self._component_names)
-            for second in self._component_names[index + 1 :]
-        ]
+        self._component_order = {
+            name: index for index, name in enumerate(self._component_names)
+        }
 
     @property
     def component_names(self) -> list[str]:
@@ -260,7 +256,8 @@ class DynamicCollisionEvaluator:
 
     @property
     def pair_count(self) -> int:
-        return len(self._pairs)
+        count = len(self._component_names)
+        return count * (count - 1) // 2
 
     @property
     def collision_mesh_statistics(self) -> dict[str, int | float]:
@@ -298,7 +295,7 @@ class DynamicCollisionEvaluator:
         duplicate._unique_mesh_definition_count = self._unique_mesh_definition_count
         duplicate._unique_mesh_triangle_count = self._unique_mesh_triangle_count
         duplicate._component_names = list(self._component_names)
-        duplicate._pairs = list(self._pairs)
+        duplicate._component_order = dict(self._component_order)
         return duplicate
 
     def precompute_strict_containment(
@@ -356,22 +353,18 @@ class DynamicCollisionEvaluator:
             frame_placements.append(exact_placements)
             frame_bounds.append(exact_bounds)
 
-        jobs: list[tuple[str, str, list[int]]] = []
-        for first_name, second_name in self._pairs:
-            if (first_name, second_name) in excluded_pairs:
-                continue
-            candidate_frames = [
-                frame_offset
-                for frame_offset, bounds in enumerate(frame_bounds, start=1)
-                if bool(
-                    _aabb_evidence(
-                        bounds[first_name],
-                        bounds[second_name],
-                    )["overlaps_or_touches"]
-                )
-            ]
-            if candidate_frames:
-                jobs.append((first_name, second_name, candidate_frames))
+        frames_by_pair: dict[tuple[str, str], list[int]] = {}
+        for frame_offset, bounds in enumerate(frame_bounds, start=1):
+            for pair in _overlapping_component_pairs(bounds):
+                if pair not in excluded_pairs:
+                    frames_by_pair.setdefault(pair, []).append(frame_offset)
+        jobs = [
+            (first, second, frames_by_pair[(first, second)])
+            for first, second in sorted(
+                frames_by_pair,
+                key=lambda pair: tuple(self._component_order[name] for name in pair),
+            )
+        ]
 
         contained: set[tuple[int, tuple[str, str]]] = set()
         for pair_index, (first_name, second_name, candidate_frames) in enumerate(
@@ -511,20 +504,21 @@ class DynamicCollisionEvaluator:
             bounds[name] = _bounds(shape, path=f"placements.{name}.bounds")
 
         collision_results: dict[tuple[str, str], dict[str, Any]] = {}
-        candidates: list[tuple[str, str]] = []
-        for first_name, second_name in self._pairs:
-            pair = (first_name, second_name)
-            if pair in excluded_pairs:
-                continue
-            if pair in known_pair_results:
-                known = known_pair_results[pair]
-                if known is not None:
-                    collision_results[pair] = dict(known)
-                continue
-            broad_phase = _aabb_evidence(bounds[first_name], bounds[second_name])
-            if not bool(broad_phase["overlaps_or_touches"]):
-                continue
-            candidates.append(pair)
+        for pair, known in known_pair_results.items():
+            first_name, second_name = pair
+            if (
+                known is not None
+                and pair not in excluded_pairs
+                and first_name in self._component_order
+                and second_name in self._component_order
+                and self._component_order[first_name] < self._component_order[second_name]
+            ):
+                collision_results[pair] = dict(known)
+        candidates = sorted(
+            (pair for pair in _overlapping_component_pairs(bounds)
+             if pair not in excluded_pairs and pair not in known_pair_results),
+            key=lambda pair: tuple(self._component_order[name] for name in pair),
+        )
 
         candidate_count = len(candidates)
         exact_common_count = 0
@@ -633,11 +627,13 @@ class DynamicCollisionEvaluator:
             }
         collisions = [
             collision_results[pair]
-            for pair in self._pairs
-            if pair in collision_results
+            for pair in sorted(
+                collision_results,
+                key=lambda pair: tuple(self._component_order[name] for name in pair),
+            )
         ]
         return {
-            "possible_pair_count": len(self._pairs),
+            "possible_pair_count": self.pair_count,
             "excluded_pair_count": len(excluded_pairs),
             "broad_phase_candidate_count": candidate_count,
             "exact_common_count": exact_common_count,
@@ -1013,21 +1009,23 @@ def summarize_dynamic_collision_frames(
     if (
         not isinstance(component_names, Sequence)
         or isinstance(component_names, (str, bytes))
-        or not 1 <= len(component_names) <= _MAX_COMPONENTS
+        or not component_names
     ):
         raise _error(
             "component_names",
-            f"must contain 1-{_MAX_COMPONENTS} stable identifiers",
+            "must contain at least one stable identifier",
         )
     names: list[str] = []
+    seen_names: set[str] = set()
     for index, name in enumerate(component_names):
         if not isinstance(name, str) or not _COMPONENT_ID.fullmatch(name):
             raise _error(
                 f"component_names[{index}]",
                 "must be a stable identifier",
             )
-        if name in names:
+        if name in seen_names:
             raise _error("component_names", f"contains duplicate {name!r}")
+        seen_names.add(name)
         names.append(name)
     if (
         not isinstance(frames, Sequence)
@@ -1515,6 +1513,33 @@ def _transformed_bounds(
     }
 
 
+def _overlapping_component_pairs(
+    bounds: Mapping[str, Mapping[str, Sequence[float]]],
+):
+    """Yield all touching/overlapping boxes without allocating all possible pairs.
+
+    Sweep along the widest scene axis; retain original component ordering in
+    each pair. Exact containment and surface tests still decide collisions.
+    Dense scenes can genuinely contain quadratic candidate counts, but sparse
+    assemblies need only their active sweep interval and actual candidates.
+    """
+    if len(bounds) < 2:
+        return
+    order = {name: index for index, name in enumerate(bounds)}
+    axis = max(range(3), key=lambda index:
+        max(box['maximum_mm'][index] for box in bounds.values())
+        - min(box['minimum_mm'][index] for box in bounds.values()))
+    active: list[str] = []
+    for name in sorted(bounds, key=lambda name: bounds[name]['minimum_mm'][axis]):
+        minimum = bounds[name]['minimum_mm'][axis]
+        active = [other for other in active
+                  if bounds[other]['maximum_mm'][axis] >= minimum]
+        for other in active:
+            if _aabb_evidence(bounds[other], bounds[name])['overlaps_or_touches']:
+                yield (other, name) if order[other] < order[name] else (name, other)
+        active.append(name)
+
+
 def _aabb_evidence(
     first: Mapping[str, Sequence[float]],
     second: Mapping[str, Sequence[float]],
@@ -1574,11 +1599,11 @@ def _prepared_components(
 ) -> tuple[dict[str, Any], dict[str, dict[str, list[float]]]]:
     if (
         not isinstance(components, Mapping)
-        or not 1 <= len(components) <= _MAX_COMPONENTS
+        or not components
     ):
         raise _error(
             "components",
-            f"must contain 1-{_MAX_COMPONENTS} named solid shapes",
+            "must contain at least one named solid shape",
         )
     placed: dict[str, Any] = {}
     bounds: dict[str, dict[str, list[float]]] = {}
@@ -1605,11 +1630,11 @@ def _component_pairs(
     if (
         not isinstance(pairs, Sequence)
         or isinstance(pairs, (str, bytes))
-        or not 1 <= len(pairs) <= _MAX_PAIRS
+        or not pairs
     ):
         raise _error(
             "pairs",
-            f"must contain 1-{_MAX_PAIRS} explicit component pairs",
+            "must contain at least one explicit component pair",
         )
     clean_pairs: list[tuple[str, str]] = []
     seen_pairs: set[tuple[str, str]] = set()

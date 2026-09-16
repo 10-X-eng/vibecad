@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 import time
 from typing import Any, Callable, Mapping
 
@@ -276,12 +277,29 @@ class NativeProviderToolRunner:
         result = self._wait_for_active_background_job(name)
         if result is None:
             result = self._document_dispatch(
-                lambda: self._execution.dispatcher.call(
+                lambda: self._execution.dispatcher.call_async(
                     name,
                     arguments_json,
                     provider_call_id,
+                    document_dispatch=self._document_dispatch,
                 )
             )
+            if isinstance(result, Future):
+                pending = result
+                while True:
+                    if self._cancelled is not None and self._cancelled():
+                        pending.cancel()
+                        result = {'ok': False, 'error_code': 'NATIVE_RUN_CANCELLED',
+                                  'error': 'VibeCAD stopped the pending Native call.'}
+                        break
+                    try:
+                        # This is a provider-thread wait, not a solver deadline
+                        # or a model-visible polling loop. Qt remains free to
+                        # finish the native job and validate its result.
+                        result = pending.result(timeout=0.1)
+                        break
+                    except FutureTimeout:
+                        continue
         if self._debug_events is not None and self._debug_capture_directory:
             events = [dict(event) for event in self._debug_events]
             self._debug_events.clear()
@@ -313,6 +331,26 @@ class NativeProviderToolRunner:
                 "next_surface": str(result.get("current_surface") or ""),
             }
             self._turn_transition_requested = True
+        if (result.get("error_code") == "NATIVE_REVISION_CONFLICT"
+                and isinstance(result.get("repair"), Mapping)
+                and result["repair"].get("next_turn_required") is True
+                and self._execution.document_uid):
+            # Keep the failed call and frozen revision intact. A separate turn
+            # must capture current document state before any further work.
+            try:
+                refreshed = dict(self._refresh_context())
+            except Exception:
+                refreshed = {}
+            live = refreshed.get("provider_tool_surface")
+            from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
+
+            next_surface = str(live.get("domain") or "") if isinstance(live, Mapping) else ""
+            if next_surface in NATIVE_WORKSPACE_BY_SURFACE:
+                self._pending_context = refreshed
+                result = {**result, "document_state_changed": True,
+                          "document_uid": self._execution.document_uid,
+                          "next_turn_required": True, "next_surface": next_surface}
+                self._turn_transition_requested = True
         if result.get("ok") is True and result.get("next_turn_required") is not True:
             try:
                 refreshed = dict(self._refresh_context())

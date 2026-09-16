@@ -23,9 +23,15 @@
 
 #include <boost/core/ignore_unused.hpp>
 #include <algorithm>
+#include <atomic>
+#include <charconv>
 #include <cmath>
+#include <cstring>
+#include <cstdlib>
 #include <vector>
 #include <unordered_map>
+#include <filesystem>
+#include <Build/Version.h>
 
 
 #include <App/Application.h>
@@ -34,7 +40,11 @@
 #include <App/DocumentTimeline.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/FeaturePythonPyImp.h>
+#include <App/GeoFeatureGroupExtension.h>
+#include <App/GroupExtension.h>
+#include <App/HostRuntime.h>
 #include <App/Link.h>
+#include <App/MainThreadSignal.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyPythonObject.h>
 #include <Base/Console.h>
@@ -82,6 +92,8 @@
 
 #include "AssemblyLink.h"
 #include "AssemblyObject.h"
+#include "SimulationFrameSnapshot.h"
+#include "SimulationPlaybackCache.h"
 #include "AssemblyObjectPy.h"
 #include "AssemblyUtils.h"
 #include "JointGroup.h"
@@ -146,6 +158,42 @@ void setGroundingReadOnly(App::DocumentObject* component, bool readOnly)
 
 // ================================ Assembly Object ============================
 
+struct AssemblyObject::SimulationJob
+{
+    std::string simulationName;
+    long simulationId = 0;
+    struct Binding
+    {
+        std::string name;
+        long id;
+        MbDPartData data;
+    };
+    std::vector<Binding> bindings;
+    using Tracks = std::vector<detail::SimulationFrameTrack>;
+    struct Result
+    {
+        std::shared_ptr<ASMTAssembly> solver;
+        std::shared_ptr<const Tracks> tracks;
+    };
+    std::future<Result> completion;
+    Result result;
+    std::shared_ptr<ASMTAssembly> solverIdentity;
+    std::shared_ptr<std::stop_source> cancellation = std::make_shared<std::stop_source>();
+    std::shared_ptr<std::atomic_bool> invalidated = std::make_shared<std::atomic_bool>(false);
+    std::shared_ptr<std::atomic_bool> applying = std::make_shared<std::atomic_bool>(false);
+    fastsignals::scoped_connection changed;
+    fastsignals::scoped_connection deleted;
+    ~SimulationJob() { cancellation->request_stop(); }
+};
+
+struct AssemblyObject::SimulationFrameJob
+{
+    std::future<std::vector<Base::Placement>> completion;
+    std::shared_ptr<std::stop_source> cancellation = std::make_shared<std::stop_source>();
+    std::shared_ptr<const SimulationJob::Tracks> tracks;
+    ~SimulationFrameJob() { cancellation->request_stop(); }
+};
+
 PROPERTY_SOURCE(Assembly::AssemblyObject, App::Part)
 
 AssemblyObject::AssemblyObject()
@@ -161,7 +209,7 @@ AssemblyObject::AssemblyObject()
     mbdAssembly->externalSystem->freecadAssemblyObject = this;
 
     lastDoF = numberOfComponents() * 6;
-    signalSolverUpdate();
+    emitSolverUpdate();
 }
 
 AssemblyObject::~AssemblyObject() = default;
@@ -237,9 +285,143 @@ void AssemblyObject::captureTimelineState() noexcept
 void AssemblyObject::onChanged(const App::Property* prop)
 {
     if (prop == &Group) {
-        updateSolveStatus();
+        invalidateConnectivityCache();
+        requestSolveStatusUpdate();
     }
     App::Part::onChanged(prop);
+}
+
+void AssemblyObject::onSettingDocument()
+{
+    App::Part::onSettingDocument();
+
+    auto* document = getDocument();
+    if (!document) {
+        return;
+    }
+
+    connectivityNewObjectConnection = document->signalNewObject.connect(
+        [this](const App::DocumentObject&) { invalidateConnectivityCache(); }
+    );
+    connectivityDeletedObjectConnection = document->signalDeletedObject.connect(
+        [this](const App::DocumentObject&) { invalidateConnectivityCache(); }
+    );
+    connectivityChangedObjectConnection = document->signalChangedObject.connect(
+        [this](const App::DocumentObject& object, const App::Property& property) {
+            slotConnectivityPropertyChanged(object, property);
+        }
+    );
+    connectivityTouchedObjectConnection = document->signalTouchedObject.connect(
+        [this](const App::DocumentObject&) { invalidateConnectivityCache(); }
+    );
+    connectivityRecomputedObjectConnection = document->signalRecomputedObject.connect(
+        [this](const App::DocumentObject&) { invalidateConnectivityCache(); }
+    );
+    connectivityPropertyStatusConnection = document->signalChangePropertyEditor.connect(
+        [this](const App::Document&, const App::Property&) { invalidateConnectivityCache(); }
+    );
+    solveStatusStableConnection = document->signalBecameStable.connect(
+        [this](const App::Document&) {
+            if (solveStatusUpdatePending && isAttachedToDocument()) {
+                requestSolveStatusUpdate();
+            }
+        }
+    );
+}
+
+void AssemblyObject::unsetupObject()
+{
+    cancelSimulation();
+    cancelSimulationFrame();
+    simulationPlayback.reset();
+    connectivityNewObjectConnection.disconnect();
+    connectivityDeletedObjectConnection.disconnect();
+    connectivityChangedObjectConnection.disconnect();
+    connectivityTouchedObjectConnection.disconnect();
+    connectivityRecomputedObjectConnection.disconnect();
+    connectivityPropertyStatusConnection.disconnect();
+    solveStatusStableConnection.disconnect();
+    solveStatusUpdatePending = false;
+    invalidateConnectivityCache();
+    App::Part::unsetupObject();
+}
+
+void AssemblyObject::invalidateConnectivityCache() noexcept
+{
+    connectivityCacheValid = false;
+}
+
+void AssemblyObject::slotConnectivityPropertyChanged(
+    const App::DocumentObject&,
+    const App::Property& property
+)
+{
+    const char* name = property.getName();
+    if ((name && (std::strcmp(name, "Visibility") == 0 || std::strcmp(name, "Label") == 0
+                  || std::strcmp(name, "Shape") == 0))
+        || property.isDerivedFrom<App::PropertyPlacement>()) {
+        return;
+    }
+    invalidateConnectivityCache();
+}
+
+std::unordered_set<App::DocumentObject*> AssemblyObject::collectConnectedParts(
+    const std::unordered_set<App::DocumentObject*>& roots,
+    const std::vector<App::DocumentObject*>& joints
+)
+{
+    std::unordered_map<App::DocumentObject*, std::vector<App::DocumentObject*>> adjacency;
+    adjacency.reserve(joints.size() * 2);
+
+    for (auto* joint : joints) {
+        if (!joint || !isJointTypeConnecting(joint)) {
+            continue;
+        }
+
+        auto* part1 = getMovingPartFromRef(joint, "Reference1");
+        auto* part2 = getMovingPartFromRef(joint, "Reference2");
+        if (!part1 || !part2) {
+            continue;
+        }
+
+        adjacency[part1].push_back(part2);
+        adjacency[part2].push_back(part1);
+    }
+
+    std::unordered_set<App::DocumentObject*> connected;
+    connected.reserve(adjacency.size() + roots.size());
+    std::vector<App::DocumentObject*> pending;
+    pending.reserve(adjacency.size() + roots.size());
+    for (auto* root : roots) {
+        if (root && connected.insert(root).second) {
+            pending.push_back(root);
+        }
+    }
+
+    while (!pending.empty()) {
+        auto* current = pending.back();
+        pending.pop_back();
+        const auto found = adjacency.find(current);
+        if (found == adjacency.end()) {
+            continue;
+        }
+        for (auto* next : found->second) {
+            if (next && connected.insert(next).second) {
+                pending.push_back(next);
+            }
+        }
+    }
+
+    return connected;
+}
+
+void AssemblyObject::rebuildConnectivityCache()
+{
+    auto grounded = getGroundedParts();
+    auto connected = collectConnectedParts(grounded, getJoints());
+    groundedPartsCache = std::move(grounded);
+    connectedPartsCache = std::move(connected);
+    connectivityCacheValid = true;
 }
 
 int AssemblyObject::solve(bool enableRedo)
@@ -300,8 +482,34 @@ int AssemblyObject::solve(bool enableRedo)
     return 0;
 }
 
+void AssemblyObject::requestSolveStatusUpdate()
+{
+    const auto* document = getDocument();
+    if (document && (document->isPerformingTransaction()
+                     || document->isCooperativeMutationActive()
+                     || document->testStatus(App::Document::Restoring))) {
+        // Group changes during publication or rollback are intermediate graph
+        // states. Recounting components and inspecting every constraint after
+        // each removal is both quadratic and diagnostically misleading. The
+        // document's stable boundary refreshes the final state once, including
+        // when transaction close occurs inside a still-active mutation lease.
+        solveStatusUpdatePending = true;
+        return;
+    }
+    // Flushing a deferred status projection must not launch a solve against
+    // the newly restored/published graph. Explicit solver calls still retain
+    // the public updateSolveStatus() behavior below.
+    refreshSolveStatus(!solveStatusUpdatePending);
+}
+
 void AssemblyObject::updateSolveStatus()
 {
+    refreshSolveStatus(true);
+}
+
+void AssemblyObject::refreshSolveStatus(bool initializeSolver)
+{
+    solveStatusUpdatePending = false;
     lastRedundantJoints.clear();
     lastConflictingJoints.clear();
     lastPartialRedundantJoints.clear();
@@ -314,11 +522,14 @@ void AssemblyObject::updateSolveStatus()
     //+1 because there's a grounded joint to origin
     lastDoF = (1 + numberOfComponents()) * 6;
 
-    if (!mbdAssembly || !mbdAssembly->mbdSystem) {
+    if (initializeSolver && (!mbdAssembly || !mbdAssembly->mbdSystem)) {
         solve();
     }
 
     if (!mbdAssembly || !mbdAssembly->mbdSystem) {
+        if (!initializeSolver) {
+            emitSolverUpdate();
+        }
         return;
     }
 
@@ -415,10 +626,39 @@ void AssemblyObject::updateSolveStatus()
         lastHasRedundancies = true;
     }
 
-    signalSolverUpdate();
+    emitSolverUpdate();
+}
+
+void AssemblyObject::emitSolverUpdate()
+{
+    if (!App::MainThreadSignalConfig::hasHooks()
+        || App::MainThreadSignalConfig::isMainThread()) {
+        signalSolverUpdate();
+        return;
+    }
+
+    std::unique_ptr<Base::PyGILStateRelease> release;
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        release = std::make_unique<Base::PyGILStateRelease>();
+    }
+    App::MainThreadSignalConfig::invoke([this] { signalSolverUpdate(); }, true);
 }
 
 int AssemblyObject::generateSimulation(App::DocumentObject* sim)
+{
+    const int status = prepareSimulation(sim);
+    if (status != 0) { return status; }
+    try {
+        mbdAssembly->runKINEMATIC();
+    }
+    catch (...) {
+        Base::Console().error("Generation of simulation failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+int AssemblyObject::prepareSimulation(App::DocumentObject* sim)
 {
     mbdAssembly = makeMbdAssembly();
     objectPartMap.clear();
@@ -439,18 +679,463 @@ int AssemblyObject::generateSimulation(App::DocumentObject* sim)
 
     create_mbdSimulationParameters(sim);
 
-    try {
-        mbdAssembly->runKINEMATIC();
-    }
-    catch (...) {
-        Base::Console().error("Generation of simulation failed\n");
-        motions.clear();
-        return -1;
-    }
-
     motions.clear();
 
     return 0;
+}
+
+std::uint64_t AssemblyObject::startSimulation(App::DocumentObject* sim)
+{
+    return startSimulationJob(sim, false);
+}
+
+std::uint64_t AssemblyObject::startSimulationPlayback(App::DocumentObject* sim)
+{
+    return startSimulationJob(sim, true);
+}
+
+std::uint64_t AssemblyObject::startSimulationJob(App::DocumentObject* sim, bool allowPlaybackCache)
+{
+    if (App::MainThreadSignalConfig::hasHooks()
+        && !App::MainThreadSignalConfig::isMainThread()) {
+        throw std::runtime_error("Simulation capture requires the document owner thread");
+    }
+    auto* document = getDocument();
+    if (!document || !sim || sim->getDocument() != document || !hasObject(sim, true)
+        || !isTimelineOperationActive(this) || !isTimelineOperationActive(sim)) {
+        throw std::runtime_error("Simulation capture requires live active objects in one document");
+    }
+    if (document->testStatus(App::Document::Recomputing)
+        || document->testStatus(App::Document::Restoring)
+        || App::GetApplication().hasPendingRecomputeRequest(document->getName())
+        || document->isCooperativeMutationActive()) {
+        throw std::runtime_error("Simulation inputs are being updated");
+    }
+    cancelSimulation();
+    cancelSimulationFrame();
+    if (simulationPlayback && !simulationPlayback->invalidated->load()
+        && simulationPlayback->solverIdentity == mbdAssembly
+        && (allowPlaybackCache || simulationPlayback->result.solver)
+        && simulationPlayback->simulationName == sim->getNameInDocument()
+        && simulationPlayback->simulationId == sim->getID()) {
+        // The subscribed input graph has not changed. Preserve the authenticated
+        // solved channels; a new caller still receives its own request token.
+        simulationReusePending = true;
+        if (++simulationRequest == 0) { ++simulationRequest; }
+        return simulationRequest;
+    }
+    auto job = std::make_unique<SimulationJob>();
+    job->simulationName = sim->getNameInDocument();
+    job->simulationId = sim->getID();
+    // Reuse the authoritative input builder, but restore all live solver state
+    // before returning to the event loop. No worker captures this object.
+    auto previousAssembly = mbdAssembly;
+    auto previousParts = std::move(objectPartMap);
+    auto previousMotions = std::move(motions);
+    std::shared_ptr<ASMTAssembly> detached;
+    try {
+        if (prepareSimulation(sim) != 0) {
+            throw std::runtime_error("Simulation requires a grounded component");
+        }
+        job->bindings.reserve(objectPartMap.size());
+        for (const auto& [object, data] : objectPartMap) {
+            job->bindings.push_back({object->getNameInDocument(), object->getID(), data});
+        }
+        detached = std::move(mbdAssembly);
+        detached->externalSystem->freecadAssemblyObject = nullptr;
+    }
+    catch (...) {
+        mbdAssembly = std::move(previousAssembly);
+        objectPartMap = std::move(previousParts);
+        motions = std::move(previousMotions);
+        throw;
+    }
+    mbdAssembly = std::move(previousAssembly);
+    objectPartMap = std::move(previousParts);
+    motions = std::move(previousMotions);
+    std::sort(job->bindings.begin(), job->bindings.end(), [](const auto& a, const auto& b) {
+        return a.name < b.name;
+    });
+    auto invalidated = job->invalidated;
+    auto cancellation = job->cancellation;
+    auto applying = job->applying;
+    auto components = std::make_shared<std::unordered_set<const App::DocumentObject*>>();
+    for (const auto& binding : job->bindings) {
+        components->insert(document->getObject(binding.name.c_str()));
+    }
+    // Capture dependencies once, while live inputs are owner-thread confined.
+    // Include linked source geometry and placement ancestors, including objects
+    // in other documents. Observers below only read this immutable identity set.
+    auto watchedInputs = std::make_shared<std::unordered_set<const App::DocumentObject*>>();
+    std::vector<App::DocumentObject*> pending;
+    const auto include = [&](App::DocumentObject* object) {
+        if (object && watchedInputs->insert(object).second) { pending.push_back(object); }
+    };
+    include(this);
+    include(sim);
+    for (const auto& binding : job->bindings) {
+        include(document->getObject(binding.name.c_str()));
+    }
+    for (size_t index = 0; index < pending.size(); ++index) {
+        auto* object = pending[index];
+        for (auto* dependency : object->getOutList()) { include(dependency); }
+        include(App::GeoFeatureGroupExtension::getGroupOfObject(object));
+    }
+    auto invalidate = [invalidated, cancellation](const App::DocumentObject& object, const char* reason) {
+        if (!invalidated->exchange(true)) {
+            FC_LOG("VIBECAD_SIMULATION invalidated object=" << object.getNameInDocument()
+                   << " reason=" << (reason ? reason : "unnamed property"));
+        }
+        cancellation->request_stop();
+    };
+    job->changed = App::GetApplication().signalChangedObject.connect(
+        [invalidate, applying, components, watchedInputs, simulation = sim]
+        (const App::DocumentObject& object, const App::Property& property) {
+            if (!watchedInputs->contains(&object)) { return; }
+            const char* name = property.getName();
+            if (name && (std::strcmp(name, "Visibility") == 0 || std::strcmp(name, "Label") == 0)) {
+                return;
+            }
+            // GroupExtension emits this derived notification for child visibility
+            // and group execution. Real child inputs and Group membership are
+            // observed separately; this property is not consumed by the solver.
+            if (name && std::strcmp(name, "_GroupTouched") == 0) {
+                const auto* group = object.getExtensionByType<App::GroupExtension>(true);
+                if (group && &property == &group->_GroupTouched) {
+                    return;
+                }
+            }
+            // Playback cadence is not consumed by create_mbdSimulationParameters.
+            // Keep this exemption scoped to the exact solved simulation.
+            if (name && &object == simulation
+                && std::strcmp(name, "jFramesPerSecond") == 0) {
+                return;
+            }
+            if (name && applying->load() && components->contains(&object)
+                && (std::strcmp(name, "Placement") == 0 || std::strcmp(name, "LinkPlacement") == 0)) {
+                return;
+            }
+            invalidate(object, name);
+        });
+    job->deleted = App::GetApplication().signalDeletedObject.connect(
+        [invalidate, watchedInputs](const App::DocumentObject& object) {
+            if (watchedInputs->contains(&object)) { invalidate(object, "deleted"); }
+        });
+    // New objects cannot affect the captured inputs until a watched Group,
+    // link, or expression changes to reference them; that change invalidates.
+    std::vector<MbDPartData> inputs;
+    std::vector<detail::SimulationPlaybackCache::Binding> cacheBindings;
+    inputs.reserve(job->bindings.size());
+    cacheBindings.reserve(job->bindings.size());
+    for (const auto& binding : job->bindings) {
+        inputs.push_back(binding.data);
+        cacheBindings.emplace_back(binding.name, binding.data.offsetPlc);
+    }
+    const auto cacheDirectory = (std::filesystem::path(App::Application::getUserCachePath())
+                                / "simulation-playback").string();
+    auto& runtime = App::GetApplication().hostRuntime();
+    job->completion = runtime.submit(
+        [detached = std::move(detached), cancellation, inputs = std::move(inputs),
+         cacheBindings = std::move(cacheBindings), cacheDirectory, allowPlaybackCache,
+         &runtime](std::stop_token runtimeStop) {
+            Base::CancellationScope context(cancellation->get_token());
+            std::stop_callback onShutdown(runtimeStop, [cancellation] { cancellation->request_stop(); });
+            detached->setCancellationCheck([] { Base::CancellationScope::check(); });
+            Base::CancellationScope::check();
+            const auto key = detail::SimulationPlaybackCache::inputKey(
+                *detached, cacheBindings, "simulation-playback-1:" FCRepositoryHash);
+            const detail::SimulationPlaybackCache cache(cacheDirectory);
+            if (allowPlaybackCache) {
+                std::vector<Base::Placement> offsets;
+                offsets.reserve(inputs.size());
+                for (const auto& input : inputs) { offsets.push_back(input.offsetPlc); }
+                if (auto saved = cache.load(key, offsets)) {
+                    Base::CancellationScope::check();
+                    FC_LOG("VIBECAD_SIMULATION playback_source=persisted components=" << saved->size()
+                           << " frames=" << saved->front().frameCount());
+                    return SimulationJob::Result {nullptr,
+                        std::make_shared<SimulationJob::Tracks>(std::move(*saved))};
+                }
+            }
+            FC_LOG("VIBECAD_SIMULATION playback_source=generated components=" << inputs.size());
+            detached->runKINEMATIC();
+            Base::CancellationScope::check();
+            if (detached->numberOfFrames() < 2) {
+                throw std::runtime_error("Simulation generated fewer than two frames");
+            }
+            auto tracks = std::make_shared<SimulationJob::Tracks>(inputs.size());
+            runtime.parallelFor(inputs.size(), [&](size_t index) {
+                Base::CancellationScope::check();
+                tracks->at(index) = detail::SimulationFrameTrack::capture(
+                    *inputs[index].part, inputs[index].offsetPlc, detached->numberOfFrames());
+            });
+            try { cache.store(key, *tracks); }
+            catch (const std::ios_base::failure& error) {
+                // Optional disk persistence must not discard a successful solve.
+                // Cancellation, allocation and solver errors still propagate.
+                Base::Console().warning("Simulation playback was not cached: %s\n", error.what());
+            }
+            return SimulationJob::Result {detached, std::move(tracks)};
+        });
+    simulationJob = std::move(job);
+    // Zero denotes the current request for callers which omit the optional token.
+    if (++simulationRequest == 0) { ++simulationRequest; }
+    return simulationRequest;
+}
+
+bool AssemblyObject::finishSimulation(std::uint64_t request)
+{
+    if (App::MainThreadSignalConfig::hasHooks()
+        && !App::MainThreadSignalConfig::isMainThread()) {
+        throw std::runtime_error("Simulation adoption requires the document owner thread");
+    }
+    if (request != 0 && request != simulationRequest) {
+        throw std::runtime_error("Simulation request was superseded");
+    }
+    const auto* document = getDocument();
+    if (!document || document->testStatus(App::Document::Recomputing)
+        || document->testStatus(App::Document::Restoring)
+        || App::GetApplication().hasPendingRecomputeRequest(document->getName())
+        || document->isCooperativeMutationActive()) {
+        return false;
+    }
+    if (simulationReusePending) {
+        simulationReusePending = false;
+        if (!simulationPlayback || simulationPlayback->invalidated->load()
+            || simulationPlayback->solverIdentity != mbdAssembly) {
+            throw std::runtime_error("Simulation inputs changed before reuse");
+        }
+        return true;
+    }
+    if (!simulationJob) { throw std::runtime_error("No pending simulation"); }
+    if (simulationJob->invalidated->load()) {
+        cancelSimulation();
+        throw std::runtime_error("Simulation inputs changed during generation");
+    }
+    if (simulationJob->completion.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        return false;
+    }
+    auto job = std::move(simulationJob);
+    job->result = job->completion.get();
+    std::unordered_map<App::DocumentObject*, MbDPartData> parts;
+    parts.reserve(job->bindings.size());
+    for (auto& binding : job->bindings) {
+        auto* object = getDocument()->getObject(binding.name.c_str());
+        if (!object || object->getID() != binding.id) {
+            throw std::runtime_error("Simulation component identity changed during generation");
+        }
+        if (job->result.solver) { parts.emplace(object, binding.data); }
+        else { binding.data.part.reset(); }
+    }
+    if (job->result.solver) {
+        job->result.solver->externalSystem->freecadAssemblyObject = this;
+        mbdAssembly = job->result.solver;
+        objectPartMap = std::move(parts);
+    }
+    job->solverIdentity = mbdAssembly;
+    simulationPlayback = std::move(job);
+    return true;
+}
+
+void AssemblyObject::cancelSimulation(std::uint64_t request)
+{
+    if (request != 0 && request != simulationRequest) { return; }
+    // HostRuntime uses packaged_task, not std::async: destroying this future
+    // never joins the worker. Its captured solver and token outlive the owner.
+    simulationJob.reset();
+    simulationReusePending = false;
+}
+
+std::uint64_t AssemblyObject::requestSimulationFrame(size_t index)
+{
+    if (App::MainThreadSignalConfig::hasHooks() && !App::MainThreadSignalConfig::isMainThread()) {
+        throw std::runtime_error("Frame requests require the document owner thread");
+    }
+    if (!simulationPlayback || simulationPlayback->invalidated->load()
+        || simulationPlayback->solverIdentity != mbdAssembly) {
+        throw std::runtime_error("Simulation frames require current asynchronously generated results");
+    }
+    if (index >= numberOfFrames()) { throw std::out_of_range("Simulation frame index"); }
+    cancelSimulationFrame();
+    auto job = std::make_unique<SimulationFrameJob>();
+    job->tracks = simulationPlayback->result.tracks;
+    auto tracks = job->tracks;
+    auto cancellation = job->cancellation;
+    auto& runtime = App::GetApplication().hostRuntime();
+    job->completion = runtime.submit([tracks, cancellation, index, &runtime](std::stop_token stop) {
+        Base::CancellationScope context(cancellation->get_token());
+        std::stop_callback onShutdown(stop, [cancellation] { cancellation->request_stop(); });
+        Base::CancellationScope::check();
+        std::vector<Base::Placement> placements(tracks->size());
+        runtime.parallelFor(tracks->size(), [&](size_t part) {
+            Base::CancellationScope::check();
+            placements[part] = tracks->at(part).placementAt(index);
+        });
+        return placements;
+    });
+    simulationFrameJob = std::move(job);
+    if (++simulationFrameRequest == 0) { ++simulationFrameRequest; }
+    return simulationFrameRequest;
+}
+
+std::vector<std::pair<std::string, Base::Placement>>
+AssemblyObject::getSimulationFrame(size_t index) const
+{
+    if (App::MainThreadSignalConfig::hasHooks()
+        && !App::MainThreadSignalConfig::isMainThread()) {
+        throw std::runtime_error("Frame presentation requires the document owner thread");
+    }
+    if (!simulationPlayback || simulationPlayback->invalidated->load()
+        || simulationPlayback->solverIdentity != mbdAssembly) {
+        throw std::runtime_error("Simulation frames require current asynchronously generated results");
+    }
+    const auto& tracks = *simulationPlayback->result.tracks;
+    if (tracks.empty() || index >= tracks.front().frameCount()) {
+        throw std::out_of_range("Simulation frame index");
+    }
+    auto* document = getDocument();
+    if (!document || document->testStatus(App::Document::Restoring)
+        || document->testStatus(App::Document::Recomputing)
+        || document->isCooperativeMutationActive()
+        || App::GetApplication().hasPendingRecomputeRequest(document->getName())) {
+        throw std::runtime_error("Simulation frame presentation requires a stable document");
+    }
+    if (tracks.size() != simulationPlayback->bindings.size()) {
+        throw std::runtime_error("Simulation frame does not match its captured components");
+    }
+    std::vector<std::pair<std::string, Base::Placement>> frame;
+    frame.reserve(tracks.size());
+    for (size_t part = 0; part < tracks.size(); ++part) {
+        const auto& binding = simulationPlayback->bindings[part];
+        auto* object = document->getObject(binding.name.c_str());
+        if (!object || object->getID() != binding.id || !object->getPlacementProperty()) {
+            throw std::runtime_error("Simulation frame target identity changed");
+        }
+        frame.emplace_back(binding.name, tracks[part].placementAt(index));
+    }
+    return frame;
+}
+
+bool AssemblyObject::finishSimulationFrame(std::uint64_t request)
+{
+    auto frame = takeSimulationFrame(request);
+    if (!frame) { return false; }
+    std::vector<Base::Placement> placements;
+    placements.reserve(frame->size());
+    for (const auto& [name, placement] : *frame) {
+        (void)name;
+        placements.push_back(placement);
+    }
+    return applySimulationFrame(placements);
+}
+
+std::optional<std::vector<std::pair<std::string, Base::Placement>>>
+AssemblyObject::takeSimulationFrame(std::uint64_t request)
+{
+    if (App::MainThreadSignalConfig::hasHooks() && !App::MainThreadSignalConfig::isMainThread()) {
+        throw std::runtime_error("Frame adoption requires the document owner thread");
+    }
+    if (request != simulationFrameRequest) { throw std::runtime_error("Simulation frame was superseded"); }
+    if (!simulationFrameJob) { throw std::runtime_error("No pending simulation frame"); }
+    if (!simulationPlayback || simulationPlayback->invalidated->load()
+        || simulationPlayback->solverIdentity != mbdAssembly
+        || simulationPlayback->result.tracks != simulationFrameJob->tracks) {
+        cancelSimulationFrame();
+        throw std::runtime_error("Simulation inputs changed during frame preparation");
+    }
+    auto* document = getDocument();
+    if (!document || document->testStatus(App::Document::Restoring)
+        || document->testStatus(App::Document::Recomputing)
+        || document->isCooperativeMutationActive()
+        || App::GetApplication().hasPendingRecomputeRequest(document->getName())) {
+        return std::nullopt;
+    }
+    if (simulationFrameJob->completion.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        return std::nullopt;
+    }
+    auto job = std::move(simulationFrameJob);
+    const auto placements = job->completion.get();
+    if (placements.size() != simulationPlayback->bindings.size()) {
+        throw std::runtime_error("Simulation frame does not match its captured components");
+    }
+    std::vector<std::pair<std::string, Base::Placement>> frame;
+    frame.reserve(placements.size());
+    for (size_t index = 0; index < placements.size(); ++index) {
+        const auto& binding = simulationPlayback->bindings[index];
+        auto* object = document->getObject(binding.name.c_str());
+        if (!object || object->getID() != binding.id || !object->getPlacementProperty()) {
+            throw std::runtime_error("Simulation frame target identity changed");
+        }
+        frame.emplace_back(binding.name, placements[index]);
+    }
+    return frame;
+}
+
+bool AssemblyObject::applySimulationFrame(const std::vector<Base::Placement>& placements)
+{
+    if (App::MainThreadSignalConfig::hasHooks() && !App::MainThreadSignalConfig::isMainThread()) {
+        throw std::runtime_error("Frame adoption requires the document owner thread");
+    }
+    if (placements.size() != simulationPlayback->bindings.size()) {
+        throw std::runtime_error("Simulation frame does not match its captured components");
+    }
+    auto* document = getDocument();
+    std::vector<App::DocumentObject*> targets;
+    targets.reserve(simulationPlayback->bindings.size());
+    for (const auto& binding : simulationPlayback->bindings) {
+        auto* object = document->getObject(binding.name.c_str());
+        if (!object || object->getID() != binding.id || !object->getPlacementProperty()) {
+            throw std::runtime_error("Simulation frame target identity changed");
+        }
+        targets.push_back(object);
+    }
+    // No event pumping: the exact target set is checked before any presentation
+    // write, and notifications from other properties still invalidate the solve.
+    auto applying = simulationPlayback->applying;
+    const bool wasApplying = applying->exchange(true);
+    std::vector<bool> previousNoTouch;
+    previousNoTouch.reserve(targets.size());
+    for (auto* target : targets) {
+        previousNoTouch.push_back(target->testStatus(App::ObjectStatus::NoTouch));
+        target->setStatus(App::ObjectStatus::NoTouch, true);
+    }
+    const auto restoreNoTouch = [&] {
+        for (size_t index = 0; index < targets.size(); ++index) {
+            targets[index]->setStatus(App::ObjectStatus::NoTouch, previousNoTouch[index]);
+        }
+    };
+    try {
+        for (size_t index = 0; index < targets.size(); ++index) {
+            auto* property = targets[index]->getPlacementProperty();
+            if (!property->getValue().isSame(placements[index])) {
+                property->setValue(placements[index]);
+                targets[index]->purgeTouched();
+            }
+        }
+        redrawJointPlacements(getJoints());
+    }
+    catch (...) {
+        restoreNoTouch();
+        applying->store(wasApplying);
+        throw;
+    }
+    restoreNoTouch();
+    applying->store(wasApplying);
+    return true;
+}
+
+bool AssemblyObject::setSimulationPresentation(bool active)
+{
+    if (App::MainThreadSignalConfig::hasHooks() && !App::MainThreadSignalConfig::isMainThread()) {
+        throw std::runtime_error("Simulation presentation scopes require the document owner thread");
+    }
+    return simulationPlayback ? simulationPlayback->applying->exchange(active) : false;
+}
+
+void AssemblyObject::cancelSimulationFrame(std::uint64_t request)
+{
+    if (request != 0 && request != simulationFrameRequest) { return; }
+    simulationFrameJob.reset();
 }
 
 std::vector<App::DocumentObject*> AssemblyObject::getMotionsFromSimulation(App::DocumentObject* sim)
@@ -475,6 +1160,18 @@ std::vector<App::DocumentObject*> AssemblyObject::getMotionsFromSimulation(App::
 
 int Assembly::AssemblyObject::updateForFrame(size_t index)
 {
+    if (simulationPlayback && !simulationPlayback->invalidated->load()
+        && simulationPlayback->solverIdentity == mbdAssembly && !simulationPlayback->result.solver) {
+        if (index >= numberOfFrames()) { return -1; }
+        cancelSimulationFrame();
+        std::vector<Base::Placement> placements;
+        placements.reserve(simulationPlayback->result.tracks->size());
+        for (const auto& track : *simulationPlayback->result.tracks) {
+            placements.push_back(track.placementAt(index));
+        }
+        applySimulationFrame(placements);
+        return 0;
+    }
     if (!mbdAssembly) {
         return -1;
     }
@@ -484,15 +1181,27 @@ int Assembly::AssemblyObject::updateForFrame(size_t index)
         return -1;
     }
 
-    mbdAssembly->updateForFrame(index);
-    setNewPlacements();
-    auto jointDocs = getJoints();
-    redrawJointPlacements(jointDocs);
+    cancelSimulationFrame();
+    const auto applying = simulationPlayback && simulationPlayback->result.solver == mbdAssembly
+        ? simulationPlayback->applying : std::shared_ptr<std::atomic_bool>();
+    const bool wasApplying = applying ? applying->exchange(true) : false;
+    try {
+        mbdAssembly->updateForFrame(index);
+        setNewPlacements();
+        redrawJointPlacements(getJoints());
+    }
+    catch (...) { if (applying) { applying->store(wasApplying); } throw; }
+    if (applying) { applying->store(wasApplying); }
     return 0;
 }
 
 size_t Assembly::AssemblyObject::numberOfFrames()
 {
+    if (simulationPlayback && !simulationPlayback->invalidated->load()
+        && simulationPlayback->solverIdentity == mbdAssembly && simulationPlayback->result.tracks
+        && !simulationPlayback->result.tracks->empty()) {
+        return simulationPlayback->result.tracks->front().frameCount();
+    }
     return mbdAssembly->numberOfFrames();
 }
 
@@ -740,6 +1449,35 @@ void AssemblyObject::setNewPlacements()
 
 void AssemblyObject::redrawJointPlacements(std::vector<App::DocumentObject*> joints)
 {
+    if (App::MainThreadSignalConfig::hasHooks()
+        && !App::MainThreadSignalConfig::isMainThread()) {
+        std::vector<std::pair<std::string, std::string>> identities;
+        identities.reserve(joints.size());
+        for (const auto* joint : joints) {
+            if (!joint || !joint->getDocument() || !joint->getNameInDocument()) {
+                continue;
+            }
+            identities.emplace_back(
+                joint->getDocument()->getName(),
+                joint->getNameInDocument()
+            );
+        }
+        App::MainThreadSignalConfig::invoke(
+            [identities = std::move(identities)] {
+                for (const auto& [documentName, objectName] : identities) {
+                    auto* document = App::GetApplication().getDocument(documentName.c_str());
+                    if (document) {
+                        AssemblyObject::redrawJointPlacement(
+                            document->getObject(objectName.c_str())
+                        );
+                    }
+                }
+            },
+            false
+        );
+        return;
+    }
+
     // Notify the joint objects that the transform of the coin object changed.
     for (auto* joint : joints) {
         if (!joint) {
@@ -752,6 +1490,29 @@ void AssemblyObject::redrawJointPlacements(std::vector<App::DocumentObject*> joi
 void AssemblyObject::redrawJointPlacement(App::DocumentObject* joint)
 {
     if (!joint) {
+        return;
+    }
+
+    if (App::MainThreadSignalConfig::hasHooks()
+        && !App::MainThreadSignalConfig::isMainThread()) {
+        auto* document = joint->getDocument();
+        const char* objectName = joint->getNameInDocument();
+        if (!document || !objectName) {
+            return;
+        }
+        const std::string documentName = document->getName();
+        const std::string stableObjectName = objectName;
+        App::MainThreadSignalConfig::invoke(
+            [documentName, stableObjectName] {
+                auto* currentDocument = App::GetApplication().getDocument(documentName.c_str());
+                if (currentDocument) {
+                    AssemblyObject::redrawJointPlacement(
+                        currentDocument->getObject(stableObjectName.c_str())
+                    );
+                }
+            },
+            false
+        );
         return;
     }
 
@@ -790,6 +1551,24 @@ std::shared_ptr<ASMTAssembly> AssemblyObject::makeMbdAssembly()
     );
 
     assembly->setDebug(hPgr->GetBool("LogSolverDebug", false));
+    auto& runtime = App::GetApplication().hostRuntime();
+    std::size_t concurrency = runtime.workerCount();
+    if (const char* configured = std::getenv("VIBECAD_HOST_CPU_SLOTS")) {
+        std::size_t requested = 0;
+        const char* end = configured + std::char_traits<char>::length(configured);
+        const auto parsed = std::from_chars(configured, end, requested);
+        if (parsed.ec == std::errc {} && parsed.ptr == end && requested > 0) {
+            concurrency = std::min(
+                requested,
+                App::HostRuntime::workerBudget(runtime.logicalProcessorCount())
+            );
+        }
+    }
+    assembly->setParallelExecutor(
+        [&runtime, concurrency](std::size_t count, const MbD::ParallelIndexWork& work) {
+            runtime.parallelFor(count, work, concurrency);
+        }
+    );
     return assembly;
 }
 
@@ -1151,17 +1930,7 @@ void AssemblyObject::removeUnconnectedJoints(
     std::unordered_set<App::DocumentObject*> groundedObjs
 )
 {
-    std::vector<ObjRef> connectedParts;
-
-    // Initialize connectedParts with groundedObjs
-    for (auto* groundedObj : groundedObjs) {
-        connectedParts.push_back({groundedObj, nullptr});
-    }
-
-    // Perform a traversal from each grounded object
-    for (auto* groundedObj : groundedObjs) {
-        traverseAndMarkConnectedParts(groundedObj, connectedParts, joints);
-    }
+    const auto connectedParts = collectConnectedParts(groundedObjs, joints);
 
     // Filter out unconnected joints
     joints.erase(
@@ -1171,10 +1940,7 @@ void AssemblyObject::removeUnconnectedJoints(
             [&](App::DocumentObject* joint) {
                 App::DocumentObject* obj1 = getMovingPartFromRef(joint, "Reference1");
                 App::DocumentObject* obj2 = getMovingPartFromRef(joint, "Reference2");
-                return (
-                    !isObjInSetOfObjRefs(obj1, connectedParts)
-                    || !isObjInSetOfObjRefs(obj2, connectedParts)
-                );
+                return !connectedParts.contains(obj1) || !connectedParts.contains(obj2);
             }
         ),
         joints.end()
@@ -1245,15 +2011,10 @@ bool AssemblyObject::isPartGrounded(App::DocumentObject* obj)
         return false;
     }
 
-    auto groundedObjs = getGroundedParts();
-
-    for (auto* groundedObj : groundedObjs) {
-        if (groundedObj->getFullName() == obj->getFullName()) {
-            return true;
-        }
+    if (!connectivityCacheValid) {
+        rebuildConnectivityCache();
     }
-
-    return false;
+    return groundedPartsCache.contains(obj);
 }
 
 bool AssemblyObject::isPartConnected(App::DocumentObject* obj)
@@ -1262,28 +2023,10 @@ bool AssemblyObject::isPartConnected(App::DocumentObject* obj)
         return false;
     }
 
-    auto groundedObjs = getGroundedParts();
-    std::vector<App::DocumentObject*> joints = getJoints();
-
-    std::vector<ObjRef> connectedParts;
-
-    // Initialize connectedParts with groundedObjs
-    for (auto* groundedObj : groundedObjs) {
-        connectedParts.push_back({groundedObj, nullptr});
+    if (!connectivityCacheValid) {
+        rebuildConnectivityCache();
     }
-
-    // Perform a traversal from each grounded object
-    for (auto* groundedObj : groundedObjs) {
-        traverseAndMarkConnectedParts(groundedObj, connectedParts, joints);
-    }
-
-    for (auto& objRef : connectedParts) {
-        if (obj == objRef.obj) {
-            return true;
-        }
-    }
-
-    return false;
+    return connectedPartsCache.contains(obj);
 }
 
 void AssemblyObject::jointParts(std::vector<App::DocumentObject*> joints)
@@ -1814,6 +2557,22 @@ std::string AssemblyObject::handleOneSideOfJoint(
     App::DocumentObject* obj = getObjFromJointRef(joint, propRefName);
 
     if (!part || !obj) {
+        if (std::getenv("VIBECAD_RESTORE_DETAIL_TRACE")) {
+            const auto* property = joint->getPropertyByName<App::PropertyXLinkSub>(propRefName);
+            const auto* target = property ? property->getValue() : nullptr;
+            const auto* document = joint->getDocument();
+            Base::Console().log(
+                "VIBECAD_ASSEMBLY_REFERENCE joint=%s property=%s part_resolved=%d "
+                "object_resolved=%d target=%s sub_count=%zu joint_active=%d "
+                "target_active=%d restoring=%d recomputing=%d owner_thread=%d\n",
+                joint->getFullName(), propRefName, part != nullptr, obj != nullptr,
+                target ? target->getFullName() : "<null>",
+                property ? property->getSubValues().size() : 0,
+                isTimelineOperationActive(joint), isTimelineOperationActive(target),
+                document && document->testStatus(App::Document::Restoring),
+                document && document->testStatus(App::Document::Recomputing),
+                App::MainThreadSignalConfig::isMainThread());
+        }
         Base::Console()
             .warning("The property %s of Joint %s is bad.\n", propRefName, joint->getFullName());
         return "";

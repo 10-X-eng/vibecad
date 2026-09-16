@@ -465,8 +465,6 @@ class ToolController:
 
         path = Path.Path(commands)
         obj.Path = path
-        if obj.ViewObject:
-            obj.ViewObject.Visibility = True
 
     def getTool(self, obj):
         """returns the tool associated with this tool controller"""

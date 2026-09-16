@@ -26,11 +26,22 @@
 #include <Inventor/nodes/SoSeparator.h>
 
 #include <Gui/ViewProviderBuilder.h>
+#include <Mod/Part/App/PartFeature.h>
 
 #include "ViewProviderPython.h"
 
 
 using namespace PartGui;
+
+PROPERTY_SOURCE(PartGui::ViewProviderCached, Gui::ViewProviderGeometryObject)
+
+ViewProviderCached::ViewProviderCached() = default;
+ViewProviderCached::~ViewProviderCached() = default;
+
+bool ViewProviderCached::allowOverride(const App::DocumentObject& object) const
+{
+    return object.isDerivedFrom<Part::Feature>();
+}
 
 PROPERTY_SOURCE(PartGui::ViewProviderCustom, PartGui::ViewProviderPart)
 
@@ -82,6 +93,12 @@ void ViewProviderCustom::updateData(const App::Property* prop)
 
 namespace Gui
 {
+/// @cond DOXERR
+PROPERTY_SOURCE_TEMPLATE(PartGui::ViewProviderCachedPython, PartGui::ViewProviderCached)
+/// @endcond
+
+template class PartGuiExport ViewProviderFeaturePythonT<PartGui::ViewProviderCached>;
+
 /// @cond DOXERR
 PROPERTY_SOURCE_TEMPLATE(PartGui::ViewProviderPython, PartGui::ViewProviderPart)
 /// @endcond

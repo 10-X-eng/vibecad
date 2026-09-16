@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 import sys
+import pytest
 
 import VibeCADGui as gui
 
@@ -77,6 +78,9 @@ class _Document:
             None,
         )
 
+    def findObjects(self, *, Property):
+        return [obj for obj in self.Objects if hasattr(obj, Property)]
+
     def recompute(self, objects=None, *_args) -> int:
         if self.Recomputing:
             self.recursive_recompute_calls += 1
@@ -141,7 +145,7 @@ def test_restored_pending_geometry_is_recomputed_and_redrawn(monkeypatch) -> Non
     assert pending.State == ["Up-to-date"]
     assert clean.State == ["Up-to-date"]
     assert view.redraw_calls == 1
-    assert document._gui_updates == [True]
+    assert document._gui_updates == []
     assert document._gui_document.Modified is False
 
 
@@ -207,7 +211,7 @@ def test_restored_projection_hydration_is_sliced_per_view() -> None:
     assert attempted == {"FirstProjection", "SecondProjection"}
 
 
-def test_non_3d_restored_view_flushes_gui_without_redraw_warning(
+def test_non_3d_restored_view_does_not_drain_the_event_loop(
     monkeypatch,
 ) -> None:
     document = _Document([_Object("DrawingPage", ["Up-to-date"])])
@@ -232,7 +236,7 @@ def test_non_3d_restored_view_flushes_gui_without_redraw_warning(
 
     gui._redraw_document_view(document)
 
-    assert gui_updates == [True]
+    assert gui_updates == []
     assert warnings == []
 
 
@@ -401,8 +405,56 @@ def test_open_scheduler_waits_for_restore_then_makes_document_render_ready(
     callbacks.pop(0)[1]()
 
     assert view.redraw_calls == 2
-    assert document._gui_updates == [True, True]
+    assert document._gui_updates == []
     assert document.Uid not in gui._pending_document_render_refreshes
+
+
+@pytest.mark.parametrize("native_state", ["CooperativeMutationActive", "PresentationUpdateActive", "RecomputePending"])
+def test_restore_geometry_waits_for_native_update(monkeypatch, native_state) -> None:
+    document = _Document([_Object("PendingFeature", ["Touched"])])
+    _install_gui_document(monkeypatch, document)
+    setattr(document, native_state, True)
+    assert gui._document_render_refresh_blocked(document) is True
+    assert gui._recompute_pending_document_geometry_slice(document) == (False, True)
+    assert document.recompute_calls == 0
+    setattr(document, native_state, False)
+    assert gui._recompute_pending_document_geometry_slice(document) == (True, False)
+    assert document.recompute_calls == 1
+
+
+def test_render_refresh_waits_while_target_document_is_in_edit(monkeypatch) -> None:
+    document = _Document([_Object("PreviewFeature", ["Up-to-date"])])
+    _install_gui_document(monkeypatch, document)
+    document._gui_document.getInEdit = lambda: SimpleNamespace()
+
+    assert gui._document_render_refresh_blocked(document) is True
+    document._gui_document.getInEdit = lambda: None
+    assert gui._document_render_refresh_blocked(document) is False
+
+
+def test_restore_geometry_queues_independent_pending_objects_together(monkeypatch) -> None:
+    document = _Document([_Object("First", ["Touched"]), _Object("Second", ["Touched"])])
+    _install_gui_document(monkeypatch, document)
+    monkeypatch.setattr(gui, "_warn", lambda message: None)
+    queued = []
+    def enqueue(*args):
+        queued.append(args)
+        document.RecomputePending = True
+        return 1
+    document.recomputeAsync = enqueue
+    attempted = set()
+    assert gui._recompute_pending_document_geometry_slice(document, attempted) == (False, True)
+    # One document request lets native dependency waves share the work.
+    # Passing a list enqueues separate recursive requests for every object.
+    assert queued == [()]
+    assert document.recompute_calls == 0
+    assert gui._recompute_pending_document_geometry_slice(document, attempted) == (False, True)
+    assert len(queued) == 1
+    document.RecomputePending = False
+    # Failed native work must be reported, not queued forever.
+    document.Objects[0].State = ["Invalid", "Touched"]
+    assert gui._recompute_pending_document_geometry_slice(document, attempted) == (False, False)
+    assert len(queued) == 1
 
 
 def test_open_scheduler_defers_render_during_atomic_document_change(
@@ -547,6 +599,50 @@ def test_open_scheduler_redraws_restored_partdesign_history(monkeypatch) -> None
 
     callbacks.pop(0)[1]()
     assert view.redraw_calls == 2
+    assert document.Uid not in gui._pending_document_render_refreshes
+
+
+def test_open_scheduler_preserves_user_visibility_change_before_deferred_redraw(
+    monkeypatch,
+) -> None:
+    document = _Document([_Object("CleanFeature", ["Up-to-date"])])
+    _install_gui_document(monkeypatch, document)
+    callbacks: list[tuple[int, object]] = []
+
+    class _Timer:
+        @staticmethod
+        def singleShot(delay: int, callback) -> None:
+            callbacks.append((delay, callback))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(QtCore=SimpleNamespace(QTimer=_Timer)),
+    )
+    monkeypatch.setattr(gui.App, "isRestoring", lambda: False, raising=False)
+    monkeypatch.setattr(
+        gui.App,
+        "listDocuments",
+        lambda: {document.Name: document},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        gui,
+        "_restore_partdesign_history_rendering",
+        lambda _doc: True,
+    )
+    gui._pending_document_render_refreshes.discard(document.Uid)
+
+    gui._schedule_document_render_after_restore(document)
+    callbacks.pop(0)[1]()
+    assert document._gui_document.Modified is False
+    assert callbacks[0][0] == 0
+
+    # The real ViewObject toggle marks an opened document dirty between timers.
+    document._gui_document.Modified = True
+    callbacks.pop(0)[1]()
+
+    assert document._gui_document.Modified is True
     assert document.Uid not in gui._pending_document_render_refreshes
 
 

@@ -78,6 +78,8 @@ private:
     void slotBeforeChangeObject(const App::DocumentObject& Obj, const App::Property& Prop);
     /** The property of an observed object has changed */
     void slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop);
+    void slotChangedObjectWithOrigin(const App::DocumentObject& Obj, const App::Property& Prop,
+                                     const std::string& origin);
     /** Undoes the last transaction of the document */
     void slotUndoDocument(const App::Document& Doc);
     /** Redoes the last undone transaction of the document */
@@ -88,6 +90,8 @@ private:
     void slotBeforeRecomputeDocument(const App::Document& Doc);
     /** Called when an observed document is recomputed */
     void slotRecomputedDocument(const App::Document& Doc);
+    /** Called at the outermost native cooperative mutation boundary. */
+    void slotCooperativeMutationChanged(const App::Document& Doc, bool active);
     /** Called when an observed document opens a transaction */
     void slotOpenTransaction(const App::Document& Doc, std::string str);
     /** Called when an observed document commits a transaction */
@@ -144,9 +148,11 @@ private:
     Connection pyDeletedObject;
     Connection pyBeforeChangeObject;
     Connection pyChangedObject;
+    Connection pyChangedObjectWithOrigin;
     Connection pyRecomputedObject;
     Connection pyBeforeRecomputeDocument;
     Connection pyRecomputedDocument;
+    Connection pyCooperativeMutationChanged;
     Connection pyOpenTransaction;
     Connection pyCommitTransaction;
     Connection pyAbortTransaction;

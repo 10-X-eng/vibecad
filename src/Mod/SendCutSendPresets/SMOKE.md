@@ -2,29 +2,42 @@
 
 ## Automated (no FreeCAD GUI)
 
-From this Mod directory:
+From the repository root, using Python with pytest installed:
 
 ```bash
-python -m unittest tests.test_smoke -v
+python -m pytest -q src/Mod/SendCutSendPresets/tests
 ```
 
-Covers: bend JSON shape, naming helpers, min-flange warn rule.
+Covers data, naming, installed-module discovery, document ownership, undo
+cleanup, one recompute per action, and pending Unfold lifecycle callbacks.
 
-## FreeCADCmd (optional)
+## Isolated GUI regression tests
 
-With FreeCADCmd on PATH and this Mod on `sys.path` / installed under `Mod/`:
+Use a separate VibeCAD process with a private profile and temporary directory.
+Install SheetMetal and its `networkx` dependency in that test environment. Add
+`Mod/SendCutSendPresets` and its `tests` directory to the test process's
+`sys.path`, then run:
+
+```python
+import unittest
+suite = unittest.defaultTestLoader.loadTestsFromName(
+    "gui_preset_update.TestPresetDocument"
+)
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+assert result.wasSuccessful()
+```
+
+The suite creates and closes synthetic documents. It checks one-step Undo,
+SheetMetal's actual material-table reader, deferred Unfold creation, and a real
+bent profile with the current Unfold engine. It must not run in a user's testing
+instance. Run it against the built/installed module after a strict Release build:
 
 ```bash
-FreeCADCmd -c "import json,os; p=os.path.join(os.path.dirname(__file__) if '__file__' in dir() else '.', 'data','sendcutsend_bends.json'); print('skip if needed')"
+cmake --build <strict-release-build-directory> --parallel 12
 ```
 
-Preferred one-liner after install into a FreeCAD Mod path:
-
-```bash
-FreeCADCmd /path/to/Mod/SendCutSendPresets/tests/freecadcmd_smoke.py
-```
-
-(`tests/freecadcmd_smoke.py` creates a FeaturePython with KFactor and verifies setattr 0.4→0.5.)
+Configure with `CMAKE_BUILD_TYPE=Release`, `FREECAD_WARN_ERROR=ON`, and all
+`FREECAD_USE_SANITIZER_*` options off for this performance test.
 
 ## Manual GUI (SheetMetal required)
 
@@ -35,8 +48,12 @@ FreeCADCmd /path/to/Mod/SendCutSendPresets/tests/freecadcmd_smoke.py
 5. Unfold → pick that sheet → Data panel KFactor synced (or Apply again after Unfold).
 6. Apply all *before* Unfold on a new part → create Unfold → Report shows auto-sync.
 7. Switch to **My custom**, save a preset, Apply — sheet prefix `material_Custom_*`.
+8. Undo cancels any remembered pending preset for that document. Apply again
+   before creating another Unfold if the preset is still wanted.
 
-## vibecad CONTRIBUTING / AI-TDD note
+## Verification evidence
 
-- Unit tests above are the red/green-capable automated layer (data + pure rules).
-- Full Apply/Unfold GUI depends on SheetMetal + Qt; covered by FreeCADCmd smoke + manual checklist rather than CI GUI automation in this PR.
+Regression tests are added before fixes. The GUI suite supplements the unit
+suite because native mutation leases, queued recompute, and document observers
+cannot be verified by mocks alone. PR validation records the exact commands,
+red/green results, build configuration, and SheetMetal revision tested.

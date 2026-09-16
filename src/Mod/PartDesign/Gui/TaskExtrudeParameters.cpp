@@ -24,6 +24,9 @@
 
 #include <QSignalBlocker>
 #include <QAction>
+#include <Inventor/nodes/SoCoordinate3.h>
+#include <Inventor/nodes/SoFaceSet.h>
+#include <Inventor/nodes/SoMaterial.h>
 
 
 #include <App/Document.h>
@@ -1423,13 +1426,17 @@ void TaskExtrudeParameters::setGizmoPositions()
     }
 
     auto extrude = getObject<PartDesign::FeatureExtrude>();
-    if (!extrude || extrude->isError()) {
+    if (!extrude || !extrude->Profile.getValue()) {
         gizmoContainer->visible = false;
         return;
     }
     gizmoContainer->visible = true;
 
     PartDesign::TopoShape shape = extrude->getProfileShape();
+    if (shape.isNull()) {
+        gizmoContainer->visible = false;
+        return;
+    }
     Base::Vector3d center = getMidPointFromProfile(shape);
     std::string sideType = std::string(extrude->SideType.getValueAsString());
     std::string extrudeType = std::string(extrude->Type.getValueAsString());
@@ -1444,6 +1451,31 @@ void TaskExtrudeParameters::setGizmoPositions()
     lengthGizmo2->setVisibility(sideType == "Two sides" && extrudeType2 == "Length");
     taperAngleGizmo2->placeOverLinearGizmo(lengthGizmo2);
     taperAngleGizmo2->setVisibility(sideType == "Two sides" && extrudeType2 == "Length");
+
+    // The end plane uses the existing length dragger and spinbox binding:
+    // reverse, symmetric/two-sided lengths, expressions, snapping and undo
+    // therefore follow exactly the same path as the arrow.
+    const auto box = shape.getBoundBox();
+    const float halfSize = static_cast<float>(box.CalcDiagonalLength() * 0.5);
+    if (halfSize > 0) {
+        for (auto* gizmo : {lengthGizmo1, lengthGizmo2}) {
+            auto* dragger = gizmo->getDraggerContainer()->getDragger();
+            auto* surface = static_cast<SoSeparator*>(dragger->getPart("dragSurface", true));
+            surface->removeAllChildren();
+            auto* material = new SoMaterial;
+            material->diffuseColor.setValue(0.25F, 0.65F, 1.0F);
+            material->transparency = 0.8F;
+            auto* coordinates = new SoCoordinate3;
+            const SbVec3f points[] = {{-halfSize, 0, -halfSize}, {halfSize, 0, -halfSize},
+                                     {halfSize, 0, halfSize}, {-halfSize, 0, halfSize}};
+            coordinates->point.setValues(0, 4, points);
+            auto* face = new SoFaceSet;
+            face->numVertices = 4;
+            surface->addChild(material);
+            surface->addChild(coordinates);
+            surface->addChild(face);
+        }
+    }
 
     Base::Vector3d padDir = extrude->Direction.getValue().Normalized();
     Base::Vector3d sketchDir = extrude->getProfileNormal().Normalized();

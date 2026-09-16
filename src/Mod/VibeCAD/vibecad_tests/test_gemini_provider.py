@@ -4,10 +4,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+
+import pytest
 
 import VibeCADAuth as auth
 import VibeCADDesignReview as design_review
@@ -497,3 +500,188 @@ def test_gemini_stream_preserves_thought_signatures_and_repairs_tool_arguments(
         "raw": None,
     }
     assert connection.closed
+
+
+def test_gemini_preserves_autonomous_default_with_explicit_turn_limit():
+    assert provider.GeminiProvider().max_turns is None
+    assert provider.GeminiProvider(max_turns=64).max_turns == 64
+    assert provider.GeminiProvider(max_turns=None).max_turns is None
+
+
+@pytest.mark.parametrize("case,expected_calls", [
+    ("same", 3), ("failure", 3), ("unknown", 3),
+    ("alternating", 5), ("revision", 70), ("poll", 70), ("disabled", 6),
+])
+def test_gemini_stalled_calls_are_bounded(monkeypatch, case, expected_calls):
+    requests = []
+    context = {
+        "modeling_surface": {"engine": "native"},
+        "native_state": {"revision": 1},
+        "provider_tool_schemas": [_state_read_schema()],
+        "_vibecad_provider_options": {
+            "gemini_no_progress_limit": 0 if case == "disabled" else 3
+        },
+    }
+    if case == "poll":
+        context["provider_tool_schemas"][0]["name"] = "vibescript.read_operation"
+
+    class Connection(_GeminiConnection):
+        def recv(self):
+            state = json.loads(json.dumps(context))
+            if case == "revision":
+                state["native_state"]["revision"] = len(requests) + 1
+            result = {"ok": case != "failure", "value": "unchanged"}
+            if case == "poll":
+                result = {"ok": True, "operation": {"operation_id": "job-1", "status": "running"}}
+            return {"type": "tool_result", "result": result, "context": state}
+
+    class Client:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def close(self):
+            pass
+
+        def create(self, **kwargs):
+            requests.append(kwargs)
+            if len(requests) > (70 if case in {"revision", "poll"} else 6):
+                return iter([_chunk(content="Done.", finish_reason="stop")])
+            name = "missing" if case == "unknown" else (
+                "vibescript_read_operation" if case == "poll" else "state_read"
+            )
+            arguments = {"operation_id": "job-1"} if case == "poll" else {
+                "target": "A" if case != "alternating" or len(requests) % 2 else "B"
+            }
+            call = SimpleNamespace(
+                index=0, id=f"call-{len(requests)}", type="function",
+                function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+            )
+            return iter([_chunk(tool_calls=[call], finish_reason="tool_calls")])
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=Client))
+    monkeypatch.setattr(provider, "_validate_provider_wire_surface", lambda _: None)
+    connection = Connection()
+    provider._gemini_child_main(
+        connection, "Inspect.", context, "mock", "fake", None, 1.0,
+        provider.GeminiProvider().max_turns, False,
+    )
+    terminal = connection.messages[-1]
+    assert terminal["type"] == "done"
+    if expected_calls < 6:
+        assert len(requests) == expected_calls
+        assert terminal["raw"]["reason"] == "no_progress"
+    else:
+        assert len(requests) == expected_calls + 1
+        assert terminal["final_output"] == "Done."
+
+@pytest.mark.parametrize("change", ["revision", "surface", "workbench", "native"])
+def test_gemini_only_sends_changed_state_after_tools(monkeypatch, change) -> None:
+    initial = {
+        "workbench": "Model",
+        "modeling_surface": {
+            "engine": "native" if change == "native" else "vibescript",
+            "workbench": "Model",
+            "domain": "partdesign",
+            "surface_id": "surface-1",
+        },
+        "native_state": {"revision": 1, "inventory": "x" * 8192},
+        "provider_tool_schemas": [_state_read_schema()],
+    }
+    changed = copy.deepcopy(initial)
+    if change in {"revision", "native"}:
+        changed["native_state"]["revision"] = 2
+    elif change == "surface":
+        changed["modeling_surface"]["surface_id"] = "surface-2"
+    else:
+        changed["workbench"] = "Assembly"
+        changed["modeling_surface"]["workbench"] = "Assembly"
+
+    updates = [initial, changed, changed, changed]
+    requests = []
+
+    class _Connection(_GeminiConnection):
+        def recv(self):
+            return {
+                "type": "tool_result",
+                "result": {"ok": True, "objects": ["Body"]},
+                "context": copy.deepcopy(updates.pop(0)),
+            }
+
+    def tool_delta(index, call_id):
+        return SimpleNamespace(
+            index=index,
+            id=call_id,
+            type="function",
+            function=SimpleNamespace(
+                name="state_read", arguments='{"target":"Body"}'
+            ),
+            extra_content={"google": {"thought_signature": call_id}},
+        )
+
+    streams = [
+        iter([_chunk(
+            tool_calls=[tool_delta(0, "call-1"), tool_delta(1, "call-2")],
+            finish_reason="tool_calls",
+        )]),
+        iter([_chunk(
+            tool_calls=[tool_delta(0, "call-3"), tool_delta(1, "call-4")],
+            finish_reason="tool_calls",
+        )]),
+        iter([_chunk(content="Inspection complete.", finish_reason="stop")]),
+    ]
+
+    class _OpenAI:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        @staticmethod
+        def _create(**kwargs):
+            requests.append(copy.deepcopy(kwargs))
+            return streams.pop(0)
+
+        @staticmethod
+        def close():
+            pass
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_OpenAI))
+    monkeypatch.setattr(
+        provider, "_validate_provider_wire_surface", lambda _context: None
+    )
+    connection = _Connection()
+    provider._gemini_child_main(
+        connection, "Inspect Body.", copy.deepcopy(initial),
+        "gemini-flash-latest", "gemini-test-key", "high", 10.0, 3, False,
+        provider.DEFAULT_GEMINI_API_BASE,
+    )
+
+    assert connection.messages[-1] == {
+        "type": "done", "final_output": "Inspection complete.", "raw": None
+    }
+    assert len(requests) == 3
+    results = [
+        message for message in requests[-1]["messages"]
+        if message["role"] == "tool"
+    ]
+    assert [result["tool_call_id"] for result in results] == [
+        "call-1", "call-2", "call-3", "call-4"
+    ]
+    for index, result in enumerate(results):
+        expected = {"ok": True, "objects": ["Body"]}
+        if index == 1 and change != "native":
+            expected["vibecad_state_after"] = {
+                "surface": changed["modeling_surface"],
+                "active_domain": changed["native_state"],
+            }
+        assert json.loads(result["content"]) == expected
+
+    assistant_messages = [
+        message for message in requests[-1]["messages"]
+        if message["role"] == "assistant"
+    ]
+    for message in assistant_messages:
+        for call in message["tool_calls"]:
+            assert call["extra_content"] == {
+                "google": {"thought_signature": call["id"]}
+            }

@@ -27,6 +27,7 @@
 
 #include <App/GeoFeature.h>
 #include <App/PropertyStandard.h>
+#include <Mod/Part/App/TopoShapePy.h>
 
 #include "ViewProviderPartExtPy.h"
 #include "ViewProviderPartExtPy.cpp"
@@ -41,6 +42,26 @@ std::string ViewProviderPartExtPy::representation() const
     str << "<View provider geometry object at " << getViewProviderPartExtPtr() << ">";
 
     return str.str();
+}
+
+PyObject* ViewProviderPartExtPy::getRenderedMeshSnapshot()
+{
+    using Owner = std::shared_ptr<const Part::RenderMesh>;
+    auto snapshot = getViewProviderPartExtPtr()->getRenderedMeshSnapshot();
+    if (!snapshot) { Py_RETURN_NONE; }
+    auto owner = std::make_unique<Owner>(std::move(snapshot));
+    auto* capsule = PyCapsule_New(owner.get(), "PartGui.RenderMesh", [](PyObject* object) {
+        delete static_cast<Owner*>(PyCapsule_GetPointer(object, "PartGui.RenderMesh"));
+    });
+    if (capsule) { owner.release(); }
+    return capsule;
+}
+
+PyObject* ViewProviderPartExtPy::getRenderedShapeSnapshot()
+{
+    return new Part::TopoShapePy(
+        new Part::TopoShape(getViewProviderPartExtPtr()->getRenderedShapeSnapshot())
+    );
 }
 
 PyObject* ViewProviderPartExtPy::getCustomAttributes(const char* attr) const

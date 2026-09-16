@@ -549,6 +549,23 @@ class TestModelTreeBrowser(unittest.TestCase):
             getattr(self, "document", None) is not None
             and App.getDocument(self.document.Name) is not None
         ):
+            # Visibility and selection changes can leave a native presentation
+            # update queued after the test assertion has finished.
+            self.assertIsNotNone(
+                _wait_until(
+                    lambda: not any(
+                        bool(getattr(self.document, state, False))
+                        for state in (
+                            "RecomputePending",
+                            "CooperativeMutationActive",
+                            "PresentationUpdateActive",
+                            "Recomputing",
+                            "Restoring",
+                            "HasPendingTransaction",
+                        )
+                    )
+                )
+            )
             App.closeDocument(self.document.Name)
         self.tree_parameters.SetBool(
             "OrganizeModelByType",
@@ -2503,6 +2520,181 @@ class TestModelTreeBrowser(unittest.TestCase):
         Gui.Control.activeTaskDialog().accept()
         assert_tip_restored()
 
+    def test_deferred_restore_does_not_override_sketch_preview(self):
+        """Issue #203: queued presentation must respect a live sketch edit."""
+
+        import VibeCADGui as vibe_gui
+
+        Gui.activateWorkbench("PartDesignWorkbench")
+        Gui.activeView().setActiveObject("pdbody", self.vibe_body)
+        document_uid = str(self.document.Uid)
+        observed_refresh_checks = []
+        original_blocked = vibe_gui._document_render_refresh_blocked
+
+        def record_blocked_check(document):
+            if document.Uid == document_uid:
+                observed_refresh_checks.append(True)
+            return original_blocked(document)
+
+        vibe_gui._document_render_refresh_blocked = record_blocked_check
+        try:
+            vibe_gui._schedule_document_render_after_restore(self.document)
+            self.assertIn(document_uid, vibe_gui._pending_document_render_refreshes)
+            Gui.activeDocument().setEdit(self.vibe_sketch.Name)
+            self.assertIsNotNone(
+                _wait_until(lambda: Gui.activeDocument().getInEdit() is not None)
+            )
+            self.assertIsNotNone(_wait_until(lambda: any(observed_refresh_checks)))
+            self.assertIsNotNone(Gui.activeDocument().getInEdit())
+            self.assertFalse(
+                self.vibe_result.Visibility,
+                "a queued restore must not undo Sketcher TempoVis during edit",
+            )
+        finally:
+            vibe_gui._document_render_refresh_blocked = original_blocked
+            if Gui.Control.activeDialog():
+                Gui.Control.activeTaskDialog().reject()
+            _wait_until(
+                lambda: (
+                    Gui.activeDocument().getInEdit() is None
+                    and document_uid not in vibe_gui._pending_document_render_refreshes
+                    and not any(
+                        bool(getattr(self.document, state, False))
+                        for state in (
+                            "RecomputePending",
+                            "CooperativeMutationActive",
+                            "PresentationUpdateActive",
+                            "Recomputing",
+                        )
+                    )
+                )
+            )
+
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: document_uid not in vibe_gui._pending_document_render_refreshes
+            )
+        )
+        self.assertTrue(self.vibe_result.Visibility)
+
+    def test_deferred_restore_keeps_newer_link_visibility(self):
+        """Issue #203: a user command after scheduling wins over stale work."""
+
+        import VibeCADGui as vibe_gui
+
+        occurrence = self.document.addObject("App::Link", "DeferredVisibilityOccurrence")
+        occurrence.LinkedObject = self.vibe_body
+        occurrence.LinkTransform = True
+        occurrence.Visibility = True
+        self.document.recompute()
+
+        document_uid = str(self.document.Uid)
+        vibe_gui._schedule_document_render_after_restore(self.document)
+        self.assertIn(document_uid, vibe_gui._pending_document_render_refreshes)
+        occurrence.Visibility = False
+        self.vibe_body.Visibility = False
+        self.assertIsNotNone(
+            _wait_until(
+                lambda: document_uid not in vibe_gui._pending_document_render_refreshes
+            )
+        )
+        self.assertFalse(occurrence.Visibility)
+        self.assertFalse(self.vibe_body.Visibility)
+        self.assertFalse(self.vibe_result.Visibility)
+
+    def test_deferred_restore_keeps_newer_visibility_edit_modified(self):
+        """Issue #203: an opened document must still offer to save a later edit."""
+
+        import VibeCADGui as vibe_gui
+
+        with tempfile.TemporaryDirectory(prefix="vibecad_deferred_visibility_") as directory:
+            self.vibe_output.Visibility = True
+            path = os.path.join(directory, "deferred_visibility.FCStd")
+            self.document.saveAs(path)
+            gui_document = Gui.getDocument(self.document.Name)
+            gui_document.Modified = False
+            self.assertFalse(self.reference.Visibility)
+
+            observed = {}
+            document_uid = str(self.document.Uid)
+            original_redraw = vibe_gui._redraw_document_view
+
+            def change_visibility():
+                observed["before"] = bool(gui_document.Modified)
+                self.reference.Visibility = True
+                observed["after"] = bool(gui_document.Modified)
+
+            def redraw_then_queue_edit(document):
+                original_redraw(document)
+                if document.Uid == document_uid and not observed:
+                    QtCore.QTimer.singleShot(0, change_visibility)
+
+            vibe_gui._redraw_document_view = redraw_then_queue_edit
+            try:
+                vibe_gui._schedule_document_render_after_restore(self.document)
+                self.assertIsNotNone(
+                    _wait_until(
+                        lambda: (
+                            "after" in observed
+                            and document_uid
+                            not in vibe_gui._pending_document_render_refreshes
+                        )
+                    )
+                )
+            finally:
+                vibe_gui._redraw_document_view = original_redraw
+
+            self.assertFalse(observed["before"])
+            self.assertTrue(observed["after"])
+            self.assertTrue(gui_document.Modified)
+            self.assertTrue(self.reference.Visibility)
+            self.document.save()
+            App.closeDocument(self.document.Name)
+            self.document = App.openDocument(path)
+            self.reference = self.document.getObject("BladeReference")
+            self.assertIsNotNone(_wait_until(self._browser_ready))
+            self.assertTrue(self.reference.Visibility)
+
+    def test_view_command_rejects_child_of_hidden_part_until_parent_is_shown(self):
+        """A raw child eye cannot prove that geometry is in the viewport."""
+
+        from tool_impl.service import core_set_view
+
+        parent = self.document.addObject("App::Part", "HiddenViewParent")
+        child = parent.newObject("Part::Feature", "HiddenViewChild")
+        child.Shape = Part.makeBox(2, 3, 4)
+        self.document.recompute()
+        parent.Visibility = False
+        child.Visibility = False
+        view = Gui.activeDocument().activeView()
+
+        def viewport_triangles():
+            counts = coin.SoGetPrimitiveCountAction()
+            counts.setCanApproximate(True)
+            counts.apply(view.getSceneGraph())
+            return counts.getTriangleCount()
+
+        before = viewport_triangles()
+        blocked = core_set_view.run(
+            object(), camera="unchanged", show_objects=[child.Name]
+        )
+        self.assertFalse(blocked["ok"])
+        self.assertEqual(blocked["observed"]["hidden_ancestors"], {
+            child.Name: [parent.Name]
+        })
+        self.assertFalse(parent.Visibility)
+        self.assertFalse(child.Visibility)
+        self.assertEqual(viewport_triangles(), before)
+
+        shown = core_set_view.run(
+            object(), camera="unchanged", show_objects=[child.Name, parent.Name]
+        )
+        self.assertTrue(shown["ok"], shown)
+        self.assertEqual(shown["shown"], [child.Name, parent.Name])
+        self.assertTrue(parent.Visibility)
+        self.assertTrue(child.Visibility)
+        self.assertGreater(viewport_triangles(), before)
+
     def test_link_occurrence_and_definition_visibility_are_independent(self):
         assembly = self.document.addObject(
             "App::Part",
@@ -2614,6 +2806,115 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertTrue(second.Visibility)
         self.assertTrue(self.vibe_body.Visibility)
         self.assertTrue(self.vibe_result.Visibility)
+
+    def test_hidden_source_and_mixed_assembly_occurrences_survive_save_reopen(self):
+        assembly = self.document.addObject("App::Part", "VisibilityAssembly")
+        shown = assembly.newObject("App::Link", "ShownOccurrence")
+        hidden = assembly.newObject("App::Link", "HiddenOccurrence")
+        for occurrence in (shown, hidden):
+            occurrence.LinkedObject = self.vibe_body
+            occurrence.LinkTransform = True
+        self.document.recompute()
+        self.vibe_component.Visibility = False
+        self.vibe_body.Visibility = False
+        self.vibe_sketch.Visibility = False
+        assembly.Visibility = True
+        shown.Visibility = True
+        hidden.Visibility = False
+
+        def visible_state():
+            return tuple(bool(self.document.getObject(name).Visibility) for name in (
+                "VisibilityAssembly", "ShownOccurrence", "HiddenOccurrence",
+                "VibeProgram", "VibeCandidateBody", "VibeResult", "VibeBladeProfile"))
+
+        expected = (True, True, False, False, False, False, False)
+        self.assertIsNotNone(_wait_until(lambda: visible_state() == expected))
+        self.assertIsNotNone(_wait_until(lambda: _primitive_counts(shown)[0] > 0))
+        with tempfile.TemporaryDirectory(prefix="vibecad_assembly_visibility_") as directory:
+            path = os.path.join(directory, "assembly.FCStd")
+            self.document.saveAs(path)
+            self.assertIsNotNone(_wait_until(lambda: self.document.isClosable()))
+            App.closeDocument(self.document.Name)
+            self.document = App.openDocument(path)
+            from VibeCADGui import _pending_document_render_refreshes
+            self.assertIsNotNone(_wait_until(lambda: (
+                not self.document.Restoring
+                and not self.document.Recomputing
+                and not self.document.RecomputePending
+                and not self.document.PresentationUpdateActive
+                and str(self.document.Uid) not in _pending_document_render_refreshes)))
+            self.assertEqual(visible_state(), expected)
+            shown = self.document.getObject("ShownOccurrence")
+            hidden = self.document.getObject("HiddenOccurrence")
+            self.assertIsNotNone(_wait_until(lambda: (
+                _primitive_counts(shown)[0] > 0 and _is_in_active_scene(shown))))
+            self.assertFalse(hidden.Visibility)
+
+    def test_assembly_occurrences_do_not_inherit_private_source_presentation(self):
+        import VibeCADScriptedPublication as scripted_publication
+        from VibeCADVibeScriptDomainPublication import restore_partdesign_history_presentation
+
+        source = self.document.addObject("Part::Feature", "PrivateSource")
+        source.Shape = Part.makeBox(10, 10, 10)
+        scripted_publication.tag_object(
+            source,
+            role=scripted_publication.ROLE_PUBLICATION_TARGET,
+            engine="vibescript:partdesign",
+            model_id="visibility-source",
+            output_key="Box",
+        )
+        assembly = self.document.addObject("App::Part", "LinkedAssembly")
+        direct = assembly.newObject("App::Link", "DirectOccurrence")
+        direct.LinkedObject = source
+        nested = assembly.newObject("App::Link", "NestedOccurrence")
+        nested.LinkedObject = direct
+        hidden = assembly.newObject("App::Link", "HiddenOccurrence")
+        hidden.LinkedObject = source
+        self.document.recompute()
+        source.Visibility = False
+        direct.Visibility = True
+        nested.Visibility = True
+        hidden.Visibility = False
+        assembly.Visibility = True
+        for occurrence in (direct, nested, hidden):
+            self.assertNotIn(scripted_publication.PROP_ROLE, occurrence.PropertiesList)
+            self.assertEqual(
+                getattr(occurrence, scripted_publication.PROP_ROLE),
+                scripted_publication.ROLE_PUBLICATION_TARGET,
+            )
+
+        def visible_state():
+            return tuple(bool(self.document.getObject(name).Visibility) for name in (
+                "PrivateSource", "DirectOccurrence", "NestedOccurrence",
+                "HiddenOccurrence", "LinkedAssembly"))
+
+        expected = (False, True, True, False, True)
+        restored = restore_partdesign_history_presentation(self.document)
+        self.assertEqual(visible_state(), expected)
+        self.assertTrue(set(restored["changed_objects"]).isdisjoint(
+            {"DirectOccurrence", "NestedOccurrence", "HiddenOccurrence"}))
+        with tempfile.TemporaryDirectory(prefix="vibecad_link_visibility_") as directory:
+            path = os.path.join(directory, "assembly.FCStd")
+            self.document.saveAs(path)
+            self.assertIsNotNone(_wait_until(lambda: not any((
+                self.document.Recomputing, self.document.RecomputePending,
+                self.document.CooperativeMutationActive,
+                self.document.PresentationUpdateActive))))
+            App.closeDocument(self.document.Name)
+            self.document = App.openDocument(path)
+            from VibeCADGui import _pending_document_render_refreshes
+            self.assertIsNotNone(_wait_until(lambda: (
+                not self.document.Restoring
+                and not self.document.Recomputing
+                and not self.document.RecomputePending
+                and not self.document.PresentationUpdateActive
+                and str(self.document.Uid) not in _pending_document_render_refreshes)))
+            self.assertEqual(visible_state(), expected)
+            for name in ("DirectOccurrence", "NestedOccurrence"):
+                occurrence = self.document.getObject(name)
+                self.assertIsNotNone(_wait_until(lambda: (
+                    _primitive_counts(occurrence)[0] > 0
+                    and _is_in_active_scene(occurrence))))
 
     def test_component_and_owned_body_visibility_stay_together(self):
         component = self.document.addObject(
@@ -3071,46 +3372,68 @@ class TestModelTreeBrowser(unittest.TestCase):
         """Feature preview state cannot consume independent browser objects."""
 
         Gui.activateWorkbench("PartDesignWorkbench")
-        Gui.activeView().setActiveObject("pdbody", self.feature_body)
-        datum = self.feature_body.newObject(
+        body = self.document.addObject("PartDesign::Body", "ChamferTaskBody")
+        body.Label = "Chamfer Task Body"
+        self.component.addObject(body)
+        feature = body.newObject("PartDesign::Feature", "ChamferTaskFeature")
+        feature.Label = "Chamfer Task Feature"
+        feature.Shape = Part.makeBox(3, 4, 5)
+        body.Tip = feature
+        profile = self.document.addObject(
+            "Sketcher::SketchObject",
+            "IndependentTaskSketch",
+        )
+        profile.Label = "Independent Task Sketch"
+        profile.addGeometry(
+            Part.LineSegment(App.Vector(0, 0, 0), App.Vector(3, 0, 0)),
+            False,
+        )
+        datum = self.document.addObject(
             "PartDesign::Plane",
             "IndependentTaskPlane",
         )
         datum.Label = "Independent Task Plane"
-        self.feature_body.Tip = self.feature
-        self.feature_body.Visibility = True
-        self.profile_beta.Visibility = True
+        self.assertNotIn(profile, body.Group)
+        self.assertNotIn(datum, body.Group)
+        Gui.activeView().setActiveObject("pdbody", body)
+        body.Visibility = True
+        profile.Visibility = True
         datum.Visibility = True
         self.document.recompute()
 
         independent_visibility = (
-            self.profile_beta.Visibility,
+            profile.Visibility,
             datum.Visibility,
         )
         self.assertEqual(independent_visibility, (True, True))
-        original_tip = self.feature_body.Tip
+        self.assertEqual(tuple(body.Group), (feature,))
+        original_tip = body.Tip
 
         def open_chamfer_task():
             Gui.Selection.clearSelection()
             Gui.Selection.addSelection(
                 self.document.Name,
-                self.feature.Name,
+                feature.Name,
                 "Edge1",
             )
             Gui.runCommand("PartDesign_Chamfer", 0)
             self.assertTrue(Gui.Control.activeDialog())
-            operation = self.document.ActiveObject
-            self.assertEqual(operation.TypeId, "PartDesign::DesignChamfer")
-            self.assertNotIn(operation, self.feature_body.Group)
+            operations = [
+                obj for obj in self.document.Objects
+                if obj.TypeId == "PartDesign::DesignChamfer"
+            ]
+            self.assertEqual(len(operations), 1)
+            operation = operations[0]
+            self.assertNotIn(operation, body.Group)
 
         open_chamfer_task()
         Gui.Control.activeTaskDialog().reject()
         self.assertIsNotNone(
             _wait_until(lambda: not Gui.Control.activeDialog())
         )
-        self.assertIs(self.feature_body.Tip, original_tip)
+        self.assertIs(body.Tip, original_tip)
         self.assertEqual(
-            (self.profile_beta.Visibility, datum.Visibility),
+            (profile.Visibility, datum.Visibility),
             independent_visibility,
         )
         self.assertFalse(self.document.HasPendingTransaction)
@@ -3120,7 +3443,7 @@ class TestModelTreeBrowser(unittest.TestCase):
         self.assertIsNotNone(
             _wait_until(lambda: not Gui.Control.activeDialog())
         )
-        publication = self.feature_body.Tip
+        publication = body.Tip
         self.assertIsNotNone(publication)
         self.assertIsNot(publication, original_tip)
         self.assertEqual(
@@ -3137,41 +3460,42 @@ class TestModelTreeBrowser(unittest.TestCase):
             accepted_operation.TypeId,
             "PartDesign::DesignChamfer",
         )
-        self.assertNotIn(accepted_operation, self.feature_body.Group)
+        self.assertNotIn(accepted_operation, body.Group)
         self.assertEqual(
-            (self.profile_beta.Visibility, datum.Visibility),
+            (profile.Visibility, datum.Visibility),
             independent_visibility,
         )
-        self.assertTrue(self.feature_body.Visibility)
+        self.assertTrue(body.Visibility)
         self.assertTrue(publication.Visibility)
         self.assertFalse(self.document.HasPendingTransaction)
+        self.assertIsNotNone(_wait_until(self.document.isClosable))
 
     def test_chamfer_requires_selection_and_cancel_is_safe(self):
         Gui.activateWorkbench("PartDesignWorkbench")
-        Gui.activeView().setActiveObject("pdbody", self.feature_body)
+        body = self.document.addObject("PartDesign::Body", "ChamferCancelBody")
+        self.component.addObject(body)
+        feature = body.newObject("PartDesign::Feature", "ChamferCancelFeature")
+        feature.Shape = Part.makeBox(3, 4, 5)
+        body.Tip = feature
+        Gui.activeView().setActiveObject("pdbody", body)
         Gui.Selection.clearSelection()
 
-        original_tip = self.feature_body.Tip
-        original_group = tuple(self.feature_body.Group)
+        original_tip = body.Tip
+        original_group = tuple(body.Group)
+        self.assertEqual(original_group, (feature,))
         original_names = tuple(obj.Name for obj in self.document.Objects)
+        original_visibility = (body.Visibility, feature.Visibility)
 
-        # No selection is rejected before a transaction or temporary feature
-        # exists. Dismiss the synchronous native warning in the test event loop.
-        def dismiss_warning():
-            for widget in QtGui.QApplication.topLevelWidgets():
-                if isinstance(widget, QtGui.QMessageBox) and widget.isVisible():
-                    widget.accept()
-
-        warning_timer = QtCore.QTimer()
-        warning_timer.timeout.connect(dismiss_warning)
-        warning_timer.start(10)
-        try:
-            Gui.runCommand("PartDesign_Chamfer", 0)
-        finally:
-            warning_timer.stop()
-        self.assertFalse(Gui.Control.activeDialog())
-        self.assertEqual(self.feature_body.Tip, original_tip)
-        self.assertEqual(tuple(self.feature_body.Group), original_group)
+        # With a valid active Body, starting without a selection opens the
+        # task so its edge picker can receive the selection.
+        Gui.runCommand("PartDesign_Chamfer", 0)
+        self.assertTrue(Gui.Control.activeDialog())
+        Gui.Control.activeTaskDialog().reject()
+        self.assertIsNotNone(
+            _wait_until(lambda: not Gui.Control.activeDialog())
+        )
+        self.assertEqual(body.Tip, original_tip)
+        self.assertEqual(tuple(body.Group), original_group)
         self.assertEqual(
             tuple(obj.Name for obj in self.document.Objects),
             original_names,
@@ -3184,15 +3508,18 @@ class TestModelTreeBrowser(unittest.TestCase):
             Gui.Selection.clearSelection()
             Gui.Selection.addSelection(
                 self.document.Name,
-                self.feature.Name,
+                feature.Name,
                 "Edge1",
             )
             Gui.runCommand("PartDesign_Chamfer", 0)
             self.assertTrue(Gui.Control.activeDialog())
-            temporary = self.document.ActiveObject
-            self.assertIsNotNone(temporary)
-            self.assertEqual(temporary.TypeId, "PartDesign::DesignChamfer")
-            self.assertNotIn(temporary, self.feature_body.Group)
+            operations = [
+                obj for obj in self.document.Objects
+                if obj.TypeId == "PartDesign::DesignChamfer"
+            ]
+            self.assertEqual(len(operations), 1)
+            temporary = operations[0]
+            self.assertNotIn(temporary, body.Group)
             self.assertFalse(
                 _snapshot_has_label(self._snapshot(), temporary.Label),
                 self._snapshot(),
@@ -3204,47 +3531,51 @@ class TestModelTreeBrowser(unittest.TestCase):
             self.assertIsNotNone(
                 _wait_until(lambda: not Gui.Control.activeDialog())
             )
-            self.assertEqual(self.feature_body.Tip, original_tip)
-            self.assertEqual(tuple(self.feature_body.Group), original_group)
+            self.assertEqual(body.Tip, original_tip)
+            self.assertEqual(tuple(body.Group), original_group)
             self.assertEqual(
                 tuple(obj.Name for obj in self.document.Objects),
                 original_names,
             )
 
         # The transaction abort must leave the native visibility contract
-        # usable; this was the exact path that previously crashed TreeWidget.
-        self.feature_body.Visibility = False
+        # usable on the Body that the task edited, not an unrelated fixture.
+        self.assertEqual((body.Visibility, feature.Visibility), original_visibility)
+        self.assertFalse(self.document.HasPendingTransaction)
+        body.Visibility = False
         self.profile_beta.Visibility = True
         self.assertIsNotNone(
             _wait_until(
                 lambda: (
-                    not self.feature_body.Visibility
-                    and not self.feature.Visibility
+                    not body.Visibility
+                    and not feature.Visibility
                     and self.profile_beta.Visibility
-                    and _primitive_counts(self.feature)[0] == 0
+                    and _primitive_counts(feature)[0] == 0
                     and _primitive_counts(self.profile_beta)[1] > 0
                     and _is_in_active_scene(self.profile_beta)
                 )
             ),
             (
-                self.feature_body.Visibility,
-                self.feature.Visibility,
+                body.Visibility,
+                feature.Visibility,
                 self.profile_beta.Visibility,
-                _primitive_counts(self.feature_body),
+                _primitive_counts(body),
                 _primitive_counts(self.profile_beta),
                 _is_in_active_scene(self.profile_beta),
             ),
         )
-        self.feature_body.Visibility = True
+        body.Visibility = True
         self.assertIsNotNone(
             _wait_until(
                 lambda: (
-                    self.feature.Visibility
+                    feature.Visibility
                     and self.profile_beta.Visibility
-                    and _primitive_counts(self.feature_body)[0] > 0
+                    and _primitive_counts(body)[0] > 0
+                    and _is_in_active_scene(feature)
                 )
             )
         )
+        self.assertIsNotNone(_wait_until(self.document.isClosable))
 
 
 @unittest.skipIf(Mesh is None, "Requires Mesh")

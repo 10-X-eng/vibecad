@@ -209,8 +209,8 @@ def controller_tool_schemas() -> list[dict[str, Any]]:
             "name": READ_WORKBENCH_TOOL,
             "description": (
                 "Read the active VibeCAD workbench and the exact ribbon "
-                "workbenches available to the human. The client cannot switch "
-                "the active workbench."
+                "workbenches. Use workspace.switch when available to change ribbons, "
+                "then refresh tools for the destination workbench."
             ),
             "parameters": {
                 "type": "object",

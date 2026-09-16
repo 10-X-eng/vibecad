@@ -537,6 +537,9 @@ class _Dispatcher:
         self.calls.append((name, arguments, call_id))
         return dict(self.result)
 
+    def call_async(self, name, arguments, call_id, *, document_dispatch):
+        return self.call(name, arguments, call_id)
+
 
 class _Ledger:
     def __init__(self) -> None:
@@ -707,6 +710,34 @@ def test_provider_runner_dispatches_call_id_and_records_concise_trace() -> None:
     ]
 
 
+def test_provider_runner_waits_for_deferred_payload_outside_owner_dispatch():
+    from concurrent.futures import Future
+
+    runner, dispatcher, _ledger, _traces, _events = _provider_runner()
+    inside_owner = False
+
+    class Pending(Future):
+        def result(self, timeout=None):
+            assert not inside_owner, 'A pending tool must not wait on the GUI owner'
+            self.set_result({'ok': True, 'value': 4})
+            return super().result(timeout)
+
+    pending = Pending()
+
+    def owner(operation):
+        nonlocal inside_owner
+        inside_owner = True
+        try:
+            return operation()
+        finally:
+            inside_owner = False
+
+    runner._document_dispatch = owner
+    dispatcher.call_async = lambda *args, **kwargs: pending
+    result = runner('state.read', '{"operation":"active"}', 'deferred-owner')
+    assert result['ok'] and result['value'] == 4
+
+
 def test_provider_runner_waits_off_document_thread_before_a_dependent_call() -> None:
     jobs = _BackgroundJobs()
     runner, dispatcher, _ledger, _traces, events = _provider_runner(
@@ -824,6 +855,33 @@ def test_provider_runner_starts_a_fresh_turn_after_human_ribbon_change() -> None
     assert result["next_surface"] == "drawing"
     assert traces[-1]["result"]["next_turn_required"] is True
     assert runner.turn_transition_requested() is True
+
+
+def test_revision_conflict_requests_fresh_state_without_claiming_the_edit() -> None:
+    failure = {"ok": False, "error_code": "NATIVE_REVISION_CONFLICT",
+               "error": "Document revision changed", "current_revision": 5,
+               "repair": {"next_turn_required": True}}
+    runner, _dispatcher, _ledger, traces, _events = _provider_runner(result=failure)
+    runner._execution.document_uid = "document-a"
+    result = runner("state.read", '{"operation":"active"}', "read-conflict")
+    assert result["ok"] is False
+    assert result["error_code"] == "NATIVE_REVISION_CONFLICT"
+    assert "receipt" not in result
+    assert result["document_state_changed"] is True
+    assert result["document_uid"] == "document-a"
+    assert result["next_surface"] == "model"
+    assert result["next_turn_required"] is True
+    assert traces[-1]["result"]["next_turn_required"] is True
+    assert runner.turn_transition_requested() is True
+
+
+def test_revision_conflict_without_exact_document_owner_does_not_continue() -> None:
+    runner, *_rest = _provider_runner(result={
+        "ok": False, "error_code": "NATIVE_REVISION_CONFLICT",
+        "repair": {"next_turn_required": True}})
+    result = runner("state.read", '{"operation":"active"}', "unowned-conflict")
+    assert "next_turn_required" not in result
+    assert runner.turn_transition_requested() is False
 
 
 def test_provider_runner_starts_a_new_loop_when_same_ribbon_scope_changes() -> None:

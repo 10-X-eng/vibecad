@@ -47,7 +47,10 @@ from PartDesignTests.TestContextMenuTracking import (
 from PartDesignTests.TestDesignHoleGui import TestDesignHoleGui
 from PartDesignTests.TestExactTransactionContract import TestExactTransactionContract
 from PartDesignTests.TestFeatureBasePlacement import TestFeatureBasePlacement
-from PartDesignTests.TestFeatureTimeline import TestFeatureTimeline
+from PartDesignTests.TestFeatureTimeline import (
+    TestFeatureTimeline,
+    TestFeatureTimelineIconColor,
+)
 from PartDesignTests.TestModelTreeBrowser import TestModelTreeBrowser
 from PartDesignTests.TestNativeRibbonTools import TestNativeRibbonTools
 from PartDesignTests.TestNativeTaskContract import (

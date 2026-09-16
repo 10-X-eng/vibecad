@@ -1663,7 +1663,20 @@ DocumentObject* LinkBaseExtension::getTrueLinkedObject(bool recurse,
         return nullptr;
     }
     bool transform = linkTransform();
-    const char* subname = getSubName();
+    // Resolving an unchanged link is also used by background recompute.
+    // getSubName() reparses shared presentation caches and returns a pointer
+    // into mutable storage. A simultaneous display read can clear that string
+    // between this call and getSubObject(), losing a valid linked source.
+    // Keep the traversal path local; this read must not mutate those caches.
+    std::string objectPath;
+    const auto* xlink = freecad_cast<const PropertyXLink*>(getLinkedObjectProperty());
+    if (xlink && !xlink->getSubValues().empty()) {
+        const auto& fullPath = xlink->getSubValues().front();
+        const char* element = Data::findElementName(fullPath.c_str());
+        objectPath = element && element[0]
+            ? std::string(fullPath.c_str(), element) : fullPath;
+    }
+    const char* subname = objectPath.empty() ? nullptr : objectPath.c_str();
     if (subname || (mat && transform)) {
         ret = ret->getSubObject(subname, nullptr, mat, transform, depth + 1);
         transform = false;

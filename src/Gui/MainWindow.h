@@ -28,6 +28,7 @@
 #include <QMainWindow>
 #include <QMdiArea>
 #include <QString>
+#include <functional>
 
 #include "Window.h"
 #include "InputHint.h"
@@ -36,6 +37,7 @@ class QMimeData;
 class QUrl;
 class QMdiSubWindow;
 class QMenu;
+class QMessageBox;
 
 namespace App
 {
@@ -283,9 +285,12 @@ public Q_SLOTS:
      * Closes all document window.
      */
     bool closeAllDocuments(bool close = true);
+    void closeAllDocumentsAsync(std::function<void(bool)> finished = {});
     /** Pop up a message box asking for saving document
      */
     int confirmSave(App::Document* doc, QWidget* parent = nullptr, bool addCheckBox = false);
+    void confirmSaveAsync(App::Document* doc, std::function<void(int)> finished,
+                          QWidget* parent = nullptr, bool addCheckBox = false);
     /**
      * Activates the next window in the child window chain.
      */
@@ -358,6 +363,7 @@ protected:
     void changeEvent(QEvent* e) override;
 
 private:
+    QMessageBox* createSaveConfirmation(App::Document*, QWidget*, bool);
     void setupDockWindows();
     bool setupTaskView();
     bool setupSelectionView();

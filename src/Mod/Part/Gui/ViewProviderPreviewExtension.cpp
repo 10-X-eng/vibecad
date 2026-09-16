@@ -30,6 +30,7 @@
 
 #include "ViewProviderPreviewExtension.h"
 #include "ViewProviderExt.h"
+#include "RenderMeshController.h"
 
 #include <App/Document.h>
 #include <Gui/Utilities.h>
@@ -124,6 +125,7 @@ void SoPreviewShape::initClass()
 EXTENSION_PROPERTY_SOURCE(PartGui::ViewProviderPreviewExtension, Gui::ViewProviderExtension)
 
 ViewProviderPreviewExtension::ViewProviderPreviewExtension()
+    : renderMeshController(std::make_unique<RenderMeshController>())
 {
     const Base::Color magenta(1.0F, 0.0F, 1.0F);
 
@@ -137,6 +139,8 @@ ViewProviderPreviewExtension::ViewProviderPreviewExtension()
 
     initExtensionType(ViewProviderPreviewExtension::getExtensionClassTypeId());
 }
+
+ViewProviderPreviewExtension::~ViewProviderPreviewExtension() = default;
 
 void ViewProviderPreviewExtension::extensionAttach(App::DocumentObject* documentObject)
 {
@@ -155,6 +159,7 @@ void ViewProviderPreviewExtension::extensionAttach(App::DocumentObject* document
 
 void ViewProviderPreviewExtension::extensionBeforeDelete()
 {
+    cancelPreviewRendering();
     ViewProviderExtension::extensionBeforeDelete();
 
     showPreview(false);
@@ -206,9 +211,14 @@ void ViewProviderPreviewExtension::updatePreview()
     updatePreviewShape(getPreviewShape(), pcPreviewShape);
 }
 
+void ViewProviderPreviewExtension::cancelPreviewRendering()
+{
+    renderMeshController->cancelAll();
+}
+
 void ViewProviderPreviewExtension::updatePreviewShape(Part::TopoShape shape, SoPreviewShape* preview)
 {
-    if (shape.isNull() || preview == nullptr) {
+    if (preview == nullptr) {
         return;
     }
 
@@ -218,46 +228,31 @@ void ViewProviderPreviewExtension::updatePreviewShape(Part::TopoShape shape, SoP
         return;
     }
 
-    const auto updatePreviewShape = [vp](SoPreviewShape* preview, Part::TopoShape shape) {
-        ViewProviderPartExt::setupCoinGeometry(
-            shape.getShape(),
-            preview,
-            vp->Deviation.getValue(),
-            vp->AngularDeflection.getValue()
-        );
-    };
+    const SbMatrix transform = Base::convertTo<SbMatrix>(shape.getTransform());
+    Gui::CoinPtr<SoPreviewShape> target(preview);
+    renderMeshController->request(
+        preview,
+        shape.getShape(),
+        vp->Deviation.getValue(),
+        vp->AngularDeflection.getValue(),
+        false,
+        [target = std::move(target), transform](RenderMeshResult result) mutable {
+            if (!result.error.empty()) {
+                Base::Console().userTranslatedNotification(
+                    tr("Failure while rendering preview: %1. That usually indicates an error with model.")
+                        .arg(QString::fromUtf8(result.error.c_str()))
+                        .toUtf8()
+                );
+                result.mesh = std::make_shared<const Part::RenderMesh>();
+            }
+            if (!result.mesh) {
+                return;
+            }
 
-    try {
-        updatePreviewShape(preview, shape);
-        preview->transform.setValue(Base::convertTo<SbMatrix>(shape.getTransform()));
-    }
-    catch (Standard_Failure& e) {
-        Base::Console().userTranslatedNotification(
-            tr("Failure while rendering preview: %1. That usually indicates an error with model.")
-                .arg(QString::fromUtf8(e.GetMessageString()))
-                .toUtf8()
-        );
-
-        updatePreviewShape(preview, {});
-    }
-
-    // For some reason line patterns are not rendered correctly if material binding is set to
-    // anything other than PER_FACE. PER_FACE material binding seems to require materialIndex per
-    // each distinct edge. Until that is fixed, this code forces each edge to use the first
-    // material.
-    unsigned lineCoordsCount = preview->lineset->coordIndex.getNum();
-    unsigned lineCount = 1;
-
-    for (unsigned i = 0; i < lineCoordsCount; ++i) {
-        if (preview->lineset->coordIndex[i] < 0) {
-            lineCount++;
+            target->bindRenderMesh(result.mesh);
+            target->transform.setValue(transform);
         }
-    }
-
-    preview->lineset->materialIndex.setNum(lineCount);
-    for (unsigned i = 0; i < lineCount; ++i) {
-        preview->lineset->materialIndex.set1Value(i, 0);
-    }
+    );
 }
 
 namespace Gui

@@ -4,6 +4,7 @@ set -e
 set -x
 
 conda_env="AppDir/usr"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 artifact_base="$(python ../../../src/Tools/resolve_release_artifact_name.py ../../..)"
 version_name="${artifact_base}-Linux-$(uname -m)"
 
@@ -77,6 +78,7 @@ EOF
     ../scripts/purge_vibecad_retired_authoring_artifacts.sh \
         "${conda_env}" \
         "${conda_env}/Mod/VibeCAD"
+    ../scripts/exclude_appimage_host_graphics_libraries.sh "${conda_env}"
 
     echo -e "\nDelete unnecessary stuff"
     rm -rf ${conda_env}/include
@@ -99,9 +101,9 @@ EOF
     sed -i '1s|.*|#!/usr/bin/env python|' ${conda_env}/bin/pip
 
     echo -e "\nCopying Icon and Desktop file"
-    cp ${conda_env}/share/applications/org.freecad.FreeCAD.desktop AppDir/
-    sed -i 's/Exec=FreeCAD/Exec=AppRun/g' AppDir/org.freecad.FreeCAD.desktop
-    cp ${conda_env}/share/icons/hicolor/scalable/apps/org.freecad.FreeCAD.svg AppDir/
+    cp "$repo_root/package/linux/vibecad.desktop" AppDir/vibecad.desktop
+    sed -i 's/^Exec=vibecad /Exec=AppRun - --single-instance /' AppDir/vibecad.desktop
+    cp "$repo_root/src/Gui/Icons/vibecad.svg" AppDir/vibecad.svg
 
     # Remove __pycache__ folders and .pyc files
     find . -path "*/__pycache__/*" -delete

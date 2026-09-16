@@ -77,8 +77,10 @@ def resolve_authoring_mode_selector(
     vibescript_reason = ""
     if current == "native" and not environment.vibescript_return_safe:
         vibescript_reason = (
-            "Native changes are not represented by VibeScript source. Discard the "
-            "Native epoch or create a new VibeScript source first."
+            "Your direct edits are not represented in the saved VibeScript code. "
+            "Rebuilding from that code would overwrite them, so switching back is "
+            "blocked. Stay in Native to keep editing this model; use a copy saved "
+            "before the switch to continue with the original VibeScript model."
         )
     native_enabled = not blocker and (current == "native" or not native_blocker)
     vibescript_enabled = not blocker and (

@@ -4,9 +4,32 @@ import FreeCAD as App
 import Part
 
 import unittest
+import tempfile
+from pathlib import Path
 
 
 class BRepTests(unittest.TestCase):
+
+    def testReadBrepShapesBatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for index in range(50):
+                path = Path(directory) / f"shape-{index}.brep"
+                Part.makeBox(index + 1, 2, 3).exportBrep(str(path))
+                paths.append(str(path))
+            before = set(App.listDocuments())
+            shapes = Part.readBrepShapes(paths)
+            self.assertEqual(len(shapes), 50)
+            for index, shape in enumerate(shapes):
+                self.assertTrue(shape.isValid())
+                self.assertAlmostEqual(shape.Volume, (index + 1) * 6)
+                self.assertEqual(len(shape.Solids), 1)
+            self.assertEqual(set(App.listDocuments()), before)
+            self.assertEqual(Part.readBrepShapes([]), [])
+            bad = Path(directory) / "bad.brep"
+            bad.write_text("not a BREP", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                Part.readBrepShapes([paths[0], str(bad), paths[1]])
 
     def testProject(self):
         """

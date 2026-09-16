@@ -901,6 +901,90 @@ class _FastenerDialog:
         return self.values()
 
 
+def _start_fastener_placement(document: Any, target: Any) -> None:
+    """Expose the native placement control for one inserted fastener."""
+
+    # An active Assembly already owns edit mode and its task panel.  Selection
+    # is the Assembly placement contract: ViewProviderAssembly responds by
+    # exposing its transform dragger for the selected occurrence.  Starting a
+    # second edit task here would tear down Assembly edit mode and strand the
+    # newly inserted component.
+    try:
+        import UtilsAssembly
+    except ImportError:
+        UtilsAssembly = None
+    if UtilsAssembly is not None:
+        assembly = UtilsAssembly.findOwningAssembly(target)
+        if assembly is not None:
+            if UtilsAssembly.activeAssembly() is not assembly:
+                raise RuntimeError(
+                    _translate(
+                        "Activate the fastener's Assembly before placing it."
+                    )
+                )
+            if not UtilsAssembly.isMovableAssemblyComponent(assembly, target):
+                raise RuntimeError(
+                    _translate(
+                        "The inserted standard fastener is not movable in its Assembly."
+                    )
+                )
+
+            document_name = str(document.Name)
+            document_uid = str(document.Uid)
+            assembly_name = str(assembly.Name)
+            assembly_id = int(assembly.ID)
+            target_name = str(target.Name)
+            target_id = int(target.ID)
+
+            def expose_assembly_placement() -> None:
+                if document_name not in App.listDocuments():
+                    return
+                live_document = App.getDocument(document_name)
+                if live_document is None or str(live_document.Uid) != document_uid:
+                    return
+                live_assembly = live_document.getObject(assembly_name)
+                live_target = live_document.getObject(target_name)
+                if (
+                    live_assembly is not assembly
+                    or int(live_assembly.ID) != assembly_id
+                    or live_target is not target
+                    or int(live_target.ID) != target_id
+                ):
+                    return
+                if bool(getattr(live_document, "Recomputing", False)) or bool(
+                    getattr(live_document, "RecomputePending", False)
+                ):
+                    if not Gui.deferToNextFrame(expose_assembly_placement):
+                        App.Console.PrintError(
+                            "Could not expose the fastener placement dragger: "
+                            "the GUI frame dispatcher is shutting down.\n"
+                        )
+                    return
+                if UtilsAssembly.activeAssembly() is not live_assembly:
+                    return
+                Gui.Selection.clearSelection(document_name)
+                Gui.Selection.addSelection(live_target)
+                if not bool(live_assembly.ViewObject.DraggerVisibility):
+                    App.Console.PrintError(
+                        "Could not expose the Assembly fastener placement dragger.\n"
+                    )
+
+            if not Gui.deferToNextFrame(expose_assembly_placement):
+                raise RuntimeError(
+                    _translate("The GUI frame dispatcher is shutting down.")
+                )
+            return
+
+    gui_document = Gui.getDocument(document.Name)
+    if gui_document is None or not gui_document.setEdit(target.Name, 1):
+        raise RuntimeError(
+            _translate(
+                "The standard fastener was inserted, but its placement task "
+                "could not be opened."
+            )
+        )
+
+
 class _InsertStandardFastenerCommand:
     def GetResources(self) -> dict[str, str]:
         return {
@@ -991,6 +1075,12 @@ class _InsertStandardFastenerCommand:
         except Exception as exc:
             document.abortTransaction()
             _show_error("Insert Standard Fastener", exc)
+            return
+
+        try:
+            _start_fastener_placement(document, selected)
+        except Exception as exc:
+            _show_error("Place Standard Fastener", exc)
 
 
 def identity_label(values: Mapping[str, Any]) -> str:

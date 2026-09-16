@@ -25,5 +25,6 @@ assignDesignSplitRegions = _PartDesign.assignDesignSplitRegions
 setDesignSeparateDefinition = _PartDesign.setDesignSeparateDefinition
 finalizeDesignOperationEdit = _PartDesign.finalizeDesignOperationEdit
 finalizeDesignScriptOperationEdit = _PartDesign.finalizeDesignScriptOperationEdit
+adoptDesignScriptOperationEdit = _PartDesign.adoptDesignScriptOperationEdit
 removeDesignOperation = _PartDesign.removeDesignOperation
 validateDesign = _PartDesign.validateDesign

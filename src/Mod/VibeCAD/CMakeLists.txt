@@ -25,12 +25,17 @@ set(VibeCAD_Scripts
     VibeCADDocumentChangeBatch.py
     VibeCADDocumentReferences.py
     VibeCADEditState.py
+    VibeCADEngineeringBrief.py
+    VibeCADEngineeringBriefGui.py
     VibeCADFasteners.py
     VibeCADFastenersGui.py
     VibeCADFastenerModel.py
     VibeCADFastenerAttachment.py
     VibeCADFastenerAssembly.py
     VibeCADGrid.py
+    VibeCADHostIsolation.py
+    VibeCADIsolationWorker.py
+    VibeCADNumericalRuntime.py
     VibeCADSectionView.py
     VibeCADSectionViewGui.py
     VibeCADGrokAuth.py
@@ -40,6 +45,7 @@ set(VibeCAD_Scripts
     VibeCADGeometryInspection.py
     VibeCADPlacementInspection.py
     VibeCADGui.py
+    VibeCADTokenUsage.py
     VibeCADLegacyArchitecture.py
     VibeCADLiveAcceptanceOracle.py
     VibeCADIntentMemory.py
@@ -52,6 +58,7 @@ set(VibeCAD_Scripts
     VibeCADMCP.py
     VibeCADMCPStdio.py
     VibeCADMCPToolNames.py
+    VibeCADMCPToolServers.py
     VibeCADModelingSurface.py
     VibeCADNativeActionManifest.py
     VibeCADNativeArguments.py
@@ -1022,6 +1029,25 @@ set(VibeCAD_Scripts
     VibeCADNativeSketchConstraintSelection.py
     VibeCADNativeSketchElementSelection.py
     VibeCADNativeSketchInspectBindings.py
+    VibeCADNativeSheetMetalInspectBindings.py
+    VibeCADNativeSheetMetalInspectRuntime.py
+    VibeCADNativeSheetMetalInspectSchema.py
+    VibeCADNativeSheetMetalSnapshot.py
+    VibeCADNativeSheetMetalConnectionSchema.py
+    VibeCADNativeSheetMetalConnectionRuntime.py
+    VibeCADNativeSheetMetalConnectionBindings.py
+    VibeCADNativeSheetMetalManufacturingSchema.py
+    VibeCADNativeSheetMetalManufacturingRuntime.py
+    VibeCADNativeSheetMetalManufacturingBindings.py
+    VibeCADNativeSheetMetalViewBindings.py
+    VibeCADNativeSheetMetalViewRuntime.py
+    VibeCADNativeSheetMetalViewSchema.py
+    VibeCADNativeSheetMetalEditBindings.py
+    VibeCADNativeSheetMetalEditRuntime.py
+    VibeCADNativeSheetMetalEditSchema.py
+    VibeCADNativeSheetMetalCreateBindings.py
+    VibeCADNativeSheetMetalCreateRuntime.py
+    VibeCADNativeSheetMetalCreateSchema.py
     VibeCADNativeSketchInspectRuntime.py
     VibeCADNativeSketchInspectSchema.py
     VibeCADNativeSketchInspectTarget.py
@@ -1213,6 +1239,7 @@ set(VibeCAD_Scripts
     VibeCADProject.py
     VibeCADPublicationProgress.py
     VibeCADSession.py
+    VibeCADConversationContext.py
     VibeCADSessionRecovery.py
     VibeCADScriptedEditor.py
     VibeCADScriptedOwnership.py
@@ -1288,6 +1315,7 @@ set(VibeCAD_Resources
     vibecad-activity.svg
     vibecad-new-conversation.svg
     vibecad-prompt-starters.svg
+    vibecad-engineering-brief.svg
 )
 
 set(VibeCAD_UpdateTrustFiles)
@@ -1305,9 +1333,14 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/assembly_simulation_playback_gui_integration.py
         vibecad_tests/grid_gui_integration.py
         vibecad_tests/section_view_gui_integration.py
+        vibecad_tests/usage_summary_gui_integration.py
         vibecad_tests/link_override_visibility_gui_integration.py
         vibecad_tests/mcp_gui_integration.py
         vibecad_tests/session_recovery_gui_integration.py
+        vibecad_tests/engineering_brief_gui_integration.py
+        vibecad_tests/engineering_brief_lifecycle_gui_integration.py
+        vibecad_tests/engineering_brief_panel_gui_integration.py
+        vibecad_tests/test_engineering_brief.py
         vibecad_tests/test_session_recovery.py
     vibecad_tests/native_background_gui_integration.py
     vibecad_tests/native_analyze_context_responsiveness_gui_integration.py
@@ -1693,6 +1726,11 @@ if(BUILD_TEST AND BUILD_GUI)
     vibecad_tests/test_native_sketch_inspect.py
     vibecad_tests/test_native_sketch_inspect_elements.py
     vibecad_tests/test_native_sketch_inspect_schema.py
+    vibecad_tests/test_native_sheetmetal_inspect_schema.py
+    vibecad_tests/test_native_sheetmetal_view.py
+    vibecad_tests/test_native_sheetmetal_edit.py
+    vibecad_tests/test_native_sheetmetal_create.py
+    vibecad_tests/test_native_sheetmetal_surface.py
     vibecad_tests/test_native_sketch_internal_alignment.py
     vibecad_tests/test_native_sketch_internal_alignment_schema.py
     vibecad_tests/test_native_sketch_virtual_space.py
@@ -1801,6 +1839,41 @@ if(VibeCAD_UpdateTrustFiles)
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_BINARY_DIR}/Mod/VibeCAD
         ${VibeCAD_UpdateTrustFiles}
+    )
+endif()
+
+# Native cmake --build does not go through rattler create_bundle.sh, so pin
+# Codex here or the module keeps a leftover runtime from an older tree.
+option(VIBECAD_INSTALL_CODEX_RUNTIME "Install the pinned Codex app-server into the build module" ON)
+if(UNIX AND VIBECAD_INSTALL_CODEX_RUNTIME)
+    if(NOT Python3_EXECUTABLE)
+        message(FATAL_ERROR "Python3_EXECUTABLE is required to install the Codex app-server runtime")
+    endif()
+    set(VIBECAD_CODEX_INSTALLER
+        "${CMAKE_SOURCE_DIR}/package/rattler-build/scripts/install_vibecad_codex_runtime.sh")
+    set(VIBECAD_CODEX_MODULE_DIR "${CMAKE_BINARY_DIR}/Mod/VibeCAD")
+    set(VIBECAD_CODEX_RUNTIME_STAMP "${VIBECAD_CODEX_MODULE_DIR}/codex_runtime/runtime.json")
+    # The installer validates its cache cheaply. A manifest timestamp alone
+    # cannot detect removed companion binaries or stale runtime metadata.
+    add_custom_target(VibeCADCodexRuntime ALL
+        BYPRODUCTS "${VIBECAD_CODEX_RUNTIME_STAMP}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${VIBECAD_CODEX_MODULE_DIR}"
+        COMMAND
+            bash "${VIBECAD_CODEX_INSTALLER}"
+            "${Python3_EXECUTABLE}"
+            "${VIBECAD_CODEX_MODULE_DIR}"
+        DEPENDS
+            "${VIBECAD_CODEX_INSTALLER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/VibeCADCodex.py"
+        COMMENT "Verifying pinned Codex app-server in ${VIBECAD_CODEX_MODULE_DIR}"
+        VERBATIM
+    )
+    add_dependencies(VibeCADScripts VibeCADCodexRuntime)
+    install(
+        DIRECTORY "${VIBECAD_CODEX_MODULE_DIR}/codex_runtime"
+        DESTINATION Mod/VibeCAD
+        USE_SOURCE_PERMISSIONS
+        OPTIONAL
     )
 endif()
 

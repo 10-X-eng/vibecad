@@ -147,6 +147,10 @@ SET(PartGui_SRCS
     PreCompiled.h
     PreviewUpdateScheduler.cpp
     PreviewUpdateScheduler.h
+    RenderMeshController.cpp
+    RenderMeshController.h
+    SectionFaceController.cpp
+    SectionFaceController.h
     PropertyEnumAttacherItem.cpp
     PropertyEnumAttacherItem.h
     SoFCShapeObject.cpp
@@ -215,6 +219,8 @@ SET(PartGui_SRCS
     ViewProviderMirror.h
     ViewProviderPython.cpp
     ViewProviderPython.h
+    ViewProviderCachedDetails.cpp
+    ViewProviderCachedDetails.h
     ViewProviderBoolean.cpp
     ViewProviderBoolean.h
     ViewProviderProjectOnSurface.cpp

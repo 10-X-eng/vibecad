@@ -83,6 +83,31 @@ _MAX_VIBESCRIPT_REFERENCE_CACHE_ENTRIES = 8
 _MAX_VIBESCRIPT_REFERENCE_CACHE_BYTES = 256 * 1024 * 1024
 
 
+def _native_document_update_active(document_uid: str) -> bool:
+    """Read one document's asynchronous update state on its owning thread."""
+
+    import FreeCAD as App
+
+    uid = str(document_uid or "").strip()
+    document = next(
+        (
+            candidate
+            for candidate in App.listDocuments().values()
+            if str(getattr(candidate, "Uid", "") or "") == uid
+        ),
+        None,
+    )
+    return bool(
+        document is not None
+        and (
+            bool(getattr(document, "Recomputing", False))
+            or bool(getattr(document, "RecomputePending", False))
+            or bool(getattr(document, "CooperativeMutationActive", False))
+            or bool(getattr(document, "PresentationUpdateActive", False))
+        )
+    )
+
+
 def _slug_filename(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip()).strip("._")
     return slug[:64] or "reference"
@@ -225,7 +250,9 @@ class VibeCADService:
         self._project_store = VibeCADProjectStore(self._local_session_id)
         self._native_document_states = NativeDocumentStateStore()
         self._native_assistant_undo = NativeAssistantUndoLedger()
-        self._native_background_jobs = NativeBackgroundManager()
+        self._native_background_jobs = NativeBackgroundManager(
+            document_update_active=_native_document_update_active,
+        )
         self._native_analyze_contexts = AnalyzeContextCoordinator()
         self._native_drawing_source_contexts = DrawingSourceCatalogCoordinator()
         self._native_state_restores: set[tuple[str, str]] = set()
@@ -381,10 +408,12 @@ class VibeCADService:
     def invalidate_vibescript_reference_snapshots_many(
         self,
         objects: Any,
+        *,
+        identities: Any = (),
     ) -> None:
-        """Invalidate snapshots for many changed sources under one cache lock."""
+        """Invalidate changed sources, including identities captured before deletion."""
 
-        identities = {
+        identities = set(identities) | {
             identity
             for identity in (
                 self._vibescript_object_identity(obj)
@@ -448,6 +477,9 @@ class VibeCADService:
 
     def provider_reasoning_effort(self) -> str:
         return load_settings().reasoning_effort
+
+    def provider_adaptive_reasoning(self) -> bool:
+        return bool(load_settings().adaptive_reasoning)
 
     def web_search_enabled(self) -> bool:
         return bool(load_settings().web_search_enabled)
@@ -842,6 +874,7 @@ class VibeCADService:
             state["depth"] = int(state["depth"]) - 1
             outermost = int(state["depth"]) == 0
             structural = bool(state.get("structural"))
+            observed_structural = bool(state.get("observed_structural"))
             invalidate = bool(state.get("invalidate"))
             committed = bool(state.get("commit", True))
             if outermost:
@@ -855,7 +888,7 @@ class VibeCADService:
                     revision = self._native_document_states.note_structural_change(uid)
                 if invalidate:
                     self._invalidate_native_read_contexts(uid)
-                if structural:
+                if structural or observed_structural:
                     self._sync_native_authority_metadata_if_active(uid)
         finally:
             if outermost:
@@ -903,7 +936,11 @@ class VibeCADService:
             state = changes.get(uid)
             if state is None or int(state.get("depth") or 0) < 1:
                 return False, None
-            state["structural"] = bool(state.get("structural")) or structural
+            # The call must own its changes before returning its receipt. The
+            # GUI lease can close later, after the next call captured a revision.
+            observed = structural and self._native_document_states.note_observed_structural_change(uid)
+            state["structural"] = bool(state.get("structural")) or (structural and not observed)
+            state["observed_structural"] = bool(state.get("observed_structural")) or observed
             state["invalidate"] = bool(state.get("invalidate")) or invalidate
         return True, self._native_document_states.current_revision(uid)
 
@@ -5960,6 +5997,7 @@ class VibeCADService:
             "provider": {
                 "model": self.provider_model(),
                 "reasoning_effort": self.provider_reasoning_effort(),
+                "adaptive_reasoning": self.provider_adaptive_reasoning(),
                 "use_online_by_default": self.use_online_provider_by_default(),
             },
             "workbench": self.active_workbench_name(),

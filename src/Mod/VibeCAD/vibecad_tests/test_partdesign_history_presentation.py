@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 import VibeCADScriptedPublication as scripted_publication
 import VibeCADVibeScriptDomainPublication as publication
 
@@ -103,9 +105,24 @@ class _Root(_Object):
             obj.InList.append(self)
 
 
+class _Link(_Object):
+    def __init__(self, name: str, source: _Object, *, visible: bool) -> None:
+        super().__init__(name, "App::Link", visible=visible)
+        self.LinkedObject = source
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.LinkedObject, name)
+
+
 class _Document:
     def __init__(self) -> None:
         self.Objects: list[_Object] = []
+
+    def findObjects(self, *, Property: str = "") -> list[_Object]:
+        if not Property:
+            return list(self.Objects)
+        # Native findObjects also resolves properties forwarded by App::Link.
+        return [obj for obj in self.Objects if hasattr(obj, Property)]
 
     def addObject(self, type_id: str, name: str) -> _Object:
         obj = _Object(name, type_id, visible=True)
@@ -342,6 +359,31 @@ def test_current_contract_repairs_duplicate_results_and_hides_publication() -> N
     assert restored["changed_objects"] == ["Blade", "BladeBody"]
 
 
+def test_restore_only_inspects_objects_with_publication_identity() -> None:
+    document, _root, body, _sketch, _earlier, tip, stable = _document_with_body(
+        body_visible=True,
+        publication_visible=True,
+        schema=publication.PARTDESIGN_HISTORY_PRESENTATION_SCHEMA,
+    )
+
+    class _UnrelatedObject:
+        Name = "Unrelated"
+        PropertiesList: list[str] = []
+
+        @property
+        def TypeId(self) -> str:
+            raise AssertionError("unrelated objects must not enter presentation restore")
+
+    document.Objects.insert(0, _UnrelatedObject())
+
+    restored = publication.restore_partdesign_history_presentation(document)
+
+    assert restored["changed_objects"] == ["Blade", "BladeBody"]
+    assert body.ViewObject.Visibility is True
+    assert tip.ViewObject.Visibility is True
+    assert stable.ViewObject.Visibility is False
+
+
 def test_current_contract_hides_private_publication_targets() -> None:
     (
         document,
@@ -381,6 +423,46 @@ def test_current_contract_hides_private_publication_targets() -> None:
     assert restored["changed_objects"] == [
         "BladeDetachedPublicationTarget",
     ]
+
+
+@pytest.mark.parametrize("role", [
+    scripted_publication.ROLE_PUBLICATION_TARGET,
+    scripted_publication.ROLE_PUBLICATION,
+    scripted_publication.ROLE_IMPLEMENTATION,
+])
+def test_presentation_identity_requires_metadata_owned_by_the_occurrence(role: str) -> None:
+    source = _Object("Source", "Part::Feature", visible=False)
+    _tag(source, role=role)
+    direct = _Link("Direct", source, visible=True)
+    nested = _Link("Nested", direct, visible=True)
+
+    for occurrence in (direct, nested):
+        assert getattr(occurrence, scripted_publication.PROP_ROLE) == role
+        assert publication._partdesign_presentation_identity(occurrence, role) is None
+        # A partial local tag must not borrow the source's identity fields.
+        occurrence.addProperty("App::PropertyString", scripted_publication.PROP_ROLE, "Test")
+        setattr(occurrence, scripted_publication.PROP_ROLE, role)
+        assert publication._partdesign_presentation_identity(occurrence, role) is None
+    _tag(direct, role=role)
+    assert publication._partdesign_presentation_identity(direct, role) == ("blade-program", "Blade")
+
+
+def test_restore_does_not_hide_links_to_private_publication_targets() -> None:
+    document = _Document()
+    source = _Object("PrivateSource", "Part::Feature", visible=True)
+    _tag(source, role=scripted_publication.ROLE_PUBLICATION_TARGET)
+    direct = _Link("Direct", source, visible=True)
+    nested = _Link("Nested", direct, visible=True)
+    hidden = _Link("Hidden", source, visible=False)
+    document.Objects = [source, direct, nested, hidden]
+
+    restored = publication.restore_partdesign_history_presentation(document)
+
+    assert restored["changed_objects"] == ["PrivateSource"]
+    assert not source.ViewObject.Visibility
+    assert direct.ViewObject.Visibility
+    assert nested.ViewObject.Visibility
+    assert not hidden.ViewObject.Visibility
 
 
 def test_current_hidden_body_remains_hidden_across_restore() -> None:

@@ -78,6 +78,8 @@ public:
     void resetTransformOrigin();
 
     void setGizmoContainer(Gui::GizmoContainer* gizmoContainer);
+    /// Temporarily show/hide task gizmos; returns their previous visibility.
+    bool setGizmosVisible(bool visible);
 
 public:
     /** @name Edit methods */
@@ -156,6 +158,8 @@ private:
     );
 
     GizmoContainer* gizmoContainer = nullptr;
+    bool previousGizmoEventRedirection {false};
+    bool gizmoEventRedirectionActive {false};
 };
 
 }  // namespace Gui

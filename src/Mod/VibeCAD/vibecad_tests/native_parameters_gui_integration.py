@@ -73,6 +73,15 @@ def _events(rounds: int = 16) -> None:
         QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 25)
 
 
+def _settle_document(document) -> None:
+    for _index in range(10000):
+        _events(1)
+        if document.isClosable():
+            return
+        time.sleep(0.001)
+    raise AssertionError("Private Parameters document did not release its background ownership")
+
+
 def _parameters_surface():
     main_window = Gui.getMainWindow()
     controller = main_window.findChild(QtCore.QObject, "VibeCADRibbonController")
@@ -330,6 +339,16 @@ def _run() -> None:
         App.closeActiveTransaction(False, transaction)
         assert abs(float(driven.DrivenLength) - 10.0) < 1.0e-9
 
+        # The fixture above is an external edit, so resume with a fresh Native
+        # turn exactly as the application does after a revision conflict.
+        _settle_document(document)
+        dispatcher = NativeTurnDispatcher(
+            document=document, state=state, registry=registry,
+            turn=_turn(read_active_ribbon_surface(controller), registry),
+            runtimes=build_native_runtime_bindings(context, turn.tool_names),
+            reauthorize_turn=reauthorize, active_document=lambda: App.ActiveDocument,
+        )
+
         before_formulas = call(
             PARAMETERS_READ_CAPABILITY_NAME,
             {"operation": "read_range", "sheet": sheet_target, "range": "A1:C3"},
@@ -462,6 +481,7 @@ def _run() -> None:
         document.recompute()
         document.saveAs(str(save_path))
         original_name = sheet.Name
+        _settle_document(document)
         App.closeDocument(document.Name)
         document = App.openDocument(str(save_path))
         assert document.getObject(original_name) in tuple(document.VibeCADTimeline.Operations)
@@ -482,6 +502,7 @@ def _run() -> None:
     finally:
         Gui.Selection.clearSelection()
         if document is not None and document.Name in App.listDocuments():
+            _settle_document(document)
             App.closeDocument(document.Name)
         if temporary is not None:
             temporary.cleanup()

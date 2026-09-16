@@ -15,14 +15,16 @@ from VibeCADNativeAssemblyComponents import assembly_components
 from VibeCADNativeTargets import object_reference
 
 
-MAX_BOM_SOURCE_NODES = 4_096
-MAX_BOM_SOURCE_EDGES = 8_192
+# Retained public names: count metadata uses zero for no fixed ceiling;
+# the optional read budget uses None, just like read_bom_table().
+MAX_BOM_SOURCE_NODES = 0
+MAX_BOM_SOURCE_EDGES = 0
 MAX_BOM_PROPERTIES_PER_NODE = 256
-MAX_BOM_PROPERTIES = 32_768
+MAX_BOM_PROPERTIES = 0
 MAX_BOM_OPERATIONS = 1_024
 MAX_BOM_COLUMNS = 32
-MAX_BOM_ROWS = 4_096
-MAX_BOM_CELLS = 262_144
+MAX_BOM_ROWS = 0
+MAX_BOM_CELLS = None
 MAX_BOM_VALUE_CHARACTERS = 4_096
 MAX_BOM_PREVIEW_VALUE_CHARACTERS = 160
 MAX_BOM_OPERATION_PREVIEW = 16
@@ -316,11 +318,8 @@ def _source_graph(assembly: Any) -> tuple[dict[str, Any], ...]:
     records: list[dict[str, Any]] = []
     by_identity: dict[tuple[str, str, int], str] = {}
     active: set[tuple[str, str, int]] = set()
-    edge_count = 0
-    property_count = 0
 
     def visit(obj: Any) -> str:
-        nonlocal edge_count, property_count
         identity = _identity_record(obj)
         key = (
             str(identity["document_uid"]),
@@ -334,17 +333,8 @@ def _source_graph(assembly: Any) -> tuple[dict[str, Any], ...]:
                     "The Assembly BOM source hierarchy contains a cycle."
                 )
             return existing
-        if len(records) >= MAX_BOM_SOURCE_NODES:
-            raise NativeAssemblyBomStateError(
-                f"The Assembly exceeds the {MAX_BOM_SOURCE_NODES}-source-node Native BOM bound."
-            )
         node_id = f"n{len(records):04d}"
         properties = _bom_properties(obj)
-        property_count += len(properties)
-        if property_count > MAX_BOM_PROPERTIES:
-            raise NativeAssemblyBomStateError(
-                f"The Assembly exceeds the {MAX_BOM_PROPERTIES}-property Native BOM bound."
-            )
         record: dict[str, Any] = {
             "node_id": node_id,
             "object": identity,
@@ -373,11 +363,6 @@ def _source_graph(assembly: Any) -> tuple[dict[str, Any], ...]:
                     or not _component_candidate(target)
                 ):
                     continue
-                edge_count += 1
-                if edge_count > MAX_BOM_SOURCE_EDGES:
-                    raise NativeAssemblyBomStateError(
-                        f"The Assembly exceeds the {MAX_BOM_SOURCE_EDGES}-occurrence Native BOM bound."
-                    )
                 scale_value = _occurrence_scale(occurrence)
                 record["occurrences"].append(
                     {
@@ -440,11 +425,11 @@ def _preview_text(value: str) -> tuple[str, bool]:
 def read_bom_table(
     bom: Any,
     *,
-    maximum_cells: int = MAX_BOM_CELLS,
+    maximum_cells: int | None = MAX_BOM_CELLS,
 ) -> dict[str, Any]:
-    """Read and hash one bounded native BOM spreadsheet."""
+    """Hash the complete table; bound only its preview unless a caller sets a budget."""
 
-    if type(maximum_cells) is not int or not 1 <= maximum_cells <= MAX_BOM_CELLS:
+    if maximum_cells is not None and (type(maximum_cells) is not int or maximum_cells < 1):
         raise NativeAssemblyBomStateError(
             "The Assembly BOM table cell budget is invalid."
         )
@@ -481,8 +466,7 @@ def read_bom_table(
         first_column != 1
         or first_row != 1
         or not 1 <= column_count <= MAX_BOM_COLUMNS
-        or row_count > MAX_BOM_ROWS
-        or cell_count > maximum_cells
+        or (maximum_cells is not None and cell_count > maximum_cells)
     ):
         raise NativeAssemblyBomStateError(
             "An Assembly BOM exceeds its bounded A1-origin table or cell budget."
@@ -573,12 +557,7 @@ def _bom_graph(
             )
         resources_by_bom[owner].append(resource)
     records = []
-    remaining_cells = MAX_BOM_CELLS
     for bom in boms:
-        if remaining_cells <= 0:
-            raise NativeAssemblyBomStateError(
-                f"The Assembly exceeds the {MAX_BOM_CELLS}-cell Native BOM bound."
-            )
         if (
             not _live_object(bom)
             or str(getattr(bom, "TypeId", "") or "") != "Assembly::BomObject"
@@ -596,8 +575,7 @@ def _bom_graph(
             raise NativeAssemblyBomStateError(
                 "An existing Assembly BOM has invalid columns."
             )
-        table = read_bom_table(bom, maximum_cells=remaining_cells)
-        remaining_cells -= int(table["cell_count"])
+        table = read_bom_table(bom)
         records.append(
             {
                 "bom": _identity_record(bom),

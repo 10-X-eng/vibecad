@@ -6093,13 +6093,26 @@ def universal_tool_specs() -> tuple[dict[str, Any], ...]:
         {
             "name": "vibescript.read_source",
             "description": (
-                "List programs when program is omitted, or read one source and state. "
+                "Search or page programs when program is omitted (query, offset, limit), "
+                "or read one exact program's source and state. "
                 "Use line bounds for a slice and include_logs only for diagnostics."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "program": program,
+                    "query": _property_schema(
+                        "Program-index search across program, domain, label and output names; omit program.",
+                        type="string",
+                    ),
+                    "offset": _property_schema(
+                        "Program-index offset; omit program. Follow next_read for further pages.",
+                        type="integer", minimum=0, default=0,
+                    ),
+                    "limit": _property_schema(
+                        "Programs per response (not a document limit); omit program.",
+                        type="integer", minimum=1, maximum=100, default=20,
+                    ),
                     "line_start": _property_schema(
                         "First source line (1-based).",
                         type="integer",

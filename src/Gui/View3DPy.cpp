@@ -114,6 +114,11 @@ void View3DInventorPy::init_type()
     add_varargs_method("viewPosition", &View3DInventorPy::viewPosition, "viewPosition()");
     add_varargs_method("startAnimating", &View3DInventorPy::startAnimating, "startAnimating()");
     add_noargs_method("stopAnimating", &View3DInventorPy::stopAnimating, "stopAnimating()");
+    add_noargs_method(
+        "isAnimating",
+        &View3DInventorPy::isAnimating,
+        "isAnimating() -> bool\nReturns whether the camera is currently animating."
+    );
     add_varargs_method(
         "setAnimationEnabled",
         &View3DInventorPy::setAnimationEnabled,
@@ -969,6 +974,11 @@ Py::Object View3DInventorPy::stopAnimating()
 {
     getView3DInventorPtr()->getViewer()->stopAnimating();
     return Py::None();
+}
+
+Py::Object View3DInventorPy::isAnimating()
+{
+    return Py::Boolean(getView3DInventorPtr()->getViewer()->isAnimating());
 }
 
 Py::Object View3DInventorPy::setAnimationEnabled(const Py::Tuple& args)

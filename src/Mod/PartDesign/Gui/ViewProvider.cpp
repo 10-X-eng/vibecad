@@ -52,6 +52,7 @@
 #include <Mod/Part/Gui/SoBrepEdgeSet.h>
 
 #include "TaskFeatureParameters.h"
+#include "TaskDialogState.h"
 #include "StyleParameters.h"
 
 #include "ViewProvider.h"
@@ -118,6 +119,7 @@ ViewProvider::~ViewProvider() = default;
 
 void ViewProvider::beforeDelete()
 {
+    finalResultRecomputeConnection.disconnect();
     ViewProviderPart::beforeDelete();
 }
 
@@ -251,6 +253,9 @@ TaskDlgFeatureParameters* ViewProvider::getEditDialog()
 
 void ViewProvider::unsetEdit(int ModNum)
 {
+    if (finalResultVisibility) {
+        showPreviousFeature(true);
+    }
     showPreview(false);
 
     // return to the WB we were in before editing the PartDesign feature
@@ -274,6 +279,12 @@ void ViewProvider::unsetEdit(int ModNum)
 
 void ViewProvider::updateData(const App::Property* prop)
 {
+    if (auto* operation = dynamic_cast<PartDesign::DesignOperationProperties*>(getObject());
+        finalResultVisibility && operation
+        && (prop == &operation->OutputShapes || prop == &operation->OutputFrames
+            || prop == &operation->OutputPresence)) {
+        updateVisual();
+    }
     if (auto* operation = dynamic_cast<PartDesign::DesignOperationProperties*>(getObject());
         operation && prop == &operation->ResultOperation) {
         updateOperationPreviewColor(*this);
@@ -454,6 +465,51 @@ Part::TopoShape ViewProvider::getPreviewShape() const
     return {};
 }
 
+Part::TopoShape ViewProvider::getRenderedShape() const
+{
+    auto* operation = dynamic_cast<const PartDesign::DesignOperationProperties*>(getObject());
+    if (!finalResultVisibility || !operation) {
+        return inherited::getRenderedShape();
+    }
+    if (getObject()->isError() || profilePicking) {
+        return {};
+    }
+    const auto& outputs = operation->OutputShapes.getValues();
+    const auto& frames = operation->OutputFrames.getValues();
+    const auto& present = operation->OutputPresence.getValues();
+    if (outputs.size() != frames.size() || outputs.size() != present.size()) {
+        return {};
+    }
+    std::vector<Part::TopoShape> shapes;
+    const auto local = App::GeoFeature::getGlobalPlacement(getObject()).inverse();
+    for (std::size_t index = 0; index < outputs.size(); ++index) {
+        if (present[index] && !outputs[index].isNull()) {
+            auto shape = outputs[index];
+            shape.transformShape((local * frames[index]).toMatrix(), true, true);
+            shapes.push_back(std::move(shape));
+        }
+    }
+    Part::TopoShape result;
+    if (!shapes.empty()) {
+        result.makeElementCompound(shapes);
+    }
+    return result;
+}
+
+void ViewProvider::setProfilePicking(bool enabled)
+{
+    if (enabled == profilePicking) {
+        return;
+    }
+    profilePicking = enabled;
+    if (enabled) {
+        gizmosBeforePicking = setGizmosVisible(false);
+    }
+    else {
+        setGizmosVisible(gizmosBeforePicking);
+    }
+}
+
 void ViewProvider::showPreviousFeature(bool enable)
 {
     PartDesign::Feature* feature {getObject<PartDesign::Feature>()};
@@ -462,6 +518,44 @@ void ViewProvider::showPreviousFeature(bool enable)
     ViewProvider* baseFeatureViewProvider {nullptr};
 
     if (!feature) {
+        return;
+    }
+
+    if (auto* operation = dynamic_cast<PartDesign::DesignOperationProperties*>(feature)) {
+        if (enable) {
+            finalResultRecomputeConnection.disconnect();
+            if (finalResultVisibility) {
+                finalResultVisibility->restore(feature->getDocument());
+                finalResultVisibility.reset();
+            }
+            hide();
+        }
+        else {
+            if (!finalResultRecomputeConnection.connected()) {
+                finalResultRecomputeConnection = feature->getDocument()->signalRecomputedObject.connect(
+                    [this](const App::DocumentObject& object) {
+                        if (&object == getObject() && finalResultVisibility) {
+                            showPreviousFeature(false);
+                        }
+                    }
+                );
+            }
+            if (finalResultVisibility) {
+                finalResultVisibility->restore(feature->getDocument());
+            }
+            finalResultVisibility = std::make_unique<TaskInternal::VisibilitySnapshot>();
+            const auto& ids = operation->OutputBodyIds.getValues();
+            for (auto* body : feature->getDocument()->getObjectsOfType<PartDesign::Body>()) {
+                if (std::ranges::find(ids, body->VibeCADBodyId.getValueStr()) != ids.end()) {
+                    finalResultVisibility->captureObject(body);
+                    if (auto* view = Gui::Application::Instance->getViewProvider(body)) {
+                        view->hide();
+                    }
+                }
+            }
+            show();
+        }
+        updateVisual();
         return;
     }
 

@@ -54,6 +54,34 @@ def _process_events(rounds: int = 20) -> None:
         QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 25)
 
 
+def _wait_document_ready(document) -> None:
+    """Wait for native work, not a machine-dependent count of event passes."""
+    loop = QtCore.QEventLoop()
+    poll = QtCore.QTimer()
+    watchdog = QtCore.QTimer()
+    watchdog.setSingleShot(True)
+    timed_out = False
+
+    def check():
+        if not any((document.Restoring, document.Recomputing, document.RecomputePending,
+                    document.CooperativeMutationActive, document.PresentationUpdateActive)):
+            loop.quit()
+
+    def timeout():
+        nonlocal timed_out
+        timed_out = True
+        loop.quit()
+
+    poll.timeout.connect(check)
+    watchdog.timeout.connect(timeout)
+    poll.start(10)
+    watchdog.start(120000)  # Test watchdog only; never cancels production work.
+    loop.exec()
+    poll.stop()
+    watchdog.stop()
+    assert not timed_out, 'Document did not finish its pending native work'
+
+
 def _select_assemble_ribbon(main_window) -> None:
     tabs = main_window.findChild(QtWidgets.QTabBar, "VibeCADRibbonTabs")
     assert tabs is not None
@@ -131,11 +159,15 @@ def _run() -> None:
             source = document.addObject("Part::Feature", f"PlaybackSource{index + 1}")
             source.Shape = Part.makeBox(20.0, 12.0, 8.0)
             sources.append(source)
+        _wait_document_ready(document)
         document.recompute()
+        _wait_document_ready(document)
         document.saveAs(str(path))
+        _wait_document_ready(document)
 
         Gui.runCommand("Assembly_CreateAssembly")
         _process_events(24)
+        _wait_document_ready(document)
         assembly = next(
             obj for obj in document.Objects if obj.TypeId == "Assembly::AssemblyObject"
         )
@@ -182,6 +214,7 @@ def _run() -> None:
                 ],
             )
             document.finalizeProvisionalTimelineOperationBlock(drive, [drive])
+            _wait_document_ready(document)
             document.recompute()
             document.commitTransaction()
         except Exception:
@@ -193,6 +226,7 @@ def _run() -> None:
                 old_solve_preference,
             )
         _process_events(16)
+        _wait_document_ready(document)
 
         VibeGui._connect_document_observer()
         main_window = Gui.getMainWindow()
@@ -297,6 +331,7 @@ def _run() -> None:
         assert simulation is not None
         document.save()
         _process_events(12)
+        _wait_document_ready(document)
         # Establish a clean presentation baseline explicitly.  Assembly edit
         # contextual-panel refreshes can dirty the GUI document independently
         # of the just-saved App document; playback must preserve the baseline
@@ -411,6 +446,7 @@ def _run() -> None:
         frame_before_save = paused["frame"]
         document.save()
         _process_events(20)
+        _wait_document_ready(document)
         active_after_save = active_native_assembly_playback_summary(assembly)
         assert active_after_save["active"] is True
         assert active_after_save["frame"] == frame_before_save
@@ -472,6 +508,7 @@ def _run() -> None:
         }
         document.save()
         _process_events(20)
+        _wait_document_ready(document)
         assert (
             active_native_assembly_playback_summary(assembly)["frame"]
             == (dirty_opened["frame"])
@@ -533,7 +570,12 @@ def _run() -> None:
                 Gui.activeDocument().resetEdit()
             except (AttributeError, RuntimeError):
                 pass
-            App.closeDocument(document.Name)
+            try:
+                _wait_document_ready(document)
+                App.closeDocument(document.Name)
+            except Exception:
+                traceback.print_exc()
+                exit_code = 1
         if temporary is not None:
             temporary.cleanup()
         application.exit(exit_code)

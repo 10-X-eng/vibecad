@@ -24,12 +24,12 @@
 
 #include <unordered_set>
 
-#include <fastsignals/signal.h>
 #include <QCoreApplication>
 #include <QRectF>
 
 #include <App/DocumentObject.h>
 #include <App/FeaturePython.h>
+#include <App/MainThreadSignal.h>
 #include <App/PropertyUnits.h>
 #include <Mod/TechDraw/TechDrawGlobal.h>
 
@@ -69,7 +69,7 @@ public:
     App::DocumentObjectExecReturn* recompute() override;
     /// recalculate the Feature
     App::DocumentObjectExecReturn *execute() override;
-    bool canRecomputeOnWorker() const override { return false; }
+    bool canRecomputeOnWorker() const override { return true; }
     void onDocumentRestored() override;
     short mustExecute() const override;
     //@}
@@ -105,8 +105,8 @@ public:
     /// True when this view is on the active side of the document timeline.
     virtual bool isActiveInDocumentTimeline() const;
 
-    fastsignals::signal<void (const DrawView*)> signalGuiPaint;
-    fastsignals::signal<void (const DrawView*, std::string, std::string)> signalProgressMessage;
+    App::MainThreadSignal<void (const DrawView*)> signalGuiPaint;
+    App::MainThreadSignal<void (const DrawView*, std::string, std::string)> signalProgressMessage;
     void requestPaint(void);
     void showProgressMessage(std::string featureName, std::string text);
 

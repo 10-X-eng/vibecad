@@ -22,11 +22,14 @@
 #ifndef APP_MAINTHREADSIGNAL_H
 #define APP_MAINTHREADSIGNAL_H
 
+#include <FCGlobal.h>
+
 #include <Base/Interpreter.h>
 #include <fastsignals/signal.h>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -35,6 +38,28 @@
 namespace App
 {
 
+// Optional provenance for one explicitly tracked asynchronous recompute.
+// Shared immutable data keeps forwarding cheap; ordinary work has no origin.
+struct RecomputeOrigin
+{
+    std::string documentName;
+    std::string token;
+};
+
+class AppExport RecomputeOriginScope
+{
+public:
+    using Origin = std::shared_ptr<const RecomputeOrigin>;
+    explicit RecomputeOriginScope(Origin origin);
+    ~RecomputeOriginScope();
+    RecomputeOriginScope(const RecomputeOriginScope&) = delete;
+    RecomputeOriginScope& operator=(const RecomputeOriginScope&) = delete;
+    static Origin current();
+
+private:
+    Origin previous;
+};
+
 // App owns these signal types because App::Document declares them. Gui installs
 // the actual main-thread hooks when a GUI application is available.
 //
@@ -42,51 +67,24 @@ namespace App
 // may observe while recompute can run on a worker thread. Raw
 // App::DocumentObject signals intentionally remain plain fastsignals with
 // same-thread semantics.
-class MainThreadSignalConfig
+class AppExport MainThreadSignalConfig
 {
 public:
     using IsMainThreadFn = bool (*)();  // true iff currently on GUI/main thread
     using InvokeFn = void (*)(std::function<void()>&& fn, bool blocking);
+    using CleanupFn = void (*)(std::function<void()>&& fn);
 
-    static void setHooks(IsMainThreadFn isMainThread, InvokeFn invoke)
-    {
-        isMainThreadSlot() = isMainThread;
-        invokeSlot() = invoke;
-    }
-
-    static inline bool isMainThread()
-    {
-        auto* f = isMainThreadSlot();
-        return f ? f() : true;  // no hooks, treat current thread as "main"
-    }
-
-    static inline bool hasHooks()
-    {
-        return isMainThreadSlot() && invokeSlot();
-    }
-
-    static inline void invoke(std::function<void()>&& fn, bool blocking)
-    {
-        auto* f = invokeSlot();
-        if (f) {
-            f(std::move(fn), blocking);
-        }
-        else {
-            fn();  // no hooks, run inline
-        }
-    }
-
-private:
-    static IsMainThreadFn& isMainThreadSlot()
-    {
-        static IsMainThreadFn fn = nullptr;
-        return fn;
-    }
-    static InvokeFn& invokeSlot()
-    {
-        static InvokeFn fn = nullptr;
-        return fn;
-    }
+    // Implemented by FreeCADApp rather than inline so Windows DLLs and PYDs
+    // all observe the same process-wide hook pair.
+    static void setHooks(IsMainThreadFn isMainThread, InvokeFn invoke);
+    static bool isMainThread();
+    static bool hasHooks();
+    // Independent cleanup delivery, kept alive until document workers join.
+    // No inline fallback: an absent hook is an error, never worker-side cleanup.
+    static void setCleanupHook(CleanupFn cleanup);
+    static bool hasCleanupHook();
+    static void invokeCleanup(std::function<void()>&& fn);
+    static void invoke(std::function<void()>&& fn, bool blocking);
 };
 
 namespace detail
@@ -234,7 +232,13 @@ private:
             return self->sig_(std::forward<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
         }
 
-        Base::PyGILStateRelease release;
+        // Native worker tasks do not necessarily hold Python's GIL. Release
+        // it only for Python-backed callers before synchronously entering the
+        // GUI owner thread; PyEval_SaveThread is invalid without ownership.
+        std::unique_ptr<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release = std::make_unique<Base::PyGILStateRelease>();
+        }
 
         auto caps = std::make_tuple(
             detail::captureSignalArg<typename ::fastsignals::signal_arg_t<Arguments>>(args)...

@@ -81,6 +81,7 @@ from VibeCADNativeCapabilityRegistry import (
 
 _SHARED = frozenset(
     {
+        "workspace.switch",
         "core.capture_view_screenshot",
         "document.query",
         "document.save",
@@ -1032,8 +1033,8 @@ def _solver_operations(
     state = _physics_state(domain)
     if state is None or state[1] == 0:
         return ()
-    if _solver_creation_ready(domain) is False:
-        return ()
+    # Creating solver settings does not execute a solve. Missing supports,
+    # loads, or meshes must not hide the action needed to finish study setup.
     physics = state[0]
     wanted = set()
     if physics.intersection({"mechanical", "thermal"}):

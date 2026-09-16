@@ -15,6 +15,7 @@ output_dir=""
 version=""
 arch="$(uname -m)"
 artifact_basename=""
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -114,27 +115,10 @@ EOF
 chmod 0755 "$pkgroot/usr/bin/vibecad"
 
 mkdir -p "$pkgroot/usr/share/applications"
-cat > "$pkgroot/usr/share/applications/vibecad.desktop" <<'EOF'
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=VibeCAD
-GenericName=AI-native CAD
-Comment=Design 3D parts with VibeCAD
-Exec=vibecad %F
-Icon=vibecad
-Terminal=false
-Categories=Graphics;Engineering;Science;
-MimeType=application/x-extension-fcstd;application/x-extension-fcstd1;
-StartupNotify=true
-EOF
+cp "$repo_root/package/linux/vibecad.desktop" "$pkgroot/usr/share/applications/vibecad.desktop"
 
 mkdir -p "$pkgroot/usr/share/icons/hicolor/scalable/apps"
-if [[ -f "$install_root/org.freecad.FreeCAD.svg" ]]; then
-    cp "$install_root/org.freecad.FreeCAD.svg" "$pkgroot/usr/share/icons/hicolor/scalable/apps/vibecad.svg"
-elif [[ -f "$install_root/usr/share/icons/hicolor/scalable/apps/org.freecad.FreeCAD.svg" ]]; then
-    cp "$install_root/usr/share/icons/hicolor/scalable/apps/org.freecad.FreeCAD.svg" "$pkgroot/usr/share/icons/hicolor/scalable/apps/vibecad.svg"
-fi
+cp "$repo_root/src/Gui/Icons/vibecad.svg" "$pkgroot/usr/share/icons/hicolor/scalable/apps/vibecad.svg"
 
 installed_size="$(du -sk "$pkgroot" | awk '{print $1}')"
 mkdir -p "$pkgroot/DEBIAN"

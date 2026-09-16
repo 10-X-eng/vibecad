@@ -11,6 +11,12 @@ import FreeCAD
 
 
 def _mod_dir():
+    try:
+        import SCS_locator
+        if os.path.isfile(os.path.join(SCS_locator.PATH, "SCSCommand.py")):
+            return SCS_locator.PATH
+    except ImportError:
+        pass
     root = FreeCAD.getUserAppDataDir()
     rels = (
         os.path.join("Mod", "SendCutSendPresets"),

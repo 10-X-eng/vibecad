@@ -74,7 +74,6 @@ _ARGUMENT_COUNTS = {
     "diagnostics": 1,
 }
 _MAX_DEFINITION_DEPTH = 32
-_MAX_DEFINITION_BYTES = 1_000_000
 _MAX_SELF_INTERSECTION_SAMPLE = 64
 _MAX_SELF_INTERSECTION_DETAIL_FACETS = 128
 _MAX_ABS_COORDINATE = 1_000_000_000.0
@@ -604,13 +603,6 @@ def validate_mesh_definition(
         require_domain_value=require_domain_value,
     )
     encoded_payload = _encoded(payload)
-    if depth == 0 and len(encoded_payload.encode("utf-8")) > _MAX_DEFINITION_BYTES:
-        raise _fail(
-            f"{context} exceeds the {_MAX_DEFINITION_BYTES}-byte Mesh definition limit.",
-            stage="definition_contract",
-            path=context,
-            maximum_bytes=_MAX_DEFINITION_BYTES,
-        )
     operation = str(payload["operation"])
     arguments = list(payload["arguments"])
     properties = dict(payload["properties"])

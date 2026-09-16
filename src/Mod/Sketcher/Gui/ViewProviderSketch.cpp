@@ -46,6 +46,7 @@
 #include <QMessageBox>
 #include <QScreen>
 #include <QTextStream>
+#include <QThread>
 #include <QToolTip>
 #include <QWindow>
 
@@ -66,6 +67,7 @@
 #include <Gui/CommandT.h>
 #include <Gui/Control.h>
 #include <Gui/Document.h>
+#include <Gui/FrameBudget.h>
 #include <Gui/MainWindow.h>
 #include <Gui/MenuManager.h>
 #include <Gui/Selection/Selection.h>
@@ -104,6 +106,7 @@
 #include <TopTools_ListOfListOfShape.hxx>
 
 #include <Mod/Part/Gui/SoFCShapeObject.h>
+#include <Mod/Part/Gui/RenderMeshController.h>
 
 
 // clang-format off
@@ -574,6 +577,7 @@ ViewProviderSketch::ViewProviderSketch()
     , Mode(STATUS_NONE)
     , pcSketchFaces(new SoSketchFaces)
     , pcSketchFacesToggle(new SoToggleSwitch)
+    , sketchFaceRenderController(std::make_unique<PartGui::RenderMeshController>())
     , listener(nullptr)
     , editCoinManager(nullptr)
     , snapManager(nullptr)
@@ -3678,10 +3682,26 @@ void ViewProviderSketch::updateData(const App::Property* prop) {
 
     if (prop == &getSketchObject()->InternalShape) {
         const auto& shape = getSketchObject()->InternalShape.getValue();
-        setupCoinGeometry(shape,
-                pcSketchFaces,
-                Deviation.getValue(),
-                AngularDeflection.getValue());
+        Gui::CoinPtr<SoSketchFaces> target(pcSketchFaces);
+        sketchFaceRenderController->request(
+            pcSketchFaces,
+            shape,
+            Deviation.getValue(),
+            AngularDeflection.getValue(),
+            false,
+            [target = std::move(target)](PartGui::RenderMeshResult result) mutable {
+                if (!result.error.empty()) {
+                    Base::Console().error(
+                        "Cannot prepare Sketch face rendering: %s\n",
+                        result.error.c_str()
+                    );
+                    return;
+                }
+                if (result.mesh) {
+                    target->bindRenderMesh(std::move(result.mesh));
+                }
+            }
+        );
     }
 
     if (prop != &getSketchObject()->Constraints) {
@@ -3691,6 +3711,15 @@ void ViewProviderSketch::updateData(const App::Property* prop) {
 
 void ViewProviderSketch::slotSolverUpdate()
 {
+    // Document recomputes run on a document worker. The solver signal is
+    // synchronous, but everything below belongs to Qt/Coin (task widgets,
+    // the edit view provider, and the scene graph). Keep the solve on its
+    // worker and adopt only its presentation update on Qt's owner thread.
+    if (qApp && QThread::currentThread() != qApp->thread()) {
+        Gui::dispatchToGuiFrameAndWait([this] { slotSolverUpdate(); });
+        return;
+    }
+
     if (!isInEditMode()) {
         return;
     }

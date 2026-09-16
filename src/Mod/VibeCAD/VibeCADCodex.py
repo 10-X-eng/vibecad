@@ -24,7 +24,7 @@ import time
 from typing import Any, Callable, Mapping
 
 
-CODEX_APP_SERVER_VERSION = "0.144.5"
+CODEX_APP_SERVER_VERSION = "0.153.4"
 CODEX_APP_SERVER_ENV = "VIBECAD_CODEX_APP_SERVER"
 CODEX_HOME_ENV = "VIBECAD_CODEX_HOME"
 CODEX_RUNTIME_DIRECTORY = "codex_runtime"
@@ -228,6 +228,14 @@ def resolve_runtime_command() -> CodexRuntimeCommand:
 
     root = bundled_runtime_root()
     executable = root / _runtime_binary_name()
+    if (root / "codex-package.json").is_file():
+        executable = root / "bin" / _runtime_binary_name()
+        companion = executable.with_name("codex-code-mode-host" + executable.suffix)
+        if not companion.is_file():
+            raise CodexAppServerError(
+                "The bundled Codex code-mode companion is missing. Reinstall VibeCAD "
+                "with the complete OpenAI Codex runtime."
+            )
     if not executable.is_file():
         raise CodexAppServerError(
             "The bundled Codex app-server runtime is missing. Reinstall VibeCAD "
@@ -763,6 +771,10 @@ class _ManagedCodexRuntime:
     client: Any = None
     thread_ids: dict[str, str] = field(default_factory=dict)
     prompt_section_digests: dict[str, dict[str, str]] = field(default_factory=dict)
+    prompt_section_anchor_turn_ids: dict[str, dict[str, str]] = field(default_factory=dict)
+    reference_image_deliveries: dict[str, dict[str, str]] = field(default_factory=dict)
+    context_reuse_generations: dict[str, int] = field(default_factory=dict)
+    conversation_cursors: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -775,26 +787,79 @@ class ManagedCodexSession:
     _thread_key: str
 
     @property
+    def previous_conversation_cursor(self) -> dict[str, Any]:
+        with self._runtime.state_lock:
+            return dict(self._runtime.conversation_cursors.get(self._thread_key) or {})
+
+    def remember_conversation_cursor(self, cursor: Mapping[str, Any], *, generation: int) -> bool:
+        with self._runtime.state_lock:
+            if self.context_reuse_generation != generation:
+                return False
+            self._runtime.conversation_cursors[self._thread_key] = dict(cursor)
+            return True
+
+    @property
     def previous_prompt_section_digests(self) -> dict[str, str]:
         with self._runtime.state_lock:
             return dict(
                 self._runtime.prompt_section_digests.get(self._thread_key) or {}
             )
 
+    @property
+    def previous_prompt_section_anchor_turn_ids(self) -> dict[str, str]:
+        with self._runtime.state_lock:
+            return dict(
+                self._runtime.prompt_section_anchor_turn_ids.get(self._thread_key) or {}
+            )
+
+    @property
+    def previous_reference_image_deliveries(self) -> dict[str, str]:
+        with self._runtime.state_lock:
+            return dict(
+                self._runtime.reference_image_deliveries.get(self._thread_key) or {}
+            )
+
+    @property
+    def context_reuse_generation(self) -> int:
+        with self._runtime.state_lock:
+            return int(self._runtime.context_reuse_generations.get(self._thread_key) or 0)
+
     def remember_thread(self, thread_id: str) -> None:
         clean = str(thread_id or "").strip()
         if not clean:
             raise ValueError("Codex thread id cannot be empty.")
         with self._runtime.state_lock:
-            previous = str(self._runtime.thread_ids.get(self._thread_key) or "")
+            previous = str(
+                self._runtime.thread_ids.get(self._thread_key) or self.thread_id or ""
+            )
             if previous and previous != clean:
+                self._runtime.conversation_cursors.pop(self._thread_key, None)
                 self._runtime.prompt_section_digests.pop(self._thread_key, None)
+                self._runtime.prompt_section_anchor_turn_ids.pop(self._thread_key, None)
+                self._runtime.reference_image_deliveries.pop(self._thread_key, None)
+                self._runtime.context_reuse_generations[self._thread_key] = (
+                    self._runtime.context_reuse_generations.get(self._thread_key, 0) + 1
+                )
             self._runtime.thread_ids[self._thread_key] = clean
             self.thread_id = clean
+
+    def invalidate_context_reuse(self) -> None:
+        """Forget data that may have been removed from the model context."""
+
+        with self._runtime.state_lock:
+            self._runtime.conversation_cursors.pop(self._thread_key, None)
+            self._runtime.prompt_section_digests.pop(self._thread_key, None)
+            self._runtime.prompt_section_anchor_turn_ids.pop(self._thread_key, None)
+            self._runtime.reference_image_deliveries.pop(self._thread_key, None)
+            self._runtime.context_reuse_generations[self._thread_key] = (
+                self._runtime.context_reuse_generations.get(self._thread_key, 0) + 1
+            )
 
     def remember_prompt_section_digests(
         self,
         section_digests: Mapping[str, str],
+        *,
+        anchor_turn_ids: Mapping[str, str] | None = None,
     ) -> None:
         clean = {
             str(name): str(digest)
@@ -803,6 +868,33 @@ class ManagedCodexSession:
         }
         with self._runtime.state_lock:
             self._runtime.prompt_section_digests[self._thread_key] = clean
+            self._runtime.prompt_section_anchor_turn_ids[self._thread_key] = {
+                name: str(turn_id)
+                for name, turn_id in (anchor_turn_ids or {}).items()
+                if name in clean and str(turn_id).strip()
+            }
+
+    def remember_reference_image_deliveries(
+        self,
+        deliveries: Mapping[str, str],
+        *,
+        generation: int | None = None,
+    ) -> bool:
+        """Remember verified image identities only for the current context generation."""
+
+        clean = {
+            str(name): str(fingerprint)
+            for name, fingerprint in deliveries.items()
+            if str(name).strip() and str(fingerprint).strip()
+        }
+        with self._runtime.state_lock:
+            current_generation = int(
+                self._runtime.context_reuse_generations.get(self._thread_key) or 0
+            )
+            if generation is not None and int(generation) != current_generation:
+                return False
+            self._runtime.reference_image_deliveries[self._thread_key] = clean
+        return True
 
 
 _managed_codex_lock = threading.RLock()
@@ -859,6 +951,21 @@ def managed_codex_session(
         with runtime.state_lock:
             client = runtime.client
         if client is None or not bool(getattr(client, "alive", False)):
+            # A dead app-server may have persisted the thread, but the client
+            # can no longer prove which historical prompt/image inputs remain
+            # available. Re-anchor all managed conversations on the next turn.
+            with runtime.state_lock:
+                for remembered_thread_key in tuple(runtime.thread_ids):
+                    runtime.conversation_cursors.pop(remembered_thread_key, None)
+                    runtime.prompt_section_digests.pop(remembered_thread_key, None)
+                    runtime.prompt_section_anchor_turn_ids.pop(remembered_thread_key, None)
+                    runtime.reference_image_deliveries.pop(
+                        remembered_thread_key, None
+                    )
+                    runtime.context_reuse_generations[remembered_thread_key] = (
+                        runtime.context_reuse_generations.get(remembered_thread_key, 0)
+                        + 1
+                    )
             client = client_factory(
                 notification_handler=notification_handler,
                 server_request_handler=server_request_handler,
@@ -896,7 +1003,11 @@ def _take_managed_codex_runtimes() -> list[tuple[Any, tuple[str, ...]]]:
             thread_ids = tuple(dict.fromkeys(runtime.thread_ids.values()))
             runtime.client = None
             runtime.thread_ids.clear()
+            runtime.conversation_cursors.clear()
             runtime.prompt_section_digests.clear()
+            runtime.prompt_section_anchor_turn_ids.clear()
+            runtime.reference_image_deliveries.clear()
+            runtime.context_reuse_generations.clear()
         if client is not None:
             detached.append((client, thread_ids))
     return detached
@@ -919,6 +1030,9 @@ def reset_managed_codex_sessions() -> None:
                 runtime.client = None
                 runtime.thread_ids.clear()
                 runtime.prompt_section_digests.clear()
+                runtime.prompt_section_anchor_turn_ids.clear()
+                runtime.reference_image_deliveries.clear()
+                runtime.context_reuse_generations.clear()
             if client is None:
                 continue
             try:

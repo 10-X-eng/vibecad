@@ -28,6 +28,7 @@ from VibeCADMechanismEngine import (
     mechanism_scenario_sha256,
     normalize_mechanism_static_check,
     normalize_mechanism_scenario,
+    quaternion_rotation_distance_degrees,
     solver_validation_scope,
 )
 from VibeCADMechanismGeometry import (
@@ -77,6 +78,8 @@ _MAX_SIMULATION_TRACE_BYTES = 64 * 1024 * 1024
 _EXPLODED_VIEW_SCHEMA = "vibecad-assembly-exploded-view-v1"
 _ASSEMBLY_BOM_SCHEMA = "vibecad-assembly-bom-v1"
 _ASSEMBLY_HIERARCHY_SCHEMA = "vibecad-assembly-source-hierarchy-v1"
+# Former producer limits are retained only to authenticate existing contracts.
+# They are not execution limits for the current worker.
 _MAX_HIERARCHY_NODES = 512
 _MAX_HIERARCHY_OCCURRENCES = 2048
 _MAX_HIERARCHY_JOINTS = 1024
@@ -405,8 +408,8 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
     }:
         raise ValueError(f"{context} has malformed top-level fields.")
     nodes_raw = value.get("nodes")
-    if not isinstance(nodes_raw, list) or not 1 <= len(nodes_raw) <= _MAX_HIERARCHY_NODES:
-        raise ValueError(f"{context}.nodes must contain 1-{_MAX_HIERARCHY_NODES} nodes.")
+    if not isinstance(nodes_raw, list) or not nodes_raw:
+        raise ValueError(f"{context}.nodes must contain at least one node.")
     nodes: list[dict[str, Any]] = []
     node_by_id: dict[str, dict[str, Any]] = {}
     occurrence_ids: set[str] = set()
@@ -446,7 +449,7 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
         )
         object_name = identity.get("object_name") if isinstance(identity, dict) else None
         if (
-            not re.fullmatch(r"n[0-9]{4}", node_id)
+            not re.fullmatch(r"n[0-9]{4,}", node_id)
             or node_id in node_by_id
             or kind not in {"assembly", "part", "shape"}
             or not isinstance(identity, dict)
@@ -500,7 +503,7 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
             name = str(occurrence_raw.get("name") or "")
             link_mode = str(occurrence_raw.get("link_mode") or "")
             if (
-                not re.fullmatch(r"o[0-9]{5}", occurrence_id)
+                not re.fullmatch(r"o[0-9]{5,}", occurrence_id)
                 or occurrence_id in occurrence_ids
                 or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
                 or name in occurrence_names
@@ -512,7 +515,7 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
                 or len(occurrence_raw["type_id"]) > 256
                 or not isinstance(occurrence_raw.get("source_node_id"), str)
                 or not re.fullmatch(
-                    r"n[0-9]{4}", str(occurrence_raw.get("source_node_id") or "")
+                    r"n[0-9]{4,}", str(occurrence_raw.get("source_node_id") or "")
                 )
             ):
                 raise ValueError(f"{occurrence_context} has invalid occurrence identity.")
@@ -532,10 +535,6 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
             occurrence_ids.add(occurrence_id)
             occurrence_names.add(name)
             occurrence_count += 1
-            if occurrence_count > _MAX_HIERARCHY_OCCURRENCES:
-                raise ValueError(
-                    f"{context} exceeds {_MAX_HIERARCHY_OCCURRENCES} occurrences."
-                )
         clean = dict(raw)
         clean["bom_properties"] = properties
         clean["occurrences"] = occurrences
@@ -578,8 +577,6 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
                 raise ValueError(f"{node_context} BREP changed shape type during transfer.")
             loaded_shapes[node_id] = shape
             shape_count += 1
-            if shape_count > _MAX_HIERARCHY_SHAPES:
-                raise ValueError(f"{context} exceeds {_MAX_HIERARCHY_SHAPES} shapes.")
         elif kind == "shape":
             raise ValueError(f"{node_context} is a shape leaf without a BREP artifact.")
         grounded = raw.get("grounded_occurrence_paths", [])
@@ -592,8 +589,6 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
             if not isinstance(joints, list):
                 raise ValueError(f"{node_context}.joints must be a list.")
             joint_count += len(joints)
-            if joint_count > _MAX_HIERARCHY_JOINTS:
-                raise ValueError(f"{context} exceeds {_MAX_HIERARCHY_JOINTS} joints.")
         elif grounded or joints:
             raise ValueError(f"{node_context} is not an Assembly but contains joint state.")
         nodes.append(clean)
@@ -650,11 +645,6 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
                     "depth": depth + 1,
                 }
             )
-            if len(paths) > _MAX_HIERARCHY_OCCURRENCES:
-                raise ValueError(
-                    f"{context} expands beyond {_MAX_HIERARCHY_OCCURRENCES} stable "
-                    "occurrence paths."
-                )
             if source["kind"] in {"assembly", "part"}:
                 flatten(str(source["node_id"]), path, depth + 1)
         active.remove(node_id)
@@ -721,7 +711,11 @@ def _load_assembly_hierarchy(root: Path, value: Any, *, context: str) -> dict[st
         "shape_artifacts": shape_count,
         "maximum_depth": max((int(item["depth"]) for item in paths), default=0),
     }
-    if counts != expected_counts or limits != _EXPECTED_HIERARCHY_LIMITS:
+    # Older saved contracts carry the former capacity ceilings. They describe
+    # the producer, not the capacity of this worker. Accept either generation.
+    current_limits = dict.fromkeys(_EXPECTED_HIERARCHY_LIMITS, 0)
+    current_limits['maximum_depth'] = _MAX_HIERARCHY_DEPTH
+    if counts != expected_counts or limits not in (_EXPECTED_HIERARCHY_LIMITS, current_limits):
         raise ValueError(f"{context}.counts or limits is inconsistent.")
     return {
         "descriptor": {
@@ -1610,21 +1604,14 @@ def _placement_delta(initial: Any, solved: Any) -> dict[str, Any]:
             "The native Assembly solver returned a zero-length placement quaternion.",
             details={"stage": "native_solver_placement_delta"},
         )
-    dot = abs(
-        sum(
-            initial_quaternion[index]
-            * solved_quaternion[index]
-            / (initial_magnitude * solved_magnitude)
-            for index in range(4)
-        )
-    )
-    rotation_degrees = math.degrees(2.0 * math.acos(max(-1.0, min(1.0, dot))))
+    rotation_degrees = quaternion_rotation_distance_degrees(initial_quaternion, solved_quaternion)
     return {
         "translation_mm": translation,
         "translation_distance_mm": math.sqrt(
             sum(value * value for value in translation)
         ),
         "rotation_degrees": rotation_degrees,
+        "rotation_metric": "quaternion_chord_v1",
     }
 
 
@@ -3391,8 +3378,6 @@ def _execute_native_simulation(
         if (
             frame_count < 2
             or frame_count > estimated_limit
-            or frame_count > 10_000
-            or pose_count > 100_000
         ):
             raise AssemblyCandidateError(
                 f"Native Assembly simulation {simulation_output!r} returned "

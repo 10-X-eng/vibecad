@@ -244,7 +244,7 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
     }
 
     if (prop && !prop->testStatus(App::Property::NoModify) && pcDocument
-        && !pcDocument->isModified() && testStatus(Gui::ViewStatus::TouchDocument)) {
+        && testStatus(Gui::ViewStatus::TouchDocument)) {
         if (prop) {
             FC_LOG(prop->getFullName() << " changed");
         }
@@ -257,8 +257,9 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
 void ViewProviderDocumentObject::hide()
 {
     ViewProvider::hide();
-    // use this bit to check whether 'Visibility' must be adjusted
-    if (!Visibility.testStatus(App::Property::User2)) {
+    // Reapply scene state even when unchanged, but do not manufacture a
+    // persistent edit when presentation adoption repeats an existing value.
+    if (Visibility.getValue() && !Visibility.testStatus(App::Property::User2)) {
         Visibility.setStatus(App::Property::User2, true);
         Visibility.setValue(false);
         Visibility.setStatus(App::Property::User2, false);
@@ -378,15 +379,17 @@ void ViewProviderDocumentObject::show()
         ViewProvider::show();
     }
     else {
-        Visibility.setValue(false);
-        if (getObject()) {
+        if (Visibility.getValue()) {
+            Visibility.setValue(false);
+        }
+        if (getObject() && getObject()->Visibility.getValue()) {
             getObject()->Visibility.setValue(false);
         }
         return;
     }
 
     // use this bit to check whether 'Visibility' must be adjusted
-    if (!Visibility.testStatus(App::Property::User2)) {
+    if (!Visibility.getValue() && !Visibility.testStatus(App::Property::User2)) {
         Visibility.setStatus(App::Property::User2, true);
         Visibility.setValue(true);
         Visibility.setStatus(App::Property::User2, false);

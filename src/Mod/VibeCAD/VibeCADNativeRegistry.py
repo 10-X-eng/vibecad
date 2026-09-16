@@ -398,6 +398,12 @@ from VibeCADNativeModelHistoryBindings import (
 from VibeCADNativeModelHistorySchema import (
     register_model_history_capability_definitions,
 )
+from VibeCADNativeSheetMetalInspectBindings import register_sheetmetal_inspect
+from VibeCADNativeSheetMetalViewBindings import register_sheetmetal_view
+from VibeCADNativeSheetMetalEditBindings import register_sheetmetal_edit
+from VibeCADNativeSheetMetalCreateBindings import register_sheetmetal_create
+from VibeCADNativeSheetMetalConnectionBindings import register_sheetmetal_connection
+from VibeCADNativeSheetMetalManufacturingBindings import register_sheetmetal_manufacturing
 from VibeCADNativeModelJoinBindings import (
     register_model_join_capability_implementation,
 )
@@ -947,6 +953,12 @@ def build_native_capability_registry() -> NativeCapabilityRegistry:
     register_model_structure_capability_implementations(registry)
     register_model_history_capability_definitions(registry)
     register_model_history_capability_implementations(registry)
+    register_sheetmetal_inspect(registry)
+    register_sheetmetal_view(registry)
+    register_sheetmetal_edit(registry)
+    register_sheetmetal_create(registry)
+    register_sheetmetal_connection(registry)
+    register_sheetmetal_manufacturing(registry)
     register_sketch_setup_capability_definition(registry)
     register_sketch_setup_capability_implementation(registry)
     register_model_boolean_capability_definition(registry)

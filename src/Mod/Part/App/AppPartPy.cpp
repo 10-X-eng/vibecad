@@ -72,6 +72,10 @@
 #include <BRepFill_Generator.hxx>
 
 #include <App/Application.h>
+#include <App/HostRuntime.h>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <App/Document.h>
 #include <App/DocumentObjectPy.h>
 #include <App/ElementNamingUtils.h>
@@ -468,6 +472,12 @@ public:
             "export(list,string) -- Export a list of objects into a single file."
         );
         add_varargs_method("read", &Module::read, "read(string) -- Load the file and return the shape.");
+        add_varargs_method(
+            "readBrepShapes", &Module::readBrepShapes,
+            "readBrepShapes(paths) -- Import and validate independent BREP files on the shared "
+            "compute pool. Returns detached shapes in input order; raises ValueError if any "
+            "artifact is invalid. Does not create or mutate document objects."
+        );
         add_varargs_method(
             "show",
             &Module::show,
@@ -968,6 +978,83 @@ private:
         TopoShape* shape = new TopoShape();
         shape->read(EncodedName.c_str());
         return Py::asObject(new TopoShapePy(shape));
+    }
+    Py::Object readBrepShapes(const Py::Tuple& args)
+    {
+        PyObject* input = nullptr;
+        if (!PyArg_ParseTuple(args.ptr(), "O", &input)) {
+            throw Py::Exception();
+        }
+        if (PyUnicode_Check(input) || !PySequence_Check(input)) {
+            throw Py::TypeError("paths must be a sequence of strings");
+        }
+        Py::Sequence sequence(input);
+        std::vector<std::string> paths;
+        paths.reserve(sequence.size());
+        for (Py_ssize_t index = 0; index < sequence.size(); ++index) {
+            Py::Object item = sequence[index];
+            if (!PyUnicode_Check(item.ptr())) {
+                throw Py::TypeError("Every BREP path must be a string");
+            }
+            paths.push_back(Py::String(item).as_std_string());
+            if (paths.back().find('\0') != std::string::npos) {
+                throw Py::ValueError("BREP paths cannot contain NUL");
+            }
+        }
+        std::vector<std::unique_ptr<TopoShape>> shapes(paths.size());
+        std::vector<std::string> errors(paths.size());
+        std::atomic_size_t active {0};
+        std::atomic_size_t peak {0};
+        const char* traceValue = std::getenv("VIBECAD_TRACE_NATIVE_EVENTS");
+        const bool trace = traceValue && *traceValue && *traceValue != '0';
+        const auto started = std::chrono::steady_clock::now();
+        try {
+            Base::PyGILStateRelease release;
+            App::GetApplication().hostRuntime().parallelFor(paths.size(), [&](std::size_t index) {
+                if (trace) {
+                    const auto count = active.fetch_add(1) + 1;
+                    auto observed = peak.load();
+                    while (observed < count && !peak.compare_exchange_weak(observed, count)) {}
+                }
+                try {
+                    auto shape = std::make_unique<TopoShape>();
+                    shape->importBrep(paths[index].c_str());
+                    if (shape->isNull() || !shape->isValid()) {
+                        errors[index] = "Null or invalid BREP";
+                    }
+                    else {
+                        shapes[index] = std::move(shape);
+                    }
+                }
+                catch (const Standard_Failure& error) {
+                    const char* message = error.GetMessageString();
+                    errors[index] = message ? message : "BREP import or validation failed";
+                }
+                catch (const std::exception& error) {
+                    errors[index] = error.what();
+                }
+                if (trace) {
+                    active.fetch_sub(1);
+                }
+            });
+        }
+        catch (const std::exception& error) {
+            throw Py::RuntimeError(error.what());
+        }
+        if (trace) {
+            const auto milliseconds = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started).count();
+            Base::Console().message("VIBECAD_ARTIFACT brep count=%zu peak_workers=%zu elapsed_ms=%.3f\n",
+                                paths.size(), peak.load(), milliseconds);
+        }
+        Py::List result;
+        for (std::size_t index = 0; index < shapes.size(); ++index) {
+            if (!shapes[index]) {
+                throw Py::ValueError("BREP artifact " + std::to_string(index) + ": " + errors[index]);
+            }
+            result.append(Py::asObject(new TopoShapePy(shapes[index].release())));
+        }
+        return result;
     }
     Py::Object show(const Py::Tuple& args)
     {

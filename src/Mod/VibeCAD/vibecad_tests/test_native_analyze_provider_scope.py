@@ -270,8 +270,8 @@ def test_new_analysis_surface_contains_only_setup_and_observation() -> None:
     assert {"analyze.model", ANALYZE_MATERIAL_CATALOG} <= names
     assert "analyze.inspect" not in names
     assert not ({"analyze.fluid", "analyze.load", "analyze.mesh"} & names)
-    assert "workspace.switch" not in names
-    assert (_SHARED - {"workspace.switch"}) <= names
+    assert "workspace.switch" in names
+    assert _SHARED <= names
 
 
 def test_face_reader_appears_only_when_exact_geometry_exists() -> None:
@@ -1207,7 +1207,7 @@ def test_incomplete_snapshot_fails_closed_to_setup_tools() -> None:
         }
     )
 
-    assert names == (_SHARED - {"workspace.switch"}) | {
+    assert names == _SHARED | {
         "analyze.model",
         ANALYZE_MATERIAL_CATALOG,
     }
@@ -1286,7 +1286,7 @@ def test_complete_manifest_is_projected_without_weakening_its_validation() -> No
     assert tuple(schema["name"] for schema in projected.schemas) == projected.tool_names
 
 
-def test_human_keeps_ribbon_control_on_every_native_surface() -> None:
+def test_agent_keeps_workspace_switch_on_every_native_surface() -> None:
     snapshot = NativeSurfaceSnapshot(
         surface_id="model",
         revision=7,
@@ -1321,7 +1321,7 @@ def test_human_keeps_ribbon_control_on_every_native_surface() -> None:
 
     authorized = provider_authorized_native_surface(surface)
 
-    assert authorized.tool_names == ("model.design", "document.query")
+    assert authorized.tool_names == names
 
 
 def _schema_operations(schema: dict) -> set[str]:
@@ -1526,7 +1526,7 @@ def test_operation_scope_publishes_only_calls_that_match_current_study_state() -
     }
 
 
-def test_solver_operations_follow_exact_engineering_readiness() -> None:
+def test_solver_creation_is_available_before_solve_prerequisites_are_complete() -> None:
     registry = NativeCapabilityRegistry()
     definitions = (
         analyze_model_capability_definition(),
@@ -1564,6 +1564,15 @@ def test_solver_operations_follow_exact_engineering_readiness() -> None:
         "ready_to_solve": False,
         "blockers": ["missing_mechanical_load", "missing_solver"],
     }
+    # The selected comparison must not inherit an older study's completed setup.
+    original = _domain("mechanical", mesh_count=1, solver_count=1)["analysis_workflows"][0]
+    original["analysis"] = {"object_name": "Analysis", "focused": False}
+    incomplete["analysis_count"] = incomplete["analysis_workflow_count"] = 2
+    incomplete["provider_scope"]["analysis_count"] = 2
+    incomplete["analysis_workflows"][0]["analysis"] = {
+        "object_name": "Comparison", "focused": True,
+    }
+    incomplete["analysis_workflows"].append(original)
     ready = _domain("mechanical", mesh_count=1, generated_mesh_count=1)
     ready["analysis_workflows"][0]["engineering_readiness"] = {
         "ready_to_solve": False,
@@ -1581,7 +1590,11 @@ def test_solver_operations_follow_exact_engineering_readiness() -> None:
         registry=registry,
     )
 
-    assert "analyze.solver" not in incomplete_surface.tool_names
+    assert "analyze.solver" in incomplete_surface.tool_names
+    incomplete_schema = next(
+        schema for schema in incomplete_surface.schemas if schema["name"] == "analyze.solver"
+    )
+    assert "analyze.run_solver" in incomplete_schema["description"]
     ready_schema = next(
         schema for schema in ready_surface.schemas if schema["name"] == "analyze.solver"
     )
@@ -1591,6 +1604,27 @@ def test_solver_operations_follow_exact_engineering_readiness() -> None:
         "create_mystran",
         "create_z88",
     }
+
+
+def test_selected_comparison_run_appears_only_after_its_own_prerequisites() -> None:
+    domain = _domain("mechanical", mesh_count=1, generated_mesh_count=1, solver_count=1)
+    original = domain["analysis_workflows"][0]
+    original["analysis"] = {"object_name": "Original", "focused": False}
+    original["engineering_readiness"] = {"ready_to_solve": True, "blockers": []}
+    comparison = _domain("mechanical", mesh_count=1, generated_mesh_count=1)["analysis_workflows"][0]
+    comparison["analysis"] = {"object_name": "Comparison", "focused": True}
+    comparison["engineering_readiness"] = {
+        "ready_to_solve": False, "blockers": ["missing_support", "missing_solver"],
+    }
+    domain["analysis_count"] = domain["analysis_workflow_count"] = 2
+    domain["provider_scope"]["analysis_count"] = 2
+    domain["analysis_workflows"].append(comparison)
+    assert "analyze.run_solver" not in _names(domain)
+    comparison["study_inventory"].update(solver_count=1, solver_kinds=["calculix"])
+    comparison["engineering_readiness"]["blockers"] = ["missing_support"]
+    assert "analyze.run_solver" not in _names(domain)
+    comparison["engineering_readiness"] = {"ready_to_solve": True, "blockers": []}
+    assert "analyze.run_solver" in _names(domain)
 
 
 def test_element_geometry_operations_follow_exact_source_dimension() -> None:

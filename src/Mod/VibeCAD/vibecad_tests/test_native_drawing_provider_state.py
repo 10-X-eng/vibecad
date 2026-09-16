@@ -184,9 +184,10 @@ def test_drawing_provider_schema_keeps_state_hashes_internal() -> None:
 
 
 def test_provider_context_compacts_drawing_state() -> None:
-    assert provider_visible_native_state(_state()) == compact_drawing_provider_state(
-        _state()
-    )
+    visible = provider_visible_native_state(_state())
+    navigation = visible.pop("workspace_navigation")
+    assert navigation["tool"] == "workspace.switch"
+    assert visible == compact_drawing_provider_state(_state())
 
 
 def test_truncated_source_state_points_to_the_next_exact_catalog_page() -> None:

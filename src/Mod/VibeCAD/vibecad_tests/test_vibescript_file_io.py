@@ -178,28 +178,34 @@ def test_worker_result_uses_in_memory_progress_when_status_file_is_locked() -> N
     assert '(root / "progress.json").read_text' not in source
 
 
-def test_domain_execution_renews_its_lease_from_worker_progress(
+def test_domain_execution_uses_persistent_pool_without_a_wall_time_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import VibeCADScriptedProcess as scripted
+    import VibeCADHostIsolation as isolation
     import VibeCADVibeScriptDomainRuntime as runtime
 
     observed: dict[str, object] = {}
 
-    def run_process(_command, **kwargs):
+    def execute_staged_script(**kwargs):
         observed.update(kwargs)
         return {
             "started": True,
-            "returncode": -1,
+            "returncode": 0,
             "cancelled": False,
-            "timed_out": True,
+            "timed_out": False,
             "memory_exceeded": False,
             "cpu_exceeded": False,
-            "timeout_mode": "inactivity",
+            "timeout_mode": "none",
+            "termination_reason": "process_exit",
         }
 
-    monkeypatch.setattr(scripted, "run_process", run_process)
+    monkeypatch.setattr(isolation, "execute_staged_script", execute_staged_script)
+    (tmp_path / "worker.py").touch()
+    (tmp_path / "result.json").write_text(
+        '{"ok":true,"outputs":[]}',
+        encoding="utf-8",
+    )
     prepared = {
         "tool_name": "vibescript.assembly.edit_source",
         "freecadcmd_executable": "FreeCADCmd",
@@ -211,13 +217,7 @@ def test_domain_execution_renews_its_lease_from_worker_progress(
 
     result = runtime.execute_candidate(prepared, cancellation_check=None)
 
-    activity_check = observed["activity_check"]
-    assert callable(activity_check)
-    assert activity_check() is None
-    (tmp_path / "progress.json").write_text('{"frame":1}', encoding="utf-8")
-    first = activity_check()
-    assert first is not None
-    (tmp_path / "progress.json").write_text('{"frame":22}', encoding="utf-8")
-    assert activity_check() != first
-    assert result["failure_code"] == "DOMAIN_EXECUTION_TIMEOUT"
-    assert "made no observable progress for 3600 seconds" in result["error"]
+    assert result["ok"] is True
+    assert observed["script"] == "worker.py"
+    assert observed["memory_limit_bytes"] == 1024
+    assert "timeout_seconds" not in observed

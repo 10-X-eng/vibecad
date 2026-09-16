@@ -53,6 +53,7 @@ class SAX2XMLReader;
 namespace Base
 {
 class Persistence;
+class Reader;
 
 /** The XML reader class
  * This is an important helper class for the store and retrieval system
@@ -307,6 +308,13 @@ public:
     void setStatus(ReaderStatus pos, bool on);
 
 protected:
+    /** Restore one registered embedded file. Specialized readers can adopt
+     * thread-affine persistent state on its owner while archive traversal
+     * stays on the reading thread. Must finish (or throw) before returning;
+     * the reader and persistence target are borrowed for this call only.
+     */
+    virtual void restoreFile(Persistence& object, Reader& reader) const;
+
     /// read the next element
     bool read();
 

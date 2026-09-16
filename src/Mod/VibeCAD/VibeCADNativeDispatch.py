@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from concurrent.futures import Future
 from dataclasses import dataclass
 import json
 import threading
@@ -85,9 +86,39 @@ def _schema_error(error: Any) -> str:
     path = ".".join(str(value) for value in error.absolute_path)
     location = f" at {path}" if path else ""
     message = " ".join(str(error.message or "").split())
+    expectation = _schema_expectation(error)
+    missing = expectation.get("required_fields", [])
+    if len(missing) > 1:
+        message += "; missing required fields: " + ", ".join(missing)
+        if expectation.get("omitted_required_field_count"):
+            message += f" (+{expectation['omitted_required_field_count']} more)"
+        message += ". No operation was executed. Supply the missing fields and retry."
+    if "allowed_fields" in expectation:
+        message += ". Allowed fields: " + ", ".join(expectation["allowed_fields"])
+        if expectation.get("omitted_allowed_field_count"):
+            message += f" (+{expectation['omitted_allowed_field_count']} more)"
+    if expectation.get("missing_required_fields"):
+        message += ". Missing required fields: " + ", ".join(
+            expectation["missing_required_fields"]
+        )
+        if expectation.get("omitted_missing_required_field_count"):
+            message += f" (+{expectation['omitted_missing_required_field_count']} more)"
     return f"Native tool arguments are invalid{location}: {message}"[
         :MAX_NATIVE_FAILURE_TEXT_CHARACTERS
     ]
+
+
+def _schema_operation_values(schema: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read only explicit operation choices, including compacted unions."""
+    values = [schema["const"]] if "const" in schema else list(schema.get("enum") or [])
+    for keyword in ("anyOf", "oneOf"):
+        for branch in schema.get(keyword, ()):
+            if isinstance(branch, Mapping):
+                values.extend(_schema_operation_values(branch))
+    validator = Draft202012Validator(schema)
+    return tuple(dict.fromkeys(
+        value for value in values if isinstance(value, str) and validator.is_valid(value)
+    ))
 
 
 def _bounded_argument_value(value: Any) -> Any:
@@ -114,13 +145,42 @@ def _schema_expectation(error: Any) -> dict[str, Any]:
             if message.startswith("'") and "' is a required property" in message
             else ""
         )
-        return {"rule": validator, "required_field": missing}
-    return {
+        expectation = {"rule": validator, "required_field": missing}
+        instance = getattr(error, "instance", None)
+        required = getattr(error, "validator_value", None)
+        if isinstance(instance, Mapping) and isinstance(required, list):
+            missing_fields = [name for name in required if name not in instance]
+            expectation["required_fields"] = _bounded_argument_value(missing_fields)
+            if len(missing_fields) > 8:
+                expectation["omitted_required_field_count"] = len(missing_fields) - 8
+        return expectation
+    expectation = {
         "rule": validator,
         "expected": _bounded_argument_value(
             getattr(error, "validator_value", None)
         ),
     }
+    schema = getattr(error, "schema", None)
+    instance = getattr(error, "instance", None)
+    if (
+        validator == "additionalProperties"
+        and getattr(error, "validator_value", None) is False
+        and isinstance(schema, Mapping)
+        and isinstance(instance, Mapping)
+    ):
+        # This is the exact selected operation's schema, not the provider union.
+        # Pattern properties accept names beyond the fixed properties list.
+        if not schema.get("patternProperties"):
+            names = list(schema.get("properties", {}))
+            expectation["allowed_fields"] = _bounded_argument_value(names)
+            if len(names) > 8:
+                expectation["omitted_allowed_field_count"] = len(names) - 8
+        missing = [name for name in schema.get("required", []) if name not in instance]
+        if missing:
+            expectation["missing_required_fields"] = _bounded_argument_value(missing)
+            if len(missing) > 8:
+                expectation["omitted_missing_required_field_count"] = len(missing) - 8
+    return expectation
 
 
 def _schema_example(schema: Mapping[str, Any], *, depth: int = 0) -> Any:
@@ -159,6 +219,11 @@ def _schema_example(schema: Mapping[str, Any], *, depth: int = 0) -> Any:
         pattern = str(schema.get("pattern") or "")
         if pattern.startswith("^sketch-v1:"):
             return "sketch-v1:" + ("0" * 64)
+        for element in ("Face", "Edge", "Vertex"):
+            candidate = element + "1"
+            if element in pattern and Draft202012Validator(schema).is_valid(candidate):
+                # Illustrate selector syntax; inspection must supply the real target.
+                return candidate
         return "value"
     if kind == "integer":
         return int(schema.get("minimum", 0) or 0)
@@ -237,6 +302,8 @@ def _failure_payload(exc: BaseException) -> dict[str, Any]:
         "actual_type",
         "accepted_types",
         "candidates",
+        "parameters_committed",
+        "object_name",
     ):
         if name in details:
             result[name] = details[name]
@@ -495,11 +562,7 @@ class NativeTurnDispatcher:
             operation_schema = dict(schema.get("properties") or {}).get("operation")
             if not isinstance(operation_schema, Mapping):
                 continue
-            values = (
-                [operation_schema.get("const")]
-                if "const" in operation_schema
-                else list(operation_schema.get("enum") or [])
-            )
+            values = _schema_operation_values(operation_schema)
             for value in values:
                 clean = str(value or "").strip()
                 if clean and clean not in frozen_operations:
@@ -594,6 +657,28 @@ class NativeTurnDispatcher:
         arguments_json: str,
         provider_call_id: str,
     ) -> dict[str, Any]:
+        return self._call(tool_name, arguments_json, provider_call_id)
+
+    def call_async(
+        self,
+        tool_name: str,
+        arguments_json: str,
+        provider_call_id: str,
+        *,
+        document_dispatch: Callable[[Callable[[], Any]], Any],
+    ) -> dict[str, Any] | Future:
+        """Launch on the owner and defer final validation until work completes.
+
+        A returned Future must only be waited on outside the GUI thread. Its
+        result is the same validated/cached JSON response as call().
+        """
+        if not callable(document_dispatch):
+            raise TypeError('Asynchronous dispatch requires an owner dispatcher')
+        return self._call(tool_name, arguments_json, provider_call_id, document_dispatch)
+
+    def _call(
+        self, tool_name, arguments_json, provider_call_id, document_dispatch=None
+    ):
         name = str(tool_name or "").strip()
         try:
             call_id = self._call_id(provider_call_id)
@@ -661,53 +746,30 @@ class NativeTurnDispatcher:
                         "NATIVE_IMPLEMENTATION_MISSING",
                         "The frozen Native capability has no implementation.",
                     )
-                payload = implementation.handler(
+                handler = (
+                    implementation.async_handler
+                    if document_dispatch is not None and implementation.async_handler is not None
+                    else implementation.handler
+                )
+                payload = handler(
                     NativeCapabilityCall(
                         normalized_arguments,
                         ticket,
                         self._runtimes[name],
                     )
                 )
-                if not isinstance(payload, Mapping) or "ok" in payload:
-                    raise NativeDispatchError(
-                        "NATIVE_RESULT_INVALID",
-                        "A Native capability returned an invalid result contract.",
+                if document_dispatch is not None and isinstance(payload, Future):
+                    return self._defer_payload(
+                        payload, document_dispatch, name, variant, normalized_arguments, ticket, record
                     )
-                self._guard_after_call(variant, payload)
-                definition = self._registry.definition(name)
-                if (
-                    definition is not None
-                    and definition.primary_classification in {"read", "view"}
-                ):
-                    revision_after = self._state.current_revision(self._document_uid)
-                    if revision_after != ticket.expected_revision:
-                        raise NativeDispatchError(
-                            "NATIVE_READ_SIDE_EFFECT",
-                            "A read-only Native capability changed the document; "
-                            "its result was rejected.",
-                            details={
-                                "current_revision": revision_after,
-                                "repair": {
-                                    "operation": normalized_arguments.get("operation"),
-                                    "revision_before": ticket.expected_revision,
-                                    "revision_after": revision_after,
-                                },
-                            },
-                        )
-                response = {"ok": True, **dict(payload)}
-                record.result_json = _canonical_json(
-                    response,
-                    label="result",
-                    byte_limit=MAX_NATIVE_RESULT_JSON_BYTES,
-                )
-                if name != "native.job":
-                    self._expected_revision = self._state.current_revision(
-                        self._document_uid
-                    )
-                return json.loads(record.result_json)
+                return self._finish_payload(name, variant, normalized_arguments, ticket, record, payload)
             except Exception as exc:
                 self._debug(name, exc)
                 response = _failure_payload(exc)
+                if isinstance(exc, NativeDispatchError) and exc.code in {
+                    'NATIVE_CALL_IN_PROGRESS', 'NATIVE_CALL_ID_REUSED'
+                }:
+                    return response
                 encoded = _canonical_json(
                     response,
                     label="failure",
@@ -724,6 +786,67 @@ class NativeTurnDispatcher:
                 if record is not None:
                     record.result_json = encoded
                 return json.loads(encoded)
+
+    def _finish_payload(self, name, variant, arguments, ticket, record, payload):
+        if not isinstance(payload, Mapping) or 'ok' in payload:
+            raise NativeDispatchError(
+                'NATIVE_RESULT_INVALID', 'A Native capability returned an invalid result contract.'
+            )
+        self._guard_after_call(variant, payload)
+        definition = self._registry.definition(name)
+        if definition is not None and definition.primary_classification in {'read', 'view'}:
+            revision_after = self._state.current_revision(self._document_uid)
+            if revision_after != ticket.expected_revision:
+                raise NativeDispatchError(
+                    'NATIVE_READ_SIDE_EFFECT',
+                    'A read-only Native capability changed the document; its result was rejected.',
+                    details={'current_revision': revision_after, 'repair': {
+                        'operation': arguments.get('operation'),
+                        'revision_before': ticket.expected_revision,
+                        'revision_after': revision_after,
+                    }},
+                )
+        record.result_json = _canonical_json(
+            {'ok': True, **dict(payload)}, label='result', byte_limit=MAX_NATIVE_RESULT_JSON_BYTES
+        )
+        if name != 'native.job':
+            self._expected_revision = self._state.current_revision(self._document_uid)
+        return json.loads(record.result_json)
+
+    def _defer_payload(self, pending, document_dispatch, name, variant, arguments, ticket, record):
+        response = Future()
+
+        def finalize():
+            with self._lock:
+                try:
+                    return self._finish_payload(name, variant, arguments, ticket, record, pending.result())
+                except Exception as error:
+                    self._debug(name, error)
+                    record.result_json = _canonical_json(
+                        _failure_payload(error), label='failure', byte_limit=MAX_NATIVE_RESULT_JSON_BYTES
+                    )
+                    return json.loads(record.result_json)
+
+        def completed(_future):
+            deliver = response.set_running_or_notify_cancel()
+            try:
+                result = document_dispatch(finalize)
+            except Exception as error:
+                result = _failure_payload(error)
+                with self._lock:
+                    record.result_json = _canonical_json(
+                        result, label='failure', byte_limit=MAX_NATIVE_RESULT_JSON_BYTES
+                    )
+            if deliver:
+                response.set_result(result)
+
+        def cancelled(future):
+            if future.cancelled():
+                document_dispatch(pending.cancel)
+
+        response.add_done_callback(cancelled)
+        pending.add_done_callback(completed)
+        return response
 
     @property
     def call_count(self) -> int:
