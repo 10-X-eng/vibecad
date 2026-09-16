@@ -697,6 +697,8 @@ if SheetMetalTools.isGuiLoaded():
 
             # Test if any selected subObject in the sheet metal
             # isn't edge.
+            if objSM is None:
+                return False
             geomTest = []
             for subObj in objSM.SubObjects:
                 if type(subObj) == Part.Edge:

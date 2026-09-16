@@ -56,11 +56,15 @@ def smMakeFace(vertex, face, edges, relief):
     p1 = vertex.Point
     p2 = p1 + relief * Edgedir1
     p3 = p2 + relief * Edgedir3
-    if not (face.isInside(p3, 0.0, True)):
+    # Determine the inward direction locally. The requested relief can extend
+    # beyond a thin side face; testing the full-size corner then reverses an
+    # otherwise correct direction and produces a self-intersecting wire.
+    probe = min(relief, edges[0].Length, edges[1].Length) * 0.25
+    if not face.isInside(p1 + probe * (Edgedir1 + Edgedir3), 0.0, True):
         p3 = p2 + relief * Edgedir3 * -1
     p6 = p1 + relief * Edgedir2
     p5 = p6 + relief * Edgedir4
-    if not (face.isInside(p5, 0.0, True)):
+    if not face.isInside(p1 + probe * (Edgedir2 + Edgedir4), 0.0, True):
         p5 = p6 + relief * Edgedir4 * -1
     # print([p1,p2,p3,p5,p6,p1])
 

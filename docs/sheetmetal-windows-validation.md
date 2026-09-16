@@ -1,0 +1,114 @@
+# Sheet Metal Windows acceptance audit
+
+This is a coverage ledger, not a claim that a finite test run proves the absence
+of bugs. Do not infer whole-workbench readiness from the new ribbon suite alone.
+
+## Baseline
+
+PR #228 at `2aa49687` plus the Windows packaging fix `e581b00b`:
+358 native GUI tests, 441 unit tests, and separate cold save/reopen checks passed.
+The packaging regression first failed, then passed after preserving the
+Spreadsheet test package directory. The complete incremental build passed.
+
+## Reproduced defects and fixes
+
+Each fix below followed a failing regression against the actual implementation.
+Native tests use compiled geometry and private documents; task tests click the
+real Qt OK/Cancel buttons, including native transaction finalization.
+
+- **Windows packaging:** flattened Spreadsheet test files shadowed the native
+  Spreadsheet module. Preserve the test package directory during installation.
+  The regression builds and installs a CMake fixture, then checks its layout.
+- **Windows test cleanup:** explicitly close the test's SQLite connection before
+  its temporary database is deleted. Production already closes its connection.
+- **Extend by Sketch:** `execute` accessed `Sketch.ViewObject` on the recompute
+  worker. Use the existing document-owned presentation dispatcher instead.
+  Geometry remains on the worker; the sketch is hidden on the GUI thread.
+- **Selection handling:** guard incomplete sketch attachments, empty flange/hem/
+  junction selection, and non-face selection in both Unfold commands. Invalid
+  selections disable commands without raising exceptions.
+- **Solid corner relief:** a relief larger than sheet thickness used an
+  out-of-face point to choose its cutting direction and produced intersecting
+  wires. Probe locally to determine direction without changing the requested
+  relief size. Native tests verify exact removed volumes for 0.5, 2 and 4 mm
+  reliefs in 1.6 mm stock.
+- **Extruded Cutout:** swallowed input errors left old geometry marked current.
+  Let the existing document recompute handler record the failure and mark the
+  feature Invalid. Its editable inputs and previous shape remain available for
+  repair; undoing the missing-profile edit restores a valid cut. The owner
+  approved this error-semantics correction in the task conversation.
+- **Task acceptance:** use the owning document and the existing feature validity
+  check before committing. A failed cut remains open for repair; restoring its
+  sketch allows normal OK completion. No alternate error framework is added.
+- **Legacy base-shape task:** return the success boolean required by the native
+  task-dialog contract. Actual OK previously removed the newly created feature;
+  OK/Cancel, new Body membership, Undo and Redo now pass.
+
+## Executable coverage
+
+| User operation | Coverage |
+| --- | --- |
+| Base shapes: Flat, L, U, Tub, Hat, Box | Existing creation/forms, geometry, reopen and cabinet-sized Box; added legacy task OK/Cancel, new Body, Undo/Redo |
+| Sheet from sketch / solid | Existing sources, forms and ownership; added legacy task OK/Cancel and Undo/Redo |
+| Flange / internal fold | Existing source creation, forms, relief-cut tab and native dispatch; added legacy flange task OK/Cancel and Undo/Redo |
+| Shared folded/flat views | Existing presentation, cached meshes, source revisions, selection and no-recompute switching |
+| Holes, profile and bend-spanning cuts | Existing geometry, repair, Undo and reopen; additional retained cutout task repair |
+| Dimensions, material, allowance | Existing native edit and invalid-input recovery |
+| Unfold | Existing document, mapping and presets; added edge/vertex selection guards |
+| Hem: Flat, Open, Teardrop, Rolled | Added valid single-solid geometry for every type; legacy task OK/Cancel and Undo/Redo |
+| Extend / Extend by Sketch | Added worker recompute, exact extension/reverse-cut volumes, task lifecycle, edit, Undo/Redo, save/reopen |
+| Solid bend / junction / relief | Added actual rounded geometry, corner opening, exact relief volumes; relief task lifecycle |
+| Bend corner relief | Added Circle, Square, scaled and Weld variants with valid changed geometry |
+| Sketch on sheet / extruded cutout / forming | Added exact cut volumes, formed geometry/suppression, task OK/Cancel and Undo/Redo |
+| Retained command selection | At least 18 classes with empty, whole-solid, unattached sketch, edge and vertex selections |
+| RMFG | Existing native connection, export, manufacturing and saved-job fixtures; no live Windows orders/uploads performed |
+
+These checks do not exhaust every geometric arrangement. In particular, direct
+legacy New Sketch and Unfold Update task lifecycles are not fully covered by the
+added task tests. No live remote-service claim is made for this Windows audit.
+
+## Final validation
+
+Focused legacy suite: 16 tests passed in 30.278 seconds; subsequently added
+base-shape task regression passed in 2.503 seconds after failing before its fix.
+The final combined native suite, including all 17 added regressions:
+**375 tests passed in 848.637 seconds**, with successful unattended completion.
+Final packaging/RMFG/preset unit run: **89 tests and 113 subtests passed in 14.30 s**.
+Final changed VibeCAD unit suite: **352 tests passed in 63.84 s**.
+Final full incremental build, including the added test resource: **passed (exit 0)**.
+
+Commands used from the repository root, with private build locations represented
+by variables (the Windows launcher and macro are local audit harnesses):
+
+```powershell
+# Full native suite from SMTests/run_native.py's default module list:
+& ./build/pr228_after_build.ps1 -BundlePath $Bundle
+# Focused red/green native tests:
+& ./build/pr228_after_build.ps1 -BundlePath $Bundle -Tests SMTests.testSheetLegacyOperations
+
+# Full incremental build in the activated Rattler build work directory:
+cmd.exe /d /c "call build_env.bat >NUL 2>&1 && ninja -C build"
+
+$env:PYTHONPATH = "$PWD/src/Mod/SheetMetal"
+$env:CMAKE_GENERATOR = 'Ninja'
+python -m pytest -q --import-mode=importlib `
+  src/Tools/tests/test_spreadsheet_installation.py `
+  src/Tools/tests/test_sheetmetal_installation.py `
+  src/Mod/SheetMetal/SMTests/testRMFGClient.py `
+  src/Mod/SheetMetal/SMTests/testRMFGAuth.py `
+  src/Mod/SheetMetal/SMTests/testRMFGJobs.py `
+  src/Mod/SheetMetal/SMTests/testRMFGManufacturing.py `
+  src/Mod/SheetMetal/SMTests/testRMFGSnapshot.py `
+  src/Mod/SheetMetal/SMTests/testRMFGSavedJobs.py `
+  src/Mod/SendCutSendPresets/tests `
+  --junitxml=build/pr228-unit-results-final.xml
+
+$env:PYTHONPATH = "$PWD/src/Mod/VibeCAD"
+$tests = @(git diff --name-only 01bae317...HEAD -- 'src/Mod/VibeCAD/vibecad_tests/test_*.py')
+python -m pytest -q @tests --junitxml=build/pr228-vibecad-unit-results-final.xml
+```
+
+The automated test window is labelled as such. Negative tests deliberately
+produce Report-view errors; test identities and recovery assertions distinguish
+those from unexpected failures. Production errors are not suppressed. Customer
+documents and the user's separate portable instance are left untouched.

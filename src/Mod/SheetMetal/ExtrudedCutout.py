@@ -132,222 +132,219 @@ class ExtrudedCutout:
 
         self.addVerifyProperties(fp)
 
-        try:
-            # Ensure the Sketch and baseObject properties are valid.
-            if fp.Sketch is None or fp.baseObject is None:
-                raise SMException("Both the Sketch and baseObject properties must be set.")
+        # Ensure the Sketch and baseObject properties are valid.
+        if fp.Sketch is None or fp.baseObject is None:
+            raise SMException("Both the Sketch and baseObject properties must be set.")
 
-            # Get the sketch from the properties.
-            cutSketch = fp.Sketch
+        # Get the sketch from the properties.
+        cutSketch = fp.Sketch
 
-            # Get selected object and selected face from the properties.
-            selected_object, face_name = fp.baseObject
-            face_name = face_name[0]
-            selected_face = selected_object.Shape.getElement(face_name)
-            normal_vector = selected_face.normalAt(0, 0)
+        # Get selected object and selected face from the properties.
+        selected_object, face_name = fp.baseObject
+        face_name = face_name[0]
+        selected_face = selected_object.Shape.getElement(face_name)
+        normal_vector = selected_face.normalAt(0, 0)
 
-            # Lengths.
-            if fp.CutType == "Two dimensions":
-                ExtLength1 = fp.ExtrusionLength1.Value
-                ExtLength2 = fp.ExtrusionLength2.Value
-            elif fp.CutType == "Symmetric":
-                ExtLength1 = fp.ExtrusionLength1.Value / 2
-                ExtLength2 = fp.ExtrusionLength1.Value / 2
+        # Lengths.
+        if fp.CutType == "Two dimensions":
+            ExtLength1 = fp.ExtrusionLength1.Value
+            ExtLength2 = fp.ExtrusionLength2.Value
+        elif fp.CutType == "Symmetric":
+            ExtLength1 = fp.ExtrusionLength1.Value / 2
+            ExtLength2 = fp.ExtrusionLength1.Value / 2
+        else:
+            skCenter = cutSketch.Shape.BoundBox.Center
+            objCenter = selected_object.Shape.BoundBox.Center
+            distance = skCenter - objCenter
+            TotalLength = selected_object.Shape.BoundBox.DiagonalLength + distance.Length
+
+            if fp.CutType == "Through everything both sides":
+                ExtLength1 = TotalLength
+                ExtLength2 = TotalLength
+            elif fp.CutType == "Through everything side 1":
+                ExtLength1 = TotalLength
+                ExtLength2 = -TotalLength
             else:
-                skCenter = cutSketch.Shape.BoundBox.Center
-                objCenter = selected_object.Shape.BoundBox.Center
-                distance = skCenter - objCenter
-                TotalLength = selected_object.Shape.BoundBox.DiagonalLength + distance.Length
+                # "Through everything side 2".
+                ExtLength1 = -TotalLength
+                ExtLength2 = TotalLength
 
-                if fp.CutType == "Through everything both sides":
-                    ExtLength1 = TotalLength
-                    ExtLength2 = TotalLength
-                elif fp.CutType == "Through everything side 1":
-                    ExtLength1 = TotalLength
-                    ExtLength2 = -TotalLength
-                else:
-                    # "Through everything side 2".
-                    ExtLength1 = -TotalLength
-                    ExtLength2 = TotalLength
+        # Step 1: Determine the sheet metal thickness.
+        min_distance = float("inf")
 
-            # Step 1: Determine the sheet metal thickness.
-            min_distance = float("inf")
+        faces = selected_object.Shape.Faces
+        for face in faces:
+            if face is not selected_face:
+                # Test to find a face with opposite normal.
+                if normal_vector.isEqual(face.normalAt(0, 0).multiply(-1), 1e-6):
+                    distance_info = selected_face.distToShape(face)
+                    distance = distance_info[0]
+                    # Test to find the closest opposite face.
+                    if distance < min_distance:
+                        try:
+                            checkFace = face.makeOffsetShape(-distance, 0)
+                            checkCut = selected_face.cut(checkFace)
 
-            faces = selected_object.Shape.Faces
-            for face in faces:
-                if face is not selected_face:
-                    # Test to find a face with opposite normal.
-                    if normal_vector.isEqual(face.normalAt(0, 0).multiply(-1), 1e-6):
-                        distance_info = selected_face.distToShape(face)
-                        distance = distance_info[0]
-                        # Test to find the closest opposite face.
-                        if distance < min_distance:
-                            try:
-                                checkFace = face.makeOffsetShape(-distance, 0)
-                                checkCut = selected_face.cut(checkFace)
+                            # Test to ensure the opposite face is,
+                            # in fact, the other side of the sheet
+                            # metal part.
+                            if checkCut.Area < 1e-6:
+                                min_distance = distance
 
-                                # Test to ensure the opposite face is,
-                                # in fact, the other side of the sheet
-                                # metal part.
-                                if checkCut.Area < 1e-6:
-                                    min_distance = distance
+                        # Is necessary 'try' and 'except' because
+                        # rounded surfaces offset can lead to errors
+                        # if offset is bigger than its radius.
+                        except:
+                            FreeCAD.Console.PrintLog("Skip wrong offset")
+                            continue
 
-                            # Is necessary 'try' and 'except' because
-                            # rounded surfaces offset can lead to errors
-                            # if offset is bigger than its radius.
-                            except:
-                                FreeCAD.Console.PrintLog("Skip wrong offset")
-                                continue
+        if min_distance == float("inf"):
+            raise SMException("No opposite face found to calculate thickness.")
 
-            if min_distance == float("inf"):
-                raise SMException("No opposite face found to calculate thickness.")
+        # Appear that rounding can help on speed performance of the
+        # rest of the code.
+        thickness = round(min_distance, 4)
 
-            # Appear that rounding can help on speed performance of the
-            # rest of the code.
-            thickness = round(min_distance, 4)
+        # Step 2: Find pairs of parallel faces.
+        parallel_faces = []
+        for i, face1 in enumerate(faces):
+            for j, face2 in enumerate(faces):
+                if i >= j:
+                    continue
+                if face1.normalAt(0, 0).isEqual(face2.normalAt(0, 0).multiply(-1), 1e-6):
+                    distance_info = face1.distToShape(face2)
+                    distance = distance_info[0]
 
-            # Step 2: Find pairs of parallel faces.
-            parallel_faces = []
-            for i, face1 in enumerate(faces):
-                for j, face2 in enumerate(faces):
-                    if i >= j:
-                        continue
-                    if face1.normalAt(0, 0).isEqual(face2.normalAt(0, 0).multiply(-1), 1e-6):
-                        distance_info = face1.distToShape(face2)
-                        distance = distance_info[0]
+                    # In the past, this tolerance was `1e-6`, it's
+                    # leads to errors.
+                    if abs(distance - thickness) < 1e-5:
+                        parallel_faces.extend([face1, face2])
 
-                        # In the past, this tolerance was `1e-6`, it's
-                        # leads to errors.
-                        if abs(distance - thickness) < 1e-5:
-                            parallel_faces.extend([face1, face2])
+        if parallel_faces:
+            shell = Part.Shell(parallel_faces)
+        else:
+            raise SMException(
+                    "No pairs of parallel faces with the specified"
+                    " thickness distance were found.")
 
-            if parallel_faces:
-                shell = Part.Shell(parallel_faces)
+        # Surfaces to improve the cut geometry.
+        if fp.ImproveCut:
+            smSide1 = self.find_connected_faces(shell)
+            smSide1 = Part.Shell(smSide1[0])
+
+            tknOffStep = thickness / fp.ImproveLevel
+
+            improvSurfaces = []
+            tknOff = tknOffStep
+            while abs(thickness - tknOff) > 1e-6:
+                sideOff = smSide1.makeOffsetShape(-tknOff, 0)
+                improvSurfaces.append(sideOff)
+                tknOff = tknOff + tknOffStep
+            improvShell = improvSurfaces
+
+        # Step 3: Extrude the cut sketch.
+        #
+        # Get all faces in sketch.
+        skWiresList = cutSketch.Shape.Wires
+        myFacesList = []
+        for wire in skWiresList:
+            myFace = Part.Face(wire)
+            myFacesList.append(myFace)
+
+        compFaces = Part.Compound(myFacesList)
+
+        if ExtLength1 == 0 and ExtLength2 == 0:
+            raise SMException("Cut length cannot be zero for both sides.")
+        else:
+            if ExtLength1 == 0:
+                ExtLength1 = -ExtLength2
+            if ExtLength2 == 0:
+                ExtLength2 = -ExtLength1
+
+            ExtLength1 = compFaces.Faces[0].normalAt(0, 0) * (-ExtLength1)
+            ExtLength2 = compFaces.Faces[0].normalAt(0, 0) * ExtLength2
+            myExtrusion1 = compFaces.extrude(ExtLength1)
+            myExtrusion2 = compFaces.extrude(ExtLength2)
+
+            if fp.Refine:
+                myUnion = Part.Solid.fuse(myExtrusion1, myExtrusion2).removeSplitter()
             else:
-                raise SMException(
-                        "No pairs of parallel faces with the specified"
-                        " thickness distance were found.")
+                myUnion = Part.Solid.fuse(myExtrusion1, myExtrusion2)
 
-            # Surfaces to improve the cut geometry.
+            myCommon = myUnion.common(shell)
+            # Intersection with the improvement surfaces.
             if fp.ImproveCut:
-                smSide1 = self.find_connected_faces(shell)
-                smSide1 = Part.Shell(smSide1[0])
+                myCommImprov = myUnion.common(improvShell)
 
-                tknOffStep = thickness / fp.ImproveLevel
+        # Step 4: Find connected components and offset shapes.
+        connected_components = self.find_connected_faces(myCommon)
+        offset_shapes = []
+        for component in connected_components:
+            component_shell = Part.Shell(component)
+            if component_shell.isValid():
+                offset_shape = component_shell.makeOffsetShape(-thickness, 0, fill=True)
+                if offset_shape.isValid():
+                    offset_shapes.append(offset_shape)
 
-                improvSurfaces = []
-                tknOff = tknOffStep
-                while abs(thickness - tknOff) > 1e-6:
-                    sideOff = smSide1.makeOffsetShape(-tknOff, 0)
-                    improvSurfaces.append(sideOff)
-                    tknOff = tknOff + tknOffStep
-                improvShell = improvSurfaces
+        if fp.ImproveCut:
+            connected_improv = self.find_connected_faces(myCommImprov)
+            offset_improv = []
+            for improv in connected_improv:  # Offset to one side.
+                improv_shell = Part.Shell(improv)
+                offset_value = improv_shell.distToShape(smSide1)[0]
+                off_impr = improv_shell.makeOffsetShape(offset_value, 0, fill=True)
+                offset_improv.append(off_impr)
+            for improv in connected_improv:  # Offset to other side.
+                improv_shell = Part.Shell(improv)
+                offset_value = thickness - improv_shell.distToShape(smSide1)[0]
+                off_impr = improv_shell.makeOffsetShape(-offset_value, 0, fill=True)
+                offset_improv.append(off_impr)
 
-            # Step 3: Extrude the cut sketch.
-            #
-            # Get all faces in sketch.
-            skWiresList = cutSketch.Shape.Wires
-            myFacesList = []
-            for wire in skWiresList:
-                myFace = Part.Face(wire)
-                myFacesList.append(myFace)
-
-            compFaces = Part.Compound(myFacesList)
-
-            if ExtLength1 == 0 and ExtLength2 == 0:
-                raise SMException("Cut length cannot be zero for both sides.")
-            else:
-                if ExtLength1 == 0:
-                    ExtLength1 = -ExtLength2
-                if ExtLength2 == 0:
-                    ExtLength2 = -ExtLength1
-
-                ExtLength1 = compFaces.Faces[0].normalAt(0, 0) * (-ExtLength1)
-                ExtLength2 = compFaces.Faces[0].normalAt(0, 0) * ExtLength2
-                myExtrusion1 = compFaces.extrude(ExtLength1)
-                myExtrusion2 = compFaces.extrude(ExtLength2)
-
-                if fp.Refine:
-                    myUnion = Part.Solid.fuse(myExtrusion1, myExtrusion2).removeSplitter()
-                else:
-                    myUnion = Part.Solid.fuse(myExtrusion1, myExtrusion2)
-
-                myCommon = myUnion.common(shell)
-                # Intersection with the improvement surfaces.
-                if fp.ImproveCut:
-                    myCommImprov = myUnion.common(improvShell)
-
-            # Step 4: Find connected components and offset shapes.
-            connected_components = self.find_connected_faces(myCommon)
-            offset_shapes = []
-            for component in connected_components:
-                component_shell = Part.Shell(component)
-                if component_shell.isValid():
-                    offset_shape = component_shell.makeOffsetShape(-thickness, 0, fill=True)
-                    if offset_shape.isValid():
-                        offset_shapes.append(offset_shape)
+        # Step 5: Combine the offsets.
+        if offset_shapes:
+            combined_offset = Part.Solid(offset_shapes[0])
+            for shape in offset_shapes[1:]:
+                combined_offset = combined_offset.fuse(shape)
 
             if fp.ImproveCut:
-                connected_improv = self.find_connected_faces(myCommImprov)
-                offset_improv = []
-                for improv in connected_improv:  # Offset to one side.
-                    improv_shell = Part.Shell(improv)
-                    offset_value = improv_shell.distToShape(smSide1)[0]
-                    off_impr = improv_shell.makeOffsetShape(offset_value, 0, fill=True)
-                    offset_improv.append(off_impr)
-                for improv in connected_improv:  # Offset to other side.
-                    improv_shell = Part.Shell(improv)
-                    offset_value = thickness - improv_shell.distToShape(smSide1)[0]
-                    off_impr = improv_shell.makeOffsetShape(-offset_value, 0, fill=True)
-                    offset_improv.append(off_impr)
+                comb_impr_off = Part.Solid(offset_improv[0])
+                for impr_shape in offset_improv[1:]:
+                    comb_impr_off = comb_impr_off.fuse(impr_shape)
+                combined_offset = combined_offset.fuse(comb_impr_off)
 
-            # Step 5: Combine the offsets.
-            if offset_shapes:
-                combined_offset = Part.Solid(offset_shapes[0])
-                for shape in offset_shapes[1:]:
+                # Intersection with sheet metal faces.
+                cutOffsets = combined_offset.common(shell)
+                conn_offsetFaces = self.find_connected_faces(cutOffsets)
+                shapeCutOffsets = []
+                for offset in conn_offsetFaces:
+                    offsetFace = Part.Shell(offset)
+                    offsetSolid = offsetFace.makeOffsetShape(-thickness, 0, fill=True)
+                    shapeCutOffsets.append(offsetSolid)
+
+                combined_offset = Part.Solid(shapeCutOffsets[0])
+                for shape in shapeCutOffsets[1:]:
                     combined_offset = combined_offset.fuse(shape)
 
-                if fp.ImproveCut:
-                    comb_impr_off = Part.Solid(offset_improv[0])
-                    for impr_shape in offset_improv[1:]:
-                        comb_impr_off = comb_impr_off.fuse(impr_shape)
-                    combined_offset = combined_offset.fuse(comb_impr_off)
-
-                    # Intersection with sheet metal faces.
-                    cutOffsets = combined_offset.common(shell)
-                    conn_offsetFaces = self.find_connected_faces(cutOffsets)
-                    shapeCutOffsets = []
-                    for offset in conn_offsetFaces:
-                        offsetFace = Part.Shell(offset)
-                        offsetSolid = offsetFace.makeOffsetShape(-thickness, 0, fill=True)
-                        shapeCutOffsets.append(offsetSolid)
-
-                    combined_offset = Part.Solid(shapeCutOffsets[0])
-                    for shape in shapeCutOffsets[1:]:
-                        combined_offset = combined_offset.fuse(shape)
-
-                # Step 6: Cut.
-                #
-                # Check the "CutSide" property to decide how to perform
-                # the cut.
-                if fp.CutSide == "Inside":
-                    if fp.Refine:
-                        cut_result = selected_object.Shape.cut(combined_offset).removeSplitter()
-                    else:
-                        cut_result = selected_object.Shape.cut(combined_offset)
-                elif fp.CutSide == "Outside":
-                    if fp.Refine:
-                        cut_result = selected_object.Shape.common(combined_offset).removeSplitter()
-                    else:
-                        cut_result = selected_object.Shape.common(combined_offset)
+            # Step 6: Cut.
+            #
+            # Check the "CutSide" property to decide how to perform
+            # the cut.
+            if fp.CutSide == "Inside":
+                if fp.Refine:
+                    cut_result = selected_object.Shape.cut(combined_offset).removeSplitter()
                 else:
-                    raise SMException("Invalid CutSide value.")
-
-                fp.Shape = cut_result
+                    cut_result = selected_object.Shape.cut(combined_offset)
+            elif fp.CutSide == "Outside":
+                if fp.Refine:
+                    cut_result = selected_object.Shape.common(combined_offset).removeSplitter()
+                else:
+                    cut_result = selected_object.Shape.common(combined_offset)
             else:
-                raise SMException("No valid offset shapes were created.")
-        except SMException as e:
-            FreeCAD.Console.PrintError(f"Error: {e}\n")
+                raise SMException("Invalid CutSide value.")
+
+            fp.Shape = cut_result
+        else:
+            raise SMException("No valid offset shapes were created.")
 
     def find_connected_faces(self, shape):
         """Find connected faces in a shape."""

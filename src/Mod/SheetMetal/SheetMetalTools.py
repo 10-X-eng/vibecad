@@ -820,8 +820,11 @@ if isGuiLoaded():
                     _taskMultiSelectionModeClicked(var)
                 else:
                     _taskSingleSelModeClicked(var)
-        FreeCAD.ActiveDocument.recompute()
-        task.obj.Document.commitTransaction()
+        document = task.obj.Document
+        document.recompute()
+        if not task.obj.isValid():
+            raise RuntimeError(task.obj.getStatusString())
+        document.commitTransaction()
         Gui.Control.closeDialog()
         Gui.ActiveDocument.resetEdit()
         return True

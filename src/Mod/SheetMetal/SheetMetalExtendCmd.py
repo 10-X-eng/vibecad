@@ -278,7 +278,7 @@ class SMExtrudeWall:
                              selItemNames=face,
                              selObject=Main_Object)
         if fp.Sketch :
-            fp.Sketch.ViewObject.Visibility = False
+            SheetMetalTools.smHideObjects(fp.Sketch)
 
 
 
@@ -435,8 +435,11 @@ if SheetMetalTools.isGuiLoaded():
             selSketch = Gui.Selection.getSelection()[0]
             if not selSketch.isDerivedFrom("Sketcher::SketchObject"):
                 return None
+            if len(selSketch.AttachmentSupport) != 1:
+                return None
             selobj, selFaceNames = selSketch.AttachmentSupport[0]
-            if not selobj.isDerivedFrom("Part::Feature"):
+            if (selobj is None or not selobj.isDerivedFrom("Part::Feature")
+                    or len(selFaceNames) != 1 or not selFaceNames[0].startswith("Face")):
                 return None
             return (selSketch, selobj, selFaceNames)
 

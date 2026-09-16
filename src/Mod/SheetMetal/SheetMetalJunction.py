@@ -192,10 +192,10 @@ if SheetMetalTools.isGuiLoaded():
             return
 
         def IsActive(self):
-            sel = Gui.Selection.getSelectionEx()[0]
-            if len(Gui.Selection.getSelection()) < 1 or len(sel.SubElementNames) < 1:
+            selection = Gui.Selection.getSelectionEx()
+            if not selection or not selection[0].SubElementNames:
                 return False
-                # selobj = Gui.Selection.getSelection()[0]
+            sel = selection[0]
             for selEdge in sel.SubObjects:
                 if not isinstance(selEdge, Part.Edge):
                     return False

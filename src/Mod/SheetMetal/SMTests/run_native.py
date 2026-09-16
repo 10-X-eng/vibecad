@@ -88,6 +88,7 @@ def main():
         "SMTests.testRMFGNativeManufacturing",
         "SMTests.testRMFGSavedJobsGui",
         "SMTests.testSheetRecomputeOrigin",
+        "SMTests.testSheetLegacyOperations",
     ])
     args = parser.parse_args()
     build = args.build.resolve()

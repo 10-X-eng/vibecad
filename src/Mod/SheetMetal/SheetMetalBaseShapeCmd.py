@@ -323,6 +323,7 @@ if SheetMetalTools.isGuiLoaded():
             doc.recompute()
             Gui.ActiveDocument.resetEdit()
             self.RevertAxisCross()
+            return True
 
         def reject(self):
             FreeCAD.ActiveDocument.abortTransaction()
@@ -330,6 +331,7 @@ if SheetMetalTools.isGuiLoaded():
             FreeCAD.ActiveDocument.recompute()
             Gui.ActiveDocument.resetEdit()
             self.RevertAxisCross()
+            return True
 
         def updateSpin(self, spin, property):
             Gui.ExpressionBinding(spin).bind(self.obj, property)

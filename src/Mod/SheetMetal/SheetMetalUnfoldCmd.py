@@ -853,7 +853,7 @@ if SheetMetalTools.isGuiLoaded():
             ):
                 return False
             selFace = Gui.Selection.getSelectionEx()[0].SubObjects[0]
-            return isinstance(selFace.Surface, Part.Plane)
+            return isinstance(selFace, Part.Face) and isinstance(selFace.Surface, Part.Plane)
 
 
     class SMRecomputeUnfoldsCommandClass:
@@ -925,7 +925,7 @@ if SheetMetalTools.isGuiLoaded():
             ):
                 return False
             selFace = Gui.Selection.getSelectionEx()[0].SubObjects[0]
-            return isinstance(selFace.Surface, Part.Plane)
+            return isinstance(selFace, Part.Face) and isinstance(selFace.Surface, Part.Plane)
 
 
     Gui.addCommand("SheetMetal_UnattendedUnfold", SMUnfoldUnattendedCommandClass())
