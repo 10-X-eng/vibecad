@@ -576,12 +576,21 @@ def _codex_dynamic_tool_surface(
     return dynamic_tools, names
 
 
+def _session_tool_schemas(context):
+    from VibeCADConversationContext import SCHEMAS_KEY, TOOL_SCHEMA
+
+    schemas = context.get(SCHEMAS_KEY) or []
+    if schemas and schemas != [TOOL_SCHEMA]:
+        raise ProviderUnavailable("Invalid session-owned conversation tool schema.")
+    return list(schemas)
+
+
 def _codex_external_dynamic_tools(
     context: dict[str, Any],
     *,
     namespaced: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[tuple[str, str], str]]:
-    """Declare registered external MCP tools as additional Codex namespaces.
+    """Declare external MCP and session history tools beside the CAD namespace.
 
     The frozen VibeCAD surface built by ``_codex_dynamic_tool_surface`` is not
     touched; these tools are appended beside it and routed by name.
@@ -590,10 +599,10 @@ def _codex_external_dynamic_tools(
     dynamic_tools: list[dict[str, Any]] = []
     namespaces: dict[str, dict[str, Any]] = {}
     names: dict[tuple[str, str], str] = {}
-    for schema in _external_tool_schemas(context):
+    for schema in [*_external_tool_schemas(context), *_session_tool_schemas(context)]:
         tool_name = str(schema.get("name") or "").strip()
         domain, _, operation = tool_name.partition(".")
-        if not domain.startswith("mcp_") or not operation:
+        if (not domain.startswith("mcp_") or not operation) and tool_name != "conversation.read":
             raise ProviderUnavailable(
                 f"Invalid external MCP tool name {tool_name!r}; expected mcp_<server>.<tool>."
             )
@@ -1907,6 +1916,7 @@ class CodexProvider(BaseProvider):
                 "schema_sha256": str(
                     thread_declaration.get("schema_sha256") or ""
                 ),
+                "session_schema_sha256": provider_tool_schema_digest(_session_tool_schemas(live_context)),
             }
             thread_key = hashlib.sha256(
                 json.dumps(
@@ -2105,6 +2115,14 @@ class CodexProvider(BaseProvider):
                 if resumed_thread
                 else prompt
             )
+            from VibeCADConversationContext import RECORDS_KEY, cursor, with_handoff
+            conversation_records = live_context.get(RECORDS_KEY)
+            if conversation_records is not None:
+                turn_prompt = with_handoff(
+                    turn_prompt, conversation_records,
+                    managed_lease.previous_conversation_cursor if managed_lease else {},
+                    thread_id=thread_id,
+                )
             prompt_section_digests = _codex_prompt_section_digests(turn_prompt)
             prompt_reuse = {
                 "reused_sections": [],
@@ -2298,6 +2316,10 @@ class CodexProvider(BaseProvider):
                         for name in prompt_section_digests_to_remember
                     },
                 )
+                if conversation_records is not None:
+                    managed_lease.remember_conversation_cursor(
+                        cursor(conversation_records), generation=context_reuse_generation,
+                    )
                 # A localImage points at a file, not the bytes hashed before
                 # turn/start. Do not cache a delivery if that file changed
                 # during the turn or the local-input fallback was used.
@@ -3914,6 +3936,7 @@ def _provider_tool_surface_definitions(
     schemas = [
         *list(context.get("provider_tool_schemas") or []),
         *_external_tool_schemas(context),
+        *_session_tool_schemas(context),
     ]
     for index, schema in enumerate(schemas):
         if not isinstance(schema, dict):

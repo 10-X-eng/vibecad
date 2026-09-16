@@ -2163,8 +2163,9 @@ def _provider_prompt(
             "Deterministic VibeCAD turn-start context exceeded "
             f"{MAX_TURN_CONTEXT_JSON_BYTES} bytes ({encoded_bytes} bytes)."
         )
+    from VibeCADConversationContext import RECORDS_KEY, with_handoff
     conversation_payload = _recent_conversation_payload(
-        recent_conversation,
+        [] if RECORDS_KEY in context else recent_conversation,
         current_user_message=current_user_message,
     )
     encoded_conversation = json.dumps(
@@ -2190,7 +2191,7 @@ def _provider_prompt(
         if authoring_contract is not None
         else ""
     )
-    return (
+    result = (
         "VIBECAD_CONTEXT_JSON\n"
         + encoded
         + "\nEND_VIBECAD_CONTEXT_JSON\n\n"
@@ -2201,6 +2202,7 @@ def _provider_prompt(
         + f"{prompt_section}\n"
         + prompt
     )
+    return with_handoff(result, context[RECORDS_KEY]) if RECORDS_KEY in context else result
 
 
 def _run_provider(
@@ -6088,6 +6090,9 @@ def _run_session_turn(
             "conversation_id": turn_conversation_id,
             "conversation_path": str(recorded.get("path") or ""),
         }
+        from VibeCADConversationContext import RECORDS_KEY, SCHEMAS_KEY, TOOL_SCHEMA
+        context[RECORDS_KEY] = turn_conversation
+        context[SCHEMAS_KEY] = [TOOL_SCHEMA]
     _consume_context_view_attachment(active_service, context, document_thread_dispatch)
     tool_trace: list[dict[str, Any]] = []
     provider_prompt = _provider_prompt(
@@ -6179,6 +6184,12 @@ def _run_session_turn(
         progress_callback=progress_callback,
         cancellation_check=cancellation_check,
     )
+    if turn_conversation_id:
+        from VibeCADConversationContext import ConversationToolRunner
+        tool_runner = ConversationToolRunner(
+            tool_runner, turn_conversation, tool_trace=tool_trace,
+            cancellation_check=cancellation_check, progress_callback=progress_callback,
+        )
     _emit(
         progress_callback,
         {
@@ -6208,23 +6219,28 @@ def _run_session_turn(
             observed_usage,
             status="completed",
         )
-        if final_output:
+        if final_output or tool_trace:
             turn_metadata: dict[str, Any] = {
                 "provider_runtime": provider_runtime,
             }
+            if tool_trace:
+                turn_metadata["tool_activity"] = _native_surface_tool_activity(tool_trace)
+            if isinstance(result.raw, Mapping) and result.raw.get("thread_id"):
+                turn_metadata["provider_thread_id"] = str(result.raw["thread_id"])
             if session_trigger:
                 turn_metadata["session_trigger"] = session_trigger
             if completed_usage is not None:
                 turn_metadata["usage"] = completed_usage
             _persist_session_conversation_turn(
                 active_service,
-                "assistant",
-                final_output,
+                "assistant" if final_output else "system",
+                final_output or "CAD tool activity before continuing in another workspace.",
                 provider=provider_name,
                 metadata=turn_metadata,
                 conversation_id=turn_conversation_id,
                 dispatch=document_thread_dispatch,
             )
+        if final_output:
             _emit(
                 progress_callback,
                 {
@@ -6269,6 +6285,13 @@ def _run_session_turn(
         )
     except ProviderUnavailable as exc:
         provider_error = str(exc)
+        if tool_trace:
+            _persist_session_conversation_turn(
+                active_service, "system", "CAD run ended before an assistant response; inspect recorded outcomes before retrying.",
+                provider=provider_name,
+                metadata={"tool_activity": _native_surface_tool_activity(tool_trace)},
+                conversation_id=turn_conversation_id, dispatch=document_thread_dispatch,
+            )
         final_output = f"{provider_name} failed before returning a usable AI result: {provider_error}"
         failed_usage = usage_metadata_for_status(
             observed_usage,

@@ -774,6 +774,7 @@ class _ManagedCodexRuntime:
     prompt_section_anchor_turn_ids: dict[str, dict[str, str]] = field(default_factory=dict)
     reference_image_deliveries: dict[str, dict[str, str]] = field(default_factory=dict)
     context_reuse_generations: dict[str, int] = field(default_factory=dict)
+    conversation_cursors: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -784,6 +785,18 @@ class ManagedCodexSession:
     thread_id: str
     _runtime: _ManagedCodexRuntime
     _thread_key: str
+
+    @property
+    def previous_conversation_cursor(self) -> dict[str, Any]:
+        with self._runtime.state_lock:
+            return dict(self._runtime.conversation_cursors.get(self._thread_key) or {})
+
+    def remember_conversation_cursor(self, cursor: Mapping[str, Any], *, generation: int) -> bool:
+        with self._runtime.state_lock:
+            if self.context_reuse_generation != generation:
+                return False
+            self._runtime.conversation_cursors[self._thread_key] = dict(cursor)
+            return True
 
     @property
     def previous_prompt_section_digests(self) -> dict[str, str]:
@@ -820,6 +833,7 @@ class ManagedCodexSession:
                 self._runtime.thread_ids.get(self._thread_key) or self.thread_id or ""
             )
             if previous and previous != clean:
+                self._runtime.conversation_cursors.pop(self._thread_key, None)
                 self._runtime.prompt_section_digests.pop(self._thread_key, None)
                 self._runtime.prompt_section_anchor_turn_ids.pop(self._thread_key, None)
                 self._runtime.reference_image_deliveries.pop(self._thread_key, None)
@@ -833,6 +847,7 @@ class ManagedCodexSession:
         """Forget data that may have been removed from the model context."""
 
         with self._runtime.state_lock:
+            self._runtime.conversation_cursors.pop(self._thread_key, None)
             self._runtime.prompt_section_digests.pop(self._thread_key, None)
             self._runtime.prompt_section_anchor_turn_ids.pop(self._thread_key, None)
             self._runtime.reference_image_deliveries.pop(self._thread_key, None)
@@ -941,6 +956,7 @@ def managed_codex_session(
             # available. Re-anchor all managed conversations on the next turn.
             with runtime.state_lock:
                 for remembered_thread_key in tuple(runtime.thread_ids):
+                    runtime.conversation_cursors.pop(remembered_thread_key, None)
                     runtime.prompt_section_digests.pop(remembered_thread_key, None)
                     runtime.prompt_section_anchor_turn_ids.pop(remembered_thread_key, None)
                     runtime.reference_image_deliveries.pop(
@@ -987,6 +1003,7 @@ def _take_managed_codex_runtimes() -> list[tuple[Any, tuple[str, ...]]]:
             thread_ids = tuple(dict.fromkeys(runtime.thread_ids.values()))
             runtime.client = None
             runtime.thread_ids.clear()
+            runtime.conversation_cursors.clear()
             runtime.prompt_section_digests.clear()
             runtime.prompt_section_anchor_turn_ids.clear()
             runtime.reference_image_deliveries.clear()

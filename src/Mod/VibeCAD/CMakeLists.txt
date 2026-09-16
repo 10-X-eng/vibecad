@@ -1239,6 +1239,7 @@ set(VibeCAD_Scripts
     VibeCADProject.py
     VibeCADPublicationProgress.py
     VibeCADSession.py
+    VibeCADConversationContext.py
     VibeCADSessionRecovery.py
     VibeCADScriptedEditor.py
     VibeCADScriptedOwnership.py
