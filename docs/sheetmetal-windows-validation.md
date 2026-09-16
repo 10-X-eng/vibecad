@@ -158,3 +158,88 @@ and run `src/Tools/performance/sheetmetal_restore_probe.py` as the macro. The
 original file is never saved or changed. This follow-up is Python-only and was
 tested in a separate copy of the already fully built portable, leaving the live
 user instance untouched. No new native binary or release build is claimed.
+
+## Cross-workspace context and repair follow-up
+
+The resumed Codex thread path previously removed recent conversation replay
+unconditionally. Returning from another workspace could therefore omit intervening
+user instructions. Tool-only workspace switches also had no durable conversation
+entry when the provider returned no prose.
+
+The session now reuses its canonical conversation records for a bounded handoff:
+original/latest requirement anchors, unseen cross-thread events and recorded tool
+outcomes. A per-provider-thread cursor advances only after successful delivery;
+failure, interruption, compaction and thread replacement invalidate it. The current
+user message appears once. Small original/latest anchors intentionally remain;
+already-delivered event history is not replayed. The new read-only
+`conversation.read` tool pages the same records (including full recorded content
+and bounded tool-activity metadata); it does not create a second history store or
+claim historical geometry is current. Excerpts and omitted events are explicit.
+Large raw CAD outputs are still not persisted/replayed as conversation history.
+The session tool is declared beside, not inside, frozen CAD authority, including
+the other provider adapters. Tool-only and failed-turn outcomes are retained so
+continuations do not infer success from missing prose. Steering remains in the
+recorded tool outcomes.
+
+Every workspace's navigation context now explains the existing-source repair
+route. Sheet inspection links the real upstream source and the existing paginated
+history/profile references. Manufacturing responses point to that inspection and
+require fresh analysis/quote after repairs. `sketch.open` correctly names the
+provider's `sketch.finish` tool; the internal `sketch.control` API remains intact.
+No DFM-to-face mapping, design dimensions or automatic repair choices are invented.
+
+Red regressions covered missing handoff state/cursor, a resumed thread losing a
+new instruction, missing workspace/manufacturing repair guidance and missing
+native source pointers. Broader verification caught duplicated current-user text
+and a description exceeding the existing Modeling schema budget; both were fixed
+without increasing that budget. The stale schema-description assertion was updated
+to require the actual provider-facing finish tool.
+
+The real-GUI workflow follows a profile cut's stored sketch reference through
+Sheet Metal -> Parameters -> Modeling -> Sketching, uses native sketch-open and
+sketch-finish runtimes, changes its existing constraint, returns to Sheet Metal,
+and verifies changed, valid geometry with unchanged object identities. It requests
+fresh analysis and a quote, then repeats for a bend-only parameter edit. Only the
+RMFG controller responses are mocked; no live order or model-generated repair is
+claimed. The complete affected native suite and provider tests below are the
+acceptance boundary, not a promise of every possible geometric repair succeeding.
+
+Commands from the worktree (the private Python environment contains the same
+MCP 2.0.0 package as the portable; the initial base environment lacked it):
+
+```powershell
+$env:PYTHONPATH = "$PWD/src/Mod/VibeCAD"
+& ../pr228-context-test-env/Scripts/python.exe -m pytest -q `
+  src/Mod/VibeCAD/vibecad_tests/test_conversation_handoff.py `
+  src/Mod/VibeCAD/vibecad_tests/test_codex_subscription.py `
+  src/Mod/VibeCAD/vibecad_tests/test_model_context_contract.py `
+  src/Mod/VibeCAD/vibecad_tests/test_native_surface_continuation.py `
+  src/Mod/VibeCAD/vibecad_tests/test_native_session.py `
+  src/Mod/VibeCAD/vibecad_tests/test_mcp_tool_servers.py `
+  src/Mod/VibeCAD/vibecad_tests/test_gemini_provider.py `
+  src/Mod/VibeCAD/vibecad_tests/test_provider_history_budget.py `
+  src/Mod/VibeCAD/vibecad_tests/test_native_workspace_schema.py `
+  src/Mod/VibeCAD/vibecad_tests/test_native_sheetmetal_manufacturing.py `
+  src/Mod/VibeCAD/vibecad_tests/test_native_model_structure_schema.py `
+  src/Mod/VibeCAD/vibecad_tests/test_native_sheetmetal_provider.py `
+  --tb=short --junitxml=../pr228-context-final.xml
+```
+
+Native suite command is the same ten-module command in the performance section,
+now including the source-pointer and full repair-workflow regressions. The full
+incremental build uses the above `build_env.bat`/Ninja command after copying the
+changed sources into the Rattler source sandbox. CMake regenerates and includes
+`VibeCADConversationContext.py` in its installation manifest. No running user
+portable is patched or restarted for these checks.
+
+Final combined provider/session/tool suite: **291 passed, 1 skipped in 47.50 s**.
+The skip is the optional installed `cua-driver` integration, not a CAD or provider
+failure. Final combined real-GUI suite: **131 passed in 278.513 s**, successful
+unattended completion. Full incremental native build: **passed, exit 0**.
+After the final compact sketch-open wording was copied into the review portable,
+the exact surface-discovery, all-ribbon navigation and DFM repair workflow checks
+also passed: **3 tests in 20.378 s**. Command:
+
+```powershell
+& ./build/pr228_after_build.ps1 -BundlePath $Bundle -Tests 'SMTests.testSheetNativeInspect.TestSheetNativeInspect.test_model_surface_discovers_the_native_tool,SMTests.testSheetNativeView.TestSheetNativeView.test_each_ribbon_workspace_retains_an_agent_route_to_other_tools,SMTests.testSheetNativeView.TestSheetNativeView.test_dfm_repair_follows_existing_sketch_across_workspaces_and_reanalyzes'
+```

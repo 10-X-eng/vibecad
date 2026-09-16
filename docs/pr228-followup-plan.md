@@ -47,35 +47,50 @@ Observed: provider threads are keyed by conversation and tool schema. Resuming a
 thread removes conversation replay even when another workspace received newer
 instructions. Immediate tool receipts transfer, but are not a shared task history.
 
-- [ ] Reproduce lost cross-workspace instructions with provider-request tests.
-- [ ] Reuse the canonical ordered conversation/operation records. Track delivery
+- [x] Reproduce lost cross-workspace instructions with provider-request tests.
+- [x] Reuse the canonical ordered conversation/operation records. Track delivery
       per actual provider thread; transfer unseen events, not the whole transcript.
       Record delivery only after success. Verify failure, retry, cancellation,
       new thread and resumed thread behavior.
-- [ ] Preserve original requirements and unfinished work across automatic
+- [x] Preserve original requirements and unfinished work across automatic
       continuations and steering. Provide a compact handoff of pending work,
       known targets, failures and next action; distinguish observations from intent.
-- [ ] Keep large tool outputs/snapshots out of the handoff; retain exact references
+- [x] Keep large tool outputs/snapshots out of the handoff; retain exact references
       and expose omitted history/details through bounded, paginated reads. Reuse
       existing retrieval APIs where possible; no duplicate history store.
-- [ ] Cover Sheet Metal, Sketching, Parameters and another workbench. Confirm
+- [x] Cover Sheet Metal, Sketching, Parameters and another workbench. Confirm
       unchanged delivered history is not retransmitted and missed events are not
       silently discarded. Keep provider-independent session behavior consistent.
 
 ## 3. Discoverable edit/DFM repair workflow
 
-- [ ] Add concise generic guidance: inspect the owning feature and source links;
+- [x] Add concise generic guidance: inspect the owning feature and source links;
       edit bend parameters in Sheet Metal; open the existing sketch to change
       sketch geometry/constraints; finish, return, verify and rerun DFM before
       requesting a quote for the corrected revision.
-- [ ] Correct the stale sketch-finish tool reference. Distinguish switching to
+- [x] Correct the stale sketch-finish tool reference. Distinguish switching to
       Sketching from entering an individual sketch's edit mode.
-- [ ] Supply authoritative source/profile references with inspection/repair
+- [x] Supply authoritative source/profile references with inspection/repair
       results where known. Never guess a DFM-to-feature mapping or prescribe
       design-specific dimensions.
-- [ ] Exercise DFM failure -> source discovery -> sketch edit -> finish -> Sheet
+- [x] Exercise DFM failure -> source discovery -> sketch edit -> finish -> Sheet
       Metal -> fresh DFM -> quote request. Verify a bend-only repair too. Preserve
       existing object identity and original requirements. No real order placement.
+
+Acceptance evidence: **291 provider/session/tool tests passed**, with one optional
+`cua-driver` check skipped because it is not installed; **131 native GUI tests
+passed in 278.513 s**. The actual GUI repair regression uses the existing profile
+and native open/finish controls across Sheet Metal, Parameters, Modeling and
+Sketching, then a bend-only edit. RMFG responses are mocked; geometry and revision
+changes are real. The full incremental build passed with the new module in the
+CMake installation manifest. Exact commands and red/green details are in
+`docs/sheetmetal-windows-validation.md`.
+
+The handoff keeps small original/latest requirement anchors; repeated event
+history is deduplicated per persistent provider thread. Paginated reads expose
+stored records, not live geometry or unretained raw tool output. This is a
+workflow/context fix, not a guarantee that a model can automatically resolve
+every DFM finding. No original document or running user instance was changed.
 
 ## Completion boundary
 
