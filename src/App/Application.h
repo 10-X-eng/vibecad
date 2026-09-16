@@ -49,6 +49,7 @@
 #include <Base/Observer.h>
 #include <Base/Parameter.h>
 #include "TransactionDefs.h"
+#include "MainThreadSignal.h"
 
 // forward declarations
 using PyObject = struct _object;
@@ -165,6 +166,8 @@ struct AppExport RecomputeRequest
     bool recursive {false};
     // Callback to be invoked when recompute is complete.
     std::function<void(RecomputeRequest&, RecomputeResult&)> callback {};
+    // Append optional provenance to preserve existing aggregate initializers.
+    RecomputeOriginScope::Origin origin {};
 };
 
 /**
@@ -581,6 +584,9 @@ public:
     fastsignals::signal<void (const App::DocumentObject&, const App::Property&)> signalBeforeChangeObject;
     /// Signal on a changed property in an object.
     fastsignals::signal<void (const App::DocumentObject&, const App::Property&)> signalChangedObject;
+    // Opt-in observation. The explicit payload never becomes GUI thread state.
+    MainThreadSignal<void(const App::DocumentObject&, const App::Property&, std::string)>
+        signalChangedObjectWithOrigin;
     /// Signal on a relabeled object.
     fastsignals::signal<void (const App::DocumentObject&)> signalRelabelObject;
     /// Signal on an activated object.

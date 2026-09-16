@@ -11,19 +11,21 @@ from VibeCADNativeRuntimeContext import NativeRuntimeContext
 from VibeCADNativeWorkspaceSchema import (
     NATIVE_SURFACE_BY_WORKSPACE,
 )
-from VibeCADSurfaceAuthority import activate_workbench
+from VibeCADSurfaceAuthority import activate_workbench, deactivate_assembly
 
 
 WORKBENCH_BY_NATIVE_WORKSPACE = {
     "modeling": "PartDesignWorkbench",
     "sketching": "SketcherWorkbench",
     "assembly": "AssemblyWorkbench",
+    "sheet_metal": "SMWorkbench",
     "mesh": "MeshWorkbench",
     "analysis": "FemWorkbench",
     "manufacturing": "CAMWorkbench",
     "drawing": "TechDrawWorkbench",
     "parameters": "SpreadsheetWorkbench",
     "aerodynamics": "VibeCADAeroWorkbench",
+    "printing": "VibeCADPrintWorkbench",
 }
 
 
@@ -72,6 +74,9 @@ class NativeWorkspaceRuntime:
         import FreeCADGui as Gui
         from PySide import QtCore, QtWidgets
 
+        # Assembly activation is a GUI edit session, even with no task open.
+        # End it before changing tools so it cannot block the next agent turn.
+        deactivate_assembly(Gui.getDocument(self._context.document.Name))
         activate_workbench(workbench)
         for _index in range(8):
             Gui.updateGui()
@@ -133,4 +138,6 @@ class NativeWorkspaceRuntime:
         return {
             "workspace": workspace,
             "next_turn_required": True,
+            "message": (f"The {workspace} workspace is active. End this turn; "
+                        "VibeCAD continues automatically with its tools on the next turn."),
         }

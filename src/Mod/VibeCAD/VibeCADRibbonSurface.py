@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Read the human-selected VibeCAD ribbon surface without changing it.
+"""Read the active VibeCAD ribbon surface without changing it.
 
 The C++ ribbon controller publishes the exact action graph used to build the
 visible page.  Native assistant code consumes this module instead of inferring
 capabilities from FreeCAD workbench names.  This module intentionally has no
-activation API: only the human-facing ribbon may change the active surface.
+activation API: workspace switching uses the shared surface authority.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ SURFACE_IDS = frozenset(
         "mesh",
         "analyze",
         "manufacture",
+        "sheet_metal",
+        "print",
         "drawing",
         "parameters",
         "aero",

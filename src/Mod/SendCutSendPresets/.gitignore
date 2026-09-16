@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.fcstd1
+*.FCStd1
+.DS_Store
+*.bak
+*.bak_scs
+.idea/
+.vscode/

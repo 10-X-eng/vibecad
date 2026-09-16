@@ -2833,6 +2833,7 @@ class TestModelTreeBrowser(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="vibecad_assembly_visibility_") as directory:
             path = os.path.join(directory, "assembly.FCStd")
             self.document.saveAs(path)
+            self.assertIsNotNone(_wait_until(lambda: self.document.isClosable()))
             App.closeDocument(self.document.Name)
             self.document = App.openDocument(path)
             from VibeCADGui import _pending_document_render_refreshes

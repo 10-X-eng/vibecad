@@ -152,6 +152,7 @@ def _run() -> None:
             "document_name": document.Name,
             "surface_id": "assemble",
             "workspace": "assembly",
+            "tool_trace": [{"tool_name": "workspace.switch", "result": response}],
         }
 
         refused = runner(

@@ -219,6 +219,8 @@ SET(PartGui_SRCS
     ViewProviderMirror.h
     ViewProviderPython.cpp
     ViewProviderPython.h
+    ViewProviderCachedDetails.cpp
+    ViewProviderCachedDetails.h
     ViewProviderBoolean.cpp
     ViewProviderBoolean.h
     ViewProviderProjectOnSurface.cpp

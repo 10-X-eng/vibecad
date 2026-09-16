@@ -29,9 +29,9 @@ fc_target_copy_resource(SpreadsheetScripts
     ${Spreadsheet_Scripts}
 )
 
-install(
-    FILES
-        ${Spreadsheet_Scripts}
-    DESTINATION
-        Mod/Spreadsheet
-)
+foreach(script IN LISTS Spreadsheet_Scripts)
+    get_filename_component(script_directory "${script}" DIRECTORY)
+    install(FILES "${script}"
+        DESTINATION "Mod/Spreadsheet/${script_directory}"
+    )
+endforeach()

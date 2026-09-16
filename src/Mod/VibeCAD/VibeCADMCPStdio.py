@@ -170,8 +170,9 @@ async def _serve() -> None:
                 "VibeCAD",
                 version=_runtime_product_version(),
                 instructions=(
-                    "Control the live VibeCAD document through the tools on the "
-                    "human-selected ribbon. The human controls ribbon changes."
+                    "Control the live VibeCAD document through the active ribbon's tools. "
+                    "Use workspace.switch when available to change ribbons; after the switch, "
+                    "refresh the tool list before continuing with the destination tools."
                 ),
                 on_list_tools=self._list_tools,
                 on_call_tool=self._call_tool,

@@ -150,8 +150,9 @@ def test_provider_sketch_open_explains_tool_transition_and_return() -> None:
     description = schema["description"]
 
     for detail in ("edit mode", "drawing", "dimension", "constraint", "next turn",
-                   "sketch.control", "modeling"):
+                   "sketch.finish", "workspace"):
         assert detail in description
+    assert "sketch.control" not in description
     assert len(description.split()) <= 35
     assert "sketch.draw_" not in description
 

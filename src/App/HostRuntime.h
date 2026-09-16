@@ -23,6 +23,8 @@
 namespace App
 {
 
+struct RecomputeOrigin;
+
 /**
  * Process-lifetime executor for CPU work that must not run on the GUI thread.
  *
@@ -32,6 +34,8 @@ namespace App
  * Submission also captures the caller's CancellationScope tokens. Each job
  * installs its own context, including when a waiting worker helps other jobs;
  * thread-local scope pointers never cross threads.
+ * Optional recompute origins are also captured per submitted task, so helping
+ * work cannot inherit the waiting task's document mutation provenance.
  */
 class AppExport HostRuntime final
 {
@@ -262,6 +266,7 @@ private:
     {
         std::function<void(std::stop_token)> execute;
         std::function<void()> cancelled {};
+        std::shared_ptr<const RecomputeOrigin> origin {};
         explicit operator bool() const { return bool(execute); }
         void operator()(std::stop_token stop) const noexcept;
         void abandon() const noexcept;
