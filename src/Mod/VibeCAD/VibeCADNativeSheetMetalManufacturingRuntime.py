@@ -72,7 +72,17 @@ class NativeSheetMetalManufacturingRuntime:
                                    if key in item} for item in materials[offset:offset + limit]]
             state.update(material_count=len(materials), material_offset=offset,
                          next_material_offset=offset + limit if offset + limit < len(materials) else None)
-            return {**state, "target": reference.summary(), "structural_revision": revision, **extra}
+            return {**state, "target": reference.summary(), "structural_revision": revision,
+                    "repair_workflow": {
+                        "inspect": {"tool": "sheet_metal.inspect", "arguments": {
+                            "operation": "read_sheet", "target": reference.summary()}},
+                        "message": (
+                            "For DFM failures, inspect the current sheet's source/history/profile links. "
+                            "Edit bends in sheet_metal; edit an existing sketch via sketching, sketch.open, "
+                            "sketch.finish, then return to sheet_metal. Do not guess a finding-to-face mapping. "
+                            "After repairs, verify the sheet, run analyze on the new revision, then quote; "
+                            "old findings/prices are not verification of the repaired design."),
+                    }, **extra}
 
         try:
             if operation == "show_panel":

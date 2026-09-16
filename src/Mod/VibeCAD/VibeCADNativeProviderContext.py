@@ -141,4 +141,11 @@ def _with_workspace_navigation(state: dict[str, Any]) -> dict[str, Any]:
         "message": ("If the current ribbon lacks tools for the requested work, switch ribbons. "
                     "An active assembly is deactivated automatically. End this turn after switching; "
                     "VibeCAD continues automatically next turn with the destination's tools."),
+        "edit_workflow": (
+            "For repairs, inspect the owning feature, history and source links first. "
+            "Edit feature parameters in their owning workspace (bends in sheet_metal). "
+            "For sketch geometry/constraints, switch to sketching, then use sketch.open on the "
+            "existing source sketch; edit tools arrive next turn. Use sketch.finish, return to "
+            "the owning workspace and verify the result. Rerun DFM on the corrected revision "
+            "before requesting a quote. Do not recreate the design or guess source/face IDs."),
     }}

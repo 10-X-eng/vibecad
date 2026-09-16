@@ -153,6 +153,17 @@ class NativeSheetMetalInspectRuntime:
                                    if name != "states"}
             overview["counts"] = {"history_states": len(result["history"]["states"]),
                                   "cuts": len(result["cuts"]), "regions": len(result["regions"])}
+            overview["repair_workflow"] = {
+                "source": result["history"]["states"][0]["predecessor"],
+                "history": {"tool": "sheet_metal.inspect", "arguments": {
+                    "operation": "list_history", "target": reference.summary()}},
+                "message": (
+                    "Inspect paged history for exact feature targets and profile sketch links. "
+                    "Change bend/source parameters with sheet_metal.edit; for an existing profile, "
+                    "switch to sketching, use sketch.open, edit, sketch.finish, then return to "
+                    "sheet_metal. Verify the current sheet and rerun manufacturing analyze before "
+                    "quote. DFM findings do not establish a sketch/face mapping; do not guess one."),
+            }
             overview["sketch_creation"] = {
                 "tool": "workspace.switch", "arguments": {"workspace": "sketching"},
                 "message": ("Create editable relief-profile or bend-line sketches in Sketching. "

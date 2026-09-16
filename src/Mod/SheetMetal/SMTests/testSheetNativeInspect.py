@@ -71,6 +71,17 @@ class TestSheetNativeInspect(unittest.TestCase):
         self.assertNotIn("edit_guidance", self.call("read_sheet", target=self.target()))
         self.assertEqual((Operations.capture_revision(self.sheet), self.model.doc.UndoCount), before)
 
+    def test_repair_route_preserves_exact_source_and_paged_history(self):
+        before = Operations.capture_revision(self.sheet), self.model.doc.UndoCount
+        result = self.call("read_sheet", target=self.target())
+        route = result["repair_workflow"]
+        self.assertEqual(route["source"], self.target(self.sheet.SourceFace[0]))
+        self.assertEqual(route["history"], {"tool": "sheet_metal.inspect", "arguments": {
+            "operation": "list_history", "target": self.target()}})
+        self.assertIn("profile", route["message"])
+        self.assertIn("sketch.open", route["message"])
+        self.assertEqual((Operations.capture_revision(self.sheet), self.model.doc.UndoCount), before)
+
     def test_sheet_ribbon_prompt_context_keeps_native_tree_and_history_identity(self):
         from VibeCADNativeSnapshot import build_active_snapshot
         hole = self.model.edit(lambda: History.create_circle_step(self.sheet, self.model.bend_pick()[2], 4))

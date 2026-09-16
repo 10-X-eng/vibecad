@@ -259,8 +259,8 @@ def model_structure_capability_definitions() -> tuple[NativeCapabilityDefinition
     open_sketch = NativeCapabilityDefinition(
         name="sketch.open",
         description=(
-            "Enter Sketch edit mode; drawing, dimension and constraint tools become "
-            "available next turn. Use sketch.control to finish and return to modeling."
+            "Open existing sketch edit mode; drawing/dimension/constraint tools arrive next turn. "
+            "Use sketch.finish; return to its workspace."
         ),
         primary_classification="mutation",
         variants=(

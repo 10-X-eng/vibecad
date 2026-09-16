@@ -78,6 +78,21 @@ def test_native_uses_the_exact_shared_controller_for_local_settings(case):
     case.controller.set_quantity.assert_called_once_with(10)
 
 
+def test_blocked_dfm_has_revision_specific_inspection_and_repair_route(case):
+    case.controller.status.return_value = {"quote": {"status": "blocked", "findings": [
+        {"message": "Insufficient clearance"}]}, "can_checkout": False}
+    result = invoke(case, "status")
+    route = result["repair_workflow"]
+    assert route["inspect"] == {"tool": "sheet_metal.inspect", "arguments": {
+        "operation": "read_sheet", "target": result["target"]}}
+    assert "sketch.open" in route["message"]
+    assert "analyze" in route["message"] and "quote" in route["message"]
+    assert "guess" in route["message"]
+    assert result["quote"]["findings"] == [{"message": "Insufficient clearance"}]
+    case.controller.analyze.assert_not_called()
+    case.controller.request_quote.assert_not_called()
+
+
 @pytest.mark.parametrize("operation,method", [("load_materials", "load_materials"), ("analyze", "analyze"),
     ("quote", "request_quote"), ("refresh", "refresh"), ("checkout", "checkout")])
 def test_network_operations_return_a_future_and_reject_synchronous_submission(case, operation, method):

@@ -66,6 +66,17 @@ def test_workspace_navigation_does_not_offer_switching_during_sketch_edit():
     assert provider_visible_native_state(state) == state
 
 
+def test_every_workspace_explains_editing_existing_sources_not_recreating_them():
+    from VibeCADNativeProviderContext import _with_workspace_navigation
+    for surface in NATIVE_WORKSPACE_SURFACES:
+        guidance = _with_workspace_navigation({"surface_id": surface})["workspace_navigation"]
+        text = guidance["edit_workflow"]
+        assert "source" in text and "history" in text
+        assert "sketch.open" in text and "sketch.finish" in text
+        assert "existing" in text and "next turn" in text
+        assert "DFM" in text and "quote" in text
+
+
 def test_sheet_metal_can_leave_for_assembly_and_return_to_its_tools():
     from jsonschema import Draft202012Validator
     from VibeCADNativeCapabilityRegistry import resolve_native_provider_surface

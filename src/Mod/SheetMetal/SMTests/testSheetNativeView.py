@@ -246,6 +246,101 @@ class TestSheetNativeView(unittest.TestCase):
     def test_deactivated_assembly_is_not_restored_after_a_later_sketch_edit(self):
         self.deactivated_assembly_sketch_cycle(remove=False)
 
+    def test_dfm_repair_follows_existing_sketch_across_workspaces_and_reanalyzes(self):
+        from concurrent.futures import Future
+        from unittest.mock import Mock
+        from SMTests.testProfileCuts import TestProfileCuts
+        from VibeCADNativeModelStructureRuntime import NativeModelStructureRuntime
+        from VibeCADNativeSketchControlRuntime import NativeSketchControlRuntime
+        from VibeCADNativeSheetMetalManufacturingRuntime import NativeSheetMetalManufacturingRuntime
+        from VibeCADNativeWorkspaceRuntime import NativeWorkspaceRuntime
+        from VibeCADRibbonSurface import read_active_ribbon_surface
+        from VibeCADEditState import active_edit_state
+        import SheetMetalHistoryOperations as Shared
+        import SheetMetalRMFGManufacturingGui as Manufacturing
+
+        profiles = TestProfileCuts()
+        profiles.fixture = self.model
+        sketch, radius_index = profiles.slot()
+        cut = self.model.edit(lambda: History.create_profile_step(self.sheet, sketch))
+        self.fixture.fixture.wait_for(lambda: cut.ViewObject.Proxy.ready)
+        original_hash = cut.PreparedInputHash
+        original_volume = cut.FlatShape.Volume
+        object_names = {obj.Name for obj in self.model.doc.Objects}
+        previous = Gui.activeWorkbench().name()
+        self.addCleanup(lambda: Gui.activateWorkbench(previous))
+        self.addCleanup(Gui.activeDocument().resetEdit)
+        self.context.state.begin_native_authority(self.model.doc.Uid)
+        context = replace(self.context,
+            active_surface_id=lambda: read_active_ribbon_surface().surface_id,
+            edit_or_task_active=lambda: active_edit_state().active or bool(Gui.Control.activeDialog()),
+            document_thread_dispatch=lambda action: action())
+        workspace = NativeWorkspaceRuntime(context)
+        workspace.switch({"operation": "switch", "workspace": "sheet_metal"})
+        manufacturing = NativeSheetMetalManufacturingRuntime(context)
+        status = {"quote": {"status": "blocked", "findings": [{"message": "Clearance failure"}]},
+                  "can_checkout": False}
+        analyzed = []
+        def analyze():
+            analyzed.append(cut.PreparedInputHash)
+            status.update(quote=None, stale=False)
+            pending = Future()
+            pending.set_result({})
+            return pending
+        def quote():
+            self.assertEqual(analyzed[-1], cut.PreparedInputHash)
+            status.update(quote={"status": "ready", "amount_total_cents": 1234})
+            pending = Future()
+            pending.set_result({})
+            return pending
+        controller = SimpleNamespace(status=lambda: dict(status), analyze=Mock(side_effect=analyze),
+            request_quote=Mock(side_effect=quote), refresh=Mock(), checkout=Mock())
+        def run(operation):
+            return manufacturing.execute({"operation": operation, "object_name": cut.Name},
+                                         asynchronous=True)
+        with patch.object(Manufacturing, "manufacturing_controller", return_value=controller):
+            failure = run("status")
+            self.assertIn("sketch.open", failure["repair_workflow"]["message"])
+            overview = self.fixture.call("read_sheet", target=self.fixture.target(cut))
+            route = overview["repair_workflow"]
+            history = self.fixture.call(**route["history"]["arguments"])
+            entry = next(item for item in history["items"] if item["target"]["object_name"] == cut.Name)
+            self.assertEqual(entry["profile"], self.fixture.target(sketch))
+            for target in ("parameters", "modeling", "sketching"):
+                workspace.switch({"operation": "switch", "workspace": target})
+            opened = NativeModelStructureRuntime(context).open_sketch({
+                "operation": "open", "sketch": {"object_name": entry["profile"]["object_name"]}},
+                ticket=context.state.begin_call(context.document_uid, "sketch.open"))
+            self.assertTrue(opened["next_turn_required"])
+            self.assertEqual(read_active_ribbon_surface().surface_id, "sketch.edit")
+            sketch.setDatum(radius_index, App.Units.Quantity("3 mm"))
+            finished = NativeSketchControlRuntime(context).control({"operation": "leave",
+                "sketch": {"object_name": sketch.Name}, "expected_geometry_count": sketch.GeometryCount,
+                "expected_constraint_count": sketch.ConstraintCount},
+                ticket=context.state.begin_call(context.document_uid, "sketch.control"))
+            self.assertTrue(finished["next_turn_required"])
+            self.model.recompute()
+            workspace.switch({"operation": "switch", "workspace": "sheet_metal"})
+            self.assertNotEqual(cut.PreparedInputHash, original_hash)
+            self.assertGreater(cut.FlatShape.Volume, original_volume)
+            self.assertIs(History.get_profile(cut), sketch)
+            self.assertNotIn("Invalid", cut.State)
+            run("analyze").result()
+            self.assertEqual(run("quote").result()["quote"]["status"], "ready")
+            # A bend-only repair uses the existing sheet operation path, not a new sketch.
+            prepared = Shared.prepare(cut, {"operation": "set_parameters", "changes": {"bend_radius": 3}},
+                                      expected_revision=Shared.capture_revision(cut))
+            pending = Shared.start(prepared)
+            self.fixture.fixture.wait_for(pending.future.done)
+            pending.future.result()
+            self.assertNotEqual(cut.PreparedInputHash, analyzed[-1])
+            run("analyze").result()
+            run("quote").result()
+            self.assertEqual(controller.analyze.call_count, 2)
+            self.assertEqual(controller.request_quote.call_count, 2)
+            controller.checkout.assert_not_called()
+        self.assertEqual({obj.Name for obj in self.model.doc.Objects}, object_names)
+
     def test_deleted_deactivated_assembly_is_not_an_edit_restore_target(self):
         self.deactivated_assembly_sketch_cycle(remove=True)
 
