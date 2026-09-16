@@ -14,13 +14,61 @@ from unittest.mock import patch
 import FreeCAD as App
 import FreeCADGui as Gui
 import Part
-from PySide import QtCore, QtGui
+from PySide import QtCore, QtGui, QtWidgets
 from pivy import coin
 
 from SMTests import testEditableSheet as fixtures
 
 
 class TestDetachedMeshing(unittest.TestCase):
+    def test_sheet_meshing_reads_each_surface_once(self):
+        import SheetMetalPresentation as Presentation
+        reads = []
+        normal_reads = []
+        class Face:
+            def __init__(self, face):
+                self.face = face
+            @property
+            def Surface(self):
+                reads.append(self.face)
+                return self.face.Surface
+            def __getattr__(self, name):
+                return getattr(self.face, name)
+            def normalAt(self, u, v):
+                normal_reads.append(self.face)
+                return self.face.normalAt(u, v)
+        class Shape:
+            def __init__(self, shape):
+                self.Faces = [Face(face) for face in shape.Faces]
+                self.Edges = shape.Edges
+            def copy(self):
+                return self
+        shape = Part.makeCylinder(8, 12)
+        meshes = Presentation.prepare_pair((Shape(shape),), App.Placement(), .1,
+                                           threading.Event())
+        self.assertEqual(len(reads), len(shape.Faces))
+        self.assertGreater(len(meshes[0].triangles), 20)
+        for normal in meshes[0].normals:
+            self.assertAlmostEqual(App.Vector(*normal).Length, 1.0)
+        self.assertEqual(sum(isinstance(face.Surface, Part.Plane) for face in normal_reads), 2)
+
+    def test_prepared_normals_match_oriented_faces_in_local_frame(self):
+        import SheetMetalPresentation as Presentation
+        placement = App.Placement(App.Vector(7, -12, 9),
+                                  App.Rotation(App.Vector(1, 2, 3), 39))
+        inverse = placement.inverse()
+        for shape in (Part.makeBox(5, 8, 11), Part.makeCylinder(8, 12), Part.makeSphere(5)):
+            shape.Placement = placement
+            shape.reverse()
+            mesh, = Presentation.prepare_pair((shape,), placement, .1, threading.Event())
+            for triangle, face_id in zip(mesh.triangles, mesh.face_ids):
+                face = shape.Faces[face_id-1]
+                surface = face.Surface
+                for index in triangle:
+                    point = placement.multVec(App.Vector(*mesh.points[index]))
+                    expected = inverse.Rotation.multVec(face.normalAt(*surface.parameter(point)))
+                    self.assertLess((App.Vector(*mesh.normals[index])-expected).Length, 1e-7)
+
     def test_detached_meshing_retains_source_and_returns_real_triangles(self):
         shape = Part.makeSphere(20)
         with tempfile.TemporaryDirectory() as directory:
@@ -107,9 +155,119 @@ class TestPresentation(unittest.TestCase):
             "count": len(timings), "mean_seconds": sum(timings)/len(timings),
             "maximum_seconds": max(timings), "scope": "cached switch call; excludes GPU frame time"}))
 
+    def test_hidden_sheet_defers_meshing_until_shown(self):
+        sheet = self.fixture.sheet
+        sheet.ViewObject.Visibility = False
+        old_nodes = self.view.cached_nodes
+        with patch.object(self.presentation._workers, "submit",
+                          wraps=self.presentation._workers.submit) as submit:
+            self.fixture.doc.BaseBend.Length = 45
+            self.fixture.recompute()
+            self.fixture.settle()
+            submit.assert_not_called()
+            self.assertEqual(self.view.cached_nodes, old_nodes)
+            sheet.ViewObject.Visibility = True
+            self.wait_for(lambda: self.view.ready and self.view.cached_nodes != old_nodes)
+            self.assertEqual(submit.call_count, 1)
+            self.assertEqual(self.view.current(), sheet.PreparedInputHash)
+
     def test_native_provider_does_not_fall_back_to_part_meshing(self):
         self.assertEqual(self.fixture.sheet.ViewObject.TypeId,
                          "PartGui::ViewProviderCachedPython")
+
+    def test_hidden_link_source_still_refreshes_its_display(self):
+        link = self.fixture.doc.addObject("App::Link", "SheetLink")
+        link.setLink(self.fixture.sheet)
+        self.fixture.sheet.ViewObject.Visibility = False
+        old_nodes = self.view.cached_nodes
+        self.fixture.doc.BaseBend.Length = 45
+        self.fixture.recompute()
+        self.wait_for(lambda: self.view.ready and self.view.cached_nodes != old_nodes)
+        self.assertEqual(self.view.current(), self.fixture.sheet.PreparedInputHash)
+
+    def test_hiding_sheet_cancels_inflight_mesh_and_keeps_warmed_cache(self):
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        original = self.presentation.prepare_pair
+        def delayed(*args):
+            started.set()
+            release.wait()
+            try:
+                return original(*args)
+            finally:
+                finished.set()
+        old_nodes = self.view.cached_nodes
+        with patch.object(self.presentation, "prepare_pair", side_effect=delayed):
+            self.view.request(force=True)
+            self.wait_for(started.is_set)
+            cancelled = self.view._cancelled
+            self.fixture.sheet.ViewObject.Visibility = False
+            self.assertTrue(cancelled.is_set())
+            self.assertFalse(self.view.pending)
+            with patch.object(self.presentation, "_publish", wraps=self.presentation._publish) as publish:
+                release.set()
+                self.wait_for(lambda: finished.is_set() and publish.call_count > 0)
+        self.assertEqual(self.view.cached_nodes, old_nodes)
+        with patch.object(self.presentation._workers, "submit",
+                          wraps=self.presentation._workers.submit) as submit:
+            self.fixture.sheet.ViewObject.Visibility = True
+            self.fixture.settle()
+            submit.assert_not_called()
+            self.assertEqual(self.view.current(), self.fixture.sheet.PreparedInputHash)
+
+    def test_pending_display_has_status_until_worker_finishes(self):
+        started, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        original = self.presentation.prepare_pair
+        def delayed(*args):
+            started.set()
+            release.wait()
+            return original(*args)
+        with patch.object(self.presentation, "prepare_pair", side_effect=delayed):
+            self.view.request(force=True)
+            self.wait_for(started.is_set)
+            label = Gui.getMainWindow().statusBar().findChild(QtWidgets.QLabel,
+                                                             "SheetMetalDisplayStatus")
+            self.assertIsNotNone(label)
+            self.assertFalse(label.isHidden())
+            self.assertIn("1", label.text())
+            release.set()
+            self.wait_for(lambda: not self.view.pending)
+            self.assertTrue(label.isHidden())
+
+    def test_restore_only_meshes_visible_history_and_preserves_camera(self):
+        fixture = self.fixture
+        hidden = fixture.edit(lambda: self.presentation.create_presented_sheet(
+            fixture.doc.BaseBend, f"Face{fixture.root}", name="HiddenHistory"))
+        hidden.ViewObject.Visibility = False
+        active = Gui.activeDocument().activeView()
+        active.setAnimationEnabled(False)
+        active.viewAxonometric()
+        active.fitAll()
+        camera = active.getCameraNode()
+        expected = (camera.position.getValue().getValue(), camera.height.getValue())
+        with tempfile.TemporaryDirectory() as directory:
+            filename = str(Path(directory)/"visible-history.FCStd")
+            fixture.doc.saveAs(filename)
+            fixture.settle()
+            App.closeDocument(fixture.doc.Name)
+            with patch.object(self.presentation._workers, "submit",
+                              wraps=self.presentation._workers.submit) as submit:
+                fixture.doc = App.openDocument(filename)
+                fixture.settle()
+                fixture.sheet = fixture.doc.getObject("EditableSheet")
+                self.view = fixture.sheet.ViewObject.Proxy
+                self.wait_for(lambda: self.view.ready)
+                self.assertEqual(submit.call_count, 1)
+            hidden = fixture.doc.getObject("HiddenHistory")
+            self.assertFalse(hidden.ViewObject.Visibility)
+            self.assertFalse(hidden.ViewObject.Proxy.cached_nodes)
+            camera = Gui.activeDocument().activeView().getCameraNode()
+            for a, b in zip(camera.position.getValue().getValue(), expected[0]):
+                self.assertAlmostEqual(a, b, places=4)
+            self.assertAlmostEqual(camera.height.getValue(), expected[1], places=4)
+            hidden.ViewObject.Visibility = True
+            self.wait_for(lambda: hidden.ViewObject.Proxy.ready)
 
     def test_appearance_updates_both_cached_modes_without_remeshing(self):
         native = self.fixture.sheet.ViewObject

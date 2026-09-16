@@ -112,3 +112,49 @@ The automated test window is labelled as such. Negative tests deliberately
 produce Report-view errors; test identities and recovery assertions distinguish
 those from unexpected failures. Production errors are not suppressed. Customer
 documents and the user's separate portable instance are left untouched.
+
+## Restored-display performance follow-up
+
+The saved Sheet Metal case exposed a distinct presentation bottleneck after the
+earlier acceptance run. Hidden history states occupied both mesh workers before
+the visible final feature, delaying its start by about 39 seconds. Per-vertex
+surface extraction and repeated planar-face normal evaluation then repeated
+expensive trimmed-face work. Automatic display requests now defer hidden,
+unlinked history, cancel superseded hidden work, and wake on visibility changes.
+Linked instances still receive their hidden source's meshes. The same surface
+and constant planar normal are reused; curved normals, face orientation, source
+geometry, forced requests and the public mesh return format are unchanged.
+Pending meshing is shown in a dedicated status-bar label, without overwriting
+another operation's message.
+
+Red tests demonstrated 504 surface reads instead of 3, 252 planar normal reads
+instead of 2, meshing after a hidden-only update, and a missing pending-status
+indicator. A link-source regression also failed against the initial hidden-only
+guard before correcting that guard. Green integration: **129 tests passed in
+291.813 seconds**, using compiled Part geometry and the real private GUI:
+
+```powershell
+& ./build/pr228_after_build.ps1 -BundlePath $Bundle -Tests 'SMTests.testPresentation,SMTests.testSheetSelection,SMTests.testSheetNativeView,SMTests.testSheetNativeInspect,SMTests.testSheetOperations,SMTests.testSheetHistory,SMTests.testSheetCutHistory,SMTests.testSheetProfileHistory,SMTests.testSheetGui,SMTests.testSheetTree'
+```
+
+The identically instrumented saved-file diagnostic fell from **88.875 s to
+7.157 s** to display-ready (including its startup delay); final mesh preparation
+fell to **2.784 s**. Separate unprofiled copied-file opens/reopens took about
+5-6 seconds. Mesh publication took about 16 ms in the instrumented final run.
+These are measurements on one Windows host/file, not universal latency promises.
+
+The reusable macro opens its own copy three times, including Fit All during
+loading, asserts unchanged sheet geometry/state/visibility inventory, records
+camera and display-poll timing, and captures images without visibility or
+recompute interventions. Run in a fresh GUI with an isolated profile:
+
+```powershell
+$env:VIBECAD_SHEET_BENCHMARK_SOURCE = $SavedDocumentCopy
+& ./build/pr228_after_build.ps1 -BundlePath $Bundle -Probe 'pr228-windows/src/Tools/performance/sheetmetal_restore_probe.py'
+```
+
+The launcher supplies `VIBECAD_TEST_OUTPUT`; other launchers can set it directly
+and run `src/Tools/performance/sheetmetal_restore_probe.py` as the macro. The
+original file is never saved or changed. This follow-up is Python-only and was
+tested in a separate copy of the already fully built portable, leaving the live
+user instance untouched. No new native binary or release build is claimed.

@@ -13,6 +13,7 @@ import weakref
 
 import FreeCAD as App
 import FreeCADGui as Gui
+import Part
 import PartGui
 from PySide import QtCore, QtWidgets
 from pivy import coin
@@ -22,11 +23,28 @@ import SheetMetalEditable as Editable
 
 _workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sheet-mesh")
 _views = weakref.WeakSet()
+_mesh_status = None
 
 
 def _gui_thread():
     if QtCore.QThread.currentThread() != QtWidgets.QApplication.instance().thread():
         raise RuntimeError("Sheet presentation belongs to the GUI thread")
+
+
+def _update_mesh_status():
+    """Keep pending display work visible without replacing another job's status."""
+    global _mesh_status
+    _gui_thread()
+    count = sum(view.pending and not view._closed for view in _views)
+    if count and _mesh_status is None:
+        bar = Gui.getMainWindow().statusBar()
+        _mesh_status = QtWidgets.QLabel(bar)
+        _mesh_status.setObjectName("SheetMetalDisplayStatus")
+        bar.addPermanentWidget(_mesh_status)
+    if _mesh_status is not None:
+        _mesh_status.setText(QtCore.QCoreApplication.translate(
+            "SheetMetal", "Loading sheet display (%1)\u2026").replace("%1", str(count)))
+        _mesh_status.setVisible(bool(count))
 
 
 @dataclass(frozen=True)
@@ -53,6 +71,7 @@ class SheetPick:
 def prepare_pair(shapes, placement, deflection, cancelled):
     """Prepare both meshes using the folded object's local display frame."""
     inverse = placement.inverse()
+    rotation = inverse.Rotation
     meshes = []
     for original in shapes:
         if cancelled.is_set():
@@ -64,10 +83,17 @@ def prepare_pair(shapes, placement, deflection, cancelled):
                 return None
             vertices, facets = face.tessellateDetached(deflection)
             offset = len(points)
+            surface = face.Surface
+            # A plane's normal is constant, including for faces with many holes.
+            # normalAt rebuilds a trimmed-face adaptor; do that once, not once
+            # per vertex. Keep the face orientation and curved-face evaluation.
+            planar_normal = (tuple(rotation.multVec(face.normalAt(
+                *surface.parameter(vertices[0]))))
+                if vertices and isinstance(surface, Part.Plane) else None)
             for vertex in vertices:
-                u, v = face.Surface.parameter(vertex)
                 points.append(tuple(inverse.multVec(vertex)))
-                normals.append(tuple(inverse.Rotation.multVec(face.normalAt(u, v))))
+                normals.append(planar_normal if planar_normal is not None else
+                               tuple(rotation.multVec(face.normalAt(*surface.parameter(vertex)))))
             triangles.extend(tuple(index+offset for index in triangle) for triangle in facets)
             face_ids.extend([face_index]*len(facets))
         for edge in shape.Edges:
@@ -128,7 +154,13 @@ def _refresh(reference):
     if view is not None and not view._closed:
         view._refresh_queued = False
         if view._alive():
-            if view._object.Document.Recomputing or view._object.Document.RecomputePending:
+            # Hidden history features need geometry for editing, not display
+            # meshes. Visibility changes request their current revision on demand.
+            # Link instances share their source's scene even when it is hidden.
+            if not view._view.Visibility and not App.getLinksTo(view._object):
+                return
+            if (view._object.Document.Restoring or view._object.Document.Recomputing
+                    or view._object.Document.RecomputePending):
                 view._queue_refresh()
             else:
                 view.request()
@@ -158,6 +190,7 @@ def _publish(reference, generation, signature, meshes, error):
     _gui_thread()
     view.pending = False
     view._requested = None
+    _update_mesh_status()
     if not _same(view._capture(), signature):
         return
     view.error = error
@@ -288,6 +321,7 @@ class SheetViewProvider:
         self.pending, self.error = True, None
         future = _workers.submit(prepare_pair, signature[2:], self._object.Placement,
                                  .1, self._cancelled)
+        _update_mesh_status()
         reference, generation = weakref.ref(self), self._generation
         future.add_done_callback(lambda done: _finished(reference, generation, signature, done))
 
@@ -392,6 +426,17 @@ class SheetViewProvider:
             self._queue_refresh()
 
     def onChanged(self, view, name):
+        if name == "Visibility":
+            if view.Visibility:
+                self._queue_refresh()
+            elif self.pending and not App.getLinksTo(self._object):
+                # Superseded history can already be queued when an operation
+                # hides it. Stop that work without discarding its warmed cache.
+                self._cancelled.set()
+                self._generation += 1
+                self._requested = None
+                self.pending = False
+                _update_mesh_status()
         if name in ("ShapeAppearance", "Transparency") and self.cached_nodes:
             _gui_thread()
             color = tuple(view.ShapeAppearance[0].DiffuseColor)[:3]
@@ -515,6 +560,7 @@ class SheetViewProvider:
         self._switch = self._view = self._object = self._document = None
         self._native_mode_switch = None
         _views.discard(self)
+        _update_mesh_status()
 
     def dumps(self):
         return None
