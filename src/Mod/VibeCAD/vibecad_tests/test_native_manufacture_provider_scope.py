@@ -122,6 +122,7 @@ def test_visible_partdesign_body_shadows_its_private_compatibility_link() -> Non
     assert shadowed == {id(publication)}
 
 _SHARED = {
+    "workspace.switch",
     "state.read",
     "view.control",
     "inspect.query",
@@ -447,7 +448,7 @@ def test_provider_authorization_applies_manufacture_scope_after_human_ribbon() -
     )
 
     assert projected.snapshot is surface.snapshot
-    assert "workspace.switch" not in projected.tool_names
+    assert "workspace.switch" in projected.tool_names
     assert "manufacture.operation" not in projected.tool_names
     assert "manufacture.simulation" not in projected.tool_names
     assert tuple(schema["name"] for schema in projected.schemas) == projected.tool_names

@@ -86,9 +86,39 @@ def _schema_error(error: Any) -> str:
     path = ".".join(str(value) for value in error.absolute_path)
     location = f" at {path}" if path else ""
     message = " ".join(str(error.message or "").split())
+    expectation = _schema_expectation(error)
+    missing = expectation.get("required_fields", [])
+    if len(missing) > 1:
+        message += "; missing required fields: " + ", ".join(missing)
+        if expectation.get("omitted_required_field_count"):
+            message += f" (+{expectation['omitted_required_field_count']} more)"
+        message += ". No operation was executed. Supply the missing fields and retry."
+    if "allowed_fields" in expectation:
+        message += ". Allowed fields: " + ", ".join(expectation["allowed_fields"])
+        if expectation.get("omitted_allowed_field_count"):
+            message += f" (+{expectation['omitted_allowed_field_count']} more)"
+    if expectation.get("missing_required_fields"):
+        message += ". Missing required fields: " + ", ".join(
+            expectation["missing_required_fields"]
+        )
+        if expectation.get("omitted_missing_required_field_count"):
+            message += f" (+{expectation['omitted_missing_required_field_count']} more)"
     return f"Native tool arguments are invalid{location}: {message}"[
         :MAX_NATIVE_FAILURE_TEXT_CHARACTERS
     ]
+
+
+def _schema_operation_values(schema: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read only explicit operation choices, including compacted unions."""
+    values = [schema["const"]] if "const" in schema else list(schema.get("enum") or [])
+    for keyword in ("anyOf", "oneOf"):
+        for branch in schema.get(keyword, ()):
+            if isinstance(branch, Mapping):
+                values.extend(_schema_operation_values(branch))
+    validator = Draft202012Validator(schema)
+    return tuple(dict.fromkeys(
+        value for value in values if isinstance(value, str) and validator.is_valid(value)
+    ))
 
 
 def _bounded_argument_value(value: Any) -> Any:
@@ -115,13 +145,42 @@ def _schema_expectation(error: Any) -> dict[str, Any]:
             if message.startswith("'") and "' is a required property" in message
             else ""
         )
-        return {"rule": validator, "required_field": missing}
-    return {
+        expectation = {"rule": validator, "required_field": missing}
+        instance = getattr(error, "instance", None)
+        required = getattr(error, "validator_value", None)
+        if isinstance(instance, Mapping) and isinstance(required, list):
+            missing_fields = [name for name in required if name not in instance]
+            expectation["required_fields"] = _bounded_argument_value(missing_fields)
+            if len(missing_fields) > 8:
+                expectation["omitted_required_field_count"] = len(missing_fields) - 8
+        return expectation
+    expectation = {
         "rule": validator,
         "expected": _bounded_argument_value(
             getattr(error, "validator_value", None)
         ),
     }
+    schema = getattr(error, "schema", None)
+    instance = getattr(error, "instance", None)
+    if (
+        validator == "additionalProperties"
+        and getattr(error, "validator_value", None) is False
+        and isinstance(schema, Mapping)
+        and isinstance(instance, Mapping)
+    ):
+        # This is the exact selected operation's schema, not the provider union.
+        # Pattern properties accept names beyond the fixed properties list.
+        if not schema.get("patternProperties"):
+            names = list(schema.get("properties", {}))
+            expectation["allowed_fields"] = _bounded_argument_value(names)
+            if len(names) > 8:
+                expectation["omitted_allowed_field_count"] = len(names) - 8
+        missing = [name for name in schema.get("required", []) if name not in instance]
+        if missing:
+            expectation["missing_required_fields"] = _bounded_argument_value(missing)
+            if len(missing) > 8:
+                expectation["omitted_missing_required_field_count"] = len(missing) - 8
+    return expectation
 
 
 def _schema_example(schema: Mapping[str, Any], *, depth: int = 0) -> Any:
@@ -160,6 +219,11 @@ def _schema_example(schema: Mapping[str, Any], *, depth: int = 0) -> Any:
         pattern = str(schema.get("pattern") or "")
         if pattern.startswith("^sketch-v1:"):
             return "sketch-v1:" + ("0" * 64)
+        for element in ("Face", "Edge", "Vertex"):
+            candidate = element + "1"
+            if element in pattern and Draft202012Validator(schema).is_valid(candidate):
+                # Illustrate selector syntax; inspection must supply the real target.
+                return candidate
         return "value"
     if kind == "integer":
         return int(schema.get("minimum", 0) or 0)
@@ -238,6 +302,8 @@ def _failure_payload(exc: BaseException) -> dict[str, Any]:
         "actual_type",
         "accepted_types",
         "candidates",
+        "parameters_committed",
+        "object_name",
     ):
         if name in details:
             result[name] = details[name]
@@ -496,11 +562,7 @@ class NativeTurnDispatcher:
             operation_schema = dict(schema.get("properties") or {}).get("operation")
             if not isinstance(operation_schema, Mapping):
                 continue
-            values = (
-                [operation_schema.get("const")]
-                if "const" in operation_schema
-                else list(operation_schema.get("enum") or [])
-            )
+            values = _schema_operation_values(operation_schema)
             for value in values:
                 clean = str(value or "").strip()
                 if clean and clean not in frozen_operations:

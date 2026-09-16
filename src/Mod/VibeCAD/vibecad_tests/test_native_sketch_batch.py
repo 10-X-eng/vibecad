@@ -118,6 +118,50 @@ def test_batch_plan_resolves_every_local_reference_before_mutation() -> None:
 
 
 @pytest.mark.parametrize(
+    ("constraint", "guidance"),
+    (
+        (
+            {"ref": "join", "kind": "coincident"},
+            ("Missing: first, second", "geometry_ref", "position", "this batch"),
+        ),
+        (
+            {"ref": "level", "kind": "horizontal", "first_geometry_ref": "bottom"},
+            ("Missing: geometry_ref", "Unexpected: first_geometry_ref"),
+        ),
+        (
+            {"ref": "anchor", "kind": "fixed"},
+            ("Unsupported kind 'fixed'", "Supported kinds:", "coincident", "distance_x"),
+        ),
+    ),
+)
+def test_rejected_batch_constraint_explains_how_to_repair(constraint, guidance) -> None:
+    values = _values(_arguments())
+    values["constraints"] = [constraint]
+    before = copy.deepcopy(values)
+    with pytest.raises(NativeSketchError) as caught:
+        prepare_sketch_batch("document-uid", values)
+    message = str(caught.value)
+    assert constraint["ref"] in message
+    for detail in guidance:
+        assert detail in message
+    assert "No batch geometry or constraints were created" in message
+    assert values == before
+
+
+def test_rejected_batch_point_reference_explains_required_point_selector() -> None:
+    values = _values(_arguments())
+    del values["constraints"][0]["first"]["position"]
+    with pytest.raises(NativeSketchError) as caught:
+        prepare_sketch_batch("document-uid", values)
+    message = str(caught.value)
+    assert "join_bottom_right first" in message
+    assert "position" in message
+    assert "start" in message
+    assert "end" in message
+    assert "this batch" in message
+
+
+@pytest.mark.parametrize(
     ("mutate", "message"),
     (
         (

@@ -3782,26 +3782,32 @@ def start_aero_designer_turn(prompt: str) -> bool:
     return True
 
 
-def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
+def _native_surface_continuation_event(response: Any) -> dict[str, Any] | None:
     if response is None or getattr(response, "error", None):
         return None
     document = getattr(App, "ActiveDocument", None)
     if document is None:
         return None
-    for trace in reversed(list(getattr(response, "tool_trace", ()) or ())):
-        tool_name = trace.get("tool_name") if isinstance(trace, dict) else None
+    tool_trace = list(getattr(response, "tool_trace", ()) or ())
+    for trace in reversed(tool_trace):
+        if not isinstance(trace, dict):
+            continue
+        tool_name = trace.get("tool_name")
         result = trace.get("result")
         if not isinstance(result, dict):
             continue
         if result.get("next_turn_required") is not True:
             continue
         provider_surface_changed = result.get("provider_surface_changed") is True
+        document_state_changed = result.get("document_state_changed") is True
         if result.get("ok") is not True and not (
-            provider_surface_changed
-            and result.get("error_code") == "NATIVE_SURFACE_CHANGED"
+            (provider_surface_changed and result.get("error_code") == "NATIVE_SURFACE_CHANGED")
+            or (document_state_changed and result.get("error_code") == "NATIVE_REVISION_CONFLICT")
         ):
             continue
-        if provider_surface_changed:
+        if document_state_changed and str(result.get("document_uid") or "") != str(document.Uid):
+            return None
+        if provider_surface_changed or document_state_changed:
             next_surface = str(result.get("next_surface") or "").strip()
             from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
 
@@ -3833,7 +3839,9 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
             return None
         event = {
             "type": (
-                "cad_provider_surface_changed"
+                "cad_document_state_changed"
+                if document_state_changed
+                else "cad_provider_surface_changed"
                 if provider_surface_changed
                 else "cad_workspace_changed"
             ),
@@ -3841,6 +3849,7 @@ def _native_surface_continuation_event(response: Any) -> dict[str, str] | None:
             "document_name": str(getattr(document, "Name", "") or "").strip(),
             "surface_id": next_surface,
             "workspace": workspace,
+            "tool_trace": tool_trace,
         }
         if tool_name == "sketch.open":
             sketch = result.get("sketch")

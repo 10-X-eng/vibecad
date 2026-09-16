@@ -46,6 +46,76 @@
 
 using namespace std::chrono_literals;
 
+TEST(RecomputeOriginScopeTest, RestoresNestedScopesAndDoesNotLeakAcrossThreads)
+{
+    using Scope = App::RecomputeOriginScope;
+    ASSERT_FALSE(Scope::current());
+    auto first = std::make_shared<const App::RecomputeOrigin>(
+        App::RecomputeOrigin {"FirstDocument", "first-origin"});
+    auto second = std::make_shared<const App::RecomputeOrigin>(
+        App::RecomputeOrigin {"SecondDocument", "second-origin"});
+    {
+        const Scope outer(first);
+        EXPECT_EQ(Scope::current(), first);
+        auto worker = std::async(std::launch::async, [second] {
+            EXPECT_FALSE(Scope::current());
+            {
+                const Scope inner(second);
+                EXPECT_EQ(Scope::current(), second);
+            }
+            return !Scope::current();
+        });
+        EXPECT_TRUE(worker.get());
+        EXPECT_THROW(([] {
+            const Scope empty({});
+            EXPECT_FALSE(Scope::current());
+            throw std::runtime_error("scope failure");
+        })(), std::runtime_error);
+        EXPECT_EQ(Scope::current(), first);
+    }
+    EXPECT_FALSE(Scope::current());
+}
+
+TEST(RecomputeOriginScopeTest, LegacyRequestAggregateKeepsCallbackPosition)
+{
+    bool called = false;
+    App::RecomputeRequest request {"Document", "Feature", true, 0, false,
+        [&](App::RecomputeRequest&, App::RecomputeResult&) { called = true; }};
+    App::RecomputeResult result;
+    request.callback(request, result);
+    EXPECT_TRUE(called);
+    EXPECT_FALSE(request.origin);
+}
+
+TEST(RecomputeOriginScopeTest, HelpingWorkerUsesEachQueuedTasksOwnOrigin)
+{
+    using Scope = App::RecomputeOriginScope;
+    App::HostRuntime runtime(1);
+    auto first = std::make_shared<const App::RecomputeOrigin>(
+        App::RecomputeOrigin {"Document", "outer"});
+    auto second = std::make_shared<const App::RecomputeOrigin>(
+        App::RecomputeOrigin {"Document", "independent"});
+    auto outer = runtime.submit([&](std::stop_token) {
+        const Scope active(first);
+        std::future<Scope::Origin> independent;
+        {
+            const Scope submitted(second);
+            independent = runtime.submit([](std::stop_token) { return Scope::current(); });
+        }
+        EXPECT_EQ(runtime.wait(independent), second);
+        EXPECT_EQ(Scope::current(), first);
+        std::future<Scope::Origin> untracked;
+        {
+            const Scope empty({});
+            untracked = runtime.submit([](std::stop_token) { return Scope::current(); });
+        }
+        EXPECT_FALSE(runtime.wait(untracked));
+        EXPECT_EQ(Scope::current(), first);
+    });
+    outer.get();
+    EXPECT_FALSE(Scope::current());
+}
+
 namespace
 {
 App::HostWorkflow<int> orderedWorkerPhases(std::vector<std::thread::id>& threads)
@@ -755,8 +825,17 @@ TEST_F(AsyncRecomputeTest, RequestedCloseRunsOnceAfterPresentationReleases)
 
 TEST_F(AsyncRecomputeTest, VisualUpdateRetainsLifetimeWithoutBlockingRecompute)
 {
+    ASSERT_FALSE(App::MainThreadSignalConfig::hasHooks());
     std::vector<bool> lifetimeTransitions;
     std::vector<bool> mutationTransitions;
+    bool sawRecompute = false;
+    auto recomputeConnection = _doc->signalBeforeRecompute.connect(
+        [&](const App::Document& document) {
+            sawRecompute = true;
+            EXPECT_TRUE(document.isPresentationUpdateActive());
+            EXPECT_FALSE(document.isMutationBlockingPresentationUpdateActive());
+        }
+    );
     auto lifetimeConnection = _doc->signalPresentationUpdateChanged.connect(
         [&lifetimeTransitions](const App::Document&, bool active) {
             lifetimeTransitions.push_back(active);
@@ -779,19 +858,22 @@ TEST_F(AsyncRecomputeTest, VisualUpdateRetainsLifetimeWithoutBlockingRecompute)
     EXPECT_EQ(lifetimeTransitions, std::vector<bool>({true}));
     EXPECT_TRUE(mutationTransitions.empty());
     EXPECT_GE(_doc->recompute(), 1);
+    EXPECT_TRUE(sawRecompute);
     EXPECT_FALSE(object->isTouched());
     EXPECT_TRUE(_doc->isPresentationUpdateActive());
-    EXPECT_EQ(mutationTransitions, std::vector<bool>({true, false}));
+    // This headless fixture has no GUI observer acquiring presentation work.
+    // Recompute itself must not turn a visual lifetime lease into a blocker.
+    EXPECT_TRUE(mutationTransitions.empty());
 
     _doc->beginPresentationUpdate();
     EXPECT_TRUE(_doc->isMutationBlockingPresentationUpdateActive());
     EXPECT_EQ(lifetimeTransitions, std::vector<bool>({true}));
-    EXPECT_EQ(mutationTransitions, std::vector<bool>({true, false, true}));
+    EXPECT_EQ(mutationTransitions, std::vector<bool>({true}));
     _doc->endPresentationUpdate();
     EXPECT_FALSE(_doc->isMutationBlockingPresentationUpdateActive());
     EXPECT_TRUE(_doc->isPresentationUpdateActive());
     EXPECT_EQ(lifetimeTransitions, std::vector<bool>({true}));
-    EXPECT_EQ(mutationTransitions, std::vector<bool>({true, false, true, false}));
+    EXPECT_EQ(mutationTransitions, std::vector<bool>({true, false}));
 
     _doc->endVisualUpdate();
     EXPECT_FALSE(_doc->isPresentationUpdateActive());

@@ -2924,6 +2924,19 @@ void TreeWidget::mouseDoubleClickEvent(QMouseEvent* event)
                 throw;
             }
         }
+        else if (item->type() == TreeWidget::BrowserDetailType) {
+            // Detail rows have no document identity and need no transaction.
+            // Resolve the live owning provider; never retain it across Python.
+            auto* parent = item->parent();
+            if (parent && parent->type() == TreeWidget::ObjectType) {
+                auto* objectItem = static_cast<DocumentObjectItem*>(parent);
+                auto* provider = dynamic_cast<TreeViewDetailActionProvider*>(objectItem->object());
+                if (provider) {
+                    const std::string key = item->data(0, Qt::UserRole).toString().toStdString();
+                    provider->activateTreeViewDetail(key);
+                }
+            }
+        }
         else if (item->type() == TreeWidget::BrowserFolderType) {
             item->setExpanded(!item->isExpanded());
         }
@@ -8077,7 +8090,19 @@ void TreeWidget::slotDeleteDocument(const Gui::Document& Doc)
         delete docItem;
         DocumentMap.erase(it);
     }
-    if (!ChangedObjects.empty() || !NewObjects.empty()) {
+    const bool survivingProjection = std::any_of(
+        DocumentMap.begin(), DocumentMap.end(), [](const auto& entry) {
+            return entry.second->presentationUpdateDocument != nullptr;
+        }
+    );
+    if (survivingProjection) {
+        // Closing this document reset the shared projection pass, including
+        // its timer. Other documents can still own the pass after their object
+        // queues drained. Resume it so their remaining Tree work completes and
+        // releases its visual-update lease.
+        onUpdateStatus();
+    }
+    else if (!ChangedObjects.empty() || !NewObjects.empty()) {
         _updateStatus();
     }
 }
@@ -8623,8 +8648,11 @@ void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, c
     if (obj->testStatus(App::ObjectStatus::NoTouch) && transientPlacement) {
         return;
     }
+    const auto* detailProvider = dynamic_cast<const TreeViewDetailActionProvider*>(&view);
+    const bool changesDetails = detailProvider
+        && detailProvider->treeViewDetailsAffectedBy(std::string(changedProperty));
     const bool changesBrowserProjection =
-        changedProperty == "Group" || changedProperty == "Origin"
+        changesDetails || changedProperty == "Group" || changedProperty == "Origin"
         || changedProperty.find("LinkedObject") != std::string_view::npos
         || changedProperty == "VibeCADScriptedRole"
         || changedProperty == "VibeCADScriptedEngine"

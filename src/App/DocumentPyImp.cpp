@@ -29,6 +29,7 @@
 #include <Base/FileInfo.h>
 #include <Base/Interpreter.h>
 #include <Base/Stream.h>
+#include <Base/Uuid.h>
 
 #include "Application.h"
 #include "Document.h"
@@ -937,7 +938,8 @@ PyObject* DocumentPy::recompute(PyObject* args)
     PY_CATCH;
 }
 
-PyObject* DocumentPy::recomputeAsync(PyObject* args)
+static PyObject* queueRecomputeAsync(
+    Document* document, PyObject* args, const RecomputeOriginScope::Origin& origin)
 {
     PyObject* pyobjs = Py_None;
     PyObject* recursive = Py_False;
@@ -947,7 +949,6 @@ PyObject* DocumentPy::recomputeAsync(PyObject* args)
 
     PY_TRY
     {
-        Document* document = getDocumentPtr();
         std::vector<RecomputeRequest> requests;
         if (pyobjs == Py_None) {
             requests.push_back(RecomputeRequest::fromDocument(*document));
@@ -982,6 +983,9 @@ PyObject* DocumentPy::recomputeAsync(PyObject* args)
             }
         }
 
+        for (auto& request : requests) {
+            request.origin = origin;
+        }
         Application& application = GetApplication();
         const auto requestCount = requests.size();
         if (!application.tryQueueRecomputeRequests(std::move(requests))) {
@@ -990,6 +994,40 @@ PyObject* DocumentPy::recomputeAsync(PyObject* args)
         return Py::new_reference_to(Py::Long(requestCount));
     }
     PY_CATCH;
+}
+
+PyObject* DocumentPy::recomputeAsync(PyObject* args)
+{
+    return queueRecomputeAsync(getDocumentPtr(), args, {});
+}
+
+PyObject* DocumentPy::recomputeAsyncTracked(PyObject* args)
+{
+    PY_TRY
+    {
+        Document* document = getDocumentPtr();
+        auto origin = std::make_shared<const RecomputeOrigin>(
+            RecomputeOrigin {document->getName(), Base::Uuid::createUuid()});
+        PyObject* count = queueRecomputeAsync(document, args, origin);
+        if (!count) {
+            return nullptr;
+        }
+        PyObject* result = Py_BuildValue("{s:s,s:O}", "origin", origin->token.c_str(),
+                                        "request_count", count);
+        Py_DECREF(count);
+        return result;
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::getCurrentRecomputeOrigin(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    const auto origin = RecomputeOriginScope::current();
+    return PyUnicode_FromString(origin && origin->documentName == getDocumentPtr()->getName()
+                                    ? origin->token.c_str() : "");
 }
 
 PyObject* DocumentPy::getObjectStructureGeneration(PyObject* args)

@@ -29,6 +29,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -36,6 +37,28 @@
 
 namespace App
 {
+
+// Optional provenance for one explicitly tracked asynchronous recompute.
+// Shared immutable data keeps forwarding cheap; ordinary work has no origin.
+struct RecomputeOrigin
+{
+    std::string documentName;
+    std::string token;
+};
+
+class AppExport RecomputeOriginScope
+{
+public:
+    using Origin = std::shared_ptr<const RecomputeOrigin>;
+    explicit RecomputeOriginScope(Origin origin);
+    ~RecomputeOriginScope();
+    RecomputeOriginScope(const RecomputeOriginScope&) = delete;
+    RecomputeOriginScope& operator=(const RecomputeOriginScope&) = delete;
+    static Origin current();
+
+private:
+    Origin previous;
+};
 
 // App owns these signal types because App::Document declares them. Gui installs
 // the actual main-thread hooks when a GUI application is available.

@@ -49,6 +49,20 @@ protected:
     std::map<const App::Property*, Gui::ViewProvider*> propView;
 };
 
+/// Opt-in provider for Python features that publish their own cached scene nodes.
+/// Shape updates retain native placement/selection handling without Part meshing.
+class PartGuiExport ViewProviderCached: public Gui::ViewProviderGeometryObject
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(PartGui::ViewProviderCached);
+
+public:
+    ViewProviderCached();
+    ~ViewProviderCached() override;
+    bool allowOverride(const App::DocumentObject& object) const override;
+};
+
+using ViewProviderCachedPython = Gui::ViewProviderFeaturePythonT<ViewProviderCached>;
+
 using ViewProviderPython = Gui::ViewProviderFeaturePythonT<ViewProviderPart>;
 using ViewProviderCustomPython = Gui::ViewProviderFeaturePythonT<ViewProviderCustom>;
 

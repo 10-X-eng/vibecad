@@ -196,6 +196,10 @@ def _domain_builder(
         from VibeCADNativeParametersSnapshot import build_parameters_snapshot
 
         return build_parameters_snapshot
+    if surface_id == "sheet_metal":
+        from VibeCADNativeSheetMetalSnapshot import build_sheet_metal_snapshot
+
+        return lambda document: build_sheet_metal_snapshot(document, selection=selection)
     if surface_id == "aero":
         from VibeCADNativeAeroSnapshot import build_aero_snapshot
 

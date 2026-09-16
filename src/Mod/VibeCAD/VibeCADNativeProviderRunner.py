@@ -331,6 +331,26 @@ class NativeProviderToolRunner:
                 "next_surface": str(result.get("current_surface") or ""),
             }
             self._turn_transition_requested = True
+        if (result.get("error_code") == "NATIVE_REVISION_CONFLICT"
+                and isinstance(result.get("repair"), Mapping)
+                and result["repair"].get("next_turn_required") is True
+                and self._execution.document_uid):
+            # Keep the failed call and frozen revision intact. A separate turn
+            # must capture current document state before any further work.
+            try:
+                refreshed = dict(self._refresh_context())
+            except Exception:
+                refreshed = {}
+            live = refreshed.get("provider_tool_surface")
+            from VibeCADNativeWorkspaceSchema import NATIVE_WORKSPACE_BY_SURFACE
+
+            next_surface = str(live.get("domain") or "") if isinstance(live, Mapping) else ""
+            if next_surface in NATIVE_WORKSPACE_BY_SURFACE:
+                self._pending_context = refreshed
+                result = {**result, "document_state_changed": True,
+                          "document_uid": self._execution.document_uid,
+                          "next_turn_required": True, "next_surface": next_surface}
+                self._turn_transition_requested = True
         if result.get("ok") is True and result.get("next_turn_required") is not True:
             try:
                 refreshed = dict(self._refresh_context())

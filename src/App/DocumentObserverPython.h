@@ -78,6 +78,8 @@ private:
     void slotBeforeChangeObject(const App::DocumentObject& Obj, const App::Property& Prop);
     /** The property of an observed object has changed */
     void slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop);
+    void slotChangedObjectWithOrigin(const App::DocumentObject& Obj, const App::Property& Prop,
+                                     const std::string& origin);
     /** Undoes the last transaction of the document */
     void slotUndoDocument(const App::Document& Doc);
     /** Redoes the last undone transaction of the document */
@@ -146,6 +148,7 @@ private:
     Connection pyDeletedObject;
     Connection pyBeforeChangeObject;
     Connection pyChangedObject;
+    Connection pyChangedObjectWithOrigin;
     Connection pyRecomputedObject;
     Connection pyBeforeRecomputeDocument;
     Connection pyRecomputedDocument;

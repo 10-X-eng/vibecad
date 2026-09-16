@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
@@ -139,6 +140,106 @@ def _successful_mutation(state, document):
 def _verify(document, draft):
     assert document.getObject(draft.value.Name) is draft.value
     return {"object": draft.created[0].summary(), "valid": True}
+
+
+def _deferred_intent(state, document):
+    draft = _successful_mutation(state, document)
+    return NativeMutationDraft(value=draft.value, created=draft.created)
+
+
+def test_deferred_mutation_commits_intent_and_releases_observation_before_geometry():
+    state, document, transactions, runner, ticket = _host()
+    execution = runner.start_deferred(
+        ticket=ticket, document=document, transaction_name="Create deferred sheet",
+        reauthorize_turn=lambda: None,
+        mutate=lambda target: _deferred_intent(state, target), verify=_verify)
+    assert transactions.commits == 1
+    assert not document.HasPendingTransaction
+    assert not document.booked_transaction
+    assert document.recompute_calls == []
+    assert execution.commit_revision == 1
+    assert execution.prepared.ticket == ticket
+    assert execution.prepared.created[0].object_name == "Box"
+    assert execution.committed_undo_entry
+    assert not execution.duplicate
+    assert state.completed_mutation_receipt(ticket) is None
+    # Later work must be observed independently, never absorbed by the short
+    # transaction's global mutation observer.
+    assert state.note_structural_change(document.Uid) == 2
+    assert state.completed_mutation_receipt(ticket) is None
+    state.cancel_mutation(ticket)
+
+
+def test_deferred_completion_records_one_receipt_at_the_final_verified_revision():
+    state, document, transactions, runner, ticket = _host()
+    execution = runner.start_deferred(
+        ticket=ticket, document=document, transaction_name="Create deferred sheet",
+        reauthorize_turn=lambda: None,
+        mutate=lambda target: _deferred_intent(state, target), verify=_verify)
+    # The domain adapter must prove ownership of this later revision before
+    # invoking completion. This runner alone is not that provenance proof.
+    state.note_structural_change(document.Uid)
+    receipt = state.complete_prepared_mutation(execution.prepared)
+    assert receipt.revision_before == 0
+    assert receipt.revision_after == 2
+    assert state.complete_prepared_mutation(execution.prepared) == receipt
+    repeated = runner.start_deferred(
+        ticket=ticket, document=document, transaction_name="Create deferred sheet",
+        reauthorize_turn=lambda: None,
+        mutate=lambda target: pytest.fail("replayed a committed mutation"), verify=_verify)
+    assert repeated.duplicate
+    assert repeated.prepared is None
+    assert not repeated.committed_undo_entry
+    assert repeated.result == execution.result
+    assert transactions.commits == 1
+
+
+@pytest.mark.parametrize("stage", ["mutation", "verification", "reauthorization"])
+def test_deferred_precommit_failure_aborts_without_a_receipt(stage):
+    state, document, transactions, runner, ticket = _host()
+    guards = []
+    def guard():
+        guards.append(True)
+        if stage == "reauthorization" and len(guards) == 2:
+            raise RuntimeError("turn ended")
+    def mutate(target):
+        draft = _deferred_intent(state, target)
+        if stage == "mutation":
+            raise RuntimeError("invalid edit")
+        return draft
+    def verify(target, draft):
+        if stage == "verification":
+            raise RuntimeError("intent did not persist")
+        return _verify(target, draft)
+    with pytest.raises(RuntimeError):
+        runner.start_deferred(ticket=ticket, document=document,
+            transaction_name="Create deferred sheet", reauthorize_turn=guard,
+            mutate=mutate, verify=verify)
+    assert transactions.aborts == 1
+    assert transactions.commits == 0
+    assert document.snapshot() == {}
+    assert not document.HasPendingTransaction
+    assert state.current_revision(document.Uid) == 0
+    assert state.completed_mutation_receipt(ticket) is None
+
+
+@pytest.mark.parametrize("geometry", ["recompute", "after_recompute"])
+def test_deferred_mutation_rejects_synchronous_geometry_work_before_commit(geometry):
+    state, document, transactions, runner, ticket = _host()
+    def mutate(target):
+        draft = _successful_mutation(state, target)
+        if geometry == "after_recompute":
+            return replace(draft, recompute_targets=(),
+                           after_recompute=lambda _: pytest.fail("ran geometry during intent commit"))
+        return draft
+    with pytest.raises(NativeMutationError):
+        runner.start_deferred(ticket=ticket, document=document,
+            transaction_name="Create deferred sheet", reauthorize_turn=lambda: None,
+            mutate=mutate, verify=_verify)
+    assert document.recompute_calls == []
+    assert transactions.aborts == 1
+    assert transactions.commits == 0
+    assert document.snapshot() == {}
 
 
 def test_success_is_one_transaction_revision_and_exact_recompute() -> None:
