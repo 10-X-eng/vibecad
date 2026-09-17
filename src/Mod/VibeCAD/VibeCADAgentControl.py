@@ -1475,7 +1475,7 @@ exact semantic VibeCAD targets without taking over the human's physical cursor.
 | POST | `/v1/close`       | optional `{{"document":"Name","discard_unsaved":false}}` | Close without silently discarding changes |
 | GET  | `/v1/ui/ribbon`   |                                   | Live semantic tab names and screen geometry |
 | GET  | `/v1/ui/menus`    |                                   | Live top-level menu names and screen geometry |
-| POST | `/v1/ui/click`    | `{{"kind":"ribbon","text":"Model"}}` | Activate a semantic Qt target without moving the physical cursor |
+| POST | `/v1/ui/click`    | `{{"kind":"ribbon","text":"Model"}}` or `{{"kind":"command","text":"Std_New"}}` | Activate a semantic Qt target without moving the physical cursor |
 | GET/POST | `/v1/screenshot` | optional `{{"path":"...png","overwrite":false}}` | Capture the visible VibeCAD window |
 | POST | `/v1/run`         | `{{"python":"..."}}` or `{{"script":"..."}}` (+ optional `path`, `recompute`) | Run against the active document |
 | GET  | `/v1/operations/<operation_id>` |                         | Prove completion after a client timeout |
@@ -2434,6 +2434,83 @@ def _cursor_coordinates(QtGui: Any) -> dict[str, int]:
     return {"x": int(point.x()), "y": int(point.y())}
 
 
+def _normalized_ui_text(value: Any) -> str:
+    return str(value or "").replace("&", "").strip()
+
+
+def _command_identity(target: Any) -> set[str]:
+    """Collect visible names and command ids for one Qt button or action."""
+
+    names: set[str] = set()
+    if target is None:
+        return names
+    for attribute in ("objectName", "toolTip", "accessibleName", "text"):
+        reader = getattr(target, attribute, None)
+        if callable(reader):
+            text = _normalized_ui_text(reader())
+            if text:
+                names.add(text)
+    property_reader = getattr(target, "property", None)
+    if callable(property_reader):
+        command_id = _normalized_ui_text(property_reader("VibeCADCommandId"))
+        if command_id:
+            names.add(command_id)
+    default_action = getattr(target, "defaultAction", None)
+    if callable(default_action):
+        names.update(_command_identity(default_action()))
+    return names
+
+
+def _iter_menu_actions(root: Any) -> list[Any]:
+    found: list[Any] = []
+    pending = [root]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        marker = id(current)
+        if marker in seen or current is None:
+            continue
+        seen.add(marker)
+        actions_reader = getattr(current, "actions", None)
+        if not callable(actions_reader):
+            continue
+        try:
+            actions = list(actions_reader() or [])
+        except Exception:
+            continue
+        for action in actions:
+            if action is None:
+                continue
+            found.append(action)
+            nested = getattr(action, "menu", None)
+            if callable(nested):
+                pending.append(nested())
+    return found
+
+
+def _collect_command_candidates(main_window: Any, QtWidgets: Any) -> list[tuple[str, Any, Any]]:
+    """Return unique (kind, target, identity) tuples for live command widgets."""
+
+    candidates: list[tuple[str, Any, Any]] = []
+    finder = getattr(main_window, "findChildren", None)
+    button_type = getattr(QtWidgets, "QToolButton", None)
+    if callable(finder) and button_type is not None:
+        try:
+            buttons = list(finder(button_type) or [])
+        except Exception:
+            buttons = []
+        for button in buttons:
+            names = _command_identity(button)
+            if names:
+                candidates.append(("button", button, names))
+    menu_bar = main_window.menuBar() if main_window is not None else None
+    for action in _iter_menu_actions(menu_bar):
+        names = _command_identity(action)
+        if names:
+            candidates.append(("action", action, names))
+    return candidates
+
+
 def ui_click_target(
     kind: str,
     text: str,
@@ -2446,10 +2523,12 @@ def ui_click_target(
     target_kind = str(kind or "").strip().lower().replace("-", "_")
     if target_kind in {"tab", "ribbon_tab"}:
         target_kind = "ribbon"
-    if target_kind not in {"ribbon", "menu"}:
+    if target_kind in {"action", "button"}:
+        target_kind = "command"
+    if target_kind not in {"ribbon", "menu", "command"}:
         return failure(
             "UI_TARGET_KIND_INVALID",
-            "kind must be 'ribbon' or 'menu'.",
+            "kind must be 'ribbon', 'menu', or 'command'.",
             stage="schema",
         )
     target_text = str(text or "").strip()
@@ -2585,6 +2664,10 @@ def ui_click_target(
         left_button = QtCore.Qt.LeftButton
         no_modifier = QtCore.Qt.NoModifier
 
+        def inject_mouse_click(widget: Any, click_point: Any) -> None:
+            # One in-process Qt click site for ribbon tabs and command buttons.
+            QtTest.QTest.mouseClick(widget, left_button, no_modifier, click_point)
+
         if target_kind == "ribbon":
             menu_bar = main_window.menuBar()
             active_action_before = None
@@ -2637,7 +2720,7 @@ def ui_click_target(
                 widget.tabText(int(widget.currentIndex())) or ""
             ).replace("&", "").strip()
             click_point = widget.tabRect(target_index).center()
-            QtTest.QTest.mouseClick(widget, left_button, no_modifier, click_point)
+            inject_mouse_click(widget, click_point)
             process_events()
             if active_action_observed:
                 current_active_action = menu_bar.activeAction()
@@ -2669,6 +2752,94 @@ def ui_click_target(
                 "click_queued": False,
                 **state,
             }
+        elif target_kind == "command":
+            matches = [
+                (source_kind, target, names)
+                for source_kind, target, names in _collect_command_candidates(
+                    main_window, QtWidgets
+                )
+                if target_text in names
+            ]
+            unique: list[tuple[str, Any, Any]] = []
+            seen_targets: set[int] = set()
+            for source_kind, target, names in matches:
+                marker = id(target)
+                if marker in seen_targets:
+                    continue
+                seen_targets.add(marker)
+                unique.append((source_kind, target, names))
+            if len(unique) != 1:
+                return failure(
+                    "UI_TARGET_NOT_UNIQUE",
+                    (
+                        f"Expected exactly one command target named {target_text!r}; "
+                        f"found {len(unique)}."
+                    ),
+                    stage="precondition",
+                )
+            source_kind, target, names = unique[0]
+            if required_index is not None and required_index != 0:
+                return failure(
+                    "UI_TARGET_INDEX_MISMATCH",
+                    f"Command {target_text!r} is index 0, not {required_index}.",
+                    stage="precondition",
+                )
+            enabled_reader = getattr(target, "isEnabled", None)
+            visible_reader = getattr(target, "isVisible", None)
+            if (callable(enabled_reader) and not bool(enabled_reader())) or (
+                callable(visible_reader) and not bool(visible_reader())
+            ):
+                return failure(
+                    "UI_TARGET_DISABLED",
+                    f"Command {target_text!r} is disabled or hidden.",
+                    stage="precondition",
+                )
+            command_id = next(
+                (
+                    name
+                    for name in sorted(names)
+                    if name.startswith(("Std_", "Sketcher_", "PartDesign_"))
+                ),
+                target_text,
+            )
+            used_mouse_click = False
+            if source_kind == "button":
+                rect_reader = getattr(target, "rect", None)
+                if not callable(rect_reader):
+                    return failure(
+                        "UI_TARGET_GEOMETRY_UNAVAILABLE",
+                        f"Command button {target_text!r} has no clickable rectangle.",
+                        stage="precondition",
+                    )
+                click_point = rect_reader().center()
+                inject_mouse_click(target, click_point)
+                used_mouse_click = True
+            else:
+                trigger = getattr(target, "trigger", None)
+                if not callable(trigger):
+                    return failure(
+                        "UI_TARGET_HAS_NO_ACTION",
+                        f"Command {target_text!r} cannot be triggered in-process.",
+                        stage="precondition",
+                    )
+                trigger()
+            process_events()
+            state = interaction_state()
+            verified = bool(state["interaction_restored"])
+            details = {
+                "target_kind": target_kind,
+                "target_text": target_text,
+                "target_index": 0,
+                "command_id": command_id,
+                "command_source": source_kind,
+                "click_queued": False,
+                **state,
+            }
+            details["input_method"] = (
+                "qt_in_process_mouse_click"
+                if used_mouse_click
+                else "qt_in_process_action_trigger"
+            )
         else:
             widget = main_window.menuBar()
             if widget is None or not bool(widget.isVisible()):
@@ -2780,13 +2951,15 @@ def ui_click_target(
             }
 
         cursor_after = _cursor_coordinates(QtGui)
+        if target_kind == "ribbon":
+            input_method = "qt_in_process_mouse_click"
+        elif target_kind == "command":
+            input_method = str(details.get("input_method") or "qt_in_process_mouse_click")
+        else:
+            input_method = "qt_in_process_menu_popup"
         details.update(
             {
-                "input_method": (
-                    "qt_in_process_mouse_click"
-                    if target_kind == "ribbon"
-                    else "qt_in_process_menu_popup"
-                ),
+                "input_method": input_method,
                 "physical_cursor_control": "none",
                 "physical_cursor_before": cursor_before,
                 "physical_cursor_after": cursor_after,

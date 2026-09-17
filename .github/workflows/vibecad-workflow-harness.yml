@@ -1,0 +1,40 @@
+name: VibeCAD workflow harness
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibecad-workflow-harness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness:
+    name: Fake-channel workflow assertions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: src/Mod/VibeCAD
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Run click-channel workflow tests without a TypeSafe key
+        run: python -m pytest -q src/Mod/VibeCAD/vibecad_tests/test_workflow_harness.py
+
+      - name: Run the fake-channel harness entry point
+        run: python src/Mod/VibeCAD/VibeCADWorkflowHarness.py --fake-channel

@@ -119,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     ui_click_parser.add_argument(
         "--kind",
         required=True,
-        choices=("ribbon", "menu"),
+        choices=("ribbon", "menu", "command"),
         help="Target family to activate.",
     )
     ui_click_parser.add_argument("--text", required=True, help="Exact visible target text.")

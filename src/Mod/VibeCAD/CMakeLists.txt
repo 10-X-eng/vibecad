@@ -45,6 +45,8 @@ set(VibeCAD_Scripts
     VibeCADGeometryInspection.py
     VibeCADPlacementInspection.py
     VibeCADGui.py
+    VibeCADJevJudge.py
+    VibeCADWorkflowHarness.py
     VibeCADTokenUsage.py
     VibeCADLegacyArchitecture.py
     VibeCADLiveAcceptanceOracle.py
@@ -1626,6 +1628,7 @@ if(BUILD_TEST AND BUILD_GUI)
         vibecad_tests/test_agent_control_grok_bot.py
         vibecad_tests/test_dev_launcher_contract.py
         vibecad_tests/test_visible_operator_contract.py
+        vibecad_tests/test_workflow_harness.py
         vibecad_tests/test_reference_image_downscale.py
         vibecad_tests/test_ollama_inspect.py
         vibecad_tests/test_live_acceptance_oracle.py

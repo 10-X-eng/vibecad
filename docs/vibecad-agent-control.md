@@ -239,6 +239,11 @@ curl -s -H "Authorization: Bearer %VIBECAD_TOKEN%" ^
   http://127.0.0.1:8766/v1/ui/click
 
 curl -s -H "Authorization: Bearer %VIBECAD_TOKEN%" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"kind\":\"command\",\"text\":\"VibeCADRibbonNew\"}" ^
+  http://127.0.0.1:8766/v1/ui/click
+
+curl -s -H "Authorization: Bearer %VIBECAD_TOKEN%" ^
   http://127.0.0.1:8766/v1/screenshot
 
 curl -s -H "Authorization: Bearer %VIBECAD_TOKEN%" ^
@@ -267,6 +272,7 @@ python "%VIBECAD_CLI%" close
 python "%VIBECAD_CLI%" ui-menus
 python "%VIBECAD_CLI%" ui-ribbon
 python "%VIBECAD_CLI%" ui-click --kind ribbon --text Aero
+python "%VIBECAD_CLI%" ui-click --kind command --text VibeCADRibbonNew
 python "%VIBECAD_CLI%" screenshot --path C:\Evidence\vibecad.png
 python "%VIBECAD_CLI%" run --path C:\Models\part.FCStd --script C:\Work\edit.py
 python "%VIBECAD_CLI%" run --python "result = [obj.Name for obj in App.ActiveDocument.Objects]"
@@ -321,7 +327,7 @@ owner's network controls.
 | POST | `/v1/close` | optional `document`, explicit `discard_unsaved` | Close without silently discarding a modified document |
 | GET | `/v1/ui/menus` | | Live top-level menu names, indices, visibility, and screen geometry |
 | GET | `/v1/ui/ribbon` | | Live ribbon names, workbenches, indices, selection, and screen geometry |
-| POST | `/v1/ui/click` | `{"kind":"menu|ribbon","text":"..."}`, optional exact PID/index | Activate one semantic Qt target without moving or clicking the OS cursor |
+| POST | `/v1/ui/click` | `{"kind":"menu|ribbon|command","text":"..."}`, optional exact PID/index | Activate one semantic Qt target without moving or clicking the OS cursor |
 | POST | `/v1/run` | `{"python":"..."}` or `{"script":"..."}` plus optional `path`, `recompute` | Exec against the active doc |
 | GET | `/v1/operations/{operation_id}` | | Read the in-memory state/result of a client-identified operation without entering the document thread |
 | GET/POST | `/v1/aero` | operation payload for POST | Bounded Aero context and operations |
@@ -408,6 +414,14 @@ When no explicit target sequence is supplied, the tour discovers the live
 window's visible, enabled top-level menus and enabled ribbon tabs. This keeps the
 tester reusable across checkouts without assuming that an optional product
 feature is installed.
+
+`kind=command` is additive: it activates one named ribbon button or menu
+action (`VibeCADRibbonNew`, `Sketcher_NewSketch`, `PartDesign_Pad`,
+`Std_Export`, or the matching command id / tooltip) through the same
+in-process click site. The workflow harness in
+[vibecad-workflow-harness.md](vibecad-workflow-harness.md) uses that channel
+for New document, Sketch then pad, and Export. The visible tour stays the
+demo; it does not become the CI suite.
 
 ### Visible-window screenshots
 
