@@ -20,7 +20,7 @@ def test_codex_runtime_release_is_consistent():
                 for t in node.targets)
     )
     installer = (root / "package/rattler-build/scripts/install_vibecad_codex_runtime.sh").read_text()
-    assert version == "0.153.4"
+    assert version == "0.154.0"
     assert f'codex_version="{version}"' in installer
     archives = re.findall(r'archive="([^"]+)"\s+archive_sha256="([a-f0-9]{64})"', installer)
     assert len(archives) == 6
