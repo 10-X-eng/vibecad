@@ -3676,5 +3676,146 @@ class TestMeshGroupBrowser(unittest.TestCase):
         )
 
 
+class TestConsumedBodyBrowser(unittest.TestCase):
+    """Current parts are distinct from retained, consumed history identities."""
+
+    def setUp(self):
+        from PySide import QtWidgets
+
+        self.widgets = QtWidgets
+        self.params = App.ParamGet(TREE_PARAMETER_PATH)
+        self.organized = self.params.GetBool("OrganizeModelByType", True)
+        self.params.SetBool("OrganizeModelByType", True)
+        self.document = App.newDocument("ConsumedBodyBrowser")
+        self.document.UndoMode = 1
+        self.temporary = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        if self.document and App.getDocument(self.document.Name):
+            self.assertTrue(_wait_until(lambda: self.document.isClosable()))
+            App.closeDocument(self.document.Name)
+        self.temporary.cleanup()
+        self.params.SetBool("OrganizeModelByType", self.organized)
+
+    def _box(self, name, x):
+        self.document.openTransaction("Create " + name)
+        operation = self.document.addObject("PartDesign::DesignBox", name)
+        edit = PartDesign.beginDesignOperationEdit(operation)
+        operation.Length = operation.Width = operation.Height = 10
+        operation.Placement = App.Placement(App.Vector(x, 0, 0), App.Rotation())
+        PartDesign.setDesignOperationTargets(edit, "New Body", [])
+        self.document.recompute()
+        bodies = PartDesign.finalizeDesignOperationEdit(edit)
+        self.assertEqual(len(bodies), 1)
+        bodies[0].Label = name + " part"
+        self.document.commitTransaction()
+        self.assertAlmostEqual(bodies[0].Shape.BoundBox.XMin, x)
+        return operation, bodies[0]
+
+    def _paths(self):
+        paths = set()
+        for tree in Gui.getMainWindow().findChildren(self.widgets.QTreeWidget):
+            if tree.metaObject().className() != "Gui::TreeWidget" or not tree.isVisible():
+                continue
+            model = tree.model()
+
+            def walk(parent=QtCore.QModelIndex(), path=()):
+                for row in range(model.rowCount(parent)):
+                    if tree.isRowHidden(row, parent):
+                        continue
+                    index = model.index(row, 0, parent)
+                    current = path + (str(model.data(index, QtCore.Qt.DisplayRole)),)
+                    paths.add(current)
+                    walk(index, current)
+
+            walk()
+        return paths
+
+    def _assert_parts(self, labels):
+        def matches():
+            paths = self._paths()
+            actual = {path[-1] for path in paths if len(path) == 3 and path[-2] == "Bodies"}
+            return actual == set(labels)
+
+        self.assertTrue(_wait_until(matches), repr(self._paths()))
+
+    def _exercise_combine(self, mode):
+        upstream, target = self._box("Target", 0)
+        _tool_operation, tool = self._box("Tool", 5)
+        empty = self.document.addObject("PartDesign::Body", "EmptyBody")
+        empty.Label = "Empty part being edited"
+        self._assert_parts({target.Label, tool.Label, empty.Label})
+        names = target.Name, tool.Name, upstream.Name
+        self.document.openTransaction("Combine parts")
+        combine = self.document.addObject("PartDesign::DesignCombine", "Combine")
+        edit = PartDesign.beginDesignOperationEdit(combine)
+        PartDesign.setDesignCombineBodies(edit, mode, target, [tool], False)
+        self.document.recompute()
+        PartDesign.finalizeDesignOperationEdit(edit)
+        self.document.commitTransaction()
+        self.assertFalse(tool.Tip.CurrentState.Present)
+        self.assertTrue(tool.Shape.isNull())
+        expected = {target.Label, empty.Label}
+        self._assert_parts(expected)
+        self.assertTrue(any(path[-2:] == ("Design History", combine.Label) for path in self._paths()))
+
+        self.document.undo()
+        self.document.recompute()
+        self._assert_parts(expected | {"Tool part"})
+        self.document.redo()
+        self.document.recompute()
+        self._assert_parts(expected)
+        target, tool, upstream = (self.document.getObject(name) for name in names)
+        combine = self.document.getObject("Combine")
+        timeline = self.document.getObject("VibeCADTimeline")
+        end = len(timeline.Operations)
+        # Use the actual history command: changing Position alone does not
+        # apply suppression, restore publications, or request a tree refresh.
+        previous = Gui.getMainWindow().findChild(
+            self.widgets.QToolButton, "VibeCADFeatureTimelinePrevious"
+        )
+        finish = Gui.getMainWindow().findChild(
+            self.widgets.QToolButton, "VibeCADFeatureTimelineEnd"
+        )
+        self.assertIsNotNone(previous)
+        self.assertIsNotNone(finish)
+        self.assertTrue(_wait_until(previous.isEnabled))
+        previous.click()
+        self.assertTrue(_wait_until(lambda: timeline.Position < end and self.document.isClosable()))
+        self._assert_parts(expected | {"Tool part"})
+        finish.click()
+        self.assertTrue(_wait_until(lambda: timeline.Position == end and self.document.isClosable()))
+        self._assert_parts(expected)
+
+        # Presence can change without rerouting the publication's state link.
+        combine.Suppressed = True
+        self.document.recompute()
+        self._assert_parts(expected | {"Tool part"})
+        combine.Suppressed = False
+        self.document.recompute()
+        self._assert_parts(expected)
+        upstream.Length = 12
+        self.document.recompute()
+        self.assertTrue(target.isValid(), target.getStatusString())
+        self.assertFalse(tool.Tip.CurrentState.Present)
+        target.Visibility = False
+        self._assert_parts(expected)
+
+        path = os.path.join(self.temporary.name, "consumed.FCStd")
+        self.assertTrue(_wait_until(lambda: self.document.isClosable()))
+        self.document.saveAs(path)
+        App.closeDocument(self.document.Name)
+        self.document = App.openDocument(path)
+        self._assert_parts(expected)
+        self.assertFalse(self.document.getObject(names[0]).Visibility)
+        self.assertFalse(self.document.getObject(names[1]).Tip.CurrentState.Present)
+
+    def test_join_consumed_body_not_listed_as_current_part(self):
+        self._exercise_combine("Join")
+
+    def test_cut_consumed_body_not_listed_as_current_part(self):
+        self._exercise_combine("Cut")
+
+
 if __name__ == "__main__":
     unittest.main()
