@@ -2955,3 +2955,45 @@ def test_existing_providers_remain_registered() -> None:
     assert set(auth.PROVIDERS) >= {"openai", "anthropic", "chatgpt", "grok"}
     assert control.DEFAULT_AGENT_PORT != 8765
     assert control.DEFAULT_AGENT_PORT == 8766
+
+
+@pytest.mark.parametrize("fail_closed", [False, True])
+def test_status_reads_run_on_registered_document_thread(monkeypatch, fail_closed):
+    caller = threading.get_ident()
+    with ThreadPoolExecutor(max_workers=1) as owner:
+        owner_id = owner.submit(threading.get_ident).result()
+        monkeypatch.setattr(
+            control, "_document_thread_dispatch",
+            lambda operation: owner.submit(operation).result(),
+        )
+        monkeypatch.setattr(
+            control, "report_status",
+            lambda: {"ok": True, "thread": threading.get_ident()},
+        )
+        code, payload = control.handle_http_request(
+            "GET", "/v1/status", fail_closed=fail_closed,
+        )
+    assert owner_id != caller
+    assert code == 200
+    assert payload["thread"] == owner_id
+
+
+@pytest.mark.parametrize("error_type", [ConnectionResetError, ConnectionAbortedError, BrokenPipeError])
+def test_http_client_disconnect_during_request_read_is_not_server_failure(error_type):
+    def disconnected(_size):
+        raise error_type("client disconnected")
+
+    handler = control._AgentRequestHandler.__new__(control._AgentRequestHandler)
+    handler.rfile = SimpleNamespace(readline=disconnected)
+    handler.handle()
+    assert handler.close_connection
+
+
+def test_http_unexpected_request_read_error_still_propagates():
+    def broken_reader(_size):
+        raise RuntimeError("unexpected request reader defect")
+
+    handler = control._AgentRequestHandler.__new__(control._AgentRequestHandler)
+    handler.rfile = SimpleNamespace(readline=broken_reader)
+    with pytest.raises(RuntimeError, match="unexpected request reader defect"):
+        handler.handle()
